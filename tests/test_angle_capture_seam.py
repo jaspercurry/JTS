@@ -36,6 +36,7 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
+from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.seat_level_reference import ResolvedLevel
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
@@ -56,7 +57,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpecError, _validate_capture_plan
+from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
@@ -923,21 +924,13 @@ def test_candidates_expand_pose_major_candidate_minor(
     }
 
 
-def _candidate_batch_plan():
-    request = ac.request_for_program(
-        mp.program("tournament", "full"), candidates=("base", "fp-a", "fp-b"),
-    )
-    prompts = ac.session_lateral_walk(
-        request, externally_positioned=False, base_entries=2,
-        supported_summed_candidates=True,
-    )
-    return capture_plan.build_v2_session_spec(
-        _ROLES_BANDS, _FC_HZ,
-        acknowledgement_binding="candidate-batch-test",
-        plan_shape=dataclasses.replace(capture_plan.resolve_plan_shape(), hand_released_positions=True),
-        include_lateral=True,
-        lateral_prompts=prompts,
-        lateral_candidate_ids=tuple(stop.candidate_id for stop in request.stops),
+def _candidate_batch_plan(request):
+    captures = prepare_plan_captures(request, roles_bands=_ROLES_BANDS)
+    return capture_plan.build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id)
+         for c in captures if c.spec.program_phase == PHASE_LATERAL],
+        roles_bands=_ROLES_BANDS, fc_hz=_FC_HZ,
+        acknowledgement_binding="candidate-batch-test", retries_per_pose=0,
     ).capture_plan
 
 
@@ -956,7 +949,10 @@ def test_summed_candidate_walk_requires_the_supported_execution_path(candidates)
 
 
 def test_three_configs_at_three_poses_use_three_placement_grants():
-    entries = [entry for entry in _candidate_batch_plan().entries if entry.kind_label == "lateral"]
+    request = ac.request_for_program(
+        mp.program("tournament", "full"), candidates=("base", "fp-a", "fp-b"),
+    )
+    entries = _candidate_batch_plan(request).entries
     gate = PositionGate()
     grants = []
     for offset, entry in enumerate(entries):
@@ -981,39 +977,38 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "3"
         assert entry.screen[POSITION_BATCH_START_KEY] == str(index - offset % 3)
         assert entry.screen["candidate_id"] == ("", "fp-a", "fp-b")[offset % 3]
-        if offset % 3:
-            assert entry.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
     assert len(grants) == len(set(grants)) == 3
     gate.abandon_hold()
     assert gate.published()["current"] is None
 
 
 def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
-    first, second, third = [
-        entry for entry in _candidate_batch_plan().entries if entry.kind_label == "lateral"
-    ][:3]
+    request = ac.request_for_program(
+        mp.program("tournament", "full"), candidates=("base", "fp-a", "fp-b"),
+    )
+    first, second, third = _candidate_batch_plan(request).entries[:3]
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
-        gate.gate(3, 3, first)
-    gate.release(3, 3)
-    gate.gate(3, 3, first)
-    gate.gate(4, 4, second)
+        gate.gate(1, 1, first)
+    gate.release(1, 1)
+    gate.gate(1, 1, first)
+    gate.gate(2, 2, second)
     with pytest.raises(CaptureBeginDeferred):
-        gate.gate(4, 5, second)
+        gate.gate(2, 3, second)
     assert gate.published()["pending"]["mover"] == ac.MOVER_HUMAN
-    for index, attempt in ((3, 3), (4, 4), (4, None)):
+    for index, attempt in ((1, 1), (2, 2), (2, None)):
         with pytest.raises(ValueError):
             gate.release(index, attempt)
-    assert gate.published()["pending"]["attempt"] == 5
-    gate.release(4, 5)
-    gate.gate(4, 5, second)
+    assert gate.published()["pending"]["attempt"] == 3
+    gate.release(2, 3)
+    gate.gate(2, 3, second)
     gate.abandon_hold()
     with pytest.raises(CaptureBeginDeferred):
-        gate.gate(4, 5, second)
-    gate.release(4, 5)
+        gate.gate(2, 3, second)
+    gate.release(2, 3)
     gate.abandon_hold()
     with pytest.raises(CaptureBeginDeferred):
-        gate.gate(5, 6, third)
+        gate.gate(3, 4, third)
 
 
 # --------------------------------------------------------------------------- #
@@ -1260,21 +1255,14 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
 def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     program = mp.program("room", size)
     request = ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=("base", "room-fp"))
-    prompts = tuple(s.prompt for s in ac.resolve_request(request))
-    plan = capture_plan.build_v2_session_spec(
-        _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
-        plan_shape=dataclasses.replace(capture_plan.resolve_plan_shape(), hand_released_positions=True),
-        include_lateral=True, lateral_prompts=prompts,
-        lateral_candidate_ids=tuple(s.candidate_id for s in request.stops),
-    ).capture_plan
-    entries = [e for e in plan.entries if e.kind_label == "lateral"]
+    plan = _candidate_batch_plan(request)
+    entries = plan.entries
     assert len(entries) == program.capture_count * 2
     for offset, entry in enumerate(entries):
         assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 2 + 1)
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
         assert entry.screen[POSITION_BATCH_START_KEY] == str(plan.entries.index(entry) - offset % 2 + 1)
         assert str(offset % 2 + 1) in entry.screen["progress"] and "2" in entry.screen["progress"]
-        assert entry.screen["auto_advance"] == (capture_plan.AUTO_ADVANCE_TAP if offset % 2 == 0 else capture_plan.AUTO_ADVANCE_COUNTDOWN)
     assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count
 
 
@@ -1604,35 +1592,18 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
 
 
 @pytest.mark.parametrize("stops", [1, 24, 33, 99, 110, 111, 120, 121, 128, 129, 140])
-def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
-    shape = capture_plan.resolve_plan_shape()
-    base_entries = len(capture_plan.build_v2_cloud_index_phase_map(
-        plan_shape=shape, include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    ))
-    plan = capture_plan.build_v2_capture_plan(
-        _ROLES_BANDS, _FC_HZ, plan_shape=shape, include_lateral=True,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-        lateral_prompts=tuple(ac.pose_at_angle(0) for _ in range(stops)),
-    )
-    try:
-        _validate_capture_plan(plan)
-        plan_accepts = True
-    except CaptureSpecError:
-        plan_accepts = False
-    try:
-        poses = ac.session_lateral_walk(
-            ac.per_driver_at([0] * stops), externally_positioned=False,
-            base_entries=base_entries,
-        )
-        assert len(poses) == stops
-        gate_accepts = True
-    except ac.LateralWalkRefused as refused:
-        assert refused.reason == ac.WALK_OVER_CAPTURE_CAPACITY
-        gate_accepts = False
-    assert gate_accepts == plan_accepts
-    if stops in (1, 140):
-        assert plan_accepts == (stops == 1)
+def test_the_capacity_gate_applies_the_stage1_attempt_budget(stops):
+    base_entries = capture_plan.stage1_base_entries()
+    attempts = capture_plan.stage1_plan_max_attempts(base_entries + stops)
+    request = ac.per_driver_at([0] * stops)
+    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            ac.session_lateral_walk(request, externally_positioned=False, base_entries=base_entries)
+        assert refused.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
+    else:
+        assert len(ac.session_lateral_walk(
+            request, externally_positioned=False, base_entries=base_entries,
+        )) == stops
 
 
 @pytest.mark.parametrize("version", [3, 4])

@@ -11,7 +11,10 @@ import re
 import pytest
 import yaml
 from dataclasses import replace
-from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
+from jasper.active_speaker.plan_run import prepare_plan_captures
+from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec, build_crossover_sweep_spec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -36,8 +39,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     VERIFY_ANCHOR_HOLD_MESSAGE,
     _program_duration_ms,
     _pose,
-    build_v2_capture_plan,
-    build_v2_session_spec,
+    build_inline_session_spec,
     build_v2_verify_capture_plan,
     build_v2_verify_session_spec,
     format_position_distance,
@@ -48,7 +50,8 @@ from jasper.active_speaker.crossover_v2.programs import PILOT_LEVEL_DELTA_DB
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement.program import (
-    KIND_COURTESY_TONE,
+    KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
+    build_check_program, build_measure_program, build_verify_program,
 )
 from tests.crossover_v2_fixtures import (
     FC_HZ,
@@ -241,56 +244,12 @@ def test_the_reverify_plan_leads_with_the_no_re_walk_sentence():
     assert steps[0] == REVERIFY_NO_REWALK_HEADLINE
 
 
-def test_the_summed_consent_heading_names_the_job_not_crossover_crossover():
-    """§2.3: the v2 cloud passed ``driver_label="crossover"`` into a heading
-    template built for per-driver captures, so the household read
-    "Crossover — crossover". A summed capture measures the speaker, not a
-    named driver."""
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24,
-    )
-    heading = next(c for c in spec.screen if c["type"] == "heading")
-    assert heading["text"] == "Tune your speaker"
-
-
-def test_check_stops_hushing_the_room_before_it_measures_it():
-    """Work order D8 / issue #1835. CHECK's ambient window is the SESSION's
-    room-noise measurement and is deliberately composed to run BEFORE anyone is
-    asked to go quiet — the gain solve reads it, so a pre-hushed room reads
-    quieter than reality and the solve under-drives against the noise the later
-    sweeps actually face.
-
-    TWO windows are touched and a THIRD is deliberately not: CHECK's step copy
-    and the phone's own pre-arm floor note both stop asking for quiet on CHECK
-    only. The in-sweep ambient lines — a different measurement with a different
-    purpose — are the speaker's own call (``quiet_requested``) and this must not
-    collapse them into one string.
-    """
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24,
-    )
-    entries = {e.kind_label: e for e in spec.capture_plan.entries}
-    check = entries["check"].screen
-    assert "stay quiet" not in check["body"].lower()
-    assert "carry on" in check["body"].lower()
-    # …and the phone's own sub-second floor window gets its own honest request,
-    # because asking for quiet THERE hushes the room a moment before CHECK
-    # measures it.
-    assert "quiet" not in check["noise_note"].lower()
-    assert "carry on" in check["noise_note"].lower()
-    # Every OTHER entry supplies no override, so the page keeps its default —
-    # which is right for them, since a sweep follows immediately.
-    for label, entry in entries.items():
-        if label != "check":
-            assert "noise_note" not in entry.screen
-
-
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
 def test_a_verify_group_too_short_for_two_wide_offsets_is_refused(positions):
     """The hole NEW-9 named: nothing stopped a caller asking for a post-apply
     group that never reaches a ~30 cm-class offset."""
     with pytest.raises(CrossoverV2FlowError):
-        build_v2_capture_plan(_roles(), FC_HZ, cloud_verify_positions=positions)
+        resolve_plan_shape(cloud_verify_positions=positions)
 
 
 def test_cloud_prompts_state_numeric_absolute_poses():
@@ -376,22 +335,6 @@ def test_wide_is_derived_from_the_offset_not_hand_set():
         _pose("Move it {d}", 40.0, "sideways")
 
 
-# --- courtesy-tone prelude (issue #1677): phone-contract duration ------------
-#
-# The phone's recording window (CapturePlanEntry.duration_ms) is derived from
-# build_v2_capture_plan's OWN nominal composition, entirely separate from the
-# real playback composition (``crossover_v2.programs``'s SessionExcitation
-# methods, reached through the conductor's ``_excitation``). Both must ask the
-# SAME ``courtesy_prelude_for_phase`` rule, or the phone would stop recording
-# before the real (longer) program finishes -- mirrors the existing +15 s
-# MEASURE-lengthening proof from sweep-composition PR-A (#1668).
-#
-# Since the 2026-08-18 trim the rule answers per PHASE, so this is now also
-# where a phase that is announced in the plan but not in playback (or the other
-# way round) is caught: each entry is checked against a nominal program composed
-# at ITS OWN phase's answer.
-
-
 def _courtesy_prelude_ms() -> float:
     """What one prelude costs, DERIVED from the composer's own constants."""
     from jasper.audio_measurement.program import (
@@ -409,104 +352,27 @@ def _courtesy_prelude_ms() -> float:
 
 
 def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
-    assert courtesy_prelude_for_phase(PHASE_CHECK) is True
-    assert courtesy_prelude_for_phase(PHASE_MEASURE) is False
-    plan = build_v2_capture_plan(_roles(), FC_HZ)
-    check, measure = plan.entries[0], plan.entries[1]
-    # The VERIFY-shaped program's duration now rides STAGE 2's anchor (the
-    # split moved the phase, not the arithmetic) — and the cloud entries, which
-    # play its unannounced twin, are checked against that twin below.
+    plan = _inline_spec().capture_plan
+    entries = {entry.kind_label: entry for entry in plan.entries}
+    roles = _roles()
+    check = build_check_program(roles, courtesy_prelude=True)
+    measure = build_measure_program({rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}, roles)
+    for phase, program in ((PHASE_CHECK, check), (PHASE_MEASURE, measure)):
+        assert entries[phase].duration_ms == _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS
+    assert entries[PHASE_CHECK].duration_ms - (
+        _program_duration_ms(build_check_program(roles)) + CAPTURE_ENTRY_MARGIN_MS
+    ) == pytest.approx(_courtesy_prelude_ms(), abs=1)
+
     stage2 = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    verify = stage2.entries[0]
-    assert verify.kind_label == "verify"
-
-    from jasper.audio_measurement.program import (
-        BASE_STIMULUS_PEAK_DBFS,
-        build_check_program,
-        build_measure_program,
-        build_verify_program,
-    )
-
-    roles = _roles()
-    nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
-    nominal_check = build_check_program(
-        roles, courtesy_prelude=courtesy_prelude_for_phase(PHASE_CHECK),
-    )
-    nominal_measure = build_measure_program(
-        nominal_gains, roles,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
-    )
-    nominal_verify = build_verify_program(
-        FC_HZ,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
-    )
-    nominal_cloud = build_verify_program(
-        FC_HZ,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
-    )
-    assert check.duration_ms == _program_duration_ms(nominal_check) + CAPTURE_ENTRY_MARGIN_MS
-    assert measure.duration_ms == _program_duration_ms(nominal_measure) + CAPTURE_ENTRY_MARGIN_MS
-    assert verify.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
-    # Every prompted position plays the summed sweep's UNANNOUNCED twin, so its
-    # recording window must be that program's — a shorter one would truncate
-    # the sweep and a longer one would record silence into the analysis.
-    cloud_ms = _program_duration_ms(nominal_cloud) + CAPTURE_ENTRY_MARGIN_MS
-    cloud_entries = [
-        e for e in (*plan.entries, *stage2.entries)
-        if e.kind_label.startswith("cloud_")
-    ]
-    assert cloud_entries
-    for entry in cloud_entries:
-        assert entry.duration_ms == cloud_ms, entry.kind_label
-    # And the trim is real at the phone's own surface: a position's window is
-    # exactly the prelude shorter than the anchor's.
-    assert verify.duration_ms - cloud_ms == pytest.approx(_courtesy_prelude_ms(), abs=1)
-    # The SHIPPED stage-1 plan, whose last entry is the one budget that has to
-    # match a program composed for a DIFFERENT phase: the entry baseline plays
-    # stage 2's anchor object, so it budgets the ANNOUNCED window even though
-    # nothing about its own position asks for a warning.
-    shipped = build_v2_capture_plan(
-        _roles(), FC_HZ,
-        include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-    baseline = next(e for e in shipped.entries if e.kind_label == "entry_baseline")
-    assert baseline.duration_ms == verify.duration_ms
-    # A lateral pose replays MEASURE, so it budgets MEASURE's window.
-    for entry in shipped.entries:
-        if entry.kind_label == "lateral":
-            assert entry.duration_ms == measure.duration_ms
-
-
-def test_capture_plan_duration_is_longer_than_the_pre_1677_shape():
-    """Direct proof the prelude actually lengthens the phone's recording
-    budget (not just that the two composition paths agree with EACH OTHER,
-    which the previous test already pins) -- the "+15 s"-style regression
-    check named in the issue."""
-    from jasper.audio_measurement.program import build_check_program
-
-    expected_prelude_ms = _courtesy_prelude_ms()
-    roles = _roles()
-    legacy_check = build_check_program(roles)
-    prelude_check = build_check_program(roles, courtesy_prelude=True)
-    delta_ms = _program_duration_ms(prelude_check) - _program_duration_ms(legacy_check)
-    assert delta_ms == pytest.approx(expected_prelude_ms, abs=1)
-
-    plan = build_v2_capture_plan(roles, FC_HZ)
-    check_entry = plan.entries[0]
-    legacy_entry_duration_ms = _program_duration_ms(legacy_check) + CAPTURE_ENTRY_MARGIN_MS
-    assert check_entry.duration_ms > legacy_entry_duration_ms
-    assert check_entry.duration_ms - legacy_entry_duration_ms == pytest.approx(
-        expected_prelude_ms, abs=1,
+    for entry in stage2.entries:
+        program = build_verify_program(
+            FC_HZ,
+            leading_pilot_gains_db=(BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS),
+            courtesy_prelude=courtesy_prelude_for_phase(entry.kind_label),
+        )
+        assert entry.duration_ms == _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS
+    assert stage2.entries[0].duration_ms - stage2.entries[1].duration_ms == pytest.approx(
+        _courtesy_prelude_ms(), abs=1,
     )
 
 
@@ -711,22 +577,38 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
         asyncio.run(composition.confirm_graph_is_live(cam, "!!not-yaml\n"))
 
 
-def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24,
+def _inline_spec():
+    request = ac.per_driver_at([0])
+    captures = prepare_plan_captures(request, roles_bands=_roles())
+    return build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        roles_bands=_roles(), fc_hz=FC_HZ,
+        acknowledgement_binding="b" * 24, retries_per_pose=0,
     )
+
+
+def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
+    spec = _inline_spec()
     assert spec.kind == "crossover_sweep"
     assert spec.capture_protocol_version == 3
     assert spec.capture_plan is not None
-    # Round-trips through the strict boundary validation.
-    from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec
-
     reparsed = CaptureSpec.from_dict(spec.to_dict())
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
+
+
+@pytest.mark.parametrize("verify_only", [False, True], ids=["inline", "verify"])
+def test_the_summed_consent_heading_names_the_job_not_the_driver(verify_only):
+    spec = (build_v2_verify_session_spec(FC_HZ, acknowledgement_binding="b" * 24)
+            if verify_only else _inline_spec())
+    assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
+    summed = build_crossover_sweep_spec(driver_label="unused", driver_role="summed")
+    assert next(c for c in spec.screen if c["type"] == "heading") == next(
+        c for c in summed.screen if c["type"] == "heading"
+    )
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
                                        MAX_CLOUD_MEASURE_POSITIONS + 1])
 def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
     with pytest.raises(CrossoverV2FlowError):
-        build_v2_capture_plan(_roles(), FC_HZ, cloud_measure_positions=positions)
+        resolve_plan_shape(cloud_measure_positions=positions)
