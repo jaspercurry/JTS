@@ -195,8 +195,6 @@ def _analyze_check(
     ambient_samples, ambient_report = _ambient_from_capture(
         capture, sample_rate, ambient_seg, global_offset
     )
-    # CHECK's 12 s ambient window feeds both the level/SNR path and the
-    # channel-map rise test (see `_pilot_observations`).
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
         ambient_samples=ambient_samples,
@@ -204,7 +202,7 @@ def _analyze_check(
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
-    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
+    pilot_snr_ok = _aggregate_tri_state_ok([p.snr_valid for p in pilots])
     # Any pilot's gap no wiring can produce (#2647) -- CHECK's ladder routes
     # this to mis-anchoring evidence ahead of `channel_map_mismatch`.
     delta_implausible = any(p.delta_implausible for p in pilots)

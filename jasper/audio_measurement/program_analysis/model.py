@@ -15,7 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.quality_model import DRIVER, TRUST_UNAVAILABLE
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
@@ -755,12 +755,7 @@ class PilotObservation:
     hotter when tried. ``peak_lo_dbfs``/``peak_hi_dbfs`` are the dedicated
     NON-ambient-subtracted levels `_solve_gain_plan` reads instead.
 
-    ``snr_valid`` is True when the quiet pilot's in-band SNR clears
-    `PILOT_MIN_SNR_DB`; when False, ``linearity_ok`` is ``None`` (unknown,
-    never forced True or False) so an untrustworthy estimate is never
-    mistaken for a linearity failure or pass. Defaults True. ``snr_db`` is
-    the underlying estimate, ``+inf`` with no ambient window to validate
-    against.
+    ``snr_valid`` is None without usable ambient; otherwise it reports whether SNR clears `PILOT_MIN_SNR_DB`.
 
     ``channel_map_ok`` is tri-state like ``linearity_ok``: ``None`` means
     no evidence, never a pass. ``channel_map_target_rise_db``/
@@ -791,7 +786,7 @@ class PilotObservation:
     captured_delta_db: float
     linearity_ok: bool | None
     channel_map_ok: bool | None
-    snr_valid: bool = True
+    snr_valid: bool | None = True
     peak_lo_dbfs: float = DBFS_FLOOR
     peak_hi_dbfs: float = DBFS_FLOOR
     snr_db: float = math.inf
@@ -931,10 +926,12 @@ class ProgramAnalysis:
     pilots: tuple[PilotObservation, ...] = ()
     linearity_ok: bool | None = None
     channel_map_ok: bool | None = None
-    # Aggregate of ``PilotObservation.snr_valid`` (``all(...)``); ``None``
-    # with no pilots. False routes to `REASON_SNR_FLOOR`/
-    # `REASON_PILOT_LEVEL_COLLAPSE`, never `REASON_AGC_BEHAVIORAL_FAIL`.
     pilot_snr_ok: bool | None = None
+
+    @property
+    def pilot_ambient(self) -> str:
+        return "present" if self.pilots and all(p.snr_valid is not None for p in self.pilots) else TRUST_UNAVAILABLE
+
     gain_plan: GainPlan | None = None
     branch_diagnostic: dict[str, Any] | None = None
     summed_response: DriverResponse | None = None

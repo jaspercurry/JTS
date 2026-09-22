@@ -46,13 +46,7 @@ REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
 # snr_floor_ok``, computed against this capture's ambient bands independent of
 # the linearity outcome.
 REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
-# The same discriminator, for the phases CHECK's evidence cannot speak for:
-# `analysis.pilot_snr_ok` False means the quiet pilot did not clear the room's
-# own in-band floor by enough to trust ANY level comparison drawn from the
-# pair — a statement about the room, not the microphone.
-# `_pilot_observations` reports ``linearity_ok`` as None whenever the SNR guard
-# fails, so every verdict below checks this BEFORE
-# `REASON_AGC_BEHAVIORAL_FAIL`.
+# CHECK needs a level solve even when pilot SNR and linearity are unknown.
 REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
