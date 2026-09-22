@@ -46,8 +46,8 @@ class QualityIssue:
 class CaptureQuality:
     sample_rate: int
     duration_s: float
-    peak_dbfs: float
-    rms_dbfs: float
+    peak_dbfs: float | None
+    rms_dbfs: float | None
     clipped_fraction: float
     issues: tuple[QualityIssue, ...]
 
@@ -60,11 +60,7 @@ class CaptureQuality:
         return sum(1 for issue in self.issues if issue.severity == "warn")
 
     def fail_messages(self) -> list[str]:
-        return [
-            issue.message
-            for issue in self.issues
-            if issue.severity == "fail"
-        ]
+        return [issue.message for issue in self.issues if issue.severity == "fail"]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -223,8 +219,8 @@ def assess_capture(
     return CaptureQuality(
         sample_rate=int(sample_rate),
         duration_s=duration_s,
-        peak_dbfs=peak_dbfs,
-        rms_dbfs=rms_dbfs,
+        peak_dbfs=None if nonfinite_samples else peak_dbfs,
+        rms_dbfs=None if nonfinite_samples else rms_dbfs,
         clipped_fraction=clipped,
         issues=tuple(issues),
     )
