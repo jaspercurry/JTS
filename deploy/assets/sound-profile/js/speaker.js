@@ -201,7 +201,7 @@ function startingCard() {
   return section('3. Starting configuration', ['research', 'apply'].includes(view.stage),
     !view.draft.prompt ? h('p', {}, 'Save the driver model names to prepare the research prompt.') :
       view.stage === 'research' ? researchForm() : h('details', {}, h('summary', {}, 'Research driver values'), researchForm()),
-    view.base_preview.crossovers.length > 0 && baseSummary(),
+    ['apply', 'tune'].includes(view.stage) && baseSummary(),
     view.issues.map(issue => h('p.form-hint', {}, issue.message)),
     advancedSettings(),
     ['apply', 'tune'].includes(view.stage) && button('Save to speaker', () => run(async () => {
@@ -236,7 +236,7 @@ function tuningCard() {
 }
 
 function render() {
-  root.replaceChildren(
+  root.replaceChildren(...[
     h('p', {}, view.stage === 'tune' ? 'Speaker setup is active. Tuning is optional.' : 'Set up the speaker, load starting values, then save.'),
     layoutCard(),
     view.draft.targets.length > 0 && detailsCard(),
@@ -247,7 +247,8 @@ function render() {
         if (await jtsConfirm('This clears the layout and tune and stops audio.', { title: 'Reset speaker setup?', confirmLabel: 'Reset setup', danger: true })) {
           await run(() => postJSON('./setup/reset', {}), 'Speaker setup cleared.');
         }
-      })));
+      }))].filter(Boolean));
 }
 
-getJSON('./setup').then(adopt).catch(error => message(error.message, true));
+message('Loading speaker setup…');
+getJSON('./setup').then(next => { adopt(next); message(''); }).catch(error => message(error.message, true));

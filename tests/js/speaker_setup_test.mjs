@@ -13,6 +13,7 @@ const visible = node => (node.tag === 'details' && !node.open
 const make = tag => Object.assign(element(tag), {
   value: '', open: false, selected: false,
   appendChild(node) { this.children.push(node); },
+  replaceChildren(...children) { this.children = children.map(child => typeof child === 'object' ? child : {textContent: String(child)}); },
   removeAttribute(key) { delete this[key]; },
 });
 globalThis.Node = class { static [Symbol.hasInstance](value) { return !!value?.appendChild; } };
@@ -47,7 +48,7 @@ test('pasting and applying use server state and reveal the tuning menu without r
   const ui = setup(undefined, async path => path.endsWith('/apply')
     ? {result: {status: 'applied'}, setup: state('tune')} : {setup: state('apply')});
   await flush();
-  assert.doesNotMatch(visible(ui.root), /private-config|opaque-identity|\/var\/lib/);
+  assert.doesNotMatch(visible(ui.root), /private-config|opaque-identity|\/var\/lib|false/);
   assert.equal(ui.button('Save to speaker'), undefined);
   const input = nodes(ui.root).find(n => n['aria-label'] === 'Paste research result');
   input.value = '```json\n{"driver": "raw result"}\n```';
