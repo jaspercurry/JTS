@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper import audio_validation, wake_legs
+from jasper import audio_validation, audio_validation_artifacts as artifacts, wake_legs
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -165,7 +165,7 @@ BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
 ))
 AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
-    str(audio_validation.DEFAULT_ARTIFACT_DIR),
+    str(artifacts.DEFAULT_ARTIFACT_DIR),
 ))
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 UNIT_STATE_TIMEOUT_SEC = 1.5
@@ -560,7 +560,7 @@ def validation_artifact_summary(
         system_env=system_env,
         mic_probe=mic_probe,
     )
-    return audio_validation.latest_artifact_summary(path=path, **filters)
+    return artifacts.latest_artifact_summary(path=path, **filters)
 
 
 def _int_env(

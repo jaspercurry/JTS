@@ -6,9 +6,7 @@
 
 Shells out to `jasper.xvf.xvf_host` for chip parameter readback and
 convergence polling, and sleeps for a bounded observation window before
-building a hardware-validation artifact. Artifact schema, parsing,
-freshness checks, and atomic writes stay owned by `jasper.audio_validation`;
-this module only produces the evidence a hardware run collects.
+building evidence for `jasper.audio_validation_artifacts`.
 """
 from __future__ import annotations
 
@@ -24,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import audio_validation_artifacts as artifacts
 from ..audio_profile_state import probe_xvf_mic
 from ..audio_validation import (
     CHIP_AEC_CONVERGENCE_COMMAND,
@@ -31,8 +30,6 @@ from ..audio_validation import (
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
     DEFAULT_HARDWARE_OBSERVE_SECONDS,
-    ValidationArtifact,
-    artifact_directory,
     build_chip_aec_hardware_validation_artifact,
     build_chip_aec_readiness_artifact,
     build_outputd_stability_hardware_validation_artifact,
@@ -44,8 +41,6 @@ from ..audio_validation import (
     read_system_env,
     read_voice_wake_legs,
     service_state,
-    write_artifact,
-    write_latest_pointer,
 )
 from ..log_event import log_event
 from ..logging_setup import configure_logging
@@ -71,7 +66,7 @@ DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
 class HardwareValidationRun:
     """Result from the operator-controlled hardware validation runner."""
 
-    artifact: ValidationArtifact | None
+    artifact: artifacts.ValidationArtifact | None
     refused: bool = False
     refusal_reason: str = ""
     path: Path | None = None
@@ -187,7 +182,7 @@ def _duration_limit(duration_seconds: float, *, allow_long: bool) -> float:
     return duration_seconds
 
 
-def _chip_runtime_refusal_reason(artifact: ValidationArtifact) -> str:
+def _chip_runtime_refusal_reason(artifact: artifacts.ValidationArtifact) -> str:
     checks = artifact.checks
     runtime_profile = checks.get("runtime_profile")
     if isinstance(runtime_profile, Mapping) and runtime_profile.get("status") != "pass":
@@ -199,7 +194,7 @@ def _chip_runtime_refusal_reason(artifact: ValidationArtifact) -> str:
 
 
 def _complete_hardware_validation_result(
-    artifact: ValidationArtifact,
+    artifact: artifacts.ValidationArtifact,
     *,
     directory: Path | None,
     report_only: bool,
@@ -218,10 +213,10 @@ def _complete_hardware_validation_result(
         )
         return HardwareValidationRun(artifact=artifact)
 
-    target_dir = directory or artifact_directory()
+    target_dir = directory or artifacts.artifact_directory()
     try:
-        path = write_artifact(artifact, directory=target_dir)
-        latest_path = write_latest_pointer(artifact, directory=target_dir)
+        path = artifacts.write_artifact(artifact, directory=target_dir)
+        latest_path = artifacts.write_latest_pointer(artifact, directory=target_dir)
     except OSError as e:
         log_event(
             logger,
