@@ -231,7 +231,7 @@ def _pilot_observations(
     ambient-power-subtracted before converting to dB — a full-band PEAK
     estimate would let LF room rumble inflate the quiet pilot's level and
     compress the captured delta. With no window (``ambient_samples=None``)
-    subtraction is a no-op, SNR is invalid, and linearity is unknown.
+    subtraction is a no-op; SNR validity and linearity are unknown.
 
     Two ambient parameters: ``ambient_samples`` feeds level/SNR;
     ``channel_map_ambient_samples`` feeds `_channel_map_ok`'s TARGET/CROSS
@@ -304,9 +304,9 @@ def _pilot_observations(
         captured_delta = level_hi - level_lo
 
         lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
-        snr_valid = has_ambient and lo_snr_db >= PILOT_MIN_SNR_DB
+        snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB if has_ambient else None
         linearity_ok = (
-            None if not snr_valid
+            None if snr_valid is not True
             else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
         )
         # A gap this large is not evidence about wiring at all (#2647) --
@@ -399,14 +399,13 @@ def _pilot_verdicts(
     verdict; the channel-map check still uses
     `_channel_map_ok`'s one-sided fallback (see `_pilot_observations`).
     """
-    ambient_samples = _pilot_ambient_samples(program, capture, global_offset)
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
-        ambient_samples=ambient_samples,
+        ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
-    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots and ambient_samples is not None else None
+    pilot_snr_ok = _aggregate_tri_state_ok([p.snr_valid for p in pilots])
     return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
 
 

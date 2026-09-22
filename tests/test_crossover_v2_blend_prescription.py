@@ -1149,7 +1149,7 @@ def test_a_non_finite_snr_becomes_null_and_names_its_column(tmp_path):
 #: PILOT family, whose ``summed_pilot_snr_db`` names no driver at all.
 _REAL_SNR_COLUMNS: dict[str, Any] = {
     "gain_plan_snr_floor_ok": True,
-    "pilot_snr_ok": True,
+    "pilot_ambient": "unavailable", "pilot_snr_ok": None,
     "summed_pilot_snr_db": 41.7,
     "tweeter_alignment_snr_band": "treble",
     "tweeter_alignment_snr_db": 33.1,
@@ -1169,20 +1169,6 @@ _REAL_SNR_COLUMNS: dict[str, Any] = {
 
 
 def test_every_snr_figure_says_which_kind_of_uncertainty_it_is_not(tmp_path):
-    """Wave-1's enrichment rule: a published spread names random or systematic.
-
-    No field here IS one — an SNR bounds a random error without being a spread
-    about a reading, and it does not shrink as captures are added — so the
-    first list is empty and the second says why for each SHAPE. The two are
-    never pooled into one figure, which is the whole point of publishing the
-    magnitude and alignment ratios apart.
-
-    Run against the REAL corpus's full column set, because the rule is about
-    what the block actually publishes rather than about what a fixture chose to
-    hand it. ``undeclared_fields`` is the mechanical half: any published column
-    whose shape the table does not cover is named there, so this cannot go
-    stale the day the producer grows another SNR field.
-    """
     session, _ = _bundle(tmp_path)
     _bank_take_with_diagnostic(session, "measure_01_a01", diagnostic={
         "phase": "measure", "delay_us": 421.0, **_REAL_SNR_COLUMNS,

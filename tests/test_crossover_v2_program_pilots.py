@@ -22,6 +22,7 @@ from jasper.audio_measurement.program import (
     KIND_SILENCE,
     RoleBand,
     _finalize,
+    build_check_program,
     build_measure_program,
     build_verify_program,
     render_program_pcm,
@@ -223,22 +224,23 @@ def test_measure_pilot_linearity_clean_capture_passes():
     assert res.candidate is not None
 
 
-@pytest.mark.parametrize("phase", ["measure", "verify"])
-@pytest.mark.parametrize("keep_fraction,snr_valid", [
-    pytest.param(1.0, True, id="ambient-present"),
-    pytest.param(0.7, True, id="ambient-shortened-usable"),
-    pytest.param(None, False, id="ambient-absent"),
-    pytest.param(0.1, False, id="ambient-truncated-unusable"),
+@pytest.mark.parametrize("phase,keep_fraction,snr_valid", [
+    (phase, fraction, valid)
+    for phase in ("check", "measure", "verify")
+    for fraction, valid in ((1.0, True), (0.7, True), (None, None), (0.1, None))
+    if phase != "check" or fraction is not None
 ])
 def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid):
-    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    prog = (build_check_program(_roles()[:1], ambient_s=1.0, pilot_duration_s=0.5,
+                                pilot_levels_db=(-22.0, -12.0), base_peak_dbfs=0.0)
+            if phase == "check" else _measure_program() if phase == "measure" else _verify_pilot_program())
     ambient = prog.segment(AMBIENT_SEGMENT_ID)
     if keep_fraction is None:
         prog = _finalize(prog.phase, prog.channels,
                          [seg for seg in prog.segments if seg != ambient], prog.total_samples)
     cap = _synthesize(prog)
     # AGC-compress the HI pilot only: programmed 10 dB delta captured as ~4 dB.
-    role = "woofer" if phase == "measure" else "summed"
+    role = "summed" if phase == "verify" else "woofer"
     hi = prog.segment(f"pilot_{role}_hi")
     start = GLOBAL_OFFSET + hi.start_sample
     cap[start:start + hi.n_samples] *= 10.0 ** (-6.0 / 20.0)
@@ -250,13 +252,13 @@ def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid
     )
     pilot, = res.pilots
     assert pilot.snr_valid is snr_valid
-    assert res.pilot_snr_ok is (True if snr_valid else None)
-    assert pilot.linearity_ok is res.linearity_ok is (False if snr_valid else None)
+    assert res.pilot_snr_ok is snr_valid
+    assert pilot.linearity_ok is res.linearity_ok is (False if snr_valid is True else None)
     assert pilot.captured_delta_db == pytest.approx(4.0, abs=0.5)
     summary = analysis_diagnostic_summary(res)
     assert summary.get("linearity_ok") is res.linearity_ok
     assert summary.get("pilot_snr_ok") is res.pilot_snr_ok
-    if snr_valid:
+    if snr_valid is True:
         assert math.isfinite(pilot.snr_db) and pilot.snr_db > PILOT_MIN_SNR_DB
         assert summary[f"{role}_pilot_snr_db"] == round(pilot.snr_db, 2)
     else:
@@ -264,8 +266,10 @@ def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid
     verdict = capture_dispatch.assess(res, phase=phase, program=prog)
     assert (verdict.ok, verdict.fault, verdict.next) == (
         (False, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake")
-        if snr_valid else (True, None, "accept")
+        if snr_valid is True else (True, None, "accept")
     )
+    assert res.pilot_ambient == summary["pilot_ambient"] == verdict.evidence["pilot_ambient"] == (
+        "present" if snr_valid is True else "unavailable")
     assert verdict.screens == []
 
 
@@ -319,26 +323,6 @@ def test_pilot_snr_is_measured_not_infinite(phase):
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])
 def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
-    """The JTS3 shape of 2026-07-28, reproduced.
-
-    The correction had dropped the pilot band, so the quiet pilot sat just
-    over the room floor and the noise compressed the captured two-pilot delta
-    from 10 dB toward 6 dB. With the guard dead that read as a linearity
-    failure and the household was told its phone's microphone had misbehaved.
-
-    With the guard live the verdict is ``pilot_snr_ok=False``, and
-    ``linearity_ok`` is UNKNOWN (``None``) — an untrustworthy estimate must
-    never register as a linearity failure. Both halves are asserted: the
-    second is what makes the conductor's routing honest rather than merely
-    reordered.
-
-    ``None``, not ``True``, since D7 of issue #1838: forcing True kept the
-    verdict out of the FAILURE branch but made an unreadable capture read as
-    a PASS to anything that did not also check ``pilot_snr_ok`` — which is
-    how a session published ``linearity_ok=true`` beside a -60.9 dB captured
-    delta against a programmed 10.0 dB. Both consumers of this flag branch on
-    ``is False``, so the FAILURE-suppression property is unchanged.
-    """
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
     # Attenuate the pilot pair (the correction dropping their band) and raise
@@ -357,6 +341,7 @@ def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     assert res.pilot_snr_ok is False
+    assert res.pilot_ambient == "present"
     assert res.pilots[0].snr_db < PILOT_MIN_SNR_DB
     assert res.linearity_ok is None
     assert res.linearity_ok is not False  # never the mic accusation

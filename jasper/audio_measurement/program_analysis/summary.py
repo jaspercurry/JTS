@@ -200,7 +200,6 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out[f"{role}_programmed_delta_db"] = round(float(pilot.programmed_delta_db), 3)
         out[f"{role}_channel_map_target_rise_db"] = pilot.channel_map_target_rise_db
         out[f"{role}_channel_map_cross_rise_db"] = pilot.channel_map_cross_rise_db
-        # Both raws AND the ratio: raws say which half moved, ratio decided CROSS.
         out[f"{role}_channel_map_isolation_db"] = channel_map_isolation_db(
             pilot.channel_map_target_rise_db, pilot.channel_map_cross_rise_db
         )
@@ -218,7 +217,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             )
             out[f"{role}_measure_gain_bound_by"] = solve.bound_by
 
-    for flag in ("pilot_snr_ok", "linearity_ok", "channel_map_ok"):
+    for flag in ("pilot_snr_ok", "pilot_ambient", "linearity_ok", "channel_map_ok"):
         value = getattr(analysis, flag, None)
         if value is not None:
             out[flag] = value

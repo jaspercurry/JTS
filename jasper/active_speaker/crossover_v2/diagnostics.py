@@ -254,7 +254,7 @@ def _log_check_diag(
     log_event(
         logger, "correction.crossover_v2_check_diag",
         session_id=session_id, accepted=verdict.accepted, code=verdict.code or "",
-        pilot_snr_ok=analysis.pilot_snr_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok, pilot_ambient=analysis.pilot_ambient,
         # The two independent rung-2 tells (#2647), split out so an operator can
         # tell which one fired without inferring it from the code alone -- both
         # route through the shared ``anchor_ambiguous`` code today.
@@ -500,11 +500,7 @@ def _log_measure_diag(
         # a G1/G2 fire from the pre-existing check that shares its reused reason
         # code.
         guard=guard,
-        # The pilot SNR guard's own evidence (#1810). Live on this phase only since
-        # the pre-pilot ambient window shipped, so a REASON_PILOT_LEVEL_COLLAPSE
-        # line with numbers here is what distinguishes a real low-SNR capture from
-        # the structurally-dead guard it replaced.
-        pilot_snr_ok=analysis.pilot_snr_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok, pilot_ambient=analysis.pilot_ambient,
         pilot_snr_db=_worst_pilot_snr_db(analysis),
     )
 
@@ -586,7 +582,7 @@ def _log_verify_diag(
         # Issue #1810 — see ``_log_measure_diag``'s note. Read alongside
         # ``pilot_transfer_step_db``: a null step next to an agc_behavioral_fail is
         # the combination these two fields together make legible.
-        pilot_snr_ok=analysis.pilot_snr_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok, pilot_ambient=analysis.pilot_ambient,
         pilot_snr_db=_worst_pilot_snr_db(analysis),
         # Capture integrity (#1971), disclosed on EVERY verify — pass or fail. On a
         # refusal it names which check fired, which is what tells telemetry a
@@ -633,7 +629,7 @@ def _log_cloud_diag(
         summed_ripple_db=analysis.summed_ripple_db,
         linearity_ok=analysis.linearity_ok,
         # Issue #1810 — see ``_log_measure_diag``'s note.
-        pilot_snr_ok=analysis.pilot_snr_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok, pilot_ambient=analysis.pilot_ambient,
         pilot_snr_db=_worst_pilot_snr_db(analysis),
         glitch=analysis.glitch_detected,
     )
@@ -663,6 +659,6 @@ def _log_entry_baseline_diag(
         validity_floor_hz=getattr(response, "validity_floor_hz", None),
         summed_ripple_db=analysis.summed_ripple_db,
         linearity_ok=analysis.linearity_ok,
-        pilot_snr_ok=analysis.pilot_snr_ok,
+        pilot_snr_ok=analysis.pilot_snr_ok, pilot_ambient=analysis.pilot_ambient,
         glitch=analysis.glitch_detected,
     )

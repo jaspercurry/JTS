@@ -69,7 +69,7 @@ def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | Non
     bands = {segment.role: [segment.f1_hz, segment.f2_hz] for segment in program.segments
              if segment.kind == KIND_PILOT} if program else {}
     return [{"code": reasons.REASON_PILOT_LEVEL_COLLAPSE, "blocking": True,
-             "evidence": {"pilot_snr_ok": False, "required_snr_db": PILOT_MIN_SNR_DB,
+             "evidence": {"pilot_snr_ok": False, "pilot_ambient": analysis.pilot_ambient, "required_snr_db": PILOT_MIN_SNR_DB,
                           "ambient_report": analysis.ambient_report,
                           "pilots": [{**asdict(pilot), "snr_db": finite_float(pilot.snr_db),
                                       "band_hz": bands.get(pilot.role)} for pilot in analysis.pilots]}}]
@@ -134,6 +134,7 @@ def _assess_recording(
             locate_confidences[key] = min(locate_confidences.get(key, loc.confidence), loc.confidence)
     evidence: dict[str, float | bool | str] = {
         "mic_meter_status": analysis.mic_meter_status or "unmeasured",
+        "pilot_ambient": analysis.pilot_ambient,
         "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
         "glitch_detected": bool(analysis.glitch_detected),
         "frame_loss": bool(analysis.frame_ledger and analysis.frame_ledger.lost_at),
@@ -195,9 +196,6 @@ def _assess_recording(
     verdict = TakeVerdict(True, evidence=evidence, capabilities=capabilities)
 
     def program_peak(targets: Mapping[str, float]) -> float | None:
-        # The retry rung is the program's peak after the per-role targets land; a
-        # composer shifts the plan until its peak meets the rung, so a target on a
-        # quieter role must not read as a new peak for every role.
         return max({**gains, **targets}.values()) if targets else None
 
     def refuse(code: str, *, next: TakeNext = "fix_and_retake", charge: TakeCharge = "operator",
@@ -251,7 +249,7 @@ def _assess_recording(
         code = (reasons.REASON_NOISY_ROOM_LINEARITY if phase == "check" and analysis.gain_plan
                 and not analysis.gain_plan.snr_floor_ok else reasons.REASON_AGC_BEHAVIORAL_FAIL)
         return refuse(code)
-    if phase == "check" and not capabilities["level_solve"]:
+    if phase == "check" and analysis.pilot_snr_ok is not None and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
     verify_gate = _gate_window_ms(analysis.summed_response)
     # A shorter VERIFY gate manufactures overlay differences (§5.2).

@@ -956,7 +956,7 @@ def _capture_snr_block(
             continue
         snr = {}
         for column, value in sorted(diagnostic.items()):
-            if _DIAGNOSTIC_SNR_MARKER not in column:
+            if _DIAGNOSTIC_SNR_MARKER not in column and column != "pilot_ambient":
                 continue
             shape = snr_shape(column)
             if shape is None:
@@ -964,8 +964,6 @@ def _capture_snr_block(
             else:
                 declared_as[column] = shape
             snr[column] = _exact_json_value(value, column, non_finite)
-        # A take whose analysis reported no SNR still gets its row, with an
-        # empty ``snr``: what this block does not publish, it counts.
         captures.append({
             "take_id": take.get("take_id"),
             "wav_sha256": take.get("wav_sha256"),
