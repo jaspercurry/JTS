@@ -71,6 +71,30 @@ class FakeAsyncProcess:
         return 0
 
 
+class _StubbornProc:
+    """asyncio subprocess stand-in whose child ignores SIGTERM."""
+
+    def __init__(self, *, gone: bool = False) -> None:
+        self.signals: list[str] = []
+        self._gone = gone
+
+    def terminate(self) -> None:
+        self.signals.append("terminate")
+        if self._gone:
+            raise ProcessLookupError(3, "No such process")
+
+
+def test_terminate_async_process_signals_and_tolerates_a_departed_child():
+    live, gone = _StubbornProc(), _StubbornProc(gone=True)
+
+    sync_flow.terminate_async_process(live)
+    sync_flow.terminate_async_process(gone)
+    sync_flow.terminate_async_process(None)
+
+    assert live.signals == ["terminate"]
+    assert gone.signals == ["terminate"]
+
+
 @pytest.fixture
 def loop_thread():
     loop = asyncio.new_event_loop()

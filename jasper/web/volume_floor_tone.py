@@ -32,8 +32,6 @@ from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_curve import percent_to_db
 from jasper.volume_owner import ClaimKind, VolumeClaimHandle, volume_owner
 
-from ._common import terminate_process
-
 logger = logging.getLogger(__name__)
 
 VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
@@ -107,6 +105,31 @@ def _volume_floor_tone_wav_path() -> Path:
         VOLUME_FLOOR_TONE_SOURCE_DBFS,
     )
     return wav_path
+
+
+def terminate_process(
+    proc: subprocess.Popen[Any] | None,
+    *,
+    timeout: float = 0.75,
+) -> None:
+    """Best-effort bounded shutdown of a subprocess this page spawned.
+
+    SIGTERM, then SIGKILL after ``timeout`` seconds, then give up: a page
+    that cannot reap its own audible helper must still answer the request.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+    except (OSError, ProcessLookupError):
+        pass
 
 
 class _LoopingVolumeFloorTone:

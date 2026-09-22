@@ -25,7 +25,7 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
-from ._common import close_awaitable, reset_session_locked, terminate_async_process
+from ._common import close_awaitable
 from .chrome import canonical_header, canonical_page, follower_delegation_page
 from .pair_flow import members_by_channel, resolve_pair
 
@@ -49,6 +49,49 @@ _state: dict[str, Any] = {
     "release_window": None,
     "wav_path": "",
 }
+
+
+def terminate_async_process(proc: Any) -> None:
+    """SIGTERM an ``asyncio.subprocess.Process`` this flow spawned on the
+    background loop. A child that has already exited is not an error.
+
+    Reaping needs that loop, so it is not done here: a caller that must know
+    the child is gone awaits ``proc.wait()`` through its own runner.
+    """
+    if proc is None:
+        return
+    with suppress(ProcessLookupError):
+        proc.terminate()
+
+
+def reset_session_locked(
+    state: dict[str, Any],
+    fields: dict[str, Any],
+    *,
+    proc_key: str,
+    error: str = "",
+) -> None:
+    """Return the session ``state`` to idle, clearing the child held under
+    ``proc_key``; call under the flow's own lock, with ``fields`` carrying
+    the schema delta. Every step is non-blocking — a reap would need the
+    background loop, which deadlocks against a playback watcher waiting on
+    the caller's lock.
+    """
+    holder = state.get(proc_key)
+    if holder:
+        terminate_async_process(holder.get("proc"))
+    release = state.get("release_window")
+    state.update({
+        "phase": "idle",
+        "error": error,
+        "members": None,
+        "session_token": int(state.get("session_token", 0)) + 1,
+        "release_window": None,
+        proc_key: None,
+        **fields,
+    })
+    if release is not None:
+        release()
 
 
 def _reset_locked(error: str = "") -> None:

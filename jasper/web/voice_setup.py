@@ -45,7 +45,7 @@ from jasper.usage import (
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
 
-from ..atomic_io import write_env_file
+from ..atomic_io import atomic_write_json, write_env_file
 from ..env_file import delete_env_file, read_env_file
 from ..platform import systemd
 from ._common import (
@@ -59,7 +59,6 @@ from ._common import (
     send_html_response,
     send_rejected_form,
     send_see_other,
-    write_json_file,
     SECRET_ENV_MODE,
     value_for_env as _value_for,
 )
@@ -530,7 +529,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         new_models = _apply_pricing_save(form, provider, model_ids, existing)
         try:
             if new_models:
-                write_json_file(cfg["pricing_path"], {
+                atomic_write_json(cfg["pricing_path"], {
                     "as_of": _today_iso(),
                     "source": "edited via /voice",
                     "models": new_models,
@@ -576,7 +575,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         merged = _sparsify_overrides({**existing, **models})
         try:
             if merged:
-                write_json_file(cfg["pricing_path"], {
+                atomic_write_json(cfg["pricing_path"], {
                     "as_of": as_of or _today_iso(),
                     "source": "imported via /voice",
                     "models": merged,
