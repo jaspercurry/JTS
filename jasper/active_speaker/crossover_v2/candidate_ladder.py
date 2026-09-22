@@ -20,8 +20,10 @@ from .position_cycle import (
     take_artifact_path,
 )
 from .record_index import bundle_measurements
+from .round_captures import doc_pose_key
 from .round_inputs import RoundInputs
 from ..frequency_view import FREQUENCY_VIEW_FILENAME, frequency_run_from_view
+from ..measurement_programs import POSE_KIND_BEARING
 
 __all__ = [
     "REFUSE_NO_LADDER",
@@ -53,11 +55,11 @@ class _Curve(NamedTuple):
 
 
 _Roles = dict[tuple[str, str], dict[str, _Curve]]
-_Poses = dict[tuple[int, int], _Roles]
+_Poses = dict[str, tuple[Mapping[str, Any], _Roles]]
 
 
 def _pose_curves(session_dir: Path, frequency_path: Path) -> Iterator[
-    tuple[int | None, int, str | None, str, Sequence[Mapping[str, Any]] | None]
+    tuple[Mapping[str, Any], str | None, str, Sequence[Mapping[str, Any]] | None]
 ]:
     if frequency_path.is_file():
         run = frequency_run_from_view(json.loads(frequency_path.read_text()))
@@ -68,25 +70,31 @@ def _pose_curves(session_dir: Path, frequency_path: Path) -> Iterator[
             if (fields.get("phase") != PHASE_LATERAL or not isinstance(pose, Mapping)
                 or pose.get("deg") is None or not take_id):
                 continue
-            rows.append((pose["deg"], pose.get("vertical_deg") or 0,
-                         fields.get("candidate_id"), f"{frequency_path}#{take_id}",
-                         [curve.to_dict()]))
+            rows.append(({
+                "position_deg": pose["deg"], "vertical_deg": pose.get("vertical_deg") or 0,
+                "pose_kind": pose.get("kind") or POSE_KIND_BEARING,
+                "seat_offset_m": pose.get("seat_offset_m"), "mark_distance_m": pose.get("distance_m"),
+            }, fields.get("candidate_id"), f"{frequency_path}#{take_id}", [curve.to_dict()]))
         if rows:
             yield from rows
             return
     for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
-        yield (row.position_deg, row.vertical_deg, row.candidate_id, row.path,
-               read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
+        yield ({
+            "position_deg": row.position_deg, "vertical_deg": row.vertical_deg,
+            "pose_kind": row.pose_kind, "seat_offset_m": row.seat_offset_m,
+            "mark_distance_m": row.mark_distance_m,
+        }, row.candidate_id, row.path,
+            read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
 
 
 def _read_poses(session_dir: Path, frequency_path: Path) -> tuple[_Poses, int]:
     """Latest retained curve per pose, role, window and named candidate."""
     poses: _Poses = {}
     unattributed = set()
-    for position, vertical, config_id, take_path, curves in _pose_curves(session_dir, frequency_path):
-        if position is None:
+    for pose, config_id, take_path, curves in _pose_curves(session_dir, frequency_path):
+        if pose["position_deg"] is None:
             continue
-        by_role = poses.setdefault((position, vertical), {})
+        _, by_role = poses.setdefault(doc_pose_key(pose), (pose, {}))
         if not config_id:
             unattributed.add(take_path)
             continue
@@ -216,14 +224,20 @@ def _role_table(by_candidate: dict[str, _Curve]) -> dict[str, Any] | None:
 
 
 def _tables(poses: _Poses) -> list[dict[str, Any]]:
-    """One table per pose that played two or more candidates, in walk order."""
+    """One table per pose that played two or more candidates."""
     tables = []
-    for (position_deg, vertical_deg), by_role in sorted(poses.items()):
+    for key, (pose, by_role) in sorted(poses.items(), key=lambda item: (
+        item[1][0]["position_deg"], item[1][0]["vertical_deg"], item[0],
+    )):
         if len(_named(by_role)) < 2:
             continue
         tables.append({
-            "position_deg": position_deg,
-            "vertical_deg": vertical_deg,
+            "pose_key": key,
+            "deg": pose["position_deg"],
+            "vertical_deg": pose["vertical_deg"],
+            "kind": pose["pose_kind"],
+            "seat_offset_m": pose["seat_offset_m"],
+            "distance_m": pose["mark_distance_m"],
             "played": _named(by_role),
             # A role whose candidates share no measured band yields nothing to
             # difference and is absent; the pose still publishes, because two
@@ -263,7 +277,8 @@ def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
         "max_abs_delta_between": [delta["a"], delta["b"]] if delta else [],
         "max_abs_delta_role": role.get("role"),
         "max_abs_delta_window": role.get("window"),
-        "max_abs_delta_position_deg": table.get("position_deg"),
+        "max_abs_delta_pose_key": table.get("pose_key"),
+        "max_abs_delta_position_deg": table.get("deg"),
         "max_abs_delta_vertical_deg": table.get("vertical_deg"),
     }
 
@@ -285,7 +300,7 @@ def candidate_ladder(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
             "round_dir": str(round_dir),
             "poses_walked": len(poses),
             "candidates_named": sorted(
-                {c for by_role in poses.values() for c in _named(by_role)}
+                {c for _, by_role in poses.values() for c in _named(by_role)}
             ),
             "takes_naming_no_candidate": unattributed,
         })
