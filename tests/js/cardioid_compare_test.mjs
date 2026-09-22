@@ -101,6 +101,23 @@ test('Off and Done POST states with CSRF and render the server answer', async ()
   assert.deepEqual(calls.at(-1).body, {state: 'on'});
   assert.equal(button('off')['aria-pressed'], 'true');
 });
+test('unavailable levels show a reason-specific status', async () => {
+  const lines = [];
+  for (const reason of [undefined, 'no_applied_rear', 'no_pair_round', 'no_front_pose',
+    'preview_refused', 'delta_out_of_range', 'cache_miss', 'level_error']) {
+    const data = block();
+    data.level_match = {status: 'unavailable', reason};
+    const {card} = setup(data); await flush();
+    assert.equal(card.hidden, false);
+    const status = nodes(card).filter(n => n.role === 'status');
+    assert.equal(status.length, 1);
+    lines.push(text(status[0]));
+    assert.ok(lines.at(-1).length > 0);
+  }
+  const fallback = lines.shift();
+  for (const line of lines) assert.notEqual(line, fallback);
+  assert.ok(new Set(lines).size > 1);
+});
 test('pending requests disable controls and do not switch early', async () => {
   let finish;
   const {button, calls} = setup(block('on'), () => new Promise(resolve => { finish = resolve; }));

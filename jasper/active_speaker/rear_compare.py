@@ -7,16 +7,23 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from functools import cache
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json, read_json_mapping
 from jasper.log_event import log_event
 
 from .audition import MAX_COMPARE_TRIM_DB, audition_state_path
+from .bundles import _detect_build_sha
 
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _levels: dict[tuple[str, str, int | None, str | None], dict[str, Any]] = {}
+
+
+@cache
+def _build_sha() -> str | None:
+    return _detect_build_sha()
 
 
 def _valid_cached_level(level: Any) -> bool:
@@ -40,7 +47,6 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
                              "reason": "level_error", "round_id": None, "banked_at": None}
     try:
         from .baseline_profile import load_applied_baseline_profile_state  # lazy: numpy startup cost
-        from .bundles import _detect_build_sha  # lazy: numpy startup cost
         from .round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: campaign reader import cost
 
         applied = load_applied_baseline_profile_state() or {}
@@ -51,7 +57,7 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
             mtime = DEFAULT_CAMPAIGN_ROOT.stat().st_mtime_ns
         except FileNotFoundError:
             mtime = None
-        key = (str(applied.get("candidate_fingerprint")), str(applied.get("applied_at")), mtime, _detect_build_sha())
+        key = (str(applied.get("candidate_fingerprint")), str(applied.get("applied_at")), mtime, _build_sha())
         path = audition_state_path().with_name("rear_compare_level.json")
         if key in _levels:
             return dict(_levels[key])

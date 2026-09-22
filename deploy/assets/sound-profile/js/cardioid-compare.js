@@ -58,7 +58,7 @@ export function initCardioidCompare(nowPlaying) {
       status.push(`Levels matched from round ${match.round_id} (${bankedDate || 'date unknown'}).`);
       status.push(`${match.louder === 'off' ? 'Off' : 'On'} plays ${Math.abs(match.trim_db)} dB lower while you compare.`);
     } else {
-      status.push(`Level match unavailable: ${unavailableReasons[match.reason] || 'not computed yet'}.`);
+      status.push(`Level match unavailable: ${unavailableReasons[match.reason] || 'reason unknown'}.`);
     }
     if (active && expires !== null) status.push(`Resets by itself in ${Math.ceil(expires / 60)} min.`);
     card.replaceChildren(
