@@ -426,25 +426,38 @@ def test_compare_level_bounds(compare_evidence, monkeypatch, delta, trim, louder
 
 
 @pytest.mark.parametrize("fresh", [False, True])
-@pytest.mark.parametrize("identity_field", ["candidate_fingerprint", "applied_at", "root_mtime"])
+@pytest.mark.parametrize("identity_field", [None, "candidate_fingerprint", "applied_at", "root_mtime", "build_sha"])
 def test_compare_cache_invalidates_for_each_identity_field(compare_evidence, monkeypatch, identity_field, fresh):
     import os
     from unittest.mock import Mock
-    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker import bundles, rear_compare
 
-    preview = Mock(return_value={"stage": {"relative_charge": 0}, "positions": {}})
+    build = compare_evidence[0].parents[1] / "build.txt"
+    build.write_text("JASPER_GIT_SHA=build-a\n")
+    monkeypatch.setattr(bundles, "_BUILD_MANIFEST_PATH", build)
+    preview = Mock(return_value={})
+    delta = Mock(return_value=None)
     monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
-    rear_compare.rear_compare_level()
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", delta)
+    cached = rear_compare.rear_compare_level()
+    assert (cached["status"], cached["reason"]) == ("unavailable", "no_front_pose")
+    delta.return_value = 0.35
     if identity_field == "root_mtime":
         root = compare_evidence[0].parent
         stat = root.stat()
         os.utime(root, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
-    else:
+    elif identity_field == "build_sha":
+        build.write_text("JASPER_GIT_SHA=build-b\n")
+    elif identity_field:
         compare_evidence[1][identity_field] = "new"
     if fresh:
         rear_compare._levels.clear()
-    rear_compare.rear_compare_level()
-    assert preview.call_count == 2
+    level = rear_compare.rear_compare_level(cached_only=True)
+    assert level["reason"] == ("cache_miss" if identity_field else "no_front_pose")
+    level = rear_compare.rear_compare_level()
+    assert level == ({**cached, "status": "matched", "reason": "", "trim_db": 0.35,
+                      "louder": "on"} if identity_field else cached)
+    assert preview.call_count == (2 if identity_field else 1)
 
 
 @pytest.mark.parametrize("damage", ["missing", "json", "shape", "key", "negative", "excess", "nan"])
