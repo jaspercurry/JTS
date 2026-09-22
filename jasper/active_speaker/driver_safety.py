@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from .design_inputs import resolve_design_inputs
+
 import json
 import math
 from functools import partial
@@ -108,9 +110,18 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     ]
 
 
+def _resolved_target_values(topology, manual_settings, driver_research):
+    # Legacy research is advisory; only v2 binds specifications to physical targets.
+    research = driver_research if (driver_research or {}).get("artifact_schema_version") == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else None
+    resolved = resolve_design_inputs(topology, manual_settings, research)
+    return {key: value for key, value in _manual_by_target(resolved).items()
+            if resolved["bindings"][key] != "ambiguous"}
+
+
 def driver_protection_policy_view(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None = None,
+    driver_research: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the code-owned protection bounds /sound/ needs to *explain* itself.
 
@@ -134,7 +145,7 @@ def driver_protection_policy_view(
     """
 
     manual_by_role = _manual_by_role(manual_settings)
-    manual_by_target = _manual_by_target(manual_settings)
+    manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
     targets = driver_research_targets(topology)
     role_counts: dict[str, int] = {}
     for target in targets:
@@ -571,8 +582,9 @@ def normalise_driver_safety_fields(
 def build_driver_research_context(
     topology: OutputTopology,
     operator_inputs: Mapping[str, Any],
+    manual_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Describe the current drivers and build notes, without declared limits."""
+    """Describe installed hardware, excluding prior tuning and protection limits."""
 
     channels = _driver_research_channels(topology)
     role_counts: dict[str, int] = {}
@@ -580,7 +592,7 @@ def build_driver_research_context(
         role_counts[channel.role] = role_counts.get(channel.role, 0) + 1
     target_models = operator_inputs.get("target_models")
     target_models = target_models if isinstance(target_models, Mapping) else {}
-    targets = []
+    targets: list[dict[str, Any]] = []
     for group, channel in channels:
         target_id = channel.target_id(group.id)
         role = channel.role
@@ -595,6 +607,15 @@ def build_driver_research_context(
                 model, f"operator_inputs.target_models.{target_id}", required=True, max_chars=160,
             ),
         })
+    declared = _manual_by_target(manual_settings)
+    for target in targets:
+        driver = declared.get(target["target_id"], {})
+        physical = {key: driver[key] for key in ("pad", "installation") if driver.get(key)}
+        physical["pad"] = physical.get("pad", {"kind": "none"})
+        enclosure = (driver.get("cabinet") or {}).get("enclosure_kind")
+        if enclosure:
+            physical["enclosure_kind"] = enclosure
+        target["installation"] = physical
     return {
         "targets": targets,
         "build_notes": _text(
@@ -1038,7 +1059,7 @@ def compute_driver_safety_profile(
     """Compute limits, provenance and issues from the current declaration."""
     manual_settings = _normalise_profile_manual_settings(topology, manual_settings)
     manual_by_role = _manual_by_role(manual_settings)
-    manual_by_target = _manual_by_target(manual_settings)
+    manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
     research_by_target = _research_by_target(driver_research)
     physical_targets = active_driver_targets(topology)
     role_counts: dict[str, int] = {}

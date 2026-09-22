@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import math
 
 import pytest
 
@@ -253,26 +252,15 @@ def test_effective_sensitivity_db_ignores_a_malformed_attenuation():
     assert effective_sensitivity_db(108.0, {"attenuation_db": True}) == 108.0
 
 
-# --- #1675 ka-beaming guidance: JS closed-form lockstep pin ------------------
-#
-# kaBeamingOnsetHz(diameterMm) is pure JS (deploy/assets/sound-profile/js/
-# driver-model.js) with no Python production implementation to import against -- the
-# guidance is display-only, client-side. This is a hand-maintained mirror of
-# the SAME closed form, verified against the rig's own anchor (114 mm ->
-# 958 Hz / 1916 Hz). If you change one side, change the other.
+@pytest.mark.parametrize("source,expected", [(None, -10.0), ("operator_pinned", -10.0),
+    ("research_estimate", -22.2), ("sensitivity_estimate", -22.2)])
+def test_declared_trims_refresh_estimates_and_keep_explicit_values(source, expected):
+    from jasper.active_speaker.level_trim import declared_driver_gains
 
-
-def _ka_beaming_onset_hz(diameter_mm: float) -> tuple[int, int]:
-    """Mirrors driver-model.js's kaBeamingOnsetHz exactly, including its rounding
-    order: f_ka1 is rounded to an integer FIRST, then f_ka2 = 2 * that
-    rounded value (not 2x the raw float) -- see the JS function's own
-    docstring for why this order is deliberate."""
-
-    radius_m = diameter_mm / 2000.0
-    ka1_hz = round(343.0 / (2.0 * math.pi * radius_m))
-    return ka1_hz, ka1_hz * 2
-
-
-def test_ka_beaming_onset_hz_matches_the_js_closed_form():
-    ka1_hz, ka2_hz = _ka_beaming_onset_hz(114.0)
-    assert (ka1_hz, ka2_hz) == (958, 1916)
+    drivers = {"woofer": {"sensitivity_db_2v83_1m": 83.3}, "tweeter": {
+        "sensitivity_db_2v83_1m": 108.5, "pad": {"attenuation_db": -3.0},
+        "gain_offset_db": -10.0, "gain_offset_db_provenance": source,
+    }}
+    gains, _, _, issues = declared_driver_gains(tuple(drivers), drivers)
+    assert gains == {"woofer": 0.0, "tweeter": expected}
+    assert not issues

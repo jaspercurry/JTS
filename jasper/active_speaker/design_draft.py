@@ -32,6 +32,7 @@ from ._common import (
     issue as _issue,
 )
 from .driver_pad import effective_sensitivity_db, normalise_pad
+from .design_inputs import resolved_draft_inputs
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     _normalise_field_provenance,
@@ -626,10 +627,10 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
 
     if not isinstance(draft, Mapping):
         return {}
-    manual = draft.get("manual_settings")
-    if not isinstance(manual, Mapping):
+    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
+    if not isinstance(settings, Mapping):
         return {}
-    drivers = manual.get("drivers")
+    drivers = settings.get("drivers")
     out: dict[str, float] = {}
     conflicted: set[str] = set()
     for driver in drivers if isinstance(drivers, list) else []:
@@ -673,10 +674,10 @@ def declared_effective_driver_sensitivities(
 
     if not isinstance(draft, Mapping):
         return {}
-    manual = draft.get("manual_settings")
-    if not isinstance(manual, Mapping):
+    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
+    if not isinstance(settings, Mapping):
         return {}
-    drivers = manual.get("drivers")
+    drivers = settings.get("drivers")
     out: dict[str, float] = {}
     conflicted: set[str] = set()
     for driver in drivers if isinstance(drivers, list) else []:
@@ -1054,7 +1055,7 @@ def design_draft_view(
             topology, draft.get("manual_settings"), draft.get("driver_research"),
         )
         out["driver_protection_policy_view"] = driver_protection_policy_view(
-            topology, draft.get("manual_settings"),
+            topology, draft.get("manual_settings"), draft.get("driver_research"),
         )
     return out
 

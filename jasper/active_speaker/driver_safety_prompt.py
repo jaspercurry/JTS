@@ -27,6 +27,7 @@ _PROMPT_TARGET_KEYS = (
     "role",
     "manufacturer_and_model",
     "driver_style",
+    "installation",
 )
 
 # Only excitation limits carry per-field provenance in the ask.

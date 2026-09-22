@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.active_speaker.commissioning_coordinator import programs_for_topology
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, PROGRAM_ENTRIES
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
@@ -16,7 +15,6 @@ from jasper.identity.reader import (
     read_identity,
     speaker_url,
 )
-from jasper.output_topology import OutputTopology
 
 HANDOFF_READY = "ready"
 HANDOFF_NOT_READY = "not_ready"
@@ -76,31 +74,13 @@ _REAR_PROMPT_LINES = (
     "a person any bearing.",
 )
 
-_PROGRAM_DETAILS = {
-    "speaker": {"title": "Speaker", "description": "Fit the drivers and align their crossover.",
-     "extra_prompt_lines": ()},
-    "room": {"title": "Room", "description": "Fit the listening area and keep the saved Speaker tune.",
-     "extra_prompt_lines": ()},
-    "bass": {"title": "Bass",
-     "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room.",
-     "extra_prompt_lines": ()},
-    "rear": {"title": "Rear woofer (cardioid)", "description": (
-        "Compare rear-woofer settings at the same positions: the applied tune, the same tune "
-        "with the rear muted, and one to three variants that each change one control family. "
-        "Keep Speaker, Room and Bass."
-     ), "extra_prompt_lines": _REAR_PROMPT_LINES},
-}
-
-
-def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
-    return tuple(_program_entry(name) for name in programs_for_topology(topology))
 
 
 def _program_entry(program_id: str) -> dict[str, Any]:
-    entry = _PROGRAM_DETAILS.get(program_id)
+    entry = next((item for item in PROGRAM_ENTRIES if item["id"] == program_id), None)
     if entry is None:
         raise ValueError(f"unknown tuning program: {program_id}")
-    return {"id": program_id, **entry}
+    return entry
 
 
 def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> str:
@@ -137,7 +117,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         entry["description"],
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
         f"Prescription contract: sudo {_BIN}/jasper-crossover-prescriber contract --round <dir> --section {program_id}",
-        *entry["extra_prompt_lines"],
+        *(_REAR_PROMPT_LINES if program_id == "rear" else ()),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Orient with {ORIENTATION_COMMAND}.",

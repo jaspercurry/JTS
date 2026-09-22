@@ -24,7 +24,6 @@ from .driver_protection import (
 
 SCHEMA_VERSION = 2
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
-_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 #: What a candidate that declares no filter/slope is previewed and compiled as.
 #: Public because the /sound/ crossover editor must pre-select the SAME member
 #: of the offered vocabulary this module would fill in — a second default in the
@@ -130,61 +129,17 @@ def _candidate_key(candidate: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(role for role in roles if isinstance(role, str))
 
 
-def _candidate_map(
-    research: Mapping[str, Any] | None,
-) -> dict[frozenset[str], Mapping[str, Any]]:
-    ranked: dict[frozenset[str], tuple[int, int, int, Mapping[str, Any]]] = {}
-    for index, item in enumerate(
-        research.get("crossover_candidates", []) if research else []
-    ):
-        candidate = _as_mapping(item)
-        if not candidate:
-            continue
-        key = _candidate_key(candidate)
-        if len(key) != 2:
-            continue
-        confidence = candidate.get("confidence", "unknown")
-        rank = _CONFIDENCE_RANK.get(str(confidence), 0)
-        if candidate.get("source") == "manual_settings":
-            rank += 10
-        has_frequency = 1 if _finite_positive(candidate.get("frequency_hz")) else 0
-        existing = ranked.get(key)
-        if existing is None or (has_frequency, rank, -index) > (
-            existing[0],
-            existing[1],
-            -existing[2],
-        ):
-            ranked[key] = (has_frequency, rank, index, candidate)
-    return {key: item[3] for key, item in ranked.items()}
+def _candidate_map(research: Mapping[str, Any] | None) -> dict[frozenset[str], Mapping[str, Any]]:
+    return {_candidate_key(candidate): candidate
+            for candidate in (research or {}).get("crossover_candidates", [])}
 
 
 def _merged_design_inputs(design_draft: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Return research-shaped inputs with operator settings taking precedence."""
+    from .design_inputs import resolved_draft_inputs
 
-    research = _as_mapping(design_draft.get("driver_research"))
-    manual = _manual_crossover_settings(design_draft)
-    if research is None and manual is None:
+    if not design_draft.get("topology") or not (design_draft.get("driver_research") or design_draft.get("manual_settings")):
         return None
-
-    drivers_by_role: dict[str, Mapping[str, Any]] = {}
-    for source in (research, manual):
-        for item in source.get("drivers", []) if source else []:
-            driver = _as_mapping(item)
-            role = driver.get("role") if driver else None
-            if isinstance(role, str) and role:
-                drivers_by_role[role] = driver
-
-    candidates = []
-    for source in (research, manual):
-        for item in source.get("crossover_candidates", []) if source else []:
-            candidate = _as_mapping(item)
-            if candidate:
-                candidates.append(candidate)
-
-    return {
-        "drivers": list(drivers_by_role.values()),
-        "crossover_candidates": candidates,
-    }
+    return resolved_draft_inputs(design_draft)
 
 
 def _range_ceiling(driver: Mapping[str, Any] | None) -> float | None:
@@ -522,7 +477,14 @@ def build_crossover_preview(
                 "crossover settings are not saved",
             )
         )
-    drivers, driver_issues = _driver_map(design_inputs)
+    primary_inputs = {"drivers": [driver for driver in (design_inputs or {}).get("drivers", [])
+                                  if not str(driver.get("target_id", "")).endswith(":rear")]}
+    primary_inputs["drivers"] = [
+        {key: value for key, value in driver.items()
+         if key != "target_id" or (design_inputs or {}).get("bindings", {}).get(driver["target_id"]) == "explicit"}
+        for driver in primary_inputs["drivers"]
+    ]
+    drivers, driver_issues = _driver_map(primary_inputs)
     issues.extend(driver_issues)
     if topology is not None:
         # One owner, every consumer derives (#2603). Stamped HERE, before the
@@ -556,13 +518,22 @@ def build_crossover_preview(
             pairs = ADJACENT_PAIRS_BY_MAIN_MODE.get(group.mode, ())
             if not pairs:
                 continue
+            group_drivers = {
+                driver["role"]: apply_driver_low_limit(
+                    driver, role=driver["role"],
+                    driver_style=_driver_style_for_role(topology, driver["role"]),
+                )
+                for driver in (design_inputs or {}).get("drivers", [])
+                if any(driver["target_id"] == channel.target_id(group.id)
+                       for channel in group.channels if channel.output_variant != "rear")
+            }
             crossovers = [
                 _build_crossover(
                     topology=topology,
                     group_id=group.id,
                     lower_role=lower_role,
                     upper_role=upper_role,
-                    drivers=drivers,
+                    drivers=group_drivers,
                     candidates=candidates,
                 )
                 for lower_role, upper_role in pairs

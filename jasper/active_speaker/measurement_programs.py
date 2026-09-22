@@ -15,6 +15,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
+from jasper.output_topology import OutputTopology, cardioid_cabinet_channels, topology_is_subless_passive_mains
+
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
@@ -34,6 +36,39 @@ PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE, PURP
 
 #: Tuning order; reference is reached only through the close/spot program.
 RUNNABLE_PROGRAMS = (PURPOSE_SPEAKER, PURPOSE_REAR, PURPOSE_BASS, PURPOSE_ROOM)
+
+
+PROGRAM_DETAILS = {
+    "speaker": {"title": "Driver linearization", "description": "Fit the drivers and align their crossover.",
+     },
+    "room": {"title": "Room", "description": "Fit the listening area and keep the saved Speaker tune.",
+     },
+    "bass": {"title": "Bass",
+     "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room.",
+     },
+    "rear": {"title": "Rear woofer (cardioid)", "description": (
+        "Compare rear-woofer settings at the same positions: the applied tune, the same tune "
+        "with the rear muted, and one to three variants that each change one control family. "
+        "Keep Speaker, Room and Bass."
+     ), },
+}
+PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
+
+
+def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
+    return tuple(entry for entry in PROGRAM_ENTRIES if entry["id"] in programs_for_topology(topology))
+
+
+def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
+    passive = topology_is_subless_passive_mains(topology)
+    rear = cardioid_cabinet_channels(
+        (channel.role, channel.output_variant, channel.physical_output_index)
+        for group in topology.speaker_groups for channel in group.channels
+        if channel.physical_output_index is not None
+    )
+    return tuple(name for name in RUNNABLE_PROGRAMS
+                 if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and rear is None))
+
 
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"

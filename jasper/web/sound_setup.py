@@ -58,7 +58,6 @@ from jasper.sound.settings import (
     output_trim_db as _output_trim,  # aliased so the probe's kwarg can't shadow it
 )
 
-from . import nav
 from ._common import (
     JsonBodyError,
     begin_request,
@@ -83,6 +82,7 @@ from .sound_seat_level import (
     seat_level_start_payload as _seat_level_start_payload,
     seat_level_stop_payload as _seat_level_stop_payload,
 )
+from . import sound_speaker_setup
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     _cardioid_compare_payload,
@@ -157,25 +157,6 @@ def _coerce_page_mode(page_mode: str) -> str:
     return page_mode if page_mode in _PAGE_PATHS else "eq"
 
 
-#: /sound/speaker/ renders the link to its own child row (docs/web-ia.md §1),
-#: on a follower too — the crossover wizard is the driver domain a follower
-#: keeps. Label and href come from the row itself so the two cannot drift. The
-#: href is RELATIVE (the path minus its parent) so it stays on the origin the
-#: household is already on; an absolute one would land on the self-signed 443
-#: origin (issue #2632).
-_CROSSOVER_ROW = nav.entry("/sound/speaker/crossover/")
-_CROSSOVER_HREF = _CROSSOVER_ROW.path.removeprefix(_CROSSOVER_ROW.parent)
-_CROSSOVER_CHILD_LINK = f"""<section class="info-card">
-    <p class="form-hint">Measure the crossover between this speaker's drivers
-    and set the filters that protect them.</p>
-    <div class="form-actions"><a class="btn" href="{_CROSSOVER_HREF}">{_CROSSOVER_ROW.label}</a></div>
-  </section>"""
-
-
-def _crossover_child_link(page_mode: str) -> str:
-    return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
-
-
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     """Build the page's JSON islands for every /sound/ shell.
 
@@ -240,8 +221,7 @@ def _follower_sound_html(
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
-        '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
-        '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
+        '<script type="module" src="/assets/sound-profile/js/speaker.js"></script>'
         if page_mode == "speaker"
         else ""
     )
@@ -264,7 +244,7 @@ def _follower_sound_html(
         leader_url=bonded_follower_leader_web_url(_PAGE_PATHS[page_mode]),
         leader_label="Open leader sound",
         extra_actions=[local_setup_link],
-        main_extra=f"\n  {local_setup}\n  {_crossover_child_link(page_mode)}",
+        main_extra=f"\n  {local_setup}\n",
         page_extra=f"\n{_sound_page_island(page_mode=page_mode, follower=True)}",
         css_href="/assets/sound-profile/sound.css",
     )
@@ -312,19 +292,17 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 """
         if page_mode == "eq"
         else canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
-        + f"""
+        + """
 <main class="page">
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
-  {_crossover_child_link(page_mode)}
+
 </main>
 """
     )
     page_island = _sound_page_island(page_mode=page_mode, follower=False)
-    body = editor_chrome + page_island + (
-        '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
-        '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
-    )
+    script = "speaker" if page_mode == "speaker" else "main"
+    body = editor_chrome + page_island + f'<script type="module" src="/assets/sound-profile/js/{script}.js"></script>'
     return canonical_page(
         title,
         body,
@@ -335,6 +313,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 
 _GET_ROUTES = {
     "/": None,
+    "/setup": None,
     "/state": None,
     "/active-speaker/commissioning-view": None,
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
@@ -487,6 +466,9 @@ def _make_handler(
                     )
                 )
                 return
+            if path == "/setup":
+                self._send_json(dict(sound_speaker_setup.load_setup_view()))
+                return
             json_route = _GET_ROUTES.get(path)
             if json_route is not None:
                 builder, event = json_route
@@ -534,6 +516,9 @@ def _make_handler(
             path = route_path(self.path)
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
+                if path.startswith("/setup/"):
+                    self._send_json(asyncio.run(sound_speaker_setup.update_setup(path, raw, camilla_factory=camilla_factory)))
+                    return
                 if path == "/cardioid-compare":
                     try:
                         requested = str(raw.get("state", ""))
@@ -916,6 +901,7 @@ def _make_handler(
     get_routes = dict.fromkeys(_GET_ROUTES, Handler._dispatch_get_route)
 
     _POST_ROUTES = {
+        **dict.fromkeys(("/setup/layout", "/setup/save-layout", "/setup/details", "/setup/research", "/setup/apply", "/setup/reset"), Handler._dispatch_post_route),
         "/cardioid-compare": Handler._dispatch_post_route,
         "/apply": Handler._dispatch_post_route,
         "/audition": Handler._dispatch_post_route,

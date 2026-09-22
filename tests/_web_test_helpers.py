@@ -294,11 +294,7 @@ _SOUND_JS_DIR = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "js"
 )
-# active-speaker-ui.js and eq-math.js are pure sibling modules with pins of
-# their own (tests/js/active_speaker_ui_test.mjs, tests/test_sound_peq_response.py)
-# and copy rules of their own; everything else in the directory is the one page
-# program main.js heads.
-_SOUND_PAGE_JS_SIBLINGS = frozenset({"active-speaker-ui.js", "eq-math.js"})
+_SOUND_PAGE_JS_SIBLINGS = frozenset({"eq-math.js"})
 
 
 def sound_page_js() -> str:

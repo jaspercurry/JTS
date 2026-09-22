@@ -569,7 +569,7 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await getJSON('/sound/speaker/crossover/envelope?program=' + encodeURIComponent(els.roundSelect?.value || ''));
+    const env = await getJSON('/sound/speaker/crossover/envelope?program=' + encodeURIComponent(els.roundSelect?.value || new URLSearchParams(window.location.search).get('program') || ''));
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }

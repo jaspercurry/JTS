@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 
 from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
 from jasper.active_speaker.driver_safety import build_driver_research_context
@@ -29,7 +30,8 @@ from jasper.active_speaker.playback_route import (
 )
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.active_speaker.tuning_handoff import program_entries, build_tuning_handoff
+from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+from jasper.active_speaker.measurement_programs import program_entries
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
@@ -633,6 +635,7 @@ def _active_speaker_driver_research_request_payload(
     request = build_driver_research_context(
         topology,
         operator_inputs,
+        design_draft_store.load_design_draft(topology=topology).get("manual_settings"),
     )
     payload = {
         "prompt": build_driver_research_prompt(request),
@@ -981,6 +984,7 @@ def _active_speaker_baseline_profile_payload(
 
 async def _active_speaker_baseline_profile_apply_payload(
     *,
+    candidate: "MeasuredCrossoverCandidate | None" = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
@@ -989,6 +993,7 @@ async def _active_speaker_baseline_profile_apply_payload(
     from .correction_crossover_v2_apply import apply_candidate  # lazy: graph compilation imports NumPy
 
     payload = await apply_candidate(
+        candidate,
         camilla_factory=camilla_factory,
         on_candidate_verified=on_candidate_verified,
     )
@@ -1026,6 +1031,7 @@ def _active_speaker_output_safety_from_config_path(
 
 async def _active_speaker_finish_commissioning_payload(
     *,
+    candidate: "MeasuredCrossoverCandidate | None" = None,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
     """Backend-owned final handoff from commissioning to the active profile.
@@ -1066,6 +1072,7 @@ async def _active_speaker_finish_commissioning_payload(
         }
 
     payload = await _active_speaker_baseline_profile_apply_payload(
+        candidate=candidate,
         on_candidate_verified=cleanup_after_locked_proof,
         camilla_factory=camilla_factory,
     )

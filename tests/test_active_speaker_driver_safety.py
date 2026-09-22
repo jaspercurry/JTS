@@ -365,14 +365,14 @@ def test_prompt_demands_one_fenced_json_object_and_exact_driver_count() -> None:
     assert "Return exactly 1 entry in drivers[]" in single
 
 
-def test_prompt_projects_only_driver_identity_and_build_notes() -> None:
+def test_prompt_projects_driver_identity_installation_and_build_notes() -> None:
     context = build_driver_research_context(
         mono_output_topology(card_id=None), _operator_inputs(),
     )
     projection = json.loads(_prompt_targets_block(build_driver_research_prompt(context)))
     assert set(projection) == {"targets", "build_notes"}
     assert all(set(target) == {
-        "target_id", "role", "manufacturer_and_model", "driver_style",
+        "target_id", "role", "manufacturer_and_model", "driver_style", "installation",
     } for target in projection["targets"])
 
 
@@ -594,7 +594,7 @@ def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
     assert "compression_horn" in result_shape
     # Never prompted: pad is an operator-only fact (they wired the resistors),
     # never something research can discover.
-    assert '"pad"' not in prompt
+    assert '"pad"' not in result_shape
     assert "in-line" not in prompt.lower()
     assert "l-pad" not in prompt.lower()
 
@@ -1039,6 +1039,11 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
             "right:tweeter:target_specific_values_missing",
         }
     )
+    placeholders = {"drivers": [{"target_id": target["target_id"], "role": target["role"]}
+                                 for target in active_driver_targets(topology)]}
+    advisory = compute_driver_safety_profile(topology, placeholders, {"drivers": legacy["drivers"]})
+    assert any(issue["severity"] == "blocker" for issue in advisory["issues"])
+    assert all(target.get("measurement_band_hz") is None for target in advisory["targets"])
 
     explicit = compute_driver_safety_profile(
         topology,

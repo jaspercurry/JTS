@@ -10,105 +10,20 @@ from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
-from jasper.output_topology import OutputTopology, cardioid_cabinet_channels, topology_is_subless_passive_mains
+from jasper.output_topology import OutputTopology
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
-from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, available_programs, program
-from .wizard_client import APPLY_PATH, CAPTURE_CANCEL_PATH
-from .round_copy import round_lines, packet_lines, round_verdict
+from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, programs_for_topology
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
 COMMISSIONING_STEP_PAGE_TITLES = {
     "layout": "Choose speaker layout",
-    "research": "Driver values",
-    "experiment": "First speaker experiment",
-    "profile": "Apply speaker profile",
+    "research": "Driver details",
+    "profile": "Save to speaker",
 }
 _MEASURE_LABELS = {name: f"Measure {name}" for name in RUNNABLE_PROGRAMS}
 _MEASURE_LABELS.update(speaker="Measure the baseline", room="Measure the room", rear="Measure the rear woofer")
-
-
-def round_status(capture: Mapping[str, Any]) -> list[str]:
-    facts = capture.get("run") or {}
-    if facts.get("round_dir"):
-        lines = packet_lines(facts["round_dir"])
-        if lines:
-            return lines
-        facts = {**facts, "packet_error": "packet_unreadable"}
-    return round_lines(facts, pending=bool(capture.get("position_pending") or capture.get("join")))
-
-
-def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture: bool = True) -> dict[str, Any]:
-    from .crossover_v2.position_gate import retake_action  # lazy: gate imports measurement
-
-    facts = capture.get("run") or {}
-    result = {"capture": dict(capture) if advertise_capture else None, "round_lines": round_status(capture),
-              "verdict_text": round_verdict(facts, verdict)}
-    if capture.get("join") or not facts.get("pose_details"):
-        return result
-    held = capture.get("position_pending") or {}
-    live = capture.get("status") not in SESSION_ENDED_STATUSES
-    actions = [a for a in held.get("actions", ()) if a["id"] != "retake"] + [
-        retake_action(), {"id": "reset_round", "label": "Reset the round", "endpoint": CAPTURE_CANCEL_PATH, "body": {}},
-    ] if live and facts.get("mover") == "human" else []
-    return {**result, "capture": None, "pending": {"actions": actions} if live else None, "busy": live}
-
-
-def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
-    from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
-    from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
-    from .crossover_v2.refusal_copy import (  # lazy: measurement planning
-        CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, refusal_copy_for,
-    )
-    from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
-
-    view = load_commissioning_view()
-    programs = view["programs"]
-    default = program(view["next_action"].get("program") or programs[0])
-    default_id = f"{default.program_id}/{default.size}"
-    choices = []
-    for name, size in available_programs():
-        plan = program(name, size)
-        if ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
-                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)):
-            continue
-        choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}",
-                                  "default": f"{name}/{size}" == default_id,
-                                  "poses": plan.mic_move_count, "captures": plan.capture_count}
-        if choice["id"] == (selected_id or default_id):
-            if plan.regime == REGIME_BRANCHES:
-                # See issue #5321.
-                copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
-                choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
-            else:
-                try:
-                    context = resolve_conductor_context(status, require_banked_level=False)
-                except CrossoverV2Refused as exc:
-                    # Disclosed the way jasper.web._common.refusal_envelope
-                    # renders one: ``str(exc)`` is the household sentence its
-                    # raisers pass; some carry no code.
-                    choice.update(code=exc.code or None, lines=[str(exc)])
-                else:
-                    request = request_for_program(plan, mover=plan.mover or "human")
-                    captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                    facts = preview_schedule(request, captures, context)
-                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": f"Start a new round: {choice['label']}",
-                                  "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
-        choices.append(choice)
-    return choices
-
-
-def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
-    passive = topology_is_subless_passive_mains(topology)
-    rear = cardioid_cabinet_channels(
-        (channel.role, channel.output_variant, channel.physical_output_index)
-        for group in topology.speaker_groups for channel in group.channels
-        if channel.physical_output_index is not None
-    )
-    return tuple(name for name in RUNNABLE_PROGRAMS
-                 if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and rear is None))
 
 
 def next_program_action(
@@ -177,7 +92,7 @@ def build_commissioning_view(
     profile_applied = applied_profile is not None and applied_profile_verdict != APPLIED_PROFILE_DISPLACED
     applied = applied_identity(applied_profile) or {}
     experiment = dict(first_experiment or {})
-    experiment_complete = bool(experiment.get("candidate_fingerprint")) or profile_applied
+    experiment_complete = bool(experiment.get("candidate_fingerprint"))
     review_ready = bool((review.get("permissions") or {}).get("may_compile")
                         or (review.get("permissions") or {}).get("may_apply"))
     disclosures = []
@@ -188,14 +103,13 @@ def build_commissioning_view(
     messages = {
         "layout": "Declare the speaker layout and assign each driver to its output.",
         "research": "Save the driver values and crossover settings.",
-        "experiment": "Place the microphone at the design mark and run the speaker program.",
-        "profile": "Apply the candidate named in the experiment packet to finish commissioning.",
+        "profile": "Save the starting crossover and trims to the speaker.",
     }
     steps = []
     active = False
     for step_id, done, not_required in (
         ("layout", has_layout, False), ("research", values_ready, passive),
-        ("experiment", experiment_complete, passive), ("profile", profile_applied, passive),
+        ("profile", profile_applied, passive),
     ):
         status = "not_required" if not_required else "done" if done else "todo" if active else "active"
         active = active or status == "active"
@@ -215,15 +129,10 @@ def build_commissioning_view(
         status = "needs_driver_safety_profile" if design_ready and preview_ready else "needs_driver_values"
         action = {"id": "save_driver_values", "label": "Save values", "enabled": True,
                   "endpoint": "./active-speaker/design-draft", "method": "POST", "body": {}}
-    elif not experiment_complete:
-        status = "needs_first_experiment"
-        action = {"id": "run_speaker_program", "label": "Run speaker experiment", "enabled": True,
-                  "endpoint": "/sound/speaker/crossover/", "method": "GET", "body": {}, "program": PURPOSE_SPEAKER}
     else:
         status = "ready_to_save_profile" if review_ready else "blocked"
-        action = {"id": "apply_candidate", "label": "Apply speaker profile", "enabled": review_ready,
-                  "endpoint": APPLY_PATH, "method": "POST",
-                  "body": {"expected_candidate_fingerprint": experiment["candidate_fingerprint"]}}
+        action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready,
+                  "endpoint": "./active-speaker/baseline-profile/save-and-apply", "method": "POST", "body": {}}
     checks_complete = bool(summary.get("driver_checks_complete") or summary.get("driver_measurements_complete"))
     checks = {"complete": checks_complete, "source": "measurements" if checks_complete else "missing",
               "captured": int(summary.get("captured_driver_check_count") or summary.get("captured_driver_count") or 0),
