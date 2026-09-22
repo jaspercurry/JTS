@@ -49,7 +49,6 @@ from jasper.fanin_coupling import (
     RING_PCM_DEVICES,
     RING_SLOTS_ENV_VAR,
     RING_WIRE_FORMAT_ENV_VAR,
-    RING_WIRE_FORMAT_WIDE,
 )
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
@@ -209,8 +208,7 @@ def load_topology_for_wire():
     """The saved output topology for a wire resolution, or ``None``.
 
     Fail-SOFT on every error: ``resolve_ring_wire(None)`` answers the shipped
-    stereo geometry, and refusing to arm on an unreadable topology is
-    :func:`ring_topology_ready`'s decision, not this helper's.
+    stereo geometry.
     """
     try:
         from jasper.output_topology import OutputTopologyError  # lazy: import cost
@@ -494,8 +492,7 @@ def ring_edge_width_ready(
     - **the conf.d** — both stereo PCM blocks, PER BLOCK, because Ring A and
       Ring B may legitimately differ on channels and only the file says what the
       ioplug will attach with. The ACTIVE conf.d block is deliberately NOT one of
-      this gate's ends — ``active_ring_endpoint_proof`` proves it on its own
-      path, with its own remedy;
+      this gate's ends;
     - **CamillaDSP's emitted stanzas** — the counterfactual "what would arming
       emit", which catches ``capture_kwargs_for_coupling`` ever stopping forcing
       the ring's own format (the emit would then fall back to the box-wide
@@ -662,71 +659,6 @@ def ring_assets_ready() -> tuple[bool, str]:
     if presence.all_present:
         return True, "ring platform assets present (ioplug .so + conf.d + shm dir)"
     return False, "ring platform assets incomplete: " + "; ".join(presence.missing())
-
-
-def active_ring_endpoint_proof() -> tuple[bool, str]:
-    """Is this box's ACTIVE-ring endpoint actually staged? Two independent facts.
-
-    A roleful topology having an active ring WIDTH says only that a ring could
-    exist for it. Arming needs the endpoint to be STAGED, and that is two
-    separate things, owned by two different writers:
-
-    1. **The marker** — ``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT`` in
-       ``outputd.env``, written by ``jasper-audio-hardware-reconcile`` from the
-       accepted active-lane decision. It is what tells outputd to expect the
-       active ring, and outputd's own allowlist bails if the ring path and this
-       marker disagree. Arming ahead of it would flip the coupling into a daemon
-       that refuses the pairing — an exit-78 park, not a working ring.
-    2. **The rendered conf.d block** — ``pcm.jts_ring_active_playback`` declaring
-       this box's resolved active width. The ioplug attaches with what the block
-       says; a block still on the shipped default while the graph declares a
-       different width is a guaranteed attach failure.
-
-    Both are checked: they have different failure modes and different remedies,
-    so one collapsed reason would send an operator to the wrong fix. Fail-CLOSED
-    on anything indeterminate — an unreadable conf.d declares nothing.
-    """
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost
-        active_ring_channels_for_topology,
-    )
-
-    if not fanin_coupling.ring_active_endpoint_armed():
-        return False, (
-            "outputd's active-ring endpoint marker "
-            "(JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT in outputd.env) is not set — "
-            "run `sudo systemctl start jasper-audio-hardware-reconcile` first so "
-            "the endpoint pair is written from the active-lane decision, then "
-            "re-arm"
-        )
-    topology = load_topology_for_wire()
-    width = (
-        active_ring_channels_for_topology(topology) if topology is not None else None
-    )
-    if width is None:
-        return False, (
-            "the saved topology resolves no active-ring width, so there is no "
-            "width the conf.d block could be proved against"
-        )
-    declared = ring_conf.ring_conf_channels(ring_conf.RING_ACTIVE_CONF_PCM, ring_assets.RING_CONF_D)
-    if declared is None:
-        return False, (
-            f"the ring conf.d declares no readable channels for "
-            f"pcm.{ring_conf.RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
-            "to reinstall it, then re-run jasper-audio-hardware-reconcile to "
-            "render the per-box wire"
-        )
-    if declared != width:
-        return False, (
-            f"pcm.{ring_conf.RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
-            f"box's active ring resolves to {width} — the ioplug attaches with "
-            "what the block says, so this would fail the attach. Run `sudo "
-            "systemctl start jasper-audio-hardware-reconcile` to render the "
-            "conf.d wire, then re-arm"
-        )
-    return True, (
-        f"active-ring endpoint staged (marker set, pcm.{ring_conf.RING_ACTIVE_CONF_PCM} "
-        f"declares channels={declared})"
-    )
 
 
 def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
@@ -1029,82 +961,6 @@ def ring_endpoint_anchor_converged(
     )
 
 
-def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
-    """May THIS composite sink ride the ACTIVE ring at the wire the box declares?
-
-    **Only at the WIDE wire.** Named on its own so the rule is greppable, but
-    wired into exactly ONE call site — :func:`ring_topology_ready`'s ACTIVE arm —
-    because both arming paths reach the ring through that gate.
-
-    THE REGRESSION THIS REFUSES is invisible on every other axis: moving a
-    composite onto a NARROW ring, changing nothing else, narrows the
-    POST-crossover per-driver program from 32 to 16 bits. The rule is that the
-    post-crossover hop carries the i32 program spine's width and quantizes ONCE,
-    at the DAC edge; a 16-bit hop quantizes early and then again after outputd's
-    per-driver gain, trim and protection have scaled it.
-
-    ``ring_edge_width_ready`` cannot catch it: that gate proves every declaring
-    end states the SAME wire, and a narrow composite arm is perfectly
-    self-consistent. Coherence is not width.
-
-    Since the resolver defaults WIDE, the only shape that reaches this refusal is
-    a box an operator has PINNED to ``S16_LE``. Not a policy override of that
-    declaration — the key's writer set stays EMPTY, which is what makes it a real
-    rollback lever — but a refusal of the unsafe COMBINATION, naming the remedy.
-
-    THE REMEDY NAMES ALL THREE RUNGS. A roleful graph's capture and playback
-    formats are baked when it is EMITTED, and the hardware reconciler re-renders
-    only the conf.d and outputd's env, so setting the key and re-running the
-    reconciler alone leaves the BOOT GRAPH narrow and the next arm refuses again
-    from ``ring_edge_width_ready``. The ``sudo /opt/jasper/.venv/bin/…`` spelling
-    matches the doctor's own rollback ladder
-    (``jasper/cli/doctor/audio_runtime_ring.py``); only that spelling pastes into
-    a shell and works.
-
-    Non-composite topologies pass untouched.
-    """
-    from jasper.active_speaker.runtime_contract import topology_sink_is_composite  # lazy: import cost
-
-    if topology is None or not topology_sink_is_composite(topology):
-        return True, "not a composite sink; the wide-wire rule does not apply"
-    try:
-        declared = fanin_coupling.read_declared_ring_wire_format()
-    except ValueError as exc:
-        # A wire token neither language recognizes. fan-in parks at exit 78 on
-        # the same value, so refusing here is the same verdict, earlier.
-        return False, (
-            f"this box declares an unusable ring wire ({exc}), so the composite "
-            "wide-wire rule cannot be proved — fix the token, then re-arm"
-        )
-    if declared != RING_WIRE_FORMAT_WIDE:
-        return False, (
-            f"a composite sink may ride the ACTIVE ring only at the WIDE wire, "
-            f"but this box declares {RING_WIRE_FORMAT_ENV_VAR}={declared}. The "
-            f"WIDE wire ({RING_WIRE_FORMAT_WIDE}) is what carries the "
-            f"post-crossover per-driver program at full width, so arming the "
-            f"ring at this narrow pin would quantize every driver's signal "
-            f"from 32 to 16 bits — a width REGRESSION disguised as a "
-            f"transport change, which the every-end wire gate cannot see "
-            f"(a narrow arm is perfectly self-consistent). An undeclared box "
-            f"resolves the wide wire, so this is a deliberate pin: remove "
-            f"{RING_WIRE_FORMAT_ENV_VAR} (or set it to {RING_WIRE_FORMAT_WIDE}) "
-            f"in /var/lib/jasper/fanin.env, then re-run the WHOLE three-step arm "
-            f"ladder in order: `sudo /opt/jasper/.venv/bin/jasper-active-speaker "
-            f"baseline-reemit --endpoint ring && sudo systemctl start "
-            f"jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
-            f"jasper-fanin-coupling-reconcile shm_ring`. The boot graph's own "
-            f"capture and playback formats are baked when it is EMITTED, so "
-            f"re-running the hardware reconciler alone leaves a stale narrow "
-            f"boot graph and the next arm refuses again. The gate fails "
-            f"closed: applied changes remain, never a "
-            f"fallback."
-        )
-    return True, (
-        f"composite sink declares the wide ring wire ({RING_WIRE_FORMAT_WIDE}), "
-        "so the arm does not narrow the per-driver program"
-    )
-
-
 def ring_roleful_unattended_ready() -> tuple[bool, str]:
     """Admit a candidate on the live declaration, or the all-muted startup anchor."""
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
@@ -1170,105 +1026,6 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         f"and the all-muted staged anchor ({anchor_detail}). Leaving the graph "
         "where it is; re-apply the speaker profile at /sound/speaker/, then run "
         "`jasper-fanin-coupling-reconcile shm_ring`."
-    )
-
-
-def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
-    """The shm_ring PREFLIGHT gate for topology eligibility.
-
-    TWO admitting arms, because there are two rings:
-
-    - **the STEREO arm** — Ring A/Ring B carry a full-range stereo program on a
-      single coherent ALSA sink, so this is legal only for an explicit valid
-      passive-stereo output contract. An unconfigured speaker stays silent. It
-      consults ``topology_supports_shm_ring``, the single stereo-ring-eligibility
-      predicate, so arming a non-eligible box refuses with a crisp reason here
-      instead of failing later at outputd's Rust full-range-stereo rejection (a
-      confusing daemon-level rollback);
-    - **the ACTIVE arm** — a ROLEFUL topology is admitted iff it resolves an
-      active-ring width AND :func:`active_ring_endpoint_proof` holds. A ROLEFUL
-      COMPOSITE resolves a width (4) and reaches this arm, so it carries one
-      extra condition the single-sink shapes do not:
-      :func:`composite_ring_wire_ready`, the wide-wire rule. Explicit-mono still
-      resolves no active width, and a PASSIVE composite is not roleful at all,
-      so both stay refused.
-
-    **Why an arm here and NOT a widening of ``topology_supports_shm_ring``.**
-    That predicate has two other consumers which would silently change meaning:
-    the unattended ``--auto`` pass would AUTO-ARM every roleful box with the
-    marker absent, so outputd would refuse the pairing and park the speaker, and
-    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
-    the boxes the widening would re-expose.
-
-    Unreadable-topology policy is caller-selectable:
-
-    - ``strict_unreadable=True``: fail-CLOSED, for a caller deciding whether to
-      MOVE a graph. An arm decision taken on an unreadable topology would
-      arm→rollback on every boot/deploy the file is transiently corrupt, and
-      outputd's own guard is not a sufficient backstop by itself — it fails open
-      on that same error (the topology read failure clears the active-lane
-      marker, so the stereo predicate then admits the ring).
-    - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
-      topology's OPINION rather than an arm decision.
-    """
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost
-        CONTRACT_UNCONFIGURED,
-        active_ring_channels_for_topology,
-        classify_output_contract,
-        topology_supports_shm_ring,
-    )
-    from jasper.output_topology import OutputTopologyError  # lazy: import cost
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
-
-    try:
-        topology = load_output_topology_strict()
-    except (OutputTopologyError, OSError, ValueError) as exc:
-        if strict_unreadable:
-            return False, (
-                f"topology unreadable ({exc}); fail-closed (applied changes "
-                "remain) rather than arm a ring it cannot prove is eligible"
-            )
-        return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
-    if topology_supports_shm_ring(topology):
-        return True, (
-            "topology is ring-eligible (declared passive full-range single sink)"
-        )
-    if classify_output_contract(topology).classification == CONTRACT_UNCONFIGURED:
-        return False, (
-            "no speaker layout is configured; save a passive stereo layout "
-            "before arming the full-range shm_ring coupling"
-        )
-    if active_ring_channels_for_topology(topology) is not None:
-        # Asked BEFORE the endpoint proof: it is a property of the box's own
-        # declaration rather than of what the reconciler has staged, so its
-        # remedy is actionable whether or not the endpoint is up.
-        wire_ok, wire_detail = composite_ring_wire_ready(topology)
-        if not wire_ok:
-            return False, wire_detail
-        proved, detail = active_ring_endpoint_proof()
-        if proved:
-            return True, f"topology is ACTIVE-ring eligible (roleful); {detail}"
-        return False, (
-            f"topology resolves an active-ring width, but the endpoint is not "
-            f"staged: {detail}"
-        )
-    # Neither ring fits: a roleful box reaching here resolved no ACTIVE-ring
-    # width (an explicit mono, or an indeterminate driven width), and a composite
-    # reaches here only when it is PASSIVE. These shapes PARK under their own
-    # name (ADR-0178, jasper.control.transport_eligibility) rather than falling back to
-    # a second coupling.
-    return False, (
-        "saved output topology is not ring-eligible (the STEREO shm_ring is a "
-        "full-range single-sink coupling; roleful/protected/subwoofer "
-        "topologies need a per-driver crossover it cannot carry — those ride "
-        "the ACTIVE ring instead, which this box did not qualify for either; a "
-        "PASSIVE composite dual-DAC is neither, so it has no ring at all; and "
-        "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
-        "This box parks under its own name (ADR-0178) rather than falling "
-        "back to a second coupling. If this box is actually a plain stereo "
-        "single-sink speaker carrying a stale roleful/subwoofer topology, run "
-        "`jasper-output-topology-reset` to clear it to an unconfigured state, "
-        "save an explicit passive stereo layout, then re-arm."
     )
 
 

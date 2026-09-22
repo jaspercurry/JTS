@@ -485,8 +485,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       :func:`~jasper.active_speaker.runtime_contract.ring_channels_for_topology`.
       A topology with no ring width (roleful, composite, explicit mono) falls
       back to the shipped stereo declaration, which is what that box's conf.d
-      says and what an open-probe of it must ask for. Whether such a box may ARM
-      is ``topology_supports_shm_ring``'s and the arm preflights' question.
+      says and what an open-probe of it must ask for.
     - ``period_frames`` — :data:`RING_SLOT_FRAMES`, fan-in's compile-time slot
       size.
     - ``ring_active_channels`` — from

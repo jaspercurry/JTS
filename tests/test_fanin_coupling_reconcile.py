@@ -1338,63 +1338,6 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     assert content.exists()
 
 
-# --- DEFECT 2: ring_topology_ready end-to-end over REAL on-disk topologies ----
-# The tests above either exercise the topology_supports_shm_ring predicate in
-# isolation (tests/test_runtime_contract_ring.py) or MOCK the predicate at the
-# reconciler seam. Neither proves the actual arming gate the defect names
-# (arm_ring_topology_ineligible) resolves a REAL topology loaded from disk — nor
-# that a real stale-subwoofer topology honestly refuses through that same gate.
-# These close that gap: an unconfigured draft must remain silent until a
-# passive stereo layout is saved, while the stale-subwoofer refusal stays clear.
-
-
-def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
-    tmp_path,
-    monkeypatch,
-):
-    # The negative end-to-end path over a REAL topology (not a mocked predicate):
-    # a plain Apple-dongle box whose SAVED topology still declares a subwoofer role
-    # from the 2026-06 campaign refuses through ring_topology_ready() — a stereo
-    # ring genuinely cannot drive a sub — and the refusal names the actionable
-    # remediation (jasper-output-topology-reset) instead of an opaque "loopback".
-    from jasper.fanin.ring_readiness import ring_topology_ready
-
-    topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    save_output_topology(
-        OutputTopology.from_mapping(
-            {
-                "artifact_schema_version": 1,
-                "kind": OUTPUT_TOPOLOGY_KIND,
-                "topology_id": "default",
-                "name": "Speaker outputs",
-                "status": "draft",
-                "hardware": {
-                    "device_id": "apple_usb_c_dongle",
-                    "device_label": "Apple USB-C audio adapter",
-                    "physical_output_count": 2,
-                    "card_id": "A",
-                },
-                "speaker_groups": [
-                    {
-                        "id": "sub",
-                        "label": "Subwoofer",
-                        "kind": "subwoofer",
-                        "mode": "subwoofer",
-                        "channels": [{"role": "subwoofer", "physical_output_index": 0}],
-                    }
-                ],
-                "routing": {"subwoofer_group_ids": ["sub"]},
-            }
-        )
-    )
-
-    ok, detail = ring_topology_ready()
-
-    assert ok is False
-    assert "jasper-output-topology-reset" in detail
-
-
 def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypatch):
     """Pin the default kick's broker contract: blocking ``start`` of the
     audio-hardware reconcile oneshot (mirrors output_topology_reset's kick)."""

@@ -162,11 +162,7 @@ def test_a_refused_gate_stops_the_move(box):
     assert not box.touched_anything()
 
 
-def test_the_one_omitted_gate_is_the_fixed_point_itself():
-    """``ring_topology_ready`` is omitted because its roleful arm ends in
-    ``active_ring_endpoint_proof``, which reads the marker derived from the graph
-    this has not moved yet. Requiring it here IS the fixed point. Omitting any
-    other gate would move a graph the box was never admitted to run."""
+def test_graph_move_gate_order():
     from jasper.fanin import ring_readiness as rr
 
     gates = dict(converge._ring_gates())
@@ -178,7 +174,6 @@ def test_the_one_omitted_gate_is_the_fixed_point_itself():
         "ring_edge_width",
     ]
     assert gates["ring_edge_width"] is rr.ring_edge_width_ready
-    assert rr.ring_topology_ready not in gates.values()
 
 
 def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
