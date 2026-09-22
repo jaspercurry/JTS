@@ -35,14 +35,6 @@ from ._shared import (
 )
 from ...service_units import JASPER_VOICE_SERVICE
 
-# Closed vocabulary for this module's `CheckResult.reason`: one snake_case
-# constant per distinct outcome branch below. Every `warn`/`fail` carries one;
-# an `ok` carries one only where the ok itself is a fact a consumer branches on
-# (not-applicable, skipped, an informational sub-state). `detail` stays the
-# human sentence and is free to reword; tests pin `status` and `reason`
-# (ADR-0233 rule 3).
-
-
 REASON_ALSA_TOOL_MISSING = "alsa_tool_missing"
 REASON_ALSA_CARD_ABSENT = "alsa_card_absent"
 

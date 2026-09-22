@@ -13,11 +13,6 @@ from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
-# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
-# pin status + reason, never `detail` prose). Named by the fact a consumer
-# would branch on, not by which code path produced it — an absent env file
-# and an explicit `JASPER_PEERING=off` are the same fact (peering is off) and
-# share one code.
 REASON_PEERING_OFF = "peering_off"
 REASON_PEERING_ON = "peering_on"
 REASON_PEERING_ENV_UNREADABLE = "peering_env_unreadable"

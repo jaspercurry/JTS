@@ -166,7 +166,7 @@ fn main() -> Result<()> {
 /// it is retrying against.
 ///
 /// `lane` names WHICH ring, since a box can carry more than one: `shm_ring` for
-/// the central content hop, `dac_content` for a leader's return lane. The
+/// the central content hop, `dac_content` for an armed member's return lane. The
 /// central hop's event strings are unchanged by it. `EBUSY` — the SPSC guard
 /// refusing a ring a live foreign reader still owns — lands in the restart arm
 /// by this same kind split, which is right: the incumbent may exit.
@@ -462,11 +462,8 @@ fn run_alsa(
         state.mark_shm_ring(src.metrics());
         state.mark_shm_ring_wire(src.wire_format(), src.channels());
     }
-    // The multi-room round-trip lane: on a grouping LEADER the DAC is fed from
-    // the bond's shared program coming back out of the sync engine, so the
-    // leader is sample-locked with its members. An armed lane IS the content
-    // source — it never falls back, and a period it cannot fill is silence
-    // (D4). Unarmed (solo) leaves this loop byte-identical to before.
+    // An armed bonded member returns through the sync engine (ADR-0220).
+    // An armed lane is the sole content source; starvation emits silence.
     let dac_content = match config.dac_content_ring.as_deref() {
         Some(path) => {
             eprintln!(
