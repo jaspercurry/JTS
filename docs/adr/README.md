@@ -310,3 +310,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
 | [0333](0333-live-followup-counts-from-audible-playout.md) | Live follow-up counts from audible playout | accepted |
 | [0335](0335-dynamic-bass-reduction-is-common-across-the-cardioid-pair.md) | Dynamic-bass reduction is common across a cardioid pair: one detector on the front lane, one gain on both lanes | accepted |
+| [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | accepted |

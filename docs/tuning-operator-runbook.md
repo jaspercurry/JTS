@@ -18,6 +18,8 @@ With a current-identity round, all applicable layers applied, and none stale,
 
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
 Re-run room after any upstream change, even when round history is unavailable.
+The rear program's hand loop of record is the [Seat trial](tuning-playbook.md#seat):
+preview from the pair at the mark, compare at the seats, then fit room from the chosen set.
 
 1. Run `jasper-round run --program <speaker|rear|bass|room>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves. See the playbook's Document section. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With the arm, run `sudo -n /opt/jasper/.venv/bin/jasper-round run --mover arm --attest-rig-clear --wait`; add the plan flags from step 1. The flag is the person’s statement that the full sweep path is clear. `jasper-round run --mover arm --attest-rig-clear --wait` owns the arm, and the retired `jasper-angle-capture serve` stays only until that path is proven on hardware and is then deleted (the menu row survives until the hardware proof on jts3 lands; do not use it beside a waited arm round). Never start `serve` next to a waited arm round: two walkers would drive one arm. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement. A layout can pin its mover (for example, `rear/pair_behind` pins `human`); another `--mover` is refused with `walk_mover_mismatch`. End a run nobody joins with `jasper-round stop --run <id>`.
@@ -38,9 +40,9 @@ All measurement programs refuse before sound with `walk_layout_unsupported_for_p
 
 `jasper-round run --program rear --dry-run` shows the rear measurement plan without sound.
 
-Run `jasper-round run --program rear` for the declared rear woofer. Use `rear/pair_mark` for a one-placement pair take; every hand trial of a rear document runs at the three seats as `rear/seat`, while the arm uses `rear_express`. Follow the [playbook’s Rear recipe](tuning-playbook.md#rear) to compose and trial candidates and read the packet.
-
-A `rear/seat` trial banks one room document per candidate set; compose the room fit from the chosen candidate's set with `--set`.
+`rear/pair_mark` banks the pair model at the mark. Hand trials of rear documents
+bank `rear/seat` with a room view per candidate set; the arm uses `rear_express`.
+The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 
 ## Bass
 
