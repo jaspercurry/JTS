@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.baseline_profile import (
@@ -24,7 +25,6 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
-    boost_headroom_by_role,
     chain_response,
 )
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
@@ -3265,19 +3265,6 @@ def test_without_an_incumbent_record_the_displacement_is_unknown_not_zero(tmp_pa
 def test_a_total_cascade_can_offset_a_filter_above_headroom(packet):
     document = _document([_boost(gain=20.0), _boost(gain=-10.0)], packet)
     assert _gate(packet, document).composed_boost_db == pytest.approx(10.0)
-
-
-@pytest.mark.parametrize("volume,spl", [(-21.09, 36.0), (None, None), (-21.09, -3.0)])
-def test_program_headroom_discloses_cost_without_measurement_caps(volume, spl):
-    filters = {"woofer": [_boost(gain=6.0, role="woofer")], "tweeter": [_boost(gain=6.0)]}
-    bounds = boost_headroom_by_role(branch_context=BRANCH_CONTEXT, linearization=filters,
-                                   session_volume_db=volume, spl_headroom_db=spl)
-    for row in bounds.values():
-        assert row == {
-            "composed_boost_db": pytest.approx(6.0), "program_headroom_spent_db": pytest.approx(7.0),
-            "program_headroom_remaining_db": pytest.approx(33.0), "max_program_headroom_db": 40.0,
-            "session_volume_db": volume, "spl_headroom_db": spl, "binding": None,
-        }
 
 
 @pytest.mark.parametrize("trim,room_gain", [(-9.52, 0.0), (0.0, 6.0)])

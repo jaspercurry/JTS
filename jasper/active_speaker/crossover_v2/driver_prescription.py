@@ -30,12 +30,12 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     CrossoverSection,
-    boost_headroom_by_role,
     branch_chain_peak_db,
     _evaluation_grid,
     chain_response,
 )
 from jasper.active_speaker.camilla_yaml import (
+    boost_headroom_by_role,
     LINEARIZATION_BIQUAD_TYPES,
     MAX_PROGRAM_HEADROOM_DB,
     linearization_slot,

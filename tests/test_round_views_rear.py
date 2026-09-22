@@ -27,7 +27,7 @@ import pytest
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
-from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
+from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection

@@ -32,9 +32,8 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from jasper.active_speaker.branch_chain import (
-    camilla_filter_response, rear_stage_chain_response, rear_stage_response,
+    camilla_filter_response, rear_branch_sum_headroom_db, rear_stage_chain_response, rear_stage_response,
 )
-from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.rear_calibration import (
     KIND,
     MAX_ALLPASS_Q,

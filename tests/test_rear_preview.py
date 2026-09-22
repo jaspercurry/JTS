@@ -11,8 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
+from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
 from jasper.active_speaker.crossover_v2 import rear_preview
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
 from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document
