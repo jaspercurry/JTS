@@ -46,7 +46,8 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, LEVEL_BANDS_HZ,
+    ARRIVAL_GAP_BAND_HZ, BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP,
+    POLARITY_INVERTED, LEVEL_BANDS_HZ,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
 from jasper.cli import round_views
@@ -836,23 +837,37 @@ def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incu
     assert packet["rear"] == []
 
 
-@pytest.mark.parametrize("swept_hz", [(20.0, 21.0), (20.0, 100.0)])
-def test_a_pair_take_too_narrow_to_read_discloses_it_rather_than_reading_clean(
-    tmp_path, banked_candidates, swept_hz,
+@pytest.mark.parametrize("applied,swept_hz,expected_band,reason", [
+    (False, SEAT_BAND_HZ, list(ARRIVAL_GAP_BAND_HZ), ""),
+    (False, (20.0, 100.0), None, REASON_COVERAGE_SHORT),
+    (True, SEAT_BAND_HZ, _CANCELLATION_BAND_HZ, ""),
+    (True, (60.0, 280.0), [60.0, 280.0], ""),
+    (True, (150.0, 500.0), None, REASON_COVERAGE_SHORT),
+    (True, (20.0, 21.0), None, REASON_COVERAGE_SHORT),
+    (True, (20.0, 100.0), None, REASON_COVERAGE_SHORT),
+])
+def test_pair_arrival_gap_uses_the_applied_band_or_default_and_refuses_short_coverage(
+    tmp_path, banked_candidates, applied, swept_hz, expected_band, reason,
 ):
     root = pair_round(tmp_path, swept_hz=swept_hz)
+    _round_environment(root, applied=_rear_document() if applied else {})
 
     entry, = packet_of(root)[0]["rear"]
     row = entry["pair"]["positions"][min(entry["comparison"]["positions"])]
+    gap = row["arrival_gap"]
 
+    assert gap["arrival_gap_band_source"] == ("rear_document" if applied else "default")
+    assert (gap["band_hz"], gap["reason"]) == (expected_band, reason)
+    if reason:
+        assert (gap["ms"], gap["search_ms"]) == (None, None)
+        assert entry["stage"]["gradient_residual_db"] is None
+    else:
+        assert gap["ms"] == pytest.approx(_PAIR_GAP_MS, abs=0.05)
     if swept_hz[1] == 21.0:
         assert (row["bands"], row["band_hz"]) == ([], None)
         assert row["superposition_residual_db"] is None
         assert row["reason"] == REASON_COVERAGE_SHORT
         assert entry["comparison"]["band_reason"] == REASON_COVERAGE_SHORT
-    assert row["arrival_gap"]["reason"] == REASON_COVERAGE_SHORT
-    assert (row["arrival_gap"]["ms"], row["arrival_gap"]["search_ms"]) == (None, None)
-    assert entry["stage"]["gradient_residual_db"] is None
 
 
 @pytest.mark.parametrize("program", ["room", "bass"])

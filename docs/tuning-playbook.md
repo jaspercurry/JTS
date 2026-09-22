@@ -268,8 +268,10 @@ The loop of record is one pair take, previews, one trial.
    alone and both, on one clock, with the rear stage cleared. Read its
    `packet["rear"][].pair.positions[*]`: `superposition_residual_db` (the
    trust number),
-   `arrival_gap` (rear-minus-front gap in 90–315 Hz, clipped to sweep coverage,
-   with confidence and search half-width `search_ms`) and
+   `arrival_gap` (rear-minus-front gap in the applied rear document's band,
+   or 90–315 Hz by default, clipped to sweep coverage; `band_hz` and
+   `arrival_gap_band_source` name the band and source (`rear_document` or `default`),
+   with confidence and `search_ms`) and
    `rear_polarity`. This round is the model; everything after it is
    computation until the trial.
 

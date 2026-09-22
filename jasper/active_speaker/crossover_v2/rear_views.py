@@ -468,6 +468,8 @@ def _pair_segments(
 
 def _pair_position(
     records: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], *, ceiling_hz: float,
+    arrival_gap_band_hz: Sequence[float] = ARRIVAL_GAP_BAND_HZ,
+    arrival_gap_band_source: str = "default",
 ) -> tuple[dict[str, Any], np.ndarray] | None:
     """One microphone position's pair evidence, and the grid it was read on.
 
@@ -494,9 +496,10 @@ def _pair_position(
     rate = takes[0].sample_rate_hz if takes else 0
     gap = arrival_gap_ms(
         repeats if rate else (), sample_rate_hz=int(rate or 0),
-        band_hz=(max(ARRIVAL_GAP_BAND_HZ[0], swept_hz[0]),
-                 min(ARRIVAL_GAP_BAND_HZ[1], swept_hz[1])),
+        band_hz=(max(arrival_gap_band_hz[0], swept_hz[0]),
+                 min(arrival_gap_band_hz[1], swept_hz[1])),
     )
+    gap["arrival_gap_band_source"] = arrival_gap_band_source
     # The trust number has its own band gate, so a row whose residual is absent
     # is not a clean read however many bands the levels answered.
     residual = superposition_residual_db(grid, front_tf=front, rear_tf=rear, pair_tf=summed,
@@ -557,20 +560,23 @@ def _pair_document(
             "takes": len(every),
         })
     ceiling = room_ceiling(inputs.session_dir)
+    profile, _profile_reason = applied_profile_source(inputs.applied_profile_path)
+    section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
+    stage = rear_operating_facts(section)
     positions: dict[str, Any] = {}
     unscored: dict[str, str] = {}
     grids: list[np.ndarray] = []
     for key, rows in sorted(records.items()):
         found = _pair_position(sorted(rows, key=lambda record: str(record.get("take_id") or "")),
-                               manifest, ceiling_hz=ceiling.ceiling_hz)
+                               manifest, ceiling_hz=ceiling.ceiling_hz,
+                               arrival_gap_band_hz=stage["band_hz"] or ARRIVAL_GAP_BAND_HZ,
+                               arrival_gap_band_source="rear_document" if stage["band_hz"] else "default")
         if found is None:
             unscored[key] = REASON_SEGMENT_MISSING
             continue
         positions[key], grid = found
         grids.append(grid)
 
-    profile, _profile_reason = applied_profile_source(inputs.applied_profile_path)
-    section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
     band_hz = _shared([row["band_hz"] for row in positions.values()])
     coverage_hz = _shared([row["coverage_hz"] for row in positions.values()])
     # One document-level figure, so it reads the MEDIAN of the BEARING
@@ -607,7 +613,7 @@ def _pair_document(
         "pair": {"candidate_id": candidate, "source": _composed_source(inputs, candidate),
                  "positions": positions},
         "stage": {
-            **rear_operating_facts(section),
+            **stage,
             "gradient_residual_db": None if ratio is None else gradient_residual_db(
                 grids[0], ratio, float(np.median(held)) if held else None, band_hz),
         },
