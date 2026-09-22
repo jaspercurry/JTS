@@ -778,7 +778,10 @@ def test_streambox_install_and_runtime_cover_the_accessory_bridge():
     runtime = _installer_function_body("start_streambox_runtime_units")
     assert "jasper-input.service" in runtime
     assert "jasper-accessory-reconcile --reason install" in runtime
-    assert "systemctl enable --now jasper-accessory-reconcile.path" in runtime
+    assert "_start_core_graph_units" in runtime
+    assert "systemctl enable --now jasper-accessory-reconcile.path" in (
+        _installer_function_body("_start_core_graph_units")
+    )
 
 
 def test_streambox_keeps_coupling_auto_for_usb_direct_capture():

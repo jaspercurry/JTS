@@ -15,8 +15,10 @@ path as a STATIC bearer in the ``X-JTS-Household`` header. Distinct file,
 distinct header, distinct trust domain (peer identity, not page origin) — the
 two never blur.
 
-This is a near-line-for-line clone of ``control_token.py`` (the smallest design
-that fits the system), with four deliberate differences:
+The read/write/verify mechanics are shared with
+:mod:`jasper.control.control_token` via :mod:`jasper.control._secret_file`
+(the smallest design that fits the system); this module keeps its own path,
+env override and the four deliberate differences:
 
 - **Header / file / env are distinct**: ``X-JTS-Household`` vs ``X-JTS-Token``;
   ``/var/lib/jasper/household_secret`` vs ``…/control_token``;
@@ -31,7 +33,7 @@ that fits the system), with four deliberate differences:
   calls verify against it. It refuses to OVERWRITE an existing secret.
 - **:func:`clear` (new): drop on unbond** so a speaker can later re-pair.
 
-Design invariants (shared with ``control_token``):
+Design invariants (shared with ``control_token`` via ``_secret_file``):
 
 - **Constant-time compare.** :func:`verify` uses :func:`hmac.compare_digest`,
   never ``==`` — equality would leak the secret's length/prefix via timing.
@@ -51,11 +53,9 @@ Design invariants (shared with ``control_token``):
 """
 from __future__ import annotations
 
-import hmac
 import os
-import secrets
 
-from jasper.atomic_io import atomic_write_text
+from jasper.control import _secret_file
 
 # The household-secret file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
@@ -80,26 +80,12 @@ SECRET_FILE = os.environ.get(
 )
 
 
-def _stored_secret() -> str:
-    """The stripped household secret on disk, or "" when absent/empty/unreadable.
-
-    Any read error (missing file, permission denied, a directory in its place)
-    resolves to "" — i.e. "not yet paired", never a raise: a grouping request
-    must not 500 because the secret file couldn't be read.
-    """
-    try:
-        with open(SECRET_FILE, encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
-
-
 def is_paired() -> bool:
     """True iff a non-empty household secret exists (this speaker is bonded).
 
     An absent or empty file means "not yet paired."
     """
-    return bool(_stored_secret())
+    return _secret_file.is_set(SECRET_FILE)
 
 
 def current() -> str:
@@ -110,7 +96,7 @@ def current() -> str:
     read path as :func:`verify`, so the presented value and the verified value
     never disagree.
     """
-    return _stored_secret()
+    return _secret_file.read(SECRET_FILE)
 
 
 def ensure() -> str:
@@ -122,12 +108,7 @@ def ensure() -> str:
     SECRET_FILE note): an existing secret is returned unchanged, so re-bonding
     the same household reuses it.
     """
-    existing = _stored_secret()
-    if existing:
-        return existing
-    secret = secrets.token_urlsafe(32)
-    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o640)
-    return secret
+    return _secret_file.ensure(SECRET_FILE)
 
 
 def adopt(secret: str | None) -> bool:
@@ -145,14 +126,7 @@ def adopt(secret: str | None) -> bool:
     empty/None value is a no-op. To re-key, the household unbonds (which
     :func:`clear`s) then re-bonds.
     """
-    if not secret:
-        return False
-    if _stored_secret():
-        return False
-    # 0640 group jasper (see the SECRET_FILE note): a follower's jasper-control
-    # writes it here, the leader's jasper-web reads it on a later re-bond.
-    atomic_write_text(SECRET_FILE, secret + "\n", mode=0o640)
-    return True
+    return _secret_file.adopt(SECRET_FILE, secret)
 
 
 def clear() -> None:
@@ -165,10 +139,7 @@ def clear() -> None:
     household reuses it). After clearing, :func:`verify` returns to fail-safe
     accept, so the speaker can be re-bonded over the trusted LAN.
     """
-    try:
-        os.unlink(SECRET_FILE)
-    except OSError:
-        pass
+    _secret_file.clear(SECRET_FILE)
 
 
 def verify(provided: str | None) -> bool:
@@ -190,7 +161,4 @@ def verify(provided: str | None) -> bool:
     already has). Pinned by tests so a refactor can't flip it to fail-closed and
     brick re-bonding.
     """
-    stored = _stored_secret()
-    if not stored:
-        return True
-    return hmac.compare_digest(provided or "", stored)
+    return _secret_file.verify(SECRET_FILE, provided)

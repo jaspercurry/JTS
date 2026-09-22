@@ -64,7 +64,10 @@ if ! [[ "$NEW_BASE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
 fi
 
 SSH_TARGET="${PI_USER}@${PI_HOST}"
-SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
+# ConnectTimeout=8 (default 5 elsewhere): also probes NEW_TARGET, a not-yet-
+# claimed mDNS name whose resolution can take longer to fail than an
+# established host's.
+SSH_OPTS=("${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=8)
 
 remote() {
     ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"

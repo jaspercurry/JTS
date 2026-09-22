@@ -85,19 +85,23 @@ import os
 import signal
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
 from .airplay_session import AirplaySessionCleanup
-from .assistant_volume import volume_context_publisher_for_runtime
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
 from .control.volume_ops import _make_duck_active_probe
 from .identity.speaker_name import runtime_name as speaker_runtime_name
-from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
+from .music_sources import (
+    MUSIC_SOURCE_VALUES,
+    MUSIC_SOURCES,
+    SOURCE_TO_FANIN_LABEL,
+    Source,
+)
 from .platform import wire
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .platform.uds import fanin_command, local_status_json
@@ -111,11 +115,7 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
-from .volume_coordinator import VolumeCoordinator
-from .volume_persistence import (
-    VolumePersistence,
-    configured_path as volume_state_path,
-)
+from .volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -175,6 +175,67 @@ def event_backed_probes() -> dict[Source, Callable[[], Any]]:
         Source.AIRPLAY: airplay_playing,
         Source.BLUETOOTH: bluetooth_playing,
     }
+
+
+# A verb's argument shape: this many whitespace tokens, or REST for
+# "everything after the first space, as one argument" — which keeps an
+# unrecognized source word whole, echoed back as the client spelled it.
+_CONTROL_REST = -1
+
+
+class _ControlVerb(NamedTuple):
+    arity: int
+    # Resolved on the Mux instance, so a replaced method still serves the verb.
+    method: str
+    # Reply when the line does not fit `arity`; None answers "unknown command",
+    # which is what a verb with no argument-count complaint has always said.
+    bad_arity: str | None
+
+
+# The control socket's vocabulary, one entry per verb; the clients that send
+# them spell the words in jasper/platform/wire.py. Spelled as literals here
+# because tests/test_platform_wire.py greps this file for each verb it emits.
+_CONTROL_VERBS: dict[str, _ControlVerb] = {
+    "STATUS": _ControlVerb(0, "_control_status", None),
+    "AUTO": _ControlVerb(0, "auto_select", None),
+    "NOTIFY": _ControlVerb(_CONTROL_REST, "_control_notify", None),
+    "PREEMPT": _ControlVerb(_CONTROL_REST, "_control_preempt", None),
+    "SELECT": _ControlVerb(_CONTROL_REST, "_control_select", None),
+    "TEST_SELECT": _ControlVerb(
+        2, "select_test_fanin_label", "TEST_SELECT requires a label and owner",
+    ),
+    "TEST_RELEASE": _ControlVerb(
+        1, "release_test_fanin_label", "TEST_RELEASE requires an owner",
+    ),
+}
+
+
+def _control_args(command: str, arity: int) -> list[str] | None:
+    """The arguments one control line gives its verb, or None when the line
+    does not fit the verb's shape."""
+    parts = command.split(None, 1)
+    rest = parts[1] if len(parts) == 2 else ""
+    if arity == _CONTROL_REST:
+        return [rest.strip()] if len(parts) == 2 else None
+    args = rest.split()
+    return args if len(args) == arity else None
+
+
+def _music_source(name: str) -> Source | None:
+    """The music source a control argument names, or None for a word that
+    names none (unknown, or a Source carrying no music such as idle)."""
+    return Source(name) if name in MUSIC_SOURCE_VALUES else None
+
+
+_SOURCE_NAMES = frozenset(source.value for source in Source)
+
+
+def _source_error(name: str, rejected: str) -> dict[str, str]:
+    """Why a source word was refused: unknown to the enum, or a known source
+    the verb does not serve."""
+    if name not in _SOURCE_NAMES:
+        return {"error": f"unknown source {name!r}"}
+    return {"error": f"{rejected} {name!r}"}
 
 
 @dataclass
@@ -1037,27 +1098,17 @@ class Mux:
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
-        camilla = primary_controller()
-        persistence = VolumePersistence(volume_state_path())
-        backend = RendererClient(librespot_state_path=self._librespot_state_path)
-        coordinator = VolumeCoordinator(
-            camilla=camilla,
-            persistence=persistence,
-            backend=backend,
+        self._volume_coordinator = build_volume_coordinator(
+            camilla=primary_controller(),
+            backend=RendererClient(librespot_state_path=self._librespot_state_path),
             spotify_router=self._ensure_spotify_router(),
-            spotify_device_name=speaker_runtime_name(),
             duck_active_probe=_make_duck_active_probe(
                 os.environ.get(
                     "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
                 ),
             ),
-            volume_context_publisher=volume_context_publisher_for_runtime(
-                os.environ,
-            ),
         )
-        coordinator.load_persisted_level()
-        self._volume_coordinator = coordinator
-        return coordinator
+        return self._volume_coordinator
 
     async def _transition_to_source_locked(
         self,
@@ -1357,6 +1408,35 @@ class Mux:
         except Exception as e:  # noqa: BLE001
             logger.warning("mux control socket unavailable: %s", e)
 
+    async def _control_status(self) -> dict[str, Any]:
+        return self._status_payload()
+
+    async def _control_notify(self, source_name: str) -> dict[str, Any]:
+        source = _music_source(source_name)
+        if source is None:
+            return _source_error(source_name, "not a music source")
+        self.notify_source_changed(source, "uds")
+        return {
+            "accepted": True,
+            "source": source.value,
+            "policy_applied": False,
+        }
+
+    async def _control_preempt(self, source_name: str) -> dict[str, Any]:
+        """AirPlay only: its escalation is bounded by two 2 s busctl calls,
+        which a client can wait out. Spotify's tier-2 `try-restart` is an 8 s
+        worst case no socket client can, and nothing calls the other lanes."""
+        if source_name != Source.AIRPLAY.value:
+            return {"error": f"not a preemptable source {source_name!r}"}
+        await self._pause(Source.AIRPLAY)
+        return {"preempted": Source.AIRPLAY.value}
+
+    async def _control_select(self, source_name: str) -> dict[str, Any]:
+        source = _music_source(source_name)
+        if source is None:
+            return _source_error(source_name, "not a selectable source")
+        return await self.select_source(source)
+
     async def _handle_control_client(
         self,
         reader: asyncio.StreamReader,
@@ -1365,72 +1445,12 @@ class Mux:
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
             command = raw.decode("utf-8", "replace").strip()
-            if command == "STATUS":
-                payload = self._status_payload()
-            elif command.startswith("NOTIFY "):
-                source_name = command.split(" ", 1)[1].strip()
-                try:
-                    source = Source(source_name)
-                except ValueError:
-                    payload = {"error": f"unknown source {source_name!r}"}
-                else:
-                    if source not in MUSIC_SOURCES:
-                        payload = {
-                            "error": f"not a music source {source_name!r}",
-                        }
-                    else:
-                        self.notify_source_changed(source, "uds")
-                        payload = {
-                            "accepted": True,
-                            "source": source.value,
-                            "policy_applied": False,
-                        }
-            elif command == "AUTO":
-                payload = await self.auto_select()
-            elif command.startswith("PREEMPT "):
-                # AirPlay only: its escalation is bounded by two 2 s busctl
-                # calls, which a client can wait out. Spotify's tier-2
-                # `try-restart` is an 8 s worst case no socket client can, and
-                # nothing calls the other lanes.
-                source_name = command.split(" ", 1)[1].strip()
-                if source_name != Source.AIRPLAY.value:
-                    payload = {
-                        "error": f"not a preemptable source {source_name!r}",
-                    }
-                else:
-                    await self._pause(Source.AIRPLAY)
-                    payload = {"preempted": Source.AIRPLAY.value}
-            elif command.startswith("TEST_SELECT "):
-                parts = command.split()
-                if len(parts) != 3:
-                    payload = {
-                        "error": "TEST_SELECT requires a label and owner",
-                    }
-                else:
-                    payload = await self.select_test_fanin_label(
-                        parts[1], parts[2],
-                    )
-            elif command.startswith("TEST_RELEASE"):
-                parts = command.split()
-                if len(parts) != 2:
-                    payload = {"error": "TEST_RELEASE requires an owner"}
-                else:
-                    payload = await self.release_test_fanin_label(parts[1])
-            elif command.startswith("SELECT "):
-                source_name = command.split(" ", 1)[1].strip()
-                try:
-                    source = Source(source_name)
-                except ValueError:
-                    payload = {"error": f"unknown source {source_name!r}"}
-                else:
-                    if source not in MUSIC_SOURCES:
-                        payload = {
-                            "error": (
-                                f"not a selectable source {source_name!r}"
-                            ),
-                        }
-                    else:
-                        payload = await self.select_source(source)
+            verb = _CONTROL_VERBS.get(command.split(None, 1)[0] if command.strip() else "")
+            args = None if verb is None else _control_args(command, verb.arity)
+            if args is not None:
+                payload = await getattr(self, verb.method)(*args)
+            elif verb is not None and verb.bad_arity is not None:
+                payload = {"error": verb.bad_arity}
             else:
                 payload = {"error": f"unknown command {command!r}"}
             writer.write((json.dumps(payload) + "\n").encode("utf-8"))

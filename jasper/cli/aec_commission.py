@@ -77,6 +77,7 @@ from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.logging_setup import configure_logging
 from jasper.service_units import OUTPUTD_SERVICE, JASPER_VOICE_SERVICE
+from jasper import systemd_probe
 
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")
@@ -99,6 +100,11 @@ REJECTED_CAPTURE_GLOBS = ("*-m*-*.wav", "aec-o*.wav", WARMUP_CAPTURE_NAME)
 # arm-only dispatch while this process's marker is live; every other reason
 # under a live marker is a mutate-nothing no-op there.
 ARM_RECONCILE_REASON = "chip-aec-commission-arm"
+# The reconciler is a Type=oneshot: anything but a live run means the
+# commissioner may read env.  An unresolved probe reads as idle, same as the
+# "unknown" word this set already accepted.
+_RECONCILER_IDLE_STATES = frozenset({"inactive", "failed", systemd_probe.UNKNOWN})
+_RECONCILER_PROBE_TIMEOUT_SEC = 5.0
 _CLEANUP_RECONCILE_REASON = "chip-aec-commission"
 # This run's identity on mux's diagnostic gate; mux.FANIN_TEST_OWNERS is a
 # closed allowlist, so the two literals must stay in step.
@@ -641,13 +647,12 @@ class SystemIO:
 
     def wait_reconciler_idle(self) -> None:
         deadline = time.monotonic() + 30
+        unit = "jasper-aec-reconcile.service"
         while time.monotonic() < deadline:
-            result = subprocess.run(
-                ["systemctl", "is-active", "jasper-aec-reconcile.service"],
-                capture_output=True,
-                text=True,
-            )
-            if result.stdout.strip() in {"inactive", "failed", "unknown"}:
+            state = systemd_probe.unit_states(
+                [unit], timeout=_RECONCILER_PROBE_TIMEOUT_SEC,
+            )[unit]
+            if state in _RECONCILER_IDLE_STATES:
                 self.env = merged_env_files()
                 return
             time.sleep(0.2)
@@ -779,7 +784,7 @@ class SystemIO:
         # that makes "no capture plays over the household" true per capture
         # rather than per phase.
         lease.check()
-        recorder = subprocess.Popen(
+        recorder = subprocess.Popen(  # unbounded: bounded below by recorder.wait(timeout=5) + finally terminate()
             [
                 "arecord", "-q", "-D", f"hw:CARD={hardware.card},DEV=0",
                 "-d", str(CAPTURE_SECONDS), "-f", "S16_LE", "-r", "16000",

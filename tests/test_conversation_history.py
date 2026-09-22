@@ -124,7 +124,10 @@ def test_store_chmod_is_quiet_when_foreign_owner_file_is_group_writable(
 
     history_module._chmod_store(str(db_path))
 
-    assert "conversation history store chmod failed" not in caplog.text
+    assert not any(
+        "conversation history store chmod failed" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_recent_orders_newest_first_with_limit_and_since_filter(tmp_path):
@@ -205,7 +208,7 @@ def test_read_only_store_can_suppress_query_warnings(tmp_path, caplog):
     finally:
         reader.close()
 
-    assert caplog.text == ""
+    assert caplog.records == []
 
 
 def test_read_settings_merges_process_env_and_fresh_wizard_file(tmp_path):
@@ -270,12 +273,22 @@ def test_read_settings_uses_code_defaults_when_retention_env_absent(tmp_path):
     assert settings.retention == {"days": 30, "max_rows": 500}
 
 
-def test_read_settings_explicit_zero_disables_retention(tmp_path):
+@pytest.mark.parametrize(
+    ("days_value", "max_rows_value", "expected"),
+    [
+        pytest.param("0", "0", {"days": None, "max_rows": None}, id="explicit_zero_disables"),
+        pytest.param("", "", {"days": None, "max_rows": None}, id="blank_disables"),
+        pytest.param("7", "42", {"days": 7, "max_rows": 42}, id="explicit_values_override"),
+    ],
+)
+def test_read_settings_retention_env_values(
+    tmp_path, days_value, max_rows_value, expected
+):
     settings_file = tmp_path / "conversation_history.env"
     settings_file.write_text(
         "\n".join([
-            f"{RETENTION_DAYS_ENV}=0",
-            f"{RETENTION_MAX_ROWS_ENV}=0",
+            f"{RETENTION_DAYS_ENV}={days_value}",
+            f"{RETENTION_MAX_ROWS_ENV}={max_rows_value}",
         ])
         + "\n",
         encoding="utf-8",
@@ -283,39 +296,7 @@ def test_read_settings_explicit_zero_disables_retention(tmp_path):
 
     settings = read_settings(path=str(settings_file), environ={})
 
-    assert settings.retention == {"days": None, "max_rows": None}
-
-
-def test_read_settings_blank_disables_retention(tmp_path):
-    settings_file = tmp_path / "conversation_history.env"
-    settings_file.write_text(
-        "\n".join([
-            f"{RETENTION_DAYS_ENV}=",
-            f"{RETENTION_MAX_ROWS_ENV}=",
-        ])
-        + "\n",
-        encoding="utf-8",
-    )
-
-    settings = read_settings(path=str(settings_file), environ={})
-
-    assert settings.retention == {"days": None, "max_rows": None}
-
-
-def test_read_settings_explicit_values_override_defaults(tmp_path):
-    settings_file = tmp_path / "conversation_history.env"
-    settings_file.write_text(
-        "\n".join([
-            f"{RETENTION_DAYS_ENV}=7",
-            f"{RETENTION_MAX_ROWS_ENV}=42",
-        ])
-        + "\n",
-        encoding="utf-8",
-    )
-
-    settings = read_settings(path=str(settings_file), environ={})
-
-    assert settings.retention == {"days": 7, "max_rows": 42}
+    assert settings.retention == expected
 
 
 def test_prune_for_settings_bounds_store_with_absent_retention_env(tmp_path):

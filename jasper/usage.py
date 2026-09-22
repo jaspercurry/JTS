@@ -380,7 +380,6 @@ class WriteHealth:
     /state.voice.usage_tracking_degraded — see ``UsageStore.write_degraded``."""
     consecutive_failures: int = 0
     last_error: str | None = None
-    last_failure_at: str | None = None
 
 
 class UsageStore:
@@ -566,7 +565,6 @@ class UsageStore:
         self._write_health = WriteHealth(
             consecutive_failures=self._write_health.consecutive_failures + 1,
             last_error=f"{type(exc).__name__}: {exc}",
-            last_failure_at=datetime.now(timezone.utc).isoformat(),
         )
         if first:
             log_event(

@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_VOLUME_FLOOR_DB",
     "HEADROOM_TRIM_MAX_DB",
-    "SETTINGS_PATH",
     "SoundSettings",
     "VOLUME_FLOOR_MAX_DB",
     "VOLUME_FLOOR_MIN_DB",

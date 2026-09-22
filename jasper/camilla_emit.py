@@ -140,17 +140,6 @@ BASS_MANAGEMENT_CORNER_HZ_LO = 40.0
 BASS_MANAGEMENT_CORNER_HZ_HI = 200.0
 BASS_MANAGEMENT_CROSSOVER_ORDER = 4
 
-# Bass-extension's sealed-box Linkwitz Transform and its protective subsonic
-# high-pass are deliberately bounded by the same measured plant domain Wave 1
-# accepts.  Keep these in the format leaf so the emitter and independent graph
-# verifier cannot drift onto different numeric domains.
-BASS_EXTENSION_FREQ_HZ_LO = 15.0
-BASS_EXTENSION_FREQ_HZ_HI = 200.0
-BASS_EXTENSION_Q_LO = 0.3
-BASS_EXTENSION_Q_HI = 1.2
-BASS_EXTENSION_SUBSONIC_ORDERS = frozenset({2, 4})
-
-
 def emit_linkwitz_transform_biquad(
     name: str,
     freq_act: float,

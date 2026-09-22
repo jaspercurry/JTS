@@ -7,16 +7,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import nginx_site
 from .test_install_state_group_write import _extract as _extract_bash_function
 
 ROOT = Path(__file__).resolve().parent.parent
 UNIT_PATH = ROOT / "deploy" / "jasper-correction-web.service"
 INSTALL_SH = ROOT / "deploy" / "install.sh"
-NGINX_CONF = ROOT / "deploy" / "nginx-jasper.conf"
 
 
 def test_measurement_view_routes_to_correction_web_on_http_and_https():
-    conf = NGINX_CONF.read_text()
+    conf = nginx_site.conf_text("full")
 
     assert conf.count("location /sound/measurements/ {") == 2
     assert conf.count("proxy_pass http://127.0.0.1:8770/measurements/;") == 2
@@ -44,7 +44,7 @@ def test_correction_location_allows_large_capture_upload():
     limit >= the backend's own MAX_WAV_BODY_BYTES, so the app — not a raw nginx
     413 — enforces the real cap with a clean error.
     """
-    conf = NGINX_CONF.read_text()
+    conf = nginx_site.conf_text("full")
     start = conf.index("location /sound/speaker/crossover/")
     end = conf.index("location ", start + 1)  # next location block
     block = conf[start:end]

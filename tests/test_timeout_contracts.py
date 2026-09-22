@@ -10,20 +10,24 @@ Scans every ``jasper/`` module for ``subprocess.run``/``check_output``/
 return value is captured rather than fired-and-forgotten (its constructor
 takes no ``timeout=`` at all, so the bound has to come from a nearby
 ``.wait(timeout=...)``/``.communicate(timeout=...)`` -- this walk cannot
-verify that across statements, so any captured ``Popen`` needs an allowlist
-entry saying where its bound lives), and ``asyncio.open_unix_connection``/
+verify that across statements), and ``asyncio.open_unix_connection``/
 ``open_connection`` (must sit inside ``asyncio.wait_for(...)`` or
 ``async with asyncio.timeout(...):``).
 
-A site this walk cannot clear needs an entry in ALLOWLIST naming why. Remove
-an entry once its call site gets a real deadline; add one only for a call
-this session found and left open -- never to silence a fresh one without
-looking at it.
+A call this walk cannot clear needs a trailing ``# unbounded: <short tag>``
+comment on its own call statement, naming why. The marker lives at the call
+site instead of a keyed-by-line-number allowlist, so an unrelated line
+shift elsewhere in the file can't turn this test red -- git history keeps
+the fuller rationale. A marker on a call that turns out to be bounded
+(fixed, or the marker drifted) fails just as loud as a missing one.
 """
 from __future__ import annotations
 
 import ast
+import io
+import re
 import textwrap
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,80 +45,7 @@ _ASYNCIO_CONNECT_FUNCS = frozenset({
 _ASYNCIO_TIMEOUT_FUNC = "asyncio.timeout"
 _ASYNCIO_WAIT_FOR_FUNC = "asyncio.wait_for"
 
-# path (relative to ROOT, POSIX separators) : lineno -> why this exact call
-# site is not bounded today. Every entry is a call this round's AST walk
-# actually found unbounded at HEAD -- re-verify before adding or removing one.
-ALLOWLIST: dict[str, str] = {
-    "jasper/audio_hardware/reconcile.py:1207": (
-        "renders asound.conf via a sourced bash lib with no timeout=; a hang "
-        "here is bounded only by the unit's own TimeoutStartSec=50s "
-        "(jasper-audio-hardware-reconcile.service). Adding a bare timeout= "
-        "would raise TimeoutExpired uncaught past main() (see the OSError "
-        "catch three lines below this call for the shape a real fix needs) "
-        "-- a design-judgment fix, not a one-line addition."
-    ),
-    "jasper/audio_hardware/reconcile.py:1241": (
-        "same gap as line 1216 (render_asound_conf, no timeout=); the "
-        "adjacent OSError catch (rc=127) shows the shape a bounded version "
-        "needs, but does not itself bound a hang."
-    ),
-    "jasper/audio_measurement/correction_lane.py:43": (
-        "popen_correction_play returns the Popen to a sync/thread caller, "
-        "which owns the wait/timeout (see exec_correction_play just below "
-        "for the bounded async analog); Popen's own constructor takes no "
-        "timeout= keyword."
-    ),
-    "jasper/cli/aec_commission.py:645": (
-        "wait_reconciler_idle polls `systemctl is-active` inside its own "
-        "30s wall-clock deadline, but the individual subprocess.run call is "
-        "itself unbounded -- a wedged systemd hangs past that deadline. "
-        "Interactive commissioning CLI (an operator is at the terminal)."
-    ),
-    "jasper/cli/aec_commission.py:782": (
-        "recorder = subprocess.Popen(...) is bounded by "
-        "recorder.wait(timeout=5) below and the finally block's "
-        "terminate()+wait(timeout=2); the constructor call itself takes no "
-        "timeout= keyword."
-    ),
-    "jasper/cli/aec_init.py:897": (
-        "interactive commissioning tool; `amixer sset` against a live chip "
-        "has no bound today. Operator present at the terminal."
-    ),
-    "jasper/cli/aec_init.py:902": (
-        "interactive commissioning tool; `amixer sget` readback has no "
-        "bound today. Operator present at the terminal."
-    ),
-    "jasper/control/restart_broker.py:388": (
-        "_spawn_detached's Popen is fired-and-forgotten by the broker itself "
-        "(a systemctl transition that can kill the broker before it answers) "
-        "-- but its handle is captured into `proc` to hand to a daemon reaper "
-        "thread, so this walk cannot see it as fire-and-forget. Its bound now "
-        "lives in _journal_detached_result's proc.communicate(timeout="
-        "_EXEC_TIMEOUT_CEILING_SEC), which kills the child and journals "
-        "restart_broker.deferred_reap_timeout on expiry -- a wedged child no "
-        "longer leaks the reaper thread forever, just delays its exit by the "
-        "ceiling."
-    ),
-    "jasper/platform/uds.py:45": (
-        "_connect's retry loop already bounds itself on retry_budget_sec "
-        "wall-clock (default 1.2s); a Unix-domain connect() blocks only on "
-        "kernel accept-queue backpressure, not network RTT, so wrapping the "
-        "individual attempt adds no protection the loop's own deadline "
-        "doesn't already provide. Flagged by R6's review as a candidate "
-        "for this allowlist (#4416)."
-    ),
-    "jasper/web/sound_seat_level.py:151": (
-        "_SeatLevelSession.start's Popen is captured into self._process for "
-        "status()/stop() and reaped by _reap's proc.communicate() on its own "
-        "daemon thread; the constructor itself takes no timeout= keyword. "
-        "The CLI's normal run length is owned by the leveling pass "
-        "(ramp+convergence), not this module, so _reap's communicate() is "
-        "intentionally unbounded for that path. The user-initiated stop path "
-        "is bounded end to end: stop() escalates SIGINT+wait(timeout="
-        "SEAT_LEVEL_STOP_TIMEOUT_S) -> terminate()+wait(timeout=1.0) -> "
-        "kill()+wait(timeout=1.0), each with a real timeout= now."
-    ),
-}
+_MARKER_RE = re.compile(r"^#\s*unbounded:\s*(.+)$")
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -125,6 +56,19 @@ def _dotted_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     return None
+
+
+def _markers(source: str) -> dict[int, str]:
+    """``{lineno: tag}`` for every ``# unbounded: <tag>`` comment in
+    ``source``, keyed by the physical line the comment sits on."""
+    markers: dict[int, str] = {}
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type != tokenize.COMMENT:
+            continue
+        match = _MARKER_RE.match(tok.string.strip())
+        if match:
+            markers[tok.start[0]] = match.group(1).strip()
+    return markers
 
 
 class _BlockingCallVisitor(ast.NodeVisitor):
@@ -138,6 +82,10 @@ class _BlockingCallVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.findings: list[tuple[int, str]] = []
+        # Every call this contract tracks, bounded or not: (lineno,
+        # end_lineno, dotted_name, is_unbounded) -- lets marker-checking
+        # tell a live marker from a stale one without a second AST walk.
+        self.calls: list[tuple[int, int, str, bool]] = []
         self._timeout_depth = 0
         self._wait_for_depth = 0
         self._fire_and_forget: set[int] = set()
@@ -171,17 +119,26 @@ class _BlockingCallVisitor(ast.NodeVisitor):
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
         self._visit_with(node)
 
+    def _record(self, node: ast.Call, dotted: str, unbounded: bool) -> None:
+        end = node.end_lineno or node.lineno
+        self.calls.append((node.lineno, end, dotted, unbounded))
+        if unbounded:
+            self.findings.append((node.lineno, dotted))
+
     def visit_Call(self, node: ast.Call) -> None:
         dotted = _dotted_name(node.func)
         if dotted in _SUBPROCESS_BLOCKING_FUNCS:
-            if not any(kw.arg == "timeout" for kw in node.keywords):
-                self.findings.append((node.lineno, dotted))
+            self._record(
+                node, dotted,
+                not any(kw.arg == "timeout" for kw in node.keywords),
+            )
         elif dotted == _SUBPROCESS_POPEN_FUNC:
-            if id(node) not in self._fire_and_forget:
-                self.findings.append((node.lineno, dotted))
+            self._record(node, dotted, id(node) not in self._fire_and_forget)
         elif dotted in _ASYNCIO_CONNECT_FUNCS:
-            if self._timeout_depth <= 0 and self._wait_for_depth <= 0:
-                self.findings.append((node.lineno, dotted))
+            self._record(
+                node, dotted,
+                self._timeout_depth <= 0 and self._wait_for_depth <= 0,
+            )
 
         if dotted == _ASYNCIO_WAIT_FOR_FUNC:
             self._wait_for_depth += 1
@@ -198,28 +155,45 @@ def scan_source(source: str) -> list[tuple[int, str]]:
     return visitor.findings
 
 
-def scan_tree(root: Path) -> dict[str, str]:
-    """``{"relpath:lineno": dotted_func_name}`` for every unbounded call
-    under ``root``, keyed relative to this repo's ROOT with POSIX
-    separators (matching ALLOWLIST's keys)."""
-    findings: dict[str, str] = {}
+def scan_markers(
+    source: str,
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """``(missing, stale)``: unbounded calls with no marker, and marked
+    calls that are actually bounded."""
+    visitor = _BlockingCallVisitor()
+    visitor.visit(ast.parse(source))
+    markers = _markers(source)
+    missing: list[tuple[int, str]] = []
+    stale: list[tuple[int, str]] = []
+    for lineno, end_lineno, dotted, unbounded in visitor.calls:
+        marked = any(line in markers for line in range(lineno, end_lineno + 1))
+        if unbounded and not marked:
+            missing.append((lineno, dotted))
+        elif not unbounded and marked:
+            stale.append((lineno, dotted))
+    return missing, stale
+
+
+def scan_tree_markers(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """``scan_markers`` over every ``*.py`` under ``root``, keyed
+    ``"relpath:lineno"``."""
+    missing: dict[str, str] = {}
+    stale: dict[str, str] = {}
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
-        for lineno, dotted in scan_source(path.read_text(encoding="utf-8")):
-            findings[f"{rel}:{lineno}"] = dotted
-    return findings
+        found_missing, found_stale = scan_markers(path.read_text(encoding="utf-8"))
+        missing.update({f"{rel}:{ln}": dotted for ln, dotted in found_missing})
+        stale.update({f"{rel}:{ln}": dotted for ln, dotted in found_stale})
+    return missing, stale
 
 
-def test_every_blocking_call_site_has_a_deadline_or_is_allowlisted() -> None:
-    """The guard itself: a new unbounded call added anywhere under jasper/
-    fails this until it either carries a real deadline or gets an honest
-    ALLOWLIST entry naming why not -- and a stale entry (the call got fixed,
-    or moved) fails it too, so the allowlist can't just grow."""
-    found = scan_tree(SCAN_ROOT)
-    assert set(found) == set(ALLOWLIST), (
-        f"missing from ALLOWLIST (newly unbounded): {set(found) - set(ALLOWLIST)}; "
-        f"stale ALLOWLIST entries (now bounded or gone): {set(ALLOWLIST) - set(found)}"
-    )
+def test_every_unbounded_call_is_marked_and_every_marker_is_live() -> None:
+    """The guard itself: a new unbounded call fails this until it carries a
+    ``# unbounded: ...`` marker, and a stale one (call since bounded) fails
+    it too, so markers can't just accumulate."""
+    missing, stale = scan_tree_markers(SCAN_ROOT)
+    assert not missing, f"unbounded call(s) with no '# unbounded: ...' marker: {missing}"
+    assert not stale, f"'# unbounded: ...' marker(s) on now-bounded call(s): {stale}"
 
 
 def test_scan_flags_a_timeout_less_subprocess_run() -> None:
@@ -273,3 +247,25 @@ def test_scan_passes_bounded_calls() -> None:
                 await asyncio.open_unix_connection(path)
     """))
     assert findings == []
+
+
+def test_scan_markers_flags_an_unmarked_unbounded_call() -> None:
+    missing, stale = scan_markers(textwrap.dedent("""
+        import subprocess
+        def f():
+            subprocess.run(["true"], check=False)
+    """))
+    assert missing == [(4, "subprocess.run")]
+    assert stale == []
+
+
+def test_scan_markers_flags_a_stale_marker_on_a_now_bounded_call() -> None:
+    """A leftover ``# unbounded: ...`` comment on a call that now carries
+    ``timeout=`` must fail, not silently pass."""
+    missing, stale = scan_markers(textwrap.dedent("""
+        import subprocess
+        def f():
+            subprocess.run(["true"], timeout=1.0)  # unbounded: stale now
+    """))
+    assert missing == []
+    assert stale == [(4, "subprocess.run")]

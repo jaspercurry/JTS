@@ -28,6 +28,7 @@ from .audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
 )
+from jasper.json_fields import as_mapping as _mapping
 
 
 @dataclass(frozen=True)
@@ -168,10 +169,6 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "advanced": {},
     }
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]:

@@ -40,6 +40,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from tests._log_events import leaked_lines
 
 web_common = importlib.import_module("jasper.web._common")
 google_setup = importlib.import_module("jasper.web.google_setup")
@@ -635,7 +636,7 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path, c
 
     assert patched_common.send_see_other.call_args.args[1] == "./"
     assert leaked not in _flash(patched_common.send_see_other)
-    assert leaked not in caplog.text
+    assert not leaked_lines(caplog, leaked)
     assert not patched_common.restart_voice_daemon.called
 
 

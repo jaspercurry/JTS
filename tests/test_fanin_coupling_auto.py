@@ -21,6 +21,7 @@ resolving a second route.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -929,21 +930,38 @@ def test_fresh_install_ring_geometry_emits_the_doc_table_values():
     assert 'device: "jts_ring_playback"' in text
 
 
-def test_fresh_install_cushion_decay_floor_default_is_576():
-    """§2 host-clock table: JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES ships
-    at the hardware-validated 576 floor (config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES).
-    The Rust behavioural test (cushion_decay_floor_defaults_to_validated_floor)
-    asserts the config equals the CONSTANT but is tautological on the constant's
-    value; this source-text pin catches the constant itself silently drifting off
-    the 576 the doc's table names. Hardware-free (the crate does not build on
-    macOS; the CI Linux rust job builds it).
+@pytest.mark.parametrize(
+    "mode,pattern",
+    [
+        (
+            "low",
+            r"pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = (\d+);",
+        ),
+        (
+            "high",
+            r'env_u32\(\s*"JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES",\s*(\d+)\)'
+            r'[\s\S]*?env_u32\(\s*'
+            r'"JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",\s*(\d+)\)',
+        ),
+    ],
+)
+def test_latency_presets_carry_fanin_s_own_decay_numbers(mode, pattern):
+    """The mode knob renames fan-in's floors; it does not choose new ones.
+
+    Low is config.rs's hardware-validated decay-floor default; High is the
+    acquisition ceiling that same file derives (base target + warm-up cushion),
+    the fill the lane settles at with decay off. Medium is this layer's own
+    middle and has no counterpart to pin. Hardware-free: the crate does not
+    build on macOS, and the CI Linux rust job covers the behaviour.
     """
     if not _FANIN_CONFIG_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
     text = _FANIN_CONFIG_RS.read_text(encoding="utf-8")
-    assert "pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = 576;" in text, (
-        "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
-        "hardware-validated floor the measurement doc §2 table ships"
+    m = re.search(pattern, text)
+    assert m, f"config.rs no longer matches {pattern!r}"
+    assert sum(int(g) for g in m.groups()) == lm.PRESETS[mode].floor_frames, (
+        f"latency_mode.PRESETS[{mode!r}].floor_frames has drifted from "
+        "rust/jasper-fanin/src/config.rs, which owns the decay policy"
     )
 
 

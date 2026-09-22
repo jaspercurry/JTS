@@ -16,16 +16,14 @@ topology that is jasper-fanin, so TTS/cues enter before CamillaDSP.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 import threading
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
-from .atomic_io import atomic_write_json
+from .atomic_io import atomic_write_json, read_json_mapping
 from .json_fields import utc_now_iso
 from .log_event import log_event
 
@@ -494,15 +492,11 @@ def _build_active_seed_backend(
 
 
 def _load_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"version": PROFILE_VERSION, "profiles": []}
-    except (OSError, json.JSONDecodeError, TypeError) as e:
-        logger.warning("assistant loudness profile read failed: %s", e)
-        return {"version": PROFILE_VERSION, "profiles": []}
-    if not isinstance(data, dict):
-        return {"version": PROFILE_VERSION, "profiles": []}
+    data = read_json_mapping(path)
+    if data is None:
+        if os.path.exists(path):
+            logger.warning("assistant loudness profile unreadable: %s", path)
+        data = {"version": PROFILE_VERSION, "profiles": []}
     if not isinstance(data.get("profiles"), list):
         data["profiles"] = []
     return data

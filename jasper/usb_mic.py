@@ -14,20 +14,24 @@ strictly downstream of JTS voice/wake routing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import struct
-import subprocess
 import time
 from typing import Any, Callable, Mapping
 
-from .atomic_io import locked_update_env_file, read_regular_bytes_nofollow
+from .atomic_io import (
+    locked_update_env_file,
+    read_json_mapping,
+    read_regular_bytes_nofollow,
+)
+from .json_fields import as_mapping as _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
 from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
+from .systemd_probe import unit_active
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
@@ -55,6 +59,8 @@ USB_MIC_BCD_DEVICE = "0x0210"
 USB_NO_MIC_BCD_DEVICE = "0x0200"
 RELAY_STATUS_FRESH_SECONDS = 3.0
 _MAX_ENV_BYTES = 4096
+# Bound on the gadget/relay unit probe; /aec polls it.
+_UNIT_PROBE_TIMEOUT_SEC = 2.0
 
 
 @dataclass(frozen=True)
@@ -199,30 +205,13 @@ def _read_text(path: Path) -> str:
 
 
 def _read_relay_status(path: Path) -> dict[str, Any]:
-    try:
-        raw = path.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return read_json_mapping(path) or {}
 
 
 def _systemd_active(unit: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", unit],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+    return unit_active(
+        unit, timeout=_UNIT_PROBE_TIMEOUT_SEC, activating_is_live=False,
+    )
 
 
 def _status_int(value: Any, default: int = 0) -> int:

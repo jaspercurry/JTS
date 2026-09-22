@@ -238,3 +238,9 @@ class JsonFields:
         if value is None or value == "":
             return None
         return self.finite_number(value, field_name)
+
+
+def as_mapping(value: Any) -> Mapping[str, Any]:
+    """``value`` when it is an object, else an empty one — so a chain of
+    ``.get()`` hops over an absent branch stays a lookup, not a crash."""
+    return value if isinstance(value, Mapping) else {}

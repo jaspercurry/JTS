@@ -210,7 +210,7 @@ def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
         return real_log_event(logger, event, **kw)
 
     monkeypatch.setattr(cr, "log_event", _capture)
-    snapshot = cr._read_snapshot(path)
+    snapshot = cr.read_snapshot(path)
     result, _healed = cr._migrate_stale_fanin_ring_slots(snapshot, "t")
     return result.text, records
 
@@ -301,7 +301,7 @@ def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatc
             )
         ),
     )
-    out, healed = cr._migrate_stale_fanin_ring_slots(cr._read_snapshot(path), "t")
+    out, healed = cr._migrate_stale_fanin_ring_slots(cr.read_snapshot(path), "t")
     assert "stale_ring_slots_override_declined" in records
     assert healed is False
     assert f"{RING_SLOTS_ENV_VAR}=8" in out.text
@@ -374,23 +374,55 @@ def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch
 # --- the four-ends wire gate, per end ---------------------------------------
 
 
-def test_wire_gate_names_the_end_that_disagrees(monkeypatch):
-    """A refusal must say WHICH end declared what. A bare "mismatch" leaves an
-    operator with four files to read and no order to read them in.
+@pytest.mark.parametrize(
+    ("fanin_text", "outputd_text", "expected_substrings"),
+    [
+        pytest.param(
+            "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n",
+            "",
+            ("fan-in (Ring A writer)", "S16_LE"),
+            id="fanin_declares_the_narrow_pin",
+        ),
+        pytest.param(
+            "",
+            "JASPER_OUTPUTD_ACTIVE_CHANNELS=6\n",
+            ("6 channels", "outputd (Ring B reader)"),
+            id="outputd_channels_the_ring_does_not_carry",
+        ),
+        pytest.param(
+            "",
+            "JASPER_OUTPUTD_ACTIVE_CHANNELS=stereo\n",
+            ("outputd (Ring B reader)", "declares no channel count at all"),
+            id="outputd_channels_will_not_parse",
+        ),
+    ],
+)
+def test_wire_gate_names_the_end_that_disagrees(
+    monkeypatch, fanin_text, outputd_text, expected_substrings
+):
+    """A refusal must say WHICH end declared what, and why.
 
-    The disagreeing token is the NARROW one now: the shipped conf.d and the
-    resolver both answer wide, so a fan-in snapshot still carrying an ``S16_LE``
-    declaration is the end out of step.
+    A bare "mismatch" leaves an operator with four files to read and no order
+    to read them in. Three declaring ends can each be the one out of step —
+    fan-in's format, outputd's channel count out of range, and outputd's
+    channel count that will not even parse — and each refusal must name its
+    (the unparseable case is its own per-axis flag rather than a reuse of the
+    format-axis note: otherwise an outputd channel count that will not parse
+    would pass on every unarmed box, i.e. every box about to arm)
+    own end and its own reason. (The disagreeing token on the format axis is
+    the NARROW one now: the shipped conf.d and the resolver both answer wide,
+    so a fan-in snapshot still carrying an ``S16_LE`` declaration is the end
+    out of step.)
     """
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(
-        fanin_text="JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n", outputd_text=""
+        fanin_text=fanin_text, outputd_text=outputd_text
     )
     assert ok is False
-    assert "fan-in (Ring A writer)" in detail
-    assert "S16_LE" in detail
+    for substring in expected_substrings:
+        assert substring in detail
 
 
 def test_wire_gate_compares_outputd_only_once_armed(monkeypatch):
@@ -463,21 +495,6 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
     assert ok is True, detail
 
 
-def test_wire_gate_refuses_an_outputd_channel_width_the_ring_does_not_carry(
-    monkeypatch,
-):
-    """The channels axis has teeth independently of the format axis."""
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    ok, detail = ring_edge_width_ready(
-        fanin_text="", outputd_text="JASPER_OUTPUTD_ACTIVE_CHANNELS=6\n"
-    )
-    assert ok is False
-    assert "6 channels" in detail
-    assert "outputd (Ring B reader)" in detail
-
-
 def test_wire_gate_defers_an_absent_conf_d_to_the_asset_gate(monkeypatch, tmp_path):
     """One missing file, one reason. ``ring_assets_ready`` owns the absent
     conf.d; a second refusal here would bury the one that names the fix."""
@@ -538,26 +555,6 @@ def test_wire_gate_refuses_an_indeterminate_channel_count_like_an_indeterminate_
     # The format axis is fine on this file — a refusal citing it would mean the
     # test proved the wrong branch.
     assert "declares no format at all" not in detail
-
-
-def test_wire_gate_refuses_an_outputd_channel_count_that_will_not_parse(monkeypatch):
-    """The other reachable indeterminate: a malformed outputd channels value.
-
-    This is why the excuse is a PER-AXIS flag rather than a reuse of ``note``.
-    The outputd end carries a note explaining why its FORMAT is not compared
-    before arming — and if that note also excused its channels, a value that
-    will not parse as an int would pass here on every unarmed box, which is
-    every box about to arm.
-    """
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    ok, detail = ring_edge_width_ready(
-        fanin_text="", outputd_text="JASPER_OUTPUTD_ACTIVE_CHANNELS=stereo\n"
-    )
-    assert ok is False
-    assert "outputd (Ring B reader)" in detail
-    assert "declares no channel count at all" in detail
 
 
 def test_wire_gate_does_not_invent_a_channels_refusal_for_ends_that_state_none(

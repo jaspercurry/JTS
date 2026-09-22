@@ -634,8 +634,10 @@ done
 
 
 # The park/record/unpark chain, left real inside the profile harness so the
-# trap sees the record the profile's own park built.
+# trap sees the record the profile's own park built. The shared core-graph
+# tail rides along: it is what both profiles reach the park through.
 _PARK_RECORD_CHAIN = (
+    "_start_core_graph_units",
     "park_audio_clients_for_core_graph_restart",
     "forget_core_graph_park_record",
     "unpark_recorded_units",
@@ -941,7 +943,9 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
             "bash",
             "-c",
             _profile_runtime_harness(
-                tmp_path, function, keep=("restart_jasper_control_and_input",)
+                tmp_path,
+                function,
+                keep=("_start_core_graph_units", "restart_jasper_control_and_input"),
             ),
         ],
         capture_output=True,

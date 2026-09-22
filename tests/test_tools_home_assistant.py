@@ -40,7 +40,7 @@ from jasper.tools import (
     dispatch_tool,
 )
 from jasper.tools.home_assistant import classify_consequential, make_home_assistant_tools
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_records, leaked_lines
 
 
 # ---- Stub HAClient ----------------------------------------------------------
@@ -176,8 +176,8 @@ async def test_dispatch_logs_redact_household_phrase(caplog):
     assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
         "<redacted len="
     )
-    assert "turn on the bedroom lights" not in caplog.text
-    assert "Turned on the bedroom lights" not in caplog.text
+    assert not leaked_lines(caplog, "turn on the bedroom lights")
+    assert not leaked_lines(caplog, "Turned on the bedroom lights")
 
 
 async def test_tool_surfaces_error_detail_on_failure():
@@ -459,7 +459,7 @@ async def test_gate_and_execute_emit_structured_logs_without_utterance(caplog):
     # never the raw utterance — a distinctive word from the spoken request
     # is absent.
     assert event_fields(caplog, "ha.confirm_gate")["action"] == "open the garage"
-    assert "Reginald" not in caplog.text
+    assert not leaked_lines(caplog, "Reginald")
 
 
 # ---- Provider-agnostic schema serialization --------------------------------

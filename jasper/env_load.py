@@ -48,6 +48,14 @@ from jasper.env_file import parse_env_mapping, read_env_file_text
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
 #: Single-writer env files, declared here for every reader (the writing
 #: daemon/wizard imports the name from this module).
+#: Deliberately NOT in ``ENV_FILES``: no unit sources it — the shairport-sync
+#: ExecStartPre (``deploy/bin/jasper-apply-airplay-mode``) layers it when
+#: deriving the AirPlay backend latency offset. Its one key is the
+#: bonded-leader-only Snapcast round-trip delay in SECONDS; solo/follower
+#: clears the file to no keys so the offset stays byte-identical to solo.
+#: PERSISTENT (never /run) so a bonded leader boots with the offset derived.
+AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
+AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"

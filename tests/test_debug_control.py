@@ -86,6 +86,32 @@ def dc(tmp_path, monkeypatch):
     debug_control._timer = None
 
 
+@pytest.mark.parametrize(
+    ("state", "active", "raises"),
+    [
+        ("active", True, False),
+        ("activating", False, False),
+        ("inactive", False, False),
+        ("unknown", False, True),
+    ],
+)
+def test_unit_probe_defers_when_stopped_and_raises_when_unanswered(
+    monkeypatch, state, active, raises,
+):
+    """An unresolved probe must reach the endpoint's 502 arm rather than read
+    as "stopped", which would silently drop the operator's restart."""
+    monkeypatch.setattr(
+        debug_control.systemd_probe,
+        "unit_states",
+        lambda units, **_kwargs: {unit: state for unit in units},
+    )
+    if raises:
+        with pytest.raises(OSError):
+            debug_control._unit_is_active("jasper-usbsink.service")
+    else:
+        assert debug_control._unit_is_active("jasper-usbsink.service") is active
+
+
 def _env(path) -> dict[str, str]:
     return read_env_file(path)
 

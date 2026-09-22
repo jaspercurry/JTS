@@ -175,13 +175,17 @@ RING_A_CHANNELS = 2
 # (``rust/jasper-outputd/src/config.rs``) and pinned here so the Python control
 # plane names the same bridge the daemon reads. Ring A and Ring B are SEPARATE
 # ring files that can be tuned independently: Ring B stays at the 2-slot
-# ping-pong floor, while Ring A widened to 4 slots (#4124) for cushion against
-# CamillaDSP short-reads.
+# ping-pong floor (outputd's compiled-in constant, not an env key), while
+# Ring A widened to 4 slots (#4124) for cushion against CamillaDSP
+# short-reads.
 OUTPUTD_CONTENT_BRIDGE_ENV_VAR = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_CONTENT_BRIDGE_SHM_RING = "shm_ring"
 OUTPUTD_RING_PATH_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_PATH"
 DEFAULT_OUTPUTD_RING_PATH = "/dev/shm/jts-ring/content.ring"
-OUTPUTD_RING_SLOTS_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_SLOTS"
+# Ring B's n_slots. NOT env-derived (unlike the path above): outputd's reader
+# takes it from its own compiled-in ``jasper_ring::RING_SLOTS``
+# (rust/jasper-ring/src/layout.rs), so this literal exists only for Python-side
+# capacity math (:func:`ring_capacity_frames`) and must track that constant.
 DEFAULT_OUTPUTD_RING_SLOTS = 2
 
 # The width outputd REQUESTS on its content upstream. Single writer:
@@ -353,8 +357,9 @@ class RingWire:
     live on the DAC edge — already breaks any ordering by byte count.
 
     ``n_slots`` is deliberately NOT an axis here even though the attach compares
-    it: it has per-ring owners already (:func:`resolve_ring_slots`,
-    :func:`resolve_outputd_ring_slots`) that read env this object cannot see.
+    it: Ring A has a per-ring owner already (:func:`resolve_ring_slots`) that
+    reads env this object cannot see, and Ring B's is outputd's compiled-in
+    ``jasper_ring::RING_SLOTS`` — no env resolves it.
 
     ``ring_active_channels`` is the ACTIVE ring's width, kept separate from
     ``ring_b_channels`` because one field per ring END is what keeps a 2-way
@@ -677,40 +682,6 @@ def resolve_outputd_ring_path(raw_path: str | None) -> str:
         return DEFAULT_OUTPUTD_RING_PATH
     value = raw_path.strip()
     return value or DEFAULT_OUTPUTD_RING_PATH
-
-
-OUTPUTD_RING_SLOTS_MIN = 2
-OUTPUTD_RING_SLOTS_MAX = 16
-
-
-def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
-    """Resolve the Ring B n_slots from a raw env value.
-
-    Empty / unset -> :data:`DEFAULT_OUTPUTD_RING_SLOTS` (2, ping-pong). A
-    present-but-out-of-range or unparseable value FAILS LOUD (:class:`ValueError`)
-    rather than silently clamping — the ioplug/daemon geometry must never shear.
-    Range :data:`OUTPUTD_RING_SLOTS_MIN`..=:data:`OUTPUTD_RING_SLOTS_MAX` mirrors
-    ``jasper_ring::{MIN_N_SLOTS, MAX_N_SLOTS}`` (``rust/jasper-ring/layout.json``).
-    """
-    if raw_slots is None:
-        return DEFAULT_OUTPUTD_RING_SLOTS
-    stripped = raw_slots.strip()
-    if not stripped:
-        return DEFAULT_OUTPUTD_RING_SLOTS
-    try:
-        value = int(stripped)
-    except ValueError as exc:
-        raise ValueError(
-            f"{OUTPUTD_RING_SLOTS_ENV_VAR}={raw_slots!r} is not an integer; the "
-            "outputd SHM ring slot count must be a whole number"
-        ) from exc
-    if OUTPUTD_RING_SLOTS_MIN <= value <= OUTPUTD_RING_SLOTS_MAX:
-        return value
-    raise ValueError(
-        f"{OUTPUTD_RING_SLOTS_ENV_VAR}={raw_slots!r} out of range "
-        f"{OUTPUTD_RING_SLOTS_MIN}..={OUTPUTD_RING_SLOTS_MAX} — a shear-prone "
-        "outputd SHM ring geometry must fail loud, not silently clamp"
-    )
 
 
 def capture_kwargs_for_coupling() -> dict[str, object]:

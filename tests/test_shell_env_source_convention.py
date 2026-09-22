@@ -7,7 +7,7 @@
 ``/etc/jasper/jasper.env`` is where an operator-pasted provider key lands
 until the next deploy sweeps it into its compartment, and
 ``/var/lib/jasper*/`` holds the wizard- and reconciler-owned files (speaker
-name, WiFi PSK, AirPlay mode). Every value in them is operator or wizard
+name, WiFi PSK, grouping delay). Every value in them is operator or wizard
 text. ``source``-ing such a file hands that text to bash: ``$(…)`` and
 backticks EXECUTE (as root, on boot and ExecStartPre paths), a space splits
 the assignment and runs the tail as a command, and ``#`` truncates. ``set -a``
@@ -49,12 +49,12 @@ JASPER_ENV_ROOTS = ("/etc/jasper", "/var/lib/jasper")
 # file never assigns — `. "${ENV_DIR}/jasper.env"` inside deploy/lib/install/*,
 # which runs with install.sh's variables. jasper.env_load.ENV_FILES is the
 # union of every unit's persistent EnvironmentFile=, so it tracks new wizard
-# files for free; the three added here are read by scripts and systemd
+# files for free; the two added here are read by scripts and systemd
 # drop-ins rather than by a unit's EnvironmentFile=, so they are not in it.
 JASPER_ENV_BASENAMES = tuple(
     sorted(
         {PurePosixPath(path).name for path in ENV_FILES}
-        | {"wifi_guardian.env", "airplay_mode.env", "grouping-airplay.env"}
+        | {"wifi_guardian.env", "grouping-airplay.env"}
     )
 )
 
@@ -203,7 +203,7 @@ def test_scanner_sees_the_shell_corpus():
         # The literal shapes deleted from the two root scripts.
         'JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"\n'
         'source "$JASPER_ENV_FILE"\n',
-        'ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"\n'
+        'ENV_FILE="${JASPER_GROUPING_AIRPLAY_ENV_FILE:-/var/lib/jasper/grouping-airplay.env}"\n'
         '. "$ENV_FILE" 2>/dev/null || true\n',
         # Compartment files live under the same prefix.
         '. /var/lib/jasper-secrets/voice_keys.env\n',
@@ -240,7 +240,7 @@ def test_classifier_catches_known_bad_shapes(bad):
         # Shell LIBRARIES are code, not env files — sourcing them is the point.
         'ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"\n'
         'source "$ENV_FILE_LIB"\n',
-        'source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"\n',
+        'source "${REPO_DIR}/deploy/lib/install/state-and-secrets.sh"\n',
         '. "$(dirname "$0")/lib/jasper-sed-inplace.sh"\n',
         # Laptop-side state outside the JTS env trees, even under `set -a`.
         'REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'

@@ -466,7 +466,13 @@ def test_no_persisted_reboot_state_logs_no_breadcrumb(caplog):
     assert not event_records(caplog, "system_supervisor.reboot_state_restored")
 
 
-@pytest.mark.parametrize("contents", [None, "{ not json", '{"last_reboot_at": "nope"}', "[]"])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        None,  # missing/malformed is atomic_io.read_json_mapping's own contract
+        '{"last_reboot_at": "nope"}',  # this site's own float-coercion fail-open
+    ],
+)
 async def test_corrupt_or_missing_reboot_state_fails_open(contents):
     """Fail-open safety: a missing, malformed, or wrong-shaped state file
     must NEVER block a genuinely-needed reboot. last_reboot_at loads as

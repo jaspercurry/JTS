@@ -26,7 +26,6 @@ daemon ``threading.Timer`` rather than ``loop.call_later``.
 from __future__ import annotations
 
 import logging
-import subprocess
 import threading
 import time
 from typing import Any
@@ -37,12 +36,17 @@ from .. import debug_mode
 from ..atomic_io import locked_update_env_file
 from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
 from ..env_file import read_env_file
+from .. import systemd_probe
 from . import restart_broker
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.RLock()
 _timer: "threading.Timer | None" = None
+
+# Bound on the is-active probe behind a debug toggle; an operator is waiting
+# on the endpoint's answer.
+_PROBE_TIMEOUT_SEC = 3.0
 
 
 # ----------------------------------------------------------- file write
@@ -80,14 +84,13 @@ def _restart_unit(unit: str) -> dict[str, Any]:
 
 
 def _unit_is_active(unit: str) -> bool:
-    """Whether systemd reports the unit active. Raises on spawn failure so
-    the endpoint can surface a real apply-path problem on the Pi."""
-    proc = subprocess.run(
-        ["systemctl", "is-active", "--quiet", unit],
-        check=False,
-        timeout=3,
-    )
-    return proc.returncode == 0
+    """Whether systemd reports the unit active. An unresolvable probe raises
+    so the endpoint surfaces a real apply-path problem on the Pi (502) rather
+    than silently deferring the restart."""
+    state = systemd_probe.unit_states([unit], timeout=_PROBE_TIMEOUT_SEC)[unit]
+    if state == systemd_probe.UNKNOWN:
+        raise OSError(f"systemctl is-active {unit} did not answer")
+    return systemd_probe.state_is_live(state, activating_is_live=False)
 
 
 def _restart_unit_if_active(

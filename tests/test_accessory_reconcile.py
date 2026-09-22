@@ -993,27 +993,25 @@ def test_installer_enables_reconciler_not_profile_adapter_by_default():
 
     assert "deploy/systemd/jasper-accessory-reconcile.service" in units_sh
     assert "deploy/systemd/jasper-accessory-reconcile.path" in units_sh
-    enable_block = units_sh.rsplit(
-        "systemctl enable jasper-camilla.service jasper-fanin.service",
-        1,
-    )[1].split("park_audio_clients_for_core_graph_restart", 1)[0]
-    assert "jasper-accessory-reconcile.service" in enable_block
+    for profile in ("install_systemd_units", "start_streambox_runtime_units"):
+        body = units_sh.split(f"{profile}() {{", 1)[1].split("\n}", 1)[0]
+        enable_block = body.split("_start_core_graph_units", 1)[1]
+        assert "jasper-accessory-reconcile.service" in enable_block, profile
     assert "jasper-accessory-reconcile --reason install" in units_sh
 
 
-@pytest.mark.parametrize(
-    "function",
-    ("install_systemd_units", "start_streambox_runtime_units"),
-)
-def test_both_profiles_start_the_request_watcher_this_boot(function: str):
+def test_both_profiles_start_the_request_watcher_this_boot():
     """`enable` alone arms the watcher for the NEXT boot. Every refresh
     requested before then would be dropped, and nothing else would say so."""
     units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8",
     )
-    body = units_sh.split(f"{function}() {{", 1)[1].split("\n}", 1)[0]
+    tail = units_sh.split("_start_core_graph_units() {", 1)[1].split("\n}", 1)[0]
+    assert "systemctl enable --now jasper-accessory-reconcile.path" in tail
 
-    assert "systemctl enable --now jasper-accessory-reconcile.path" in body
+    for function in ("install_systemd_units", "start_streambox_runtime_units"):
+        body = units_sh.split(f"{function}() {{", 1)[1].split("\n}", 1)[0]
+        assert "_start_core_graph_units" in body, function
 
 
 def test_reconciler_does_not_order_before_the_host_it_restarts():

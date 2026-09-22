@@ -34,27 +34,27 @@ from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..camilla import CamillaUnavailable
 from ..dsp_apply import DspApplyError
-from ..env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
-from ..fanin_coupling import (
-    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-    RING_ACTIVE_PLAYBACK_DEVICE,
+from ..env_load import (
+    AIRPLAY_BONDED_EXTRA_DELAY_ENV,
+    AIRPLAY_GROUPING_ENV_FILE,
+    OUTPUTD_GROUPING_ENV_FILE,
+    VOICE_GROUPING_ENV_FILE,
 )
+from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import (
-    OUTPUTD_SERVICE,
-    run_systemctl,
-)
+from ..service_units import OUTPUTD_SERVICE, read_unit_property
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from ..systemd_probe import unit_query, unit_state
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
     DAC_CONTENT_RING_PERIOD_FRAMES,
-    dac_content_ring_servable,
+    OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
 )
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
@@ -62,6 +62,14 @@ from .effective_role import (
     normalise_boot_id,
     read_current_boot_id,
     read_effective_role_status,
+)
+from .grouping_env import (
+    LANE_REFUSED_PERIOD,
+    LaneDecision,
+    airplay_grouping_env,
+    member_lane_decision,
+    outputd_grouping_env,
+    voice_grouping_env,
 )
 from .reconcile_plan import (
     ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
@@ -73,15 +81,12 @@ from .reconcile_plan import (
     _assemble_args,
     plan,
 )
-from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
+from .tts_route import VOICE_PARK_ENV
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
-OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
-TTS_MIX_STAGE_ENV = _tts_routing.TTS_MIX_STAGE_ENV
-TTS_MIX_STAGE_POST_DSP = _tts_routing.TTS_MIX_STAGE_POST_DSP
 
 
 # ---------- Unit names (single source of truth) ----------
@@ -173,21 +178,8 @@ _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
 # snd-aloop (snapclient's snd_pcm_delay would lie, inv-2) and never the raw DAC,
 # which outputd owns.
 
-# The derived key is written as an empty string when this speaker is not an
-# active member, so a stale file can never leave the lane half-configured.
-OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
-OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = "jasper-camilla.service"
-
-# Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre
-# (jasper-apply-airplay-mode) layers when deriving the AirPlay backend latency
-# offset. Holds the bonded-leader-only Snapcast round-trip delay; EMPTY (no keys)
-# for solo/follower so the offset stays byte-identical to the solo value.
-# Persistent (NOT /run) so a bonded leader boots with the bonded offset already
-# derived. mode 0644, no secret.
-AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
-AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 
 # jasper-aec-reconcile is the SINGLE owner of jasper-voice + jasper-aec-bridge
 # unit state. Role changes therefore KICK it rather than touching those units
@@ -245,207 +237,6 @@ class _PcmHandleProbeResult:
     @property
     def unknown(self) -> bool:
         return self.state == "unknown"
-
-
-#: Why a bonded member is not on the dac-content return ring. Stable tokens:
-#: they reach ``/state`` and the doctor through the follower STATUS file.
-LANE_REFUSED_ACTIVE_ENDPOINT = "active_endpoint"
-LANE_REFUSED_FLAT_OUTPUT_DENIED = "flat_output_not_allowed"
-LANE_REFUSED_PERIOD = "dac_content_ring_period_mismatch"
-
-
-@dataclass(frozen=True)
-class LaneDecision:
-    """Whether this box arms the dac-content return lane, and why not."""
-
-    armed: bool
-    #: One of the ``LANE_REFUSED_*`` tokens, or ``""`` when armed.
-    reason: str = ""
-
-
-def member_lane_decision(
-    cfg: GroupingConfig,
-    *,
-    active_endpoint: bool = False,
-    flat_output_allowed: bool = False,
-    outputd_period_frames: int | None = None,
-) -> LaneDecision:
-    """THE arming rule for the dumb-member round-trip lane. PURE.
-
-    Four conditions, spelled once and consumed by everything that needs the
-    answer — the env writer, the reconciler's bond refusal, and the doctor's
-    channel-pick check:
-
-    - an ``is_active_member``-shaped config (enabled, no error);
-    - not an ACTIVE endpoint: CamillaDSP owns that box's channel-pick and split
-      (Layer A), so outputd runs its normal active sink and no lane;
-    - a saved topology that permits a flat final-output graph, from the
-      canonical output runtime contract;
-    - an outputd period the ring's slot can carry
-      (:func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable`).
-
-    A disabled or invalid config is not refused — it is not a member at all —
-    so it returns the same unarmed decision with no reason token.
-    """
-    if not (cfg.enabled and cfg.error is None):
-        return LaneDecision(armed=False)
-    if active_endpoint:
-        return LaneDecision(armed=False, reason=LANE_REFUSED_ACTIVE_ENDPOINT)
-    if not flat_output_allowed:
-        return LaneDecision(armed=False, reason=LANE_REFUSED_FLAT_OUTPUT_DENIED)
-    if not dac_content_ring_servable(outputd_period_frames):
-        return LaneDecision(armed=False, reason=LANE_REFUSED_PERIOD)
-    return LaneDecision(armed=True)
-
-
-def outputd_grouping_env(
-    cfg: GroupingConfig,
-    *,
-    active_endpoint: bool = False,
-    flat_output_allowed: bool = False,
-    outputd_period_frames: int | None = None,
-) -> dict[str, str]:
-    """The outputd round-trip lane env derived from a GroupingConfig. PURE.
-
-    Whether the lane arms is :func:`member_lane_decision`'s answer, never a
-    second rule; what the lane IS is :mod:`jasper.multiroom.dac_content_ring`'s
-    module docstring.
-
-    Every non-arming shape gets EMPTY strings rather than absent keys — outputd
-    reads empty as unset (``env_optional``) and as disarmed (``env_bool``), so a
-    stale file can never half-configure the lane.
-
-    ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
-    drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
-    owns both the channel-pick and the ``2->N`` split (Layer A), so outputd just
-    runs its normal active sink fed by camilla.
-
-    THE ARMED BRANCH WRITES A BLANK ``JASPER_OUTPUTD_CONTENT_BRIDGE``, and every
-    other branch OMITS the key. outputd refuses the marker beside a DECLARED
-    bridge of any value (``rust/jasper-outputd/src/config.rs``), and its
-    ``env_optional`` read counts blank as undeclared — so blank is what
-    overrides the ``shm_ring`` that ``jasper-fanin-coupling-auto`` writes into
-    the FIRST env layer on every pass. Omitting the key there would leave that
-    value standing and park the daemon at EX_CONFIG under
-    ``RestartPreventExitStatus=78``. The unarmed branches must NOT write blank:
-    without the marker outputd reads this key with ``env_str``, whose blank is a
-    value it parks on, so an unarmed box has to inherit layer 1 verbatim.
-
-    Active-mode TTS stays upstream of the crossover in fan-in: the outputd TTS
-    mixer is stereo-only and post-crossover, and on an active lane a 2-way
-    speaker is also "2 channels", so arming that socket would send full-range
-    assistant audio to the tweeter. Active endpoints therefore clear the outputd
-    TTS socket along with the lane — and so does every other box whose DAC
-    outputs the graph owns, which is why the route reads ``flat_output_allowed``
-    from the same decision the lane does (#2380).
-    """
-    route = expected_grouping_tts_route(
-        cfg,
-        active_endpoint=active_endpoint,
-        flat_output_allowed=flat_output_allowed,
-    )
-
-    if cfg.enabled and cfg.error is None:
-        if not member_lane_decision(
-            cfg,
-            active_endpoint=active_endpoint,
-            flat_output_allowed=flat_output_allowed,
-            outputd_period_frames=outputd_period_frames,
-        ).armed:
-            return {
-                DAC_CONTENT_LANE_ENV: "",
-                OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
-                OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
-                # Empty = unset to outputd's env_f32 (default 0.0).
-                OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
-            }  # no CONTENT_BRIDGE key: layer 1's value must stand
-        return {
-            # The BARE marker outputd's env_bool reads (never a path — outputd
-            # derives the ring file from its own DEFAULT_DAC_CONTENT_RING_PATH,
-            # so the two ends have no second spelling to disagree on).
-            DAC_CONTENT_LANE_ENV: "1",
-            # BLANK, not absent: this layer loads AFTER outputd.env, where
-            # jasper-fanin-coupling-auto writes shm_ring on every pass.
-            OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "",
-            OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
-            OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
-            # Pair-balance trim (validated <= 0 by load_config; outputd
-            # re-validates fail-closed). Always written while bonded so
-            # a cleared trim converges back to 0.0.
-            OUTPUTD_DAC_CONTENT_TRIM_ENV: f"{cfg.trim_db:.1f}",
-        }
-    return {
-        DAC_CONTENT_LANE_ENV: "",
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
-        OUTPUTD_TTS_SOCKET_ENV: "",
-        # Empty = unset to outputd's env_f32 (default 0.0).
-        OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
-    }
-
-
-def voice_grouping_env(
-    cfg: GroupingConfig,
-    *,
-    active_endpoint: bool = False,
-    flat_output_allowed: bool = False,
-) -> dict[str, str]:
-    """jasper-voice's grouping-derived env. PURE.
-
-    The route matrix owns the policy. Passive members point voice's TTS
-    playout socket at outputd so each member's OWN replies mix at its OWN final
-    output; inv-3 keeps the leader's TTS out of the SHARED stream. Active
-    endpoints fail closed to fan-in or park, with outputd TTS unarmed. Solo also
-    returns an EMPTY dict — the key is omitted, never present-but-empty (a
-    set-empty value would be read as a real, invalid socket path).
-
-    Takes the SAME two route facts as :func:`outputd_grouping_env`: the two
-    files are one route, and a caller that answered them differently would aim
-    voice at a socket outputd does not serve.
-    """
-    route = expected_grouping_tts_route(
-        cfg,
-        active_endpoint=active_endpoint,
-        flat_output_allowed=flat_output_allowed,
-    )
-    if cfg.enabled and cfg.error is None:
-        env = (
-            {}
-            if route.voice_env_socket is None
-            else {
-                VOICE_TTS_SOCKET_ENV: route.voice_env_socket,
-                TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
-            }
-        )
-        if route.voice_parked:
-            # Parked routes stop voice (and the AEC stack) through the flag
-            # jasper-aec-reconcile gates on; the route matrix owns any socket
-            # override separately.
-            env[VOICE_PARK_ENV] = "1"
-        return env
-    return {}
-
-
-def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
-    """shairport's bonded-leader AirPlay latency-offset delta. PURE.
-
-    Only an ACTIVE bonded LEADER both receives AirPlay AND plays its own channel
-    through the Snapcast round-trip, so only a leader's shairport must fold the
-    Snapcast playout buffer into its backend latency offset to keep the leader's
-    OWN output landing on the AirPlay anchor (lip-sync). Everyone else — solo,
-    follower (shairport parked), invalid — gets an EMPTY dict, which clears the
-    file to the byte-identical solo offset.
-
-    The value is the Snapcast buffer in SECONDS — the dominant new delay the
-    bonded leader's own output gains over solo, and deliberately a first-order
-    estimate: the solo offset's Ring A / CamillaDSP / Ring B / outputd terms
-    still apply in the bonded path, and the residual (CamillaDSP pipe-sink fill,
-    the member content FIFO) is second-order and acoustically calibrated
-    alongside snapclient --latency. jasper-apply-airplay-mode ADDS this to the
-    solo-derived offset.
-    """
-    if config.is_active_leader(cfg):
-        return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
-    return {}
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
@@ -635,10 +426,10 @@ def box_outputd_period_frames() -> int | None:
 
     :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
     plan's policy resolver: the slot gate has to match the value outputd's own
-    ``env_u32`` reads off its three EnvironmentFile= layers, and the two differ
-    exactly where guessing is fatal (a DAC floor of 128 with a stale 1024 still
-    in ``outputd.env``; an operator ``jasper.env`` value the reconciler has not
-    applied).
+    ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
+    and the two differ exactly where guessing is fatal (a DAC floor of 128 with
+    a stale 1024 still in ``outputd.env``; an operator ``jasper.env`` value the
+    reconciler has not applied).
 
     Fail-soft to ``None``, which
     :func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable` reads
@@ -668,59 +459,34 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     A missing systemctl binary returns ``None`` silently; other spawn failures
     return ``None`` with one warning. Completed commands are classified by their
     explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
-    masquerade as disabled or inactive.
+    masquerade as disabled or inactive. Classification itself lives in
+    jasper.systemd_probe (shared with jasper.source_intent); this wrapper
+    keeps only the observability this caller wants on an unresolved probe.
     """
-    try:
-        proc = run_systemctl(
-            [query, unit],
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except FileNotFoundError:
+    result = unit_state(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
+    verdict = unit_query(result)
+    if verdict is not None:
+        return verdict
+    if isinstance(result.error, FileNotFoundError):
         return None
-    except (OSError, subprocess.SubprocessError) as e:
+    if result.error is not None:
         log_event(
             logger,
             "multiroom.reconcile.unit_state_probe_failed",
             unit=unit,
             query=query,
-            error=e,
+            error=result.error,
             level=logging.WARNING,
         )
         return None
-
-    state = (proc.stdout or "").strip().lower()
-    true_states = {
-        "is-enabled": {"enabled", "enabled-runtime"},
-        "is-active": {"active"},
-    }
-    false_states = {
-        "is-enabled": {
-            "alias",
-            "static",
-            "indirect",
-            "disabled",
-            "generated",
-            "transient",
-            "linked",
-            "linked-runtime",
-            "masked",
-            "masked-runtime",
-            "not-found",
-        },
-        "is-active": {"inactive", "failed"},
-    }
-    if state in true_states.get(query, set()):
-        return True
-    if state in false_states.get(query, set()):
-        return False
     log_event(
         logger,
         "multiroom.reconcile.unit_state_probe_failed",
         unit=unit,
         query=query,
-        rc=proc.returncode,
-        state=state or "(none)",
-        stderr=(proc.stderr or "").strip(),
+        rc=result.rc,
+        state=result.word or "(none)",
+        stderr=result.stderr,
         level=logging.WARNING,
     )
     return None
@@ -894,25 +660,15 @@ def _unit_active(unit: str) -> bool | None:
     ``None`` on a probe failure or an unrecognized state; callers treat that
     as unproven and take the safe branch.
     """
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", unit, "--property=ActiveState", "--value"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError):
+    values = read_unit_property(
+        "ActiveState", (unit,), timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+    )
+    if not values:
         return None
-    state = (proc.stdout or "").strip().lower()
-    if proc.returncode == 0 and state in {
-        "active",
-        "activating",
-        "reloading",
-        "deactivating",
-    }:
+    state = values[0].strip().lower()
+    if state in {"active", "activating", "reloading", "deactivating"}:
         return True
-    if proc.returncode == 0 and state in {"inactive", "failed"}:
+    if state in {"inactive", "failed"}:
         return False
     return None
 

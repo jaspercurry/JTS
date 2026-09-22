@@ -37,12 +37,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
-from .. import atomic_io
 from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
+from . import _stash
 from .config import GroupingConfig
 
 logger = logging.getLogger(__name__)
@@ -102,31 +101,25 @@ def program_channel_for(channel: str) -> str:
 
 def _camilla():
     """Return camilla#1 without coupling this oneshot to a web module."""
-    from jasper.camilla import primary_controller
-
-    return primary_controller()
+    return _stash.camilla()
 
 
 # ---------- prior-config stash ----------
+# Mechanics shared with leader_config (see jasper.multiroom._stash);
+# these stay as module-level names so this arm's tests can monkeypatch
+# them, and so the default `path=` keeps pointing at THIS arm's stash.
 
 def read_stash(path: str = FOLLOWER_PRIOR_STASH) -> str | None:
     """The stashed prior solo-active config path, or None."""
-    try:
-        text = Path(path).read_text().strip()
-    except OSError:
-        return None
-    return text or None
+    return _stash.read_stash(path)
 
 
 def _write_stash(value: str, path: str = FOLLOWER_PRIOR_STASH) -> None:
-    atomic_io.atomic_write_text(path, value + "\n", mode=0o644)
+    _stash.write_stash(value, path)
 
 
 def _clear_stash(path: str = FOLLOWER_PRIOR_STASH) -> None:
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
+    _stash.clear_stash(path)
 
 
 # ---------- the two apply flows ----------

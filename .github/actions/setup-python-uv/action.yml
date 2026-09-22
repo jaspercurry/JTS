@@ -6,6 +6,10 @@ inputs:
     description: Python version for actions/setup-python and astral-sh/setup-uv.
     required: false
     default: "3.13"
+  install-full:
+    description: Also install PortAudio and the full locked JTS runtime (what the pytest and docs lanes import).
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -21,3 +25,23 @@ runs:
         version: "0.12.9"
         python-version: ${{ inputs.python-version }}
         enable-cache: true
+
+    - name: System deps for sounddevice (portaudio)
+      # Bounded against apt-mirror hangs (#2727); the helper's retry budget
+      # fits inside the 360 s cap.
+      if: ${{ inputs.install-full == 'true' }}
+      shell: bash
+      run: timeout -k 10 360 scripts/ci-apt-install.sh portaudio19-dev
+
+    - name: Install JTS from committed uv lock
+      if: ${{ inputs.install-full == 'true' }}
+      shell: bash
+      run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
+
+    - name: Install openwakeword without its tflite-runtime dep
+      # openwakeword 0.6.0 hard-requires tflite-runtime, which has no
+      # Python 3.13 wheel; only its ONNX models are used. Runs after the
+      # exact sync, which would otherwise remove the package.
+      if: ${{ inputs.install-full == 'true' }}
+      shell: bash
+      run: uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0

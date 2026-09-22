@@ -39,6 +39,7 @@ from jasper.json_fields import parse_utc_iso
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from tests.test_round_inputs import _bank_packet
+from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
@@ -602,9 +603,7 @@ def test_every_path_this_tool_prints_is_a_route_nginx_serves(path):
     the paths this tool hands out are checked against it rather than against a
     second list somebody would have to remember to update.
     """
-    conf = (
-        Path(__file__).resolve().parents[1] / "deploy" / "nginx-jasper.conf"
-    ).read_text()
+    conf = nginx_site.conf_text("full")
 
     assert f"location {path} {{" in conf
 

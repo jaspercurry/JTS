@@ -77,27 +77,22 @@ def test_validate_grouping_valid_leader_and_follower():
     ) is None
 
 
-def test_validate_grouping_missing_bond_id():
-    assert "BOND_ID" in validate_grouping(
-        role="leader", channel="left", bond_id="", leader_addr="",
-    )
-
-
-def test_validate_grouping_bad_channel():
-    assert "CHANNEL" in validate_grouping(
-        role="leader", channel="surround", bond_id="lr", leader_addr="",
-    )
-
-
-def test_validate_grouping_bad_role():
-    assert "ROLE" in validate_grouping(
-        role="boss", channel="left", bond_id="lr", leader_addr="",
-    )
-
-
-def test_validate_grouping_follower_needs_leader_addr():
-    assert "LEADER_ADDR" in validate_grouping(
-        role="follower", channel="right", bond_id="lr", leader_addr="",
+@pytest.mark.parametrize(
+    ("role", "channel", "bond_id", "leader_addr", "expected_token"),
+    [
+        pytest.param("leader", "left", "", "", "BOND_ID", id="missing_bond_id"),
+        pytest.param("leader", "surround", "lr", "", "CHANNEL", id="bad_channel"),
+        pytest.param("boss", "left", "lr", "", "ROLE", id="bad_role"),
+        pytest.param(
+            "follower", "right", "lr", "", "LEADER_ADDR", id="follower_needs_leader_addr"
+        ),
+    ],
+)
+def test_validate_grouping_single_field_errors(
+    role, channel, bond_id, leader_addr, expected_token
+):
+    assert expected_token in validate_grouping(
+        role=role, channel=channel, bond_id=bond_id, leader_addr=leader_addr,
     )
 
 
@@ -157,27 +152,23 @@ def test_absent_file_never_raises(tmp_path):
 # ---------- master toggle: off / missing / garbage => fail-safe ----------
 
 
-def test_explicit_off_is_disabled_no_error(tmp_path):
-    path = _write_env(tmp_path, "JASPER_GROUPING=off\n")
-    cfg = load_config(path)
-    assert cfg.enabled is False
-    assert cfg.error is None
-
-
-def test_missing_toggle_is_disabled_no_error(tmp_path):
-    """File present but no JASPER_GROUPING key => off, no error."""
-    path = _write_env(tmp_path, "JASPER_GROUPING_ROLE=leader\n")
-    cfg = load_config(path)
-    assert cfg.enabled is False
-    assert cfg.error is None
-
-
-@pytest.mark.parametrize("value", ["garbage", "1", "true", "yes", "enabled", "  ", "of"])
-def test_garbage_toggle_is_disabled_no_error(tmp_path, value):
-    """Any non-"on" value fails SAFE to disabled with no error — a broken
-    toggle must never silently leave grouping ON.
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("JASPER_GROUPING=off\n", id="explicit_off"),
+        pytest.param("JASPER_GROUPING_ROLE=leader\n", id="toggle_key_missing"),
+        *[
+            pytest.param(f"JASPER_GROUPING={value}\n", id=f"garbage_{value.strip() or 'blank'}")
+            for value in ["garbage", "1", "true", "yes", "enabled", "  ", "of"]
+        ],
+    ],
+)
+def test_toggle_off_missing_or_garbage_is_disabled_no_error(tmp_path, body):
+    """Any state but an exact "on" fails SAFE to disabled with no error — a
+    missing key, an explicit "off", or a broken toggle must never silently
+    leave grouping ON.
     """
-    path = _write_env(tmp_path, f"JASPER_GROUPING={value}\n")
+    path = _write_env(tmp_path, body)
     cfg = load_config(path)
     assert cfg.enabled is False
     assert cfg.error is None

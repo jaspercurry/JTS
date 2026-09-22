@@ -14,7 +14,7 @@ from jasper.voice.catalog import provider_ids_manifest_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENV_MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+STATE_AND_SECRETS_LIB = ROOT / "deploy" / "lib" / "install" / "state-and-secrets.sh"
 
 
 def _extract_render_helper() -> str:
@@ -22,7 +22,7 @@ def _extract_render_helper() -> str:
         [
             "bash",
             "-c",
-            rf"sed -n '/^render_voice_provider_ids_manifest()/,/^}}/p' '{ENV_MIGRATIONS_LIB}'",
+            rf"sed -n '/^render_voice_provider_ids_manifest()/,/^}}/p' '{STATE_AND_SECRETS_LIB}'",
         ],
         capture_output=True,
         text=True,

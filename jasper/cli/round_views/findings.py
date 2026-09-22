@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -42,6 +41,7 @@ from jasper.attribution.mechanisms import (
     MECHANISM_HF_REFLECTION,
     MECHANISM_LEVEL_FRAME,
 )
+from jasper.atomic_io import read_json_mapping
 from jasper.attribution.storage import (
     FindingEvidenceMissing,
     FindingStorageError,
@@ -85,11 +85,7 @@ BAND_DISCLOSURE = (
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    return raw if isinstance(raw, Mapping) else {}
+    return read_json_mapping(path) or {}
 
 
 def _echo_band(

@@ -16,8 +16,8 @@ or a >3 s service settle on a loaded 1 GB Pi returns non-zero and aborts
 doctor to diagnose the box through. On a self-recovering appliance that is the
 opposite of resilient.
 
-Fix: profile-owned call sites are non-fatal (guarded by `||`) and emit a loud
-WARN, so the install always reaches the recovery surface. The systemd
+Fix: the shared core-graph tail's call site is non-fatal (guarded by `||`) and
+emits a loud WARN, so the install always reaches the recovery surface. The systemd
 `Wants=/After=jasper-outputd` dependency and the doctor's
 `check_outputd_service` remain the real runtime guards. These tests pin that
 invariant so the bare-fatal form cannot silently regress.
@@ -42,8 +42,8 @@ def _call_site_indices(lines: list[str]) -> list[int]:
         and "require_outputd_ready()" not in line
         and not line.lstrip().startswith("#")
     ]
-    assert len(hits) == 2, (
-        f"expected full + streambox require_outputd_ready call sites, found {len(hits)} "
+    assert len(hits) == 1, (
+        f"expected one shared require_outputd_ready call site, found {len(hits)} "
         f"(at line numbers {[h + 1 for h in hits]})"
     )
     return hits
@@ -93,31 +93,25 @@ def test_require_outputd_ready_call_is_non_fatal_and_loud():
         )
 
 
-def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
-    """Both install profiles (full + streambox) own outputd runtime startup
-    via their runtime-starter helpers."""
+def test_require_outputd_ready_is_owned_by_the_shared_core_graph_tail():
+    """Both install profiles (full + streambox) own outputd runtime startup,
+    through the one core-graph tail they both call."""
     text = installer_text()
-    streambox_runtime = re.search(
-        r"^start_streambox_runtime_units\(\)\s*\{\n(.*?)\n\}",
+    tail = re.search(
+        r"^_start_core_graph_units\(\)\s*\{\n(.*?)\n\}",
         text,
         re.S | re.M,
     )
-    full_runtime = re.search(
-        r"^install_systemd_units\(\)\s*\{\n(.*?)\n\}",
-        text,
-        re.S | re.M,
+    assert tail, "could not locate _start_core_graph_units()"
+    assert tail.group(1).count("require_outputd_ready") == 1
+    assert tail.group(1).index("require_outputd_ready") < tail.group(1).index(
+        "reconcile_sound_dsp_state"
     )
 
-    assert streambox_runtime, "could not locate start_streambox_runtime_units()"
-    assert full_runtime, "could not locate install_systemd_units()"
-
-    assert streambox_runtime.group(1).count("require_outputd_ready") == 1
-    assert full_runtime.group(1).count("require_outputd_ready") == 1
-    for block in (streambox_runtime.group(1), full_runtime.group(1)):
-        assert "reconcile_sound_dsp_state" in block
-        assert block.index("require_outputd_ready") < block.index(
-            "reconcile_sound_dsp_state"
-        )
+    for starter in ("start_streambox_runtime_units", "install_systemd_units"):
+        block = re.search(rf"^{starter}\(\)\s*\{{\n(.*?)\n\}}", text, re.S | re.M)
+        assert block, f"could not locate {starter}()"
+        assert "_start_core_graph_units" in block.group(1)
 
 
 def test_the_readiness_probe_makes_no_content_lane_claim():
