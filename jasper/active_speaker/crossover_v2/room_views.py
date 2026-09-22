@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCE_FALLBACK,
     CEILING_SOURCE_ROUND_GATE,
@@ -33,7 +34,7 @@ from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
 from .record_index import measurement_documents
-from .round_views import RoundViewsError, local_features
+from .round_inputs import RoundViewsError
 
 #: A feature is a local excursion at least this deep against the local level,
 #: at least this wide between its half-depth edges; positions agree on it

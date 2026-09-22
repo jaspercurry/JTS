@@ -28,6 +28,7 @@ import numpy as np
 
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import REFERENCE_BAND_HZ, FlatSpecReport, evaluate_flat_spec
+from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.gating import ENTANGLEMENT_SOURCE_UNKNOWN
 from jasper.active_speaker.flat_spec_views import (
     DirectivityTable,
@@ -1097,44 +1098,6 @@ class AgreementFeature:
             "ratio": self.ratio,
             "common_mode": self.common_mode,
         }
-
-
-def local_features(
-    grid: np.ndarray, pooled: np.ndarray, *, lo_hz: float, hi_hz: float, feature_db: float
-) -> list[tuple[int, int, int]]:
-    """``(center_idx, lo_idx, hi_idx)`` for every local extremum of
-    ``|pooled| >= feature_db`` inside ``[lo_hz, hi_hz]``, half-depth edges."""
-    band = (grid >= lo_hz) & (grid <= hi_hz)
-    idx = np.where(band)[0]
-    found: list[tuple[int, int, int]] = []
-    for k in range(1, len(idx) - 1):
-        i = idx[k]
-        v = pooled[i]
-        if abs(v) < feature_db:
-            continue
-        if v > 0 and not (pooled[i] >= pooled[i - 1] and pooled[i] >= pooled[i + 1]):
-            continue
-        if v < 0 and not (pooled[i] <= pooled[i - 1] and pooled[i] <= pooled[i + 1]):
-            continue
-        half = abs(v) / 2.0
-        a = i
-        while a > idx[0] and abs(pooled[a]) > half and np.sign(pooled[a]) == np.sign(v):
-            a -= 1
-        b = i
-        while b < idx[-1] and abs(pooled[b]) > half and np.sign(pooled[b]) == np.sign(v):
-            b += 1
-        found.append((i, a, b))
-    merged: list[tuple[int, int, int]] = []
-    for i, a, b in found:
-        if merged and a <= merged[-1][2]:
-            prev_i, prev_a, prev_b = merged[-1]
-            if abs(pooled[i]) > abs(pooled[prev_i]):
-                merged[-1] = (i, min(a, prev_a), max(b, prev_b))
-            else:
-                merged[-1] = (prev_i, min(a, prev_a), max(b, prev_b))
-        else:
-            merged.append((i, a, b))
-    return merged
 
 
 def default_agreement_lo_hz(banked: BankedRound) -> float:

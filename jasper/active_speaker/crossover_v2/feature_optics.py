@@ -16,23 +16,19 @@ from __future__ import annotations
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.excess_phase import (
+    FEATURE_HALF_OCT, NEIGHBOURHOOD_OCT,
+)
 
 __all__ = [
     "CENTRE_SEARCH_OCT",
     "DETREND_FRACTION",
-    "FEATURE_HALF_OCT",
-    "MAGNITUDE_SMOOTH_FRACTION",
-    "NEIGHBOURHOOD_OCT",
     "PHASE_GATE_LEAD_MS",
     "biquad_peaking",
     "detrend",
     "feature_q",
     "read_feature",
 ]
-
-#: Magnitude smoothing. 1/12 octave keeps a feature's own shape while coarse
-#: enough that grid noise does not become one.
-MAGNITUDE_SMOOTH_FRACTION = 12
 
 #: The broad tilt removed before a feature's size is read. One octave leaves a
 #: ~1/6-octave feature essentially intact; a half-octave baseline would eat it.
@@ -43,13 +39,7 @@ DETREND_FRACTION = 1
 #: pre-ringing, so a sub-500 Hz feature reads many dB too deep (P1).
 PHASE_GATE_LEAD_MS = 1.0
 
-#: Half-width of a feature's own band.
-FEATURE_HALF_OCT = 1.0 / 12.0
-
-#: The neighbourhood a feature is read against, and the span a centre is
-#: searched over. The ladder's null-model fit searches the narrower: the
-#: wider walked onto a neighbouring feature (P1).
-NEIGHBOURHOOD_OCT = 1.0 / 3.0
+#: A wider centre search walked onto a neighbouring feature (P1).
 CENTRE_SEARCH_OCT = 1.0 / 6.0
 
 #: Width used when a feature never returns to half amplitude inside its

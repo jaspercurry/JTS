@@ -22,6 +22,7 @@ import numpy as np
 
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
+from jasper.audio_measurement.series_stats import _power_mean_db
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # Where grading stops, Hz — best-effort above this, never evaluated against
@@ -301,13 +302,6 @@ class GradedSpec:
     curve_db: np.ndarray
     excluded: np.ndarray
     report: FlatSpecReport
-
-
-def _power_mean_db(values_db: np.ndarray) -> float:
-    """``10*log10(mean(10**(dB/10)))`` — power (energy) mean, NOT a linear
-    average of dB values."""
-    linear = np.power(10.0, values_db / 10.0)
-    return float(10.0 * np.log10(np.mean(linear)))
 
 
 def _graded_lo_hz(f_lo_hz: float, trusted_floor_hz: float | None) -> float:

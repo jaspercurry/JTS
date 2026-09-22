@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from jasper.active_speaker.frequency_view import FrequencyRun, FrequencySeries, build_frequency_view
+from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
 from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
 from . import gate_sweep
 from .round_captures import capture_row, select_capture
@@ -29,8 +30,7 @@ def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], 
         id=f"{capture.capture_id}:{rung:g}ms", label=f"{rung:g} ms", kind="analysis",
         freqs_hz=tuple(grid), magnitude_db=tuple(read.curves[rung] + read.reference_const_db),
         reference_db=read.reference_const_db,
-        smoothing_fractional_octave=gate_sweep.MAGNITUDE_SMOOTH_FRACTION,
-        visible_by_default=True,
+        smoothing_fractional_octave=MAGNITUDE_SMOOTH_FRACTION, visible_by_default=True,
         details={
             **capture_row(capture), "window_ms": rung,
             "validity_floor_hz": f_valid_floor_hz(rung / 1000),
@@ -46,8 +46,7 @@ def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], 
         measurement_family="window_diagnostic", series=series,
         metadata={
             **capture_row(capture), "frame": gate_sweep.frame_descriptor(rungs, grid),
-            "sample_rate_hz": capture.sample_rate,
-            "direct_peak_sample": capture.peak_idx,
+            "sample_rate_hz": capture.sample_rate, "direct_peak_sample": capture.peak_idx,
             "impulse": {
                 "start_sample": start, "samples": capture.ir[start:end].tolist(),
                 "time_reference_sample": capture.peak_idx,

@@ -25,6 +25,8 @@ from typing import Callable, get_args
 import numpy as np
 import pytest
 
+from jasper.audio_measurement import excess_phase as ep
+from jasper.audio_measurement.deconv import magnitude_response
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.quality_model import TrustLevel
 
@@ -71,11 +73,6 @@ from jasper.cli import round_views as cli
 SR = 48000
 SESSION_ID = "bundle5essi0n"
 RESONANCE_HZ = 3000.0
-
-
-# --------------------------------------------------------------------------- #
-# synthetic speakers, whose answers are known before the instrument runs
-# --------------------------------------------------------------------------- #
 
 
 def _sweep(seconds: float = 1.0, f0: float = 20.0, f1: float = 20000.0) -> np.ndarray:
@@ -221,7 +218,7 @@ def test_a_minimum_phase_peak_is_classified_cuttable(peak_artifact):
     rows = peak_artifact["rows"]
     assert len(rows) == 1, [row["hz"] for row in rows]
     row = rows[0]
-    assert abs(math.log2(row["hz"] / RESONANCE_HZ)) < fx.FEATURE_HALF_OCT
+    assert abs(math.log2(row["hz"] / RESONANCE_HZ)) < ep.FEATURE_HALF_OCT
     assert row["classification"] == DEFECT_CUTTABLE
     assert row["egd_verdict"] == EGD_MIN_PHASE
     assert row["gate_verdict"] == GATE_STABLE
@@ -236,7 +233,7 @@ def test_a_minimum_phase_dip_is_classified_boostable_and_carries_its_depth(
     rows = dip_artifact["rows"]
     assert len(rows) == 1, [row["hz"] for row in rows]
     row = rows[0]
-    assert abs(math.log2(row["hz"] / RESONANCE_HZ)) < fx.FEATURE_HALF_OCT
+    assert abs(math.log2(row["hz"] / RESONANCE_HZ)) < ep.FEATURE_HALF_OCT
     assert row["classification"] == DEFECT_BOOSTABLE
     assert row["is_dip"] is True
     assert row["depth_db"] == pytest.approx(abs(row["pooled_db"]))
@@ -268,7 +265,7 @@ def test_the_detrend_shoulders_of_a_resonance_are_not_features(peak_artifact):
         if abs(math.log2(row["hz"] / RESONANCE_HZ)) <= _SHOULDER_SEARCH_OCT
     ]
     assert len(near) == 1, near
-    assert abs(math.log2(near[0] / RESONANCE_HZ)) < fx.FEATURE_HALF_OCT
+    assert abs(math.log2(near[0] / RESONANCE_HZ)) < ep.FEATURE_HALF_OCT
 
 
 #: A reflection arriving here is INSIDE the 7 ms window and OUTSIDE the 3 ms
@@ -296,7 +293,7 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     delta route deciding alone, which is the route a round with no real pose
     cloud still has.
     """
-    ir = fx.add_delayed_copy(_flat_ir(), _ROOM_ARRIVAL_GAIN, _ROOM_ARRIVAL_MS, SR)
+    ir = ep.add_delayed_copy(_flat_ir(), _ROOM_ARRIVAL_GAIN, _ROOM_ARRIVAL_MS, SR)
     bundle, dumps = _bundle(tmp_path, ir)
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
@@ -436,7 +433,7 @@ def test_fdw_5_excludes_a_reflection_the_fixed_gate_retains(tmp_path):
     the two windows disagree on this synthetic reflection the way the
     physics says they must.
     """
-    ir = fx.add_delayed_copy(
+    ir = ep.add_delayed_copy(
         _flat_ir(), _FDW_REFLECTION_GAIN, _FDW_REFLECTION_MS, SR
     )
     bundle, dumps = _bundle(tmp_path, ir)
@@ -824,7 +821,7 @@ def test_a_genuinely_non_minimum_phase_host_still_fails_c3():
     chain genuinely cannot read flat. #3493 bars clearing this control by
     widening it, and it equally bars clearing it by over-subtracting.
     """
-    host = fx.add_delayed_copy(_flat_ir(), fx.CONTROL_COMB_NMP_GAIN, 0.9, SR)
+    host = ep.add_delayed_copy(_flat_ir(), fx.CONTROL_COMB_NMP_GAIN, 0.9, SR)
     verdict = _controls(host, [1800.0, RESONANCE_HZ])["verdict"]
     assert verdict["passes"] is False
     assert "C3_min_phase_echo" in verdict["failed"]
@@ -859,7 +856,7 @@ def test_the_bias_removal_is_defined_only_where_the_injection_is_minimum_phase()
     """
     trusted = (f_trusted_floor_hz(fx.DEFAULT_GATE_MS * 1e-3), fx.TRUSTED_CEILING_HZ)
     with pytest.raises(ValueError):
-        fx.injection_excess_gd(
+        ep.injection_excess_gd(
             fx.CONTROL_COMB_NMP_GAIN, fx.CONTROL_ECHO_MS, SR, trusted_band_hz=trusted
         )
 
@@ -1356,11 +1353,11 @@ def _pose_curve(
     band_hz: tuple[float, float] = (200.0, 8000.0),
 ) -> fx.RoundPoseCurve:
     """A synthetic banked pose curve, built the same way the module's own
-    ``_resonant_ir`` fixtures are read -- :func:`fx.magnitude_response`, the
-    seam :func:`~jasper.active_speaker.crossover_v2.feature_classifier.smoothed_curve`
+    ``_resonant_ir`` fixtures are read -- :func:`magnitude_response`, the
+    seam :func:`~jasper.audio_measurement.excess_phase.smoothed_curve`
     itself uses, never a hand-rolled transform.
     """
-    freqs, db = fx.magnitude_response(ir.astype(np.float32), SR)
+    freqs, db = magnitude_response(ir.astype(np.float32), SR)
     keep = np.isfinite(db) & (freqs >= band_hz[0]) & (freqs <= band_hz[1])
     return fx.RoundPoseCurve(
         pose_id=pose_id,
@@ -1416,7 +1413,7 @@ def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
         assert entry["position_deg"] == degrees
         assert isinstance(entry["pooled_db"], float)
         assert isinstance(entry["centre_hz"], float)
-        assert abs(math.log2(entry["centre_hz"] / RESONANCE_HZ)) < fx.NEIGHBOURHOOD_OCT
+        assert abs(math.log2(entry["centre_hz"] / RESONANCE_HZ)) < ep.NEIGHBOURHOOD_OCT
     vanished_entry = by_pose["lateral_02_a01"]
     assert vanished_entry["resolved"] is False
     assert vanished_entry["pooled_db"] is None
@@ -1630,7 +1627,7 @@ def test_the_vectorised_slope_matches_a_least_squares_fit():
     hi = np.arange(2048) + 41
     lo = np.clip(lo, 0, 2048)
     hi = np.clip(hi, 0, 2048)
-    fast = fx._window_slopes(y, lo, hi)
+    fast = ep._window_slopes(y, lo, hi)
     for index in (100, 512, 1024, 2000):
         window = np.arange(lo[index], hi[index], dtype=float)
         expected = np.polyfit(window, y[lo[index] : hi[index]], 1)[0]
@@ -1642,14 +1639,14 @@ def test_a_short_window_yields_no_slope():
     y = np.arange(10, dtype=float)
     lo = np.zeros(10, dtype=int)
     hi = np.full(10, 3)
-    assert np.all(np.isnan(fx._window_slopes(y, lo, hi)))
+    assert np.all(np.isnan(ep._window_slopes(y, lo, hi)))
 
 
 def test_the_classifiable_band_keeps_a_feature_off_the_edge():
     """A verdict needs its whole neighbourhood inside the trusted band."""
     lo, hi = fx.classifiable_band_hz((357.0, 16000.0))
-    assert lo == pytest.approx(357.0 * 2 ** fx.NEIGHBOURHOOD_OCT)
-    assert hi == pytest.approx(16000.0 * 2**-fx.NEIGHBOURHOOD_OCT)
+    assert lo == pytest.approx(357.0 * 2 ** ep.NEIGHBOURHOOD_OCT)
+    assert hi == pytest.approx(16000.0 * 2**-ep.NEIGHBOURHOOD_OCT)
     assert lo > 357.0 and hi < 16000.0
 
 
@@ -1682,7 +1679,7 @@ def test_a_quiet_delayed_copy_stays_minimum_phase():
         (fx.CONTROL_COMB_MP_GAIN, True),
         (fx.CONTROL_COMB_NMP_GAIN, False),
     ):
-        taps = fx.add_delayed_copy(impulse, gain, 4 / SR * 1e3, SR)
+        taps = ep.add_delayed_copy(impulse, gain, 4 / SR * 1e3, SR)
         zeros, _, _ = tf2zpk(np.trim_zeros(taps, "b"), np.array([1.0]))
         assert all(abs(z) < 1.0 for z in zeros) is expect_inside
 

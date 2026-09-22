@@ -24,11 +24,8 @@ import pytest
 from scipy.signal import lfilter
 
 from jasper.active_speaker.crossover_v2 import feature_classification, gate_sweep
-from jasper.active_speaker.crossover_v2.feature_classifier import (
-    add_delayed_copy,
-    biquad_peaking,
-)
-from jasper.active_speaker.crossover_v2.feature_optics import CENTRE_SEARCH_OCT
+from jasper.audio_measurement.excess_phase import add_delayed_copy
+from jasper.active_speaker.crossover_v2.feature_optics import CENTRE_SEARCH_OCT, biquad_peaking
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     moved_routes,
     sweep_features,

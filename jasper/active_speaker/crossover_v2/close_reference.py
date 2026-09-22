@@ -56,20 +56,12 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
-from .feature_classifier import (
-    CLASSIFICATION_GRID_HI_HZ,
-    CLASSIFICATION_GRID_LO_HZ,
-    DEFAULT_GATE_MS,
-    classification_grid,
-    smoothed_curve,
+from jasper.audio_measurement.excess_phase import (
+    CLASSIFICATION_GRID_HI_HZ, CLASSIFICATION_GRID_LO_HZ,
+    MAGNITUDE_SMOOTH_FRACTION, NEIGHBOURHOOD_OCT, classification_grid, smoothed_curve,
 )
-from .feature_optics import (
-    DETREND_FRACTION,
-    MAGNITUDE_SMOOTH_FRACTION,
-    NEIGHBOURHOOD_OCT,
-    PHASE_GATE_LEAD_MS,
-    detrend,
-)
+from .feature_classifier import DEFAULT_GATE_MS
+from .feature_optics import DETREND_FRACTION, PHASE_GATE_LEAD_MS, detrend
 from .gate_sweep import gated_segment
 from .round_captures import (
     RoundCapturesRefused,
