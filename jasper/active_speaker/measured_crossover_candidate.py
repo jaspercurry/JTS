@@ -49,7 +49,7 @@ from .camilla_names import driver_delay_name as _driver_delay_name
 from .camilla_yaml import (
     _channels_for_role,
     _rear_stage_channels,
-    _role_polarity,
+    role_polarity,
     emit_active_speaker_baseline_config,
 )
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH, POLARITY_INVERT, POLARITY_KEEP
@@ -885,7 +885,7 @@ def driver_corrections(
     """The exact compiler-ready refinement this candidate proposes."""
 
     preset = effective_preset(candidate)
-    polarity = _role_polarity(preset)
+    polarity = role_polarity(preset)
     roles = required_driver_roles(preset.way_count)
     delays = declared_role_delays(preset)
     return {

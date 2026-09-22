@@ -234,12 +234,7 @@ def _validated_driver_corrections(
 # the two stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
-_LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
-
-
-# Public alias: a reader outside this module needs the same set to decide
-# whether a persisted linearization record is one this system wrote.
-LINEARIZATION_BIQUAD_TYPES = _LINEARIZATION_BIQUAD_TYPES
+LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
@@ -253,7 +248,7 @@ LINEARIZATION_BIQUAD_TYPES = _LINEARIZATION_BIQUAD_TYPES
 # ``SHELF_Q`` for the formula and the upstream test that pins it.
 
 
-def _linearization_slot(
+def linearization_slot(
     index: int, count: int, filters: Sequence[Mapping[str, Any]],
 ) -> str:
     """Classify one filter's role in a linearization chain by POSITION:
@@ -277,12 +272,6 @@ def _linearization_slot(
     ):
         return "taper"
     return "peak"
-
-
-# Public alias: a gate outside this module that admits a shelf must answer
-# "would the emitter accept this list" before it does, so the per-driver
-# prescription door reads this and refuses at intake rather than at emission.
-linearization_slot = _linearization_slot
 
 
 def _validated_biquad_entry(
@@ -361,7 +350,7 @@ def _validated_linearization(
             role_filters.append(_validated_biquad_entry(
                 entry,
                 label=f"linearization {role}",
-                allowed_types=_LINEARIZATION_BIQUAD_TYPES,
+                allowed_types=LINEARIZATION_BIQUAD_TYPES,
                 max_gain_db=None,
             ))
         _validate_linearization_shelf_structure(role, role_filters)
@@ -449,7 +438,7 @@ def _validate_linearization_shelf_structure(
         # shelf, a taper without a Lowshelf lead, a taper not last) is invalid.
         if (
             biquad_type in shelf_types
-            and _linearization_slot(i, n, role_filters) == "peak"
+            and linearization_slot(i, n, role_filters) == "peak"
         ):
             raise ActiveSpeakerConfigError(
                 f"linearization shelf placement for {role} is invalid: a "
@@ -474,7 +463,7 @@ def _driver_linearization_chain_names(
     peak_index = 0
     count = len(filters)
     for i in range(count):
-        slot = _linearization_slot(i, count, filters)
+        slot = linearization_slot(i, count, filters)
         if slot == "shelf":
             names.append(driver_linearization_shelf_name(role))
         elif slot == "taper":
@@ -505,7 +494,7 @@ def _emit_driver_linearization_definitions(
         peak_index = 0
         count = len(filters)
         for i, entry in enumerate(filters):
-            slot = _linearization_slot(i, count, filters)
+            slot = linearization_slot(i, count, filters)
             if slot == "shelf":
                 spec = FilterSpec(
                     name=driver_linearization_shelf_name(role),
