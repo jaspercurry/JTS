@@ -216,7 +216,7 @@ function startingCard() {
 }
 
 function tuningCard() {
-  return section('4. Tuning', view.stage === 'tune', h('p.form-hint', {}, 'Optional. Start with driver linearization, then refine the rear output, bass, and room.'),
+  return section('4. Tuning', view.stage === 'tune', h('p.form-hint', {}, 'Optional. Copy a program’s prompt to begin.'),
     view.programs.map(program => {
       const holder = h('div');
       return h('div.speaker-program', {}, h('h3', {}, program.title), h('p', {}, program.description),
