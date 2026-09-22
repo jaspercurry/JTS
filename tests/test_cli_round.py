@@ -65,7 +65,6 @@ from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pa
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
 
-
 def test_round_parser_does_not_import_numpy():
     result = subprocess.run(
         [sys.executable, "-c", (
@@ -1201,7 +1200,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
                 device=SimpleNamespace(model_key="minidsp_umik2"), evidence_store=store, manifest=manifest,
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
                 conductor=conductor, refs={}, trims={},
-                ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box, verify_only=False,
+                ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box,
                 level=plan.level, ladder=report if isinstance(report, LevelLadder) else None,
             )
             runner = wired.build_v2_wired_run_and_consume(

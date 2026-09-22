@@ -26,7 +26,7 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
     _tracking_curve,
     _verify_analysis,
-    _verify_only_conductor,
+    _stage2_conductor,
 )
 
 
@@ -129,10 +129,9 @@ def test_verify_rearm_measure_predicted_sum_era_round_trip():
 def test_delta_probe_runs_only_after_tracking_has_passed(monkeypatch):
     fakes = FakeSeams()
     freqs = np.linspace(100.0, 20000.0, 64)
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes, measure_predicted_sum=(freqs, np.zeros_like(freqs)),
-        measure_commanded_delta=(freqs, np.ones_like(freqs)),
-    )
+        measure_commanded_delta=(freqs, np.ones_like(freqs)), index_phase_map={1: PHASE_VERIFY})
     probe = Mock(wraps=c._run_delta_probe)
     monkeypatch.setattr(c, "_run_delta_probe", probe)
     fakes.verify = lambda program: dataclasses.replace(
@@ -157,4 +156,3 @@ def test_delta_probe_runs_only_after_tracking_has_passed(monkeypatch):
 # --------------------------------------------------------------------------- #
 # adversarial-review regressions (round 2)
 # --------------------------------------------------------------------------- #
-

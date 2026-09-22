@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
@@ -21,34 +20,28 @@ import secrets
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from jasper.active_speaker import preflight, preflight_live
+from jasper.active_speaker import preflight_live
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.angle_capture import (
-    BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused,
-    REGIME_SUMMED, default_run_level,
+    AngleCaptureRequest, LateralWalkRefused,
+    default_run_level,
 )
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
-    summed_sweep_band_hz,
+    build_inline_session_spec,
 )
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
-from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-from jasper.active_speaker.plan_run import RunSignals, PlanCapture, prepare_plan_captures, preview_schedule
+from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.active_speaker.bundles import mark_state
-from jasper.active_speaker.candidate_trials import tuning_trial_matches_candidate
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_FINDINGS,
     STAGE_MEASURE_CAPABILITIES,
-    STAGE_VERIFY_CAPABILITIES,
     StageOpening,
-    available_stage_priors,
     open_stage,
 )
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
@@ -59,7 +52,6 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 V2_CAPTURE_KIND_SESSION = "crossover_v2:session"
-V2_CAPTURE_KIND_VERIFY = "crossover_v2:verify"
 
 
 class CrossoverV2LocalSeamError(RuntimeError):
@@ -430,26 +422,6 @@ def _resolve_prepare_wired_mic() -> Any:
         ) from exc
 
 
-def _hand_released_plan_shape(plan_shape: Any) -> Any:
-    """The same shape, told whether a PERSON releases each of its begins.
-
-    A hand-walked round is the shape that needs saying: nothing paces it, and
-    without a hold the local runner fires every capture back to back while the
-    household is still walking to the next spot. Its begins are therefore held
-    and released by hand (``V2PlanShape.hand_released_positions``), the same
-    ``POST /crossover/v2/position-ready`` an external driver uses.
-
-    Every other shape is returned untouched: the arm already holds behind its
-    driver's report, and the tier-less recovery re-arm (``plan_shape is
-    None``) is one sweep at the mark with no walk to pace at all.
-    """
-    if plan_shape is None:
-        return plan_shape
-    if plan_shape.externally_positioned:
-        return plan_shape
-    return dataclasses.replace(plan_shape, hand_released_positions=True)
-
-
 def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
     from jasper.web import correction_crossover_v2_wired as wired
 
@@ -477,46 +449,20 @@ def _build_wired_run(conductor: Any, **host: Any) -> Callable[[Any], Any]:
     return wired.build_v2_wired_run_and_consume(conductor, **host)
 
 
-# The request field that selects which post-apply instrument a verify-only
-# prepare opens, and its one non-default value.
-VERIFY_STAGE_KEY = "stage"
-VERIFY_STAGE_POST_APPLY = "post_apply"
-VERIFY_STAGE_RECOVERY = "recovery"
-
-
-def _verify_plan_shape(
-    raw: Mapping[str, Any] | None,
-) -> Any:
-    """The caller chooses a full post-apply walk or one recovery sweep."""
-    from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
-
-    stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
-    if stage == VERIFY_STAGE_RECOVERY:
-        return None
-    if stage != VERIFY_STAGE_POST_APPLY:
-        raise CrossoverV2Refused(
-            f"unknown verify stage {stage!r} (expected "
-            f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
-        )
-    return resolve_plan_shape()
-
-
 def prepare_v2_session(
     raw: Mapping[str, Any],
     *,
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
-    verify_only: bool = False,
 ) -> V2PreparedSession:
-    """Prepare the inline run or the existing post-apply verification."""
+    """Prepare the inline measurement run."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
         wall_clock_ceiling_s,
     )
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
-    from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
     from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         CrossoverV2Session,
     )
@@ -524,167 +470,80 @@ def prepare_v2_session(
         attempt_history_from_state,
     )
 
-    if verify_only:
-        from jasper.active_speaker.crossover_v2.capture_plan import (
-            build_v2_verify_index_phase_map,
-            build_v2_verify_session_spec,
-        )
-        from jasper.active_speaker.crossover_v2.journey import (
-            PHASE_CHECK,
-            PHASE_MEASURE,
-        )
+    from jasper.active_speaker.branch_chain import confirmed_protection_sections
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+    from jasper.active_speaker.crossover_v2.journey import (
+        LATERAL_CONSUMER_FORWARD_MODEL,
+    )
+    from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
+        V2ConductorSnapshot,
+    )
 
-        if v2volume.session_volume_plan().needs_recovery:
-            raise CrossoverV2Refused(
-                "the measurement volume needs recovery; recover it before verifying"
-            )
-        state = v2state.load_v2_state() or {}
-        if not state.get("applied"):
-            raise CrossoverV2Refused(
-                "verification needs an applied measured crossover; measure and "
-                "apply first"
-            )
-        candidate_state = state.get("candidate")
-        candidate_fingerprint = (
-            candidate_state.get("fingerprint")
-            if isinstance(candidate_state, Mapping) else None
+    if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
+        raise CrossoverV2Refused("An inline v5 plan is required", code="program_plan_shape_invalid")
+    try:
+        request = AngleCaptureRequest.from_mapping(raw["plan"])
+    except LateralWalkRefused as exc:
+        raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+    except (ValueError, TypeError, CrossoverV2FlowError) as exc:
+        raise CrossoverV2Refused(str(exc), code="program_plan_shape_invalid") from exc
+    level, level_source = default_run_level(request)
+    if request.level_source == "program_default":
+        request = dataclasses.replace(request, level=level, level_source=level_source)
+    if v2volume.session_volume_plan().needs_recovery:
+        raise CrossoverV2Refused(
+            "the measurement volume needs recovery; recover it before starting "
+            "a new session"
         )
-        if tuning_trial_matches_candidate(
-            state.get("tuning_trial"), candidate_fingerprint,
-        ):
-            raise CrossoverV2Refused(
-                "this measured tuning is already applied; it does not "
-                "use the speaker-fit verification stage"
-            )
-        tuning_attempt_id = (
-            str(candidate_state.get("fingerprint") or "")
-            if isinstance(candidate_state, Mapping) else ""
+    context = resolve_conductor_context(status)
+    facts = preflight_live.read_preflight_facts(request, context=context)
+    report = preflight_levels(request, facts)
+    issue = next((issue for issue in report.issues if issue.blocking), None)
+    if issue is not None:
+        raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
+    request = report.plan
+    assert request.level.resolved is not None
+    captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
+        request, roles_bands=context.roles_bands,
+    )
+    try:
+        protection_sections = confirmed_protection_sections(
+            context.safety_profile, context.role_targets
         )
-        plan_shape = _verify_plan_shape(raw)
-        context = resolve_conductor_context(status)
-    else:
-        from jasper.active_speaker.branch_chain import confirmed_protection_sections
-        from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-        from jasper.active_speaker.crossover_v2.journey import (
-            LATERAL_CONSUMER_FORWARD_MODEL,
-        )
-        from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
-            V2ConductorSnapshot,
-        )
+    except ValueError as exc:
+        raise CrossoverV2Refused(
+            "The confirmed driver protection cannot be used for this measurement."
+        ) from exc
 
-        if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
-            raise CrossoverV2Refused("An inline v5 plan is required", code="program_plan_shape_invalid")
-        try:
-            request = AngleCaptureRequest.from_mapping(raw["plan"])
-        except LateralWalkRefused as exc:
-            raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
-        except (ValueError, TypeError, CrossoverV2FlowError) as exc:
-            raise CrossoverV2Refused(str(exc), code="program_plan_shape_invalid") from exc
-        level, level_source = default_run_level(request)
-        if request.level_source == "program_default":
-            request = dataclasses.replace(request, level=level, level_source=level_source)
-        plan_shape = None
-        if v2volume.session_volume_plan().needs_recovery:
-            raise CrossoverV2Refused(
-                "the measurement volume needs recovery; recover it before starting "
-                "a new session"
-            )
-        context = resolve_conductor_context(status)
-        facts = preflight_live.read_preflight_facts(request, context=context)
-        report = preflight_levels(request, facts)
-        issue = next((issue for issue in report.issues if issue.blocking), None)
-        if issue is not None:
-            raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
-        request = report.plan
-        assert request.level.resolved is not None
-        captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
-            request, roles_bands=context.roles_bands,
-        )
-        try:
-            protection_sections = confirmed_protection_sections(
-                context.safety_profile, context.role_targets
-            )
-        except ValueError as exc:
-            raise CrossoverV2Refused(
-                "The confirmed driver protection cannot be used for this measurement."
-            ) from exc
-
-    wired_device = _resolve_prepare_wired_mic() if verify_only else None
-    if verify_only:
-        session_plan = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED),))
-        level, level_source = default_run_level(session_plan)
-        session_plan = dataclasses.replace(
-            session_plan, level=level, level_source=level_source,
-        )
-        report = preflight.preflight(session_plan, preflight_live.read_preflight_facts(
-            session_plan, context=context, device=wired_device))
-        if report.blocking:
-            issue = next(issue for issue in report.issues if issue.blocking)
-            raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
-    plan_shape = _hand_released_plan_shape(plan_shape)
-    engine_measure_specs: dict[int, Any] = {}
-    engine_level_trims: dict[str, float] = {}
-    if not verify_only:
-        stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
-        engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}
-        engine_level_trims, _ = v2state._resolve_measurement_level_trims(
-            request.template, preset=context.preset, topology=context.topology,
-        )
-        if request.template.level_matched and not engine_level_trims:
-            raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
-        lateral_prompts = tuple(capture.resolved(request).prompt
-            for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
+    stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
+    engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}
+    engine_level_trims, _ = v2state._resolve_measurement_level_trims(
+        request.template, preset=context.preset, topology=context.topology,
+    )
+    if request.template.level_matched and not engine_level_trims:
+        raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
+    lateral_prompts = tuple(capture.resolved(request).prompt
+        for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = v2evidence.open_v2_evidence_store(context.topology)
-    if verify_only:
-        import numpy as np
-
-        priors_raw = state.get("verify_priors") or {}
-        sum_raw = priors_raw.get("predicted_sum") if isinstance(priors_raw, Mapping) else None
-        predicted_sum = None
-        if isinstance(sum_raw, Mapping) and sum_raw.get("freqs_hz"):
-            predicted_sum = (
-                np.asarray(sum_raw["freqs_hz"], dtype=float),
-                np.asarray(sum_raw["magnitude_db"], dtype=float),
-            )
-        predicted_spec = (
-            priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
+    prior_raw = v2state.load_v2_state()
+    prior_snapshot = (
+        V2ConductorSnapshot(
+            session_id=str(prior_raw.get("session_id") or ""),
+            accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
+            applied=bool(prior_raw.get("applied")),
+            gain_plan_db=prior_raw.get("gain_plan_db"),
+            measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
+            attempt_history=attempt_history_from_state(prior_raw),
         )
-        predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
-        commanded_delta = v2durable.commanded_delta_prior_from_state(state)
-        declared_transfer = v2durable.declared_transfer_prior_from_state(state)
-        proposal_fingerprint = (
-            str(priors_raw.get("proposal_fingerprint") or "")
-            if isinstance(priors_raw, Mapping) else ""
-        )
-        entry_baseline = v2durable.entry_baseline_prior_from_state(state)
-        alignment_objective = str(
-            (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
-             else "") or ""
-        )
-        gate_ms = (
-            priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
-        )
-        pilot_transfer_prior = v2durable.pilot_transfer_prior_from_state(state)
-    else:
-        prior_raw = v2state.load_v2_state()
-        prior_snapshot = (
-            V2ConductorSnapshot(
-                session_id=str(prior_raw.get("session_id") or ""),
-                accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
-                applied=bool(prior_raw.get("applied")),
-                gain_plan_db=prior_raw.get("gain_plan_db"),
-                measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
-                attempt_history=attempt_history_from_state(prior_raw),
-            )
-            if isinstance(prior_raw, Mapping)
-            else None
-        )
+        if isinstance(prior_raw, Mapping)
+        else None
+    )
 
     acknowledgement_binding = secrets.token_urlsafe(24)
     signals = RunSignals()
-    position_gate = PositionGate(mover=request.mover) if not verify_only else PositionGate() if plan_shape and plan_shape.positions_gated else None
+    position_gate = PositionGate(mover=request.mover)
     capture_session_id = "wired-" + secrets.token_hex(8)
-    spec = None if verify_only else build_inline_session_spec(
+    spec = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         safety_profile=context.safety_profile, role_targets=context.role_targets,
@@ -692,31 +551,19 @@ def prepare_v2_session(
         retries_per_pose=request.retries_per_pose,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )
-    if not verify_only:
-        evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
-        schedule = preview_schedule(request, captures, context)
-        if position_gate:
-            position_gate.publish(schedule)
+    evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
+    schedule = preview_schedule(request, captures, context)
+    if position_gate:
+        position_gate.publish(schedule)
 
     held: v2evidence._HeldSession | None = None
 
     def _open() -> Any:
-        nonlocal spec
-        device = wired_device if verify_only else _resolve_prepare_wired_mic()
+        device = _resolve_prepare_wired_mic()
         assert device is not None
-        if verify_only:
-            spec = build_v2_verify_session_spec(
-                context.fc_hz,
-                measurement_band_hz=measurement_band_hz(context.roles_bands),
-                acknowledgement_binding=acknowledgement_binding,
-                plan_shape=plan_shape,
-                default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
-            )
-        assert spec is not None
         ceiling_s = wall_clock_ceiling_s(spec.capture_plan.capture_target)
         rc = _mint_wired_session(device, spec)
-        if not verify_only:
-            rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
+        rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
         session_id = rc.pi_session.session_id
         v2volume.session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
         publish_check, publish_candidate, refs = v2evidence.bind_evidence_publishers(
@@ -735,32 +582,17 @@ def prepare_v2_session(
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
             roles=context.roles_bands,
-            protection_sections_by_role=(
-                None if verify_only else protection_sections
-            ),
+            protection_sections_by_role=protection_sections,
             declared_sensitivities=context.declared_sensitivities,
             provenance=capture_provenance,
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
-            program_for_spec=lambda spec, gain: (
-                conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
-                else compose_plan_program(conductor, spec, gain, context=context)),
+            program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain, context=context),
         )
-        if verify_only:
-            opening = open_stage(
-                STAGE_VERIFY_CAPABILITIES,
-                index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
-                available=available_stage_priors(
-                    commanded_delta=commanded_delta is not None,
-                    predicted_sum=predicted_sum is not None,
-                    entry_baseline=entry_baseline is not None,
-                ),
-            )
-        else:
-            opening = open_stage(
-                STAGE_MEASURE_CAPABILITIES,
-                index_phase_map=stage1_index_phase,
-                verify_capture_target=0,
-            )
+        opening = open_stage(
+            STAGE_MEASURE_CAPABILITIES,
+            index_phase_map=stage1_index_phase,
+            verify_capture_target=0,
+        )
         seams = bind_v2_stage_seams(
             opening,
             evidence_store=evidence_store,
@@ -772,71 +604,33 @@ def prepare_v2_session(
             camilla_factory=camilla_factory,
             provenance=capture_provenance, layout=context.preset.channel_map.layout,
         )
-        if verify_only:
-            conductor = CrossoverV2Session(
-                session_id=session_id,
-                source_preset=context.preset,
-                positions_gated=bool(plan_shape and plan_shape.positions_gated),
-                roles_bands=context.roles_bands,
-                fc_hz=context.fc_hz,
-                driver_caps_dbfs=context.driver_caps_dbfs,
-                driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-                session_volume_db=context.session_volume_db,
-                seams=seams,
-                driver_spacing_m=context.driver_spacing_m,
-                driver_class_by_role=context.driver_class_by_role,
-                fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
-                radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-                accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-                applied=True,
-                gain_plan_db=state.get("gain_plan_db"),
-                measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
-                index_phase_map=opening.plan.index_phase_map,
-                measure_predicted_sum=predicted_sum,
-                measure_predicted_spec_report=predicted_spec,
-                measure_commanded_delta=commanded_delta,
-                measure_declared_transfer=declared_transfer,
-                measure_proposal_fingerprint=proposal_fingerprint,
-                measure_entry_baseline=entry_baseline,
-                measure_alignment_objective=alignment_objective,
-                measure_gate_window_ms=(
-                    float(gate_ms) if isinstance(gate_ms, (int, float)) else None
-                ),
-                verify_pilot_transfer_prior=pilot_transfer_prior,
-                attempt_history=attempt_history_from_state(state),
-                series_position=series_position_from_state(state),
-                speaker_id=context.topology.topology_id,
-                tuning_attempt_id=tuning_attempt_id,
-            )
-        else:
-            series_position = series_position_from_state(prior_raw)
-            conductor = CrossoverV2Session.hydrate(
-                prior_snapshot,
-                session_id=session_id,
-                source_preset=context.preset,
-                roles_bands=context.roles_bands,
-                fc_hz=context.fc_hz,
-                driver_caps_dbfs=context.driver_caps_dbfs,
-                driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-                session_volume_db=context.session_volume_db,
-                seams=seams,
-                positions_gated=True,
-                index_phase_map=opening.plan.index_phase_map,
-                post_apply_verifies=opening.plan.post_apply_verifies,
-                driver_spacing_m=context.driver_spacing_m,
-                driver_class_by_role=context.driver_class_by_role,
-                fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
-                radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
-                lateral_prompts=lateral_prompts,
-                measure_specs_by_index=engine_measure_specs,
-                measurement_protection_sections_by_role=protection_sections,
-                sound_design_revision=context.sound_design_revision,
-                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-                speaker_id=context.topology.topology_id,
-                series_position=series_position,
-            )
+        series_position = series_position_from_state(prior_raw)
+        conductor = CrossoverV2Session.hydrate(
+            prior_snapshot,
+            session_id=session_id,
+            source_preset=context.preset,
+            roles_bands=context.roles_bands,
+            fc_hz=context.fc_hz,
+            driver_caps_dbfs=context.driver_caps_dbfs,
+            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+            session_volume_db=context.session_volume_db,
+            seams=seams,
+            positions_gated=True,
+            index_phase_map=opening.plan.index_phase_map,
+            post_apply_verifies=opening.plan.post_apply_verifies,
+            driver_spacing_m=context.driver_spacing_m,
+            driver_class_by_role=context.driver_class_by_role,
+            fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
+            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
+            lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+            lateral_prompts=lateral_prompts,
+            measure_specs_by_index=engine_measure_specs,
+            measurement_protection_sections_by_role=protection_sections,
+            sound_design_revision=context.sound_design_revision,
+            tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
+            speaker_id=context.topology.topology_id,
+            series_position=series_position,
+        )
         v2state.persist_conductor_state(conductor, failure_code=None, evidence=refs)
         manifest = RunManifest(session_id, v2evidence._record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
@@ -845,27 +639,9 @@ def prepare_v2_session(
             host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
-            ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
-                            if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
+            ceiling_db_spl=report.spl_ceiling_db_spl,
             level=report.plan.level, ladder=report if isinstance(report, LevelLadder) else None,
         )
-        run_request = None if verify_only else request
-        run_captures = None if verify_only else captures
-        if verify_only:
-            run_request = AngleCaptureRequest(
-                level=report.plan.level,
-                level_source=report.plan.level_source,
-                stops=tuple(
-                    AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
-                              elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
-                    for entry in spec.capture_plan.entries
-                ),
-            )
-            run_captures = tuple(PlanCapture(stop, MeasureSpec(
-                kind="verify", graph_scope="candidate", candidate_id=BASE_CANDIDATE, positions=(stop.angle_deg,),
-                vertical_deg=stop.elevation_deg, program_phase=opening.plan.index_phase_map[index],
-                sweep_band_hz=summed_sweep_band_hz(context.roles_bands),
-            )) for index, stop in enumerate(run_request.stops, 1))
         nonlocal held
         source_run = _build_wired_run(
             conductor,
@@ -875,7 +651,7 @@ def prepare_v2_session(
             evidence_refs=refs,
             ceiling_s=ceiling_s,
             manifest=manifest, analyze=analyze, assessor=assessor, execute=execute,
-            request=run_request, captures=run_captures,
+            request=request, captures=captures,
         )
         held = v2evidence._HeldSession(tuning=tuning, run=source_run)
         return rc
@@ -909,7 +685,7 @@ def prepare_v2_session(
                     await publish_round_packet(Path(evidence_store.bundle_dir), position_gate)
 
     return V2PreparedSession(
-        label=V2_CAPTURE_KIND_VERIFY if verify_only else V2_CAPTURE_KIND_SESSION,
+        label=V2_CAPTURE_KIND_SESSION,
         join_spec=spec,
         session_id=capture_session_id,
         open=_open,

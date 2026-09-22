@@ -178,7 +178,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
     """POST /crossover/* — secure active-crossover measurement."""
     path = route_path(handler.path)
 
-    if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
+    if path == "/crossover/v2/session":
         # v2 commission sessions (Wave 5a). ValueError covers both the
         # host's typed CrossoverV2Refused (a subclass) and shared
         # precondition refusals — same contract as the capture routes.
@@ -186,7 +186,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
             handler._send_json(
                 correction_handlers._handle_crossover_v2_capture(
                     handler,
-                    verify_only=(path == "/crossover/v2/verify"),
                     idle_hold=handler.idle_hold,
                 )
             )
@@ -592,7 +591,6 @@ _POST_ROUTES = {
     # v2 session flow — the only crossover-measurement flow. There is no
     # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
     "/crossover/v2/session": _dispatch_crossover,
-    "/crossover/v2/verify": _dispatch_crossover,
     "/crossover/v2/republish": _dispatch_crossover,
     "/crossover/v2/apply": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has

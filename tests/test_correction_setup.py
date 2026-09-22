@@ -1,17 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the measurement daemon's shared seams and HTTP dispatch.
-
-  1. The capture slot, its idle hold and the ``_run_async`` bridge every
-     measurement route shares.
-  2. Microphone calibration: fetch, upload, the household-mic record and
-     the setup reference the crossover walk resolves through it.
-  3. Healthz returns plain-text "ok" so systemd / curl probes work.
-  4. End-to-end via a real ThreadingHTTPServer to confirm the routes
-     dispatch from real HTTP — same shape as test_voice_setup.
-"""
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
@@ -31,7 +20,6 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-
 from jasper.web import (
     correction_capture,
     correction_handlers,
@@ -45,7 +33,6 @@ from jasper.platform.systemd import no_hold
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from ._web_test_helpers import make_csrf_session, request_with_csrf
-
 
 def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
     stop_event = threading.Event()
@@ -85,14 +72,7 @@ def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
     finally:
         release_cleanup.set()
 
-
 class _RecordingIdleHold:
-    """Stand-in for ``IdleShutdownTracker.hold`` that counts acquire/release.
-
-    Same shape as the real seam — call it with a label, get a context manager —
-    so a test can assert the pairing without a live tracker or a real timer
-    thread.
-    """
 
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []
@@ -115,16 +95,7 @@ class _RecordingIdleHold:
     def labels(self) -> list[str]:
         return [label for _kind, label in self.events]
 
-
 def test_the_capture_spawn_seam_has_no_silent_idle_hold_default():
-    """Whether a capture runner outlives its request is a per-call-site decision.
-
-    ``_run_capture``'s job IS spawning work that outlives the POST, and
-    the socket-activated process exits after ~600 s with nothing inbound
-    (#1854). A default — safe or unsafe — makes that decision invisible and
-    lets the next call site inherit it silently. Required keyword-only means a
-    site that forgets fails at the call, not on a household's speaker.
-    """
     param = inspect.signature(correction_capture._run_capture).parameters["idle_hold"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is inspect.Parameter.empty, (
@@ -132,18 +103,7 @@ def test_the_capture_spawn_seam_has_no_silent_idle_hold_default():
         "explicitly"
     )
 
-
 def test_capture_holds_the_idle_exit_for_the_whole_background_session():
-    """The background runner keeps the socket-activated wizard alive (#1854).
-
-    2026-07-29 JTS3: a crossover-v2 session's last INBOUND request was the
-    envelope GET the phone made before it navigated to the capture origin.
-    Everything after that — status polling, sweep playback, analysis, apply,
-    verify — ran on background workers holding nothing, so correction-web's
-    600 s idle exit fired mid-verify and `os._exit(0)`'d the analysis away.
-    The hold is taken on the request thread before the runner is scheduled and
-    released only when the runner reaches a terminal state.
-    """
     idle_hold = _RecordingIdleHold()
     release_runner = threading.Event()
     runner_entered = threading.Event()
@@ -165,8 +125,6 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
             ),
             idle_hold=idle_hold,
         )
-        # Held from the moment the POST returns — before the runner has even
-        # been scheduled, which is the window a phone-only session sits in.
         assert idle_hold.events == [("acquire", "capture:crossover_v2:session")]
         assert runner_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert idle_hold.active == 1
@@ -186,7 +144,6 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
         ("acquire", "capture:crossover_v2:session"),
         ("release", "capture:crossover_v2:session"),
     ]
-
 
 @pytest.mark.parametrize("exc,code", [
     (RuntimeError("link timeout"), None),
@@ -235,7 +192,6 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
         ("release", "capture:crossover_v2:verify"),
     ]
 
-
 def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     monkeypatch,
 ):
@@ -274,40 +230,22 @@ def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
         "capture:crossover_v2:session", "capture:crossover_v2:session",
     ]
 
-
 def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     monkeypatch,
 ):
-    """The one background lifetime a v2 session still owns (#1854).
-
-    RE-DERIVED by PR-T3: this used to assert BOTH lifetimes — the capture
-    runner, held by ``_run_capture``, and the auto-apply worker thread
-    the preparer spawned, which could outlive it. The two-stage split removed
-    that worker: the apply is now a household POST served in-request, so the
-    idle tracker's ordinary in-flight-request accounting holds the process for
-    it and the preparers take no ``idle_hold`` at all. What remains is the
-    runner's hold, which is still the one #1854 was actually about.
-    """
     idle_hold = _RecordingIdleHold()
     seen: dict[str, object] = {}
 
-    def _fake_prepare(raw, *, status, run_async, camilla_factory, verify_only):
+    def _fake_prepare(raw, *, status, run_async, camilla_factory):
         seen["prepare_kwargs"] = {
-            "status", "run_async", "camilla_factory", "verify_only",
+            "status", "run_async", "camilla_factory",
         }
         return SimpleNamespace(
             label="crossover_v2:session",
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
             request_stop=lambda reason: None,
-            # An ungated session carries no position gate; the field is
-            # stated rather than omitted so this stub keeps matching the real
-            # V2PreparedSession the dispatch reads.
             position_gate=None,
-            # #2662 W2b: the dispatch forwards the session's two local signals
-            # — the all-spots-measured confirmation and the per-take retake
-            # (#2879). Stated rather than omitted so this stub keeps matching
-            # the real V2PreparedSession.
             request_complete=None,
             request_retake=None, join_spec=None, session_id="test",
         )
@@ -327,19 +265,13 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     monkeypatch.setattr(correction_capture, "_stage_capture", _fake_run_capture)
 
     correction_handlers._handle_crossover_v2_capture(
-        None, verify_only=False, idle_hold=idle_hold,
+        None, idle_hold=idle_hold,
     )
 
-    # The preparer takes no hold any more — and cannot silently regrow one
-    # unnoticed, because a stub that accepted extra kwargs would still fail
-    # this signature check.
     assert "idle_hold" not in seen["prepare_kwargs"]
     assert "idle_hold" not in inspect.signature(v2host.prepare_v2_session).parameters
     assert seen["orchestrator"] is idle_hold
 
-    # ...and the route reads it off the handler class make_server binds.
-    # main() handing tracker.hold to make_server is pinned by the shared wizard
-    # CLI contract tests.
     from jasper.platform import systemd as _systemd
 
     built: dict[str, object] = {}
@@ -351,44 +283,18 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     correction_setup.make_server(0, idle_hold=idle_hold)
     assert built["cls"].idle_hold is idle_hold
 
-
-@pytest.mark.parametrize(
-    ("verify_only", "expected_label"),
-    [
-        pytest.param(False, "crossover_v2:session", id="session-route"),
-        pytest.param(True, "crossover_v2:verify", id="verify-route"),
-    ],
-)
 def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
-    monkeypatch, verify_only, expected_label,
+    monkeypatch,
 ):
-    """Which STAGE a route opens, carried through the dispatch to the kind.
-
-    ``/crossover/v2/session`` and ``/crossover/v2/verify`` are one handler
-    separated by one boolean, and since the two preparers converged that boolean
-    is the whole of the separation. Nothing pinned it: hardcoding
-    ``verify_only=False`` at the call site passed every suite, because the
-    handler had only ever been driven for stage 1.
-
-    Asserted at BOTH ends of the hop — the flag the preparer is handed, and the
-    label the capture kind ends up carrying — so neither a dropped argument nor a
-    preparer that ignores it can pass. The expected labels are spelled as
-    literals rather than read back off the module, because they are the wire
-    identity the capture lifecycle keys on.
-    """
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
     seen: dict[str, object] = {}
 
-    def _fake_prepare(raw, *, status, run_async, camilla_factory, verify_only):
-        seen["verify_only"] = verify_only
+    def _fake_prepare(raw, *, status, run_async, camilla_factory):
         return SimpleNamespace(
-            # The real preparer's own line, so the label this route surfaces is
-            # the stage the route asked for rather than one the stub chose.
             label=(
-                v2host.V2_CAPTURE_KIND_VERIFY if verify_only
-                else v2host.V2_CAPTURE_KIND_SESSION
+                v2host.V2_CAPTURE_KIND_SESSION
             ),
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
@@ -409,11 +315,10 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
     monkeypatch.setattr(correction_capture, "_run_capture", _fake_run_capture)
     monkeypatch.setattr(correction_capture, "_stage_capture", _fake_run_capture)
 
-    correction_handlers._handle_crossover_v2_capture(None, verify_only=verify_only)
+    correction_handlers._handle_crossover_v2_capture(None)
 
-    assert seen["verify_only"] is verify_only
+    expected_label = "crossover_v2:session"
     assert seen["kind"].label == expected_label
-
 
 def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
@@ -433,21 +338,7 @@ def test_capture_stop_callback_is_atomic_with_starting_state():
     finally:
         correction_capture._set_capture_slot(None)
 
-
 def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
-    """W6 hardware run 3 finding G: a bare OSError from the v2 crossover's
-    LOCAL play/DSP seam (the DSP writer lock's os.open hitting a read-only
-    config_dir, finding F) used to leak the raw errno string —
-    "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'" —
-    onto the wizard's capture status line via the generic str(exc) fallback.
-    build_v2_run_and_consume wraps it as CrossoverV2LocalSeamError before it
-    escapes the seam (see
-    tests/test_correction_crossover_v2_endpoints.py::
-    test_local_seam_oserror_from_play_maps_to_internal_error); this pins the
-    household-facing translation, pulled from the SAME REASON_REGISTRY copy
-    the v2 envelope itself renders for internal_error — never the raw
-    exception. The raw string still reaches the journal unchanged; only the
-    household-facing surface is sanitized here."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_INTERNAL_ERROR,
         REASON_REGISTRY,
@@ -461,7 +352,6 @@ def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message
-
 
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
@@ -498,16 +388,7 @@ def test_run_async_timeout_waits_for_coroutine_cleanup():
     worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert failures == []
 
-
 def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
-    """Callers arriving DURING loop startup all get the one loop, running.
-
-    Two loops means two capture owners. Gating re-creation on
-    ``_loop.is_running()`` read False between ``Thread.start()`` and
-    ``run_forever()``, so a caller landing in that window built a second loop
-    despite the lock. The gate below holds the window open for the whole race
-    rather than hoping to hit it.
-    """
     prior_loop = correction_runtime._loop
     prior_thread = correction_runtime._loop_thread
     prior_running = correction_runtime._loop_running.is_set()
@@ -546,8 +427,6 @@ def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
     ]
     try:
         threads[0].start()
-        # The first loop thread is now parked before run_forever(): every
-        # later caller arrives inside the startup window.
         assert at_the_gate.acquire(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         for thread in threads[1:]:
             thread.start()
@@ -582,7 +461,6 @@ def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
         for loop in built:
             if not loop.is_running():
                 loop.close()
-
 
 def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     cleanup_started = threading.Event()
@@ -631,7 +509,6 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     assert finished.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
-
 def test_read_json_body_rejects_invalid_content_length():
     class Handler:
         headers = {"Content-Length": "not-a-number"}
@@ -640,7 +517,6 @@ def test_read_json_body_rejects_invalid_content_length():
     with pytest.raises(correction_runtime.BadRequest, match="Content-Length"):
         correction_runtime.read_json_body(Handler())
 
-
 def test_read_wav_body_rejects_invalid_content_length():
     class Handler:
         headers = {"Content-Length": "not-a-number"}
@@ -648,7 +524,6 @@ def test_read_wav_body_rejects_invalid_content_length():
 
     with pytest.raises(correction_runtime.BadRequest, match="Content-Length"):
         correction_runtime.read_wav_body(Handler())
-
 
 def test_read_wav_body_rejects_large_or_incomplete_body():
     class TooLarge:
@@ -665,19 +540,9 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
     with pytest.raises(correction_runtime.BadRequest, match="incomplete"):
         correction_runtime.read_wav_body(Incomplete())
 
-
-# ---------- End-to-end via the actual HTTP server --------------------------
-
-
 def _post_with_csrf(base: str, path: str, data: bytes, **kwargs):
-    """POST with a CSRF cookie minted from a page this daemon serves.
-
-    The mint page has to be one the daemon renders through ``begin_request``;
-    ``/sync`` is the cheapest of them.
-    """
     kwargs.setdefault("session", make_csrf_session(base, page_path="/sync"))
     return request_with_csrf(base, path, data, **kwargs)
-
 
 def _start_server() -> tuple[ThreadingHTTPServer, str]:
     server = correction_setup.make_server(
@@ -687,13 +552,7 @@ def _start_server() -> tuple[ThreadingHTTPServer, str]:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{port}"
 
-
 def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
-    """This daemon also serves the page nginx mounts at /sound/pair/sync/:
-    manifest label as <title> and header, back to the parent
-    (docs/web-ia.md §2). The public path is pinned in
-    test_landing_page_html.py; the daemon's own route stays /sync, the
-    sibling of /crossover and /bass on this backend."""
     server, base = _start_server()
     try:
         resp = urllib.request.urlopen(f"{base}/sync", timeout=5)
@@ -708,7 +567,6 @@ def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
     assert 'href="/sound/pair/"' in body
     assert "/assets/sync/sync.css?v=" in body
 
-
 def test_e2e_unknown_path_404s():
     server, base = _start_server()
     try:
@@ -722,10 +580,7 @@ def test_e2e_unknown_path_404s():
         server.shutdown()
         server.server_close()
 
-
 def test_e2e_invalid_json_returns_400():
-    """A body that is not a JSON object is answered before the route body
-    runs, so no route sees a half-parsed request."""
     server, base = _start_server()
     try:
         _post_with_csrf(
@@ -738,7 +593,6 @@ def test_e2e_invalid_json_returns_400():
     finally:
         server.shutdown()
         server.server_close()
-
 
 def _stored_umik2(tmp_path, *, serial="810-8494"):
     """Establish a UMIK-2 calibration and remember it as the household mic."""
@@ -763,7 +617,6 @@ def _stored_umik2(tmp_path, *, serial="810-8494"):
     )
     return record
 
-
 def _setup_reference(record, *, model="minidsp_umik2"):
     """The reference shape the measurement source mints from the record."""
     return {
@@ -773,7 +626,6 @@ def _setup_reference(record, *, model="minidsp_umik2"):
             "model": model,
         },
     }
-
 
 def test_setup_reference_resolves_the_remembered_calibration(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
@@ -786,10 +638,7 @@ def test_setup_reference_resolves_the_remembered_calibration(tmp_path, monkeypat
     assert resolved is not None
     assert resolved.calibration_id == record.calibration_id
 
-
 def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch):
-    """An upload-provenance record resolves identically: the reference names a
-    calibration_id, not how the household established it."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
@@ -818,7 +667,6 @@ def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch)
     assert resolved is not None
     assert resolved.calibration_id == record.calibration_id
 
-
 @pytest.mark.parametrize(
     ("device", "expect_applied"),
     (
@@ -832,10 +680,6 @@ def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch)
 def test_setup_reference_refuses_a_different_mic(
     tmp_path, monkeypatch, device, expect_applied,
 ):
-    """The 2026-07-20 incident: the reference names the household's UMIK-2 but
-    THIS capture reports a Dayton iMM-6C. Refusing answers None, so the
-    caller's uncalibrated-analysis path takes over — never a blocked capture,
-    and never a re-persisted wrong pairing."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
@@ -852,7 +696,6 @@ def test_setup_reference_refuses_a_different_mic(
         assert resolved is None
     assert household_path.read_text() == before  # never re-persisted either way
 
-
 def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     monkeypatch.setenv(
@@ -867,7 +710,6 @@ def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
     assert "event=correction.calibration_device_identity_mismatch" in caplog.text
     assert "stored_model=minidsp_umik2" in caplog.text
 
-
 def test_setup_reference_without_a_calibration_resolves_to_nothing(
     tmp_path, monkeypatch,
 ):
@@ -881,10 +723,7 @@ def test_setup_reference_without_a_calibration_resolves_to_nothing(
     assert v2evidence.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) \
         is None
 
-
 def test_a_stale_setup_reference_is_a_named_rejection(tmp_path, monkeypatch):
-    """A reference to a calibration that is no longer on disk raises loudly
-    with household-facing copy, rather than silently measuring uncalibrated."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
@@ -902,7 +741,6 @@ def test_a_stale_setup_reference_is_a_named_rejection(tmp_path, monkeypatch):
         )
     assert not household_path.exists()  # no write on a resolution miss
 
-
 def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     monkeypatch.setenv(
@@ -913,7 +751,6 @@ def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
         v2evidence.resolve_setup_calibration(
             {"calibration": {"mode": "stored", "model": "minidsp_umik2"}}, None,
         )
-
 
 def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeypatch):
     cal_root = tmp_path / "cal"
@@ -949,19 +786,11 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     assert hint.model == "minidsp_umik2"
     assert hint.serial_display == "8494"
     assert hint.calibration_id == record.calibration_id
-    # A record that resolves cleanly gates the phone's one-tap "stored"
-    # confirmation on this flag.
     assert hint.resolvable is True
-
 
 def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
     tmp_path, monkeypatch,
 ):
-    """`resolvable` is deliberately a SECOND, independent resolver call, not
-    inferred from `resolved_household_mic()` having just succeeded — so a
-    resolver hiccup between the two calls degrades to "no one-tap" (the hint
-    still ships, just without `resolvable`) instead of dropping the whole
-    hint or raising."""
     cal_root = tmp_path / "cal"
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
@@ -993,8 +822,6 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
 
     def flaky_resolve(household, *, root=None):
         calls.append(household)
-        # First call is `resolved_household_mic()` building the hint's other
-        # fields; second is the dedicated `resolvable` check.
         if len(calls) == 1:
             return resolve_household_mic_calibration(household, root=root)
         return None
@@ -1006,7 +833,6 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
     assert hint.calibration_id == record.calibration_id
     assert hint.resolvable is False  # but the one-tap confirm is not offered
     assert len(calls) == 2
-
 
 def test_e2e_correction_posts_require_csrf():
     server, base = _start_server()
@@ -1026,7 +852,6 @@ def test_e2e_correction_posts_require_csrf():
     finally:
         server.shutdown()
         server.server_close()
-
 
 def test_sync_analyze_rejects_oversized_capture_before_body_read():
     handler_cls = correction_setup._make_handler_class(
@@ -1049,11 +874,3 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 
     assert sent["status"] == 400
     assert "WAV body too large" in sent["payload"]["error"]
-
-
-# --- Bug 1 regression: calibration↔device mismatch backstop -----------------
-# A vendor measurement-mic calibration applied to phone-built-in-mic audio
-# silently invalidates the measurement. The browser blocks it, but this
-# server-side gate is the reliable backstop. Reproduces the cmm31555 iMM-6C
-# run on 2026-06-04 where input_device.browser_label was "iPhone Microphone".
-

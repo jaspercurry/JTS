@@ -59,7 +59,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_cloud_index_phase_map,
     build_inline_session_spec,
     LATERAL_MARK_PROMPT,
-    build_v2_verify_session_spec,
     v2_first_begin_timeout_s,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
@@ -2203,10 +2202,6 @@ def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatc
         "absolute_worst_hz": None,
         "candidate_fingerprint": "room-candidate-fingerprint",
     }
-    with pytest.raises(refusal_copy.CrossoverV2Refused):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
-        )
 
 
 def test_a_session_that_verified_still_resolves_to_done():
@@ -3797,23 +3792,19 @@ def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
     assert hint.resolvable is True
 
 
-@pytest.mark.parametrize("verify_only", [False, True])
 @pytest.mark.parametrize("with_calibration", [False, True])
 def test_inline_and_verify_specs_carry_the_default_calibration_hint(
-    tmp_path, monkeypatch, verify_only, with_calibration,
+    tmp_path, monkeypatch, with_calibration,
 ):
     record = _seed_household_mic(tmp_path, monkeypatch)
     hint = v2evidence.default_setup_calibration_for_v2()
     assert hint is not None
     kwargs = {"default_setup_calibration": hint} if with_calibration else {}
-    if verify_only:
-        spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING, **kwargs)
-    else:
-        spec = build_inline_session_spec(
-            [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK), LATERAL_MARK_PROMPT, "base")],
-            roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING,
-            retries_per_pose=0, **kwargs,
-        )
+    spec = build_inline_session_spec(
+        [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK), LATERAL_MARK_PROMPT, "base")],
+        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING,
+        retries_per_pose=0, **kwargs,
+    )
     wire = spec.to_dict()
     if with_calibration:
         assert wire["default_setup"]["calibration"]["calibration_id"] == record.calibration_id
@@ -6048,7 +6039,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
 
 
 @pytest.mark.parametrize("route,handler_name", [
-    ("session", "capture"), ("verify", "capture"), ("apply", "apply"),
+    ("session", "capture"), ("apply", "apply"),
     ("position-ready", "position_ready"), ("complete", "complete"),
     ("retake", "retake"),
 ])
@@ -6213,33 +6204,6 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(
     assert plan["level"]["level_db"] == reference
     assert plan["level_source"] == level_source
     assert v2state.load_v2_state() == before
-
-
-@pytest.mark.parametrize(("reference", "level_source"), [(-18.0, "seat_reference"), (None, "program_default")])
-def test_verify_round_defaults_its_structured_level(monkeypatch, reference, level_source):
-    class PlanRead(Exception):
-        pass
-
-    captured = {}
-    _store_seat_reference(reference)
-    v2state.save_v2_state({"applied": True})
-    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: object())
-    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
-    monkeypatch.setattr(v2host.preflight_live, "read_preflight_facts", lambda *args, **kwargs: object())
-
-    def read_plan(plan, _facts):
-        captured.update(plan.to_dict())
-        raise PlanRead
-
-    monkeypatch.setattr(v2host.preflight, "preflight", read_plan)
-    with pytest.raises(PlanRead):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
-        )
-
-    assert captured["level"]["level_db"] == reference
-    assert captured["level_source"] == level_source
 
 
 @pytest.mark.parametrize("levels,phases", [

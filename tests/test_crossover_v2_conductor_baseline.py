@@ -59,7 +59,7 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _run_phase,
     _verify_analysis,
-    _verify_only_conductor,
+    _stage2_conductor,
 )
 
 
@@ -124,12 +124,11 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
         written.append(dict(observation))
         return True
 
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes,
         seams=replace(fakes.seams(), record_model_error=record),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     first = _run_phase(c, 1, 1)
     repeated = _run_phase(c, 1, 2)
 
@@ -164,24 +163,22 @@ def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_pat
         return True
 
     first_fakes = FakeSeams()
-    first = _verify_only_conductor(
+    first = _stage2_conductor(
         first_fakes,
         seams=replace(first_fakes.seams(), record_model_error=record),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     assert _run_phase(first, 1, 1)["accepted"] is True
     assert len(load_state(path)["model_error"]) == 1
 
     # Simulate a crash before the host persisted ``first.attempt_history``:
     # rebuild with no history but the same applied-candidate identity.
     recovered_fakes = FakeSeams()
-    recovered = _verify_only_conductor(
+    recovered = _stage2_conductor(
         recovered_fakes,
         seams=replace(recovered_fakes.seams(), record_model_error=record),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     assert _run_phase(recovered, 1, 1)["accepted"] is True
 
     records = load_state(path)["model_error"]
@@ -242,13 +239,12 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     recovered_fakes.verify = lambda program: _verify_analysis(
         program, max_db=0.7, n_graded_bins=80,
     )
-    recovered = _verify_only_conductor(
+    recovered = _stage2_conductor(
         recovered_fakes,
         seams=replace(recovered_fakes.seams(), record_model_error=record),
         attempt_history=history,
         tuning_attempt_id="candidate-current",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     with caplog.at_level(logging.WARNING):
         assert _run_phase(recovered, 1, 1)["accepted"] is True
 
@@ -279,12 +275,11 @@ def test_model_error_store_failure_warns_without_blocking_verify(caplog):
         raise OSError("synthetic full disk")
 
     fakes = FakeSeams()
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes,
         seams=replace(fakes.seams(), record_model_error=fail_write),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     with caplog.at_level(logging.WARNING):
         verdict = _run_phase(c, 1, 1)
 
@@ -315,12 +310,11 @@ def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
         raise MemoryError("synthetic out-of-family store failure")
 
     fakes = FakeSeams()
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes,
         seams=replace(fakes.seams(), record_model_error=unexpected_write),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     # The raise is TOLERATED rather than allowed to end the test, because the
     # original bug is a COUNT: a test that dies on the first propagating run
     # never reaches the second write and so never observes the double-bank it
@@ -365,12 +359,11 @@ def test_base_exception_from_the_store_seam_still_propagates():
         raise KeyboardInterrupt("operator stopped the run")
 
     fakes = FakeSeams()
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes,
         seams=replace(fakes.seams(), record_model_error=interrupted_write),
         tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
+        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
     with pytest.raises(KeyboardInterrupt):
         _run_phase(c, 1, 1)
 

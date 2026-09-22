@@ -1,9 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-
 from __future__ import annotations
+
+from tests.crossover_v2_fixtures import _check_analysis, _verify_analysis
+
+from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+import asyncio
+from dataclasses import replace
+from tests._async_wait import wait_signalled
+from jasper.active_speaker import delta_probe
+from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_VERIFY
+from tests.engine_twin import FakeSeams as EngineFakeSeams
+from jasper.audio_measurement.program import STIMULUS_KINDS
+from jasper.active_speaker.crossover_v2.capture_dispatch import CLIP_RETRY_BACKOFF_DB
+from tests.crossover_v2_fixtures import (_MINTED_CAPTURE_SESSION_ID, _PERSISTED_TOP_LEVEL_KEYS, _RecordingCheckStore, _delta_probe_given_a_tracking_curve, _flow_seams, _inline_body, _install_commanded_delta, _open_prepared, _regradable_fixture, _session_from_real_open, _stage_1, _status, _topology)
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
@@ -11,8 +22,6 @@ from jasper.web import correction_crossover_v2_state as v2state
 from jasper.active_speaker.delta_probe import classify_delta_probe
 from jasper.active_speaker.crossover_v2 import delta_probe_run
 from tests.test_active_speaker_delta_probe import _GRID_HZ, _band, _commanded_lift
-
-
 
 import dataclasses
 import json
@@ -57,69 +66,29 @@ from jasper.web import correction_crossover_v2_restore as restore
 
 from tests._log_events import event_records
 
-# The round harness: one staging of "a real stage 2, post-apply, with a
-# comparable before" — a fixture library rather than a test file, so no
-# suite depends on another's collection.
 from tests.crossover_v2_round_harness import (
-    _bg_run_async,
     _consume_verify,
     _install_applied_graph,
     _install_entry_baseline,
     _post_apply_analysis,
     _restoring_stage_2,
+    _round_session,
     _seed_round_state,
     _stub_restore_doors,
     _tracking_curve_change_from_entry,
 )
 
-# The stage-bridge harness: one definition of "what a real preparer needs
-# stubbed". The two autouse fixtures come with it by name — pytest activates
-# an autouse fixture by its presence in this namespace, and nothing here calls
-# one, so they are re-exported under the redundant-alias form. That is the
-# idiom for "this module-level name is deliberate", and it says so without
-# spending a lint suppression against the repo's frozen noqa budget.
-from tests.test_crossover_v2_stage_bridge import (
-    _inline_body,
-    _MINTED_CAPTURE_SESSION_ID,
-    _flow_seams,
+from tests.crossover_v2_fixtures import (
     _isolated_v2_state as _isolated_v2_state,
-    _open_prepared,
     _production_host_seams as _production_host_seams,
-    _status,
 )
 
-# --------------------------------------------------------------------------- #
-# private reaches, all of them, in one place
-#
-# The same convention the stage-bridge module states: each helper below reaches
-# past a public surface because the fact it touches has no public accessor, and
-# each is named for the FACT rather than the attribute so a future public
-# property can replace the body without touching a test.
-# --------------------------------------------------------------------------- #
-
-
-# Production refuses a session with no volume owner; stand one up.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
 def _hydrated_series_position(conductor: Any) -> Any:
-    """The :class:`SeriesPosition` this conductor was SEEDED with.
-
-    Distinct from anything the session computes for itself: it is purely what
-    the preparer resolved off durable state and handed over, and there is no
-    public reader because a session may only carry it, never re-derive it.
-    """
     return conductor._series_position
 
-
 def _round_receipt_json(store: Any, capture_session_id: str) -> dict[str, Any]:
-    """The receipt as it sits in the bundle, read off the filesystem.
-
-    Read as bytes rather than through the store's own reader, because "the
-    store can find what the store wrote" is not the claim: the claim is that
-    the receipt occupies a path a later reader can construct from the round id
-    alone. ``EVIDENCE_ROOT/artifacts/`` is the store's strict namespace, which
-    the seam's relative path is placed inside.
-    """
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 
     path = (
@@ -132,23 +101,8 @@ def _round_receipt_json(store: Any, capture_session_id: str) -> dict[str, Any]:
     )
     return json.loads(path.read_text(encoding="utf-8"))
 
-
-# --------------------------------------------------------------------------- #
-# fixtures
-# --------------------------------------------------------------------------- #
-
-
 @pytest.fixture
 def real_bundle(monkeypatch, tmp_path):
-    """A REAL write-once evidence bundle behind ``open_v2_evidence_store``.
-
-    The stage-bridge harness substitutes a recorder with no publish method at
-    all, which is right for a module about seam bindings and wrong for any pin
-    that says something about the receipt — including a pin that NO receipt was
-    written, which against that stand-in would be true for the wrong reason.
-    The real store is canonical-JSON, write-once, fsync'd, and tamper-checked
-    on the way out: the properties a receipt needs.
-    """
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
@@ -170,18 +124,10 @@ def real_bundle(monkeypatch, tmp_path):
     )
     return store
 
-
-# --------------------------------------------------------------------------- #
-# 1. adoption outcomes, through the REAL two-stage host
-# --------------------------------------------------------------------------- #
-
-
 def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch):
     """Measured improvement keeps the graph and reaches the verified screen."""
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
-    # 1.5x the deviation before, 1.0x after: measurably flatter, by more than
-    # #2291's claim margin.
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
@@ -189,33 +135,16 @@ def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch
 
     assert verdict.accepted is True
     evaluation = conductor.round_evaluation
-    # KEEP_FOR_ITERATION, not RESTORE: the graph stays on the speaker. The two
-    # keeping outcomes leave the speaker in the same state — what differs is
-    # whether another round is offered.
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
     assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
-    # The reason still NAMES the ungradable objectives — the status changed,
-    # the diagnosis did not.
     assert evaluation.adoption.reason == HEADROOM_NO_OBJECTIVES
-    # The disclosure target list still names the unwalked spatial arm — spec
-    # not deciding the status is not spec vanishing from the receipt.
     assert evaluation.quality.evidence["targets"] == ["spec:no_spec_report"]
-    # Nothing was put back, because nothing needed to be.
     assert attempts == []
-
-
-# --------------------------------------------------------------------------- #
-# 1b. exactly one restore, and the seams it reaches
-# --------------------------------------------------------------------------- #
-
 
 def test_a_round_reaches_its_readers_and_publisher(monkeypatch):
     seen: list[str] = []
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
-    # A baseline FLATTER than the post-apply capture — the graph made the
-    # speaker measurably worse — so the table says restore and the rollback
-    # seam is live. Every other adoption row leaves at least one seam untouched.
     _install_entry_baseline(conductor, scale=0.5)
     _install_applied_graph(monkeypatch, boosts=False)
     bound = _flow_seams(conductor)
@@ -250,27 +179,9 @@ def test_a_round_reaches_its_readers_and_publisher(monkeypatch):
         "entry_graph_fingerprint", "publish_round_receipt",
     }
 
-
-# --------------------------------------------------------------------------- #
-# 3. the receipt
-# --------------------------------------------------------------------------- #
-
-
 def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     monkeypatch, real_bundle,
 ):
-    """Where it is, that it is fingerprinted, and that it reads back identical.
-
-    A receipt is the only thing that lets someone reconstruct a round after the
-    household has walked away, so all three facts matter and none implies
-    another: a receipt at an unpredictable path cannot be found, one whose
-    fingerprint is a decorative string cannot be checked for tampering, and one
-    that does not survive its own readback is not a record.
-
-    The fingerprint is RE-DERIVED here from the bytes on disk through the
-    contract's own hash, rather than compared to the identity block alone —
-    otherwise a receipt could carry any string in that field and still pass.
-    """
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
@@ -285,47 +196,23 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     assert receipt["adoption"]["outcome"] == (
         AdoptionOutcome.KEEP_FOR_ITERATION.value
     )
-    # An Express tier walks no post-apply cloud, so the fourth axis has no
-    # objectives to grade. Since the bites ruling that is not an ending: the
-    # reason names the missing evidence and the series stays open.
     assert receipt["adoption"]["reason"] == HEADROOM_NO_OBJECTIVES
     assert receipt["entry_baseline"]["program_id"] == (
         conductor.measure_entry_baseline.program_id
     )
-    # Fingerprinted by the contract, not merely stamped: re-hash the payload's
-    # own core and it has to come back the same.
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
     assert receipt["fingerprint"] == json_fingerprint(core)
     identity = conductor.round_receipt_identity
     assert identity["round_id"] == _MINTED_CAPTURE_SESSION_ID
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
     assert identity["artifact_fingerprint"]
-    # #2704: every banked identity carries what topology it was measured
-    # through, so a later read can tell a stale series from a live one.
     assert identity["topology_fingerprint"] == coordinator.topology_config_fingerprint(
         coordinator.load_output_topology()
     )
 
-
 def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     monkeypatch, real_bundle, caplog,
 ):
-    """#2559 piece 2, end to end: the deferral holds and the round grades.
-
-    2026-08-15 14:47 (jts3): a ``model_error`` whose realized deviation pointed
-    entirely quieter — a −3.32 dB dip at 1330 Hz, nothing realized louder than
-    declared anywhere, tracking passed, 2.399 dB of measured improvement — was
-    reverted by the probe's own seam. That seam PREEMPTED the adoption table
-    (the round ended ``attempt_decision decision=ungraded``), so
-    ``decide_adoption`` never saw the evidence at all.
-
-    The seam is gone and the deferral is not: it now decides whether the
-    QUALITY axis escalates, so the same class still keeps and the same
-    measurement still stands. Three things have to hold together, and none
-    implies another: no Undo runs, the capture is still accepted so the round
-    is graded, and the deferral is on the record. A deferral nobody could see
-    would be the same dishonesty in the other direction.
-    """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
@@ -343,8 +230,6 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     )
 
     assert conductor.delta_probe is not None
-    # Still a rollback verdict by the probe's own reckoning — the deferral is a
-    # decision about what to DO with it, not a demotion of the measurement.
     assert conductor.delta_probe.verdict == VERDICT_MODEL_ERROR
     assert conductor.delta_probe.advises_against_keep is True
     assert conductor.delta_probe.realized_louder_than_commanded is False
@@ -353,43 +238,17 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     assert verdict.accepted is True
 
     receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
-    # The deferral reaches the record through the axis that now reads it: the
-    # quality axis declined to escalate, and names the class it declined on.
     assert receipt["round_axes"]["quality"]["evidence"]["probe_rollback_class"] == ""
     safety = receipt["round_axes"]["safety"]
     assert safety["evidence"]["seam_deferred"] == (
         SEAM_DEFERRED_QUIETER_THAN_COMMANDED
     )
     assert safety["evidence"]["realized_louder_than_commanded"] is False
-    # …and the table it was handed to actually ran, which is the whole point of
-    # deferring rather than restoring.
     assert receipt["adoption"]["outcome"] in {
         AdoptionOutcome.KEEP.value, AdoptionOutcome.KEEP_FOR_ITERATION.value,
     }
 
-
-# --------------------------------------------------------------------------- #
-# 3b. #2392 — WHICH identity the receipt's proposal fingerprint is
-# --------------------------------------------------------------------------- #
-#
-# The migration story, driven through the real two-stage host rather than
-# asserted on a hand-built contract, because the fact under test is a durable
-# WRITE: a proposal fingerprint that never crosses ``verify_priors`` reaches
-# the receipt as an empty string, which the contract refuses, and the round
-# loses its receipt to the fail-soft handler. That is the exact shape of the
-# defect the ERROR log line above was earned by.
-#
-# ``_seed_applied_stage_1_state`` writes NO ``verify_priors.proposal_
-# fingerprint``, which makes it a genuine pre-#2392 durable state rather than a
-# simulated one — so the "old regime" side of every comparison below is the
-# real thing.
-
-#: Stands in for an ``InterventionProposal.fingerprint``. Deliberately the same
-#: SHAPE as the candidate fingerprint it must be told apart from (both are what
-#: ``json_fingerprint`` returns), because a discrimination that only works when
-#: the two look different is not a discrimination.
 _PROPOSAL_FP = "e" * 64
-
 
 def _seed_round_state_proposing(fingerprint: str) -> dict[str, Any]:
     """Stage-1 durable state that DID cross a proposal fingerprint (#2392)."""
@@ -398,20 +257,7 @@ def _seed_round_state_proposing(fingerprint: str) -> dict[str, Any]:
     v2state.save_v2_state(state)
     return state
 
-
 def test_the_receipt_names_the_proposal_that_was_made(monkeypatch, real_bundle):
-    """#2392's acceptance criterion, on the durable artifact.
-
-    The receipt's ``proposal_fingerprint`` is the fingerprint of the
-    ``InterventionProposal`` stage 1 committed — NOT ``fp-stage-1``, the
-    candidate that happened to be applied, which is what every receipt written
-    before #2392 carried in this field.
-
-    The candidate identity is asserted too, and on the same receipt: taking the
-    field over for the proposal must not cost the record a fact it used to
-    carry, or "identifies the proposal" would have been bought by losing
-    "identifies the candidate".
-    """
     _seed_round_state_proposing(_PROPOSAL_FP)
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
@@ -427,22 +273,12 @@ def test_the_receipt_names_the_proposal_that_was_made(monkeypatch, real_bundle):
     assert receipt["proposal_fingerprint"] == _PROPOSAL_FP
     assert receipt["proposal_fingerprint_kind"] == "intervention_proposal"
     assert receipt["evidence_identities"]["candidate_fingerprint"] == "fp-stage-1"
-    # Still a real receipt, re-derivable from its own bytes.
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
     assert receipt["fingerprint"] == json_fingerprint(core)
-
 
 def test_a_pre_2392_stage_1_still_gets_a_receipt_and_it_says_so(
     monkeypatch, real_bundle,
 ):
-    """The other half of the migration story: the old regime, still honest.
-
-    A stage-2 re-arm whose stage 1 ran before #2392 has no proposal fingerprint
-    to carry — and a household mid-commission when the deploy lands is exactly
-    that. It must still get a receipt (losing one to a missing field would be a
-    regression against the very handler #2291 Phase 3c made ERROR), and that
-    receipt must not claim a proposal identity it never had.
-    """
     _seed_round_state()  # NO verify_priors.proposal_fingerprint — the old shape
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
@@ -458,19 +294,9 @@ def test_a_pre_2392_stage_1_still_gets_a_receipt_and_it_says_so(
     assert receipt["evidence_identities"]["candidate_fingerprint"] == "fp-stage-1"
     assert conductor.round_receipt_identity is not None, "a receipt was still written"
 
-
 def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
     monkeypatch, real_bundle, tmp_path,
 ):
-    """The discrimination, stated as the property a later reader depends on.
-
-    Both fingerprints are 64-hex SHA-256 — ``json_fingerprint``'s output — so
-    NOTHING about the value distinguishes them, and "the formats are disjoint"
-    was never available as a migration story. Given that premise (proved on real
-    objects elsewhere; see the comment below), this asserts the receipts are
-    separable anyway, in all three states, which is only true because the
-    receipt carries the marker.
-    """
     from jasper.active_speaker.crossover_v2.contracts import (
         PROPOSAL_FINGERPRINT_KINDS,
     )
@@ -482,43 +308,21 @@ def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
     _consume_verify(conductor, _post_apply_analysis(conductor))
     new_regime = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
-    # The pre-#2392 record, as a banked artifact would present it: the key is
-    # ABSENT, not empty. That is the third state, and it is the one a reader
-    # meets on every receipt already on disk.
     old_regime = {
         key: value for key, value in new_regime.items()
         if key != "proposal_fingerprint_kind"
     }
     old_regime["proposal_fingerprint"] = "fp-stage-1"
 
-    # The two regimes' VALUES carry no discriminator. That premise is proved on
-    # real objects — a real candidate fingerprint against a real proposal
-    # fingerprint, both 64-hex from ``json_fingerprint`` — by
-    # ``test_a_proposal_fingerprint_and_a_candidate_fingerprint_are_the_same_shape``
-    # in tests/test_crossover_v2_proposal.py. It is not re-derived here,
-    # because the candidate identity this harness seeds is the placeholder
-    # ``fp-stage-1`` rather than a real digest: asserting a shape against it
-    # would be asserting a property of the fixture.
     assert len(new_regime["proposal_fingerprint"]) == 64
 
-    # What IS this test's own claim: separable anyway, by the receipt's own
-    # word, in all three states.
     assert "proposal_fingerprint_kind" not in old_regime, "pre-#2392: absent"
     assert new_regime["proposal_fingerprint_kind"] in PROPOSAL_FINGERPRINT_KINDS
     assert new_regime["proposal_fingerprint_kind"] == "intervention_proposal"
 
-
 def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     monkeypatch, real_bundle,
 ):
-    """The write property: one call, and the bytes are the receipt's own.
-
-    A write-once artifact path punishes a second write, and a payload that
-    disagreed with the contract object would make the fingerprint in the
-    identity block a claim about something else. Both are asserted at the seam
-    the host actually binds, so a future caller that grades twice or hands the
-    seam a re-serialized copy fails here.
-    """
     from tests.crossover_v2_fixtures import with_records
 
     written: list[dict[str, Any]] = []
@@ -540,7 +344,6 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     )
 
     _consume_verify(conductor, _post_apply_analysis(conductor))
-    # Same trigger again — the fire-once guard is what keeps this at one write.
     _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
 
     assert len(written) == 1, "a write-once receipt path may be written once"
@@ -548,20 +351,12 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     assert payload["proposal_fingerprint"] == _PROPOSAL_FP
     assert payload["proposal_fingerprint_kind"] == "intervention_proposal"
     assert payload["round_id"] == _MINTED_CAPTURE_SESSION_ID
-    # The bytes handed to the seam ARE the receipt: same digest, and it is the
-    # digest the session then reports.
     core = {key: value for key, value in payload.items() if key != "fingerprint"}
     assert payload["fingerprint"] == json_fingerprint(core)
     assert conductor.round_receipt_identity["receipt_fingerprint"] == (
         payload["fingerprint"]
     )
     assert _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID) == payload
-
-
-# --------------------------------------------------------------------------- #
-# 4. a receipt-write failure does not lose the verdict
-# --------------------------------------------------------------------------- #
-
 
 def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     """A failed receipt write preserves the verdict and ordinal, with empty hashes."""
@@ -580,57 +375,29 @@ def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow"):
         verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
-    # The verdict survived, whole.
     assert verdict.accepted is True
     assert (
         conductor.round_evaluation.adoption.outcome
         is AdoptionOutcome.KEEP_FOR_ITERATION
     )
     assert attempts == []
-    # Nothing CLAIMS a receipt: both fingerprints are empty, which is how a
-    # reader tells "no artifact was banked" from "here is where it landed".
     identity = conductor.round_receipt_identity
     assert identity is not None
     assert identity["artifact_fingerprint"] == ""
     assert identity["receipt_fingerprint"] == ""
-    # …and the series still knows where it is, which is the #2609 half. Fed
-    # back exactly as the host persists it.
     assert identity["round_ordinal"] == 1
     assert "objectives" in identity
-    # This round's cloud pipeline was made to fail, so there is no spec report
-    # — and the key says so rather than fabricating an empty verdict.
     assert identity["spec"] is None
     assert coordinator.series_position_from_state(
         {"round_receipt": identity}
     ).ordinal == 2
-    # The loss is recorded rather than silent.
     failures = event_records(caplog, "correction.crossover_v2_round_receipt_failed")
     assert failures, "a lost receipt must be recorded, not silent"
-    # …at ERROR. The LEVEL is the pin, not incidental: this is the event that
-    # would have fired on every shipped round for a whole phase while the
-    # receipt silently went unwritten, and a fail-soft path whose only trace is
-    # a WARNING is one nobody reads.
     assert [record.levelname for record in failures] == ["ERROR"]
-
 
 def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
     monkeypatch, caplog,
 ):
-    """The stated safety property of round grading, pinned.
-
-    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round` promises
-    that a bug in the grader logs and returns the caller's own verdict
-    untouched — the round exists to ADD an honest answer, and it must never
-    cost the household a verdict the measurement gate already reached. That
-    promise had no coverage, which is exactly where a later refactor turns a
-    fail-soft into a fail-closed and nobody notices until a good capture starts
-    being refused.
-
-    Patched on the COORDINATOR's binding, not on ``round_evidence``'s: #2291
-    Phase 5 made that a module-scope ``from`` import, so rebinding the source
-    module's attribute would leave the guarded call resolving to the real
-    grader and pass this test over a fail-soft that had been deleted.
-    """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=2.0)
@@ -644,29 +411,16 @@ def test_a_grader_bug_never_turns_an_accepted_capture_into_a_refusal(
     with caplog.at_level("WARNING"):
         verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
 
-    # The capture's own verdict survives, unchanged.
     assert verdict.accepted is True
     assert verdict.code is None
-    # And nothing was invented from a round that never graded.
     assert conductor.round_evaluation is None
     assert conductor.round_receipt_identity is None
     assert attempts == []
     assert event_records(caplog, "correction.crossover_v2_round_grade_failed")
 
-
 def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
     monkeypatch,
 ):
-    """One session, one round — even if the same trigger fires twice.
-
-    The two triggers are mutually exclusive by construction (``_consume_verify``
-    grades only when this session plans no post-apply cloud; the cloud close
-    grades only when it does), so the guard's real job is not arbitrating
-    between them. It is re-entry on ONE trigger: a re-armed VERIFY, a retake,
-    or any future caller reaching the same site twice. Without it the second
-    pass would re-run adoption — a second restore attempt, and a second write
-    to a write-once receipt path.
-    """
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=0.4)
@@ -677,33 +431,15 @@ def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
     assert attempts == []
     graded = conductor.round_evaluation
 
-    # Same trigger, again. The guard — not the seam's once-guard — is what has
-    # to stop this: adoption must not be re-run at all.
     second = _consume_verify(conductor, _post_apply_analysis(conductor), attempt=2)
 
     assert second.accepted is True, "the second pass grades nothing, so it refuses nothing"
     assert conductor.round_evaluation is graded, "the round was not re-decided"
     assert attempts == [], "no second restore was attempted"
 
-
-# --------------------------------------------------------------------------- #
-# 5. the model-error store banks the TRACKING number
-# --------------------------------------------------------------------------- #
-
-
 def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
     monkeypatch,
 ):
-    """Two quantities that agree today, and must not share a source.
-
-    ``model_error_store`` owns prediction/realization error; the attempts
-    ledger owns the acoustic grade. They read the same tracking scalar right
-    now, and that coincidence is the hazard — a future change to what the
-    LEDGER grades must not silently change what the STORE banks. The two are
-    forced apart here by handing the flow an attempt record whose grade is a
-    different number, so an implementation reading ``record.grade_db`` banks
-    the wrong one and says so.
-    """
     banked: list[dict[str, Any]] = []
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
@@ -735,20 +471,7 @@ def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
     assert banked[0]["realized_db"] == pytest.approx(0.7)
     assert banked[0]["predicted_db"] == 0.0
 
-
-# --------------------------------------------------------------------------- #
-# 6. durability, both directions
-# --------------------------------------------------------------------------- #
-
-
 def _recorded_write_calls(monkeypatch) -> list[str]:
-    """``atomic_write_text``'s syscall order, as ``tests/test_atomic_io.py`` reads it.
-
-    The shipped ordering pattern, reused rather than re-invented: a durable
-    write is ``chmod`` → ``fsync`` (the file) → ``replace`` → ``fsync`` (the
-    parent directory), and a cheap one is the same list with both fsyncs
-    absent.
-    """
     calls: list[str] = []
     real_chmod = os.chmod
     real_replace = os.replace
@@ -766,15 +489,7 @@ def _recorded_write_calls(monkeypatch) -> list[str]:
     monkeypatch.setattr(os, "fsync", lambda _fd: calls.append("fsync"))
     return calls
 
-
 def test_the_apply_write_that_creates_the_way_back_is_fsynced(monkeypatch):
-    """Power loss here leaves a corrected speaker with no recorded way back.
-
-    ``observe_apply_success`` records ``previous_candidate_fingerprint`` — the
-    only pointer the way back resolves its target from — in the same moment
-    the new graph goes live. Atomic is not durable: without the fsync a power
-    cut can lose the whole write while leaving the DSP graph changed.
-    """
     _seed_round_state(previous_candidate=False)
     calls = _recorded_write_calls(monkeypatch)
 
@@ -787,19 +502,7 @@ def test_the_apply_write_that_creates_the_way_back_is_fsynced(monkeypatch):
         v2state.load_v2_state()["previous_candidate_fingerprint"] == "fp-previous"
     )
 
-
 def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
-    """The other direction, which is what makes the two above mean anything.
-
-    ``persist_conductor_state`` runs after every consumed capture, and an fsync
-    per capture buys nothing the next capture's write does not already redo.
-    Pinning only the durable side would pass for a blanket ``durable=True`` and
-    leave that cost unguarded on a 1 GB Pi.
-
-    Scoped deliberately to a conductor with no round receipt: the receipt
-    identity is its OWN durability trigger (a receipt whose pointer is lost is
-    a receipt nobody can resolve), and that branch is a different claim.
-    """
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
     assert conductor.round_receipt_identity is None
@@ -809,37 +512,7 @@ def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
 
     assert calls == ["chmod", "replace"]
 
-
-# --------------------------------------------------------------------------- #
-# 10. the #2331 review ledger — six claims the panel found unpinned
-#
-# Each of these was a sentence in a docstring, a level in a log call, or an
-# exhaustiveness claim that nothing asserted. They are grouped here rather than
-# scattered because they share one origin (the Phase 5a-i round-tail review) and
-# one lesson: a stated guarantee with no test is where the next regression hides.
-# --------------------------------------------------------------------------- #
-
-
 def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
-    """C7. ``rollback_available`` claims BOTH halves fail closed; one was pinned.
-
-    The parametrized table below varies the ``rollback`` seam and the state
-    seam's ANSWER, but always binds a state probe. The docstring's other half
-    — no probe bound at all — had no row.
-
-    **The ANSWER alone does not pin it, and finding that out is why this test
-    reads the journal.** Deleting the ``seam is None`` guard still returns
-    ``False``: ``None()`` raises ``TypeError``, which the surrounding handler
-    catches. A first version of this pin asserted only the ``False`` and
-    survived exactly that mutation — pinned for the wrong property, which is the
-    shape of defect the whole ledger exists to close.
-
-    What distinguishes the two is the journal, and the difference is one a
-    support read depends on: an unbound probe is a *configuration* fact (a
-    single-stage or future caller that cannot restore at all), not a failure. It
-    must not spend a WARNING with a traceback, or the log cries wolf in the one
-    place an operator goes looking for a real anchor-read failure.
-    """
     ports = coordinator.RoundPorts(
         rollback_available=None,
     )
@@ -852,14 +525,7 @@ def test_an_unbound_anchor_probe_fails_closed_QUIETLY(caplog):
         caplog, "correction.crossover_v2_rollback_available_failed"
     ), "an unbound probe is a configuration fact, not a failure to report"
 
-
 def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
-    """The control for the pin above: a real failure DOES reach the journal.
-
-    Without it, "quietly" could be satisfied by a reader that never logs at all,
-    and the WARN that tells an operator their durable state is unreadable would
-    be free to disappear.
-    """
 
     def _explode() -> bool:
         raise RuntimeError("the durable state is unreadable")
@@ -879,7 +545,6 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
         )
     ] == ["WARNING"]
 
-
 @pytest.mark.parametrize(
     ("seam", "expected", "why"),
     [
@@ -892,74 +557,19 @@ def test_an_anchor_probe_that_raises_fails_closed_LOUDLY(caplog):
     ids=["unbound", "raises", "cut-only", "boosted"],
 )
 def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
-    """``boosted`` fails CLOSED, on both of the two ways it can go unanswered.
-
-    ``boosted`` is what routes an unprovable round to a restore rather than to
-    "ask the household" (#2318's fail-closed cell), so the wrong default leaves
-    a driver being driven on evidence nobody has. The two unanswerable shapes —
-    no seam, and a seam that raised — are the ones no end-to-end round reaches,
-    because the production host always binds it and the applied-profile SSOT
-    always answers; a mutation flipping either default survived the whole
-    round suite before this pin existed.
-    """
     ports = coordinator.RoundPorts(applied_boosts=seam)
 
     assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
 
-
-# --------------------------------------------------------------------------- #
-# 10. the FULL tier's trigger — the post-apply cloud close
-#
-# Everything above drives ``_consume_verify``, which is the EXPRESS trigger.
-# The Full tier grades somewhere else entirely — at the end of
-# ``_close_cloud_group`` for ``PHASE_CLOUD_VERIFY``, once the spatial arm has
-# landed — and until #2291 Phase 5a-iv that call site had no coverage at all.
-#
-# **Measured, not assumed** (2026-08-11, against a ``git archive`` of
-# ``origin/main`` at 5dcd872a4): deleting the ``_grade_round_once`` call from
-# that branch left the 15 crossover-reaching suites entirely GREEN — 874
-# collected, 863 passed, 11 skipped, exit 0. The same deletion at the Express
-# site fails 18 of them. Two suites reach this branch —
-# ``test_crossover_v2_conductor`` and ``test_correction_crossover_v2_endpoints``
-# — and both stop at the capture verdict, so a Full household's adoption
-# decision, its automatic restore, and its receipt were all riding on a call
-# nothing checked was still there.
-#
-# The bar for this section is therefore a property rather than a coverage
-# claim: **each test below fails if the Full trigger stops grading.** They
-# assert through the close, on the same three things sections 1-6 assert for
-# Express — the adoption outcome, the restore that outcome commands, and the
-# receipt it banks.
-# --------------------------------------------------------------------------- #
-
-
 def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
-    """A REAL Full-tier stage 2 — VERIFY, then the post-apply position group.
-
-    :func:`_restoring_stage_2` prepares the RECOVERY shape (one entry at the
-    mark), which is the Express-shaped session every test above wants and is
-    exactly why none of them can reach the Full trigger. Two things differ here
-    and both are the household's own declarations, read by production code: the
-    durable state carries ``tier="full"`` (written by the measuring session, so
-    the tier chooser governs both stages), and the caller asks for
-    ``stage="post_apply"`` rather than the §5.2 recovery re-verify.
-
-    Everything else is the same real preparer behind the same stubbed doors,
-    and the returned counter is the same "how many times did a restore actually
-    run" the Express tests assert on.
-    """
     attempts = _stub_restore_doors(monkeypatch)
-    prepared = v2host.prepare_v2_session(
-        {"stage": "post_apply"}, status=_status(), run_async=_bg_run_async,
-        camilla_factory=lambda: SimpleNamespace(), verify_only=True,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
+    from tests.crossover_v2_fixtures import STAGE2_MAP
+    conductor = _round_session(camilla_factory=lambda: SimpleNamespace(), index_phase_map=STAGE2_MAP)
     assert journey.PHASE_CLOUD_VERIFY in conductor.session_phases, (
         "this session must plan a post-apply cloud, or it is not the Full "
         "shape and grades at the other trigger"
     )
     return conductor, attempts
-
 
 def _seed_full_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     """:func:`_seed_round_state`, plus the tier the measuring session declared."""
@@ -968,29 +578,14 @@ def _seed_full_round_state(*, previous_candidate: bool = True) -> dict[str, Any]
     v2state.save_v2_state(state)
     return state
 
-
 def _cloud_verify_indexes(conductor: Any) -> tuple[int, ...]:
-    """The post-apply group's indexes, read off the conductor's OWN plan.
-
-    Derived rather than written down: the Full tier's position count is a
-    shipped range, and a test that hardcoded five would silently stop covering
-    the close the day that range moved.
-    """
     plan = conductor._journey.plan
     return tuple(
         i for i in range(1, 32)
         if plan.phase_for_index(i) == journey.PHASE_CLOUD_VERIFY
     )
 
-
 def _walk_post_apply_cloud(conductor: Any, *, scale: float = 1.0) -> Any:
-    """Every prompted post-apply position, in order, through the real consume.
-
-    Reached at ``_consume_cloud_position`` for the reason :func:`_consume_verify`
-    is reached directly: the runner in between is a thread and a websocket. The
-    close, the delta probe, and the round grading all hang off this call, so
-    nothing between here and them is stubbed.
-    """
     verdict = None
     for attempt, index in enumerate(_cloud_verify_indexes(conductor), start=2):
         verdict = conductor._consume_cloud_position(
@@ -1001,39 +596,11 @@ def _walk_post_apply_cloud(conductor: Any, *, scale: float = 1.0) -> Any:
     assert verdict is not None, "a Full session has at least one cloud position"
     return verdict
 
-
 def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     monkeypatch, real_bundle,
 ):
-    """The Full trigger's headline, and the pin its call site never had.
-
-    Three assertions, in the order the evidence arrives, and the first is what
-    makes the other two mean something: **VERIFY alone does not grade a Full
-    round**. Its post-apply evidence is not complete — the spatial arm has not
-    landed — so a session that graded there would decide adoption on a subset
-    of what it is about to hold. That assertion is also what makes this test
-    unsatisfiable by the Express trigger: if grading moved back to
-    ``_consume_verify`` this fails before it ever reaches the close.
-
-    Then the close runs and all three of the round's outputs appear at once:
-    the adoption verdict, its reason, and the receipt on disk. Deleting the
-    ``_grade_round_once`` call from the ``PHASE_CLOUD_VERIFY`` branch leaves
-    every one of them absent.
-
-    Lands on the bare ``KEEP``, not ``KEEP_FOR_ITERATION`` — #2537's quality
-    STATUS is keyed on ``(realization, benefit)`` alone (corrected in commit
-    c1ea01838; spec rides as disclosure only, never as a decision input, per
-    the restored "spec is any in every row" permutation invariant). This
-    fixture's post-apply positions all play ``_in_room_summed_db()``
-    (scaled), which its own docstring names as "an UNCORRECTED speaker in a
-    room" and which genuinely fails one flat-spec band — so the receipt's
-    target list still names it (see the assertion below), but it does not
-    move the outcome off ``KEEP``.
-    """
     _seed_full_round_state()
     conductor, attempts = _full_stage_2(monkeypatch)
-    # 1.5x the deviation before, 1.0x after: measurably flatter, by more than
-    # #2291's claim margin — the keep row, so a restore here would be a defect.
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
@@ -1051,11 +618,6 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     assert verdict.payload["group_complete"] == journey.PHASE_CLOUD_VERIFY
     evaluation = conductor.round_evaluation
     assert evaluation is not None, "the cloud close did not grade the round"
-    # #2602's HEADLINE CASE, end to end: the Full tier walks a post-apply
-    # cloud, so the fourth axis can see this result still has tilt and ripple
-    # left in it. The graph is KEPT exactly as before — ``KEEP_FOR_ITERATION``
-    # leaves the speaker in the same state ``KEEP`` does — and the round now
-    # says another one is worth running instead of declaring the series over.
     assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
     assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
     assert evaluation.adoption.reason == HEADROOM_REACHABLE
@@ -1063,34 +625,20 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
         "the round still PASSED on quality — #2602 changed the stop "
         "condition, not the grade"
     )
-    # Spec still names its own miss on the target list — it just does not
-    # move the outcome off KEEP.
     assert any(
         target.startswith("spec:") for target in evaluation.quality.evidence["targets"]
     )
-    # Nothing was put back, because nothing needed to be.
     assert attempts == []
-    # …and the round banked a receipt, at the path a later reader can build
-    # from the round id alone.
     identity = conductor.round_receipt_identity
     assert identity is not None
     receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     assert receipt["round_id"] == _MINTED_CAPTURE_SESSION_ID
-    # The receipt records the same answer the evaluation reached — #2602's
-    # row 6, not row 1. A receipt that still said "keep" here would be the
-    # banked artifact disagreeing with the screen.
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.KEEP_FOR_ITERATION.value
     assert receipt["adoption"]["row"] == ADOPTION_ROW_KEEP_ITERATING
     assert receipt["adoption"]["reason"] == HEADROOM_REACHABLE
-    # Fingerprinted by the contract, not merely stamped — the same re-hash the
-    # Express receipt pin makes, so a Full round's receipt is held to it too.
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
     assert receipt["fingerprint"] == json_fingerprint(core)
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
-    # …and the round's own flatness verdicts ride the same durable record the
-    # objectives do, not only the tilt/ripple pair. A driver chaining rounds
-    # decides from this block, and "tilt = 2.4 dB" with no band, no frequency
-    # and no graded span is a number nobody can act on.
     spec = identity["spec"]
     assert isinstance(spec, dict)
     assert {"max_db", "max_hz", "graded_band_hz", "passed", "tilt"} <= set(spec)
@@ -1100,30 +648,11 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
         spec["bands"][0]
     )
     assert {"step_db", "high_band_hz", "low_band_hz"} <= set(spec["tilt"])
-    # The same numbers the axis decided on, not a second reading of them.
     assert spec["max_db"] == evaluation.spec.evidence["max_db"]
-
 
 def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     monkeypatch, real_bundle,
 ):
-    """The mutual exclusion, measured on both shapes instead of stated in prose.
-
-    ``_grade_round_once``'s docstring has always said the two triggers are
-    "mutually exclusive by construction", and until now that sentence was the
-    whole guarantee: the fire-once re-entry pin exercises ONE trigger, and no
-    test had ever driven the other. A property asserted on one of its two cases
-    is a property nobody has checked.
-
-    Both branch on the same fact — ``PHASE_CLOUD_VERIFY in plan.phases`` — so
-    the honest way to pin it is to run both shapes and assert the complement:
-    the Express session grades at VERIFY **and plans no cloud close to reach**;
-    the Full session does **not** grade at VERIFY and grades at the close. A
-    regression that made both fire breaks the Full case's middle assertion; one
-    that made neither fire breaks its last.
-    """
-    # Express: the recovery/one-entry shape, which is what every other test in
-    # this module prepares.
     _seed_round_state()
     express, _attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(express, scale=1.5)
@@ -1133,7 +662,6 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     assert _consume_verify(express, _post_apply_analysis(express)).accepted
     assert express.round_evaluation is not None, "Express grades at VERIFY"
 
-    # Full: the tier's own post-apply walk.
     _seed_full_round_state()
     full, _full_attempts = _full_stage_2(monkeypatch)
     _install_entry_baseline(full, scale=1.5)
@@ -1146,7 +674,6 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
 
     assert full.round_evaluation is not None, "Full grades at the cloud close"
 
-
 def test_a_probe_finding_at_the_cloud_close_banks_advice(
     monkeypatch, real_bundle,
 ):
@@ -1156,14 +683,6 @@ def test_a_probe_finding_at_the_cloud_close_banks_advice(
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
-    # 2 dB LOUDER than commanded across the band: a ``model_error`` the #2559
-    # deferral does not spare, which is the class this branch exists for. The
-    # Full tier grades at the cloud close, so VERIFY only stashes it.
-    #
-    # Stated against the ENTRY capture, not against a flat model curve: the
-    # direction that withholds the deferral is a measured change since
-    # series-2 D1, and a decoupled fixture would let the entry baseline's own
-    # shape decide it — which is the fixture testing itself.
     assert _consume_verify(
         conductor,
         dataclasses.replace(
@@ -1177,9 +696,7 @@ def test_a_probe_finding_at_the_cloud_close_banks_advice(
     verdict = _walk_post_apply_cloud(conductor)
 
     assert verdict.accepted is True
-    # The graph stays applied.
     assert attempts == []
-    # …and the round was graded rather than skipped.
     assert conductor.round_evaluation is not None
     assert (
         conductor.round_evaluation.adoption.outcome is AdoptionOutcome.RESTORE
@@ -1188,18 +705,11 @@ def test_a_probe_finding_at_the_cloud_close_banks_advice(
     assert quality.status is QualityStatus.REGRESSED
     assert quality.evidence["probe_rollback_class"] == VERDICT_MODEL_ERROR
 
-    # The receipt exists, and records what the restore DID.
     receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
     assert receipt["advice"]["delta_probe"]["verdict"] == VERDICT_MODEL_ERROR
     assert conductor.round_receipt_identity is not None
     assert conductor.round_receipt_identity["round_ordinal"] == 1
-
-
-# --------------------------------------------------------------------------
-# the series' own memory, across rounds (#2602)
-# --------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     ("case", "raw", "ordinal", "previous"),
@@ -1243,12 +753,6 @@ def test_a_probe_finding_at_the_cloud_close_banks_advice(
     ],
 )
 def test_the_series_position_reader(case, raw, ordinal, previous):
-    """Every shape durable state can be in, and what the next round inherits.
-
-    Unreadable shapes resolve to the FIRST round, never to "the cap was
-    reached": a bad byte on disk must not be able to silently switch iteration
-    back off, which is the behaviour #2602 exists to add.
-    """
 
     position = coordinator.series_position_from_state(raw)
 
@@ -1262,7 +766,6 @@ def test_the_series_position_reader(case, raw, ordinal, previous):
             position.previous_objectives.ripple_db,
         ) == previous, case
 
-
 def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
     """Non-finite objectives cannot count as measured progress."""
 
@@ -1275,14 +778,7 @@ def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
     assert position.previous_objectives.tilt_db is None
     assert position.previous_objectives.ripple_db is None
 
-
 def test_a_topology_change_between_rounds_resets_the_series(monkeypatch):
-    """#2704: a banked blend measured through the OLD graph must not seed the
-    NEW graph's first candidate. The receipt's topology stamp is compared
-    against the CURRENT topology at read time, and a mismatch means no
-    series — the same "unreadable shape resolves to the first round" rule
-    this function already applies everywhere else.
-    """
 
     monkeypatch.setattr(
         coordinator, "topology_config_fingerprint", lambda _topology: "new-topology",
@@ -1296,7 +792,6 @@ def test_a_topology_change_between_rounds_resets_the_series(monkeypatch):
 
     assert position.ordinal == 1
     assert position.previous_objectives is None
-
 
 def test_a_matching_topology_fingerprint_keeps_the_series_going(monkeypatch):
     """The read-side guard does not fire when nothing about the topology moved."""
@@ -1313,12 +808,7 @@ def test_a_matching_topology_fingerprint_keeps_the_series_going(monkeypatch):
 
     assert position.ordinal == 5
 
-
 def test_a_receipt_with_no_topology_fingerprint_is_not_a_mismatch():
-    """A pre-#2704 receipt carries no claim about the topology either way, so
-    it must not be treated as a stale one — only a STORED-AND-DIFFERENT
-    fingerprint resets the series.
-    """
 
     position = coordinator.series_position_from_state({"round_receipt": {
         "round_ordinal": 4,
@@ -1327,16 +817,10 @@ def test_a_receipt_with_no_topology_fingerprint_is_not_a_mismatch():
 
     assert position.ordinal == 5
 
-
 @pytest.mark.parametrize(
     ("case", "receipt"),
     [
         ("objectives absent", {"round_ordinal": 9}),
-        # The branch EVERY real round after the first takes — a banked receipt
-        # always carries objectives beside its ordinal. The reader returns from
-        # two different places depending on this key, and a clamp added to only
-        # the second one is invisible to the case above. (Found by the #2602
-        # gate: a clamp mutation on this branch survived all 637 tests.)
         (
             "objectives present",
             {
@@ -1348,30 +832,14 @@ def test_a_receipt_with_no_topology_fingerprint_is_not_a_mismatch():
     ids=["objectives_absent", "objectives_present"],
 )
 def test_the_reader_never_clamps_the_cap_itself(case, receipt):
-    """One enforcer. The headroom axis is where the cap lives.
-
-    A reader that quietly clamped at 3 would be a second owner of the rule,
-    and the two could disagree about what "the last round" means.
-
-    Both return paths are exercised, because "the reader does not clamp" is a
-    property of the FUNCTION and the function has two exits.
-    """
 
     position = coordinator.series_position_from_state({"round_receipt": receipt})
 
     assert position.ordinal == 10, case
 
-
 def test_a_graded_round_banks_what_the_next_one_needs_to_read(
     monkeypatch, real_bundle,
 ):
-    """The round-trip: what ``_write_round_receipt`` writes, the reader reads.
-
-    Writer and reader live in one module precisely so they cannot drift, and
-    this is what proves they have not. Without it a series could bank the
-    ordinal under one key and look for it under another — and every round
-    would look like round 1, forever, with nothing red.
-    """
 
     _seed_round_state()
     conductor, _attempts = _restoring_stage_2(monkeypatch)
@@ -1385,27 +853,12 @@ def test_a_graded_round_banks_what_the_next_one_needs_to_read(
     assert identity["round_ordinal"] == 1, "the first graded round is round 1"
     assert "objectives" in identity, "the next round has nothing to compare to"
 
-    # Fed back exactly as the host persists it — ``state["round_receipt"]``.
     position = coordinator.series_position_from_state({"round_receipt": identity})
     assert position.ordinal == 2
-
 
 def test_a_graded_round_banks_WHICH_EPOCH_its_ordinal_counts_in(
     monkeypatch, real_bundle,
 ):
-    """The ordinal alone is ambiguous the moment a reset door has run.
-
-    A republish (and Start-Over's applied branch) replaces durable state
-    wholesale and drops ``round_receipt``, so the next round is ordinal 1 again
-    on a speaker that has already been tuned. The epoch is what tells that
-    round apart from a fresh box's first one, and it is only useful if the
-    RECEIPT carries it — the receipt is the series' only memory between
-    sessions, so an epoch that lived anywhere else would not survive to be read.
-
-    Driven end to end: the epoch is seeded into durable state, the REAL
-    preparer resolves the series position off it, and the graded round's own
-    banked identity is what is asserted.
-    """
 
     state = _seed_round_state()
     state[coordinator.ROUND_ORDINAL_EPOCH_STATE_KEY] = 2
@@ -1418,22 +871,10 @@ def test_a_graded_round_banks_WHICH_EPOCH_its_ordinal_counts_in(
 
     identity = conductor.round_receipt_identity
     assert identity is not None
-    # Round ONE — of the third epoch. Both numbers, because either alone is the
-    # ambiguity this exists to remove.
     assert identity["round_ordinal"] == 1
     assert identity["round_ordinal_epoch"] == 2
 
-
 def test_the_status_block_forwards_the_receipt_to_the_screen():
-    """The projection without which every round sentence is dead on a real box.
-
-    ``persist_conductor_state`` has written ``state["round_receipt"]`` since
-    #2537, and ``crossover_v2_status_block`` did not forward it — so the
-    envelope read ``None`` in production and the round nudges existed only in
-    unit tests that hand-built the status dict. #2602 makes that load-bearing:
-    a series that cannot tell a household another round is coming has not
-    delivered the ruling.
-    """
 
     receipt = {
         "round_id": "s1",
@@ -1454,18 +895,6 @@ def test_the_status_block_forwards_the_receipt_to_the_screen():
         "the screen cannot name a round the status block never forwards"
     )
 
-
-# --------------------------------------------------------------------------- #
-# 7. every round banks its receipt (the ethos's fifth principle)
-#
-# A direct ``run_round`` harness rather than the conductor fixtures above:
-# these are properties of the COORDINATOR — which arms bank, what the identity
-# carries, what survives a broken store — and driving them through a full
-# stage-2 session would make the failure mode "somewhere in twelve hundred
-# lines" instead of "this arm".
-# --------------------------------------------------------------------------- #
-
-
 _USABLE_ANALYSIS = SimpleNamespace(
     capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
     verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
@@ -1473,12 +902,6 @@ _USABLE_ANALYSIS = SimpleNamespace(
     program_id="prog-1",
 )
 
-#: The same analysis, plus the VERIFY absolute claim that names a crossover
-#: region. Decision 10's blend record rides only when there IS a region, so a
-#: round graded from the analysis above banks none — which is what
-#: ``test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones``
-#: pins, and why the widest-receipt fixture needs this one instead.
-#: ``[824.35, 3297.4]`` is the band every series-1 round actually graded.
 _REGION_ANALYSIS = SimpleNamespace(
     capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
     verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
@@ -1486,7 +909,6 @@ _REGION_ANALYSIS = SimpleNamespace(
     program_id="prog-1",
     verify_absolute={"band_hz": [824.35, 3297.4], "worst_db": -2.9},
 )
-
 
 def _direct_round(
     *,
@@ -1528,7 +950,6 @@ def _direct_round(
     )
     return coordinator.run_round(evidence, ports)
 
-
 @pytest.mark.parametrize(
     ("case", "kwargs", "outcome"),
     [
@@ -1562,19 +983,10 @@ def test_every_adoption_outcome_banks_advice(case, kwargs, outcome):
     assert len(banked) == 1, case
     assert decision.receipt_identity is not None, case
     assert decision.receipt_identity["artifact_fingerprint"] == "art", case
-    # The banked artifact and the identity describe the same decision.
     assert banked[0]["adoption"]["outcome"] == outcome.value, case
     assert decision.receipt_identity["adoption"] == outcome.value, case
 
-
 def test_a_round_with_no_publishing_seam_still_remembers_where_it_sat():
-    """A host that cannot bank an artifact must not lose the series' count.
-
-    This used to return ``None`` outright, so a caller with no publish seam
-    produced no identity at all — and ``series_position_from_state`` reads the
-    ordinal off exactly that identity. The empty fingerprints are how the
-    record says no artifact was written.
-    """
     decision = _direct_round(publish=None)
 
     identity = decision.receipt_identity
@@ -1585,7 +997,6 @@ def test_a_round_with_no_publishing_seam_still_remembers_where_it_sat():
     assert coordinator.series_position_from_state(
         {"round_receipt": identity}
     ).ordinal == 2
-
 
 def test_receipt_write_failure_preserves_continuity_across_more_rounds():
     """A missing artifact stays visible without resetting or ending iteration."""
@@ -1611,14 +1022,7 @@ def test_receipt_write_failure_preserves_continuity_across_more_rounds():
 
     assert coordinator.series_position_from_state(state).ordinal == 9
 
-
 def test_the_receipt_banks_the_probes_band_resolved_realization_verbatim():
-    """#2649's numbers are the next bite's command inputs, not a log line.
-
-    Banked VERBATIM off the probe's own ``to_dict`` rather than reshaped here:
-    the probe owns what a realization report says, and a second shaping in the
-    receipt writer is a second owner of the same fact.
-    """
     realization = {
         "pooled": 0.664,
         "graded_band_hz": [250.0, 16000.0],
@@ -1641,7 +1045,6 @@ def test_the_receipt_banks_the_probes_band_resolved_realization_verbatim():
 
     assert banked[0]["round_measurements"]["realization"] == realization
 
-
 @pytest.mark.parametrize(
     ("case", "probe"),
     [
@@ -1661,13 +1064,6 @@ def test_the_receipt_banks_the_probes_band_resolved_realization_verbatim():
     ids=["absent", "older_build", "raising"],
 )
 def test_a_probe_that_cannot_report_costs_the_receipt_nothing_else(case, probe):
-    """Three honest absences, none of them an error.
-
-    The realization block is optional evidence. Losing the whole receipt over
-    a probe that cannot answer would be exactly the trade this module refuses
-    everywhere else — and the round's verdict, which is what protects the
-    speaker, must be untouched by it.
-    """
     banked = []
 
     decision = _direct_round(
@@ -1678,15 +1074,7 @@ def test_a_probe_that_cannot_report_costs_the_receipt_nothing_else(case, probe):
     assert "realization" not in banked[0]["round_measurements"], case
     assert decision.evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
 
-
 def test_the_receipt_banks_the_per_position_residual_role_labelled():
-    """§4.2: "on-axis 0.4 dB, off-axis 2.9 dB" is an instruction.
-
-    The role is the half that makes the number readable — a residual with no
-    role says the cloud disagreed, and one with a role says which listening
-    position it disagreed at, which is what separates a speaker defect from a
-    room feature.
-    """
     residuals = (
         {"position_id": "p0", "role": "onax", "rms_db": 0.42, "n_bins": 380},
         {"position_id": "p1", "role": "offax", "rms_db": 2.91, "n_bins": 380},
@@ -1701,25 +1089,13 @@ def test_the_receipt_banks_the_per_position_residual_role_labelled():
         dict(row) for row in residuals
     ]
 
-
 def test_a_round_with_no_cloud_banks_no_residuals_rather_than_empty_ones():
-    """An Express tier walks no positions, and a zero-length list of measured
-    numbers is a claim that measuring happened and found nothing."""
     banked = []
 
     _direct_round(publish=lambda r: banked.append(r) or "art")
 
     assert banked[0]["round_measurements"] == {}
 
-
-# --------------------------------------------------------------------------- #
-# #2662 G5 — the opaque maps get an enumerated key set
-# --------------------------------------------------------------------------- #
-
-#: Every key the round's three ``Mapping[str, Any]`` receipt fields may carry,
-#: enumerated at their writers: ``round_axes`` from ``RoundEvaluation.axes``,
-#: and the other two from ``_write_round_receipt``/``_round_measurements`` in
-#: :mod:`~jasper.active_speaker.crossover_v2.coordinator`.
 RECEIPT_MAP_KEYS = {
     "round_axes": {"trust", "safety", "quality", "headroom"},
     "evidence_identities": {
@@ -1729,15 +1105,6 @@ RECEIPT_MAP_KEYS = {
         "candidate_fingerprint",
         "tuning_graph_fingerprint",
     },
-    # Both optional; the empty and single-key cases are pinned above. This is
-    # the widest the map gets.
-    # ``blend`` (decision 10) rides only when the round had a crossover region
-    # to speak about — see ``_round_measurements``. It carries the region's
-    # commanded-vs-realized pair AND the reason code for a round that
-    # prescribed nothing, deliberately together rather than split across
-    # ``round_axes``: that map is the four ADOPTION axes and every value in it
-    # is a Verdict, which a blend reason is not — a fifth key of a different
-    # shape there would read as a fifth axis, which decision 10 forbids.
     "round_measurements": {"realization", "position_residuals", "blend"},
 }
 
@@ -1748,12 +1115,10 @@ _KEY_DRIFT_REMEDY = (
     "contracts.SCHEMA_VERSION in the same diff."
 )
 
-
 def _key_drift(actual, expected):
     """``(added, missing)`` for one mapping against its enumerated key set."""
 
     return set(actual) - set(expected), set(expected) - set(actual)
-
 
 def _widest_receipt():
     """One banked receipt with BOTH optional instruments reporting."""
@@ -1771,17 +1136,7 @@ def _widest_receipt():
     )
     return banked[0]
 
-
 def test_the_receipt_key_guard_sees_a_planted_key(monkeypatch):
-    """The key-set guard's own positive control, planted through the REAL path.
-
-    Set arithmetic on a hand-built dict would prove only that ``-`` works. This
-    plants the key where one would actually arrive — in the writer — and reads
-    it back off a banked receipt, so it also proves the drive below reaches
-    that writer at all. A guard whose ``_direct_round`` stopped producing
-    ``round_measurements`` would otherwise report an empty diff and read as
-    compliance.
-    """
     real = coordinator._round_measurements
     monkeypatch.setattr(
         coordinator,
@@ -1799,15 +1154,7 @@ def test_the_receipt_key_guard_sees_a_planted_key(monkeypatch):
     assert added == {"smuggled_in"}
     assert missing == set()
 
-
 def test_the_receipts_opaque_maps_carry_only_their_enumerated_keys():
-    """#2662 G5: accretion into the three opaque maps becomes a real diff.
-
-    ``SCHEMA_VERSION`` sat at ``1`` through three field additions in one week
-    and is stamped into every ``to_dict`` payload, so a reader cannot tell two
-    shapes apart by it. That is not fixed by bumping it once; it is fixed by
-    something failing when the shape moves, which is this.
-    """
     receipt = _widest_receipt()
 
     for field, expected in RECEIPT_MAP_KEYS.items():
@@ -1815,16 +1162,7 @@ def test_the_receipts_opaque_maps_carry_only_their_enumerated_keys():
         assert not added, f"{field} grew {sorted(added)}. {_KEY_DRIFT_REMEDY}"
         assert not missing, f"{field} lost {sorted(missing)}. {_KEY_DRIFT_REMEDY}"
 
-
 def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
-    """Decision 10's series carry: prescription out, prescription back.
-
-    Banked as a mapping rather than a bare list because the next round needs
-    BOTH halves — the filters to build its candidate, and the region residual
-    to know whether the region is still improving. Splitting them across two
-    keys would let a series remember a prescription from one round and a
-    reading from another.
-    """
 
     decision = _direct_round(publish=lambda _r: "art",
                              analysis=_REGION_ANALYSIS)
@@ -1837,16 +1175,10 @@ def test_a_kept_round_banks_its_blend_instruction_and_it_reads_back():
     position = coordinator.series_position_from_state({"round_receipt": identity})
     assert position.previous_blend_correction is not None
 
-
-#: The 2026-08-18 round's own banked instruction, and a DIFFERENT readable
-#: correction for the speaker to be playing. The two blend tests below share
-#: them so "the instruction" and "the applied graph" are provably the same two
-#: answers in both, rather than two pairs that happen to differ.
 _BANKED_INSTRUCTION = ({"biquad_type": "Peaking", "freq": 2120.3384, "q": 2.0,
                         "gain": -0.7171},)
 _APPLIED_INCUMBENT = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
                        "gain": -2.5},)
-
 
 def _state_carrying_a_banked_instruction() -> dict[str, Any]:
     """Durable state as a kept round 8 leaves it: ordinal, objectives, blend."""
@@ -1862,27 +1194,7 @@ def _state_carrying_a_banked_instruction() -> dict[str, Any]:
         },
     }
 
-
 def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch):
-    """#2698 — the hop the test above stops one step short of.
-
-    That test proves the receipt CARRIES the instruction and that the reader
-    parses it back. Neither fact iterates anything: ``_candidate_blend_correction`` is
-    read at candidate-build time, which runs in the MEASURE stage, so a series
-    converges only if the MEASURING session is hydrated with its position too.
-    Before #2698 it was not: the one ``series_position=`` line lived in
-    the verify-only prepare alone, ``self._series_position`` was ``None`` on
-    every measuring session, and the build silently fell back to the incumbent.
-    Measured on 2026-08-18: a round banked ``Peaking 2120.34 Hz, -0.7171 dB``
-    and the next round emitted zero blend filters, with the done screen still
-    promising the region would be trimmed.
-
-    Driven through the REAL stage-1 preparer, and DISCRIMINATING: the applied
-    profile carries a different, readable correction, so "carried the
-    instruction" and "fell back to the graph" are two distinguishable answers
-    rather than one. A fixture with no incumbent would pass against ``()`` for
-    the wrong reason.
-    """
 
     banked, incumbent = _BANKED_INSTRUCTION, _APPLIED_INCUMBENT
     monkeypatch.setattr(
@@ -1897,34 +1209,15 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
 
-    # The series survived into the MEASURING session, ordinal and all — a
-    # position resolved to ``first()`` would carry no instruction and the
-    # assertion below would then be testing the fallback.
     assert _hydrated_series_position(conductor).ordinal == 9
-    # …and what ``_build_candidate`` hands the emitter is that instruction,
-    # not the graph the speaker is already playing.
     assert conductor._candidate_blend_correction() == banked
-    # The control that makes the assertion above mean something: the fallback
-    # is reachable, readable, and a DIFFERENT answer.
     assert flow.CrossoverV2Session._applied_blend_correction(
         SimpleNamespace()
     ) == incumbent
 
-
-#: "the session resolved no position at all", distinct from "it resolved one
-#: carrying no instruction" — both must hold the applied graph.
 _ABSENT = object()
 
-
 def test_the_production_incumbent_reader_refuses_a_corrupt_profile(monkeypatch):
-    """The converged panel finding, asserted at the PRODUCTION method.
-
-    ``tests/test_crossover_v2_blend_correction.py`` drives the two readers in
-    sequence; that proves they compose correctly and cannot notice
-    ``_applied_blend_correction`` ceasing to call the strict one — which is
-    exactly the shape of the original defect (a guard pointed at the wrong
-    reader). This drives the shipped method.
-    """
 
     from jasper.active_speaker import crossover_v2_flow as flow
 
@@ -1944,25 +1237,13 @@ def test_the_production_incumbent_reader_refuses_a_corrupt_profile(monkeypatch):
     assert _profile({"blend_correction": [{"biquad_type": "Peaking",
                                            "freq": 1900.0, "q": 2.0,
                                            "gain": 0.5}]}) is None
-    # Positive control: a real record must still read through, or "everything
-    # is unknown" would satisfy every assertion above while making the
-    # correction permanently unreachable.
     good = [{"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -2.5}]
     assert _profile({"blend_correction": good}) == tuple(good)
     assert _profile(None) is None
 
-
 def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
     monkeypatch,
 ):
-    """Panel ruling 2, at the hop that carries it out.
-
-    ``_candidate_blend_correction`` is the only place the difference between "no
-    instruction" and "apply nothing" becomes a graph. A series instruction
-    wins; its ABSENCE falls back to what the speaker is already playing, which
-    is what stops a restored round — or a fresh series on an
-    already-corrected speaker — from silently dropping an adopted correction.
-    """
 
     from jasper.active_speaker import crossover_v2_flow as flow
 
@@ -1976,9 +1257,6 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
     )
 
     def _session(instruction):
-        # The REAL incumbent reader, so the fallback is proved to go through
-        # the same strict path the solve's incumbent does rather than a stub
-        # that could disagree with it.
         return SimpleNamespace(
             _series_position=(
                 None if instruction is _ABSENT
@@ -1991,26 +1269,14 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
             ),
         )
 
-    # No instruction -> hold what is applied.
     assert prescribe(_session(_ABSENT)) == applied
     assert prescribe(_session(None)) == applied
-    # An EXPLICIT empty instruction -> apply nothing, overriding the graph.
     assert prescribe(_session(())) == ()
-    # A real instruction -> that, not the applied graph.
     fresh = ({"biquad_type": "Peaking", "freq": 1200.0, "q": 2.0,
               "gain": -1.0},)
     assert prescribe(_session(fresh)) == fresh
 
-
 def test_no_instruction_and_an_empty_instruction_are_different_answers():
-    """The distinction the apply path turns on.
-
-    ``None`` means "this series has no instruction for you" and the next
-    candidate derives from the APPLIED graph; ``()`` means "apply no blend
-    correction" and it does exactly that. Collapsing them would make a
-    restored round — or a fresh series on an already-corrected speaker —
-    silently drop an adopted correction.
-    """
 
     empty = coordinator.series_position_from_state({"round_receipt": {
         "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
@@ -2022,7 +1288,6 @@ def test_no_instruction_and_an_empty_instruction_are_different_answers():
 
     assert empty.previous_blend_correction == ()
     assert absent.previous_blend_correction is None
-
 
 @pytest.mark.parametrize(
     "blend",
@@ -2038,9 +1303,6 @@ def test_no_instruction_and_an_empty_instruction_are_different_answers():
     ids=["bad-filters", "boost", "string-freq", "string", "legacy-list"],
 )
 def test_an_unreadable_instruction_reads_as_no_instruction(blend):
-    """An instruction nobody can vouch for must not be able to REMOVE an
-    adopted correction any more than it can invent one — so it resolves to
-    "no instruction", not to "apply nothing"."""
 
     position = coordinator.series_position_from_state({"round_receipt": {
         "round_ordinal": 1, "objectives": {"tilt_db": 0.0, "ripple_db": 0.0},
@@ -2049,17 +1311,8 @@ def test_an_unreadable_instruction_reads_as_no_instruction(blend):
 
     assert position.previous_blend_correction is None
 
-
 def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
-    """Panel correctness SF3.
 
-    The receipt carries two residuals over the same band, referenced
-    differently and therefore numerically different. Unlabelled, a reader
-    reasonably takes the gap for a defect in one of them.
-    """
-
-    # The identity carries the instruction; the artifact carries the numbers.
-    # Drive the measurements builder directly for the labelled pair.
     from jasper.active_speaker.crossover_v2 import blend_correction as bc
     from jasper.active_speaker.crossover_v2.contracts import BenefitStatus
 
@@ -2091,14 +1344,7 @@ def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
         "region_local_reference"
     )
 
-
 def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):
-    """#2609 SF5's round trip: the frame travels with the objectives.
-
-    Without it the next round differences two numbers graded over different
-    band edges — worth ±0.518 dB on an unchanged curve across a 7↔10 ms gate,
-    2.1x the plateau bar — and calls the difference progress.
-    """
     decision = _direct_round(publish=lambda _r: "art", trusted_floor_hz=143.0)
 
     identity = decision.receipt_identity
@@ -2106,11 +1352,7 @@ def test_the_trusted_floor_rides_the_identity_and_reads_back(monkeypatch):
     position = coordinator.series_position_from_state({"round_receipt": identity})
     assert position.previous_trusted_floor_hz == 143.0
 
-
 def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
-    """Absent is not zero. A missing floor must not compare equal to a real
-    one, and must not refuse every comparison either — see
-    ``_floors_comparable`` for which direction unknown takes."""
     position = coordinator.series_position_from_state({"round_receipt": {
         "round_ordinal": 1,
         "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
@@ -2118,18 +1360,7 @@ def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
 
     assert position.previous_trusted_floor_hz is None
 
-
 def test_the_position_role_reaches_the_combiners_own_input_struct():
-    """§4.2's one line, pinned where it was missing.
-
-    The role was written to the position RECORD and the persisted row and read
-    by nothing analytical, because ``cloud_position_capture`` — the ONLY
-    builder of the combiner's per-position struct — dropped it. Everything
-    downstream (the role-labelled residual, and any reader of
-    ``CombinedResponse.position_roles``) is silently unlabelled if this line
-    goes away, and no combine-level assertion would notice: the reduction is
-    unweighted, so the numbers stay identical.
-    """
     import numpy as np
 
     complex_tf = np.ones(9, dtype=complex)
@@ -2149,11 +1380,7 @@ def test_the_position_role_reaches_the_combiners_own_input_struct():
     assert capture.position_id == "p_onax"
     assert capture.role == "onax"
 
-
 def test_a_position_that_declares_no_role_carries_an_empty_one():
-    """``""`` rather than ``None``: the combiner's field is a string, and a
-    ``None`` would reach a receipt as ``null`` where every other unlabelled
-    position reads as empty."""
     import numpy as np
 
     position = SimpleNamespace(
@@ -2166,7 +1393,6 @@ def test_a_position_that_declares_no_role_carries_an_empty_one():
     )
 
     assert spatial.cloud_position_capture(position).role == ""
-
 
 @pytest.mark.parametrize("probe_verdict", [None, *sorted(DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS)])
 @pytest.mark.parametrize("previous_candidate", [True, False])
@@ -2209,7 +1435,6 @@ def test_round_advice_keeps_the_applied_graph(
         assert advice["delta_probe"]["advises_against_keep"] is True
     v2state.persist_conductor_state(conductor, failure_code=None)
     assert v2state.load_v2_state()["round_receipt"]["advice"] == advice
-
 
 @pytest.mark.parametrize("failure", [None, "apply", "unavailable", "displaced", "bank", "grade"])
 def test_measured_excess_boost_restores_once_and_discloses_the_result(
@@ -2265,3 +1490,380 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
         assert receipt["applied_graph_fingerprint"] == "applied"
     v2state.persist_conductor_state(conductor, failure_code=result["code"])
     assert v2state.load_v2_state()["round_receipt"]["protection"] == protection
+
+@pytest.mark.parametrize(
+    "restore, failure, write_failed, expected_state",
+    [
+        ("exact_restored", None, False, "closed"),
+        ("exact_restored", asyncio.CancelledError, False, "closed"),
+        ("exact_restored", RuntimeError, False, "closed"),
+        ("failed", RuntimeError, False, "open"),
+        ("deferred", None, False, "open"),
+        ("exact_restored", None, True, "open"),
+    ],
+)
+async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
+    monkeypatch, tmp_path, restore, failure, write_failed, expected_state,
+):
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
+
+    info = open_bundle(_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
+    bundle = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda topology: (store, store.session_id))
+    prepared = v2host.prepare_v2_session(
+        _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=None,
+    )
+    cleanup_started, cleanup_finished = asyncio.Event(), asyncio.Event()
+    error = failure() if failure else None
+    artifacts = []
+
+    async def worker(session):
+        artifacts.append(store.publish_json_artifact("completed_take.json", {"accepted": True}))
+        cleanup_started.set()
+        await cleanup_finished.wait()
+        v2state._persist_execution_result(session.session_id, volume_restore=restore)
+        if error is not None:
+            raise error
+
+    _open_prepared(monkeypatch, prepared, run=worker)
+    task = asyncio.create_task(prepared.run_and_consume(
+        SimpleNamespace(session_id=_MINTED_CAPTURE_SESSION_ID),
+    ))
+    await wait_signalled(cleanup_started, "measurement cleanup started", producer=task)
+    assert json.loads((bundle / "info.json").read_text())["state"] == "open"
+    if write_failed:
+        monkeypatch.setattr(v2host, "mark_state", lambda *args: None)
+    cleanup_finished.set()
+    if error is not None or write_failed:
+        with pytest.raises(type(error) if error is not None else OSError) as caught:
+            await task
+        if error is not None:
+            assert caught.value is error
+    else:
+        await task
+    assert json.loads((bundle / "info.json").read_text())["state"] == expected_state
+    assert store.reopen_json_artifact(artifacts[0])["accepted"] is True
+
+@pytest.mark.parametrize(
+    "open_stage_under_test",
+    [pytest.param(_stage_1, id="session")],
+)
+def test_each_stage_binds_its_own_sessions_check_publisher(
+    monkeypatch, open_stage_under_test,
+):
+    from jasper.audio_measurement.program_analysis import GainPlan
+
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(
+        v2evidence, "open_v2_evidence_store",
+        lambda topology: (store, store.session_id),
+    )
+    conductor, _state = open_stage_under_test(monkeypatch)
+
+    conductor._seams.records.check(
+        GainPlan(
+            gain_db={"woofer": -11.0}, predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+        {"bands": []},
+    )
+
+    payload = dict(store.published)[f"crossover_v2/{_MINTED_CAPTURE_SESSION_ID}/check.json"]
+    assert payload["gain_plan_db"] == {"woofer": -11.0}
+
+def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
+    _conductor, state = _stage_1(monkeypatch)
+
+    assert set(state["verify_priors"]) == {
+        "predicted_sum",
+        "predicted_spec",
+        "gate_window_ms",
+        "pilot_transfer_reference",
+        "commanded_delta",
+        "declared_transfer",
+        "entry_baseline",
+        "proposal_fingerprint",
+        "verify_measured",
+        "alignment_objective",
+    }
+
+def test_the_measured_verify_curve_is_persisted_beside_the_priors(monkeypatch):
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
+
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    record = (v2state.load_v2_state() or {})["verify_priors"]["verify_measured"]
+
+    assert set(record) == {"freqs_hz", "measured_db", "predicted_db"}
+    n = len(record["freqs_hz"])
+    assert 0 < n <= v2durable.MAX_PERSISTED_SUM_POINTS
+    assert len(record["measured_db"]) == n
+    assert len(record["predicted_db"]) == n
+    persisted_error = np.asarray(record["measured_db"]) - np.asarray(
+        record["predicted_db"]
+    )
+    assert float(np.max(persisted_error)) == pytest.approx(6.0, abs=1e-9)
+    assert float(np.min(persisted_error)) == pytest.approx(0.0, abs=1e-9)
+
+def test_a_session_with_no_verify_capture_persists_no_measured_curve(monkeypatch):
+    conductor, _state = _stage_1(monkeypatch)
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    priors = (v2state.load_v2_state() or {})["verify_priors"]
+    assert priors["verify_measured"] is None
+    assert v2durable.verify_measured_curve_from_state({"verify_priors": priors}) is None
+
+def test_a_verdict_can_be_re_graded_from_the_store_alone(monkeypatch):
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    _install_commanded_delta(conductor, (freqs, commanded))
+    live = _delta_probe_given_a_tracking_curve(
+        conductor, (freqs, predicted + error, predicted),
+    )
+    assert live is not None
+    assert live.advises_against_keep is True
+
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
+
+    stored_freqs, stored_measured, stored_predicted = (
+        v2durable.verify_measured_curve_from_state(state)
+    )
+    assert stored_freqs.size < freqs.size
+    stored_commanded = v2durable.commanded_delta_prior_from_state(state)
+    commanded_on_grid = np.interp(
+        stored_freqs, stored_commanded[0], stored_commanded[1]
+    )
+    regraded = delta_probe.classify_delta_probe(
+        stored_freqs,
+        (stored_measured - stored_predicted) + commanded_on_grid,
+        commanded_on_grid,
+        band_hz=live.requested_band_hz,
+        expected_offset_db=live.expected_offset_db,
+    )
+
+    assert regraded.verdict == live.verdict
+    assert regraded.reason == live.reason
+    assert regraded.advises_against_keep == live.advises_against_keep
+    assert regraded.max_error_db == pytest.approx(live.max_error_db, abs=0.05)
+    assert regraded.exceedance_octaves == pytest.approx(
+        live.exceedance_octaves, abs=0.05
+    )
+
+def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
+    import numpy as np
+
+    from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
+    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, _flat_commanded, error = _regradable_fixture()
+    commanded = np.where((freqs >= 300.0) & (freqs <= 8_000.0), 6.0, 0.0)
+    predicted = np.zeros_like(freqs)
+    _install_commanded_delta(conductor, (freqs, commanded))
+
+    anchor_db = -2.5
+    conductor._measure_entry_baseline = EntryBaseline(
+        program_id=conductor.program_for_phase(
+            journey.PHASE_VERIFY
+        ).program_id,
+        reference_mark="design_axis_mark",
+        curve=ResponseCurve(freqs, (predicted - commanded) + anchor_db),
+        excluded=tuple(False for _ in freqs),
+        graph_fingerprint="fingerprint",
+        captured_at="2026-08-15T00:00:00Z",
+    )
+
+    live = _delta_probe_given_a_tracking_curve(
+        conductor, (freqs, predicted + error, predicted),
+    )
+    assert live is not None
+    assert live.entry_anchor_offset_db == pytest.approx(anchor_db, abs=1e-6)
+
+    v2state.persist_conductor_state(conductor, failure_code=None)
+    state = v2state.load_v2_state() or {}
+
+    stored_freqs, stored_measured, stored_predicted = (
+        v2durable.verify_measured_curve_from_state(state)
+    )
+    assert stored_freqs.size < freqs.size  # the decimation really happened
+    stored_commanded = v2durable.commanded_delta_prior_from_state(state)
+    commanded_on_grid = np.interp(
+        stored_freqs, stored_commanded[0], stored_commanded[1]
+    )
+    stored_entry = v2durable.entry_baseline_prior_from_state(state)
+    assert stored_entry is not None
+    entry_on_grid = np.interp(
+        stored_freqs,
+        np.asarray(stored_entry.curve.hz, dtype=float),
+        np.asarray(stored_entry.curve.db, dtype=float),
+    )
+    regraded = delta_probe.classify_delta_probe(
+        stored_freqs,
+        (stored_measured - stored_predicted) + commanded_on_grid,
+        commanded_on_grid,
+        band_hz=live.requested_band_hz,
+        expected_offset_db=live.expected_offset_db,
+        entry_delta_db=(entry_on_grid - stored_predicted) + commanded_on_grid,
+    )
+
+    assert regraded.verdict == live.verdict
+    assert regraded.reason == live.reason
+    assert regraded.advises_against_keep == live.advises_against_keep
+    assert regraded.entry_anchor_offset_db == pytest.approx(
+        live.entry_anchor_offset_db, abs=0.05,
+    )
+    assert regraded.residual_offset_db == pytest.approx(
+        live.residual_offset_db, abs=0.05,
+    )
+    assert regraded.quiet_probe_coverage == pytest.approx(
+        live.quiet_probe_coverage, abs=0.05,
+    )
+
+def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch):
+    import numpy as np
+
+    conductor, _state = _stage_1(monkeypatch)
+    freqs, _commanded, error = _regradable_fixture()
+    predicted = np.zeros_like(freqs)
+    conductor._verify_tracking_curve = (freqs, predicted + error, predicted)
+    v2state.persist_conductor_state(conductor, failure_code=None)
+
+    state = v2state.load_v2_state() or {}
+    assert v2durable.verify_measured_curve_from_state(state) is not None
+    state["verify_priors"]["verify_measured"]["measured_db"] = (
+        state["verify_priors"]["verify_measured"]["measured_db"][:-3]
+    )
+    assert v2durable.verify_measured_curve_from_state(state) is None
+
+def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
+    stage_1_conductor, _state = _stage_1(monkeypatch)
+
+    assert callable(_flow_seams(stage_1_conductor).records.findings)
+
+def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
+    _conductor, stage_1_state = _stage_1(monkeypatch)
+
+    assert set(stage_1_state) == _PERSISTED_TOP_LEVEL_KEYS
+
+def test_the_two_stages_declare_the_capabilities_that_differ():
+    measure = v2host.STAGE_MEASURE_CAPABILITIES
+    verify = journey.STAGE_VERIFY_CAPABILITIES
+
+    assert measure.stage == "measure"
+    assert measure.provides == {v2host.CAPABILITY_FINDINGS}
+    assert measure.requires == frozenset()
+
+    assert verify.stage == "verify"
+    assert verify.provides == set()
+    assert verify.requires == {
+        journey.CAPABILITY_COMMANDED_DELTA,
+        journey.CAPABILITY_PREDICTED_SUM,
+        journey.CAPABILITY_ENTRY_BASELINE,
+    }
+
+def test_no_capability_is_provided_by_both_stages():
+    measure = v2host.STAGE_MEASURE_CAPABILITIES
+    verify = journey.STAGE_VERIFY_CAPABILITIES
+
+    assert not (measure.provides & verify.provides)
+
+def test_stage_1_declares_itself_too(monkeypatch, caplog):
+    """Both stages declare; the measuring one needs nothing handed to it."""
+    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
+        _conductor, _state = _stage_1(monkeypatch)
+
+    declared = [
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_stage_capabilities" in record.getMessage()
+    ]
+    assert len(declared) == 1
+    assert "stage=measure" in declared[0]
+    assert "provides=findings requires=" in declared[0]
+    assert 'requires="" missing=""' in declared[0]
+
+@pytest.mark.parametrize(
+    "n_bins",
+    [400, 512, 513, 1023, 1536, 4096],
+)
+def test_the_commanded_delta_persists_on_the_same_grid_as_the_predicted_sum(n_bins):
+    import numpy as np
+
+    freqs = np.linspace(20.0, 24000.0, n_bins)
+    curve = np.sin(np.log10(freqs) * 7.0)
+
+    reduced_delta = v2durable._decimate_delta((freqs, curve))
+    reduced_sum = v2durable._decimate_sum((freqs, curve))
+
+    assert len(reduced_delta["freqs_hz"]) <= v2durable.MAX_PERSISTED_SUM_POINTS
+    assert reduced_delta["freqs_hz"] == reduced_sum["freqs_hz"]
+
+def test_the_commanded_delta_is_block_averaged_in_db_not_in_power():
+    import numpy as np
+
+    freqs = np.linspace(20.0, 24000.0, 2 * v2durable.MAX_PERSISTED_SUM_POINTS)
+    swing = np.tile([6.0, -6.0], v2durable.MAX_PERSISTED_SUM_POINTS)
+
+    reduced_delta = v2durable._decimate_delta((freqs, swing))
+    reduced_sum = v2durable._decimate_sum((freqs, swing))
+
+    assert reduced_delta["delta_db"] == pytest.approx([0.0] * len(swing[::2]))
+    assert reduced_sum["magnitude_db"][0] > 1.0
+
+@pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
+def test_prepared_flow_prices_clip_retries_from_the_played_program(monkeypatch, phase):
+    conductor = _session_from_real_open(monkeypatch, EngineFakeSeams())["conductor"]
+    program = conductor.program_for_phase(phase)
+    analysis_factory, assess = {
+        PHASE_CHECK: (_check_analysis, conductor._check_verdict),
+        PHASE_VERIFY: (_verify_analysis, conductor._verify_verdict),
+    }[phase]
+    analysis = analysis_factory(program)
+    verdict = assess(replace(analysis, locations=tuple(
+        replace(location, clipped=True) for location in analysis.locations
+    )))
+    assert verdict.code == "clipped" and not verdict.accepted
+    assert verdict.charge == "speaker" and verdict.next == "retake_quieter"
+    assert type(verdict.next_gain_db) is float
+    played_gain = max(segment.gain_db for segment in program.segments if segment.kind in STIMULUS_KINDS)
+    assert verdict.next_gain_db == pytest.approx(played_gain - CLIP_RETRY_BACKOFF_DB)
+
+def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
+    from tests.engine_twin import FakeSeams
+
+    fakes = FakeSeams()
+    captured = _session_from_real_open(monkeypatch, fakes)
+    session = captured["tuning"]
+
+    assert session.session_id == _MINTED_CAPTURE_SESSION_ID
+    assert session.measurement_level_db == captured["conductor"]._session_volume_db
+    assert session.measurement_level_db < 0.0, "the hearing clamp is never relaxed"
+    assert session.seams.graph is fakes.graph
+    assert session.seams.records is fakes.records
+    assert not session.is_open, "opening is the run's, not the preparer's"
+
+async def test_a_session_from_the_real_preparer_drives_the_measure_verb(monkeypatch):
+    from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from tests.engine_twin import FakeSeams
+
+    fakes = FakeSeams()
+    session = _session_from_real_open(monkeypatch, fakes)["tuning"]
+
+    await session.open()
+    fakes.volume.proven_db = session.measurement_level_db
+    measured = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    await session.close()
+
+    assert measured.record_ids == session.banked_record_ids
+    assert measured.record_ids != ()
+    assert fakes.graph.installs == 2 and fakes.graph.restores == 1
+    assert not fakes.volume.held, "the claim went back"
+    assert not session.is_open

@@ -1,26 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
-
-"""One post-apply round, staged: the harness the round suites drive it through.
-
-A fixture library that IS a fixture library, kept OUT of any collected test
-module on purpose: the census's recurring finding is test files doubling as
-fixture libraries (S7 step b, *"deleting a 'dead' file can break a class-A
-survivor"*), and a shared harness that lives in a collected test module is
-how that happens.
-
-**Nothing here asserts.** Every function stages a fact — a durable state, a
-conductor, a comparable "before", an applied graph, one post-apply capture —
-and returns it. The claims stay in the modules that own them.
-
-**What is deliberately NOT here.** The two autouse fixtures
-(``_isolated_v2_state``, ``_production_host_seams``) stay imported by each test
-module directly: ``pytest`` activates an autouse fixture by its presence in the
-COLLECTED module's namespace, so re-exporting them from an uncollected helper
-module would silently deactivate them. ``real_bundle`` stays with the receipt
-pins that need a real evidence store.
-"""
 
 from __future__ import annotations
 
@@ -40,9 +19,8 @@ from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
 from tests.crossover_v2_fixtures import _in_room_summed_db, _verify_analysis
-from tests.test_crossover_v2_stage_bridge import (
+from tests.crossover_v2_fixtures import (
     _COMMANDED_FREQS_HZ,
-    _open_prepared,
     _seed_applied_stage_1_state,
     _status,
 )
@@ -61,24 +39,7 @@ __all__ = [
     "_tracking_curve_change_from_entry",
 ]
 
-
 def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
-    """Give a stage-2 conductor the "before" stage 1 would have handed it.
-
-    Production rehydrates this from the durable bridge key, and
-    ``tests/test_crossover_v2_entry_baseline.py`` owns that path. What a ROUND
-    test needs is a baseline that is genuinely *comparable* with the post-apply
-    capture it will be differenced against — same program id, same grid, same
-    mark — and the only way to get that is to build it from THIS conductor's own
-    ``_verify_program``, which does not exist until the conductor does. A
-    seeded state file cannot: it would have to guess the program id the
-    conductor is about to compose, and a lookalike grades
-    ``incomparable_program`` instead of grading the speaker.
-
-    ``scale`` multiplies the fixture's in-room deviation, so a scale ABOVE the
-    post-apply capture's is a speaker that measurably improved and one below it
-    is a measured regression. Higher deviation is worse.
-    """
     measured = measured_response_from_analysis(
         _verify_analysis(
             conductor.program_for_phase(journey.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
@@ -95,43 +56,9 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     conductor._measure_entry_baseline = baseline
     return baseline
 
-
 def _tracking_curve_change_from_entry(
     conductor: Any, *, change_db: float, louder_spike_db: float | None = None,
 ) -> tuple:
-    """A post-apply tracking curve that missed by ``change_db``, both ways.
-
-    ``(freqs, measured, predicted)`` for ``verify_tracking_curve``, built so the
-    delta probe's TWO readings of the miss agree and are both flat ``change_db``:
-
-        measured_post − predicted_post                   (the model's departure)
-        (measured_post − measured_pre) − commanded       (the anchored excess)
-
-    which needs ``predicted_post == measured_pre + commanded`` — the statement
-    that the applied graph's prediction IS the entry measurement plus what the
-    apply commands, i.e. a model that was right about the speaker going in.
-
-    Since series-2 D1 the two directional findings are differenced against the
-    pre-apply capture, so a fixture claiming "the speaker came out 2 dB quieter
-    than it was asked for" has to say that about **two captures of one speaker**.
-    Stating it against a flat model curve alone — which is what these fixtures
-    did while the finding was ``realized − commanded`` — leaves the direction to
-    whatever shape the entry baseline happens to carry, and that shape is the
-    fixture's BENEFIT knob, not its direction knob. Production reads one entry
-    baseline for both, so a fixture that decouples them is testing a wiring the
-    speaker does not have.
-
-    ``louder_spike_db`` adds that much at ONE bin. It is what separates a
-    ``model_error`` the #2559 deferral does not spare from a hearing hazard, and
-    the separation is the structured-run rule: one bin is enough for
-    ``realized_louder_than_commanded`` (unstructured, so the lenience is
-    withheld) and far too narrow for ``boost_over_declared_bound`` (which needs
-    a 1/3-octave run before it will call anything a hazard). A fixture that
-    wants the probe's rollback CLASS to take the graph off — rather than the
-    safety axis, which outranks it — has to sit in exactly that gap.
-
-    Requires ``_install_entry_baseline`` to have run.
-    """
     import numpy as np
 
     freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
@@ -156,30 +83,7 @@ def _tracking_curve_change_from_entry(
         measured[len(measured) // 2] += louder_spike_db
     return (freqs, measured, predicted)
 
-
 def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
-    """Put a real applied profile on the speaker — boosted, or cut-only.
-
-    **The input the PRODUCTION predicate reads, not an injection into the
-    conductor.** An earlier version of this helper assigned
-    ``conductor._candidate`` directly, and that is exactly how #2318's
-    fail-closed cell stayed green over dead code: stage 2 builds a fresh
-    conductor with no ``candidate=`` ctor parameter, so the production read was
-    always ``None`` and ``boosted`` was always ``False``, while the suite
-    supplied by hand the one thing the shipped path never has.
-
-    So this sets the applied-profile SSOT instead, and every link after it is
-    production: ``_applied_graph_boosts`` → ``profile_linearization`` (which
-    prefers the recomposition snapshot) → ``camilla_yaml.linearization_has_boost``.
-    Stubbing the loader is unavoidable — there is no profile on disk in a
-    hardware-free test — but it is the boundary of the system, not a step
-    inside the rule under test.
-
-    The mapping is the REDUCED ``{role: [filter_dict, ...]}`` shape a frozen
-    profile actually carries, deliberately not the unreduced candidate shape:
-    passing the latter through ``linearization_filters_by_role`` would be a
-    silent ``{}``, which reads as "this graph boosts nothing".
-    """
     gain_db = 3.0 if boosts else -3.0
     monkeypatch.setattr(
         baseline_profile_mod,
@@ -192,75 +96,27 @@ def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
         },
     )
 
-
 def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 0.9):
-    """One post-apply VERIFY analysis on this conductor's own program.
-
-    ``max_db`` drives BOTH the flow's tracking gate and the realization verdict
-    (they read the same ``max_db_notch_excluded``), so a value inside
-    ``VERIFY_TOLERANCE_DB`` is an accepted capture with a MATCHED realization.
-    """
     return _verify_analysis(
         conductor.program_for_phase(journey.PHASE_VERIFY),
         max_db=max_db,
         summed_db=_in_room_summed_db() * scale,
     )
 
-
-#: The index the harness banks a VERIFY take under when a caller states none.
-#: Not a production index — production threads the walk's own — so the take it
-#: mints is ``verify_00_a01``.
 _HARNESS_VERIFY_INDEX = 0
-
 
 def _consume_verify(
     conductor: Any, analysis: Any, *, attempt: int = 1,
     index: int = _HARNESS_VERIFY_INDEX, result: Any = None,
 ) -> Any:
-    """Drive the production VERIFY trigger site.
-
-    ``_consume_verify`` is where the Express tier grades its round, and it is
-    the real entry point the capture runner calls — not a test-only shim. Reached
-    directly because the runner in between is a thread and a websocket.
-
-    **The take this mints under the defaults is a PHANTOM: do not assert on
-    it.** ``index``/``result`` default because every caller here drives the
-    GRADING trigger rather than the banking, so the banked take comes out
-    ``verify_00_a01`` with a ``None`` digest — an identity production never
-    mints (its indexes start at 1) and a digest that only means "this call
-    passed no bytes". It is banked because banking is what an accepted VERIFY
-    does, and suppressing it here would make the harness diverge from the
-    production arm on the very branch these tests exercise. Any test that
-    wants to READ a banked VERIFY take must state ``index`` and ``result``.
-
-    ``phase`` is stated rather than defaulted: a default would let the
-    harness bank under a label the caller never chose — the mislabel
-    :meth:`_consume_verify` documents.
-    """
     return conductor._consume_verify(
         index, attempt, analysis, result, phase=journey.PHASE_VERIFY,
     )
 
-
-#: The prior MEASURED candidate the seeded pre-apply stash names — the
-#: republish target an adoption restore resolves. Distinct from the stash's
-#: own composed-baseline fingerprint so a wrong-key read cannot pass.
 _PREVIOUS_CANDIDATE_FINGERPRINT = "fp-previous"
 
-
 def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
-    """The durable state a household reaches stage 2 with, post-apply.
-
-    ``previous_candidate`` decides whether the state records a prior measured
-    candidate — the one fact the adoption table's ``rollback_available``
-    reads, and the fingerprint the restore republishes. ``False`` is every
-    first-ever apply.
-    """
     state = _seed_applied_stage_1_state()
-    # The seeded entry baseline sits on a five-point grid of its own, which
-    # cannot be compared with a real capture. Rounds in this module install a
-    # comparable one on the conductor; drop the placeholder so a test that
-    # forgets is INDETERMINATE rather than quietly graded against a stranger.
     state["verify_priors"]["entry_baseline"] = None
     if previous_candidate:
         state["previous_candidate_fingerprint"] = _PREVIOUS_CANDIDATE_FINGERPRINT
@@ -268,12 +124,10 @@ def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     v2state.save_v2_state(state)
     return state
 
-
 def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
     import asyncio
 
     return asyncio.run(coro)
-
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
     from jasper.active_speaker import staging
@@ -284,7 +138,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     from tests.test_active_speaker_driver_safety import _manual_settings
     from tests.test_active_speaker_baseline_profile import _draft, _MEASURE_EVIDENCE
     from tests.test_active_speaker_measured_crossover_candidate import _candidate
-    from tests.test_crossover_v2_stage_bridge import _topology
+    from tests.crossover_v2_fixtures import _topology
 
     root = v2state._state_path().parent
     topology = _topology()
@@ -315,7 +169,6 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     monkeypatch.setattr(apply_host, "load_tuning_declaration", load_tuning_declaration)
     return []
 
-
 def _restoring_stage_2(monkeypatch, *, load_ok=True) -> tuple[Any, list[int]]:
     """A real stage 2 with a banked prior graph and a hardware stand-in."""
     from pathlib import Path
@@ -336,22 +189,9 @@ def _restoring_stage_2(monkeypatch, *, load_ok=True) -> tuple[Any, list[int]]:
                 live.update(candidate_fingerprint="previous", config={"sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()})
             return True
     camilla = Camilla()
-    prepared = v2host.prepare_v2_session(
-        {}, status=_status(), run_async=_bg_run_async,
-        camilla_factory=lambda: camilla, verify_only=True,
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    return conductor, attempts
-
+    return _round_session(camilla_factory=lambda: camilla), attempts
 
 def _household_sentence(conductor: Any, code: str) -> str:
-    """The verdict text the wizard renders, through the production envelope.
-
-    Not the reason code: the code is an internal identity, and the regression
-    that matters is a household reading "the new tuning is STILL APPLIED" about
-    a speaker that has already been put back. So the assertion has to reach the
-    string on the screen.
-    """
     v2state.persist_conductor_state(conductor, failure_code=code)
     envelope = build_crossover_envelope_v2({
         "active": True,
@@ -359,3 +199,42 @@ def _household_sentence(conductor: Any, code: str) -> str:
         "crossover_v2": v2status.crossover_v2_status_block(),
     })
     return str(envelope["verdict_text"])
+
+def _round_session(*, camilla_factory, index_phase_map=None):
+    from jasper.active_speaker.crossover_v2 import durable_state, coordinator
+    from jasper.web import correction_crossover_v2_evidence as evidence
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor, _MINTED_CAPTURE_SESSION_ID
+    import numpy as np
+
+    state = v2state.load_v2_state() or {}
+    priors = state.get("verify_priors") or {}
+    context = v2host.resolve_conductor_context(_status())
+    store, _ = evidence.open_v2_evidence_store(context.topology)
+    publish_check, publish_candidate, refs = evidence.bind_evidence_publishers(
+        store, _MINTED_CAPTURE_SESSION_ID, _bg_run_async)
+    phases = index_phase_map or {1: journey.PHASE_VERIFY}
+    opening = journey.open_stage(journey.STAGE_VERIFY_CAPABILITIES, index_phase_map=phases)
+    seams = v2host.bind_v2_stage_seams(opening, evidence_store=store,
+        capture_session_id=_MINTED_CAPTURE_SESSION_ID, refs=refs,
+        publish_check=publish_check, publish_candidate=publish_candidate,
+        run_async=_bg_run_async, camilla_factory=camilla_factory, layout=context.preset.channel_map.layout)
+    predicted = priors.get("predicted_sum")
+    conductor = _conductor(FakeSeams(), session_id=_MINTED_CAPTURE_SESSION_ID, source_preset=context.preset,
+        roles_bands=context.roles_bands, fc_hz=context.fc_hz,
+        driver_caps_dbfs=context.driver_caps_dbfs, seams=seams,
+        index_phase_map=phases, accepted_phases=(journey.PHASE_CHECK, journey.PHASE_MEASURE), applied=True,
+        gain_plan_db=state.get("gain_plan_db"), measure_gain_ceiling_db=state.get("measure_gain_ceiling_db"),
+        measure_predicted_sum=(np.asarray(predicted["freqs_hz"]), np.asarray(predicted["magnitude_db"])) if predicted else None,
+        measure_predicted_spec_report=priors.get("predicted_spec"),
+        measure_commanded_delta=durable_state.commanded_delta_prior_from_state(state),
+        measure_declared_transfer=durable_state.declared_transfer_prior_from_state(state),
+        measure_proposal_fingerprint=priors.get("proposal_fingerprint", ""),
+        measure_entry_baseline=durable_state.entry_baseline_prior_from_state(state),
+        measure_alignment_objective=priors.get("alignment_objective", ""),
+        measure_gate_window_ms=priors.get("gate_window_ms"),
+        verify_pilot_transfer_prior=durable_state.pilot_transfer_prior_from_state(state),
+        attempt_history=durable_state.attempt_history_from_state(state),
+        series_position=coordinator.series_position_from_state(state), speaker_id=context.topology.topology_id,
+        tuning_attempt_id=(state.get("candidate") or {}).get("fingerprint", ""))
+    v2state.persist_conductor_state(conductor, failure_code=None, evidence=refs)
+    return conductor
