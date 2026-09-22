@@ -305,3 +305,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; the only protective band edge is a high-frequency driver's floor | accepted |
 | [0329](0329-cardioid-on-off-is-an-audition-layer.md) | Cardioid on/off for listening is an audition layer: the rear mutes in the running graph only, switched in place, loudness-matched by attenuation only | accepted |
 | [0330](0330-speaker-setup-resolves-inputs-on-the-server.md) | The server resolves speaker setup inputs | accepted |
+| [0331](0331-applied-tune-reads-use-the-saved-artifact.md) | Applied tune reads use the saved artifact | EQ status dry-run superseded by 0332 |
+| [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
