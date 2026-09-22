@@ -87,11 +87,10 @@ REASON_NO_COMPARISON = "no_candidate_comparison"
 #: :func:`~jasper.audio_measurement.deconv.magnitude_response` applies.
 _MAGNITUDE_FLOOR = 1e-12
 
-#: A woofer is radiating within this much of its own peak level.
-RADIATING_FLOOR_BELOW_PEAK_DB = 20.0
-
 #: Minimum search half-width; narrow bands need room outside the main lobe.
 ARRIVAL_GAP_SEARCH_MS = 2.0
+#: Two drivers in one cabinet with rear-stage delay cleared for pair takes: ±10 ms leaves room for wall-image lobes.
+ARRIVAL_GAP_MIN_BAND_HZ = 200.0
 
 #: Mean ``angle(R/F)`` with the arrival gap removed, degrees: at or below the
 #: first the rear tracks the front, at or above the second it opposes it.
@@ -120,6 +119,7 @@ UPPER_BANDS_HZ = ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
 LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0), *UPPER_BANDS_HZ)
 LATE_ENERGY_BAND_HZ = (90.0, 250.0)
 #: The gap that predicts cancellation is the gap measured in its band.
+#: Pair-take default before a rear document exists; jasper.active_speaker.rear_calibration.rear_operating_facts reads the applied pass band.
 ARRIVAL_GAP_BAND_HZ = (90.0, 315.0)
 LATE_ENERGY_CHANGE_KEYS = (("early_late_change_db", "early_late_db"),
                            ("band_energy_change_db", "energy_db"), ("arrival_shift_ms", "centroid_ms"))
@@ -444,27 +444,6 @@ def superposition_residual_db(
     return float(np.sqrt(np.mean((parts[inside] - played[inside]) ** 2)))
 
 
-def shared_radiating_band_hz(
-    freqs_hz: Any, *, front_tf: Any, rear_tf: Any, band_hz: Sequence[float],
-) -> list[float] | None:
-    """The span inside ``band_hz`` where BOTH woofers radiate: lowest to
-    highest bin at which each one's 1/6-octave level is within
-    :data:`RADIATING_FLOOR_BELOW_PEAK_DB` of its own in-band peak.
-    ``None`` under two such bins."""
-    freqs = np.asarray(freqs_hz, dtype=np.float64)
-    inside = _band(freqs, band_hz)
-    if inside.size < 2:
-        return None
-    radiating = np.ones(inside.size, dtype=bool)
-    for tf in (front_tf, rear_tf):
-        level = _figure_level_db(freqs, magnitude_db(tf))[inside]
-        radiating &= level >= float(np.max(level)) - RADIATING_FLOOR_BELOW_PEAK_DB
-    both = np.flatnonzero(radiating)
-    if both.size < 2:
-        return None
-    return [float(freqs[inside[both[0]]]), float(freqs[inside[both[-1]]])]
-
-
 def arrival_gap_ms(
     repeats: Sequence[tuple[Any, Any, float]], *, sample_rate_hz: int,
     band_hz: Sequence[float] | None,
@@ -486,7 +465,7 @@ def arrival_gap_ms(
     band = None if band_hz is None else (float(band_hz[0]), float(band_hz[1]))
     # Four main-lobe widths across the window leave secondary peaks unmasked.
     search_ms = (max(ARRIVAL_GAP_SEARCH_MS, 2e3 / (band[1] - band[0]))
-                 if band and band[0] < band[1] else None)
+                 if band and band[1] - band[0] >= ARRIVAL_GAP_MIN_BAND_HZ else None)
     rows = []
     for front, rear, shift in repeats:
         ahead = np.asarray(front, dtype=np.float64)
@@ -508,7 +487,7 @@ def arrival_gap_ms(
         "search_ms": search_ms if rows else None,
         "band_hz": list(band) if rows and band else None, "n_repeats": len(rows),
         "repeat_spread_us": float(np.ptp(gaps)) * 1e3 if len(gaps) > 1 else None,
-        "reason": "" if rows else REASON_NO_IMPULSE,
+        "reason": "" if rows else REASON_COVERAGE_SHORT if search_ms is None else REASON_NO_IMPULSE,
     }
 
 

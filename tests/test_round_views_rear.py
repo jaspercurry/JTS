@@ -836,20 +836,22 @@ def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incu
     assert packet["rear"] == []
 
 
+@pytest.mark.parametrize("swept_hz", [(20.0, 21.0), (20.0, 100.0)])
 def test_a_pair_take_too_narrow_to_read_discloses_it_rather_than_reading_clean(
-    tmp_path, banked_candidates,
+    tmp_path, banked_candidates, swept_hz,
 ):
-    """A position whose trust number is absent is NOT a clean read, however
-    many bands the levels answered — one reason covers both gates."""
-    root = pair_round(tmp_path, swept_hz=(20.0, 21.0))
+    root = pair_round(tmp_path, swept_hz=swept_hz)
 
     entry, = packet_of(root)[0]["rear"]
     row = entry["pair"]["positions"][min(entry["comparison"]["positions"])]
 
-    assert (row["bands"], row["band_hz"]) == ([], None)
-    assert row["superposition_residual_db"] is None
-    assert row["reason"] == REASON_COVERAGE_SHORT
-    assert entry["comparison"]["band_reason"] == REASON_COVERAGE_SHORT
+    if swept_hz[1] == 21.0:
+        assert (row["bands"], row["band_hz"]) == ([], None)
+        assert row["superposition_residual_db"] is None
+        assert row["reason"] == REASON_COVERAGE_SHORT
+        assert entry["comparison"]["band_reason"] == REASON_COVERAGE_SHORT
+    assert row["arrival_gap"]["reason"] == REASON_COVERAGE_SHORT
+    assert (row["arrival_gap"]["ms"], row["arrival_gap"]["search_ms"]) == (None, None)
     assert entry["stage"]["gradient_residual_db"] is None
 
 
