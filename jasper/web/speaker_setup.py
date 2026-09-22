@@ -122,8 +122,8 @@ def _restart_units(
     no_block: bool = True,
     timeout: float = 5.0,
 ) -> bool:
-    # WS1 Phase 3: route through jasper-control's restart broker (the
-    # read-only `_systemctl` probes elsewhere in this file stay direct).
+    # Route through jasper-control's restart broker (the read-only
+    # `_systemctl` probes elsewhere in this file stay direct).
     resp = manage_units(
         *units,
         verb=verb,

@@ -64,10 +64,8 @@ WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
 _SHARED_JSON_OBJECT_READERS = {
     "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
-    "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
     "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
-    "tools_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 

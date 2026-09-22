@@ -65,7 +65,6 @@ from ..tool_catalog_view import catalog_view
 from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
-    JsonBodyError,
     RestartOutcome,
     begin_request,
     bonded_follower_active,
@@ -73,7 +72,7 @@ from ._common import (
     dispatch_post,
     json_body,
     read_active_provider,
-    read_json_object,
+    read_json_body,
     resolve_samples,
     restart_voice_daemon,
     send_html_response,
@@ -432,13 +431,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _read_json(self) -> dict[str, Any] | None:
             """Parse the request body, answering 400 and returning None on a
             malformed one so `json_body` never dispatches it to a route."""
-            try:
-                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
-            except JsonBodyError as exc:
+            parsed, err = read_json_body(self, max_bytes=_JSON_BODY_LIMIT)
+            if err is not None:
                 send_proxy_json(
-                    self, json.dumps({"error": exc.code}).encode(), status=400,
+                    self, json.dumps({"error": err}).encode(), status=400,
                 )
                 return None
+            return parsed
 
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)

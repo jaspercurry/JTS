@@ -590,10 +590,9 @@ def _apply_save(
 
     The sensitivity slider lives in the same page but posts directly
     to jasper-control via /assistant/wake/sensitivity, which writes
-    JASPER_WAKE_THRESHOLD into the same env file. Here we preserve
-    whatever value is already there by starting from `dict(current)`
-    (write_env_file overwrites the whole file with whatever dict we
-    pass)."""
+    JASPER_WAKE_THRESHOLD into the same env file. Starting from
+    `dict(current)` keeps that value in the returned state so a model
+    save can't zap it."""
     key = (form.get("model") or "").strip()
     new = dict(current)
     if not key:

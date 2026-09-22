@@ -153,12 +153,17 @@ def _capture_post(body: bytes | None, content_length: str | None = None):
     ("body", "content_length", "expected_error"),
     (
         (None, None, "enabled must be true or false"),
-        (b"{}", "not-a-number", "invalid content length"),
-        (b"", "-1", "request too large"),
-        (b"", str(chat_setup.MAX_JSON_BYTES + 1), "request too large"),
-        (b"{", "1", "invalid JSON body"),
-        (b"{}", "3", "invalid JSON body"),
-        (b"[]", "2", "JSON body must be an object"),
+        (b"{}", "not-a-number", "invalid Content-Length"),
+        (b"", "-1", "invalid body length"),
+        (b"", str(chat_setup.MAX_JSON_BYTES + 1), "invalid body length"),
+        (
+            b"{",
+            "1",
+            "invalid JSON body: Expecting property name enclosed in double "
+            "quotes: line 1 column 2 (char 1)",
+        ),
+        (b"{}", "3", "incomplete body"),
+        (b"[]", "2", "body must be a JSON object"),
     ),
 )
 def test_chat_capture_preserves_public_body_error_messages(

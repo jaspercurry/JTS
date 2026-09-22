@@ -60,7 +60,7 @@ from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
-from ..atomic_io import write_env_file
+from ..atomic_io import locked_transform_env_file
 from . import rooms_peers
 from ._common import (
     begin_request,
@@ -296,9 +296,11 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     REUSES jasper.peering.config for the PEERING_ENV_FILE and state readers
     so there is ONE owner of the peering env contract.
 
-    Read-modify-write: write_env_file does a full-file replace, so without
-    the merge a save would clobber JASPER_PEER_ROOM (owned by /speaker/) and
-    operator-set arbitration knobs like JASPER_PEER_ARB_WINDOW_MS.
+    Locked: peering.env can carry JASPER_PEER_ROOM (a legacy fallback key
+    nothing writes anymore — see identity.reader.LEGACY_PEER_ROOM_ENV) or an
+    operator-set JASPER_PEER_ARB_WINDOW_MS. locked_transform_env_file holds
+    the file's lock across the read and write so this save can't clobber
+    either.
 
     Fail-soft: a parse/IO error returns a 4xx/5xx JSON error and never raises
     out of the handler."""
@@ -310,21 +312,24 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
 
     enabled = bool(parsed.get("enabled"))
     primary = bool(parsed.get("primary"))
+    peering_mode = "on" if enabled else "off"
 
-    # Resolve the path ONCE so the merge cannot read one file and write
-    # another, which would clobber the keys it means to preserve.
-    env_path = peering_config.PEERING_ENV_FILE
-
-    values: dict[str, str] = dict(peering_config.read_state(env_path))
-    values["JASPER_PEERING"] = "on" if enabled else "off"
-    if primary:
-        values["JASPER_PEER_PRIMARY"] = "1"
-    elif "JASPER_PEER_PRIMARY" in values:
-        del values["JASPER_PEER_PRIMARY"]
+    def _update(state: dict[str, str]) -> dict[str, str]:
+        state["JASPER_PEERING"] = peering_mode
+        if primary:
+            state["JASPER_PEER_PRIMARY"] = "1"
+        else:
+            state.pop("JASPER_PEER_PRIMARY", None)
+        return state
 
     try:
         # mode=0o644 — no secrets, just config.
-        write_env_file(env_path, values, mode=0o644, owner="JTS /rooms peering wizard")
+        locked_transform_env_file(
+            peering_config.PEERING_ENV_FILE,
+            _update,
+            mode=0o644,
+            owner="JTS /rooms peering wizard",
+        )
     except OSError as e:
         log_event(logger, "rooms.peering.save.error", level=logging.ERROR, exc_info=True)
         _send_json(
@@ -336,7 +341,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     log_event(
         logger,
         "rooms.peering.save",
-        mode=values["JASPER_PEERING"],
+        mode=peering_mode,
         primary=int(primary),
     )
 

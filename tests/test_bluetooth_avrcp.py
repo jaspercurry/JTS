@@ -91,7 +91,6 @@ async def test_probe_reports_a_connected_a2dp_transport(monkeypatch, objects, pl
 async def test_unreachable_bus_is_none_not_a_raise(monkeypatch, error):
     _install_objects(monkeypatch, error=error)
     assert await avrcp.a2dp_sink_playing() is None
-    assert await avrcp.bluetooth_player_path() is None
 
 
 async def test_a_missing_dbus_next_fails_soft_like_an_unreachable_bus(monkeypatch):
@@ -120,9 +119,8 @@ async def test_a_missing_dbus_next_fails_soft_like_an_unreachable_bus(monkeypatc
         ({TRANSPORT: _transport("active")}, None),
     ],
 )
-async def test_player_path_prefers_the_active_a2dp_device(monkeypatch, objects, expected):
-    _install_objects(monkeypatch, objects)
-    assert await avrcp.bluetooth_player_path() == expected
+def test_player_path_prefers_the_active_a2dp_device(objects, expected):
+    assert avrcp._player_path(objects) == expected
 
 
 @pytest.mark.parametrize(

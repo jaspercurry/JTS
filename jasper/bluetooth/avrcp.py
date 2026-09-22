@@ -109,12 +109,6 @@ async def a2dp_sink_playing(session: BluezSession | None = None) -> bool | None:
     return _a2dp_sink_device(objects) is not None
 
 
-async def bluetooth_player_path(session: BluezSession | None = None) -> str | None:
-    """The MediaPlayer1 path an AVRCP command should target, if any."""
-    objects = await _bluez_objects(session)
-    return None if objects is None else _player_path(objects)
-
-
 async def bluetooth_avrcp_call(method: str, session: BluezSession | None = None) -> None:
     """Invoke a no-arg AVRCP method on the active BlueZ MediaPlayer1."""
     try:
