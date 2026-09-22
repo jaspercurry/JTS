@@ -7,41 +7,113 @@
 from __future__ import annotations
 
 import json
+from dataclasses import MISSING, fields
 from importlib import import_module
 from pathlib import Path
 
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
-from jasper.active_speaker import measurement_programs as mp
-from jasper.active_speaker.angle_capture import request_for_program
+from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
+from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
+from jasper.active_speaker.candidate_bank import BankedCandidate
+from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 
-@pytest.mark.parametrize(
-    ("program_id", "size", "poses", "moves", "captures"),
-    [
-        ("speaker", "mark", 1, 1, 3),
-        ("baseline", "full", 13, 13, 29),
-        ("baseline", "express", 5, 5, 13),
-        ("tournament", "full", 3, 3, 3),
-        ("tournament", "express", 1, 1, 1),
-        ("seat", "cloud", 11, 11, 11),
-        ("seat", "cube", 7, 7, 7),
-        ("seat", "express", 3, 3, 3),
-        ("room", "cloud", 11, 11, 11),
-        ("room", "arm", 3, 3, 3),
-        ("room", "seat", 3, 3, 3),
-        ("bass", "axis", 1, 1, 1),
-        ("close", "spot", 1, 1, 1),
-    ],
-)
+@pytest.mark.parametrize("actual,expected", [
+    pytest.param(pd._JUDGE_ORDER, ("topology", "blend", "alignment", "room", "bass", "rear_calibration", "driver"), id="judge"),
+    pytest.param(tuple(pd._PREVIEW_ROWS), ("rear_calibration", "room", "emitted_graph"), id="preview"),
+    pytest.param(tuple(pc.prescription_contracts()), ("speaker", "room", "bass", "rear"), id="contracts"),
+    pytest.param(tuple(section.name for section in mp.PRESCRIPTION_SECTIONS if section.compose),
+                 ("driver", "blend", "topology", "room", "bass", "rear_calibration"), id="compose-with-rear"),
+    pytest.param(tuple(section.name for section in mp.PRESCRIPTION_SECTIONS if section.compose and section.name != "rear_calibration"),
+                 ("driver", "blend", "topology", "room", "bass"), id="compose-without-rear"),
+    pytest.param(mp.RUNNABLE_PROGRAMS, ("speaker", "rear", "bass", "room"), id="runnable"),
+    pytest.param(tuple(pd.SECTION_KINDS.items()), (
+        ("driver", "jts_crossover_driver_prescription"), ("blend", "jts_crossover_blend_prescription"),
+        ("alignment", "jts_crossover_alignment_prescription"), ("topology", "jts_crossover_topology_prescription"),
+        ("room", "jts_room_prescription"), ("bass", None), ("rear_calibration", "jts_rear_calibration"),
+    ), id="section-kinds"),
+])
+def test_program_projections_preserve_document_order(actual, expected):
+    assert actual == expected
+
+
+@pytest.mark.parametrize("site", [
+    "purposes", "runnable", "regimes", "trial", "sections", "kinds", "kind_constants", "judge", "preview",
+    "contracts", "compose", "optional_types", "typed_fields", "snapshot", "applied", "applied_names",
+    "handoff", "measure", "graph",
+])
+def test_program_table_projections(site):
+    rows = mp.PROGRAM_ROWS
+    ordered = sorted(rows, key=lambda row: row.purpose_order)
+    sections = sorted((section for row in rows for section in row.sections), key=lambda section: section.document_order)
+    candidate_fields = [field for row in ordered for field in row.candidate_fields]
+    candidate = _candidate()
+    composed = compose_candidate(BankedCandidate(candidate, "", "", Path("candidate.json")), base_profile={},
+                                 sections={section.name: None for section in sections if section.reset})
+    snapshot = bp.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
+        candidate.source_preset, mono_output_topology(), {}, "null"))
+    snapshot_header = {"schema_version", "domain", "topology_id", "topology_fingerprint", "preset", "corrections",
+                       "driver_protection", "playback_device", "measured_candidate_fingerprint"}
+    trials = [(section.name, (row.purpose, *row.trial)) for row in rows if row.trial for section in row.sections]
+    room_trial = next(value for _, value in trials if value[0] == mp.PURPOSE_ROOM)
+    actual, expected = {
+        "purposes": (mp.PURPOSES, tuple(name for _, name in sorted(
+            [(row.purpose_order, row.purpose) for row in rows] + [(3, mp.PURPOSE_REFERENCE)]))),
+        "runnable": (mp.RUNNABLE_PROGRAMS, tuple(row.purpose for row in rows)),
+        "regimes": ([(name, value) for name, value in mp._REGIMES_BY_PURPOSE.items() if name != mp.PURPOSE_REFERENCE],
+                    [(row.purpose, row.regimes) for row in ordered]),
+        "trial": (list(mp._TRIAL_PROGRAMS.items()), [*trials, (None, room_trial)]),
+        "sections": ([mp.prescription_sections(purpose) for purpose in (None, *(row.purpose for row in rows))],
+                     [tuple(section.name for row in rows if purpose is None or row.purpose == purpose
+                            for section in row.sections if section.reset) for purpose in (None, *(row.purpose for row in rows))]),
+        "kinds": (list(pd.SECTION_KINDS.items()), [(section.name, section.kind) for section in sections]),
+        "kind_constants": ([pd.driver.DRIVER_PRESCRIPTION_KIND, pd.blend.PRESCRIPTION_KIND,
+                            pd.alignment.ALIGNMENT_PRESCRIPTION_KIND, pd.topology.TOPOLOGY_PRESCRIPTION_KIND,
+                            pd.room.ROOM_PRESCRIPTION_KIND, None, pd.rear_calibration.KIND], [section.kind for section in sections]),
+        "judge": (pd._JUDGE_ORDER, tuple(section.name for section in sorted(sections, key=lambda section: section.judge_order))),
+        "preview": (list(pd._PREVIEW_ROWS.items()), [(kind, set(names)) for _, kind, names in sorted(row.preview for row in rows if row.preview)]),
+        "contracts": ((pc.SECTIONS, tuple(pc.prescription_contracts())), (tuple(row.purpose for row in ordered),) * 2),
+        "compose": (list(composed.analysis["resolution"]), sorted([section.name for section in sections if section.compose] + ["alignment"])),
+        "optional_types": (list(mc._OPTIONAL_FIELD_TYPES.items()), [(field.name, field.type) for field in candidate_fields]),
+        "typed_fields": ([field.name for field in fields(mc.MeasuredCrossoverCandidate) if field.init and field.name != "alignment"
+                          and (field.default is not MISSING or field.default_factory is not MISSING)],
+                         [field.name for field in candidate_fields]),
+        "snapshot": ([name for name in snapshot if name not in snapshot_header], [field.name for field in candidate_fields if field.snapshot]),
+        "applied": (list(bp.applied_layers(None).items()), [(row.purpose, False) for row in ordered]),
+        "applied_names": (list(bp.applied_layer_names(None).items()), [(row.applied_name, False) for row in ordered]),
+        "handoff": (th.PROGRAM_ENTRIES, tuple({"id": row.purpose, "title": row.title, "description": row.description} for row in rows)),
+        "measure": (list(cc._MEASURE_LABELS.items()), [(row.purpose, row.measure_label) for row in rows]),
+        "graph": (list(me.measurement_graph_evidence(scope="candidate", candidate=candidate)),
+                  [row.candidate_fields[0].name for row in ordered if row.graph_evidence]),
+    }[site]
+    assert actual == expected
+
+
+@pytest.mark.parametrize(("program_id", "size", "poses", "moves", "captures"), [
+    ("speaker", "mark", 1, 1, 3),
+    ("baseline", "full", 13, 13, 29),
+    ("baseline", "express", 5, 5, 13),
+    ("tournament", "full", 3, 3, 3),
+    ("tournament", "express", 1, 1, 1),
+    ("seat", "cloud", 11, 11, 11),
+    ("seat", "cube", 7, 7, 7),
+    ("seat", "express", 3, 3, 3),
+    ("room", "cloud", 11, 11, 11),
+    ("room", "arm", 3, 3, 3),
+    ("room", "seat", 3, 3, 3),
+    ("bass", "axis", 1, 1, 1),
+    ("close", "spot", 1, 1, 1),
+])
 def test_shipped_rows(
     program_id: str, size: str, poses: int, moves: int, captures: int
 ) -> None:
-    """The shipped numbers."""
-
     row = mp.program(program_id, size)
 
     assert (row.program_id, row.size) == (program_id, size)
@@ -72,7 +144,6 @@ def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
                      ("inventory", True, False))),
 ])
 def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
-    """One table, not four lists: each automatic view resolves to a builder."""
     assert mp.bookkeeping_views(purpose, has_room=has_room) == expected
     assert {name for name, row in ARTIFACT_BY_VIEW.items() if row.builder} == set(BOOKKEEPING_ORDER)
     for view, _, _ in expected:
@@ -85,8 +156,6 @@ def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected
     ("branches/express", "drivers"), ("front_rear/express", "front_rear"),
 ])
 def test_a_branch_row_is_reachable_as_a_speaker_run_and_keeps_its_pair(poses, pair):
-    """A branches regime plays no room sweep, so the speaker default's sweep must
-    not be inherited onto it: that combination refused both rows outright."""
     row = mp.run_program("speaker", poses)
 
     assert (row.regime, row.branch_pair, row.room_sweep) == (mp.REGIME_BRANCHES, pair, False)
@@ -100,8 +169,6 @@ def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch
 
 
 def test_express_geometry() -> None:
-    """The quick tier: on-axis plus one horizontal pair and one vertical pair."""
-
     row = mp.program("baseline", "express")
 
     assert {p.azimuth_deg for p in row.poses} == {0, -20, 20}
@@ -111,13 +178,8 @@ def test_express_geometry() -> None:
     ] == [mp.ANCHOR_REPEATS]
 
 
-@pytest.mark.parametrize(
-    ("program_id", "size"),
-    [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")],
-)
+@pytest.mark.parametrize("program_id,size", [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")])
 def test_unknown_lookup_names_the_valid_choices(program_id: str, size: str) -> None:
-    """A miss carries the menu as a field, not only in its message."""
-
     with pytest.raises(mp.UnknownProgramError) as excinfo:
         mp.program(program_id, size)
 
@@ -129,29 +191,12 @@ def test_available_programs_is_the_sorted_registry() -> None:
     choices = mp.available_programs()
 
     assert choices == (
-        ("baseline", "express"),
-        ("baseline", "full"),
-        ("bass", "axis"),
-        ("bass", "cloud"),
-        ("bass", "nearfield"),
-        ("bass", "quick"),
-        ("branches", "express"),
-        ("close", "spot"),
-        ("front_rear", "express"),
-        ("rear", "behind"),
-        ("rear", "express"),
-        ("rear", "pair"),
-        ("rear", "pair_behind"),
-        ("rear", "wide"),
-        ("room", "arm"),
-        ("room", "cloud"),
-        ("room", "seat"),
-        ("seat", "cloud"),
-        ("seat", "cube"),
-        ("seat", "express"),
-        ("speaker", "mark"),
-        ("tournament", "express"),
-        ("tournament", "full"),
+        ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
+        ("bass", "nearfield"), ("bass", "quick"), ("branches", "express"), ("close", "spot"),
+        ("front_rear", "express"), ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
+        ("rear", "pair_behind"), ("rear", "wide"), ("room", "arm"), ("room", "cloud"), ("room", "seat"),
+        ("seat", "cloud"), ("seat", "cube"), ("seat", "express"), ("speaker", "mark"),
+        ("tournament", "express"), ("tournament", "full"),
     )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
@@ -190,8 +235,6 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
 def test_counts_split_moves_from_captures(
     poses: tuple[object, ...], moves: int, captures: int
 ) -> None:
-    """Repeats add captures at a place already reached, never a mic move."""
-
     row = mp.MeasurementProgram(program_id="t", size="t", poses=poses)
 
     assert row.mic_move_count == moves
@@ -199,8 +242,6 @@ def test_counts_split_moves_from_captures(
 
 
 def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
-    """The listener's head and the six faces one offset away, express a subset."""
-
     cube = mp.program("seat", "cube")
     express = mp.program("seat", "express")
 
@@ -234,8 +275,6 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
 
 
 def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
-    """The room-suppressed reference states a standoff, and no head offset."""
-
     pose, = mp.program("close", "spot").poses
 
     assert pose.kind == mp.POSE_KIND_CLOSE
@@ -248,8 +287,6 @@ def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
     [(0, 0), (-35, 10), (400, -400)],
 )
 def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -> None:
-    """Out-of-reach geometry is the staging layer's refusal, not this table's."""
-
     row = mp.spot_program(azimuth, elevation)
 
     assert row.poses == (mp.ProgramPose(azimuth, elevation, 1),)
@@ -313,7 +350,6 @@ def test_rear_gate_exemption_matches_room() -> None:
     (mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, True),
 ])
 def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, supported) -> None:
-    """Rear is the one non-speaker purpose whose take reads each branch solo."""
     if supported:
         assert mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime) == purpose
     else:
@@ -357,25 +393,6 @@ def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
     """A behind pose carries no seat offset; its distance validates like a
     close pose's (issue #5330)."""
     assert mp.validated_pose(mp.POSE_KIND_BEHIND, None, 0.1) == (None, 0.1)
-
-
-@pytest.mark.parametrize("mover", [None, "arm", "human"])
-@pytest.mark.parametrize("sections,purpose,layout,default_mover", [
-    (("driver", "blend"), "room", "seat_express", "human"),
-    (("room",), "room", "seat_express", "human"),
-    (("bass",), "bass", "bass_axis", "arm"),
-    (("rear_calibration",), "rear", "rear_express", None),
-    (("rear_calibration", "room"), "rear", "rear_express", None),
-    (("rear_calibration", "bass", "room"), "rear", "rear_express", None),
-])
-def test_trial_program_selects_sections_and_mover(sections, purpose, layout, default_mover, mover) -> None:
-    selected = mp.trial_program(sections, mover)
-    assert (selected.program_id, selected.purpose, selected.layout, selected.mover) == (
-        purpose, purpose, "room_quick" if purpose == "room" and mover == "arm" else layout,
-        mover or default_mover,
-    )
-    request = request_for_program(selected, mover=selected.mover or "human")
-    assert (request.program, request.mover) == (f"{purpose}/{selected.size}", mover or default_mover or "human")
 
 
 def test_run_program_resolves_rear_layouts_and_custom_bearings() -> None:

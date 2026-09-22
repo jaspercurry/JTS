@@ -75,7 +75,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
-from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
+from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
 from . import passive_profile as _passive
@@ -997,19 +997,16 @@ def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any
 def applied_layers(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     profile = profile or {}
     snapshot = profile.get("recomposition_snapshot") or {}
-    return {
-        PURPOSE_SPEAKER: bool(profile_linearization(profile)),
-        PURPOSE_ROOM: bool(snapshot.get("room_correction", profile.get("room_correction"))),
-        PURPOSE_BASS: bool(snapshot.get("bass_extension", profile.get("bass_extension"))),
-        PURPOSE_REAR: bool(snapshot.get("rear_calibration")),
-    }
+    return {row.purpose: bool(profile_linearization(profile) if row.purpose == PURPOSE_SPEAKER else
+                              snapshot.get(row.candidate_fields[0].name,
+                                           profile.get(row.candidate_fields[0].name) if row.profile_fallback else None))
+            for row in PROGRAM_DOCUMENT_ORDER}
 
 
 def applied_layer_names(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     """``applied_layers``, keyed by its packet-facing layer name instead of purpose."""
     layers = applied_layers(profile)
-    return {"driver": layers[PURPOSE_SPEAKER], "room": layers[PURPOSE_ROOM],
-            "bass": layers[PURPOSE_BASS], "rear": layers[PURPOSE_REAR]}
+    return {row.applied_name: layers[row.purpose] for row in PROGRAM_DOCUMENT_ORDER}
 
 
 def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -1648,9 +1645,8 @@ def recomposition_snapshot_for(
         "preset": effective_preset(candidate_on_declaration(shaped, declaration.preset)).to_dict(),
         "corrections": driver_corrections(shaped),
         "linearization": linearization_filters_by_role(candidate.linearization),
-        "blend_correction": list(candidate.blend_correction),
-        "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
-        "rear_calibration": dict(candidate.rear_calibration),
+        **{field.name: field.type(getattr(candidate, field.name)) for row in PROGRAM_DOCUMENT_ORDER
+           for field in row.candidate_fields if field.snapshot and field.name != "linearization"},
         "driver_protection": _protection_projection(design_draft.get("driver_safety_profile")),
         "playback_device": declaration.playback_device,
         "measured_candidate_fingerprint": candidate.fingerprint,

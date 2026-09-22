@@ -26,6 +26,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     compile_candidate_config, driver_corrections, effective_preset,
     prove_candidate_config,
 )
+from jasper.active_speaker.measurement_programs import GRAPH_LAYERS
 from jasper.active_speaker.profile import (
     ActiveSpeakerPreset, required_driver_roles,
 )
@@ -111,7 +112,6 @@ def measurement_graph_evidence(
     candidate: MeasuredCrossoverCandidate | None = None,
     candidate_id: str = "",
 ) -> dict[str, Any]:
-    """Resolve the candidate layers the installed graph must prove."""
     if scope == GRAPH_SCOPE_DRIVERS:
         return {}
     if candidate is None and candidate_id:
@@ -120,10 +120,8 @@ def measurement_graph_evidence(
         raise MeasurementGraphRefused("measurement_candidate_required", scope)
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
-    return {
-        "bass_extension": {} if scope == "timing" else dict(candidate.bass_extension),
-        "rear_calibration": dict(candidate.rear_calibration),
-    }
+    return {name: {} if scope == "timing" and name == "bass_extension" else dict(getattr(candidate, name))
+            for name in GRAPH_LAYERS}
 
 
 def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
