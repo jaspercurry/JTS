@@ -25,54 +25,32 @@ WIZARD_UNITS=(
 
 OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
 
+# Rows use "<mode> <source relative to REPO_DIR> <destination>".
+_install_file_rows() {
+    local row mode src dst
+    for row in "$@"; do
+        read -r mode src dst <<<"${row}"
+        install -m "${mode}" "${REPO_DIR}/${src}" "${dst}"
+    done
+}
+
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
     # The recovery timer may run mid-install; its raw reads precede the new lib.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
-        /usr/local/sbin/jasper-wifi-guardian
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
-        /usr/local/lib/jasper/jasper-asound-render.sh
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
-        /usr/local/lib/jasper/jasper-env-file.sh
+    _install_file_rows \
+        "0755 deploy/bin/jasper-wifi-guardian /usr/local/sbin/jasper-wifi-guardian" \
+        "0644 deploy/lib/jasper-asound-render.sh /usr/local/lib/jasper/jasper-asound-render.sh" \
+        "0644 deploy/lib/jasper-env-file.sh /usr/local/lib/jasper/jasper-env-file.sh"
     # deploy/bin/jasper-contained-build is the only reader of this directory,
     # and it sources build-sandbox.sh alone.
     install -d -m 0755 /usr/local/lib/jasper/install
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/install/build-sandbox.sh" \
-        /usr/local/lib/jasper/install/build-sandbox.sh
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-contained-build" \
-        /usr/local/sbin/jasper-contained-build
+    _install_file_rows \
+        "0644 deploy/lib/install/build-sandbox.sh /usr/local/lib/jasper/install/build-sandbox.sh" \
+        "0755 deploy/bin/jasper-contained-build /usr/local/sbin/jasper-contained-build"
 }
 
-# Core audio-graph unit + helper-binary install table. One row per file:
-# "<mode> <src-relative-to-REPO_DIR> <dst>". Driven by a transactional loop
-# (install_local_audio_graph_unit_files) so a single failed `install` cannot
-# abort the sequence and silently skip a LATER unit — the 2026-06 deploy hazard
-# where a newly-added unit never landed on the first deploy because an earlier
-# step failed under `set -euo pipefail`. The loop attempts EVERY row, then
-# fails at the end if any row failed (so a genuine error still surfaces), and a
-# daemon-reload is guaranteed by the caller regardless.
-#
-# Annotations preserved from the prior flat form:
-#   jasper-camilla-crossover.service — camilla#2 endpoint-crossover (:1235),
-#     not globally boot-enabled; grouping reconcile arms it only while the box
-#     is a bonded active leader.
-#   jasper-doctor-json.service — root oneshot capturing
-#     jasper-doctor --json for /system/diagnostics (non-root jasper-control
-#     triggers it via polkit). On-demand only — not enabled.
-#   jasper-camilla-pipe-guard — ExecStartPre chain-breaker: re-points the
-#     statefile off a dead Snapcast PLAYBACK pipe before camilla launches.
-#   jasper-camilla-topology-gate — ExecCondition: skips the start when the
-#     statefile's graph was proved against a different topology than the one
-#     the last convergence worked on.
-#   jasper-camilla-crossover-guard — like the pipe-guard but repairs ONLY to the
-#     re-proven driver-domain graph (never flat — a flat crossover would send
-#     full-range to the tweeter). Live only on a reconciled active leader.
+# Core copies attempt every row before reporting failure; daemon-reload still runs.
 JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
     # jasper-unpark lands before BOTH units whose ExecStartPost= names it,
     # jasper-camilla.service and jasper-outputd.service below: `-` makes a
@@ -121,15 +99,10 @@ install_local_audio_graph_unit_files() {
         echo "  ERROR: failed to install Camilla guard common library" >&2
         return 1
     fi
-    # Transactional: attempt EVERY row even if one fails, so a newly-added unit
-    # at the END of the table still lands on the first deploy. Failures are
-    # collected and re-raised after the loop; the caller's daemon-reload runs
-    # regardless. Each `install` is guarded with `|| failed=...` so `set -e`
-    # from the sourcing shell cannot short-circuit the loop.
     local failed="" row mode src dst
     for row in "${JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS[@]}"; do
-        read -r mode src dst <<<"${row}"
-        if ! install -m "${mode}" "${REPO_DIR}/${src}" "${dst}"; then
+        if ! _install_file_rows "${row}"; then
+            read -r mode src dst <<<"${row}"
             echo "  ERROR: failed to install ${dst} (from ${src})" >&2
             failed="${failed}${failed:+, }${dst}"
         fi
@@ -356,57 +329,27 @@ validate_installed_systemd_units() {
 }
 
 install_resilience_identity_unit_files() {
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-recover.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
-        "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
-        /usr/local/sbin/jasper-wifi-recover
+    _install_file_rows \
+        "0644 deploy/systemd/jasper-wifi-guardian.service ${SYSTEMD_DIR}/jasper-wifi-guardian.service" \
+        "0644 deploy/systemd/jasper-wifi-recover.service ${SYSTEMD_DIR}/jasper-wifi-recover.service" \
+        "0644 deploy/systemd/jasper-wifi-recover.timer ${SYSTEMD_DIR}/jasper-wifi-recover.timer" \
+        "0644 deploy/systemd/jasper-wifi-scan-repair.service ${SYSTEMD_DIR}/jasper-wifi-scan-repair.service" \
+        "0755 deploy/bin/jasper-wifi-recover /usr/local/sbin/jasper-wifi-recover"
     # The 5-min timer cadence is deliberate: an mDNS collision rename lands
     # when the OTHER device joins the LAN, not when this one boots.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
-        /usr/local/sbin/jasper-identity-reconcile
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
-        "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
-        /usr/local/sbin/jasper-bootloop-guard
-    # The script lands BEFORE the unit whose ExecStart= names it: a deploy
-    # interrupted between these two rows would otherwise leave a unit that
-    # fails to exec (203) on every restart instead of one that is simply
-    # not there yet.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-usb-hcd-recover" \
-        /usr/local/sbin/jasper-usb-hcd-recover
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usb-hcd-recover.service" \
-        "${SYSTEMD_DIR}/jasper-usb-hcd-recover.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-journal-review.service" \
-        "${SYSTEMD_DIR}/jasper-journal-review.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-journal-review.timer" \
-        "${SYSTEMD_DIR}/jasper-journal-review.timer"
-    install -m 0755 \
-        "${REPO_DIR}/scripts/journal-review.sh" \
-        /usr/local/sbin/jasper-journal-review
+    _install_file_rows \
+        "0644 deploy/systemd/jasper-identity-reconcile.service ${SYSTEMD_DIR}/jasper-identity-reconcile.service" \
+        "0644 deploy/systemd/jasper-identity-reconcile.timer ${SYSTEMD_DIR}/jasper-identity-reconcile.timer" \
+        "0755 deploy/bin/jasper-identity-reconcile /usr/local/sbin/jasper-identity-reconcile" \
+        "0644 deploy/systemd/jasper-bootloop-guard.service ${SYSTEMD_DIR}/jasper-bootloop-guard.service" \
+        "0755 deploy/bin/jasper-bootloop-guard /usr/local/sbin/jasper-bootloop-guard"
+    # Land the helper before its unit to avoid exec failure during an interrupted install.
+    _install_file_rows \
+        "0755 deploy/bin/jasper-usb-hcd-recover /usr/local/sbin/jasper-usb-hcd-recover" \
+        "0644 deploy/systemd/jasper-usb-hcd-recover.service ${SYSTEMD_DIR}/jasper-usb-hcd-recover.service" \
+        "0644 deploy/systemd/jasper-journal-review.service ${SYSTEMD_DIR}/jasper-journal-review.service" \
+        "0644 deploy/systemd/jasper-journal-review.timer ${SYSTEMD_DIR}/jasper-journal-review.timer" \
+        "0755 scripts/journal-review.sh /usr/local/sbin/jasper-journal-review"
 }
 
 # USB host-controller recovery: a long-lived kernel-log follow that re-binds a
@@ -429,75 +372,37 @@ install_usbsink_unit_files() {
     # opt-in sampler's narrow ReadWritePaths= contract valid even when the
     # gadget has never bound (and therefore never emitted a startup snapshot).
     install -d -m 0750 /var/lib/jasper/usb-gadget-incidents
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbgadget.service" \
-        "${SYSTEMD_DIR}/jasper-usbgadget.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.service" \
-        "${SYSTEMD_DIR}/jasper-usbgadget-forensics.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.path" \
-        "${SYSTEMD_DIR}/jasper-usbgadget-forensics.path"
+    _install_file_rows \
+        "0644 deploy/systemd/jasper-usbgadget.service ${SYSTEMD_DIR}/jasper-usbgadget.service" \
+        "0644 deploy/systemd/jasper-usbgadget-forensics.service ${SYSTEMD_DIR}/jasper-usbgadget-forensics.service" \
+        "0644 deploy/systemd/jasper-usbgadget-forensics.path ${SYSTEMD_DIR}/jasper-usbgadget-forensics.path"
     # Kick-only (no [Install]): jasper-usbgadget's name-patch ExecStartPre
     # starts it with `systemctl --no-block` so the 10.3 s depmod runs in its
     # own cgroup instead of the gadget's 5 s start budget (#2176).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink-name-index.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink-name-index.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbsink-volume.service" \
-        "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbmic.service" \
-        "${SYSTEMD_DIR}/jasper-usbmic.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbmic-apply.service" \
-        "${SYSTEMD_DIR}/jasper-usbmic-apply.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usbnet-dhcp.service" \
-        "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-usb-network-plan.service" \
-        "${SYSTEMD_DIR}/jasper-usb-network-plan.service"
+    _install_file_rows \
+        "0644 deploy/systemd/jasper-usbsink-name-index.service ${SYSTEMD_DIR}/jasper-usbsink-name-index.service" \
+        "0644 deploy/systemd/jasper-usbsink.service ${SYSTEMD_DIR}/jasper-usbsink.service" \
+        "0644 deploy/systemd/jasper-usbsink-volume.service ${SYSTEMD_DIR}/jasper-usbsink-volume.service" \
+        "0644 deploy/systemd/jasper-usbmic.service ${SYSTEMD_DIR}/jasper-usbmic.service" \
+        "0644 deploy/systemd/jasper-usbmic-apply.service ${SYSTEMD_DIR}/jasper-usbmic-apply.service" \
+        "0644 deploy/systemd/jasper-usbnet-dhcp.service ${SYSTEMD_DIR}/jasper-usbnet-dhcp.service" \
+        "0644 deploy/systemd/jasper-usb-network-plan.service ${SYSTEMD_DIR}/jasper-usb-network-plan.service"
     install -d -m 0755 "${SYSTEMD_DIR}/NetworkManager.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/NetworkManager.service.d/jasper-usb-network-plan.conf" \
-        "${SYSTEMD_DIR}/NetworkManager.service.d/jasper-usb-network-plan.conf"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-up" \
-        /usr/local/sbin/jasper-usbgadget-up
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-down" \
-        /usr/local/sbin/jasper-usbgadget-down
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-snapshot" \
-        /usr/local/sbin/jasper-usbgadget-snapshot
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-wanted" \
-        /usr/local/sbin/jasper-usbgadget-wanted
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-converge" \
-        /usr/local/sbin/jasper-usbgadget-converge
+    _install_file_rows \
+        "0644 deploy/systemd/NetworkManager.service.d/jasper-usb-network-plan.conf ${SYSTEMD_DIR}/NetworkManager.service.d/jasper-usb-network-plan.conf" \
+        "0755 deploy/usbsink/jasper-usbgadget-up /usr/local/sbin/jasper-usbgadget-up" \
+        "0755 deploy/usbsink/jasper-usbgadget-down /usr/local/sbin/jasper-usbgadget-down" \
+        "0755 deploy/usbsink/jasper-usbgadget-snapshot /usr/local/sbin/jasper-usbgadget-snapshot" \
+        "0755 deploy/usbsink/jasper-usbgadget-wanted /usr/local/sbin/jasper-usbgadget-wanted" \
+        "0755 deploy/usbsink/jasper-usbgadget-converge /usr/local/sbin/jasper-usbgadget-converge"
     # Sourced (not executed) by -wanted/-up/-converge, which find it beside
     # themselves — so it lives in sbin with them rather than /usr/local/lib.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-compose.sh" \
-        /usr/local/sbin/jasper-usbgadget-compose.sh
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbmic-apply-result" \
-        /usr/local/sbin/jasper-usbmic-apply-result
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
-        /usr/local/sbin/jasper-usbsink-wait-card
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-name-patch" \
-        /usr/local/sbin/jasper-usbsink-name-patch
-    install -m 0755 \
-        "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
-        /usr/local/sbin/uac2_name_patch.py
+    _install_file_rows \
+        "0644 deploy/usbsink/jasper-usbgadget-compose.sh /usr/local/sbin/jasper-usbgadget-compose.sh" \
+        "0755 deploy/usbsink/jasper-usbmic-apply-result /usr/local/sbin/jasper-usbmic-apply-result" \
+        "0755 deploy/usbsink/jasper-usbsink-wait-card /usr/local/sbin/jasper-usbsink-wait-card" \
+        "0755 deploy/usbsink/jasper-usbsink-name-patch /usr/local/sbin/jasper-usbsink-name-patch" \
+        "0755 deploy/usbsink/uac2_name_patch.py /usr/local/sbin/uac2_name_patch.py"
     install_usb_network_files
 }
 
@@ -667,24 +572,13 @@ install_grouping_unit_files() {
     # here either — jasper.multiroom.provision.ensure_snapcast_installed pulls
     # them the first time grouping is enabled, so a solo box never carries an
     # enabled-by-default snapserver socket or its runtime deps.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
-        "${SYSTEMD_DIR}/jasper-snapserver.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
-        "${SYSTEMD_DIR}/jasper-snapclient.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile-trailing.service" \
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
-        /usr/local/sbin/jasper-grouping-reconcile-trailing
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
-        /usr/local/sbin/jasper-grouping-reconcile-kick
+    _install_file_rows \
+        "0644 deploy/systemd/jasper-snapserver.service ${SYSTEMD_DIR}/jasper-snapserver.service" \
+        "0644 deploy/systemd/jasper-snapclient.service ${SYSTEMD_DIR}/jasper-snapclient.service" \
+        "0644 deploy/systemd/jasper-grouping-reconcile.service ${SYSTEMD_DIR}/jasper-grouping-reconcile.service" \
+        "0644 deploy/systemd/jasper-grouping-reconcile-trailing.service ${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service" \
+        "0755 deploy/bin/jasper-grouping-reconcile-trailing /usr/local/sbin/jasper-grouping-reconcile-trailing" \
+        "0755 deploy/bin/jasper-grouping-reconcile-kick /usr/local/sbin/jasper-grouping-reconcile-kick"
 }
 
 activate_staged_unit_files() {
@@ -713,43 +607,27 @@ install_renderer_source_unit_files() {
         rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
         echo "  removed stale shairport drop-in from a previous install"
     fi
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/librespot.service" \
-        "${SYSTEMD_DIR}/librespot.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/shairport-sync.service" \
-        "${SYSTEMD_DIR}/shairport-sync.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/nqptp.service" \
-        "${SYSTEMD_DIR}/nqptp.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bt-agent.service" \
-        "${SYSTEMD_DIR}/bt-agent.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-mux.service" \
-        "${SYSTEMD_DIR}/jasper-mux.service"
+    _install_file_rows \
+        "0644 deploy/systemd/librespot.service ${SYSTEMD_DIR}/librespot.service" \
+        "0644 deploy/systemd/shairport-sync.service ${SYSTEMD_DIR}/shairport-sync.service" \
+        "0644 deploy/systemd/nqptp.service ${SYSTEMD_DIR}/nqptp.service" \
+        "0644 deploy/systemd/bt-agent.service ${SYSTEMD_DIR}/bt-agent.service" \
+        "0644 deploy/systemd/jasper-mux.service ${SYSTEMD_DIR}/jasper-mux.service"
     # bluealsa-aplay and bluealsa are apt-owned units, so JTS routing
     # (loopback output instead of ALSA default), Restart=always (their apt
     # default treats a status=0 exit as "stop Bluetooth audio") and the
     # jts-audio.slice assignment all have to land as drop-ins.
     install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
-        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf" \
-        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-restart.conf"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
-        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
+    _install_file_rows \
+        "0644 deploy/systemd/bluealsa-aplay.service.d/jts-output.conf ${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf" \
+        "0644 deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf ${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-restart.conf" \
+        "0644 deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf ${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
     install -d -m 0755 "${SYSTEMD_DIR}/bluealsa.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
-        "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
+    _install_file_rows \
+        "0644 deploy/systemd/bluealsa.service.d/jts-restart.conf ${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
     install -d -m 0755 "${SYSTEMD_DIR}/bluetooth.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluetooth.service.d/jts-timeout.conf" \
-        "${SYSTEMD_DIR}/bluetooth.service.d/jts-timeout.conf"
+    _install_file_rows \
+        "0644 deploy/systemd/bluetooth.service.d/jts-timeout.conf ${SYSTEMD_DIR}/bluetooth.service.d/jts-timeout.conf"
 }
 
 install_audio_output_recovery_unit_files() {
