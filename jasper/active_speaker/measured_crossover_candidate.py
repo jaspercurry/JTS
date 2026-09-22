@@ -56,6 +56,7 @@ from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH, POLARIT
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .graph_safety import unprotected_tweeter_outputs, view_from_yaml_dict
 from .level_trim import MAX_ATTENUATION_DB
+from .measurement_programs import PROGRAM_DOCUMENT_ORDER
 from .profile import (
     SIDES_BY_LAYOUT,
     ActiveSpeakerConfigError,
@@ -89,17 +90,7 @@ _LINEARIZATION_OUTCOME_VALUES = frozenset({
 })
 
 
-# Shared by the unknown-field check, from_mapping persisted-core filter, and optional-field coverage test.
-_OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
-    "linearization": dict,
-    "linearization_outcome": str,
-    "trim_decision": dict,
-    "exclusion_evidence": dict,
-    "blend_correction": list,
-    "room_correction": dict,
-    "bass_extension": dict,
-    "rear_calibration": dict,
-}
+_OPTIONAL_FIELD_TYPES = {field.name: field.type for row in PROGRAM_DOCUMENT_ORDER for field in row.candidate_fields}
 
 _ROOM_CORRECTION_KEYS = frozenset({
     "sides",

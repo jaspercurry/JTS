@@ -13,7 +13,7 @@ from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.output_topology import OutputTopology
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
-from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, programs_for_topology
+from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, _PROGRAM_SECTIONS, programs_for_topology
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
@@ -22,8 +22,7 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "research": "Driver details",
     "profile": "Save to speaker",
 }
-_MEASURE_LABELS = {name: f"Measure {name}" for name in RUNNABLE_PROGRAMS}
-_MEASURE_LABELS.update(speaker="Measure the baseline", room="Measure the room", rear="Measure the rear woofer")
+_MEASURE_LABELS = {row.purpose: row.measure_label for row in _PROGRAM_SECTIONS}
 
 
 def next_program_action(

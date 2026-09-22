@@ -23,6 +23,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, _PROGRAM_SECTIONS
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
@@ -46,15 +47,8 @@ from .round_captures import RoundCapturesRefused
 from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
-SECTION_KINDS = {
-    "driver": driver.DRIVER_PRESCRIPTION_KIND,
-    "blend": blend.PRESCRIPTION_KIND,
-    "alignment": alignment.ALIGNMENT_PRESCRIPTION_KIND,
-    "topology": topology.TOPOLOGY_PRESCRIPTION_KIND,
-    "room": room.ROOM_PRESCRIPTION_KIND,
-    "bass": None,
-    "rear_calibration": rear_calibration.KIND,
-}
+SECTION_KINDS = {section.name: section.kind for section in PRESCRIPTION_SECTIONS}
+_JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
 
 class PrescriptionDocumentRefused(ValueError):
@@ -251,18 +245,14 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
 
 
-_PREVIEW_ROWS: dict[str, tuple[set[str], Callable[..., dict[str, Any]]]] = {
-    "rear_calibration": ({"rear_calibration"}, preview_rear_section),
-    "room": ({"room"}, room.preview_room_prescription),
-    "emitted_graph": ({"driver", "blend"}, _preview_emitted_graph),
-}
+_PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in _PROGRAM_SECTIONS if row.preview)}
 
 
 def preview_kind(document: Mapping[str, Any]) -> str:
     sections = set(document["sections"])
     if "bass" in sections:
         raise PrescriptionDocumentRefused("prescription_malformed", "bass", "bass has no preview model")
-    for kind, (names, _) in _PREVIEW_ROWS.items():
+    for kind, names in _PREVIEW_ROWS.items():
         if sections & names:
             if sections <= names:
                 return kind
@@ -276,14 +266,15 @@ def preview_prescription_document(
     evidence: PrescriptionEvidence | None = None, capture_id: str | None = None,
 ) -> dict[str, Any]:
     kind = preview_kind(document)
-    _, preview_function = _PREVIEW_ROWS[kind]
     sections = document["sections"]
     payload: Any = document
     kwargs: dict[str, Any]
+    preview_function: Callable[..., dict[str, Any]]
     try:
         if kind == "rear_calibration":
             if round_dir is None:
                 raise PrescriptionDocumentRefused("evidence_unreadable", kind, "a rear preview needs --round <pair round>")
+            preview_function = preview_rear_section
             inputs = round_inputs(round_dir)
             payload = sections[kind]
             kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
@@ -293,6 +284,7 @@ def preview_prescription_document(
                                                   "a driver/blend preview needs --round <diagnostic round>")
             assert base is not None and evidence is not None
             if kind == "room":
+                preview_function = room.preview_room_prescription
                 if not sections[kind]:
                     raise PrescriptionDocumentRefused("prescription_malformed", kind, "preview requires a room section")
                 contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
@@ -301,6 +293,7 @@ def preview_prescription_document(
                           "room_median_sha256": evidence.room_median_sha256, "round_id": evidence.round_id,
                           "sides": SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout]}
             else:
+                preview_function = _preview_emitted_graph
                 kwargs = {"round_dir": round_dir, "base": base, "evidence": evidence, "capture_id": capture_id}
         preview = preview_function(payload, **kwargs)
     except room.RoomPrescriptionRefused as exc:
@@ -357,7 +350,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
     fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]
-    for name in ("topology", "blend", "alignment", "room", "bass", "rear_calibration", "driver"):
+    for name in _JUDGE_ORDER:
         if name not in document["sections"]:
             continue
         section = document["sections"][name]

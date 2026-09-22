@@ -32,19 +32,100 @@ PURPOSE_ROOM = "room"
 PURPOSE_BASS = "bass"
 PURPOSE_REFERENCE = "reference"
 PURPOSE_REAR = "rear"
-PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_REAR)
 
-#: Tuning order; reference is reached only through the close/spot program.
-RUNNABLE_PROGRAMS = (PURPOSE_SPEAKER, PURPOSE_REAR, PURPOSE_BASS, PURPOSE_ROOM)
+REGIME_PER_DRIVER = "per_driver"
+REGIME_SUMMED = "summed"
+REGIME_BRANCHES = "branches"
+REGIME_NEAR_FIELD = "near_field"
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
 
 
-PROGRAM_DETAILS = {
-    "speaker": {"title": "Driver linearization", "description": "Measure each driver and refine its response and crossover."},
-    "rear": {"title": "Cardioid tuning", "description": "Set the rear woofer to reduce sound behind the speaker."},
-    "bass": {"title": "Bass extension", "description": "Extend low bass within the driver's limits."},
-    "room": {"title": "Room correction", "description": "Adjust the sound at your listening position."},
-}
+@dataclass(frozen=True)
+class PrescriptionSection:
+    name: str
+    kind: str | None
+    document_order: int
+    judge_order: int
+    reset: bool = True
+    compose: bool = True
+
+
+@dataclass(frozen=True)
+class CandidateField:
+    name: str
+    type: type
+    snapshot: bool = True
+
+
+@dataclass(frozen=True)
+class ProgramDefinition:
+    purpose: str
+    sections: tuple[PrescriptionSection, ...]
+    candidate_fields: tuple[CandidateField, ...]
+    regimes: tuple[str, ...]
+    purpose_order: int
+    title: str
+    description: str
+    measure_label: str
+    applied_name: str
+    trial: tuple[str, str | None] | None = None
+    preview: tuple[int, str, tuple[str, ...]] | None = None
+    profile_fallback: bool = True
+    graph_evidence: bool = False
+
+
+# Row order is the tuning order; stored documents retain their existing orders.
+_PROGRAM_SECTIONS = (
+    ProgramDefinition(
+        PURPOSE_SPEAKER,
+        (PrescriptionSection("driver", "jts_crossover_driver_prescription", 0, 6),
+         PrescriptionSection("blend", "jts_crossover_blend_prescription", 1, 1),
+         PrescriptionSection("alignment", "jts_crossover_alignment_prescription", 2, 2, compose=False),
+         PrescriptionSection("topology", "jts_crossover_topology_prescription", 3, 0, reset=False)),
+        (CandidateField("linearization", dict), CandidateField("linearization_outcome", str, False),
+         CandidateField("trim_decision", dict, False), CandidateField("exclusion_evidence", dict, False),
+         CandidateField("blend_correction", list)),
+        (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
+        "Driver linearization", "Measure each driver and refine its response and crossover.",
+        "Measure the baseline", "driver", preview=(2, "emitted_graph", ("driver", "blend")),
+    ),
+    ProgramDefinition(
+        PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
+        (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
+        "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
+        "Measure the rear woofer", "rear", trial=("rear_express", None),
+        preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
+    ),
+    ProgramDefinition(
+        PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
+        (CandidateField("bass_extension", dict),), (REGIME_SUMMED, REGIME_NEAR_FIELD), 2,
+        "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
+        trial=("bass_axis", None), graph_evidence=True,
+    ),
+    ProgramDefinition(
+        PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
+        (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
+        "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
+        trial=("seat_express", "room_quick"), preview=(1, "room", ("room",)),
+    ),
+)
+PROGRAM_DOCUMENT_ORDER = tuple(sorted(_PROGRAM_SECTIONS, key=lambda row: row.purpose_order))
+PRESCRIPTION_SECTIONS = tuple(sorted(
+    (section for row in _PROGRAM_SECTIONS for section in row.sections), key=lambda section: section.document_order,
+))
+PURPOSES = tuple(name for _, name in sorted(
+    [(row.purpose_order, row.purpose) for row in _PROGRAM_SECTIONS] + [(3, PURPOSE_REFERENCE)],
+))
+RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
+PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
+_REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
+                                (REGIME_SUMMED,)) for name in PURPOSES}
+_TRIAL_PROGRAMS: dict[str | None, tuple[str, str, str | None]] = {
+    section.name: (row.purpose, *row.trial) for row in _PROGRAM_SECTIONS if row.trial for section in row.sections
+}
+_TRIAL_PROGRAMS[None] = _TRIAL_PROGRAMS[PURPOSE_ROOM]
+GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 
 
 def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
@@ -61,12 +142,6 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     return tuple(name for name in RUNNABLE_PROGRAMS
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
 
-
-REGIME_PER_DRIVER = "per_driver"
-REGIME_SUMMED = "summed"
-REGIME_BRANCHES = "branches"
-REGIME_NEAR_FIELD = "near_field"
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
 
 #: WHICH two measurement targets a :data:`REGIME_BRANCHES` take excites: the
 #: declared driver roles, or the front and rear woofer of a cardioid cabinet
@@ -99,18 +174,6 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
         return _LEGACY_PURPOSE_BY_KIND[kind]
     except KeyError:
         raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}") from None
-
-
-#: The capture modes the runner supports per purpose. A rear comparison reads
-#: each woofer solo as well as their sum, so it is the one non-speaker purpose
-#: a :data:`REGIME_BRANCHES` take may carry (issue #5330).
-_REGIMES_BY_PURPOSE = {
-    PURPOSE_SPEAKER: (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES),
-    PURPOSE_ROOM: (REGIME_SUMMED,),
-    PURPOSE_BASS: (REGIME_SUMMED, REGIME_NEAR_FIELD),
-    PURPOSE_REFERENCE: (REGIME_SUMMED,),
-    PURPOSE_REAR: (REGIME_SUMMED, REGIME_BRANCHES),
-}
 
 
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
@@ -417,25 +480,11 @@ def load_programs(
 
 _PROGRAMS, _DEFAULT_SIZES = _load_programs()
 
-_TRIAL_PROGRAMS = {
-    "rear_calibration": (PURPOSE_REAR, "rear_express", None),
-    "bass": (PURPOSE_BASS, "bass_axis", None),
-    "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
-    None: (PURPOSE_ROOM, "seat_express", "room_quick"),
-}
-
-_PROGRAM_SECTIONS = {
-    PURPOSE_SPEAKER: ("driver", "blend", "alignment"),
-    PURPOSE_REAR: ("rear_calibration",),
-    PURPOSE_BASS: ("bass",),
-    PURPOSE_ROOM: ("room",),
-}
-
 
 def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
     """The prescription sections one program owns; every program's when ``purpose`` is None."""
-    return tuple(section for owner, sections in _PROGRAM_SECTIONS.items()
-                 if purpose is None or owner == purpose for section in sections)
+    return tuple(section.name for row in _PROGRAM_SECTIONS
+                 if purpose is None or row.purpose == purpose for section in row.sections if section.reset)
 
 # Compatibility values derived from the config, which remains their owner.
 ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats

@@ -36,6 +36,7 @@ from .measured_crossover_candidate import (
 
 from .level_trim import declared_driver_gains
 from .measurement_emit import MeasurementGraphRefused
+from .measurement_programs import PRESCRIPTION_SECTIONS
 from .profile import ActiveSpeakerPreset, required_driver_roles
 
 COMPOSITION_KIND = "jts_candidate_composition"
@@ -236,11 +237,9 @@ def compose_candidate(
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
     rear = dict(selected.get("rear_calibration", base.candidate.rear_calibration) or {})
-    # ``rear_calibration`` is named only once a cardioid document is in play, so
-    # a candidate composed without one keeps the fingerprint it had before the
-    # section existed.
-    names = ["driver", "blend", "topology", "room", "bass",
-             *(["rear_calibration"] if rear or "rear_calibration" in selected else [])]
+    # Empty rear sections stay absent from pre-cardioid fingerprints (ADR-0322).
+    names = [section.name for section in PRESCRIPTION_SECTIONS if section.compose
+             and (section.name != "rear_calibration" or rear or section.name in selected)]
     resolution = {
         name: "base" if name not in selected else "document" if selected[name] else "cleared"
         for name in names

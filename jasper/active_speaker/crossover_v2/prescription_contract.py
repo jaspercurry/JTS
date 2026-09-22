@@ -25,6 +25,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_context
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
+from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
@@ -41,7 +42,7 @@ from .feature_classification import UNCERTAINTY_RANDOM
 from .fc_sweep import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
-SECTIONS = ("speaker", "room", "bass", "rear")
+SECTIONS = tuple(row.purpose for row in PROGRAM_DOCUMENT_ORDER)
 
 
 def contract_json(value: Mapping[str, Any]) -> str:
@@ -452,13 +453,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
 
 
 def _rear() -> dict[str, Any]:
-    """Authoring contract for ``rear_calibration``: case ``electrical_dsp``, ``rear.mode`` ``branches``.
-
-    The runtime candidate boundary's own scope today (ADR-0318, ADR-0322,
-    ADR-0324) — see ``measured_crossover_candidate._validated_rear_calibration``.
-    An acoustic-target or FIR document still round-trips ``read_rear_calibration``
-    but is outside this contract.
-    """
+    """Electrical branches only; see ADR-0318, ADR-0322 and ADR-0324."""
     return {
         "document_section": "rear_calibration",
         "case": "electrical_dsp",
@@ -524,10 +519,9 @@ def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
     candidate = candidate or {}
     preset = _preset(candidate) or _preset({"source_preset":
         _mapping((applied_profile or {}).get("recomposition_snapshot")).get("preset")})
-    return {"speaker": _speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}),
-            "room": _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset),
-            "bass": _bass(bass_evidence or {}),
-            "rear": _rear()}
+    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}) if name == "speaker" else
+                   _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
+                   _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS}
 
 
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {'<role>_snr_db': "the worst per-band signal-to-noise ratio over the bands that decide this DRIVER role's MAGNITUDE claims — its level and its overlap-band trim. A ratio is not a spread about a reading: it BOUNDS the random error a level measured in that band can carry, and it does not shrink as captures are added, because it is a property of the capture conditions rather than of how many times they were repeated", '<role>_snr_verdict': "the policy's own answer about the figure above, in jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL vocabulary that ships a shortfall in dB, deliberately not the quality_model trust labels it resembles. The words are not spelled here: they have an owner, and a copy that agrees today is still a copy. A verdict, not a quantity: there is nothing here to be uncertain by", '<role>_snr_band': 'which band produced the worst reading above. A label, not a quantity', '<role>_alignment_snr_db': "the same worst-band ratio over the bands that decide this DRIVER role's ALIGNMENT claims — polarity and delay — which need far more SNR because a null of depth D cannot be measured with less than roughly D + 10 dB. Published apart from the magnitude figure rather than pooled with it: the two answer different questions under different floors, and one number would let a capture that is fine for a trim read as fine for a null depth", '<role>_alignment_snr_verdict': "the same policy's answer about the alignment figure, under the alignment floor rather than the magnitude one — which is why one capture can legitimately carry a passing magnitude verdict and a refusing alignment one at the same time. A verdict, not a quantity", '<role>_alignment_snr_band': 'which band produced the worst alignment reading. A label, not a quantity', '<role>_pilot_snr_db': "the quiet-pilot in-band SNR. Null when no usable ambient window was captured. Pilot roles include 'summed'. A ratio, not a spread", 'pilot_ambient': 'whether usable ambient evidence is present or unavailable; unavailable is not low SNR. A label', 'pilot_snr_ok': "whether every pilot cleared its SNR floor; null means no pilots or no usable ambient, never a pass. A verdict, not a spread", 'gain_plan_snr_floor_ok': 'the room-quality gate: whether the ambient report cleared the floor the target capture level needs. False also when that report was missing or unreadable, so it is a gate outcome rather than a measurement, and never a spread'}
