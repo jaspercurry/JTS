@@ -36,6 +36,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -63,6 +64,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
+from jasper.active_speaker import seat_level_reference
 
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
@@ -1283,6 +1285,22 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
     )
     assert verify_on_disk["geometry"]["locked"] is False
     assert verify_on_disk["spec"]["overall_within_target"] is True
+
+
+@pytest.mark.parametrize("banked", [True, False])
+def test_status_publishes_the_banked_seat_level_once(banked, request):
+    if banked:
+        request.getfixturevalue("banked_session_level")
+    with patch.object(
+        seat_level_reference, "load_seat_level_reference",
+        wraps=seat_level_reference.load_seat_level_reference,
+    ) as load:
+        block = v2status.crossover_v2_status_block()
+    assert block["level"] == (
+        {"seat_level_reference_volume_db": -20.0, "leveled_db_spl": 75.0}
+        if banked else None
+    )
+    load.assert_called_once()
 
 
 def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
