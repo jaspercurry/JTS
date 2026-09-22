@@ -57,14 +57,15 @@ from tests.test_crossover_v2_blend_prescription import _bundle
 
 
 @pytest.mark.parametrize("overrides, digest", [
-    ({}, "cf1173b1791138e1ebb6632f3ee4126cf40aa3b236e1fd1ec3acffffa236f42b"),
+    ({}, "b365c437202cfab7a38234a5a45b1b25c845b3076b74fcc71ef6742b67c6951b"),
     ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "2e28a04ee85fd2678f898d22b07f1904ed86b536ec48ba9a49598e0d3dea7851"),
+    }}, "ae6d13cf298bb6c186a1e50baac378547c1209e999e1d78a4fcbc33155a8a491"),
     ({"cloud_over": {"positions": {}}},
-     "cb00f4683dc896fc72d9a31f62bc6810182bb7e64755d029684bfdfd87a81315"),
+     "45bf0774e961ba2d5b42a5df06e5618a4e800d2157118821040da47377f9bc9d"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
 def test_packet_json_bytes(tmp_path, overrides, digest):
+    # A plain-box packet carries no rear contract (report H R3).
     session, _ = _bundle(tmp_path, **overrides)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == digest

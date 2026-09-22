@@ -20,7 +20,7 @@ from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.prescription_contract import prescription_contracts
+from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
@@ -199,7 +199,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     rooms = room_sets(manifest)
     for group in manifest.get("sets", ()):
         try:
-            contracts = prescription_contracts(**prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None))
+            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None)
+            contracts = prescription_contracts(programs=contract_programs(section_sources), **section_sources)
             section = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and group in rooms else purpose
             if section in contracts:
                 limits[group["set_id"]] = {key: value for key, value in contracts[section].items()

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import MISSING, fields
 from copy import deepcopy
 from types import SimpleNamespace
@@ -25,12 +25,15 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_context, boost_headroom_by_role
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
-from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER
+from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import finite_float
+from jasper.output_topology import (
+    OutputTopology, SpeakerChannel, SpeakerGroup, WAY_COUNT_BY_MAIN_MODE, unknown_output_hardware,
+)
 
 from . import alignment_prescription as alignment
 from . import bass_prescription
@@ -108,11 +111,33 @@ def _mapping(raw: Any) -> Mapping[str, Any]:
     return raw if isinstance(raw, Mapping) else {}
 
 
-def _preset(candidate: Mapping[str, Any]) -> ActiveSpeakerPreset | None:
+def _preset(candidate: Mapping[str, Any], applied_profile: Mapping[str, Any]) -> ActiveSpeakerPreset | None:
+    for raw in (candidate.get("source_preset"), _mapping(applied_profile.get("recomposition_snapshot")).get("preset")):
+        try:
+            return ActiveSpeakerPreset.from_mapping(raw)
+        except (TypeError, ValueError, ActiveSpeakerConfigError):
+            continue
+    return None
+
+
+def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
+    """Resolve banked outputs without consulting the machine reading the round."""
     try:
-        return ActiveSpeakerPreset.from_mapping(candidate["source_preset"])
-    except (KeyError, TypeError, ValueError, ActiveSpeakerConfigError):
-        return None
+        return programs_for_topology(OutputTopology.from_mapping(_mapping(sources.get("draft")).get("topology")))
+    except ValueError:
+        pass
+    preset = _preset(_mapping(sources.get("candidate")), _mapping(sources.get("applied_profile")))
+    groups: tuple[SpeakerGroup, ...] = ()
+    if preset is not None:
+        mode = next(mode for mode, count in WAY_COUNT_BY_MAIN_MODE.items() if count == preset.way_count)
+        groups = tuple(SpeakerGroup(side, side, side, mode, channels=tuple(
+            SpeakerChannel(output.driver_role, output.driver_role == "tweeter",
+                           physical_output_index=output.index, output_variant=output.output_variant)
+            for output in preset.channel_map.outputs if output.side == side
+        )) for side in SIDES_BY_LAYOUT[preset.channel_map.layout])
+        if preset.local_subwoofer is not None:
+            groups += (SpeakerGroup("subwoofer", "subwoofer", "subwoofer", "subwoofer"),)
+    return programs_for_topology(OutputTopology("", "", unknown_output_hardware(), groups))
 
 
 def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
@@ -506,7 +531,7 @@ def _rear() -> dict[str, Any]:
     }
 
 
-def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
+def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mapping[str, Any] | None = None,
                            receipt: Mapping[str, Any] | None = None,
                            candidate: Mapping[str, Any] | None = None,
                            room_median: Mapping[str, Any] | None = None,
@@ -516,11 +541,10 @@ def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
                            applied_profile: Mapping[str, Any] | None = None,
                            manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
-    preset = _preset(candidate) or _preset({"source_preset":
-        _mapping((applied_profile or {}).get("recomposition_snapshot")).get("preset")})
+    preset = _preset(candidate, applied_profile or {})
     return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}) if name == "speaker" else
                    _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
-                   _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS}
+                   _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS if name in programs}
 
 
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {'<role>_snr_db': "the worst per-band signal-to-noise ratio over the bands that decide this DRIVER role's MAGNITUDE claims — its level and its overlap-band trim. A ratio is not a spread about a reading: it BOUNDS the random error a level measured in that band can carry, and it does not shrink as captures are added, because it is a property of the capture conditions rather than of how many times they were repeated", '<role>_snr_verdict': "the policy's own answer about the figure above, in jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL vocabulary that ships a shortfall in dB, deliberately not the quality_model trust labels it resembles. The words are not spelled here: they have an owner, and a copy that agrees today is still a copy. A verdict, not a quantity: there is nothing here to be uncertain by", '<role>_snr_band': 'which band produced the worst reading above. A label, not a quantity', '<role>_alignment_snr_db': "the same worst-band ratio over the bands that decide this DRIVER role's ALIGNMENT claims — polarity and delay — which need far more SNR because a null of depth D cannot be measured with less than roughly D + 10 dB. Published apart from the magnitude figure rather than pooled with it: the two answer different questions under different floors, and one number would let a capture that is fine for a trim read as fine for a null depth", '<role>_alignment_snr_verdict': "the same policy's answer about the alignment figure, under the alignment floor rather than the magnitude one — which is why one capture can legitimately carry a passing magnitude verdict and a refusing alignment one at the same time. A verdict, not a quantity", '<role>_alignment_snr_band': 'which band produced the worst alignment reading. A label, not a quantity', '<role>_pilot_snr_db': "the quiet-pilot in-band SNR. Null when no usable ambient window was captured. Pilot roles include 'summed'. A ratio, not a spread", 'pilot_ambient': 'whether usable ambient evidence is present or unavailable; unavailable is not low SNR. A label', 'pilot_snr_ok': "whether every pilot cleared its SNR floor; null means no pilots or no usable ambient, never a pass. A verdict, not a spread", 'gain_plan_snr_floor_ok': 'the room-quality gate: whether the ambient report cleared the floor the target capture level needs. False also when that report was missing or unreadable, so it is a gate outcome rather than a measurement, and never a spread'}
