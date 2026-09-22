@@ -128,6 +128,11 @@ def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor
                "reason": "" if n_positions > 1 else REASON_TOO_FEW_POSITIONS}
     assert document["freqs_hz"][0] == document["coverage_hz"][0] == persistence["coverage_hz"][0] == floor_hz
     assert document["spatial_support"] == persistence["spatial_support"] == support
+    freqs = np.asarray(document["freqs_hz"])
+    band = (freqs >= floor_hz) & (freqs < ceiling.ceiling_hz)
+    assert document["spread_rms_db"] == (
+        pytest.approx(np.sqrt(np.mean(np.asarray(document["spread_db"])[band] ** 2)))
+        if n_positions > 1 else None)
     assert all(feature["band_hz"][0] >= floor_hz for feature in persistence["features"])
     median = read_room_median(document)
     assert median.coverage_hz == pytest.approx(document["coverage_hz"])

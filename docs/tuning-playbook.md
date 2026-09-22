@@ -164,6 +164,7 @@ Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
 `incumbent_reason` before comparison. Top-level `limits` carries the contract.
 Do not infer an incumbent from a file name when the entry says the set is
 ambiguous.
+Read `median.spread_rms_db`: RMS of the per-bin cross-position spread from the coverage floor to the ceiling, with `n_positions`; `None` below two positions.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
 curve. The ceiling follows the highest trusted floor from the round's gated
@@ -324,6 +325,7 @@ The loop of record is one pair take, previews, one trial.
    only: the muted trough's depth drifts by up to 5 dB between rounds at the
    same bearing while its frequency holds, and only the repeated bearing
    resolves tenths.
+   Read `own_trend_ripple_db`: roughness against the candidate's own trend; `ripple_db` also charges an intended broad re-tilt.
 
 What held on jts3, and what the preview should show before a document is
 worth playing:

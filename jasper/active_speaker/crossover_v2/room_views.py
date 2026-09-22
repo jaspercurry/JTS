@@ -27,6 +27,7 @@ from jasper.audio_measurement.room_boundary import (
 )
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
+from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.json_fields import finite_float
 from ..run_manifest import room_sets, view_sets
 
@@ -168,10 +169,12 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     freqs, rows = _stacked(takes, coverage_hz[0], ceiling.ceiling_hz)
     median = np.median(rows, axis=0)
     support = spatial_support(len(takes))
+    spread = np.std(rows, axis=0).tolist() if support["sufficient"] else None
     return {
         "freqs_hz": freqs.tolist(),
         "median_db": median.tolist(),
-        "spread_db": np.std(rows, axis=0).tolist() if support["sufficient"] else None,
+        "spread_db": spread,
+        "spread_rms_db": spread_rms_db(spread, freqs, band_hz=(coverage_hz[0], ceiling.ceiling_hz)),
         "spatial_support": support,
         "n_positions": len(takes),
         "positions": [
