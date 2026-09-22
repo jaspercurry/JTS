@@ -7,6 +7,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ..busctl import run_busctl
+from ..source_state import (
+    GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
+)
 from ..identity.reader import resolve_hostname
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
@@ -16,34 +20,6 @@ from .spotify import _format_name_list
 from ..spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
-
-# Shairport-sync exposes a standard MPRIS Player interface on the
-# system DBus when built with --with-mpris-interface (confirmed
-# present on the Pi). When AirPlay is the active source, calling
-# Next/Previous/Pause/Play here forwards to the AirPlay sender
-# (iPhone, Mac, etc.) via DACP — the same mechanism a HomePod uses
-# to accept transport from the receiver side. So "next song" works
-# uniformly whether the sender is Apple Music, Spotify, YouTube,
-# a podcast app, or anything else casting via AirPlay.
-MPRIS_DEST = "org.mpris.MediaPlayer2.ShairportSync"
-MPRIS_PATH = "/org/mpris/MediaPlayer2"
-MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
-MPRIS_PROPS_IFACE = "org.freedesktop.DBus.Properties"
-
-# shairport-sync's gnome interface exposes a `RemoteControl.Available`
-# property that is the AUTHORITATIVE signal for whether the AirPlay
-# sender registered a DACP endpoint. MPRIS's own CanGoNext/CanGoPrevious
-# always read true on this build of shairport, even when the sender
-# can't actually accept remote-control commands — that flag is shaped
-# for the abstract MPRIS contract, not the concrete AirPlay+DACP
-# capability. Browser-based AirPlay sources (YouTube tab, Netflix,
-# etc.) and some Mac sources don't expose DACP; the iPhone Music app
-# and iPhone Spotify do. Pre-checking RemoteControl.Available means
-# we tell the user "your computer doesn't accept remote control" up
-# front instead of silently no-op'ing every Next/Previous call.
-GNOME_DEST = "org.gnome.ShairportSync"
-GNOME_PATH = "/org/gnome/ShairportSync"
-GNOME_REMOTE_IFACE = "org.gnome.ShairportSync.RemoteControl"
 
 _PLAYER_METHODS = {
     "next": "Next",
@@ -57,38 +33,23 @@ _PLAYER_METHODS = {
 async def _airplay_remote_available() -> bool:
     """True iff shairport's gnome RemoteControl reports Available=true,
     i.e. the AirPlay sender exposes a DACP endpoint."""
-    proc = await asyncio.create_subprocess_exec(
-        "dbus-send", "--system", "--print-reply",
-        f"--dest={GNOME_DEST}",
-        GNOME_PATH,
-        f"{MPRIS_PROPS_IFACE}.Get",
-        f"string:{GNOME_REMOTE_IFACE}",
-        "string:Available",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    result = await run_busctl(
+        "get-property", GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, "Available",
+        timeout=2.0,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    if proc.returncode != 0:
-        # Treat unreadable as unavailable — better to tell the user
-        # the sender doesn't accept control than to silently no-op.
-        return False
-    return b"boolean true" in stdout
+    return result is not None and result.returncode == 0 and result.stdout.strip() == b"b true"
 
 
 async def _mpris_call(method: str) -> None:
     """Invoke a no-arg method on the shairport MPRIS Player interface."""
-    proc = await asyncio.create_subprocess_exec(
-        "dbus-send", "--system", "--print-reply",
-        f"--dest={MPRIS_DEST}",
-        MPRIS_PATH,
-        f"{MPRIS_PLAYER_IFACE}.{method}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    result = await run_busctl(
+        "call", MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE, method, timeout=2.0,
     )
-    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    if proc.returncode != 0:
+    if result is None:
+        raise RuntimeError(f"mpris {method} unavailable or timed out")
+    if result.returncode != 0:
         raise RuntimeError(
-            f"mpris {method} failed: {stderr.decode(errors='replace').strip()}"
+            f"mpris {method} failed: {result.stderr.decode(errors='replace').strip()}"
         )
 
 

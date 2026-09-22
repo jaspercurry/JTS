@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jasper.busctl import BusctlResult, run_busctl
 from jasper.tools.transport import (
+    _airplay_remote_available,
+    _mpris_call,
     _detect_source,
     make_transport_dispatcher,
     make_transport_tools,
@@ -159,24 +162,26 @@ def test_native_transport_commands(source, tool_name, method):
         "jasper.tools.transport._mpris_now_playing",
         new=AsyncMock(return_value={"title": "Apple Music Track"}),
     ), patch(
-        "jasper.tools.transport._airplay_remote_available",
-        new=AsyncMock(return_value=True),
-    ) as available, patch(
-        "jasper.tools.transport._mpris_call", new=AsyncMock(),
-    ) as mpris, patch(
+        "jasper.tools.transport.run_busctl",
+        new=AsyncMock(side_effect=[BusctlResult(0, b"b true\n", b""), BusctlResult(0, b"", b"")]),
+    ) as busctl, patch(
         "jasper.tools.transport._bluetooth_call", new=AsyncMock(),
     ) as bluetooth:
         result = asyncio.run(
             dispatch("toggle") if tool_name == "toggle" else tools[tool_name]()
         )
     if source == "airplay":
-        mpris.assert_awaited_once_with(method)
-        available.assert_awaited_once_with()
+        assert [call.args for call in busctl.await_args_list] == [
+            ("get-property", "org.gnome.ShairportSync", "/org/gnome/ShairportSync",
+             "org.gnome.ShairportSync.RemoteControl", "Available"),
+            ("call", "org.mpris.MediaPlayer2.ShairportSync", "/org/mpris/MediaPlayer2",
+             "org.mpris.MediaPlayer2.Player", method),
+        ]
+        assert all(call.kwargs["timeout"] == 2.0 for call in busctl.await_args_list)
         bluetooth.assert_not_awaited()
     else:
         bluetooth.assert_awaited_once_with(method)
-        available.assert_not_awaited()
-        mpris.assert_not_awaited()
+        busctl.assert_not_awaited()
     assert result == {"ok": True, "source": source}
 
 
@@ -371,3 +376,33 @@ def test_get_now_playing_returns_empty_when_no_source():
     tools = _by_name(make_transport_tools(renderer, None))
     result = asyncio.run(tools["get_now_playing"]())
     assert result == {"title": "", "artist": "", "album": "", "source": "none"}
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "expected"),
+    [(b"b true\n", 0, True), (b"b false\n", 0, False), (b"b true\n", 1, False)],
+)
+async def test_airplay_remote_available_from_busctl(monkeypatch, stdout, returncode, expected):
+    monkeypatch.setattr(
+        "jasper.tools.transport.run_busctl",
+        AsyncMock(return_value=BusctlResult(returncode, stdout, b"")),
+    )
+    assert await _airplay_remote_available() is expected
+
+
+@pytest.mark.parametrize("result", [None, BusctlResult(1, b"", b"denied")])
+async def test_transport_busctl_failures(monkeypatch, result):
+    monkeypatch.setattr("jasper.tools.transport.run_busctl", AsyncMock(return_value=result))
+    assert await _airplay_remote_available() is False
+    with pytest.raises(RuntimeError):
+        await _mpris_call("Play")
+
+
+async def test_busctl_timeout_kills_and_reaps_child(monkeypatch):
+    process = MagicMock(returncode=None)
+    process.communicate = AsyncMock(side_effect=asyncio.Event().wait)
+    process.wait = AsyncMock(return_value=-9)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    assert await run_busctl("call", "org.example", timeout=0.001) is None
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()

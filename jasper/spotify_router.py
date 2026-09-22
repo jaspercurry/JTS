@@ -43,7 +43,9 @@ from .accounts import (
     Account, Registry, build_cache_handler, legacy_cache_path,
     maybe_migrate_legacy, registry_path,
 )
+from .busctl import run_busctl
 from .log_event import log_event
+from .source_state import GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE
 from .spotify_routing import normalise
 
 logger = logging.getLogger(__name__)
@@ -311,38 +313,20 @@ def build_clients(
     )
 
 
-# DBus probe for shairport-sync's currently-connected ClientName.
-# Returns "" when nothing is connected (or the call fails — we treat
-# unreadable as "no AirPlay"). Cached call, but kept very short — the
-# resolver runs at most once per voice command, not per audio frame.
-_GNOME_DEST = "org.gnome.ShairportSync"
-_GNOME_PATH = "/org/gnome/ShairportSync"
-_GNOME_RC_IFACE = "org.gnome.ShairportSync.RemoteControl"
-_PROPS_IFACE = "org.freedesktop.DBus.Properties"
-_CLIENT_NAME_RE = re.compile(r'string\s+"((?:[^"\\]|\\.)*)"')
+_CLIENT_NAME_RE = re.compile(r'^s\s+"((?:[^"\\]|\\.)*)"$')
 
 
 async def airplay_client_name() -> str:
-    """Read shairport's currently-connected sender name. Returns ''
-    when AirPlay is not active or the property is empty."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "dbus-send", "--system", "--print-reply",
-            f"--dest={_GNOME_DEST}",
-            _GNOME_PATH,
-            f"{_PROPS_IFACE}.Get",
-            f"string:{_GNOME_RC_IFACE}",
-            "string:ClientName",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    text = stdout.decode(errors="replace")
-    m = _CLIENT_NAME_RE.search(text)
+    """Read the connected sender name; raise RuntimeError if the query fails."""
+    result = await run_busctl(
+        "get-property", GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, "ClientName",
+        timeout=2.0,
+    )
+    if result is None:
+        raise RuntimeError("ClientName unavailable or timed out")
+    if result.returncode != 0:
+        raise RuntimeError(f"ClientName failed: {result.stderr.decode(errors='replace').strip()}")
+    m = _CLIENT_NAME_RE.search(result.stdout.decode(errors="replace").strip())
     return m.group(1) if m else ""
 
 
