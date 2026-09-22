@@ -1126,7 +1126,7 @@ def test_renderer_checks_probe_normally_when_solo(monkeypatch):
 
 def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     """Intentional Off is desired state, not a dead-renderer incident."""
-    from jasper.source_intent import BluetoothRfkillState
+    from jasper.bluetooth.rfkill import BluetoothRfkillState
 
     monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
@@ -1201,7 +1201,7 @@ def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
 def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
     monkeypatch,
 ):
-    from jasper.source_intent import BluetoothRfkillState
+    from jasper.bluetooth.rfkill import BluetoothRfkillState
 
     monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
@@ -1227,7 +1227,7 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
 
 
 def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
-    from jasper.source_intent import BluetoothRfkillState
+    from jasper.bluetooth.rfkill import BluetoothRfkillState
 
     monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)

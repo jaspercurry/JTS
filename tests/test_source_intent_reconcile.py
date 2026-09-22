@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.bluetooth.rfkill import BluetoothRfkillState
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.multiroom import reconcile as reconcile_mod
@@ -80,8 +81,8 @@ class _FakeHost:
     usb_role_pending_host: bool = False
     usb_audio: bool = False
     usb_direct: bool = False
-    rfkill: source_intent.BluetoothRfkillState = field(
-        default_factory=lambda: source_intent.BluetoothRfkillState(
+    rfkill: BluetoothRfkillState = field(
+        default_factory=lambda: BluetoothRfkillState(
             present=True,
             soft_blocked=False,
             hard_blocked=False,
@@ -139,7 +140,7 @@ class _FakeHost:
         self.calls.append(("rfkill", "block" if blocked else "unblock"))
         if ("rfkill", "block" if blocked else "unblock") in self.fail:
             return 1, "injected failure"
-        self.rfkill = source_intent.BluetoothRfkillState(
+        self.rfkill = BluetoothRfkillState(
             present=self.rfkill.present,
             soft_blocked=blocked,
             hard_blocked=self.rfkill.hard_blocked,
@@ -1719,7 +1720,7 @@ def test_converged_usb_off_still_repairs_persisted_coupling_state(tmp_path):
 
 def test_bluetooth_enable_clears_soft_block_before_power_and_dependents(tmp_path):
     host = _FakeHost(
-        rfkill=source_intent.BluetoothRfkillState(True, True, False),
+        rfkill=BluetoothRfkillState(True, True, False),
         bluez=False,
     )
     assert (
@@ -1750,7 +1751,7 @@ def test_bluetooth_enable_clears_soft_block_before_power_and_dependents(tmp_path
 
 def test_bluetooth_enable_waits_for_late_rfkill_registration(tmp_path):
     host = _FakeHost(
-        rfkill=source_intent.BluetoothRfkillState(False, False, False),
+        rfkill=BluetoothRfkillState(False, False, False),
         bluez=False,
     )
     probes = 0
@@ -1759,8 +1760,8 @@ def test_bluetooth_enable_waits_for_late_rfkill_registration(tmp_path):
         nonlocal probes
         probes += 1
         if probes < 3:
-            return source_intent.BluetoothRfkillState(False, False, False)
-        return source_intent.BluetoothRfkillState(True, False, False)
+            return BluetoothRfkillState(False, False, False)
+        return BluetoothRfkillState(True, False, False)
 
     ops = replace(host.ops(), rfkill_state=rfkill_state)
     assert (
@@ -1901,7 +1902,7 @@ def test_hard_block_fails_bluetooth_without_blocking_other_sources(
     caplog,
 ):
     host = _FakeHost(
-        rfkill=source_intent.BluetoothRfkillState(True, False, True),
+        rfkill=BluetoothRfkillState(True, False, True),
     )
     with caplog.at_level("WARNING"):
         rc = source_intent.reconcile(

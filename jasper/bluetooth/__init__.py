@@ -18,7 +18,8 @@ Module layout:
                     systemd entrypoint for the always-on default agent
   - engine.py       long-lived discovery owner, pair state machine, status events
   - scan.py         live ObjectManager observer + event stream
-  - availability.py adapter path, control-plane unit, shared rfkill read
+  - availability.py adapter path and control-plane unit
+  - rfkill.py       shared Bluetooth RF-kill state reader
   - avrcp.py        AVRCP transport controls (play/pause/next/etc.) plus the
                     "does a phone have an A2DP transport to us" probe mux
                     and the source-state poll read
