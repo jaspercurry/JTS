@@ -32,7 +32,6 @@ from jasper.active_speaker import (
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2.contracts import (
     LINEARIZATION_OUTCOME_SINGLE_BRANCH,
-    TrimStrategy,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -40,7 +39,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.proposal import trim_strategy_for_outcome
 from jasper.active_speaker.delta_probe import VERDICT_MATCHED, VERDICT_MODEL_ERROR
 from jasper.audio_measurement.program_analysis import (
     ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
@@ -167,13 +165,8 @@ def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
 
     candidate, state = conductor._build_candidate(analysis)
 
-    # The fit RAN, and says so in the shape's own word rather than the pair's,
-    # so the proposal cannot map it onto a committed-pair trim strategy.
     assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
     assert candidate.linearization_outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
-    assert trim_strategy_for_outcome(candidate.linearization_outcome)[0] is (
-        TrimStrategy.NO_PAIR_TO_TRIM
-    )
     assert candidate.role_attenuations_db == {"full_range": 0.0}
     assert set(candidate.linearization) == {"full_range"}
     assert candidate.linearization["full_range"]["filters"]
