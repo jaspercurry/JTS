@@ -533,15 +533,9 @@ def _release(
     fn: Callable[..., object],
     *args: Any,
 ) -> None:
-    """Register `fn(*args)` as a teardown that cannot eat the park.
+    """A teardown error must not replace the typed startup error.
 
-    `AsyncExitStack` REPLACES the body's exception with any callback's
-    exception (demoting the original to `__context__`), so one unlucky
-    teardown turns ANY park exception `main()` handles — the list is in
-    `main()`, and it grows — into a plain crash: no cue, exit 1, and a
-    systemd restart loop instead of a park (NN-6; ADR-0239). Every release
-    in `run()` goes through here or `_arelease`. `CancelledError` is a
-    `BaseException`, so cancellation still propagates.
+    CancelledError is a BaseException, so cancellation still propagates.
     """
     def _tolerant() -> None:
         try:
@@ -827,12 +821,7 @@ async def _prerender_timer(cues: AudioCueManager, timer: Timer) -> None:
 
 
 def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
-    """Route SIGINT/SIGTERM to the stop event.
-
-    Deliberately never unregistered: a second SIGTERM arriving during the
-    unwind must still land here rather than terminate the process mid-cue
-    (ADR-0239). `asyncio.run()` closes the loop, and these handlers with it.
-    """
+    """Keep handlers through teardown so a second signal cannot interrupt cleanup."""
     def _request_shutdown() -> None:
         logger.info("shutdown requested")
         stop_event.set()

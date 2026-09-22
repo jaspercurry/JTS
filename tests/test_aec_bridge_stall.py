@@ -282,12 +282,6 @@ def _arm_main(monkeypatch, tmp_path, *, mic_ok=True, usb_ok=True):
 
 
 def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
-    """Spy on the park cue through the seam both parks speak from.
-
-    `jasper.cues.park` is the shared player: the same fake TtsPlayout and cue
-    manager the voice daemon's boot-park pins use, so a bridge park that
-    stopped playing cannot pass here on a stub of its own.
-    """
     from jasper.cues import park as cue_park
 
     spy = _ParkCues(cue_result)

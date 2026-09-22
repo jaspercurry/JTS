@@ -1147,11 +1147,6 @@ def main() -> int:
     try:
         validate_mic_device(config)
     except MicDeviceUnavailable as e:
-        # The only EX_NOINPUT site: the wake mic itself. `_park` speaks for it
-        # — validate_mic_device raises on ANY sd.query_devices failure, and a
-        # card that never moved (a stale device name, a PortAudio hiccup)
-        # fires no udev event, so the jasper-aec-reconcile hand-off ADR-0239
-        # describes covers only part of this fault.
         return _park(os.EX_NOINPUT, "mic_device_unavailable", str(e))
     if corpus_usb_enabled:
         try:

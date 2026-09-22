@@ -1625,15 +1625,6 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
-# --- the marker body is a closed code vocabulary -----------------------------
-#
-# Every `mark_voice_input_absent` site writes `reason=<code>` from
-# jasper.mic_presence.MIC_ABSENT_REASONS plus the prose that code cannot carry
-# as `detail=`. The reader maps anything else to `unknown`, so a site that
-# invents a code degrades to "we do not know why" on /state.microphone and
-# loses its ADR-0239 transient class — which is exactly what these drive.
-
-
 def _park_no_accessory(tmp_path: Path) -> Path:
     """stop_voice with the accessory probe resolved and empty."""
     _write_env(tmp_path, "udp:9876")

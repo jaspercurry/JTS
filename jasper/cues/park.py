@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Speak one cue from a daemon that is about to park, then let it exit.
-
-A park holds the unit down (`RestartPreventExitStatus`), so a wake-blocking
-fault must still announce itself here per AGENTS.md non-negotiable 6.
-Nothing here reads a microphone or the AEC bridge.
-"""
+"""Play a configuration-fault cue without changing the daemon's exit code."""
 from __future__ import annotations
 
 import asyncio
@@ -18,9 +13,7 @@ from ..tts_playout import TtsPlayout
 from ..tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .factory import build_env_cue_manager
 
-# Bound on a park cue: the 4.65 s cue plus drain, plus TtsPlayout's own 1.0 s
-# connect timeout. Past this the daemon is holding systemd's start timeout
-# (READY=1 was never sent) for a cue nobody will hear.
+# Keep cue failures within systemd's startup deadline.
 PARK_CUE_TIMEOUT_SEC = 12.0
 
 
