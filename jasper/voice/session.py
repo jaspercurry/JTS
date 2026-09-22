@@ -54,6 +54,7 @@ class AudioOutChunk:
     pcm: bytes
     provider_item_id: str | None = None
     kind: str = "assistant"
+    audible: bool = True
 
 
 @dataclass(frozen=True)

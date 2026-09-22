@@ -39,6 +39,7 @@ from .assistant_output import (
 )
 from .content_activity import ContentActivityTracker
 from .conversation import continuous_watchdog
+from .speech_activity import SpeechActivity
 from .conversation_capture import ConversationCapture
 from .output_gate import AssistantOutputEpisode
 from .peering_client import PeeringClient
@@ -175,7 +176,7 @@ class TurnLifecycle:
         # both boundaries and local VAD must not become a second writer of
         # end-of-input.
         self.manual_endpoint_this_turn: bool = False
-        self.continuous_speech_started = self.continuous_last_speech = 0.0
+        self.speech = SpeechActivity()
 
         # Turns since daemon start that were asked a question and produced no
         # answer. Published as /state.voice.silent_responses_session.
@@ -227,7 +228,7 @@ class TurnLifecycle:
         self._reset_input()
         self.user_speech_seen = False
         self.input_ended = False
-        self.continuous_speech_started = self.continuous_last_speech = 0.0
+        self.speech = SpeechActivity()
         self.started_at_loop = (
             anchor_at or self._acquire_anchor() or asyncio.get_event_loop().time()
         )
@@ -304,9 +305,7 @@ class TurnLifecycle:
             continuous_watchdog(
                 self.turn, self._output.tts, followup_seconds=self._output.cfg.followup_timeout_sec,
                 stall_seconds=self._output.cfg.response_stall_timeout_sec,
-                user_activity=lambda: (self.continuous_speech_started, self.continuous_last_speech),
-                last_accepted_at=lambda: self.playback_report.last_accepted_at,
-                write_started_at=lambda: self.playback_report.write_started_at,
+                speech=self.speech, playback=self.playback_report,
                 spend_allowed=self._spend_cap.allowed,
             ) if continuous else idle_watchdog(
                 self.turn,

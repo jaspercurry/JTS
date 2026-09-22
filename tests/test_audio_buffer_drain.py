@@ -160,8 +160,8 @@ async def test_acquire_gap_resets_speech_and_silence_runs(armed):
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._turns.started_at_loop = time.monotonic() - 2.0
     wl._turns.user_speech_seen = armed
-    wl._speech_run_started_at = wl._silence_started_at = time.monotonic() - 1.0
-    wl._speech_run_max_silero = 1.0
+    wl._turns.speech.run_started_at = wl._turns.speech.silence_started_at = time.monotonic() - 1.0
+    wl._turns.speech.peak = 1.0
     reset = []
     wl._vad.reset = lambda: reset.append(True)
     wl._vad.predict = lambda frame: float(frame[0])
@@ -171,7 +171,7 @@ async def test_acquire_gap_resets_speech_and_silence_runs(armed):
     assert wl._turns.user_speech_seen is armed
     assert not wl._turns.input_ended
     assert reset == [True]
-    assert wl._speech_run_started_at == (0.0 if armed else at)
+    assert wl._turns.speech.run_started_at == (0.0 if armed else at)
 
 
 async def test_no_speech_abort_then_fresh_command(monkeypatch):
@@ -214,7 +214,7 @@ async def test_endpoint_discarded_tail_does_not_keep_pre_gap_vad_state():
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._turns.started_at_loop = time.monotonic() - 2.0
     wl._turns.user_speech_seen = True
-    wl._silence_started_at = time.monotonic() - 1.0
+    wl._turns.speech.silence_started_at = time.monotonic() - 1.0
     reset = []
     wl._vad.reset = lambda: reset.append(True)
     wl._acquire_buffer.append(_frame(0))

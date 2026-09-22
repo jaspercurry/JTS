@@ -27,6 +27,7 @@ PRE_RESPONSE_CAPPED_REASON = "pre_response_capped"
 class PlaybackReport:
     accepted_audio: bool = False
     last_accepted_at: float = 0.0
+    audible_drain_at: float = 0.0
     write_started_at: float = 0.0
     stop_reason: str | None = None
 
@@ -104,6 +105,7 @@ async def play_responses(
 
     async def first_write() -> None:
         report.last_accepted_at = time.monotonic()
+        report.audible_drain_at = max(report.last_accepted_at, tts.expected_drain_at())
         if not report.accepted_audio:
             report.accepted_audio = True
             if on_first_write is not None:
@@ -117,7 +119,7 @@ async def play_responses(
                     continue
                 report.write_started_at = time.monotonic()
                 try:
-                    if not response_started:
+                    if not response_started and chunk.audible:
                         response_started = True
                         if on_response_started is not None:
                             try:
@@ -130,8 +132,10 @@ async def play_responses(
                         chunk.pcm,
                         provider_item_id=chunk.provider_item_id,
                         segment_kind=chunk.kind,
-                        on_first_write=first_write,
+                        on_first_write=first_write if chunk.audible else None,
                     )
+                    if accepted and chunk.audible:
+                        report.audible_drain_at = max(report.last_accepted_at, tts.expected_drain_at())
                 finally:
                     report.write_started_at = 0.0
                 if not accepted:
@@ -171,7 +175,8 @@ async def play_responses(
             if interrupt.done() and not interrupt.cancelled():
                 await interrupt
                 report.stop_reason = "barge_in"
-                await _flush_for_interrupt(turn, tts)
+                if await _flush_for_interrupt(turn, tts):
+                    report.audible_drain_at = min(report.audible_drain_at, time.monotonic())
         finally:
             interrupt.cancel()
             await asyncio.gather(interrupt, return_exceptions=True)
