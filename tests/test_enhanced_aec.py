@@ -276,12 +276,12 @@ def test_unknown_or_missing_persisted_schema_fails_closed(capability):
 def test_installed_marker_uses_root_proof_publish_contract(
     tmp_path: Path, monkeypatch,
 ):
-    calls: list[tuple[Path, str, dict[str, object]]] = []
+    calls: list[tuple[Path, dict, dict[str, object]]] = []
 
-    def fake_atomic_write(path, text, **kwargs):
-        calls.append((Path(path), text, kwargs))
+    def fake_atomic_write(path, payload, **kwargs):
+        calls.append((Path(path), payload, kwargs))
 
-    monkeypatch.setattr(enhanced_aec, "atomic_write_text", fake_atomic_write)
+    monkeypatch.setattr(enhanced_aec, "atomic_write_json", fake_atomic_write)
     marker = tmp_path / "proof" / "installed.json"
     enhanced_aec.write_installed_marker(
         fingerprint="enhanced-aec-v1:fingerprint",
@@ -291,14 +291,14 @@ def test_installed_marker_uses_root_proof_publish_contract(
     )
 
     assert len(calls) == 1
-    path, text, options = calls[0]
+    path, payload, options = calls[0]
     assert path == marker
     assert options == {
         "mode": 0o644,
         "group_from_parent": False,
         "durable": True,
     }
-    assert json.loads(text)["fingerprint"] == "enhanced-aec-v1:fingerprint"
+    assert payload["fingerprint"] == "enhanced-aec-v1:fingerprint"
     assert enhanced_aec.INSTALLED_MARKER_PATH == (
         Path("/var/lib/jasper-enhanced-aec") / "installed.json"
     )

@@ -20,6 +20,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.json_fields import finite_float
+
 #: Schema tag for the persisted block.
 POSITION_EVIDENCE_SCHEMA = "jts_attribution_position_evidence/1"
 
@@ -226,13 +228,6 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
 }
 
 
-def _finite_or_none(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
 def log_grid_hz(
     floor_hz: float, ceiling_hz: float, *, fractional_octave: int = CURVE_FRACTIONAL_OCTAVE
 ) -> np.ndarray:
@@ -336,7 +331,7 @@ def _block(
             "reason": "no_per_position_curves",
         }
 
-    floor = _finite_or_none(validity_floor_hz)
+    floor = finite_float(validity_floor_hz)
     lowest = float(freqs[freqs > 0.0].min()) if np.any(freqs > 0.0) else 0.0
     if floor is not None and floor > 0.0:
         floor_hz, floor_source = max(floor, lowest), "validity_floor_hz"

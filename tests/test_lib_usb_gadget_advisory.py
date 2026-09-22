@@ -44,7 +44,6 @@ that same case abort with rc=1 (see the PR body).
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -245,27 +244,15 @@ def test_advisory_does_not_abort_when_python3_itself_fails(tmp_path):
     assert "REACHED_END" in proc.stdout
 
 
-# ── SSH_BATCH_OPTS keepalive bound ───────────────────────────────────────
-#
-# Deleting ServerAliveInterval/ServerAliveCountMax from SSH_BATCH_OPTS leaves
-# every test above green: nothing else asserts a severed transport surfaces
-# as an ssh error rather than an unbounded hang. Read the values out of the
-# real file rather than restating them here.
-
-
-def _ssh_batch_opts_line() -> str:
-    text = DEPLOY.read_text(encoding="utf-8")
-    m = re.search(r"^SSH_BATCH_OPTS=\((.*)\)\s*$", text, flags=re.M)
-    assert m is not None, "could not find SSH_BATCH_OPTS=(...) in deploy-to-pi.sh"
-    return m.group(1)
-
-
 def test_ssh_keepalive_options_pinned():
-    opts = _ssh_batch_opts_line()
-
-    for opt_name in ("ServerAliveInterval", "ServerAliveCountMax"):
-        code_match = re.search(rf"\b{opt_name}=(\d+)\b", opts)
-        assert code_match, f"SSH_BATCH_OPTS is missing {opt_name}=<N>: {opts!r}"
-        assert int(code_match.group(1)) > 0, (
-            f"{opt_name} must be a positive count/interval: {code_match.group(1)!r}"
-        )
+    proc = subprocess.run(
+        [
+            "bash", "-c",
+            f'PI_HOST=test.invalid source "{LIB}"; printf "%s\\n" "${{SSH_BATCH_OPTS[@]}}"',
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    assert proc.stdout.splitlines() == [
+        "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+    ]

@@ -15,7 +15,6 @@ playback/capture, launch cloud jobs, or mutate Pi runtime state.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import wave
@@ -23,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from jasper.json_fields import sha256_file as sha256
 from jasper.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
@@ -134,14 +134,6 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             data["_manifest_line"] = lineno
             rows.append(data)
     return rows
-
-
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def feature_frame_count(total_samples: int) -> int:
