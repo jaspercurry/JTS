@@ -161,8 +161,9 @@ def prepare_plan_captures(
             AngleStop(0, REGIME_PER_DRIVER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
-        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
+    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE), None)
+    # The speaker flow needs an entry baseline; other rounds use their first take as the level reference.
+    if base_stop is not None and base_stop.purpose == PURPOSE_SPEAKER:
         base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
             headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
@@ -171,10 +172,9 @@ def prepare_plan_captures(
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
-        timing = base_stop.purpose == PURPOSE_SPEAKER
         captures.extend(PlanCapture(base_request.stops[0], replace(
-            base_spec, graph_scope="timing" if timing else base_spec.graph_scope, program_phase=PHASE_ENTRY_BASELINE,
-        ), repeat) for repeat in range(1, (request.repeats if timing else 1) + 1))
+            base_spec, graph_scope="timing", program_phase=PHASE_ENTRY_BASELINE,
+        ), repeat) for repeat in range(1, request.repeats + 1))
     for offset, spec in enumerate(placed):
         stop = request.stops[offset // request.repeats]
         if spec is None:
