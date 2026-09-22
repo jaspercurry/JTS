@@ -71,8 +71,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     choices = []
     for name, size in available_programs():
         plan = program(name, size)
-        if (plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs
-                or plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs):
+        if ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
+                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)):
             continue
         choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}",
                                   "default": f"{name}/{size}" == default_id,
@@ -86,6 +86,9 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                 try:
                     context = resolve_conductor_context(status, require_banked_level=False)
                 except CrossoverV2Refused as exc:
+                    # Disclosed the way jasper.web._common.refusal_envelope
+                    # renders one: ``str(exc)`` is the household sentence its
+                    # raisers pass; some carry no code.
                     choice.update(code=exc.code or None, lines=[str(exc)])
                 else:
                     request = request_for_program(plan, mover=plan.mover or "human")

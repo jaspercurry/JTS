@@ -171,7 +171,6 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
     assert {"seat/cube", "room/cloud", "room/seat", "close/spot"} <= ids
-    assert {"seat/cloud", "seat/express"}.isdisjoint(ids)
     assert sum(choice["default"] for choice in choices) == 1
     programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})

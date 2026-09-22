@@ -1023,8 +1023,8 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
 
 @pytest.mark.parametrize(
     ("program_id", "size"),
-    [("seat", "cube"), ("room", "seat"), ("close", "spot")],
-    ids=["seat/cube", "room/seat", "close/spot"],
+    [("seat", "cube"), ("seat", "express"), ("close", "spot")],
+    ids=["seat/cube", "seat/express", "close/spot"],
 )
 def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
     program_id: str, size: str,
@@ -1579,8 +1579,8 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
     ("room", "arm", ac.MOVER_ARM, None),
     ("room", "arm", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
     ("bass", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
-    ("room", "cloud", ac.MOVER_HUMAN, None),
-    ("room", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
+    ("seat", "cloud", ac.MOVER_HUMAN, None),
+    ("seat", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
 ])
 def test_program_mover_constraints_refuse_by_name(program, size, mover, reason):
     row = mp.program(program, size)

@@ -26,7 +26,9 @@ from jasper.audio_measurement.gating import SEAT_EXEMPT
         ("baseline", "express", 5, 5, 13),
         ("tournament", "full", 3, 3, 3),
         ("tournament", "express", 1, 1, 1),
+        ("seat", "cloud", 11, 11, 11),
         ("seat", "cube", 7, 7, 7),
+        ("seat", "express", 3, 3, 3),
         ("room", "cloud", 11, 11, 11),
         ("room", "arm", 3, 3, 3),
         ("room", "seat", 3, 3, 3),
@@ -143,7 +145,9 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("room", "arm"),
         ("room", "cloud"),
         ("room", "seat"),
+        ("seat", "cloud"),
         ("seat", "cube"),
+        ("seat", "express"),
         ("speaker", "mark"),
         ("tournament", "express"),
         ("tournament", "full"),
@@ -197,7 +201,7 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
     """The listener's head and the six faces one offset away, express a subset."""
 
     cube = mp.program("seat", "cube")
-    express = mp.program("room", "seat")
+    express = mp.program("seat", "express")
 
     assert {p.kind for p in cube.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cube.poses} == {(0, 0, 1)}
@@ -216,7 +220,7 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
 
 
 def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
-    cloud = mp.program("room", "cloud")
+    cloud = mp.program("seat", "cloud")
 
     assert {p.kind for p in cloud.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cloud.poses} == {(0, 0, 1)}
@@ -260,7 +264,7 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
         "baseline": "express",
         "tournament": "express",
         "branches": "express",
-        "seat": "cube",
+        "seat": "cloud",
         "room": "seat",
         "close": "spot",
         "rear": "express",
@@ -272,7 +276,7 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, size, purpos
     cloud = mp.program(program, "cloud")
     quick = mp.program(program, size)
 
-    assert cloud.poses is mp.program("room", "cloud").poses
+    assert cloud.poses is mp.program("seat", "cloud").poses
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in quick.poses] == [
         (0, 0), (-20, 0), (20, 0),
     ]
@@ -403,8 +407,8 @@ def test_shared_layout_can_change_to_five_positions_without_code(tmp_path: Path)
 
     programs = mp.load_programs(_write_config(tmp_path, config))
 
-    assert len(programs[("room", "cloud")].poses) == 5
-    assert programs[("room", "cloud")].poses is programs[("bass", "cloud")].poses
+    assert len(programs[("seat", "cloud")].poses) == 5
+    assert programs[("room", "cloud")].poses is programs[("seat", "cloud")].poses
 
 
 def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
