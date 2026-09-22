@@ -789,9 +789,6 @@ def test_run_guardian_does_not_retry_real_oserror(tmp_path, monkeypatch):
 
 
 def test_run_guardian_surfaces_persistent_spawn_failure(tmp_path, monkeypatch):
-    """Retry is bounded: a machine that is *persistently* out of spawn
-    resources fails loudly (re-raises) rather than looping forever or
-    silently passing."""
     monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
     calls = {"n": 0}
 
@@ -800,9 +797,10 @@ def test_run_guardian_surfaces_persistent_spawn_failure(tmp_path, monkeypatch):
         raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
 
     monkeypatch.setattr(subprocess, "run", always_eagain)
-    with pytest.raises(BlockingIOError):
+    with pytest.warns(_TransientSpawnRetryWarning) as record, pytest.raises(BlockingIOError):
         _run_guardian(tmp_path, stash_contents=None)
     assert calls["n"] == _SPAWN_RETRIES + 1  # bounded attempts, then raise
+    assert len(record) == _SPAWN_RETRIES + 1
 
 
 # ----- DA-0006: recreate-path stderr temp file is private -----
