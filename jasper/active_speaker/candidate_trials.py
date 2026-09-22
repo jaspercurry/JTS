@@ -15,10 +15,6 @@ from .candidate_bank import CandidateBankRefusal
 from .boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
 
 
-def has_tuning_layers(candidate: Any) -> bool:
-    return bool(candidate.room_correction or candidate.bass_extension)
-
-
 def tuning_trial_matches_candidate(reference: Any, candidate_fingerprint: Any) -> bool:
     """Whether a persisted tuning-trial pointer names this exact candidate."""
     if not isinstance(reference, Mapping):
