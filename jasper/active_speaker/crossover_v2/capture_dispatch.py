@@ -249,7 +249,7 @@ def _assess_recording(
         code = (reasons.REASON_NOISY_ROOM_LINEARITY if phase == "check" and analysis.gain_plan
                 and not analysis.gain_plan.snr_floor_ok else reasons.REASON_AGC_BEHAVIORAL_FAIL)
         return refuse(code)
-    if phase == "check" and analysis.pilot_snr_ok is not None and not capabilities["level_solve"]:
+    if phase == "check" and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
     verify_gate = _gate_window_ms(analysis.summed_response)
     # A shorter VERIFY gate manufactures overlay differences (§5.2).

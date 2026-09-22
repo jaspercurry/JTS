@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -224,13 +225,14 @@ def test_measure_pilot_linearity_clean_capture_passes():
     assert res.candidate is not None
 
 
-@pytest.mark.parametrize("phase,keep_fraction,snr_valid", [
-    (phase, fraction, valid)
+@pytest.mark.parametrize("phase,keep_fraction,snr_valid,level_solved", [
+    (phase, fraction, valid, solved)
     for phase in ("check", "measure", "verify")
     for fraction, valid in ((1.0, True), (0.7, True), (None, None), (0.1, None))
     if phase != "check" or fraction is not None
+    for solved in ((True, False) if phase == "check" and valid is None else (True,))
 ])
-def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid):
+def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid, level_solved):
     prog = (build_check_program(_roles()[:1], ambient_s=1.0, pilot_duration_s=0.5,
                                 pilot_levels_db=(-22.0, -12.0), base_peak_dbfs=0.0)
             if phase == "check" else _measure_program() if phase == "measure" else _verify_pilot_program())
@@ -250,6 +252,8 @@ def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
+    if phase == "check" and snr_valid is None:
+        res = replace(res, gain_plan=replace(res.gain_plan, snr_floor_ok=level_solved))
     pilot, = res.pilots
     assert pilot.snr_valid is snr_valid
     assert res.pilot_snr_ok is snr_valid
@@ -264,10 +268,11 @@ def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid
     else:
         assert summary[f"{role}_pilot_snr_db"] is None
     verdict = capture_dispatch.assess(res, phase=phase, program=prog)
-    assert (verdict.ok, verdict.fault, verdict.next) == (
-        (False, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake")
-        if snr_valid is True else (True, None, "accept")
-    )
+    fault = (refusal_copy.REASON_AGC_BEHAVIORAL_FAIL if snr_valid is True else
+             refusal_copy.REASON_SNR_FLOOR if not level_solved else None)
+    assert (verdict.ok, verdict.fault, verdict.next) == (fault is None, fault, "fix_and_retake" if fault else "accept")
+    if phase == "check" and snr_valid is None:
+        assert verdict.capabilities["level_solve"] is level_solved
     assert res.pilot_ambient == summary["pilot_ambient"] == verdict.evidence["pilot_ambient"] == (
         "present" if snr_valid is True else "unavailable")
     assert verdict.screens == []
@@ -412,20 +417,10 @@ def test_measure_summary_omits_the_channel_map_flag_it_cannot_judge(phase):
 def test_pilot_ambient_min_usable_fraction_boundary(
     kept_samples_delta, expect_evidence,
 ):
-    """`AMBIENT_MIN_USABLE_FRACTION` pinned AT its boundary, inclusive.
-
-    Driven through `_pilot_ambient_samples` directly rather than through a
-    truncated capture: the end-to-end path recovers ``global_offset`` by
-    correlation, and a ±1-sample location error would flip a test that turns
-    on an exact sample count. Here the offset is supplied, so "exactly at the
-    fraction is KEPT, one sample under is dropped" is an exact statement
-    about the constant.
-    """
+    """Supply the offset: a one-sample correlation error can cross the boundary."""
     prog = _measure_program()
     ambient = prog.segment("ambient")
     kept = int(AMBIENT_MIN_USABLE_FRACTION * ambient.n_samples) + kept_samples_delta
-    # A capture that began exactly ``ambient.n_samples - kept`` samples into
-    # the window: its schedule position is negative by that much.
     global_offset = -(ambient.start_sample + ambient.n_samples - kept)
     capture = np.zeros(prog.total_samples, dtype=np.float64)
     got = _pilot_ambient_samples(prog, capture, global_offset)
@@ -436,8 +431,6 @@ def test_pilot_ambient_min_usable_fraction_boundary(
 
 
 def test_pilot_ambient_samples_is_none_without_a_window():
-    """A program with no room-listening window at all (legacy, or composed
-    without leading pilots) yields no evidence rather than raising."""
     prog = _measure_program(with_pilots=False)
     capture = np.zeros(prog.total_samples, dtype=np.float64)
     assert _pilot_ambient_samples(prog, capture, 0) is None

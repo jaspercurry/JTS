@@ -346,18 +346,18 @@ def test_check_low_pilot_snr_routes_to_snr_floor_not_agc():
     assert verdict["template"] == "fix_and_retry"
 
 
-def test_check_without_ambient_keeps_the_take_and_discloses_the_missing_floor():
+def test_check_without_ambient_still_requires_a_level_solution():
     fakes = FakeSeams()
     fakes.check = lambda program: replace(
         _check_analysis(program, linearity=None, channel_map=None, snr_floor_ok=False),
         ambient_report={"bands": []},
     )
     verdict = _run_phase(_conductor(fakes), 1, 1)
-    assert verdict["accepted"] is True
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "snr_floor"
     assert verdict["evidence"]["pilot_ambient"] == "unavailable"
     assert verdict["capabilities"]["level_solve"] is False
-    plan, = fakes.published_checks
-    assert plan.snr_floor_ok is False
+    assert fakes.published_checks == []
 
 
 def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
