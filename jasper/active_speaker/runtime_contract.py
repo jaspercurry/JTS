@@ -36,7 +36,7 @@ import yaml
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.bass_extension.dynamic_graph import validated_base_graph
+from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
@@ -3944,6 +3944,10 @@ def _classify_bass_extension_snapshot(
             if source in (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE):
                 graph_text = _reserialize_keeping_header(graph_text, validated_base_graph(
                     yaml.safe_load(graph_text), descriptor, channels,
+                    owner_groups=dynamic_bass_owner_groups(channels, (
+                        (item.speaker_group_id, item.role, item.output_variant, item.physical_output_index)
+                        for item in contract.assignments
+                    )),
                 ))
         except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError):
             return _unsafe_boundary("bass_extension_block_invalid", "bass graph differs from the saved tune")

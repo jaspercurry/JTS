@@ -457,6 +457,31 @@ def test_persisted_dynamic_graph_matches_saved_descriptor(
         assert refused.issues[0]["code"] == "bass_extension_block_invalid"
 
 
+@pytest.mark.parametrize("tamper", ["rear_detector", "missing_rear_delta", "swapped_variants"])
+def test_cardioid_dynamic_graph_uses_the_declared_front_detector(tamper):
+    from tests.test_rear_output_foundation import _cardioid_baseline, _rear_document  # lazy: test fixture cycle
+
+    descriptor = _dynamic_bass_descriptor()
+    _, topology, text = _cardioid_baseline(bass_extension=descriptor)
+    applied = {"recomposition_snapshot": {"bass_extension": descriptor, "rear_calibration": _rear_document()}}
+    kwargs = {"evidence_source": "desired", "applied_baseline_state": applied}
+    assert classify_bass_extension_graph(topology, graph_text=text, **kwargs).allowed
+    payload = yaml.safe_load(text)
+    parameters = payload["processors"]["bass_ext_dynamic_compress_0"]["parameters"]
+    if tamper == "rear_detector":
+        payload["mixers"]["bass_ext_dynamic_form_delta"]["mapping"][5]["sources"][0]["channel"] = 4
+    elif tamper == "missing_rear_delta":
+        parameters["process_channels"] = [3]
+    else:
+        raw = topology.to_dict()
+        channels = raw["speaker_groups"][0]["channels"]
+        channels[0]["output_variant"], channels[-1]["output_variant"] = "rear", "primary"
+        topology = OutputTopology.from_mapping(raw)
+    refused = classify_bass_extension_graph(topology, graph_text=_dump_baseline(text, payload), **kwargs)
+    assert not refused.allowed
+    assert refused.issues[0]["code"] == "bass_extension_block_invalid"
+
+
 def test_low_level_baseline_without_bass_authority_fails_closed() -> None:
     graph = _classify_camilla_graph(
         topology=_active_topology("mono", "active_2_way"),

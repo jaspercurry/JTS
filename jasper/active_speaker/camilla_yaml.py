@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 import yaml
 
 from jasper.atomic_io import atomic_write_text
-from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph, validated_base_graph
+from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph, dynamic_bass_owner_groups, validated_base_graph
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -536,8 +536,12 @@ def _dynamic_bass_graph(
         if preset.local_subwoofer is not None
         else tuple(_channels_for_role(preset, lowest_driver_role(preset.way_count)))
     )
-    decorated = apply_dynamic_bass_graph(base, descriptor, channels)
-    if validated_base_graph(decorated, descriptor, channels) != base:
+    groups = dynamic_bass_owner_groups(channels, (
+        (output.side, output.driver_role, output.output_variant, output.index)
+        for output in preset.channel_map.outputs
+    ))
+    decorated = apply_dynamic_bass_graph(base, descriptor, channels, groups)
+    if validated_base_graph(decorated, descriptor, channels, groups) != base:
         raise ActiveSpeakerConfigError("dynamic bass changed the static speaker tune")
     return decorated
 
