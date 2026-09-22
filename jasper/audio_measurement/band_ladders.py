@@ -12,7 +12,7 @@ from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 UPPER_BANDS_HZ = ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
 LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0), *UPPER_BANDS_HZ)
 LATE_ENERGY_BAND_HZ = (90.0, 250.0)
-# jts3 cardioid null-band default: 09-19 two-mic target 100–350 Hz, third-octave edges 90–315 Hz (ADR-0316).
+# jts3 cardioid null-band default, third-octave edges around the 100–350 Hz target (ADR-0316).
 ARRIVAL_GAP_BAND_HZ = (90.0, 315.0)
 BASS_BANDS_HZ = ((20.0, 30.0), (30.0, 40.0), (40.0, 50.0), (50.0, 63.0),
                  (63.0, 80.0), (80.0, 100.0), (100.0, 125.0), (125.0, 160.0), (160.0, 200.0))

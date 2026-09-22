@@ -839,6 +839,7 @@ def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incu
 
 @pytest.mark.parametrize("applied,swept_hz,expected_band,reason", [
     (False, SEAT_BAND_HZ, list(ARRIVAL_GAP_BAND_HZ), ""),
+    (False, (20.0, 100.0), None, REASON_COVERAGE_SHORT),
     (True, SEAT_BAND_HZ, _CANCELLATION_BAND_HZ, ""),
     (True, (60.0, 280.0), [60.0, 280.0], ""),
     (True, (150.0, 500.0), None, REASON_COVERAGE_SHORT),
