@@ -199,20 +199,19 @@ def test_prove_static_delay_binding_rejects_non_delay_filter():
 
 
 @pytest.mark.parametrize(
-    ("volume_limit", "accepted", "error_code"),
+    ("volume_limit", "error_code"),
     [
-        (None, False, "volume_limit_invalid"),
-        (True, False, "volume_limit_invalid"),
-        ("0.0", False, "volume_limit_invalid"),
-        (float("nan"), False, "snapshot_invalid"),
-        (1.0, False, "volume_limit_invalid"),
-        (0.0, True, None),
-        (-12.5, True, None),
+        (None, "volume_limit_invalid"),
+        (True, "volume_limit_invalid"),
+        ("0.0", "volume_limit_invalid"),
+        (float("nan"), "snapshot_invalid"),
+        (1.0, "volume_limit_invalid"),
+        (0.0, None),
+        (-12.5, None),
     ],
 )
 def test_prove_static_delay_binding_checks_volume_limit_contract(
     volume_limit: object,
-    accepted: bool,
     error_code: str | None,
 ) -> None:
     graph = _graph("as_positive_delay", "as_negative_delay")
@@ -221,7 +220,7 @@ def test_prove_static_delay_binding_checks_volume_limit_contract(
         graph["devices"].pop("volume_limit")
     else:
         graph["devices"]["volume_limit"] = volume_limit
-    if accepted:
+    if error_code is None:
         assert prove_static_delay_binding(
             graph,
             delay_filter_name="as_positive_delay",
