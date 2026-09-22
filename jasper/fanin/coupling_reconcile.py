@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from jasper.control import restart_broker
 from jasper.atomic_io import (
     CONFIG_FILE_MODE,
     env_key_action,
@@ -155,10 +156,6 @@ class CouplingResult:
 # the broker, which would deny ``reset-failed`` anyway.
 _START_BUDGET_VERBS = frozenset({"start", "restart", "try-restart"})
 _CRASH_BUDGET_UNITS = frozenset({FANIN_UNIT, OUTPUTD_UNIT, CAMILLA_UNIT})
-# Mirrors restart_broker._RESET_TIMEOUT_SEC (which owns the bound
-# reset_then_manage actually applies); only the ceiling arithmetic below reads
-# it, so it is spelled here rather than paid for as an import.
-_RESET_FAILED_TIMEOUT_SEC = 5.0
 
 
 def _restart_unit(
@@ -176,10 +173,6 @@ def _restart_unit(
     A start-consuming verb on a crash-budget daemon goes through
     :func:`restart_broker.reset_then_manage` (see the block comment above).
     """
-    try:
-        from jasper.control import restart_broker  # lazy: a broken control package must degrade to a reported failure, not kill the reconcile
-    except ImportError as e:  # pragma: no cover - control pkg always present in prod
-        return False, f"restart_broker unavailable: {e}"
     drive = (
         restart_broker.reset_then_manage
         if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS
@@ -381,25 +374,6 @@ _CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 # ceiling to cover it would hide every real wedge for that length. The
 # broker-dead figure is disclosed as
 # :data:`COUPLING_AUTO_BROKER_DEAD_WORST_SEC` and never used in the arithmetic.
-_BROKER_SOCKET_MARGIN_SEC = 5.0  # restart_broker._CLIENT_SOCKET_MARGIN_SEC
-
-
-def _daemon_op_ceiling_sec(
-    timeout: float, *, reset_failed: bool, broker_dead: bool = False
-) -> float:
-    """Worst legal wall time for one :func:`_restart_unit` call at ``timeout``.
-
-    ``broker_dead`` adds the root direct-systemctl retry each broker call makes
-    after ``BrokerUnavailable``. That is the disclosed residual, never an input
-    to the shipped ceiling.
-    """
-    attempts = 2 if broker_dead else 1
-    preamble = (
-        attempts * _RESET_FAILED_TIMEOUT_SEC + _BROKER_SOCKET_MARGIN_SEC
-        if reset_failed
-        else 0.0
-    )
-    return preamble + attempts * timeout + _BROKER_SOCKET_MARGIN_SEC
 
 
 # Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
@@ -422,7 +396,7 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
     """
 
     def op(timeout: float, reset_failed: bool) -> float:
-        return _daemon_op_ceiling_sec(
+        return restart_broker.operation_ceiling_sec(
             timeout, reset_failed=reset_failed, broker_dead=broker_dead
         )
 

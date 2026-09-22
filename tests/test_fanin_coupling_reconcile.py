@@ -1709,27 +1709,9 @@ def test_coupling_auto_ceiling_is_sized_for_a_live_broker():
     )
 
 
-def test_daemon_op_ceiling_counts_the_preamble_and_names_the_retry():
-    """The preamble is in the arithmetic; the root retry is the disclosed half.
-
-    restart_broker converts a socket timeout to BrokerUnavailable and, as root
-    (which this unit is), retries the same call through direct systemctl. That
-    doubling is modelled so it can be disclosed, not so it can be budgeted.
-    """
+def test_camilla_start_consumes_a_crash_budget_but_stop_does_not():
     import jasper.fanin.coupling_reconcile as cr
-    from jasper.control import restart_broker
 
-    assert cr._BROKER_SOCKET_MARGIN_SEC == restart_broker._CLIENT_SOCKET_MARGIN_SEC
-    # The preamble the arithmetic charges must be the bound reset_then_manage
-    # actually applies, or a legitimately slow pass reads as a wedge.
-    assert cr._RESET_FAILED_TIMEOUT_SEC == restart_broker._RESET_TIMEOUT_SEC
-    # Broker alive: one attempt, plus the socket margin, plus any preamble.
-    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=False) == 15.0
-    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=True) == 25.0
-    # Broker dead: the same call again through direct systemctl.
-    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=False, broker_dead=True) == 25.0
-    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=True, broker_dead=True) == 40.0
-    # A start verb on a crash-budget unit is what earns the preamble.
     assert cr.CAMILLA_UNIT in cr._CRASH_BUDGET_UNITS
     assert "start" in cr._START_BUDGET_VERBS
     assert "stop" not in cr._START_BUDGET_VERBS

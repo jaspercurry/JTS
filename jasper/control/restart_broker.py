@@ -247,11 +247,7 @@ ALLOWED_VERBS = frozenset(_VERB_ARGV)
 # org.freedesktop.login1.*). Every other verb must name an allowlisted unit.
 POWER_VERBS = frozenset({"reboot", "poweroff"})
 
-# Per-request systemctl exec timeout: the client passes how long it's willing
-# to wait, the broker runs systemctl with that bound (clamped), and the client
-# then waits slightly LONGER on the socket — so the broker always returns a
-# verdict before the client gives up (no racing-deadlines truncation of a
-# legitimate blocking restart). --no-block calls return in ms regardless.
+# Each client leg waits past the exec bound so the broker can return a verdict.
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Ordinary broker actions retain the original hard ceiling.  The sole extended
 # shape is a blocking start of exactly the source-intent coordinator: its
@@ -901,6 +897,23 @@ def manage_units(
     return resp
 
 
+def operation_ceiling_sec(
+    timeout: float, *, reset_failed: bool, broker_dead: bool = False
+) -> float:
+    """Return seconds for an action at ``timeout``, with an optional default reset.
+
+    Each broker leg pays the socket margin; ``broker_dead`` also budgets the
+    root direct retry. The caller owns whether its unit/action needs a reset.
+    """
+    attempts = 2 if broker_dead else 1
+    preamble = (
+        attempts * _RESET_TIMEOUT_SEC + _CLIENT_SOCKET_MARGIN_SEC
+        if reset_failed
+        else 0.0
+    )
+    return preamble + attempts * timeout + _CLIENT_SOCKET_MARGIN_SEC
+
+
 def reset_then_manage(
     *units: str,
     verb: str = "restart",
@@ -911,25 +924,15 @@ def reset_then_manage(
 ) -> dict[str, Any]:
     """Clear the units' systemd failure/start-rate state, then run ``verb``.
 
-    A deliberate operator or reconciler action gets a fresh, bounded retry
-    budget this way, so a burst of them cannot walk the target into its
-    ``StartLimitAction`` (#2175). The reset is best-effort in the strong
-    sense: ``reset-failed`` is denied for START_ONLY units and routinely exits
-    nonzero against an already-GC'd oneshot (#3237), so it is logged and
-    discarded. Only the ACTION's result is returned — a failed reset must
-    never be reported as, or turn into, a failed action.
-
-    ``reset_timeout`` bounds only the reset leg's own exec (default: the
-    broker's own ``_RESET_TIMEOUT_SEC``); pass a smaller value when the
-    caller sits behind a short-timeout proxy (each leg still separately pays
-    the client socket margin on top of whichever bound applies).
+    Reset-failed runs first so a burst of deliberate actions cannot walk the
+    unit into its ``StartLimitAction`` (#2175).
+    Only the ACTION's result is returned — a failed reset (including a denied
+    or already-GC'd reset, #3237) is logged and discarded, never reported as a
+    failed action.
+    ``reset_timeout`` bounds the reset exec; each leg also pays a socket margin.
     """
     reset = manage_units(
-        *units,
-        verb="reset-failed",
-        reason=reason,
-        no_block=False,
-        timeout=reset_timeout,
+        *units, verb="reset-failed", reason=reason, no_block=False, timeout=reset_timeout,
     )
     if not reset.get("ok"):
         log_event(

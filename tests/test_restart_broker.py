@@ -1735,6 +1735,33 @@ def test_manage_units_empty_units_is_noop():
     assert resp["units"] == []
 
 
+@pytest.mark.parametrize(
+    "timeout,reset_failed,live_bound,dead_bound",
+    [
+        pytest.param(15.0, False, 20.0, 35.0, id="fanin-hardware-kick"),
+        pytest.param(60.0, False, 65.0, 125.0, id="fanin-content-converge"),
+        pytest.param(8.0, True, 23.0, 36.0, id="fanin-outputd-and-fanin-restarts"),
+        pytest.param(8.0, False, 13.0, 21.0, id="fanin-camilla-stop"),
+        pytest.param(236.0, True, 251.0, 492.0, id="fanin-camilla-start"),
+        pytest.param(5.0, False, 10.0, 15.0, id="fanin-grouping-kick"),
+        pytest.param(60.0, True, 75.0, None, id="multiroom-blocking-action"),
+        pytest.param(5.0, True, 5.0 + 5.0 + 5.0 + 5.0, None, id="multiroom-aec-kick"),
+        pytest.param(10.0, False, 15.0, 25.0, id="without-reset"),
+        pytest.param(10.0, True, 25.0, 40.0, id="with-reset"),
+    ],
+)
+def test_operation_ceiling_preserves_reconciler_budgets(
+    timeout, reset_failed, live_bound, dead_bound,
+):
+    assert restart_broker.operation_ceiling_sec(
+        timeout, reset_failed=reset_failed,
+    ) == live_bound
+    if dead_bound is not None:
+        assert restart_broker.operation_ceiling_sec(
+            timeout, reset_failed=reset_failed, broker_dead=True,
+        ) == dead_bound
+
+
 @pytest.mark.parametrize("reset_ok", [True, False])
 def test_reset_then_manage_runs_the_action_whatever_the_reset_did(
     monkeypatch, reset_ok,
