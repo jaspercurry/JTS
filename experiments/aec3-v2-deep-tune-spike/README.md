@@ -1,10 +1,8 @@
 # AEC3 v2.1 deep-tune spike (laptop)
 
-**Status:** **DELIVERED a usable tuning** as of 2026-05-22 night.
-`BEST_A` is the production-target AEC3 config; it crosses the wake
-threshold on the previously-silent `whisper-music` cell and beats
-AEC3-stock on every other failing music cell. Triple-stream plan
-(raw + BEST_A + DTLN-256 OR-fused) is the next sprint.
+**Historical record — 2026-05-22 tuning results.** Current build and BEST_A
+defaults live in [`jasper_aec3/`](../../jasper_aec3/); runtime engines live in
+[`jasper/aec_engines/`](../../jasper/aec_engines/).
 
 ## What this is
 
@@ -31,11 +29,11 @@ did:
 - `run_offline.py` — process all 10 baseline cells
   through a given config, write `aec-v2*.wav` outputs
 - `sweep.py` — the **single-variable sweep methodology**
-  used to identify BEST_A. Re-run with new knobs to extend.
+  used to identify BEST_A.
 - `forensic.py` — per-stream audio quality metrics
   (pumping CV, HF tearing, crest factor)
 
-## The BEST_A config (canonical)
+## The measured BEST_A config
 
 ```python
 BEST_A = dict(
@@ -126,84 +124,9 @@ whisper 0/0.07 (cancellation effect). They appear to interact
 inside AEC3's logic. BEST_A picks the first (more robust on other
 cells).
 
-## How to rebuild
-
-Prereqs on laptop: Python 3.9+ venv with `pybind11`, `numpy`,
-`openwakeword`, `onnxruntime`; macOS or Linux toolchain with
-`c++`, `meson`, `ninja`; existing JTS `reference-conditions/`
-corpus.
-
-```sh
-# 1) Clone + build v2.1 static
-git clone --depth 1 --branch v2.1 \
-    https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git \
-    /tmp/webrtc-aec3-vendor
-cd /tmp/webrtc-aec3-vendor
-meson setup builddir \
-    -Ddefault_library=static \
-    -Dc_args=-fPIC -Dcpp_args=-fPIC \
-    --prefix=/tmp/webrtc-2.1-install
-meson compile -C builddir
-# (skip `meson install` — internal headers aren't installed; we
-#  read them from the source tree directly via -I flags)
-
-# 2) Build the binding
-cd <jts-repo>/experiments/aec3-v2-deep-tune-spike/
-PYINC=$(python -c "import sysconfig; print(sysconfig.get_paths()['include'])")
-PYEXT=$(python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-PYBIND11_INC=$(python -c "import pybind11; print(pybind11.get_include())")
-SRC=/tmp/webrtc-aec3-vendor; BLD=/tmp/webrtc-aec3-vendor/builddir
-c++ -O3 -fPIC -shared -std=c++17 \
-    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST \
-    -DWEBRTC_LIBRARY_IMPL -DWEBRTC_POSIX -DWEBRTC_MAC \
-    -DWEBRTC_APM_DEBUG_DUMP=0 \
-    -I"$PYINC" -I"$PYBIND11_INC" \
-    -I"$BLD" -I"$SRC" -I"$BLD/webrtc" -I"$SRC/webrtc" \
-    -I"$BLD/subprojects/abseil-cpp-20240722.0" \
-    -I"$SRC/subprojects/abseil-cpp-20240722.0" \
-    -o "_aec3_v2_spike${PYEXT}" \
-    binding.cpp \
-    "$BLD/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.a" \
-    "$BLD"/subprojects/abseil-cpp-20240722.0/libabsl_*.a \
-    -framework CoreFoundation -framework Foundation \
-    -undefined dynamic_lookup
-
-# On Linux/Pi 5: drop -framework flags, drop -D_LIBCPP_HARDENING_MODE,
-# drop -undefined dynamic_lookup. Add -lpthread.
-
-# 3) Run the sweep (re-derives BEST_A or extends it)
-python sweep.py
-
-# 4) Re-run full 10-cell scoring with any candidate config
-python run_offline.py
-```
-
-## What still hasn't been tuned
-
-The sweep covered ~27 configs but the `EchoCanceller3Config` surface
-is larger. Untouched knobs that *might* help further (in priority
-order):
-
-1. **`nearend_tuning.max_dec_factor_lf` paired with normal=0.05.**
-   Single-variable test had yell 9→8 (mild regression). Worth a
-   joint sweep — maybe pairs better than solo.
-2. **`echo_audibility.audibility_threshold_hf`** (default 10). Single
-   test was neutral but only at value=100. Try 50 / 200 / 1000.
-3. **`comfort_noise.noise_floor_dbfs`** (default −96). Higher floor
-   masks pump dips perceptually — sound quality, not detection rate.
-4. **`subband_nearend_detection.subband1.{low,high}`** + enable
-   subband-nearend detection. Default `{1,1}` ranges are no-op;
-   could target 3-7 kHz speech band specifically.
-5. **`ep_strength.default_len`, `nearend_len`** (reverb tail priors,
-   defaults 0.83). Untested. Might matter for our 192ms room reverb.
-6. **The WebRTC field-trial mechanism** (`field_trial::InitFieldTrialsFromString()`).
-   ~50 AEC3 trials available, including `Aec3SuppressorTuningOverride`
-   for whole-config overrides via string. Different mechanism than
-   the C++ struct; might unlock different combinations.
-7. **Per-cell custom configs.** whisper-music wants opposite settings
-   from fast-music (more vs less suppression). Could plumb a "config
-   selector" that swaps configs based on detected signal type. Complex
-   and probably not worth the operational cost.
+Two other single-variable tests: `nearend_tuning.max_dec_factor_lf`
+reduced yell events from 9 to 8; `echo_audibility.audibility_threshold_hf=100`
+(default 10) was neutral.
 
 ## What didn't work (don't retry without new evidence)
 
@@ -218,23 +141,3 @@ order):
   `WebRTC-Aec3SuppressorAntiHowlingGainOverride` field trial.
 - **Combining both whisper-music winners** (erle lower + nearend
   mask_hf parity): cancels out. Pick one.
-
-## Productionization sketch
-
-When ready to move BEST_A to the Pi:
-
-1. Replace `jasper_aec3/`'s build system with the v2.1 static-vendor
-   pattern from this spike. Setup.py needs to clone + build v2.1
-   as part of `pip install -e .`.
-2. Promote `binding.cpp` from this directory to
-   `jasper_aec3/src/aec3_binding.cpp`. Set BEST_A as constructor
-   defaults.
-3. Expose the new knobs as env vars in `jasper/cli/aec_bridge.py`
-   (e.g., `JASPER_AEC_ERLE_MAX_L`, `JASPER_AEC_MAX_DEC_LF`).
-4. `install.sh` adds `meson` + `ninja` to apt deps. Native build
-   on Pi 5 takes ~3-5 min.
-5. Cross-compile risk: the v2.1 static-vendor pattern isn't widely
-   documented for Debian aarch64 builds. Budget ~half a day for
-   build-environment troubleshooting on Pi 5.
-
-Effort: ~1.5-2 days for full productionization.

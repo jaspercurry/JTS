@@ -100,10 +100,8 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH", "assistant_loudness_profile_path", "str"),
     # Barge-in.
     ("JASPER_VAD_BARGE_IN_THRESHOLD", "vad_barge_in_threshold", "float"),
-    # Ducking / CamillaDSP reach.
     ("JASPER_CAMILLA_HOST", "camilla_host", "str"),
     ("JASPER_CAMILLA_PORT", "camilla_port", "int"),
-    ("JASPER_DUCK_DB", "duck_db", "float"),
     # Timeouts / idle context reset.
     ("JASPER_IDLE_TIMEOUT_SEC", "idle_timeout_sec", "int"),
     ("JASPER_OPENAI_CONTEXT_RESET_SEC", "openai_context_reset_sec", "int"),

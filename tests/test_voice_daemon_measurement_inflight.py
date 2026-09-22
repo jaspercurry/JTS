@@ -873,7 +873,6 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner() -> None:
         ducker=_FanInDuck(),
     )
     wl._cfg.tts_outputd_socket = FANIN_TTS_SOCKET
-    wl._cfg.duck_db = -25.0
 
     playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
     await wait_signalled(ducked, "fanin proactive duck", producer=playing)

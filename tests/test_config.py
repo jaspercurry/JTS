@@ -47,7 +47,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_OPENAI_REASONING_EFFORT", "JASPER_OPENAI_NOISE_REDUCTION",
         "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
         "JASPER_WAKE_MODEL",
-        "JASPER_DUCK_DB",
         "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
         "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_MANUAL_MIC_SOURCES",
@@ -76,7 +75,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.grok_model == catalog.default_model_id("grok")
     assert cfg.grok_voice == catalog.default_voice_id("grok")
     assert cfg.wake_model == "hey_jarvis"
-    assert cfg.duck_db == -25.0
     assert cfg.response_stall_timeout_sec == 120
     # Idle context reset is opt-in (0 = disabled). Per-provider so the
     # cost/race tradeoffs can be tuned separately.

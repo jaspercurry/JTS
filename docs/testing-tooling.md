@@ -105,17 +105,16 @@ twin. The `js` CI job runs them; run them locally when touching either side.
 
 ```sh
 node scripts/check-peq-parity.mjs              # eq-math.js vs peq_response_fixture.json
-node scripts/check-sensitivity-trim-parity.mjs # active-speaker-ui.js vs sensitivity_trim_fixture.json
 node scripts/check-balance-trim-parity.mjs
 ```
 
 Python sides: `tests/test_sound_peq_response.py` and
-`tests/test_active_speaker_baseline_profile.py::test_sensitivity_trim_matches_shared_parity_fixture`.
+`tests/test_web_rooms_setup.py::test_balance_trim_python_matches_fixture`.
 
 **`tests/js/` invocation patterns.** A file under `tests/js/` is run one of two
 ways, never a third: (a) a harness the `js` CI job invokes directly by path
 (`.github/workflows/tests.yml`'s `js` job: `sound_profile_harness.mjs`,
-`dialog_harness.mjs`, `correction_render_harness.mjs`, plus the parity
+`speaker_setup_test.mjs`, `dialog_harness.mjs`, plus the parity
 scripts above), or (b) a `*_test.mjs` file pytest discovers by glob, e.g.
 `tests/test_crossover_wizard_js.py`'s
 `_JS_DIR.glob("crossover_*_test.mjs")`. A new JS test is written as one of
