@@ -30,6 +30,7 @@ still blocks a brownout move); the envelope is clamped to
 :data:`~jasper.active_speaker.angle_capture.ARM_ENVELOPE_DEG` before any
 move; the arm parks at 0 deg and is verified (``abs(offset) <
 PARK_TOLERANCE_DEG``) on EVERY exit path, including :data:`PARK_ON_SIGNALS`;
+park may re-issue ``move_to(0)`` once after a ``port_busy`` refusal;
 ``set-zero`` is never invoked (:data:`_TOOL_SUBCOMMANDS` is the complete
 adapter-verb set); the settle never goes under :data:`SETTLE_FLOOR_S`,
 validated at configure time and MEASURED per release.
@@ -328,12 +329,14 @@ class TurntableMover:
     sleep: Callable[[float], None] = time.sleep
     move_failure: Mapping[str, Any] = field(init=False, default_factory=dict)
     _stderr_tail: str = field(init=False, default="")
+    _after_retry: bool = field(init=False, default=False)
 
     def _invoke(self, subcommand: str, *rest: str) -> tuple[int, Mapping[str, Any]]:
         if subcommand not in _TOOL_SUBCOMMANDS:
             raise AssertionError(f"not an allowed adapter verb: {subcommand!r}")
         argv = [self.python, str(self.tool_path), "--json", subcommand, *rest]
         for attempt in (1, 2):
+            self._after_retry = attempt == 2
             try:
                 proc = self.run(
                     argv, capture_output=True, text=True, timeout=self.timeout_s
@@ -351,11 +354,16 @@ class TurntableMover:
             self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
             code = int(getattr(proc, "returncode", 1))
             error = f"{stderr}\n{payload.get('error', '')}"
+            # experiments/usb-turntable/jts_turntable.py:main emits port_busy before
+            # controller access: refused stop/position sent zero bytes, safe to retry once.
             if (
                 attempt == 1
-                and subcommand == "stop"
                 and code
-                and _VENDOR_HEARTBEAT_FRAME_ERROR in error
+                and (
+                    (subcommand == "stop" and _VENDOR_HEARTBEAT_FRAME_ERROR in error)
+                    or (subcommand in {"stop", "position"}
+                        and payload.get("code") == "port_busy")
+                )
             ):
                 log_event(
                     logger,
@@ -404,7 +412,9 @@ class TurntableMover:
         self.move_failure = {
             "subcommand": subcommand,
             "exit_code": code,
+            "code": payload.get("code", ""),
             "stderr_tail": self._stderr_tail or str(payload.get("error", ""))[-200:],
+            "after_retry": self._after_retry or bool(payload.get("retried")),
         }
         log_event(
             logger,
@@ -534,8 +544,8 @@ class RunOwnedArm:
         self._walk = ArmWalk(mover, session, config, should_stop=self._stop.is_set)
         self._code, self._error = EXIT_REFUSED, ""
         self._answer: dict[str, Any] | None = None
-        # Covers in-flight polls/serve and park, both stop retries, HTTP/CSRF calls, and settles.
-        self.timeout_s = (8 * mover.timeout_s + 2 * _VENDOR_RETRY_S + 6 * session._timeout
+        # Covers polls/serve, stop/position retries in all three moves, park retry, HTTP/CSRF, settles.
+        self.timeout_s = (8 * mover.timeout_s + 7 * _VENDOR_RETRY_S + 6 * session._timeout
                           + config.settle_s + PARK_SETTLE_S
                           + next_poll_s(float("inf"), changed=False, initial_s=config.poll_s))
         self._thread = threading.Thread(target=self._run, name="round-arm", daemon=False)
@@ -876,6 +886,9 @@ class ArmWalk:
         self._cancel_capture(reason)
         try:
             moved = self._mover.move_to(0)
+            if not moved and getattr(self._mover, "move_failure", {}).get("code") == "port_busy":
+                self._sleep(_VENDOR_RETRY_S)
+                moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)
             offset = self._mover.offset_deg()
         except (ArmWalkRefused, OSError, RuntimeError, ValueError,
