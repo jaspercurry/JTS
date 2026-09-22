@@ -15,7 +15,7 @@ import pytest
 import yaml as yaml_lib
 
 from jasper.active_speaker import driver_base_trim as dbt
-from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
@@ -934,8 +934,9 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
                                       evidence={"packet_fingerprint": "room-round"})
     monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
     monkeypatch.setattr(baseline_profile_mod, "release_staged_startup_hold", lambda: None)
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(candidate, declaration=declaration,
-        design_draft=draft, measurements={}, applied_at=identity["at"], provenance={} if source == "composed" else {"timing": incumbent})
+    prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
+        design_draft=draft, measurements={}, applied_at=identity["at"], saved_timing=incumbent,
+        provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
     baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
     applied = load_applied(path)
@@ -954,7 +955,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     assert {key: value for key, value in asdict(applied_profile_timing(applied)).items() if value is not None} == expected
     corrections = applied["corrections"]
     assert 1000 * (corrections["tweeter"]["delay_ms"] - corrections["woofer"]["delay_ms"]) == pytest.approx(delay)
-    later = baseline_profile_mod.prepare_applied_baseline_profile(replace(candidate, analysis={"measurement_status": "unmeasured"}), declaration=declaration,
+    later = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
         design_draft=draft, measurements={}, provenance=applied)
     assert later["timing"] == expected
     assert later["corrections"] == corrections
@@ -999,7 +1000,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     text = compile_tuning_graph(declaration, candidate=candidate)
 
     applied = baseline_profile_mod.prepare_applied_baseline_profile(
-        candidate, declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(candidate), declaration=declaration, design_draft=draft, measurements={},
         config_path=tmp_path / "baseline.yml",
         config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
@@ -1043,7 +1044,7 @@ def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration)
     candidate = replace(declared, rear_calibration=_rear_document())
 
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(
-        candidate, declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(candidate), declaration=declaration, design_draft=draft, measurements={},
         config_path=None, config_sha256="",
     )
 

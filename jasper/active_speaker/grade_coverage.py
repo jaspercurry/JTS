@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bundles import sessions_dir
-from .candidate_bank import CandidateBankRefusal, _candidate_roots, status_banked_candidate
+from .candidate_bank import CandidateBankRefusal, _candidate_roots, load_applied_candidate
 from .commissioning_evidence_store import EVIDENCE_ROOT
 from .run_manifest import RUN_MANIFEST_FILENAME
 
 
-def _manifest_path(state: Mapping[str, Any]) -> Path | None:
+def _manifest_path(state: Mapping[str, Any], applied_profile: Mapping[str, Any] | None) -> Path | None:
     candidate = state.get("candidate")
     evidence = state.get("evidence")
     fingerprint = str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else ""
@@ -25,7 +25,7 @@ def _manifest_path(state: Mapping[str, Any]) -> Path | None:
     # run still owns the promise after that re-arm (#2098).
     if fingerprint:
         try:
-            banked = status_banked_candidate(fingerprint)
+            banked = load_applied_candidate(fingerprint, applied_profile=applied_profile or {})
             return banked.path.with_name(RUN_MANIFEST_FILENAME)
         except CandidateBankRefusal:
             pass
@@ -47,9 +47,9 @@ def _manifest_path(state: Mapping[str, Any]) -> Path | None:
     return None
 
 
-def asked_beyond_mark(state: Mapping[str, Any]) -> bool:
+def asked_beyond_mark(state: Mapping[str, Any], *, applied_profile: Mapping[str, Any] | None) -> bool:
     """No manifest means no spatial promise, as for old records (ADR-0298)."""
-    path = _manifest_path(state)
+    path = _manifest_path(state, applied_profile)
     if path is None:
         return False
     try:

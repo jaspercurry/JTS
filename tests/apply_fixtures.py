@@ -21,11 +21,12 @@ from jasper.audio_measurement.bundles import record_artifact
 def bank_candidate(candidate):
     root = bundles.sessions_dir()
     try:
-        find_banked_candidate(candidate.fingerprint)
+        return find_banked_candidate(candidate.fingerprint)
     except CandidateBankRefusal:
         candidate_path = root / f"authored-{candidate.fingerprint}" / "evidence/v1/artifacts/crossover_v2/authored/candidate.json"
         candidate_path.parent.mkdir(parents=True, exist_ok=True)
         candidate_path.write_text(json.dumps(candidate.to_dict()))
+        return find_banked_candidate(candidate.fingerprint)
 
 
 async def bank_trial_async(candidate, profile, topology, *, record_fields=None, wav_bytes=b"captured trial bytes"):
@@ -71,7 +72,7 @@ def prepare_candidate(candidate, topology, config_path, *, design_draft=None):
     from jasper.active_speaker.playback_route import resolve_active_playback_device
     from jasper.sound.settings import saved_sound_layers
 
-    bank_candidate(candidate)
+    banked = bank_candidate(candidate)
     draft = design_draft or {}
     safety = draft.get("driver_safety_profile")
     declaration = MeasurementGraphProfile(candidate.source_preset, topology, {}, resolve_active_playback_device(topology)[0],
@@ -79,5 +80,5 @@ def prepare_candidate(candidate, topology, config_path, *, design_draft=None):
     preference_filters, trim_db = saved_sound_layers()
     text = compile_tuning_graph(declaration, candidate, preference_filters=preference_filters, output_trim_db=trim_db)
     Path(config_path).write_text(text)
-    return prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={},
+    return prepare_applied_baseline_profile(banked, declaration=declaration, design_draft=draft, measurements={},
         config_path=config_path, config_sha256=hashlib.sha256(text.encode()).hexdigest())

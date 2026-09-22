@@ -947,8 +947,7 @@ def test_recover_volume_ignores_a_legacy_volume_safety_file(
     assert recover_body["reason"] == "crossover_volume_recovery_not_required"
 
 
-@pytest.mark.parametrize("lookup", ["identity", "record"])
-def test_apply_bank_refusal_returns_a_refusal_envelope(monkeypatch, tmp_path, lookup):
+def test_apply_bank_refusal_returns_a_refusal_envelope(monkeypatch, tmp_path):
     import asyncio
     from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal
@@ -959,7 +958,7 @@ def test_apply_bank_refusal_returns_a_refusal_envelope(monkeypatch, tmp_path, lo
     _bank_for_apply({"candidate": candidate.to_dict()})
     def refused(*args, **kwargs):
         raise CandidateBankRefusal("ambiguous", "multiple banked candidates")
-    monkeypatch.setattr(apply_host if lookup == "identity" else apply_host.baseline_profile, "find_banked_candidate", refused)
+    monkeypatch.setattr(apply_host, "find_banked_candidate", refused)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     monkeypatch.setattr(correction_runtime, "run_async", asyncio.run)
     monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: pytest.fail("bank checks precede the DSP load"))

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker.candidate_bank import bank_candidate
+
 import pytest
 
 from pathlib import Path
@@ -386,7 +388,7 @@ def declared_profile_fixture(topology, *, design_draft, measurements, config_pat
     text = compile_tuning_graph(declaration, candidate=candidate)
     target = baseline_candidate_config_path(text, config_path)
     profile = prepare_applied_baseline_profile(
-        candidate, declaration=declaration, design_draft=design_draft, measurements=measurements,
+        bank_candidate(candidate), declaration=declaration, design_draft=design_draft, measurements=measurements,
         config_path=target, config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
     profile.update(status="ready_to_apply" if write else "ready_to_compile",

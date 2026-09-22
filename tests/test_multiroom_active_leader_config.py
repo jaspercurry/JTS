@@ -332,6 +332,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     assert applied["permissions"]["may_apply"]
     applied["status"] = "applied"
     applied["source"].pop("measured_candidate_fingerprint")
+    applied.pop("candidate_artifact_path")
     snapshot = applied["recomposition_snapshot"]
     if unsupported_stage == "dynamic_bass":
         snapshot["bass_extension"] = asdict(_descriptor())
