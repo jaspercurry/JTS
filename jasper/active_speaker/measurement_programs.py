@@ -414,7 +414,7 @@ def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
 ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
 SEAT_OFFSET_M = max(
     abs(component)
-    for pose in _PROGRAMS[("seat", "cloud")].poses
+    for pose in _PROGRAMS[("room", "cloud")].poses
     for component in pose.seat_offset_m or ()
 )
 CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from jasper.active_speaker.commissioning_coordinator import programs_for_topology
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -15,6 +16,7 @@ from jasper.identity.reader import (
     read_identity,
     speaker_url,
 )
+from jasper.output_topology import OutputTopology
 
 HANDOFF_READY = "ready"
 HANDOFF_NOT_READY = "not_ready"
@@ -88,14 +90,17 @@ _PROGRAM_DETAILS = {
         "Keep Speaker, Room and Bass."
      ), "extra_prompt_lines": _REAR_PROMPT_LINES},
 }
-PROGRAM_ENTRIES = tuple({"id": name, **_PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
+
+
+def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
+    return tuple(_program_entry(name) for name in programs_for_topology(topology))
 
 
 def _program_entry(program_id: str) -> dict[str, Any]:
-    entry = next((item for item in PROGRAM_ENTRIES if item["id"] == program_id), None)
+    entry = _PROGRAM_DETAILS.get(program_id)
     if entry is None:
         raise ValueError(f"unknown tuning program: {program_id}")
-    return entry
+    return {"id": program_id, **entry}
 
 
 def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> str:
@@ -158,7 +163,7 @@ def build_tuning_handoff(
         "reason": reason,
         "binding": binding,
         "driver_spacing_mm": commissioning_view.get("driver_spacing_mm"),
-        "programs": [dict(item) for item in PROGRAM_ENTRIES],
+        "programs": [_program_entry(name) for name in commissioning_view["programs"]],
         "program": program_id,
         "prompt": build_tuning_handoff_prompt(binding, program_id) if ready else "",
     }

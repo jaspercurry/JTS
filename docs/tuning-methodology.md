@@ -244,10 +244,10 @@ Judge evidence use, recovery, and resulting state; no tool sequence is required.
 Room correction is a layer of this toolbox, not a separate product.
 `0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md`
 establishes that room correction and bass extension share this toolbox.
-The room is measured where it is heard. The default `seat/cloud` has 11 poses:
+The room is measured where it is heard. The `room/cloud` plan has 11 poses:
 a 3×3 horizontal grid at offsets −0.30, 0, and +0.30 m, plus points 0.30 m
 above and below the head centre. The named `seat/cube` alternative has the
-centre and six face centres; `seat/express` has the centre, right, and forward.
+centre and six face centres; `room/seat` has the centre, right, and forward.
 Each pose is one summed sweep through the applied
 tune, analyzed ungated so the reflections stay in. A seat take records its
 kind, its offset from the head and its window; it is not a bearing at the mark,
