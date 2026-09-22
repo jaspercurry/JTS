@@ -31,6 +31,24 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_reasons import (
+    REFUSAL_ALL_ZERO_IR,
+    REFUSAL_BAD_BAND_HZ,
+    REFUSAL_BAD_SAMPLE_RATE,
+    REFUSAL_BAD_SEARCH_US,
+    REFUSAL_BAD_SIGNAL_BAND_HZ,
+    REFUSAL_BAND_BELOW_PASSBAND,
+    REFUSAL_BAND_TOO_NARROW,
+    REFUSAL_DETECTOR_ERROR,
+    REFUSAL_EARLIER_DOMINANT_ARRIVAL,
+    REFUSAL_LOW_ARRIVAL_CREST,
+    REFUSAL_MALFORMED_IR,
+    REFUSAL_NO_IN_WINDOW_ECHO,
+    REFUSAL_RAHMONIC_OF_LOWER_DELAY,
+    REFUSAL_SEARCH_OUTSIDE_CEPSTRUM,
+    REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
+    REFUSAL_WINDOW_TOO_SHORT,
+)
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 
 # --------------------------------------------------------------------------- #
@@ -231,25 +249,6 @@ BAND_BELOW_PASSBAND_MARGIN_DB = 25.0
 # arrival at -14.66 to -15.71 dB on 4/10 positions, and all ten still detected the rim wave.
 EARLIER_ARRIVAL_DOMINANCE_DB = -10.0
 
-# Refusal vocabulary for EchoDiagnostic.refusal. Empty means the detector ran to completion
-# (which may be a zero-confidence "found nothing credible"); non-empty means every estimate on
-# the record is uninformative. Consumers gate on `refusal == ""`, never a specific slug.
-REFUSAL_LOW_ARRIVAL_CREST = "low_arrival_crest"
-REFUSAL_WINDOW_TOO_SHORT = "analysis_window_too_short"
-REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
-REFUSAL_BAND_BELOW_PASSBAND = "band_below_passband"
-REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
-REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
-REFUSAL_TAU_AT_WINDOW_LOWER_EDGE = "tau_at_window_lower_edge"
-REFUSAL_RAHMONIC_OF_LOWER_DELAY = "rahmonic_of_lower_delay"
-REFUSAL_EARLIER_DOMINANT_ARRIVAL = "earlier_dominant_arrival"
-REFUSAL_ALL_ZERO_IR = "all_zero_ir"
-REFUSAL_MALFORMED_IR = "malformed_ir"
-REFUSAL_BAD_SAMPLE_RATE = "bad_sample_rate"
-REFUSAL_BAD_BAND_HZ = "bad_band_hz"
-REFUSAL_BAD_SIGNAL_BAND_HZ = "bad_signal_band_hz"
-REFUSAL_BAD_SEARCH_US = "bad_search_us"
-REFUSAL_DETECTOR_ERROR = "detector_error"
 
 # --------------------------------------------------------------------------- #
 # Geometry-lock tuning

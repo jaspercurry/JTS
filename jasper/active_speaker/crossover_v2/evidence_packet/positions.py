@@ -9,6 +9,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_CROSS_SEAT_SPREAD_OVERFLOW,
+    REASON_NO_CURVE_GRID,
+    REASON_TOO_FEW_SEATS,
+)
 from jasper.json_fields import finite_float
 
 from ...commissioning_evidence_store import EVIDENCE_ROOT
@@ -194,10 +199,7 @@ def _cross_seat_sigma_block(
         return {
             "available": False,
             "status": "not_evaluated",
-            "reason": (
-                "the positions block carries no curve grid, so there are no "
-                "bins to take a spread over"
-            ),
+            "reason": REASON_NO_CURVE_GRID,
             "n_seats": 0,
             "n_seats_excluded": len(rows),
         }
@@ -213,13 +215,7 @@ def _cross_seat_sigma_block(
         return {
             "available": False,
             "status": "not_evaluated",
-            "reason": (
-                f"a spread across seats needs two usable member curves and this "
-                f"round has {len(curves)} ({excluded} row(s) could not be read "
-                f"as a curve on this grid). A sample standard deviation is "
-                f"UNDEFINED at one seat, so nothing is published — a 0.0 here "
-                f"would say the seats agreed"
-            ),
+            "reason": REASON_TOO_FEW_SEATS,
             "n_seats": len(curves),
             "n_seats_excluded": excluded,
         }
@@ -237,11 +233,7 @@ def _cross_seat_sigma_block(
         return {
             "available": False,
             "status": "not_evaluated",
-            "reason": (
-                "a member curve carries samples so large that their spread does "
-                "not fit a float; this artifact cannot be read for a cross-seat "
-                "spread at all"
-            ),
+            "reason": REASON_CROSS_SEAT_SPREAD_OVERFLOW,
             "n_seats": len(curves),
             "n_seats_excluded": excluded,
         }

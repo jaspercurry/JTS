@@ -25,19 +25,13 @@ from jasper.active_speaker.crossover_v2.round_captures import (
 )
 from jasper.active_speaker.flat_spec import FlatSpecReport
 
+from jasper.audio_measurement.evidence_reasons import (
+    NOT_SWEPT_BAND_NOT_EVALUABLE,
+    NOT_SWEPT_BIN_OFF_ANALYSIS_GRID,
+    NOT_SWEPT_CAPTURES_UNREADABLE,
+    NOT_SWEPT_SINGLE_POSE,
+)
 from .banked import BankedRound
-
-#: Why a band carries no gate sensitivity when the LADDER NEVER RAN on it. The
-#: ``not_swept_`` prefix tells these apart from the sweep's own refusals
-#: (``gate_sweep.NULL_*``), which mean the ladder ran and then declined to
-#: publish; both land in the one ``BandResult.gate_sensitivity_note`` field.
-NOT_SWEPT_SINGLE_POSE = "not_swept_single_pose"
-NOT_SWEPT_BAND_NOT_EVALUABLE = "not_swept_band_not_evaluable"
-#: Every ``RoundCapturesRefused`` the ladder can raise EXCEPT the single-pose
-#: one. They are one word here because the answer is the same — this round's
-#: captures did not become curves — and the refusal carries the detail.
-NOT_SWEPT_CAPTURES_UNREADABLE = "not_swept_captures_unreadable"
-NOT_SWEPT_BIN_OFF_ANALYSIS_GRID = "not_swept_bin_outside_analysis_grid"
 
 
 def _stamped_band(

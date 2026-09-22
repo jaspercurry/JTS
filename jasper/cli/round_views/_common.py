@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.round_view_artifacts import (
-    PROG as PROG, REASON_REFUSED as REASON_REFUSED, REASON_UNREADABLE as REASON_UNREADABLE, REASON_UNWRITABLE as REASON_UNWRITABLE,
+    PROG as PROG,
     ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
     VIEW_PURPOSES as VIEW_PURPOSES, ViewArtifact as ViewArtifact,
     TAKES_THIS_ROUND as TAKES_THIS_ROUND, TAKES_THIS_BUNDLE as TAKES_THIS_BUNDLE,
@@ -33,6 +33,11 @@ from jasper.active_speaker.crossover_v2.round_views import (
     BankedRound,
     RoundViewsError,
     load_banked_round,
+)
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_REFUSED as REASON_REFUSED,
+    REASON_UNREADABLE as REASON_UNREADABLE,
+    REASON_UNWRITABLE as REASON_UNWRITABLE,
 )
 from jasper.cli._refusal import (
     answered,
@@ -55,7 +60,6 @@ _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 #: the shape to type rather than as this module's own parameter names.
 _ROUND_DIR_METAVAR = "<round-dir>"
 _BUNDLE_DIR_METAVAR = "<bundle-dir>"
-
 
 
 #: The named ``reason`` each failing stage publishes. The bucket is the STAGE,
@@ -102,8 +106,6 @@ def refused_by_name(
     if not isinstance(detail, str):
         detail = json.dumps(detail, sort_keys=True, default=str)
     return failed(code, reason, detail)
-
-
 
 
 def resolved_out(round_dir: Path, artifact: str, set_id: str | None = None) -> Path:

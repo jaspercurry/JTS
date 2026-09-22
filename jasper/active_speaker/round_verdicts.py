@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
+from jasper.audio_measurement.evidence_reasons import REASON_REPEAT_FLOOR_NOT_BANKED
 from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
@@ -113,7 +114,7 @@ def round_verdicts(
     metric = metrics.get(record.get("aggregate_metric")) if isinstance(metrics, Mapping) and record else None
     unit = metric.get("unit", "db") if isinstance(metric, Mapping) else "db"
     spread = (stopping_thresholds(record) or {}).get(f"plateau_{unit}") if record else None
-    floor_reason = ("repeat_floor_not_banked" if record is None else "repeat_floor_unit_mismatch" if unit != "db"
+    floor_reason = (REASON_REPEAT_FLOOR_NOT_BANKED if record is None else "repeat_floor_unit_mismatch" if unit != "db"
                     else "repeat_floor_unavailable" if spread is None else None)
     if unit != "db":
         spread = None

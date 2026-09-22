@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 
@@ -129,7 +130,7 @@ def spatial_support(n_positions: int) -> dict[str, Any]:
     return {
         "n_positions": n_positions,
         "sufficient": sufficient,
-        "reason": "" if sufficient else "too_few_positions",
+        "reason": "" if sufficient else REASON_TOO_FEW_POSITIONS,
     }
 
 
@@ -237,7 +238,7 @@ def _refusal_reason(
     # Negated `>=`/`<=` rather than `<`/`>`: a non-finite measurement must
     # refuse at the first check it cannot satisfy, never fall through admitted.
     if n_positions < ROOM_BOOST_MIN_POSITIONS:
-        return "too_few_positions"
+        return REASON_TOO_FEW_POSITIONS
     if not depth_db >= ROOM_BOOST_MIN_DIP_DB:
         return "dip_too_shallow"
     if not depth_db <= ROOM_BOOST_MAX_DIP_DB:

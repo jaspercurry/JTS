@@ -55,6 +55,7 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
 )
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_SEATS
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_cloud_echo_band, bank_findings, bank_measure_round
@@ -2810,7 +2811,7 @@ def test_selected_seat_views_share_preparation_and_write_artifact_payloads(
     assert results["co-metrics"]["coverage"]["pooled_window_bearings_deg"] == []
     if not has_verify:
         assert results["agreement"]["outcome"] == "unavailable"
-        assert results["agreement"]["reason"] == "insufficient_agreement_seats"
+        assert results["agreement"]["reason"] == REASON_TOO_FEW_SEATS
     if not has_axis:
         assert results["directivity"]["outcome"] == "unavailable"
         assert results["co-metrics"]["coverage"]["on_axis"] is False

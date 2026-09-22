@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement import room_limits
 
 #: An arbitrary ceiling: it arrives as an argument, never from a constant.
@@ -111,7 +112,7 @@ def test_unknown_spread_caps_cuts_at_the_boost_envelope(base_max_cut_db):
     ("freq_hz", "n_positions", "reason"),
     [
         (45.0, 7, ""),
-        (45.0, 2, "too_few_positions"),
+        (45.0, 2, REASON_TOO_FEW_POSITIONS),
         (320.0, 7, "dip_too_shallow"),
         (90.0, 7, "dip_too_deep"),
         (250.0, 7, "dip_too_narrow"),

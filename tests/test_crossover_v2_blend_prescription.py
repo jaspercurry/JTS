@@ -67,6 +67,11 @@ from jasper.active_speaker.crossover_v2 import (
     planning,
     position_cycle,
 )
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_TOO_FEW_SEATS,
+    REASON_CROSS_SEAT_SPREAD_OVERFLOW,
+    REASON_NO_CURVE_GRID,
+)
 from jasper.sound.profile import EVALUABLE_Q_MAX
 from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
 from jasper.active_speaker.crossover_v2.feature_classification import (
@@ -1301,21 +1306,18 @@ def test_the_spread_is_uncentred_so_a_louder_seat_raises_it(tmp_path):
     assert min(block["per_bin_sigma_db"]) == pytest.approx(1.5)
 
 
-def test_one_seat_refuses_rather_than_publishing_a_zero_spread(tmp_path):
-    """A 0.0 here would say the seats agreed; they were never compared.
-
-    The classification block's ``excursion_sd_us`` DOES publish 0.0 at one
-    capture — the instrument's own convention, copied through verbatim like
-    everything in that block. This is a new field with no convention to
-    inherit, so it takes the honest answer instead of the inherited one.
-    """
-    block = _sigma_block(tmp_path, dip_at=[1000.0])
+@pytest.mark.parametrize("overrides, reason, n_seats", [
+    ({"dip_at": [1000.0]}, REASON_TOO_FEW_SEATS, 1),
+    ({"cloud_over": {"positions": {}}}, REASON_NO_CURVE_GRID, 0),
+])
+def test_missing_seat_evidence_refuses_instead_of_publishing_zero(tmp_path, overrides, reason, n_seats):
+    block = _sigma_block(tmp_path, **overrides)
 
     assert block["available"] is False
     assert block["status"] == "not_evaluated"
-    assert block["n_seats"] == 1
+    assert block["n_seats"] == n_seats
     assert "per_bin_sigma_db" not in block
-    assert "UNDEFINED at one seat" in block["reason"]
+    assert block["reason"] == reason
 
 
 def test_a_refused_spread_reaches_the_honesty_block_by_name(tmp_path):
@@ -1412,7 +1414,7 @@ def test_a_member_curve_at_the_float_ceiling_costs_the_block_not_the_packet(tmp_
 
     assert block["available"] is False
     assert block["n_seats"] == 4, "every sample is finite; the SPREAD is not"
-    assert "does not fit a float" in block["reason"]
+    assert block["reason"] == REASON_CROSS_SEAT_SPREAD_OVERFLOW
     # The packet itself survives, fingerprint and all.
     assert packet["packet_fingerprint"]
 

@@ -39,6 +39,14 @@ from jasper.audio_measurement.analysis import (
     band_levels_from_magnitude,
     smooth_fractional_octave,
 )
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_COVERAGE_SHORT,
+    REASON_GAP_NOT_CONFIDENT,
+    REASON_NO_COMPARISON,
+    REASON_NO_IMPULSE,
+    REASON_NO_REPEATS,
+    REASON_NO_ROW,
+)
 from jasper.json_fields import finite_float
 
 #: Figures are read on 1/6-octave smoothed level; the frozen reference curve
@@ -68,19 +76,6 @@ BAND_SOURCE_DECLARED_GEOMETRY = "declared_geometry"
 BAND_SOURCE_SECTION_BAND = "section_band"
 BAND_SOURCE_COVERAGE = "coverage"
 
-#: Why a figure or a position is unavailable.
-REASON_COVERAGE_SHORT = "coverage_short"
-REASON_NO_REPEATS = "no_repeats"
-REASON_NO_ROW = "no_row"
-REASON_NO_IMPULSE = "no_impulse"
-#: A gap the correlator DID read, under its confidence gate. Distinct from
-#: :data:`REASON_NO_IMPULSE`: the segments were there, the answer is not
-#: trustworthy enough to remove from a phase.
-REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
-#: A batch with ONE played candidate: it reads no candidate figures, so it has
-#: no repeat spread for a difference to be called real against. Its own repeat
-#: evidence is per position, beside each measured figure.
-REASON_NO_COMPARISON = "no_candidate_comparison"
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
 #: number instead of ``-inf``, which is not JSON — the same floor
@@ -339,7 +334,7 @@ def repeat_spread(repeats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Peak-to-peak spread of each figure across repeated takes of ONE
     candidate, position and level — the only thing a difference may be called
     inconclusive against. Never a difference between candidates or positions:
-    fewer than two repeats is ``no_repeats``, not a substitute for one."""
+    fewer than two repeats is ``too_few_repeats``, not a substitute for one."""
     enough = len(repeats) > 1
     spread: dict[str, float | None] = {}
     for figure in FIGURE_REGRESSION_SIGN:

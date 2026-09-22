@@ -22,6 +22,21 @@ import numpy as np
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.audio_measurement.bundles import sha256_file
 
+from jasper.audio_measurement.evidence_reasons import (
+    CAPTURES_UNREADABLE,
+    CAPTURE_ADMISSIBLE,
+    CAPTURE_OTHER_SESSION,
+    CAPTURE_PHASE_NOT_ADMISSIBLE,
+    CAPTURE_PROGRAM_MISSING,
+    CAPTURE_PROGRAM_UNIDENTIFIED,
+    CAPTURE_UNREADABLE_SIDECAR,
+    CAPTURE_UNSTAMPED_NAME,
+    CAPTURE_WAV_MISSING,
+    NO_ADMISSIBLE_CAPTURES,
+    NO_FEATURES_DETECTED,
+    PROGRAM_MISSING,
+    ROUND_SHAPE_INADMISSIBLE,
+)
 from ..evidence_packet.offline_reads import RING_SIDECAR_GLOB
 from ..journey import (
     PHASE_CLOUD_VERIFY,
@@ -39,31 +54,6 @@ from ..record_index import (
 from ..round_captures import radiated_band_of
 from ..spatial import take_stop_id
 
-ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
-
-#: No capture of this round reached the instrument at all — an empty ring,
-#: one holding only other sessions' captures, or sidecars that will not
-#: parse. The remedy is the RING or the bundle it was scoped to; no round
-#: shape would satisfy this one. Narrowed from the slug that used to cover
-#: :data:`ROUND_SHAPE_INADMISSIBLE` too (#3480): the two refuse from
-#: different code paths and have different remedies.
-NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
-
-#: This round banked a capture of an admissible shape and the ring cannot
-#: hand it over: the WAV is not beside its sidecar, or the dump name lost
-#: the stamp the take's timing is bound to. The round shape is RIGHT — the
-#: remedy is the ring or the bank step that filled it (#3480).
-CAPTURES_UNREADABLE = "classification_captures_unreadable"
-
-#: No program in the round directory carries the bytes a capture's sidecar
-#: banked, so it cannot be deconvolved against the signal that was actually
-#: played. Matching is by content hash, never by phase label (#3504).
-PROGRAM_MISSING = "classification_program_missing"
-
-#: Nothing in the pooled response stood above the round's own capture-to-
-#: capture scatter. Refused rather than reported as an empty verdict set: an
-#: artifact with no rows and a broken detector look identical to a reader.
-NO_FEATURES_DETECTED = "classification_no_features_detected"
 
 CLASSIFICATION_REFUSAL_REASONS = frozenset({
     ROUND_SHAPE_INADMISSIBLE,
@@ -73,35 +63,6 @@ CLASSIFICATION_REFUSAL_REASONS = frozenset({
     NO_FEATURES_DETECTED,
 })
 
-
-#: The capture is classifiable: an admissible shape, this round's session, the
-#: program whose bytes it banked present, and a readable WAV under a stamped
-#: name.
-CAPTURE_ADMISSIBLE = "admissible"
-
-#: The sidecar JSON did not read as an object carrying a ``phase`` string.
-CAPTURE_UNREADABLE_SIDECAR = "unreadable_sidecar"
-
-#: The capture is stamped with a different bundle ``session_id``.
-CAPTURE_OTHER_SESSION = "other_session"
-
-#: The capture's phase is not in :data:`ADMISSIBLE_PHASES`.
-CAPTURE_PHASE_NOT_ADMISSIBLE = "phase_not_admissible"
-
-#: No program in the round directory carries the bytes this capture's sidecar
-#: banked as ``provenance.stimulus.wav_sha256``.
-CAPTURE_PROGRAM_MISSING = "program_missing"
-
-#: The sidecar banks no stimulus content hash, so no program can be proven to
-#: be the one it heard.
-CAPTURE_PROGRAM_UNIDENTIFIED = "program_unidentified"
-
-#: The sidecar's WAV is not beside it in the ring.
-CAPTURE_WAV_MISSING = "wav_missing"
-
-#: The dump filename does not open with the microsecond stamp every capture's
-#: timing residual is bound to.
-CAPTURE_UNSTAMPED_NAME = "unstamped_name"
 
 #: Which refusal each admissibility reason speaks for when a round ends with
 #: no classifiable capture — the partition of the closed capture vocabulary

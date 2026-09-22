@@ -44,4 +44,8 @@ assert.deepEqual(elements.get('crossover-round-lines').children.map(n => n.textC
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
 render({...env, busy: false, pending: null, next_action: action});
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
-console.log(JSON.stringify({ok: true, passed: 10}));
+for (const reason of ['no_repeats', 'insufficient_positions', 'insufficient_agreement_seats', 'unknown_analysis_reason']) {
+  render({...env, round_lines: [reason]});
+  assert.deepEqual(elements.get('crossover-round-lines').children.map(n => n.textContent), [reason]);
+}
+console.log(JSON.stringify({ok: true, passed: 14}));
