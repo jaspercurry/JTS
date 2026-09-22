@@ -19,7 +19,6 @@ from jasper.json_fields import finite_float
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
 from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
-from .crossover_v2.journey import PHASE_ENTRY_BASELINE
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
@@ -120,8 +119,7 @@ def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
 
 
 def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
-    return tuple(capture for capture in prepare_plan_captures(plan, roles_bands=roles_bands)
-                 if capture.spec.program_phase != PHASE_ENTRY_BASELINE)
+    return prepare_plan_captures(plan, roles_bands=roles_bands)
 
 
 @dataclass(frozen=True)
