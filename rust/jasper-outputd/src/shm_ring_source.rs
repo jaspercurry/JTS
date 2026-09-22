@@ -28,6 +28,13 @@ use jasper_ring::{
 
 use crate::types::{widen_period, ProgramSample, SampleFormat};
 
+// One identity check per ~1 s keeps the DAC period loop syscall-free otherwise (#5266).
+const LINK_CHECK_INTERVAL_FRAMES: u32 = jasper_ring::RATE_HZ;
+
+fn link_check_periods(period_frames: u32) -> u32 {
+    LINK_CHECK_INTERVAL_FRAMES.div_ceil(period_frames.max(1))
+}
+
 /// The wire an `S24_3Le` declaration would ask for and the ring cannot carry.
 ///
 /// Refused park-class, at the same exit code every other declaration fault
@@ -109,6 +116,8 @@ fn program_bytes_mut(samples: &mut [ProgramSample]) -> &mut [u8] {
 /// per DAC period.
 pub struct ShmRingSource {
     reader: RingReader,
+    periods_until_link_check: u32,
+    link_recovery_pending: bool,
     samples_per_slot: usize,
     kind: WireKind,
     /// The wire this reader is attached to. Declaration and ring header carry
@@ -170,6 +179,8 @@ impl ShmRingSource {
         };
         Ok(Self {
             reader,
+            periods_until_link_check: link_check_periods(period_frames),
+            link_recovery_pending: false,
             samples_per_slot,
             kind,
             format,
@@ -196,11 +207,60 @@ impl ShmRingSource {
         self.channels
     }
 
+    fn check_linked_path(&mut self) {
+        if self.periods_until_link_check > 1 {
+            self.periods_until_link_check -= 1;
+            return;
+        }
+        self.periods_until_link_check = link_check_periods(self.reader.geometry().period_frames);
+
+        match self.reader.owns_linked_path() {
+            Ok(true) => {
+                if self.link_recovery_pending {
+                    eprintln!(
+                        "event=outputd.shm_ring.link_restored path={} action=keep_reader",
+                        self.reader.path()
+                    );
+                    self.link_recovery_pending = false;
+                }
+            }
+            Ok(false) => {
+                let replacement =
+                    RingReader::try_attach_existing(self.reader.path(), self.reader.geometry());
+                match replacement {
+                    Ok(reader) => {
+                        self.reader = reader;
+                        self.link_recovery_pending = false;
+                        eprintln!(
+                            "event=outputd.shm_ring.reattached path={} action=read_current_inode",
+                            self.reader.path()
+                        );
+                    }
+                    Err(error) => self.note_link_failure(&error),
+                }
+            }
+            Err(error) => self.note_link_failure(&error),
+        }
+    }
+
+    fn note_link_failure(&mut self, error: &io::Error) {
+        if self.link_recovery_pending {
+            return;
+        }
+        self.link_recovery_pending = true;
+        eprintln!(
+            "event=outputd.shm_ring.reattach_pending path={} action=retry error={error}",
+            self.reader.path()
+        );
+    }
+
     /// Try to consume one slot into the program period `out` (`out.len()` must
     /// be `period_frames * channels`). Slot available -> copies it and returns
-    /// the frame count; ring empty -> zero-fills and returns 0. Never blocks,
-    /// and a ring fault is never a runtime error (it degrades to silence +
-    /// counters, never a crash — `StartLimitAction=reboot` discipline).
+    /// the frame count; ring empty -> zero-fills and returns 0. Normal periods
+    /// never block. Once per ~1 s, the reader checks whether its mapping still
+    /// owns the linked path and attempts one immediate existing-file attach. A
+    /// ring fault degrades to silence + counters, never a crash
+    /// (`StartLimitAction=reboot` discipline).
     ///
     /// The `Result` is the CALLER-contract fault only, and it is exactly the one
     /// the run loop already propagated when the widening lived at the call site:
@@ -235,6 +295,7 @@ impl ShmRingSource {
                 self.samples_per_slot
             );
         }
+        self.check_linked_path();
         let read = match self.kind {
             WireKind::S16 => {
                 let read = self.reader.try_consume_slot(&mut self.s16_scratch);
@@ -326,6 +387,106 @@ mod tests {
         assert_eq!(src.read_period(&mut out).unwrap(), 0);
         assert_eq!(src.metrics().empty_reads, 1);
         cleanup(&path);
+    }
+
+    #[test]
+    fn follows_a_replaced_ring_after_ready_missing_or_invalid_successors() {
+        #[derive(Debug, Clone, Copy)]
+        enum Successor {
+            Ready,
+            Missing,
+            Invalid,
+        }
+
+        for successor in [Successor::Ready, Successor::Missing, Successor::Invalid] {
+            let path = tmp_path();
+            let mut src = narrow(&path);
+            let geometry = src.reader.geometry();
+            let mut old_writer = byte_writer(&path, geometry);
+            let old_wire = vec![1u8; geometry.slot_bytes().unwrap()];
+            let new_wire = vec![2u8; geometry.slot_bytes().unwrap()];
+            let periods = link_check_periods(geometry.period_frames);
+
+            std::fs::remove_file(&path).unwrap();
+            let mut successor_writer = match successor {
+                Successor::Ready => Some(byte_writer(&path, geometry)),
+                Successor::Missing => None,
+                Successor::Invalid => Some(byte_writer(
+                    &path,
+                    Geometry {
+                        period_frames: geometry.period_frames / 2,
+                        ..geometry
+                    },
+                )),
+            };
+
+            let mut out = vec![0 as ProgramSample; geometry.samples_per_slot()];
+            for period in 0..periods {
+                assert_eq!(
+                    old_writer.publish_bytes(&old_wire),
+                    PublishOutcome::Published,
+                    "{successor:?} period {period}"
+                );
+                let read = src.read_period(&mut out).unwrap();
+                if matches!(successor, Successor::Ready) && period + 1 == periods {
+                    assert_eq!(read, 0, "{successor:?}");
+                } else {
+                    assert_eq!(read, geometry.period_frames as usize, "{successor:?}");
+                }
+            }
+
+            if !matches!(successor, Successor::Ready) {
+                assert_eq!(
+                    old_writer.reader_liveness().pid,
+                    u64::from(std::process::id()),
+                    "{successor:?} must keep the valid old mapping"
+                );
+                drop(successor_writer.take());
+                if std::path::Path::new(&path).exists() {
+                    std::fs::remove_file(&path).unwrap();
+                }
+                successor_writer = Some(byte_writer(&path, geometry));
+
+                for period in 0..periods {
+                    assert_eq!(
+                        old_writer.publish_bytes(&old_wire),
+                        PublishOutcome::Published,
+                        "{successor:?} recovery period {period}"
+                    );
+                    let read = src.read_period(&mut out).unwrap();
+                    if period + 1 == periods {
+                        assert_eq!(read, 0, "{successor:?}");
+                    } else {
+                        assert_eq!(read, geometry.period_frames as usize, "{successor:?}");
+                    }
+                }
+            }
+
+            let mut successor_writer = successor_writer.unwrap();
+            assert!(src.reader.owns_linked_path().unwrap(), "{successor:?}");
+            assert_eq!(old_writer.reader_liveness().pid, 0, "{successor:?}");
+            assert_eq!(src.metrics().frames_read_slots, 0, "{successor:?}");
+            assert_eq!(src.metrics().startup_empty_reads, 1, "{successor:?}");
+            let successor_liveness = successor_writer.reader_liveness();
+            assert_eq!(
+                successor_liveness.pid,
+                u64::from(std::process::id()),
+                "{successor:?}"
+            );
+            assert!(successor_liveness.live, "{successor:?}");
+            assert_eq!(
+                successor_writer.publish_bytes(&new_wire),
+                PublishOutcome::Published,
+                "{successor:?}"
+            );
+            assert_eq!(
+                src.read_period(&mut out).unwrap(),
+                geometry.period_frames as usize,
+                "{successor:?}"
+            );
+            assert_eq!(src.metrics().frames_read_slots, 1, "{successor:?}");
+            cleanup(&path);
+        }
     }
 
     #[test]

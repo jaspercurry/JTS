@@ -268,6 +268,30 @@ struct OpenTransactionLock {
 }
 
 impl OpenTransactionLock {
+    fn try_acquire_existing(path: &str) -> io::Result<Self> {
+        let lock_path = format!("{path}{OPEN_LOCK_SUFFIX}");
+        let c_lock_path = std::ffi::CString::new(lock_path).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "ring lock path contains NUL")
+        })?;
+        let fd = unsafe { libc::open(c_lock_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(Self { fd });
+        }
+        let error = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        if matches!(
+            error.raw_os_error(),
+            Some(code)
+                if code == libc::EWOULDBLOCK || code == libc::EAGAIN || code == libc::EINTR
+        ) {
+            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+        }
+        Err(error)
+    }
+
     fn acquire_with_wait_hook<F>(path: &str, role: RingRole, mut on_wait: F) -> io::Result<Self>
     where
         F: FnMut(),
@@ -639,7 +663,22 @@ impl RingReader {
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
         let map = attach_or_create(path, expected, RingRole::Reader)?;
+        Self::from_mapping(path, expected, map)
+    }
 
+    /// Attach only when an existing ring is ready now.
+    ///
+    /// This path never waits, creates, or reclaims. A held open-transaction
+    /// lock, short file, or unpublished magic returns [`io::ErrorKind::WouldBlock`].
+    /// It is for real-time owners that can keep their current mapping and retry
+    /// later; startup callers should use [`Self::create_or_attach`].
+    pub fn try_attach_existing(path: &str, expected: Geometry) -> io::Result<Self> {
+        expected.validate_self()?;
+        let map = try_attach_existing_mapping(path, expected)?;
+        Self::from_mapping(path, expected, map)
+    }
+
+    fn from_mapping(path: &str, expected: Geometry, map: RingMapping) -> io::Result<Self> {
         // SPSC GUARD: refuse before ANY header store, so a refused attach leaves
         // the incumbent's read_seq + reader_pid exactly as it left them. `EBUSY`
         // is the code the C reader returns for this same refusal — see
@@ -1039,6 +1078,69 @@ where
     Err(io::Error::from_raw_os_error(libc::EAGAIN))
 }
 
+fn try_attach_existing_mapping(path: &str, expected: Geometry) -> io::Result<RingMapping> {
+    let _open_lock = OpenTransactionLock::try_acquire_existing(path)?;
+    let c_path = std::ffi::CString::new(path)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ring path contains NUL"))?;
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } < 0 {
+        let error = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(error);
+    }
+    let actual_size = match stat_value_as_u64(stat.st_size, "st_size") {
+        Ok(size) => size,
+        Err(error) => {
+            unsafe { libc::close(fd) };
+            return Err(error);
+        }
+    };
+    if actual_size < HEADER_BYTES as u64 {
+        unsafe { libc::close(fd) };
+        return Err(io::Error::from(io::ErrorKind::WouldBlock));
+    }
+    let actual_size = usize::try_from(actual_size).map_err(|error| {
+        unsafe { libc::close(fd) };
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ring st_size cannot be represented as usize: {error}"),
+        )
+    })?;
+    let map = match mmap_fd(fd, actual_size, expected) {
+        Ok(map) => map,
+        Err(error) => {
+            unsafe { libc::close(fd) };
+            return Err(error);
+        }
+    };
+    let magic = map
+        .header_atomic(layout::OFF_MAGIC_QWORD)
+        .load(Ordering::Acquire) as u32;
+    if magic != MAGIC {
+        return Err(io::Error::from(io::ErrorKind::WouldBlock));
+    }
+    let map = match validate_attached_map(map, actual_size, expected) {
+        Ok(map) => map,
+        Err(AttachError::Fatal(error)) => return Err(error),
+        Err(AttachError::MagicInvalid) => {
+            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+        }
+    };
+    match mapping_owns_linked_path(path, &map) {
+        Ok(true) => Ok(map),
+        Ok(false) => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(io::Error::from(io::ErrorKind::WouldBlock))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 enum AttachError {
     Fatal(io::Error),
     /// The creator did not complete ftruncate + magic publication within the
@@ -1117,6 +1219,14 @@ where
         return Err(AttachError::MagicInvalid);
     }
 
+    validate_attached_map(map, actual_size, expected)
+}
+
+fn validate_attached_map(
+    map: RingMapping,
+    actual_size: usize,
+    expected: Geometry,
+) -> Result<RingMapping, AttachError> {
     // The magic is present, so the header is fully written. Cross-check that the
     // file size the header's own declared geometry implies matches the actual
     // size on disk — a corrupt/truncated ring with valid magic is fatal, not
@@ -1889,6 +1999,17 @@ mod tests {
         created_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("A must hold the lock after initialization");
+
+        let started = std::time::Instant::now();
+        let immediate_error = match RingReader::try_attach_existing(&path, g) {
+            Ok(_) => panic!("an immediate attach must not bypass the open transaction lock"),
+            Err(error) => error,
+        };
+        assert_eq!(immediate_error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(OPEN_LOCK_WAIT_TIMEOUT_MS / 2),
+            "an immediate attach must not spend the 500 ms startup wait budget"
+        );
 
         let (wait_tx, wait_rx) = mpsc::channel();
         let path_b = path.clone();
