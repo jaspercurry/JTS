@@ -1423,12 +1423,11 @@ class Mux:
         }
 
     async def _control_preempt(self, source_name: str) -> dict[str, Any]:
-        """AirPlay only: its escalation is bounded by two 2 s busctl calls,
-        which a client can wait out. Spotify's tier-2 `try-restart` is an 8 s
-        worst case no socket client can, and nothing calls the other lanes."""
+        """Two 2 s busctl calls fit clients; Spotify's 8 s restart does not."""
         if source_name != Source.AIRPLAY.value:
             return {"error": f"not a preemptable source {source_name!r}"}
-        await self._pause(Source.AIRPLAY)
+        async with self._transition_lock:
+            await self._airplay_session.release()
         return {"preempted": Source.AIRPLAY.value}
 
     async def _control_select(self, source_name: str) -> dict[str, Any]:
