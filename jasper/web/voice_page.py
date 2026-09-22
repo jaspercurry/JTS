@@ -71,7 +71,7 @@ def _provider_html(
     settings: ProviderSettings, csrf_token: str, discovered: DiscoverySnapshot | None,
 ) -> str:
     provider = settings.provider
-    discovery_status = "Catalog models are shown. Refresh is manual."
+    discovery_status = ""
     if discovered and discovered.fetched_at:
         discovery_status = f"Last refreshed {discovered.fetched_at}."
     if discovered and discovered.last_error:
@@ -87,19 +87,16 @@ def _provider_html(
     </section>
     <section class="section">
       <h2 class="section__title">3. Select model</h2>
-      {_choice_html(settings.model)}
-      <details class="disclosure">
-        <summary>Available models</summary>
-        <div class="disclosure__body">
-          <p class="form-hint">{html.escape(discovery_status)}</p>
-          <form method="post" action="refresh-models">
-            {csrf_field_html(csrf_token)}
-            <input type="hidden" name="provider" value="{provider.id}">
-            <button class="btn btn--default" type="submit"{'' if settings.masked_key else ' disabled'}>Refresh available models</button>
-          </form>
-          {'' if settings.masked_key else '<p class="form-hint">Save your key before refreshing models.</p>'}
-        </div>
-      </details>
+      <div class="voice-model">
+        {_choice_html(settings.model)}
+        <form method="post" action="refresh-models">
+          {csrf_field_html(csrf_token)}
+          <input type="hidden" name="provider" value="{provider.id}">
+          <button class="btn btn--ghost" type="submit" aria-label="Refresh models"
+                  {'' if settings.masked_key else 'disabled title="Save your key to refresh models"'}>Refresh</button>
+        </form>
+      </div>
+      {f'<p class="form-hint">{html.escape(discovery_status)}</p>' if discovery_status else ''}
     </section>
     <details class="disclosure">
       <summary>Voice and options</summary>

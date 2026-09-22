@@ -11,6 +11,13 @@
   margin-block: 1rem;
 }
 
+.voice-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
 .voice-key {
   position: relative;
 }

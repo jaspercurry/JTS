@@ -141,9 +141,8 @@ def test_index_renders_manual_refresh_button_without_page_load_fetch():
         {"OPENAI_API_KEY": "sk-x", "JASPER_VOICE_PROVIDER": "openai"},
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
-    assert 'action="refresh-models"' in page
-    assert "Refresh available models" in page
-    assert "Refresh is manual" in page
+    assert page.count('action="refresh-models"') == 1
+    assert 'aria-label="Refresh models"' in page
 
 
 def test_apply_save_blank_key_field_preserves_existing_value():
