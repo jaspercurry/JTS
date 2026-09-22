@@ -10,13 +10,16 @@ import collections
 import copy
 from dataclasses import replace
 import json
+import subprocess
+import sys
 
 import pytest
 import yaml
 
 from pathlib import Path
 
-import jasper.active_speaker.runtime_contract as runtime_contract_module
+from jasper.active_speaker import runtime_contract
+from jasper.active_speaker.graph.active_verifier import _linearization_boost_allowance_db as allowance
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerConfigError,
@@ -85,6 +88,15 @@ from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_o
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def test_runtime_contract_import_leaves_numpy_unloaded():
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; import jasper.active_speaker.runtime_contract; "
+         "raise SystemExit('numpy' in sys.modules)"],
+        cwd=Path(__file__).resolve().parents[1], timeout=30, check=False,
+    )
+    assert result.returncode == 0
 
 
 def classify_camilla_graph(*args, **kwargs):
@@ -382,7 +394,6 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     _, topology, applied = _cardioid_baseline(linearization={"woofer": [
         {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 3.0}]})
     compare = rear_compare_yaml(applied, rear_muted=muted, trim_db=MAX_COMPARE_TRIM_DB)
-    allowance = runtime_contract_module._linearization_boost_allowance_db
     assert allowance(yaml.safe_load(compare)) - allowance(yaml.safe_load(applied)) == pytest.approx(MAX_COMPARE_TRIM_DB)
     cam = _controller(_FakeClient(), tmp_path)
     for text in (applied, compare):
@@ -391,7 +402,7 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     paths = [authority[key] for key in ("config", "statefile_path", "applied_baseline_path", "staged_metadata_path")]
     before = [path.read_bytes() for path in paths]
     proof = Mock(side_effect=AssertionError("live compare reached durable proof"))
-    monkeypatch.setattr(runtime_contract_module, "_classify_bass_extension_snapshot", proof)
+    monkeypatch.setattr(runtime_contract, "_classify_bass_extension_snapshot", proof)
     async def active():
         return camilla_default_filled(compare)
     graph = await classify_active_bass_extension_graph(
@@ -2097,21 +2108,6 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.details["unmuted_outputs"] == [0, 1]
 
 
-# --- C3a-4: the active-baseline runtime graph's fail-closed protections ---
-#
-# When source == ACTIVE_BASELINE_SOURCE the classifier SUPPRESSES the
-# commission-mute checks and instead treats every output as unmuted, validating
-# them through a NEW block of per-driver blocker predicates
-# (runtime_contract.py:1047-1291). That block is the ENTIRE fail-closed safety
-# net for a tweeter-bearing active-baseline runtime graph, yet only the positive
-# path (test_mono_active_2way_allows_approved_baseline_runtime) was pinned. These
-# mutate the emitted baseline YAML to break one protection at a time and assert
-# the classifier rejects it with the matching blocker — so a fail-OPEN regression
-# (e.g. dropping the gain<=0 check) can't pass green. The baseline-source comment
-# header is preserved by mutating text rather than parse->dump (the classifier
-# reads the source from that comment; a YAML round-trip strips it).
-
-
 def _baseline_codes(graph) -> set[str]:
     return {issue["code"] for issue in graph.issues}
 
@@ -3550,7 +3546,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         "- false\n",
         encoding="utf-8",
     )
-    real_classify = runtime_contract_module.classify_bass_extension_graph
+    real_classify = runtime_contract.classify_bass_extension_graph
     switched = False
 
     def switch_selector_before_canonical_proof(*args, **kwargs):
@@ -3568,7 +3564,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         return real_classify(*args, **kwargs)
 
     monkeypatch.setattr(
-        runtime_contract_module,
+        runtime_contract,
         "classify_bass_extension_graph",
         switch_selector_before_canonical_proof,
     )

@@ -10,6 +10,8 @@ bound) and how much the branch puts above unity
 ahead of the split). One module because the CHARGE (``camilla_yaml``) and the PROOF
 (``runtime_contract``) must agree bit for bit. Everything models the DIGITAL filter the
 graph runs except :func:`radiating_band_hz`, a policy threshold.
+``camilla_yaml``/``active_verifier`` import this LAZILY (neither pulls numpy today,
+both load on a 1 GB Pi).
 """
 from __future__ import annotations
 
