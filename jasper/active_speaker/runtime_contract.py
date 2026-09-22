@@ -1334,6 +1334,8 @@ def _active_graph_allowed(
     rear_calibration: Mapping[str, Any] | None,
     excited_target_ids: Collection[str] = (),
 ) -> GraphSafety:
+    from .graph.active_verifier import _active_graph_evidence  # lazy: cycle with graph.active_verifier (the verifier reads this module's contract names)
+
     evidence = _active_graph_evidence(
         text, contract, summary, bass_profile_summary, rear_calibration,
         excited_target_ids=excited_target_ids,
@@ -2944,10 +2946,3 @@ def _materialise_parked_muted_config(
             f"validation ({validation.status.value}): {validation.error}"
         )
     atomic_write_text(target, text, mode=0o640)
-
-
-# Both modules define their names before importing across this cycle.
-from .graph.active_verifier import (
-    _active_graph_evidence,
-    _linearization_boost_allowance_db as _linearization_boost_allowance_db,
-)

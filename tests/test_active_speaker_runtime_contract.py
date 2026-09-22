@@ -18,7 +18,8 @@ import yaml
 
 from pathlib import Path
 
-import jasper.active_speaker.runtime_contract as runtime_contract_module
+from jasper.active_speaker import runtime_contract
+from jasper.active_speaker.graph.active_verifier import _linearization_boost_allowance_db as allowance
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerConfigError,
@@ -393,7 +394,6 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     _, topology, applied = _cardioid_baseline(linearization={"woofer": [
         {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 3.0}]})
     compare = rear_compare_yaml(applied, rear_muted=muted, trim_db=MAX_COMPARE_TRIM_DB)
-    allowance = runtime_contract_module._linearization_boost_allowance_db
     assert allowance(yaml.safe_load(compare)) - allowance(yaml.safe_load(applied)) == pytest.approx(MAX_COMPARE_TRIM_DB)
     cam = _controller(_FakeClient(), tmp_path)
     for text in (applied, compare):
@@ -402,7 +402,7 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     paths = [authority[key] for key in ("config", "statefile_path", "applied_baseline_path", "staged_metadata_path")]
     before = [path.read_bytes() for path in paths]
     proof = Mock(side_effect=AssertionError("live compare reached durable proof"))
-    monkeypatch.setattr(runtime_contract_module, "_classify_bass_extension_snapshot", proof)
+    monkeypatch.setattr(runtime_contract, "_classify_bass_extension_snapshot", proof)
     async def active():
         return camilla_default_filled(compare)
     graph = await classify_active_bass_extension_graph(
@@ -3546,7 +3546,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         "- false\n",
         encoding="utf-8",
     )
-    real_classify = runtime_contract_module.classify_bass_extension_graph
+    real_classify = runtime_contract.classify_bass_extension_graph
     switched = False
 
     def switch_selector_before_canonical_proof(*args, **kwargs):
@@ -3564,7 +3564,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         return real_classify(*args, **kwargs)
 
     monkeypatch.setattr(
-        runtime_contract_module,
+        runtime_contract,
         "classify_bass_extension_graph",
         switch_selector_before_canonical_proof,
     )

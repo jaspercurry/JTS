@@ -68,6 +68,22 @@ from ..graph_safety import (
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUB_CROSSOVER_ORDER, SUPPORTED_LR_ORDERS
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
+from ..runtime_contract import (
+    ACTIVE_BASELINE_SOURCE,
+    ACTIVE_DRIVER_DOMAIN_SOURCE,
+    ACTIVE_PROGRAM_SOURCE,
+    ACTIVE_SPLIT_MIXER_PREFIX,
+    EVENT_LINEARIZATION_HEADROOM_UNPROVEN,
+    LINEARIZATION_HEADROOM_UNPROVEN_CODE,
+    OutputAssignment,
+    OutputContract,
+    _BASELINE_LIKE_SOURCES,
+    _LINEARIZATION_BOOST_EPS_DB,
+    _mains_lowest_driver_indexes,
+    _mixer_output_proved,
+    _subwoofer_output_indexes,
+    logger,
+)
 
 
 def _pipeline_mixer_names(payload: dict[str, Any]) -> list[str]:
@@ -2150,22 +2166,3 @@ def _active_graph_evidence(
         "mains_bass_mgmt_outputs": sorted(mains_low_outputs),
         "split_channels": split_channels,
     }
-
-
-# Both modules define their names before importing across this cycle.
-from ..runtime_contract import (
-    ACTIVE_BASELINE_SOURCE,
-    ACTIVE_DRIVER_DOMAIN_SOURCE,
-    ACTIVE_PROGRAM_SOURCE,
-    ACTIVE_SPLIT_MIXER_PREFIX,
-    EVENT_LINEARIZATION_HEADROOM_UNPROVEN,
-    LINEARIZATION_HEADROOM_UNPROVEN_CODE,
-    OutputAssignment,
-    OutputContract,
-    _BASELINE_LIKE_SOURCES,
-    _LINEARIZATION_BOOST_EPS_DB,
-    _mains_lowest_driver_indexes,
-    _mixer_output_proved,
-    _subwoofer_output_indexes,
-    logger,
-)
