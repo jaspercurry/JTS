@@ -959,7 +959,7 @@ def test_append_repeat_capture_records_wav_and_json_under_repeat_captures(
 
     # A repeat capture is NOT added to info.json's captures/summed_captures
     # compact lists -- it's raw evidence only, indexed via the winning
-    # capture's aggregate_driver_repeats per_repeat[] array instead.
+    # capture's per_repeat[] array instead.
     reloaded = bundles._read_info(bundle_dir)
     assert reloaded["captures"] == []
     assert reloaded["summed_captures"] == []
@@ -1105,39 +1105,3 @@ def test_repeat_captures_count_toward_bundle_size_and_retention(
     summary = bundles.summarize_bundle(bundle_dir)
 
     assert summary["bundle_size_bytes"] >= 256
-
-
-def test_record_driver_repeat_aggregate_event_fields_match_bundle_promise(
-    caplog,
-) -> None:
-    """Cross-module pin: commissioning_capture.record_driver_repeat_aggregate
-    (the lane D step-2 emitter per SC-5) logs the exact field set the
-    bundle/SC-5 contract requires: session, group, role, accepted, rejected,
-    spread."""
-
-    from jasper.active_speaker.commissioning_capture import (
-        record_driver_repeat_aggregate,
-    )
-
-    repeats = [
-        {
-            "verdict": "present",
-            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
-        }
-        for level in (-30.0, -30.1, -29.9)
-    ]
-
-    with caplog.at_level(logging.INFO):
-        record_driver_repeat_aggregate(
-            speaker_group_id="mono",
-            role="tweeter",
-            repeats=repeats,
-            session_id="sess-9",
-        )
-
-    fields = event_fields(caplog, "correction.crossover_repeats_aggregated")
-    assert fields["session"] == "sess-9"
-    assert fields["group"] == "mono"
-    assert fields["role"] == "tweeter"
-    assert fields["accepted"] == "3"
-    assert fields["rejected"] == "0"

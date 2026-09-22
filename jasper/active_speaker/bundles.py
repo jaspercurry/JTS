@@ -783,7 +783,7 @@ def append_repeat_capture(
     """Copy one repeat-attempt WAV into ``repeat_captures/`` and record it.
 
     Unlike :func:`append_capture`, a repeat attempt gets no compact
-    ``info.json`` entry: ``aggregate_driver_repeats``'s ``per_repeat[]`` array,
+    ``info.json`` entry: the ``per_repeat[]`` array,
     attached to the WINNING capture's entry, is where each repeat's
     ``artifact_path`` is discoverable. This files only the raw evidence — the
     WAV plus its quality JSON, with a manifest dependency edge between them.
