@@ -6145,6 +6145,43 @@ def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_pat
     assert draft['manual_settings']['drivers'][0]['gain_offset_db'] == -3
 
 
+def test_setup_preserves_unambiguous_legacy_trim_when_other_bindings_are_ambiguous(tmp_path, monkeypatch):
+    from jasper.web import sound_speaker_setup as setup
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.design_draft import save_design_draft
+    from jasper.active_speaker.design_inputs import resolved_draft_inputs
+    from jasper.active_speaker.layout import build_speaker_layout
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _operator_inputs
+
+    topology = build_speaker_layout(mono_output_topology(), {
+        "layout": "mono", "crossover": "active", "channels": 3, "cardioid": True,
+    })
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(tmp_path / "draft.json"))
+    monkeypatch.setattr(setup, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: None)
+    monkeypatch.setattr(setup.commissioning_coordinator, "load_commissioning_view", lambda topology: {
+        "programs": programs_for_topology(topology), "applied_profile": {"stands": False},
+        "driver_values": {"complete": False}, "review": {"issues": []},
+    })
+    inputs = _operator_inputs()
+    save_design_draft(topology, operator_inputs=inputs, manual_settings={"drivers": [
+        {"role": "woofer", "gain_offset_db": -2}, {"role": "tweeter", "gain_offset_db": -20},
+    ]})
+    manual = setup.load_setup_view()["draft"]["manual_settings"]
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            target = channel.target_id(group.id)
+            if not any(row.get("target_id") == target for row in manual["drivers"]):
+                manual["drivers"].append({"target_id": target, "role": channel.role})
+    setup.save_details({"operator_inputs": inputs, "manual_settings": manual})
+    draft = load_design_draft(topology=topology)
+    drivers = resolved_draft_inputs(draft)["drivers"]
+    assert next(row for row in drivers if row["role"] == "tweeter")["gain_offset_db"] == -20
+    assert any(row.get("target_id") is None and row["role"] == "woofer" and row["gain_offset_db"] == -2
+               for row in draft["manual_settings"]["drivers"])
+
+
 @pytest.mark.parametrize('style', ['', 'compression_driver'])
 def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch, style):
     from jasper.web import sound_speaker_setup as setup

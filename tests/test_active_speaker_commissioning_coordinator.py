@@ -174,6 +174,8 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert sum(choice["default"] for choice in choices) == 1
     programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})
+    assert (handoff["status"] == "ready") is passive
+    assert bool(handoff["prompt"]) is passive
     page = sound_active_speaker._active_speaker_baseline_profile_payload()
     assert tuple(entry["id"] for entry in handoff["programs"]) == programs
     assert tuple(entry["id"] for entry in page["tuning_programs"]) == programs

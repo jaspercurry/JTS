@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQUIRED
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, PROGRAM_ENTRIES
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -19,9 +20,6 @@ from jasper.identity.reader import (
 HANDOFF_READY = "ready"
 HANDOFF_NOT_READY = "not_ready"
 
-#: Why the card holds the prompt back. No tuning flow is a prerequisite for
-#: USING the speaker, so the handoff appears only once the executor chain has
-#: produced a playing baseline — never earlier, and never as a gate on sound.
 NO_APPLIED_BASELINE = "no_applied_baseline"
 
 #: Installed console-script paths, not bare names: an SSH session gets no
@@ -136,7 +134,8 @@ def build_tuning_handoff(
     _program_entry(program_id)
     binding = build_tuning_handoff_binding(design_draft, commissioning_view)
     applied = commissioning_view.get("applied_profile")
-    ready = isinstance(applied, Mapping) and applied.get("stands") is True
+    ready = (commissioning_view.get("status") == VIEW_STATUS_NOT_REQUIRED
+             or isinstance(applied, Mapping) and applied.get("stands") is True)
     reason = None if ready else NO_APPLIED_BASELINE
     return {
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,

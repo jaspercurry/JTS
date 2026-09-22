@@ -76,9 +76,14 @@ def load_setup_view() -> SpeakerSetupView:
     draft = design_draft.load_design_draft(topology=topology)
     resolved = resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research"))
     manual = resolve_design_inputs(topology, draft.get("manual_settings"), None)
-    if "ambiguous" in manual["bindings"].values():
-        manual = dict(draft.get("manual_settings") or {})
-    manual.pop("bindings", None)
+    bindings = manual.pop("bindings")
+    ambiguous_roles = {driver["role"] for driver in manual["drivers"]
+                       if bindings[driver["target_id"]] == "ambiguous"}
+    manual["drivers"] = [driver for driver in manual["drivers"]
+                         if bindings[driver["target_id"]] != "ambiguous"] + [
+        driver for driver in (draft.get("manual_settings") or {}).get("drivers", [])
+        if not driver.get("target_id") and driver["role"] in ambiguous_roles
+    ]
     coordinator = commissioning_coordinator.load_commissioning_view(topology)
     preview = build_crossover_preview(draft)
     applied = coordinator["applied_profile"]
