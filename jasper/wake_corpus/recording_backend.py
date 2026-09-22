@@ -4,10 +4,6 @@
 
 """Recording engine for the wake-corpus recorder.
 
-``RecordingBackend`` + its capture task, the per-clip metadata shape, and
-the test-mode marker crash-recovery — all extracted verbatim from
-``jasper/web/wake_corpus_setup.py``.
-
 The backend drives a background asyncio loop (in a daemon thread) from
 sync HTTP handler threads via ``run_coroutine_threadsafe``. It is the
 upper layer of the recorder: it imports the bridge env / leg-plan /
@@ -137,7 +133,6 @@ STOP_RETRY_MAX_SEC = 1.0
 # ~16.6 s of wall clock before abandonment.
 STOP_RETRY_MAX_ATTEMPTS = 20
 STOP_SHUTDOWN_JOIN_SEC = 5.0
-_STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
 
 # How long after entering corpus test mode we treat the marker as
 # abandoned and self-heal jasper-voice back on. Kept well under the
@@ -268,10 +263,7 @@ class RecordingTask:
         self.current_rms_dbfs: float = -100.0
 
     async def start(self) -> None:
-        # lazy: import cost — jasper.mic_capture imports numpy at module
-        # scope, and jasper-web reaches this module through
-        # jasper.web.wake_corpus_setup.
-        from jasper.mic_capture import UdpMicCapture
+        from jasper.mic_capture import UdpMicCapture  # lazy: test seam — tests/wake_corpus_setup_fixtures.py patches jasper.mic_capture.UdpMicCapture at call time
 
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
@@ -389,6 +381,14 @@ MIC_MUTED_MESSAGE = (
     "while the household mic mute is on. Unmute from the /system/ "
     "dashboard, then retry."
 )
+
+
+class LifecycleBusyError(StateError):
+    pass
+
+
+class NoRecordingError(StateError):
+    pass
 
 
 class MicMutedError(StateError):
@@ -618,7 +618,7 @@ class RecordingBackend:
         """
         acquired = self._lifecycle_lock.acquire(blocking=False)
         if not acquired:
-            raise StateError(busy_message)
+            raise LifecycleBusyError(busy_message)
         try:
             yield
         finally:
@@ -1316,12 +1316,6 @@ class RecordingBackend:
                     generation,
                 )
 
-    def _mute_stop_safe(self, generation: _StopGeneration) -> None:
-        # auto=False: a privacy stop must stay distinguishable from the
-        # duration cap even if both timers race. The recovery path makes mute
-        # win while retaining exactly one pending retry.
-        self._safety_stop(generation, auto=False, mute_stopped=True)
-
     def _auto_stop_threadsafe(self, generation: _StopGeneration) -> None:
         """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
         elapses. Triggers stop_recording on a worker thread so the
@@ -1329,9 +1323,6 @@ class RecordingBackend:
         self._spawn_safety_worker(
             generation, auto=True, mute_stopped=False,
         )
-
-    def _auto_stop_safe(self, generation: _StopGeneration) -> None:
-        self._safety_stop(generation, auto=True, mute_stopped=False)
 
     def _spawn_safety_worker(
         self,
@@ -1571,12 +1562,11 @@ class RecordingBackend:
                 mute_stopped=mute_stopped,
                 _expected_generation=generation,
             )
+        except LifecycleBusyError:
+            return False
+        except NoRecordingError:
+            pass
         except StateError as e:
-            if str(e) == _STOP_LIFECYCLE_BUSY:
-                return False
-            if str(e) == "no recording in progress":
-                self._clear_pending_stop(generation)
-                return True
             logger.warning("deferred recording stop refused: %s", e)
         except Exception as e:  # noqa: BLE001
             logger.warning("deferred recording stop failed: %s", e)
@@ -1592,7 +1582,7 @@ class RecordingBackend:
     ) -> ClipMetadata:
         """Stop the current recording, save WAVs, return metadata."""
         with self._lifecycle_transaction(
-            _STOP_LIFECYCLE_BUSY,
+            "can't stop recording: lifecycle transition in progress",
         ):
             with self._lock:
                 clip_id = self._current_clip_id
@@ -1601,7 +1591,7 @@ class RecordingBackend:
                     _expected_generation is not None
                     and (clip_id, task) != _expected_generation
                 ):
-                    raise StateError("no recording in progress")
+                    raise NoRecordingError("no recording in progress")
             try:
                 clip = self._stop_recording(
                     auto=auto,
@@ -1621,7 +1611,7 @@ class RecordingBackend:
     ) -> ClipMetadata:
         with self._lock:
             if self._current is None:
-                raise StateError("no recording in progress")
+                raise NoRecordingError("no recording in progress")
             task = self._current
             clip_id = self._current_clip_id
             generation = (clip_id, task)
