@@ -43,6 +43,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import ring_conf
 from jasper import ring_assets
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.grouping_ring import (
@@ -130,7 +131,7 @@ def _strip_conf_comments(text: str) -> str:
     [
         (
             _REPO / "deploy/alsa/conf.d/60-jts-ring.conf",
-            ring_assets.RING_CONF_PCMS,
+            ring_conf.RING_CONF_PCMS,
             1,
         ),
         (_GROUPING_CONF, (GROUPING_RING_PCM,), 1),
@@ -239,20 +240,18 @@ def _confd_field(key: str) -> str:
 
     Deliberately reads the SHIPPED file with the ring platform's own block
     parser rather than a private regex, so "how a jts_ring block is read" keeps
-    one owner (:mod:`jasper.ring_assets`, which the conf.d renderer and every
+    one owner (:mod:`jasper.ring_conf`, which the conf.d renderer and every
     doctor check already share).
     """
-    from jasper import ring_assets
-
     readers = {
-        "period_frames": lambda: ring_assets.ring_conf_period_frames(str(_GROUPING_CONF)),
-        "n_slots": lambda: ring_assets.ring_conf_n_slots(
+        "period_frames": lambda: ring_conf.ring_conf_period_frames(str(_GROUPING_CONF)),
+        "n_slots": lambda: ring_conf.ring_conf_n_slots(
             GROUPING_RING_PCM, str(_GROUPING_CONF)
         ),
-        "channels": lambda: ring_assets.ring_conf_channels(
+        "channels": lambda: ring_conf.ring_conf_channels(
             GROUPING_RING_PCM, str(_GROUPING_CONF)
         ),
-        "format": lambda: ring_assets.ring_conf_format(
+        "format": lambda: ring_conf.ring_conf_format(
             GROUPING_RING_PCM, str(_GROUPING_CONF)
         ),
     }

@@ -984,12 +984,12 @@ def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
     — the probe reads a LITERAL in the file, not the ioplug's absent-key
     default. The shipped file changed to spell the token because the
     resolver's default went wide while the C ioplug's compiled-in default
-    (mirrored by ``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT``) stayed
+    (mirrored by ``jasper.ring_conf.RING_CONF_DEFAULT_FORMAT``) stayed
     S16_LE: an omitted ``format`` key would now declare the OPPOSITE of what
     every other end of the ring resolves. That same disagreement is what makes
     the ioplug capability gate LIVE fleet-wide now (``ring_wire_caps_ready`` /
     ``ring_ioplug_wire_supported``) rather than dormant — see
-    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`'s own docstring.
+    :data:`~jasper.ring_conf.RING_CONF_DEFAULT_FORMAT`'s own docstring.
 
     THE CHANNELS AXIS IS UNCHANGED: no block declares ``channels``, so it
     still answers via the ioplug's absent-key default (2), not a literal and

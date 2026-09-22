@@ -31,6 +31,7 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
+from jasper import ring_conf
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
@@ -794,8 +795,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     # The heal reads the conf.d's declared wire before it writes the slot count;
     # point it at the SHIPPED file rather than the dev host's /etc.
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    # conf.d Ring-A n_slots = 4 (the pinned default); the on-disk `=8` disagrees.
-    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
+    monkeypatch.setattr(ring_conf, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
@@ -825,7 +825,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
+    monkeypatch.setattr(ring_conf, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)

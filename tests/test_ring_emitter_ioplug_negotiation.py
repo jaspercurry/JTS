@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jasper import ring_assets
+from jasper import ring_conf
 from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
@@ -102,8 +102,8 @@ def _rust_ring_slot_frames() -> int:
 
 
 def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
-    period_frames = ring_assets.ring_conf_period_frames(str(CONF_D))
-    n_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(CONF_D))
+    period_frames = ring_conf.ring_conf_period_frames(str(CONF_D))
+    n_slots = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, str(CONF_D))
 
     assert period_frames == _ioplug_default_period_frames() == RING_SLOT_FRAMES
     assert _rust_ring_slot_frames() == RING_SLOT_FRAMES
@@ -164,7 +164,7 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     assert wide.buffer_bytes == 2 * narrow.buffer_bytes
 
     # narrow is ioplug_constraints()'s fixed compiled-in baseline (mirrors
-    # jasper.ring_assets.RING_CONF_DEFAULT_FORMAT), NOT what an undeclared box's
+    # jasper.ring_conf.RING_CONF_DEFAULT_FORMAT), NOT what an undeclared box's
     # resolve_ring_wire() answers any more — that resolver defaults WIDE since
     # PR #2601 (test_fanin_coupling.py pins the resolver side of this). Every
     # caller here that passes neither axis still gets the S16_LE/2ch geometry
@@ -227,8 +227,8 @@ def test_ring_coupled_camilla_emitter_matches_shipped_ring_geometry():
     target_level = devices["target_level"]
     queuelimit = devices["queuelimit"]
     enable_rate_adjust = devices["enable_rate_adjust"]
-    period_frames = ring_assets.ring_conf_period_frames(str(CONF_D))
-    n_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(CONF_D))
+    period_frames = ring_conf.ring_conf_period_frames(str(CONF_D))
+    n_slots = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, str(CONF_D))
 
     assert chunksize == RING_CAMILLA_CHUNKSIZE == 128
     assert target_level == RING_CAMILLA_TARGET_LEVEL == 128

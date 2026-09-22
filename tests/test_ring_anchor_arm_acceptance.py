@@ -839,12 +839,7 @@ def test_a_legal_wire_mismatch_produces_the_OTHER_sentence(tmp_path, monkeypatch
 
 
 def test_a_malformed_staged_record_is_refused_not_raised(tmp_path, monkeypatch):
-    """A record whose ``config`` is a truthy NON-mapping. The idiom the web
-    reader uses (``(staged.get("config") or {}).get("path")``) raises
-    AttributeError on exactly this shape — and an exception escaping here would
-    unwind the ordered arm past the snapshot restore that makes a refused arm
-    non-destructive. It must be a refusal, like every other missing proof.
-    """
+    """A truthy non-mapping config must produce a refusal, not an exception."""
     _stage_box(
         tmp_path,
         monkeypatch,

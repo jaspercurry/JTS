@@ -990,7 +990,7 @@ def _ring_conf(
     (``resolve_ring_wire_format``, wide by default) would disagree with this
     hand-rolled conf.d's implicit ioplug-default declaration — an omitted
     ``format`` key still declares a wire, just the narrow one
-    (``jasper.ring_assets.ring_conf_format``'s absent-means-default contract) —
+    (``jasper.ring_conf.ring_conf_format``'s absent-means-default contract) —
     tripping ``ring_edge_width_ready`` for a reason unrelated to whatever axis
     (slots/period) the calling test actually isolates. Pass ``"S16_LE"`` for a
     test that means to reproduce an operator's narrow-pinned box instead.

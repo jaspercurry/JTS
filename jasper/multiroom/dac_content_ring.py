@@ -30,8 +30,8 @@ once, so one ring cannot be both.
 :mod:`jasper.multiroom.grouping_ring` states at length:
 :data:`jasper.fanin_coupling.RING_PCM_DEVICES` decides a graph is a ring graph
 and hands it the coupling's chunk/target/queuelimit profile, and
-:data:`jasper.ring_assets.RING_CONF_PCMS` is what
-``jasper.ring_assets.render_ring_conf_wire`` walks. This ring is neither the
+:data:`jasper.ring_conf.RING_CONF_PCMS` is what
+``jasper.ring_conf.render_ring_conf_wire`` walks. This ring is neither the
 coupling's wire nor a renderer lane, so it carries its own conf.d file and
 joins neither registry.
 """

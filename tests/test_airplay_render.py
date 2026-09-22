@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from jasper import ring_conf
 from jasper.audio_runtime_settings import DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
 from tests.status_socket_fixtures import JsonStatusSocket
+from tests.test_ring_conf import SHIPPED_RING_CONF
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -125,7 +127,7 @@ def _render(
         ["bash", str(SCRIPT)],
         env=env,
         # cwd=REPO (not pytest's own cwd): the script's ring-conf-parsed
-        # tier shells into `python -` and imports jasper.ring_assets, which
+        # tier shells into `python -` and imports jasper.ring_conf, which
         # resolves via the interpreter's own site-packages in production
         # (the runtime venv) but via the empty-string sys.path[0]-as-cwd
         # rule for the bare-python3 fallback this test environment uses —
@@ -585,12 +587,12 @@ devices:
 def test_airplay_ring_conf_geometry_propagates(tmp_path: Path):
     """A ring retune (different period_frames/n_slots in the shipped ALSA
     ring conf) must change the derived offset — the geometry is parsed via
-    jasper.ring_assets at render time, never hardcoded blind, so a future
+    jasper.ring_conf at render time, never hardcoded blind, so a future
     retune needs no code change here. No live STATUS on either socket, so
     both terms fall through to this parsed tier.
 
     period_frames is CONSISTENT across both blocks (256): the real conf.d
-    shares one period value fleet-wide (jasper.ring_assets.
+    shares one period value fleet-wide (jasper.ring_conf.
     ring_conf_period_frames scans every block for a single shared value),
     so a fixture with two different period_frames would be a torn conf.d
     the parser correctly refuses, not a valid retune — that shape is
@@ -636,7 +638,7 @@ def test_airplay_ring_conf_geometry_propagates(tmp_path: Path):
 def test_airplay_renderer_torn_ring_conf_falls_back_to_default(tmp_path: Path):
     """A conf.d whose blocks disagree on period_frames (a torn file — a
     half-applied retune, or hand edit) must never be silently picked from;
-    jasper.ring_assets.ring_conf_period_frames reports indeterminate for
+    jasper.ring_conf.ring_conf_period_frames reports indeterminate for
     it, so both Ring A and Ring B fall all the way through to their
     DEFAULT_RING_A/B_LATENCY_FRAMES tier — the same total as no conf.d at
     all, never a guess built from mismatched blocks.
@@ -724,20 +726,18 @@ def test_airplay_renderer_prefers_live_ring_b_occupancy(tmp_path: Path):
     assert "audio_backend_latency_offset_in_seconds = -0.121500;" in rendered
 
 
-def test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets():
+def test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_conf():
     """DEFAULT_RING_A_LATENCY_FRAMES / DEFAULT_RING_B_LATENCY_FRAMES (the
     script's own last-tier constants, 512 / 128) must equal what
-    jasper.ring_assets — the production authority — actually parses from
+    jasper.ring_conf — the production authority — actually parses from
     the real shipped deploy/alsa/conf.d/60-jts-ring.conf TODAY, so a ring
     retune that moves the shipped file and forgets these two bash
     constants is caught here rather than silently drifting.
     """
-    from jasper import ring_assets
-    from tests.test_ring_assets import SHIPPED_RING_CONF
 
     conf = str(SHIPPED_RING_CONF)
-    period = ring_assets.ring_conf_period_frames(conf)
-    ring_a_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, conf)
+    period = ring_conf.ring_conf_period_frames(conf)
+    ring_a_slots = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, conf)
 
     assert period is not None and ring_a_slots is not None
     assert period * ring_a_slots == 512  # DEFAULT_RING_A_LATENCY_FRAMES

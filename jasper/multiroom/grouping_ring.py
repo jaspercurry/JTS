@@ -28,8 +28,8 @@ production and test modules that want nothing else from it — for example,
 :data:`jasper.fanin_coupling.RING_PCM_DEVICES` is what
 ``jasper.active_speaker.camilla_yaml.active_emit_devices`` tests to decide a
 graph is a ring graph and to hand it the ring chunk/target/queuelimit profile;
-:data:`jasper.ring_assets.RING_CONF_PCMS` is what
-``jasper.ring_assets.render_ring_conf_wire`` walks, and it raises for any member
+:data:`jasper.ring_conf.RING_CONF_PCMS` is what
+``jasper.ring_conf.render_ring_conf_wire`` walks, and it raises for any member
 without a ``per_block`` width entry. The grouping ring is neither the coupling's
 wire nor a renderer lane — it is a third axis with its own conf.d file, exactly
 as the renderer lanes got theirs. Adding it to either registry would route it

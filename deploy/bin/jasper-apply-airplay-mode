@@ -18,7 +18,7 @@
 #     written by jasper-grouping-reconcile). Absent on solo/follower
 #     => unchanged. The formula is restated once, beside the placeholder
 #     in deploy/shairport-sync.conf.template. Full derivation: ADR-0205.
-#     Ring A/B each prefer live daemon STATUS, then a jasper.ring_assets
+#     Ring A/B each prefer live daemon STATUS, then a jasper.ring_conf
 #     parse of the shipped ALSA ring conf, then a hardcoded default — see
 #     ring_a_latency_frames / ring_b_latency_frames below.
 #   - output_device: shairport_substream, AirPlay's private snd-aloop
@@ -40,7 +40,7 @@
 #                                 (deploy/alsa/conf.d/60-jts-ring.conf,
 #                                 installed verbatim), consulted only as
 #                                 Ring A/B's PARSED fallback tier (via
-#                                 jasper.ring_assets) when neither daemon's
+#                                 jasper.ring_conf) when neither daemon's
 #                                 live STATUS is available. Not read
 #                                 directly by this script — see
 #                                 ring_conf_parsed_frames.
@@ -59,7 +59,7 @@
 #                                 offset is byte-identical to before.
 #                                 Default: /var/lib/jasper/grouping-airplay.env.
 #   JASPER_STATUS_PYTHON        — interpreter used for both the daemon
-#                                 STATUS reads and the jasper.ring_assets
+#                                 STATUS reads and the jasper.ring_conf
 #                                 parse; process environment only, no env
 #                                 file names it. Default:
 #                                 /opt/jasper/.venv/bin/python if present,
@@ -77,7 +77,7 @@ JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
-# Ring A/B's PARSED fallback source (jasper.ring_assets), consulted only
+# Ring A/B's PARSED fallback source (jasper.ring_conf), consulted only
 # when neither daemon's live STATUS answers — see ring_conf_parsed_frames.
 RING_ALSA_CONF="${JASPER_RING_ALSA_CONF:-/etc/alsa/conf.d/60-jts-ring.conf}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
@@ -94,7 +94,7 @@ OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/contr
 # jasper.audio_runtime_settings' copy so a retune cannot desync lip-sync silently.
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # Ring A/B slot-geometry LAST-TIER fallback, reached only when both live
-# STATUS and the jasper.ring_assets parse (see ring_conf_parsed_frames) are
+# STATUS and the jasper.ring_conf parse (see ring_conf_parsed_frames) are
 # unavailable. Matches the shipped 60-jts-ring.conf: period_frames 128,
 # n_slots 4. Ring A counts the full 4-slot capacity — it runs pinned full
 # in steady state (STATUS full_waits/published ratio ~1.0,
@@ -102,8 +102,8 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # ring_slots) — while
 # Ring B counts only the one-slot floor: there is no equivalent pinned-full
 # evidence for it, so only the proven minimum is charged.
-# test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets pins
-# these equal to a fresh jasper.ring_assets parse of the real shipped file,
+# test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_conf pins
+# these equal to a fresh jasper.ring_conf parse of the real shipped file,
 # so a retune that moves the conf and forgets these constants fails loud.
 DEFAULT_RING_A_LATENCY_FRAMES=512
 DEFAULT_RING_B_LATENCY_FRAMES=128
@@ -189,7 +189,7 @@ camilla_config_path() {
 # is the one python-free reader on the HARD-REQUIRED path: missing
 # samplerate/chunksize fails the whole offset computation (falls to
 # 0.0), with no further tier to fall through to. The STATUS and
-# ring_assets tiers below are different in kind, not just in being
+# ring_conf tiers below are different in kind, not just in being
 # python-free — they were already python-OPTIONAL, each with its own
 # next tier to degrade to. Converging this one onto a python parser
 # would gate AirPlay startup on venv health for the first time.
@@ -256,7 +256,7 @@ nonnegative_int_or_empty() {
 }
 
 # The interpreter shared by every daemon-STATUS read and the
-# jasper.ring_assets parse below. Prefer the runtime venv (so `import
+# jasper.ring_conf parse below. Prefer the runtime venv (so `import
 # jasper.*` resolves without a PYTHONPATH), then bare python3 on PATH.
 # Empty output (nothing on stdout) means "no usable interpreter" — every
 # caller treats that as its tier failing, never as a hard error.
@@ -337,7 +337,7 @@ PY
 }
 
 # Ring A/B geometry parsed straight from the shipped ALSA ring conf via
-# jasper.ring_assets — the production authority for this file's schema
+# jasper.ring_conf — the production authority for this file's schema
 # (brace-MATCHED block bodies, torn-conf detection across the file's
 # shared period_frames). Never a bash/awk re-parse of that schema: a
 # from-scratch line scanner cannot see a nested `hint { ... }` block, an
@@ -361,7 +361,7 @@ ring_conf_parsed_frames() {
 import sys
 
 try:
-    from jasper.ring_assets import ring_conf_n_slots, ring_conf_period_frames
+    from jasper.ring_conf import ring_conf_n_slots, ring_conf_period_frames
 except ImportError:
     sys.exit(0)
 
@@ -406,7 +406,7 @@ outputd_dac_buffer_frames() {
 #     depth in SLOTS, refreshed every render period) times
 #     RING_A_SLOT_FRAMES. See ADR-0266: fan-in has no playback PCM to sample
 #     since ADR-0100, so the ring is the only live Ring A evidence.
-#   tier=parsed — jasper.ring_assets's period_frames x n_slots for
+#   tier=parsed — jasper.ring_conf's period_frames x n_slots for
 #     pcm.jts_ring_capture, reached only when fanin's STATUS is entirely
 #     unavailable (daemon down, no socket).
 #   tier=default — DEFAULT_RING_A_LATENCY_FRAMES, reached only when the
@@ -441,7 +441,7 @@ ring_a_latency_frames() {
 #     write_seq-read_seq depth, refreshed every DAC period) times
 #     shm_ring.slot_frames. Absent whenever shm_ring itself is unconfigured
 #     (non-ring topology) or outputd predates the field.
-#   tier=parsed — jasper.ring_assets's period_frames for pcm.jts_ring_playback
+#   tier=parsed — jasper.ring_conf's period_frames for pcm.jts_ring_playback
 #     (one slot's worth, NOT x n_slots — unlike Ring A there is no
 #     pinned-full evidence for Ring B, so only the proven one-slot floor is
 #     charged; see DEFAULT_RING_B_LATENCY_FRAMES's comment above).

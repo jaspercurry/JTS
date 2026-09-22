@@ -32,7 +32,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from jasper import fanin_coupling, ring_assets
+from jasper import fanin_coupling, ring_assets, ring_conf
 from jasper.camilla_config_contract import (
     devices_playback_is_pipe,
     parse_camilla_devices_config,
@@ -388,11 +388,11 @@ def ring_wire_declarations(
             channels=RING_A_CHANNELS,
         ),
         RingWireDeclaration(
-            end=f"conf.d {ring_assets.RING_A_CONF_PCM}",
+            end=f"conf.d {ring_conf.RING_A_CONF_PCM}",
             source=ring_assets.RING_CONF_D,
             ring=RING_A,
-            sample_format=ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM) if conf_present else None,
-            channels=ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM) if conf_present else None,
+            sample_format=ring_conf.ring_conf_format(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D) if conf_present else None,
+            channels=ring_conf.ring_conf_channels(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D) if conf_present else None,
             note=conf_absent_note,
             # An ABSENT conf.d states nothing on either axis and the asset
             # gate owns that refusal; a PRESENT one that cannot be parsed is a
@@ -400,11 +400,11 @@ def ring_wire_declarations(
             channels_excused=not conf_present,
         ),
         RingWireDeclaration(
-            end=f"conf.d {ring_assets.RING_B_CONF_PCM}",
+            end=f"conf.d {ring_conf.RING_B_CONF_PCM}",
             source=ring_assets.RING_CONF_D,
             ring=RING_B,
-            sample_format=ring_assets.ring_conf_format(ring_assets.RING_B_CONF_PCM) if conf_present else None,
-            channels=ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM) if conf_present else None,
+            sample_format=ring_conf.ring_conf_format(ring_conf.RING_B_CONF_PCM, ring_assets.RING_CONF_D) if conf_present else None,
+            channels=ring_conf.ring_conf_channels(ring_conf.RING_B_CONF_PCM, ring_assets.RING_CONF_D) if conf_present else None,
             note=conf_absent_note,
             channels_excused=not conf_present,
         ),
@@ -709,24 +709,24 @@ def active_ring_endpoint_proof() -> tuple[bool, str]:
             "the saved topology resolves no active-ring width, so there is no "
             "width the conf.d block could be proved against"
         )
-    declared = ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM)
+    declared = ring_conf.ring_conf_channels(ring_conf.RING_ACTIVE_CONF_PCM, ring_assets.RING_CONF_D)
     if declared is None:
         return False, (
             f"the ring conf.d declares no readable channels for "
-            f"pcm.{ring_assets.RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
+            f"pcm.{ring_conf.RING_ACTIVE_CONF_PCM} (absent, torn, or unreadable) — redeploy "
             "to reinstall it, then re-run jasper-audio-hardware-reconcile to "
             "render the per-box wire"
         )
     if declared != width:
         return False, (
-            f"pcm.{ring_assets.RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
+            f"pcm.{ring_conf.RING_ACTIVE_CONF_PCM} declares channels={declared} but this "
             f"box's active ring resolves to {width} — the ioplug attaches with "
             "what the block says, so this would fail the attach. Run `sudo "
             "systemctl start jasper-audio-hardware-reconcile` to render the "
             "conf.d wire, then re-arm"
         )
     return True, (
-        f"active-ring endpoint staged (marker set, pcm.{ring_assets.RING_ACTIVE_CONF_PCM} "
+        f"active-ring endpoint staged (marker set, pcm.{ring_conf.RING_ACTIVE_CONF_PCM} "
         f"declares channels={declared})"
     )
 
