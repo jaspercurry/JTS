@@ -37,9 +37,6 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import REASON_HOSTNAME_UNREADABLE, CheckResult, _run
 
-# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
-# pin status + reason, never `detail` prose). Named by the fact a consumer
-# would branch on; two branches meaning the same thing share one code.
 REASON_REGDOM_PROBE_FAILED = "regdom_probe_failed"
 REASON_REGDOM_UNPARSEABLE = "regdom_unparseable"
 REASON_REGDOM_UNSET = "regdom_unset"

@@ -27,7 +27,7 @@ use crate::mixer::{send_drop_counted, FaninLogEvent, CHANNELS};
 use crate::playout::{frames_to_ms, PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
-    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, HeldLoudnessReference,
+    AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, GainRamp, HeldLoudnessReference,
     ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
 use jasper_tts_protocol::{
@@ -55,7 +55,6 @@ const STARVED_LOG_MIN_MS: u64 = 10;
 /// Hardware observations put short gaps at 16–138 ms and longer gaps from
 /// 502 ms. Keep both durations observable when assessing this threshold.
 const STARVED_DROPOUT_MAX_MS: u64 = 250;
-const LIVE_VOLUME_RAMP_FRAMES: u32 = TTS_SAMPLE_RATE / 10;
 const PACKED_DB_NONE: i64 = i64::MIN;
 
 #[derive(Debug)]
@@ -1333,58 +1332,6 @@ struct AssistantSegmentPlayback {
     context: VolumeContext,
 }
 
-#[derive(Default)]
-struct GainRamp {
-    initialized: bool,
-    current_linear: f32,
-    target_linear: f32,
-    step_linear: f32,
-    remaining_frames: u32,
-    target_db: f32,
-}
-
-impl GainRamp {
-    fn force_silent(&mut self) {
-        self.initialized = true;
-        self.current_linear = 0.0;
-        self.target_linear = 0.0;
-        self.step_linear = 0.0;
-        self.remaining_frames = 0;
-        // Force the next non-muted target through `retarget`, even when the
-        // target itself is the -60 dB floor, so unmute always ramps from zero.
-        self.target_db = f32::NAN;
-    }
-
-    fn retarget(&mut self, target_db: f32) {
-        if self.initialized && (target_db - self.target_db).abs() < 0.01 {
-            return;
-        }
-        let target_linear = gain_db_to_linear(target_db);
-        if !self.initialized {
-            self.initialized = true;
-            self.current_linear = target_linear;
-            self.target_linear = target_linear;
-            self.target_db = target_db;
-            return;
-        }
-        self.target_linear = target_linear;
-        self.target_db = target_db;
-        self.remaining_frames = LIVE_VOLUME_RAMP_FRAMES;
-        self.step_linear = (target_linear - self.current_linear) / (LIVE_VOLUME_RAMP_FRAMES as f32);
-    }
-
-    fn next_frame(&mut self) -> f32 {
-        if self.remaining_frames > 0 {
-            self.current_linear += self.step_linear;
-            self.remaining_frames -= 1;
-            if self.remaining_frames == 0 {
-                self.current_linear = self.target_linear;
-            }
-        }
-        self.current_linear
-    }
-}
-
 pub fn spawn_tts_server(
     path: PathBuf,
     tx: SyncSender<QueuedTtsCommand>,
@@ -2476,24 +2423,6 @@ mod tests {
         .unwrap();
         mixer.prepare_period();
         assert!(reference_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn unmute_ramps_from_silence_even_at_the_gain_floor() {
-        let mut ramp = GainRamp::default();
-        ramp.retarget(0.0);
-        assert_eq!(ramp.next_frame(), 1.0);
-
-        ramp.force_silent();
-        ramp.retarget(MIN_TTS_GAIN_DB);
-        let first = ramp.next_frame();
-
-        assert!(first > 0.0);
-        assert!(first < gain_db_to_linear(MIN_TTS_GAIN_DB));
-        for _ in 1..LIVE_VOLUME_RAMP_FRAMES {
-            ramp.next_frame();
-        }
-        assert_eq!(ramp.current_linear, gain_db_to_linear(MIN_TTS_GAIN_DB));
     }
 
     #[test]

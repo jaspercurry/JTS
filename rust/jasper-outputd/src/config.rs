@@ -67,7 +67,7 @@ pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
 /// this path.
 pub const DEFAULT_ACTIVE_SHM_RING_PATH: &str = "/dev/shm/jts-ring/active-content.ring";
 
-/// The DAC-content RETURN ring — a grouping leader's round-trip ingress, read
+/// The DAC-content return ring — an armed bonded member's ingress, read
 /// by `dac_content::DacContentSource`'s ring arm.
 ///
 /// Deliberately not a third `*_SHM_RING_PATH` env: this path is never operator
@@ -200,18 +200,14 @@ pub struct Config {
     pub chip_ref_tee_path: Option<String>,
     pub reference_udp_target: Option<String>,
     pub control_socket_path: Option<String>,
-    /// The OPTIONAL multi-room round-trip lane: `Some` iff
-    /// `JASPER_OUTPUTD_DAC_CONTENT_LANE` marks this box a leader whose
-    /// snapclient writes [`DEFAULT_DAC_CONTENT_RING_PATH`] through the C
-    /// ioplug. The path is the constant, never operator input. `None` is the
-    /// solo default.
+    /// Bonded-member return ring, armed by `jasper-grouping-reconcile`
+    /// through `JASPER_OUTPUTD_DAC_CONTENT_LANE` (ADR-0220).
+    /// The path is [`DEFAULT_DAC_CONTENT_RING_PATH`], never operator input.
     ///
     /// An armed marker SELECTS the content source: it resolves
     /// [`ContentBridgeMode::DacContentRing`], so [`Self::shm_ring`] is `None`
     /// and this is the only ring outputd attaches. Declaring
     /// `JASPER_OUTPUTD_CONTENT_BRIDGE` beside it is refused for that reason.
-    ///
-    /// No in-tree writer arms this key: an armed lane is an operator action.
     pub dac_content_ring: Option<String>,
     /// Which channel of the shared stereo program this speaker plays
     /// from the round-trip lane (channel-split vocabulary; default
@@ -220,8 +216,7 @@ pub struct Config {
     /// Per-member level trim on the round-trip lane (dB, ALWAYS <= 0 —
     /// pair balancing attenuates the LOUDER speaker, never boosts;
     /// positive values fail closed like the duck knob). Applied to the
-    /// whole dac_content-armed content path including inv-B fallback
-    /// periods, so a starvation transition never jumps in level.
+    /// whole dac_content-armed content path; starvation emits silence.
     /// Reconciler-derived from JASPER_GROUPING_TRIM_DB; 0.0 = no trim.
     pub dac_content_trim_db: f32,
     /// OPTIONAL bonded-member TTS socket: when set, outputd listens for the

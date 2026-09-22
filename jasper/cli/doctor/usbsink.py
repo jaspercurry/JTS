@@ -71,10 +71,6 @@ from ._shared import (
     _run,
 )
 
-# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
-# pin status + reason, never `detail` prose). Named by the fact a consumer
-# would branch on; two branches meaning the same thing to a consumer share
-# one code (e.g. every "disabled but still advertised" mismatch below).
 REASON_DATA_ROLE_UNAVAILABLE = "data_role_unavailable"
 REASON_DATA_ROLE_REBOOT_REQUIRED = "data_role_reboot_required"
 REASON_DATA_ROLE_HOST_ONLY = "data_role_host_only"

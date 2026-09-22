@@ -45,13 +45,6 @@ from ...active_speaker.session_volume_plan import (
 from ...control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
 from ...platform.systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 
-# Closed vocabulary for this module's `CheckResult.reason`: one snake_case
-# constant per distinct outcome branch below. Every `warn`/`fail` carries one;
-# an `ok` carries one only where the ok itself is a fact a consumer branches on
-# (not-applicable, skipped, an informational sub-state). `detail` stays the
-# human sentence and is free to reword; tests pin `status` and `reason`
-# (ADR-0233 rule 3).
-
 REASON_WEB_SOCKET_INACTIVE = "correction_web_socket_inactive"
 REASON_WEB_INACTIVE = "correction_web_inactive"
 
