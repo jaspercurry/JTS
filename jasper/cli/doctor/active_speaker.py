@@ -22,13 +22,6 @@ from .correction import (
     _active_camilla_config_path,
 )
 
-# Closed vocabulary for this module's `CheckResult.reason`: one snake_case
-# constant per distinct outcome branch below. Every `warn`/`fail` carries one;
-# an `ok` carries one only where the ok itself is a fact a consumer branches on
-# (not-applicable, skipped, an informational sub-state). `detail` stays the
-# human sentence and is free to reword; tests pin `status` and `reason`
-# (ADR-0233 rule 3).
-
 REASON_GRAPH_PASSIVE_LAYOUT = "runtime_graph_passive_layout"
 REASON_GRAPH_PARKED_SILENT = "runtime_graph_parked_silent"
 REASON_GRAPH_LAYOUT_INCOMPLETE = "runtime_graph_layout_incomplete"

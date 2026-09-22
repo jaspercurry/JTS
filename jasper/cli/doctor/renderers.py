@@ -35,12 +35,6 @@ from ._shared import (
     _systemctl_unavailable_result,
 )
 
-# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
-# pin status + reason, never `detail` prose). Named by the fact a consumer
-# would branch on; two branches meaning the same thing share one code —
-# REASON_SOURCE_OFF is set from ONE shared helper and covers every renderer
-# check that calls it, and REASON_SPOTIFY_NOT_CONFIGURED covers both Spotify
-# checks below. The bonded-follower park code lives in `_shared.py`.
 REASON_SOURCE_OFF = "source_off"
 REASON_SOURCE_OFF_DRIFT = "source_off_drift"
 REASON_BLUETOOTH_RADIO_UNVERIFIABLE = "bluetooth_radio_unverifiable"

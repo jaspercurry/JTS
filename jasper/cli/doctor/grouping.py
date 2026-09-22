@@ -23,12 +23,6 @@ from ._shared import (
 )
 from ...service_units import JASPER_VOICE_SERVICE
 
-# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
-# pin status + reason, never `detail` prose). Named by the fact a consumer
-# would branch on; two branches meaning the same thing share one code —
-# REASON_GROUPING_OFF covers every "grouping is off, nothing to check" ok
-# across this module's checks, and REASON_NOT_APPLICABLE covers every
-# "this box's role/topology doesn't reach this check" ok.
 REASON_GROUPING_OFF = "grouping_off"
 REASON_NOT_APPLICABLE = "not_applicable"
 

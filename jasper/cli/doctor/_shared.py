@@ -414,11 +414,8 @@ _RUNTIME_STATE_UNITS = (
     "jasper-source-intent-reconcile.service",
 )
 
-# Type=oneshot members of the tracked set: `activating` is their NORMAL
-# in-flight state, not the stuck-start instability it signals on the
-# long-running daemons above, so only a `failed` end-state flags them. A
-# wedged oneshot is still caught — its TimeoutStartSec (120 s on
-# jasper-fanin-coupling-auto) moves it to `failed`.
+# A oneshot normally stays `activating` during its pass; its unit timeout
+# moves a stalled pass to `failed`.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
     "jasper-grouping-reconcile.service",
@@ -441,9 +438,6 @@ def _loopback_playback_active() -> bool:
     from hw:UAC2Gadget. A caller needing true output silence must consult
     that too.
 
-    Renderer ingress has exactly these two shapes and no third (ADR-0281):
-    the per-renderer SHM ring this used to also disclose as a blind spot
-    was retired with that decision, so aloop is the only ingress left here.
     """
     from ._evidence import evidence  # lazy: _evidence imports _shared
 
