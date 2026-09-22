@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.atomic_io import advisory_file_lock
 from jasper.enhanced_aec import (
     INSTALL_LOCK_PATH,
@@ -515,15 +516,13 @@ def _refresh_aec_runtime() -> str:
     manifest, published accessory/grouping facts) moves — a bare kick would be
     gated off as "no voice-relevant change". The one-shot marker below is the
     declared-intent path the gate honors; a systemctl kick can carry no
-    arguments, which is why it is a file. The path literal mirrors
-    VOICE_RESTART_INTENT_MARKER in deploy/bin/jasper-aec-reconcile (pinned by
-    tests/test_aec_reconcile.py). Marker-write failures fall through to the
+    arguments, which is why it is a file. Marker-write failures fall through to the
     kick on purpose: a gated-off refresh degrades exactly like a failed kick —
     v2 waits for the next ordinary restart, already this function's documented
     fallback.
     """
 
-    marker = Path("/run/jasper-aec-reconcile/voice-restart-intent")
+    marker = Path(VOICE_RESTART_INTENT_MARKER)
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("enhanced_aec_v2_activation\n", encoding="utf-8")
