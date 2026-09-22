@@ -13,6 +13,17 @@ A prediction at the mark cannot establish the response at the listener.
 Separate rear and room rounds would spend more placements and compare takes
 made under different conditions.
 
+Rejected options: retaining an impulse in the bank was rejected for this
+change. The banked `pose_curve` grid is log-spaced; its inverse FFT cannot
+recover a physical impulse. Keep the figures computed from capture-time impulse
+evidence rather than treating the retained frequency grid as an impulse store.
+Classifying SBIR (speaker-boundary interference) by seat shift was rejected:
+a front-wall notch can move only about 1% for a 0.30 m seat shift in the
+design's geometry, too little to identify its cause reliably. Use declared
+geometry to name the band; do not classify the dip from motion. Adding
+`by_candidate` was rejected because the packet already joins by set; another
+candidate-keyed room structure would duplicate that identity.
+
 ## Decision
 
 The seat trial is a trial of the rear program at listening seats. Its
@@ -46,16 +57,3 @@ model or prove a polar pattern.
   Seat trials do not supply a repeat floor. Cross-seat spread is not repeat
   spread, and `room-grade` across candidate sets is not a candidate comparison.
 - Plain boxes use `room/seat` without a rear model or rear variants.
-
-## Overrides considered
-
-- **Retain an impulse in the bank:** rejected for this change. The banked
-  `pose_curve` grid is log-spaced; its inverse FFT cannot recover a physical
-  impulse. Keep the figures computed from capture-time impulse evidence rather
-  than treating the retained frequency grid as an impulse store.
-- **Classify SBIR by seat shift:** rejected. SBIR is speaker-boundary
-  interference. A front-wall notch can move only about 1% for a 0.30 m seat
-  shift in the design's geometry, too little to identify its cause reliably.
-  Use declared geometry to name the band; do not classify the dip from motion.
-- **Add `by_candidate`:** rejected. The packet already joins by set; another
-  candidate-keyed room structure would duplicate that identity.
