@@ -234,7 +234,7 @@ existing owner.
 > at — a boost additionally owing the dip's own measured depth
 > ([`crossover_v2/feature_classification.py`](../../jasper/active_speaker/crossover_v2/feature_classification.py)
 > is the verdict register;
-> [`crossover_v2/feature_classifier.py`](../../jasper/active_speaker/crossover_v2/feature_classifier.py)
+> [`crossover_v2/feature_classifier.py`](../../jasper/active_speaker/crossover_v2/feature_classifier/__init__.py)
 > is the instrument that produces one, offline over a round's banked captures).
 >
 > `stage` closed the gap the first wired night hit: until it shipped, an

@@ -797,7 +797,7 @@ The bank record carries judged sections and evidence digests. `status` reads ret
 `jasper-round-views classify-features`
 ([`jasper/cli/round_views/classify_features.py`](../jasper/cli/round_views/classify_features.py)
 over
-[`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py))
+[`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier/__init__.py))
 answers the question a magnitude curve cannot: is that bump a **minimum-phase
 driver defect** (a filter is at least the right kind of tool), a
 **non-minimum-phase cancellation** (structurally the wrong one — a filter lowers
