@@ -159,6 +159,13 @@ their listeners and the includes. The routes cover the assistant
 `/spotify/`, `/bluetooth/`) and the system pages
 (`/system/`, `/wifi/`, `/speaker/`).
 
+From a unit or a route to its Python module: `systemctl cat <unit>` shows
+the `ExecStart=`; a `python -m jasper.web` one runs `jasper/web/__main__.py`,
+whose `WIZARD_SPECS` maps each nginx-proxied URL prefix to its handler
+module and port. A named binary (e.g. `jasper-chat-web`, one of the
+standalone `deploy/jasper-*-web.service` units) resolves via its
+`[project.scripts]` entry in `pyproject.toml` to a `module:function`.
+
 ---
 
 ## Repository layout

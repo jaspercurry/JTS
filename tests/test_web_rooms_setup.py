@@ -944,7 +944,7 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
     monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
-        "write_env_file",
+        "locked_transform_env_file",
         lambda *_a, **_k: pytest.fail("invalid request must not write config"),
     )
     monkeypatch.setattr(
@@ -972,7 +972,7 @@ def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
     monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rooms_setup,
-        "write_env_file",
+        "locked_transform_env_file",
         lambda *_a, **_k: pytest.fail("failed read must not write config"),
     )
     handler, _ = make_real_handler(rooms_setup._make_handler(), "/peering", body=None)
@@ -1047,8 +1047,8 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
     )
     monkeypatch.setattr(
         rooms_setup,
-        "write_env_file",
-        lambda *_a, **_k: effects.append("write_env_file"),
+        "locked_transform_env_file",
+        lambda *_a, **_k: effects.append("locked_transform_env_file"),
     )
     monkeypatch.setattr(
         rooms_setup,
@@ -1079,8 +1079,8 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
 
 def test_post_peering_enables_and_preserves_room(monkeypatch, tmp_path):
     """Turning peering on read-modify-writes peering.env: JASPER_PEERING flips
-    to on, JASPER_PEER_PRIMARY is set, and JASPER_PEER_ROOM (owned by
-    /speaker/) plus operator tuning knobs are PRESERVED."""
+    to on, JASPER_PEER_PRIMARY is set, and the legacy JASPER_PEER_ROOM
+    fallback plus operator tuning knobs are PRESERVED."""
     envp = _seed_peering_env(
         tmp_path, monkeypatch,
         "JASPER_PEERING=off\nJASPER_PEER_ROOM=kitchen\n"

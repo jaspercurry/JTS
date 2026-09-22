@@ -15,12 +15,11 @@ from typing import Any
 
 from ..conversation_history import ConversationStore, read_settings, write_settings
 from ._common import (
-    JsonBodyError,
     begin_request,
     dispatch_get,
     dispatch_post,
     json_body,
-    read_json_object,
+    read_json_body,
     send_html_response,
     send_proxy_json,
 )
@@ -77,19 +76,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_json(self) -> dict[str, Any] | None:
         """Parse the request body, answering 400 and returning None on a
         malformed one so `json_body` never dispatches it to a route."""
-        try:
-            return read_json_object(self, max_bytes=MAX_JSON_BYTES)
-        except JsonBodyError as exc:
-            if exc.code == "invalid_content_length":
-                message = "invalid content length"
-            elif exc.code in {"negative_content_length", "body_too_large"}:
-                message = "request too large"
-            elif exc.code == "non_object":
-                message = "JSON body must be an object"
-            else:
-                message = "invalid JSON body"
-            _json_response(self, {"error": message}, status=HTTPStatus.BAD_REQUEST)
+        parsed, err = read_json_body(self, max_bytes=MAX_JSON_BYTES)
+        if err is not None:
+            _json_response(self, {"error": err}, status=HTTPStatus.BAD_REQUEST)
             return None
+        return parsed
 
     # nginx strips the /assistant/chat/ prefix so we see "/" and "/data.json".
     def do_GET(self) -> None:  # noqa: N802
