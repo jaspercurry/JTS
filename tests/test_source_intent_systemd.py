@@ -6,9 +6,9 @@
 
 from pathlib import Path
 
-from jasper import source_intent
+from jasper import source_intent_units as units
 from jasper.control import restart_broker
-from jasper.local_sources import local_source_lifecycles
+from jasper.local_sources import local_source_lifecycles, reconcile
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
 from jasper.music_sources import Source
 from tests import nginx_site
@@ -99,7 +99,7 @@ def test_source_intent_reconcile_is_bounded_without_bluez_ordering_cycle() -> No
     assert ("Type", "oneshot") in pairs
     assert (
         "TimeoutStartSec",
-        str(int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
+        str(int(units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
     ) in pairs
     assert not any(key == "Restart" for key, _value in pairs)
     assert not any(key == "RestartSec" for key, _value in pairs)
@@ -137,40 +137,39 @@ def test_max_failed_reset_transitions_matches_local_source_registry() -> None:
         1 if lifecycle.source == Source.USBSINK else len(lifecycle.runtime_units)
         for lifecycle in local_source_lifecycles()
     )
-    assert source_intent._MAX_FAILED_RESET_TRANSITIONS == live
+    assert units._MAX_FAILED_RESET_TRANSITIONS == live
 
 
 def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
     """One pass fits owned source actions plus two BT and one USB owner waits."""
-    owner_waits = source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC
+    owner_waits = units._OWNER_UNIT_ACTION_TIMEOUT_SEC
     required = (
-        source_intent._NON_OWNER_RECONCILE_BUDGET_SEC
-        + 2 * owner_waits[source_intent._ACCESSORY_RECONCILE_UNIT]
-        + owner_waits[source_intent._USB_COUPLING_UNIT]
+        units._NON_OWNER_RECONCILE_BUDGET_SEC
+        + 2 * owner_waits[units._ACCESSORY_RECONCILE_UNIT]
+        + owner_waits[units._USB_COUPLING_UNIT]
     )
-    assert source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS >= required
+    assert units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS >= required
     assert (
-        source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS
-        > source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
+        units.RECONCILE_BROKER_TIMEOUT_SECONDS > units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
     )
     assert (
         restart_broker._clamp_exec_timeout(
-            source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS,
+            units.RECONCILE_BROKER_TIMEOUT_SECONDS,
             verb="start",
-            units=[source_intent.RECONCILE_UNIT],
+            units=[units.RECONCILE_UNIT],
             no_block=False,
         )
-        == source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS
+        == units.RECONCILE_BROKER_TIMEOUT_SECONDS
     )
     assert (
         "TimeoutStartSec",
-        str(int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
+        str(int(units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
     ) in set(_directives())
     installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8"
     )
     assert (
-        f"--kill-after=5s {int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
+        f"--kill-after=5s {int(units.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
     ) in installer
 
 
@@ -183,16 +182,19 @@ def test_owned_source_unit_client_bounds_outlast_explicit_systemd_contracts() ->
         for unit in lifecycle.runtime_units
     }
     assert set(SOURCE_UNIT_FILES) == declared
-    assert set(source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC) == declared
+    assert set(units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC) == declared
 
     for unit, path in SOURCE_UNIT_FILES.items():
         text = path.read_text(encoding="utf-8")
         start = seconds_for(text, "TimeoutStartSec")
         stop = seconds_for(text, "TimeoutStopSec")
-        assert source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (start, stop)
-        assert source_intent._unit_action_timeout_sec(unit, "start") > start
-        assert source_intent._unit_action_timeout_sec(unit, "stop") > stop
-        assert source_intent._unit_action_timeout_sec(unit, "restart") > start + stop
+        assert units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (
+            start,
+            stop,
+        )
+        assert units._unit_action_timeout_sec(unit, "start") > start
+        assert units._unit_action_timeout_sec(unit, "stop") > stop
+        assert units._unit_action_timeout_sec(unit, "restart") > start + stop
 
 
 def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
@@ -221,22 +223,22 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
     assert "nqptp.service" in requires
     assert "nqptp.service" in after
 
-    shairport_start = source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
-        "shairport-sync.service"
-    ][0]
-    nqptp_start = source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0]
-    usb_volume_start = source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
+    shairport_start = units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["shairport-sync.service"][
+        0
+    ]
+    nqptp_start = units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0]
+    usb_volume_start = units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
         "jasper-usbsink-volume.service"
     ][0]
-    assert source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC == {
+    assert units._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC == {
         "shairport-sync.service": nqptp_start,
         "jasper-usbsink.service": usb_volume_start,
         "jasper-usbgadget.service": sum(
-            source_intent._USB_GADGET_START_DEPENDENCY_SEC.values()
+            units._USB_GADGET_START_DEPENDENCY_SEC.values()
         ),
     }
     assert (
-        source_intent._unit_action_timeout_sec("shairport-sync.service", "start")
+        units._unit_action_timeout_sec("shairport-sync.service", "start")
         > shairport_start + nqptp_start
     )
 
@@ -282,7 +284,7 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
         "jasper-usbgadget.service",
     ):
         path = ROOT / "deploy/systemd" / dependency
-        assert source_intent.RECONCILE_UNIT not in path.read_text(encoding="utf-8")
+        assert units.RECONCILE_UNIT not in path.read_text(encoding="utf-8")
 
 
 def _pulled_ordered_dependencies(path: Path) -> set[str]:
@@ -294,7 +296,7 @@ def _declared_start_ceiling(name: str) -> float:
 
     text = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
     return seconds_for(
-        text, "TimeoutStartSec", source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC
+        text, "TimeoutStartSec", units._SYSTEMD_DEFAULT_TIMEOUT_START_SEC
     )
 
 
@@ -330,7 +332,7 @@ def test_dependencies_that_never_stay_complete_are_inside_the_client_bound() -> 
         if not shipped:
             continue
         requeued[unit] = {name: _declared_start_ceiling(name) for name in shipped}
-        budget = source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC.get(unit, 0.0)
+        budget = units._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC.get(unit, 0.0)
         required = sum(requeued[unit].values())
         assert budget >= required, (
             f"{unit}: dependency budget {budget} must cover the start ceilings of "
@@ -353,11 +355,11 @@ def test_gadget_dependency_mirror_matches_the_units_it_pulls_and_orders() -> Non
     """
 
     gadget = "jasper-usbgadget.service"
-    modelled = source_intent._USB_GADGET_START_DEPENDENCY_SEC
+    modelled = units._USB_GADGET_START_DEPENDENCY_SEC
     assert set(modelled) == _pulled_ordered_dependencies(SOURCE_UNIT_FILES[gadget])
     for name, budgeted in modelled.items():
         assert budgeted >= _declared_start_ceiling(name), name
-    assert source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC[gadget] == sum(
+    assert units._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC[gadget] == sum(
         modelled.values()
     )
 
@@ -387,28 +389,25 @@ def test_gadget_phase_model_matches_its_shipped_command_count() -> None:
         starts += key in start_keys
         stops += key in stop_keys
 
-    assert source_intent._UNIT_PHASE_COMMAND_COUNTS["jasper-usbgadget.service"] == (
+    assert units._UNIT_PHASE_COMMAND_COUNTS["jasper-usbgadget.service"] == (
         starts,
         stops,
     )
-    declared_start, declared_stop = source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
+    declared_start, declared_stop = units._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
         "jasper-usbgadget.service"
     ]
     # The modelled start phase plus the client margin must cover the worst start
     # phase actually measured on jts4 (25.51 s, Starting -> Finished).
     worst_observed_start_sec = 25.51
     assert (
-        declared_start * starts + source_intent._UNIT_ACTION_CLIENT_MARGIN_SEC
+        declared_start * starts + units._UNIT_ACTION_CLIENT_MARGIN_SEC
         >= worst_observed_start_sec
     )
     # And the restart bound must cover the worst measured restart with room:
     # 33.64 s, Stopping -> Finished, on the pass that produced the false timeout.
+    assert units._unit_action_timeout_sec("jasper-usbgadget.service", "restart") > 33.64
     assert (
-        source_intent._unit_action_timeout_sec("jasper-usbgadget.service", "restart")
-        > 33.64
-    )
-    assert (
-        source_intent._unit_action_timeout_sec("jasper-usbgadget.service", "stop")
+        units._unit_action_timeout_sec("jasper-usbgadget.service", "stop")
         > declared_stop * stops
     )
 
@@ -423,7 +422,7 @@ def test_owner_client_bounds_mirror_their_shipped_unit_ceilings() -> None:
     of false timeout #2790 removed from the gadget restart.
     """
 
-    for unit, client in source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC.items():
+    for unit, client in units._OWNER_UNIT_ACTION_TIMEOUT_SEC.items():
         text = (ROOT / "deploy/systemd" / unit).read_text(encoding="utf-8")
         assert value_for(text, "Type") == "oneshot", unit
         declared = seconds_for(text, "TimeoutStartSec")
@@ -434,69 +433,66 @@ def test_failed_usb_on_cleanup_budget_matches_its_enumerated_waits() -> None:
     """The rollback budget is its own blocking waits, not a hand-picked floor."""
 
     gadget = "jasper-usbgadget.service"
-    query = source_intent._UNIT_STATE_QUERY_TIMEOUT_SEC
+    query = units._UNIT_STATE_QUERY_TIMEOUT_SEC
     enumerated = (
         # _ensure_active(usbsink, False): probe, stop, probe, failed-state reset
         2 * query
-        + source_intent._unit_action_timeout_sec("jasper-usbsink.service", "stop")
-        + (2 * query + source_intent._RESET_FAILED_ACTION_TIMEOUT_SEC)
+        + units._unit_action_timeout_sec("jasper-usbsink.service", "stop")
+        + (2 * query + units._RESET_FAILED_ACTION_TIMEOUT_SEC)
         # _ensure_enabled(usbsink, False): probe, disable, probe
-        + source_intent._ENABLEMENT_TRANSITION_BUDGET_SEC
+        + units._ENABLEMENT_TRANSITION_BUDGET_SEC
         # recompose the gadget, stop it if audio survived, disarm coupling
-        + source_intent._unit_action_timeout_sec(gadget, "restart")
-        + source_intent._unit_action_timeout_sec(gadget, "stop")
-        + source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[source_intent._USB_COUPLING_UNIT]
+        + units._unit_action_timeout_sec(gadget, "restart")
+        + units._unit_action_timeout_sec(gadget, "stop")
+        + units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units._USB_COUPLING_UNIT]
     )
-    assert source_intent._USB_FAILED_ON_CLEANUP_BUDGET_SEC == enumerated
+    assert units._USB_FAILED_ON_CLEANUP_BUDGET_SEC == enumerated
 
 
 def test_control_unit_client_bounds_match_packaged_dropins() -> None:
-    assert set(source_intent._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC) == set(
-        CONTROL_UNIT_FILES
-    )
+    assert set(units._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC) == set(CONTROL_UNIT_FILES)
     for unit, path in CONTROL_UNIT_FILES.items():
         text = path.read_text(encoding="utf-8")
         start = seconds_for(text, "TimeoutStartSec")
         stop = seconds_for(text, "TimeoutStopSec")
-        assert source_intent._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (
+        assert units._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (
             start,
             stop,
         )
-        assert source_intent._unit_action_timeout_sec(unit, "start") > start
-        assert source_intent._unit_action_timeout_sec(unit, "stop") > stop
-        assert source_intent._unit_action_timeout_sec(unit, "restart") > start + stop
+        assert units._unit_action_timeout_sec(unit, "start") > start
+        assert units._unit_action_timeout_sec(unit, "stop") > stop
+        assert units._unit_action_timeout_sec(unit, "restart") > start + stop
 
 
 def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
     stops = sum(
-        source_intent._unit_action_timeout_sec(unit, verb)
-        for unit, verb in source_intent._WORST_CASE_ORDINARY_STOP_ACTIONS
+        units._unit_action_timeout_sec(unit, verb)
+        for unit, verb in reconcile._WORST_CASE_ORDINARY_STOP_ACTIONS
     )
     enablement = (
-        source_intent._MAX_ENABLEMENT_TRANSITIONS
-        * source_intent._ENABLEMENT_TRANSITION_BUDGET_SEC
+        units._MAX_ENABLEMENT_TRANSITIONS * units._ENABLEMENT_TRANSITION_BUDGET_SEC
     )
-    assert source_intent._NON_OWNER_RECONCILE_BUDGET_SEC == (
-        source_intent._NON_SYSTEMD_RECONCILE_BUDGET_SEC
+    assert units._NON_OWNER_RECONCILE_BUDGET_SEC == (
+        units._NON_SYSTEMD_RECONCILE_BUDGET_SEC
         + enablement
-        + source_intent._FAILED_RESET_BUDGET_SEC
-        + source_intent._ACTIVE_TRANSITION_BUDGET_SEC
-        + source_intent._unit_action_timeout_sec("jasper-usbgadget.service", "restart")
-        + source_intent._BLUETOOTH_CONTROL_BUDGET_SEC
-        + source_intent._USB_DIRECT_WAIT_BUDGET_SEC
-        + source_intent._USB_FAILED_ON_CLEANUP_BUDGET_SEC
+        + units._FAILED_RESET_BUDGET_SEC
+        + units._ACTIVE_TRANSITION_BUDGET_SEC
+        + units._unit_action_timeout_sec("jasper-usbgadget.service", "restart")
+        + units._BLUETOOTH_CONTROL_BUDGET_SEC
+        + units._USB_DIRECT_WAIT_BUDGET_SEC
+        + units._USB_FAILED_ON_CLEANUP_BUDGET_SEC
     )
     assert (
-        source_intent._NON_SYSTEMD_RECONCILE_BUDGET_SEC + enablement + stops
-        <= source_intent._NON_OWNER_RECONCILE_BUDGET_SEC
+        units._NON_SYSTEMD_RECONCILE_BUDGET_SEC + enablement + stops
+        <= units._NON_OWNER_RECONCILE_BUDGET_SEC
     )
-    owner_waits = source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC
+    owner_waits = units._OWNER_UNIT_ACTION_TIMEOUT_SEC
     assert (
-        source_intent._NON_OWNER_RECONCILE_BUDGET_SEC
-        + 2 * owner_waits[source_intent._ACCESSORY_RECONCILE_UNIT]
-        + owner_waits[source_intent._USB_COUPLING_UNIT]
-        + source_intent._RECONCILE_TIMEOUT_MARGIN_SEC
-    ) == source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
+        units._NON_OWNER_RECONCILE_BUDGET_SEC
+        + 2 * owner_waits[units._ACCESSORY_RECONCILE_UNIT]
+        + owner_waits[units._USB_COUPLING_UNIT]
+        + units._RECONCILE_TIMEOUT_MARGIN_SEC
+    ) == units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
 
 
 def _location_block(text: str, route: str) -> str:
@@ -512,7 +508,7 @@ def test_source_http_routes_outlast_two_bounded_broker_passes() -> None:
     minimum_http_timeout = int(
         2
         * (
-            source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS
+            units.RECONCILE_BROKER_TIMEOUT_SECONDS
             + restart_broker._CLIENT_SOCKET_MARGIN_SEC
         )
     )
@@ -563,8 +559,7 @@ def test_root_fanin_owners_do_not_inherit_group_writable_fanin_env() -> None:
     assert "EnvironmentFile=-/var/lib/jasper/fanin.env" not in unit
     assert "EnvironmentFile=-/etc/jasper/jasper.env" in unit
     assert (
-        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:"
-        "/sbin:/bin"
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ) in unit
     assert (
         "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT "
@@ -655,7 +650,7 @@ def test_bluetooth_adapter_udev_rule_matches_the_observed_hci0_uevent() -> None:
     themselves. Parses _JTS3_HCI0_UEVENT's `E: KEY=value` lines the way udev
     itself would and checks the rule's literals against them."""
     observed = dict(
-        line[len("E: "):].split("=", 1)
+        line[len("E: ") :].split("=", 1)
         for line in _JTS3_HCI0_UEVENT.splitlines()
         if line.startswith("E: ") and "=" in line
     )

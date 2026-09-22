@@ -380,7 +380,7 @@ docs = [
 id = "local-source-lifecycle"
 safety = "boot-risk"
 code = [
-  "jasper/source_intent.py",
+  "jasper/source_intent.py", "jasper/local_sources/reconcile.py",
   "jasper/bluetooth/availability.py",
   "jasper/local_sources/registry.py",
   "jasper/local_sources/markers.py",

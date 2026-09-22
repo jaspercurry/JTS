@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from jasper import source_intent
+from jasper import source_intent_units as units
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
 from jasper.audio_hardware.dac import APPLE_DONGLE_USB_ID
@@ -78,9 +78,7 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     "jasper-grouping-reconcile": str(
         int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
     ),
-    "jasper-source-intent-reconcile": str(
-        int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)
-    ),
+    "jasper-source-intent-reconcile": str(int(units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
     # The udev dongle recovery blocks on a chain of `systemctl start` clients;
     # the arithmetic is derived and pinned by
     # test_dongle_recover_timeout_covers_its_whole_blocking_start_chain below.
@@ -188,8 +186,7 @@ def test_tier_a_required_directives(unit, path):
         elif (key, want) not in pairs:
             missing.append(f"{key}={want}")
     assert not missing, (
-        f"{unit} ({path.name}) lost WS1 phase-1 hardening directive(s): "
-        f"{missing}."
+        f"{unit} ({path.name}) lost WS1 phase-1 hardening directive(s): {missing}."
     )
 
 
@@ -218,9 +215,7 @@ def test_accessory_bridge_host_keeps_the_folded_adapter_sandbox():
     assert ("RuntimeDirectory", status_dir.name) in pairs
     assert ("PrivateDevices", "true") not in pairs
     # The BlueZ grant is a user-database membership, never a unit directive.
-    assert not any(
-        k == "SupplementaryGroups" and "bluetooth" in v for k, v in pairs
-    )
+    assert not any(k == "SupplementaryGroups" and "bluetooth" in v for k, v in pairs)
 
 
 @pytest.mark.parametrize("user", ["jasper-input", "jasper-mux", "jasper-voice"])
@@ -327,7 +322,9 @@ def test_dongle_recover_reset_failed_covers_camillas_hard_dependency():
     reset_failed_argvs = [
         argv
         for argv in exec_argv_for(text, "ExecStart")
-        if argv and PurePosixPath(argv[0]).name == "systemctl" and argv[1:2] == ["reset-failed"]
+        if argv
+        and PurePosixPath(argv[0]).name == "systemctl"
+        and argv[1:2] == ["reset-failed"]
     ]
     assert reset_failed_argvs, "expected one `systemctl reset-failed` ExecStart="
     assert "jasper-audio-hardware-reconcile.service" in reset_failed_argvs[0]
@@ -362,9 +359,7 @@ def test_accessory_parallel_budget_matches_owner_and_caller_barriers():
     assert accessory_reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS == 2
     assert accessory_reconcile._OWNER_OPERATION_TIMEOUT_BUDGET_SEC < owner_timeout
     assert (
-        source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[
-            source_intent._ACCESSORY_RECONCILE_UNIT
-        ]
+        units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units._ACCESSORY_RECONCILE_UNIT]
         == owner_timeout + 5.0
     )
 
@@ -425,7 +420,7 @@ def _blocking_start_cost_sec(name: str, active: set[str]) -> float:
             total += seconds_for(
                 text,
                 "TimeoutStartSec",
-                source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC,
+                units._SYSTEMD_DEFAULT_TIMEOUT_START_SEC,
             )
         active.add(current)
         queue.extend(pulled_ordered_dependencies(text))
@@ -795,12 +790,9 @@ def test_streambox_web_unit_sources_every_env_its_wizards_write():
     for its env-backed fields after a save that appeared to work. Only the
     wake-side file is exempt.
     """
+
     def envfiles(path):
-        return {
-            v.lstrip("-")
-            for k, v in _directives(path)
-            if k == "EnvironmentFile"
-        }
+        return {v.lstrip("-") for k, v in _directives(path) if k == "EnvironmentFile"}
 
     full = envfiles(TIER_A["jasper-web"])
     streambox = envfiles(ROOT / "deploy/jasper-web-streambox.service")
@@ -967,7 +959,8 @@ def test_wiim_remote_ce_unit_grants_only_raw_hci():
     # A request landing mid-deploy must skip cleanly, not fail 203/EXEC into
     # `failed` — nothing in this repo ever reset-failed's this unit.
     assert (
-        "ConditionPathExists", "/opt/jasper/.venv/bin/jasper-wiim-remote-ce",
+        "ConditionPathExists",
+        "/opt/jasper/.venv/bin/jasper-wiim-remote-ce",
     ) in pairs
 
 
@@ -1102,9 +1095,7 @@ def test_usb_network_plan_unit_allows_netlink_for_if_nameindex():
     assert USB_NETWORK_PLAN_UNIT.is_file()
     pairs = set(_directives(USB_NETWORK_PLAN_UNIT))
     families = [v for k, v in pairs if k == "RestrictAddressFamilies"]
-    assert families, (
-        "jasper-usb-network-plan.service must set RestrictAddressFamilies="
-    )
+    assert families, "jasper-usb-network-plan.service must set RestrictAddressFamilies="
     assert set(families[-1].split()) == {"AF_INET", "AF_NETLINK", "AF_UNIX"}, (
         "AF_INET is the SIOCGIFADDR/SIOCGIFNETMASK ioctl socket "
         "(observe_ipv4_cidr's address/netmask read); AF_NETLINK is opened "
@@ -1284,7 +1275,6 @@ def test_single_statedirectory_owner():
     )
 
 
-
 # ----------------------------------------------------------------------
 # 7 — one RESTART_POLICY table over the reboot-ladder unit set (R22, #4416)
 # ----------------------------------------------------------------------
@@ -1370,9 +1360,7 @@ def test_restart_policy_covers_exactly_the_doctor_drift_table():
     """A unit added to (or dropped from) the reboot ladder without updating
     doctor/drift.py's StartLimitAction row would otherwise silently stop (or
     wrongly start) being drift-checked."""
-    assert set(RESTART_POLICY) == set(
-        doctor_drift._UNIT_DIRECTIVES["StartLimitAction"]
-    )
+    assert set(RESTART_POLICY) == set(doctor_drift._UNIT_DIRECTIVES["StartLimitAction"])
 
 
 @pytest.mark.parametrize("unit_name", sorted(RESTART_POLICY))
@@ -1385,15 +1373,21 @@ def test_restart_policy_matches_the_shipped_unit_file(unit_name):
     unit = (SYSTEMD_UNIT_DIR / f"{unit_name}.service").read_text(encoding="utf-8")
     for directive in _RESTART_POLICY_SCALAR_DIRECTIVES:
         assert value_for(unit, directive) == expected[directive], (
-            unit_name, directive, expected[directive],
+            unit_name,
+            directive,
+            expected[directive],
         )
     for directive in _RESTART_POLICY_LIST_DIRECTIVES:
         assert values_for(unit, directive) == expected[directive], (
-            unit_name, directive, expected[directive],
+            unit_name,
+            directive,
+            expected[directive],
         )
     expected_start_limit_action = doctor_drift._UNIT_DIRECTIVES["StartLimitAction"][
         unit_name
     ]
     assert value_for(unit, "StartLimitAction") == expected_start_limit_action, (
-        unit_name, "StartLimitAction", expected_start_limit_action,
+        unit_name,
+        "StartLimitAction",
+        expected_start_limit_action,
     )
