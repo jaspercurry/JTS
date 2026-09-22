@@ -1197,7 +1197,7 @@ def sweep_round(
             }
             for read in reads
         ],
-        "bands": [
+        "ladder": "speaker_spec", "bands": [
             _band_result(reads, grid, sigma, axes, band, rungs_ms=rungs, cache=cache)
             for band in SPEC_BANDS
         ],

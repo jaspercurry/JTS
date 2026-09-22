@@ -81,7 +81,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         incumbent_reason=artifact["incumbent_reason"], ceiling_hz=artifact["ceiling_hz"],
         ceiling_source=artifact["ceiling_source"], n_positions=artifact["n_positions"],
         spatial_support=artifact["spatial_support"],
-        bands=artifact["bands"], regressed_bands=regressed,
+        ladder=artifact["ladder"], bands=artifact["bands"], regressed_bands=regressed,
         incumbent=artifact["incumbent"], graph_scopes=artifact["graph_scopes"],
         comparison=artifact["comparison"],
         evidence=artifact["evidence"], incumbent_evidence=artifact["incumbent_evidence"],

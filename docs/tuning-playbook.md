@@ -21,6 +21,8 @@ each filter's `position_variance`, and the per-pose null ceiling in
 `verdicts`. Then read role gate lines and retake `fault` values. A missing
 section is missing evidence.
 
+Band rows name their `ladder` from `band_ladders.py`: `rear_upper`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
+
 Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
 the packet did not answer. Never recompute a number it prints.

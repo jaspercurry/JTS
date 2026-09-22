@@ -402,6 +402,7 @@ def test_the_view_keeps_response_grades_when_spread_is_unknown(
     assert answer["spatial_support"] == artifact["spatial_support"] == document["spatial_support"]
     assert artifact["spatial_support"]["sufficient"] is (n_positions != 1)
     assert answer["bands"] == artifact["bands"]
+    assert answer["ladder"] == artifact["ladder"] == "room"
     assert [row["spread_db"] for row in answer["bands"]] == [
         SPREAD_DB if unknown == "incumbent" else None,
     ] * 3

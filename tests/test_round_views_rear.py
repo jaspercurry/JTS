@@ -586,7 +586,7 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
         behind, = (row for key, row in positions.items() if key.startswith("behind_"))
         front, = (row for key, row in positions.items() if not key.startswith("behind_"))
         assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "handover", "low_bass",
-                              "band_level_db", "late_energy", "upper_bands"}
+                              "band_level_db", "late_energy", "upper_bands", "ladder"}
         assert [band["band_hz"] for band in front["upper_bands"]] == (
             [list(band) for band in LEVEL_BANDS_HZ[-3:]] if covered_bands == 7 else [])
         for band in front["upper_bands"]:

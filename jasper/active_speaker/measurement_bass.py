@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ as BASS_BANDS_HZ
 from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
 from jasper.audio_measurement.distortion import read_segment_distortion, required_pre_guard_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
@@ -19,9 +20,6 @@ from jasper.audio_measurement.repeated_sweep import sweep_ambient_id
 
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import AnalyzedMeasurement, analyzed_measurements
-
-BASS_BANDS_HZ = tuple(zip((20., 30., 40., 50., 63., 80., 100., 125., 160.),
-                         (30., 40., 50., 63., 80., 100., 125., 160., 200.)))
 
 
 def _finite(values: np.ndarray) -> list[float | None]:
@@ -115,7 +113,7 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
                    for s in program.segments if sweep_ambient_id(s.segment_id) in segment_ids],
         "calibration": document["calibration"],
         "frequency_curve": curve,
-        "diagnostics": diagnostics, "quiet_samples": quiet_samples, "bands": bands,
+        "diagnostics": diagnostics, "quiet_samples": quiet_samples, "ladder": "bass", "bands": bands,
         "freqs_hz": _finite(frequencies),
         "fundamental_db": _finite(np.asarray(curve["magnitude_db"])[bass]),
         "fundamental_qualified": _qualified(frequencies, bands).tolist(), "harmonics": orders,

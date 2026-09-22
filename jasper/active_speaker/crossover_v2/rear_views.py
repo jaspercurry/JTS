@@ -193,6 +193,7 @@ def _position_rows(
         rows[key]["upper_bands"] = band_level_changes(
             grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
         ) if key in bearing and key in reference_curve else []
+        rows[key]["ladder"] = "rear_upper" if key in bearing else "rear_level"
         if key not in bearing:
             rows[key].update(reason=REASON_NON_BEARING, trough_fill_db=None)
             measured = band_level_changes(
@@ -503,6 +504,7 @@ def _pair_position(
     return {
         "reason": "" if bands and residual is not None else REASON_COVERAGE_SHORT,
         "coverage_hz": coverage_hz, "band_hz": band_hz, "bands": bands, "arrival_gap": gap,
+        "ladder": "third_octave_bass",
         "superposition_residual_db": residual,
         "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, band_hz=band_hz,
                                        arrival_gap=gap),

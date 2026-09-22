@@ -643,6 +643,7 @@ def evaluate_spec(report: FlatSpecReport | None) -> Verdict[SpecStatus]:
     # The gauge names ONE band; these are every band and the graded span they
     # were read over. Same rows the quality axis's misses come from.
     evidence["bands"] = spec_band_rows(report)
+    evidence["ladder"] = "speaker_spec"
     evidence["graded_band_hz"] = list(report.graded_band_hz)
     evidence["trusted_ceiling_hz"] = report.trusted_ceiling_hz
     if report.overall_within_target:

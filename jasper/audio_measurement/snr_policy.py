@@ -25,26 +25,10 @@ from typing import Any, Literal, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement import deconv
+from jasper.audio_measurement.band_ladders import (
+    SNR_BANDS_HZ as SNR_BANDS_HZ, CROSSOVER_SNR_BANDS_HZ as CROSSOVER_SNR_BANDS_HZ, band_ladder_name,
+)
 from jasper.audio_measurement.quality_model import QualityModel
-
-# TRAP — these edges look like the room-correction boundary and are deliberately
-# NOT routed through jasper.audio_measurement.room_boundary. This is
-# capture-quality vocabulary shared verbatim between the room and gated
-# instruments; routing the 350 Hz edge would make banded SNR non-comparable
-# across sessions and instruments once the boundary becomes per-room. They
-# stay static. See docs/room-correction-regime-plan.md.
-SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
-    ("sub_bass", 20.0, 80.0),
-    ("bass", 80.0, 160.0),
-    ("upper_bass", 160.0, 350.0),
-    ("transition", 350.0, 1000.0),
-)
-# "mid"/"treble" extend the room table up through a tweeter's crossover range.
-CROSSOVER_SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
-    *SNR_BANDS_HZ,
-    ("mid", 1000.0, 4000.0),
-    ("treble", 4000.0, 12000.0),
-)
 
 DBFS_FLOOR = -120.0
 
@@ -158,8 +142,9 @@ def framed_ambient_band_report(
     """One-second-frame ambient PSD statistic, independent of total duration."""
 
     x = np.asarray(samples, dtype=np.float64)
+    ladder = band_ladder_name([(lo, hi) for _, lo, hi in bands])
     if sample_rate <= 0 or x.size < 8:
-        return {"schema_version": 1, "duration_s": 0.0, "bands": []}
+        return {"schema_version": 1, "duration_s": 0.0, "ladder": ladder, "bands": []}
     frame_len = sample_rate
     frames = [
         x[start:start + frame_len]
@@ -184,7 +169,7 @@ def framed_ambient_band_report(
         "schema_version": 1,
         "duration_s": round(x.size / sample_rate, 3),
         "method": f"one_second_p{percentile:g}",
-        "bands": out,
+        "ladder": ladder, "bands": out,
     }
 
 
@@ -406,6 +391,7 @@ def band_snr_verdicts(
     relevant_hz: tuple[float, float],
     model: QualityModel,
     band_method: str = "fft_band_power_difference",
+    ladder: str | None = None,
 ) -> dict[str, Any]:
     """The SC-1 per-band SNR verdict block for one decision.
 
@@ -493,6 +479,7 @@ def band_snr_verdicts(
         "schema_version": 1,
         "decision_class": decision_class,
         "relevant_hz": [relevant_lo, relevant_hi],
+        "ladder": ladder or band_ladder_name([band["band_hz"] for band in bands_out if band["band_hz"] is not None]),
         "bands": bands_out,
         "worst_relevant": worst_relevant,
         "verdict": overall_verdict,

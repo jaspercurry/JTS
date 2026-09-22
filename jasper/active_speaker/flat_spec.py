@@ -21,29 +21,17 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement import gating
+from jasper.audio_measurement.band_ladders import (
+    BEST_EFFORT_ABOVE_HZ as BEST_EFFORT_ABOVE_HZ, SPEC_BANDS as SPEC_BANDS, SPEC_BAND_EDGES_HZ,
+)
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 from jasper.audio_measurement.series_stats import _power_mean_db
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
-# Where grading stops, Hz — best-effort above this, never evaluated against
-# a tolerance. NOMINAL: a `trusted_ceiling_hz` moves it either direction
-# (ADR-0194); `FlatSpecReport.best_effort_above_hz` publishes where it landed.
-BEST_EFFORT_ABOVE_HZ: float = 16000.0
-
-# The adopted spec table: (f_lo_hz, f_hi_hz, tolerance_db), membership
-# f_lo <= f < f_hi. Neither outer edge is a literal — the lower is the seam
-# with room_boundary, the upper is BEST_EFFORT_ABOVE_HZ — both NOMINAL,
-# intersected with the session's trusted floor/ceiling at evaluation.
-SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
-    (GATED_SPEC_LOWER_EDGE_HZ, 2000.0, 1.5),
-    (2000.0, 8000.0, 2.0),
-    (8000.0, BEST_EFFORT_ABOVE_HZ, 2.5),
-)
-
 # SPEC_BANDS[0] exactly — the LOW-MID band alone, so no band above 2 kHz is
 # pooled into the zero its own deviation is stated against (ADR-0194). Not
 # `gate_sweep.REFERENCE_BAND_HZ`, which normalises rather than grades.
-REFERENCE_BAND_HZ: tuple[float, float] = (GATED_SPEC_LOWER_EDGE_HZ, 2000.0)
+REFERENCE_BAND_HZ: tuple[float, float] = SPEC_BAND_EDGES_HZ[0]
 
 
 @dataclass(frozen=True)
@@ -235,6 +223,7 @@ class FlatSpecReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "reference_db": self.reference_db,
+            "ladder": "speaker_spec",
             "bands": [band.to_dict() for band in self.bands],
             "overall_within_target": self.overall_within_target,
             "excluded_intervals": [list(interval) for interval in self.excluded_intervals],

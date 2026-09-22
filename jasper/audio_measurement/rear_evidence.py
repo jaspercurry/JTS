@@ -35,9 +35,15 @@ from jasper.audio_measurement.alignment import (
 )
 from jasper.audio_measurement.analysis import (
     CANONICAL_SHOULDER_RATIOS,
-    THIRD_OCTAVE_BASS_BANDS_HZ,
     band_levels_from_magnitude,
     smooth_fractional_octave,
+)
+from jasper.audio_measurement.band_ladders import (
+    ARRIVAL_GAP_BAND_HZ as ARRIVAL_GAP_BAND_HZ,
+    LATE_ENERGY_BAND_HZ as LATE_ENERGY_BAND_HZ,
+    LEVEL_BANDS_HZ as LEVEL_BANDS_HZ,
+    THIRD_OCTAVE_BASS_BANDS_HZ,
+    UPPER_BANDS_HZ,
 )
 from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT,
@@ -110,12 +116,6 @@ FIGURE_REGRESSION_SIGN: Mapping[str, float] = {
 }
 
 
-UPPER_BANDS_HZ = ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
-LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0), *UPPER_BANDS_HZ)
-LATE_ENERGY_BAND_HZ = (90.0, 250.0)
-#: The gap that predicts cancellation is the gap measured in its band.
-#: Pair-take default before a rear document exists; jasper.active_speaker.rear_calibration.rear_operating_facts reads the applied pass band.
-ARRIVAL_GAP_BAND_HZ = (90.0, 315.0)
 LATE_ENERGY_CHANGE_KEYS = (("early_late_change_db", "early_late_db"),
                            ("band_energy_change_db", "energy_db"), ("arrival_shift_ms", "centroid_ms"))
 # Early/late windows of the cardioid-or-fill figure; see ADR-0325.

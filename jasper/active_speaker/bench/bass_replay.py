@@ -76,7 +76,8 @@ def bass_replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, floa
                 'volume_taper_output_change_db': change('volume_taper', 'full_boost'),
                 'compressor_output_change_db': change('delivered', 'volume_taper'),
                 'delivered_gain_db': change('delivered', 'baseline')})
-        channels.append({'channel': index, 'bass_owner': index in attribution['channels'], 'bands': bands})
+        channels.append({'channel': index, 'bass_owner': index in attribution['channels'],
+                         'ladder': channel['ladder'], 'bands': bands})
     return {**readings['delivered'], 'channels': channels, 'bass_attribution': {
         'descriptor': attribution['descriptor'], 'scope': attribution['scope'],
         'stages': {name: {key: reading[key] for key in ('output_sha256', 'graph_sha256', 'bass_reference_db')}

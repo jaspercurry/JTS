@@ -88,6 +88,7 @@ class RoomGrade:
             "ceiling_source": self.ceiling_source,
             "n_positions": self.n_positions,
             "spatial_support": spatial_support(self.n_positions),
+            "ladder": "room",
             "bands": [asdict(band) for band in self.bands],
             "incumbent": None if self.incumbent_ceiling_hz is None else {
                 "ceiling_hz": self.incumbent_ceiling_hz,

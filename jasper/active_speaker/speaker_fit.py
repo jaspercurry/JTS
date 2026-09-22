@@ -51,7 +51,7 @@ def _envelope_answer(envelope: EnvelopeCurve) -> dict[str, Any]:
                 "center_hz": center, "band_hz": [lo, hi],
                 "min_depth_db": float(np.min(depth)), "max_depth_db": float(np.max(depth)),
             })
-    return {"bands": bands, "sigma_source": "paired_repeats" if envelope.sigma_db is not None else "unavailable"}
+    return {"ladder": "octave", "bands": bands, "sigma_source": "paired_repeats" if envelope.sigma_db is not None else "unavailable"}
 
 
 def _read_candidate(path: Path) -> dict[str, Any]:

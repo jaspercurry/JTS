@@ -50,6 +50,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REFUSAL_WINDOW_TOO_SHORT,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.band_ladders import OCTAVE_BAND_CENTERS_HZ as OCTAVE_BAND_CENTERS_HZ, OCTAVE_BANDS_HZ
 
 # --------------------------------------------------------------------------- #
 # Combiner tuning
@@ -63,20 +64,6 @@ DEFAULT_FLAG_THRESHOLD_DB = 2.0
 DEFAULT_DIAG_FRACTION = 6
 DEFAULT_SPEC_FRACTION = 3
 
-# ISO preferred octave-band centres for the cross-position spread diagnostic. Octave, not
-# 1/3-octave: a legible ~10-number diagnostic, not a curve. Needs >= MIN_BAND_BINS grid bins.
-OCTAVE_BAND_CENTERS_HZ: tuple[float, ...] = (
-    31.5,
-    63.0,
-    125.0,
-    250.0,
-    500.0,
-    1000.0,
-    2000.0,
-    4000.0,
-    8000.0,
-    16000.0,
-)
 MIN_BAND_BINS = 4
 
 # A capture grid must be uniformly spaced to this relative tolerance: smooth_fractional_octave
@@ -1371,9 +1358,9 @@ def octave_bands_hz(
     that spread must cut the spectrum at the same places.
     """
     bands = []
-    for center in OCTAVE_BAND_CENTERS_HZ:
-        lo = max(center / math.sqrt(2.0), grid_lo_hz)
-        hi = min(center * math.sqrt(2.0), grid_hi_hz)
+    for center, (low, high) in zip(OCTAVE_BAND_CENTERS_HZ, OCTAVE_BANDS_HZ):
+        lo = max(low, grid_lo_hz)
+        hi = min(high, grid_hi_hz)
         if lo < hi:
             bands.append((float(center), float(lo), float(hi)))
     return tuple(bands)

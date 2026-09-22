@@ -14,6 +14,8 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import THIRD_OCTAVE_BASS_BANDS_HZ as THIRD_OCTAVE_BASS_BANDS_HZ
+
 #: The canonical shoulders, as multiples of Fc (one octave either side). THE
 #: one statement of the span: consumers multiply Fc by these rather than
 #: restating them, so moving the canon is this line.
@@ -267,15 +269,6 @@ def normalize_to_band(
 
 
 from typing import Mapping, Sequence
-
-
-_THIRD_OCTAVE_CENTERS_HZ = (20.0, 25.0, 31.5, 40.0, 50.0, 63.0,
-                            80.0, 100.0, 125.0, 160.0, 200.0)
-_THIRD_OCTAVE_EDGE_FACTOR = 2.0 ** (1.0 / 6.0)
-THIRD_OCTAVE_BASS_BANDS_HZ: tuple[tuple[float, float], ...] = tuple(
-    (center / _THIRD_OCTAVE_EDGE_FACTOR, center * _THIRD_OCTAVE_EDGE_FACTOR)
-    for center in _THIRD_OCTAVE_CENTERS_HZ
-)
 
 
 def band_levels_from_magnitude(

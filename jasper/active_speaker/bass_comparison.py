@@ -10,11 +10,11 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
 from jasper.json_fields import finite_float
 
 from .crossover_v2.measurement_context import CAPTURE_FIELDS, GRAPH_FIELDS, capture_basis, compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
-from .measurement_bass import BASS_BANDS_HZ
 
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
@@ -65,7 +65,7 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
     context = compare_capture_basis(bass_capture_context(after), bass_capture_context(before), interventions=interventions,
                                     required=tuple(key for key in COMPARISON_FIELDS if key not in interventions))
     result: dict[str, Any] = {"schema": "jts_bass_comparison/1", "change": change, "context": context,
-        "before": before["record_path"], "after": after["record_path"], "bands": []}
+        "before": before["record_path"], "after": after["record_path"], "ladder": "bass", "bands": []}
     if context["incompatible_fields"] and change != "diagnostic":
         return {**result, "available": False, "reason": "capture_context_changed"}
     f, a, b = common_bass_bins(before, after, "fundamental_db", "fundamental_qualified")
