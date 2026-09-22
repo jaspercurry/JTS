@@ -28,8 +28,7 @@ configuration and runtime loading, not measured sound quality.
 - Volume: 70%, reported by `/state` as −15.15 dB. Flat preference EQ.
 - Original loaded graph: `active_speaker_baseline_candidate_48676134ca08.yml`.
 
-Backup and test evidence:
-[`logs/jts3-commissioning-smoke-20260921/`](../../logs/jts3-commissioning-smoke-20260921/).
+Local backup and test evidence: `logs/jts3-commissioning-smoke-20260921/`.
 The backup archive contains the speaker JSON settings and CamillaDSP files;
 it excludes credential compartments and unrelated account data.
 
