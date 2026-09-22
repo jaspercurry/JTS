@@ -291,7 +291,7 @@ def _capture_to_magnitude(
             "method": "paired_signal_window_deconvolution",
             "ambient_duration_s": round(float(ambient_duration_s), 3),
             "selected_quiet_duration_s": round(len(ambient_source) / sr, 3),
-            "bands": adjusted,
+            "ladder": robust["ladder"], "bands": adjusted,
             "raw_robust": robust,
             "raw_baseline": baseline,
             "source": {

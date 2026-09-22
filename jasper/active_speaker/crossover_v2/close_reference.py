@@ -500,7 +500,7 @@ def compare_impulse_responses(
             "declared_clean_window_ms": declared_ms,
             "trusted_floor_hz": f_trusted_floor_hz(span / sr),
             "comparison_band_hz": list(window_band),
-            "bands": graded(table=SPEC_BANDS),
+            "ladder": "speaker_spec", "bands": graded(table=SPEC_BANDS),
             "features": [
                 {"requested_hz": at_hz, **row} for row in graded(table=narrow)
             ],

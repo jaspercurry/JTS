@@ -111,7 +111,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     return {**{key: row[key] for key in ("coverage_hz", "band_hz", "arrival_gap", "superposition_residual_db", "reason")},
             "pose_kind": take.pose_kind, "repeats": len(takes), "figures": symptoms, "figures_band_hz": band,
             "trough_fill_db": None if dip is None else change[np.argmin(np.abs(freqs - dip["hz"]))],
-            "bands": bands, "late_energy": late,
+            "ladder": "rear_level", "bands": bands, "late_energy": late,
             "gradient_residual": {"db": None if not np.all(front[keep]) else figures.gradient_residual_db(
                 grid[keep], rear[keep] / front[keep], gap, pair_band),
                 "reason": figures.REASON_GAP_NOT_CONFIDENT if gap is None else ""},

@@ -8,12 +8,12 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
 from jasper.json_fields import finite_float
 
 from .bass_comparison import bass_curve_on_grid, common_bass_bins
-from .measurement_bass import BASS_BANDS_HZ
 
 
 def _band(take, lo, hi):
@@ -241,7 +241,7 @@ def bass_level_evidence(
     return {**{f"{stack}_response": _response(grid, aligned[stack], [pair[side] for pair in pairs], aligned["reference_band_hz"][0])
                for side, stack in enumerate(("base", "candidate"))},
             "sources": aligned["sources"], "position_count": len(groups), "take_pair_count": len(pairs),
-            "prescribed_boost_db": prescribed_boost_db, "boost_band_hz": boost_band,
+            "prescribed_boost_db": prescribed_boost_db, "boost_band_hz": boost_band, "ladder": "bass",
             "realized_boost_db": [{"band_hz": [lo, hi], "value_db": band_mean(delta, lo, hi),
                                    "prescribed_boost_db": band_mean(prescribed, lo, hi)} for lo, hi in BASS_BANDS_HZ],
             "compression_db": compression,

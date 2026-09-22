@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import ROOM_BAND_SPLITS_HZ as ROOM_BAND_SPLITS_HZ
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.room_boundary import (
@@ -47,10 +48,6 @@ FEATURE_AGREEMENT_DB = 3.0
 #: this many octaves either side, in dB, so a mode neither lifts its own
 #: baseline the way a power mean would nor hides in a dip.
 TREND_HALF_WIDTH_OCTAVES = 0.5
-
-#: Where the room band splits: modes below 60 Hz, the modal-to-transition
-#: region to 120 Hz, the rest to the ceiling.
-ROOM_BAND_SPLITS_HZ = (60.0, 120.0)
 
 
 def band_edges(ceiling_hz: float, floor_hz: float = ROOM_FLOOR_HZ) -> tuple[tuple[float, float], ...]:

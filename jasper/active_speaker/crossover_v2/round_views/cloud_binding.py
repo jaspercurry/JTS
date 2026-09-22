@@ -121,6 +121,7 @@ class CloudBindingRole:
             "refit_vs_banked_db": self.refit_vs_banked_db,
             "n_filters_wired": self.n_filters_wired,
             "n_filters_severed": self.n_filters_severed,
+            "ladder": "octave",
             "bands": [band.to_dict() for band in self.bands],
         }
 

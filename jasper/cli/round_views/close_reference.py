@@ -146,7 +146,7 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
         at_hz_verdict=next(
             (row["verdict"] for row in far_window["features"]), None
         ),
-        bands=[
+        ladder=far_window["ladder"], bands=[
             {
                 "window": window["name"],
                 "graded_band_hz": row["graded_band_hz"],

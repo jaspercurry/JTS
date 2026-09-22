@@ -226,6 +226,7 @@ def _driver_snr_block(
         relevant_hz=relevant_hz,
         model=DRIVER,
         band_method=band_method,
+        ladder="crossover_snr",
     )
     # TWO decision classes off ONE set of measurements: the magnitude
     # verdict above grades ok/reduced/insufficient around 25/20 dB; a
@@ -240,6 +241,7 @@ def _driver_snr_block(
         relevant_hz=alignment_band_hz or relevant_hz,
         model=DRIVER,
         band_method=band_method,
+        ladder="crossover_snr",
     )
     return block
 

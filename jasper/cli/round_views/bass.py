@@ -65,7 +65,7 @@ def _cmd(args: argparse.Namespace) -> int:
     try:
         if args.command == "bass-compare":
             payload, destination = _compare(args)
-            summary: dict[str, Any] = {key: payload[key] for key in ("available", "context", "bands")}
+            summary: dict[str, Any] = {key: payload[key] for key in ("available", "context", "ladder", "bands")}
         else:
             root = args.round_dir if args.command == "bass" else args.round_dir[-1]
             inputs = round_inputs(root)

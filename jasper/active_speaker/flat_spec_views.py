@@ -123,7 +123,7 @@ class LogPooledResidual:
             "linear_rms_db": self.linear_rms_db,
             "octaves": self.octaves,
             "n_bins": self.n_bins,
-            "bands": [band.to_dict() for band in self.bands],
+            "ladder": "speaker_spec", "bands": [band.to_dict() for band in self.bands],
             "n_bands_not_evaluated": self.n_bands_not_evaluated,
             "evaluable": self.evaluable,
         }
@@ -533,7 +533,7 @@ class DirectivityRow:
             "in_reference": self.in_reference,
             "level_offset_db": self.level_offset_db,
             "normalized_db": list(self.normalized_db),
-            "bands": [band.to_dict() for band in self.bands],
+            "ladder": "speaker_spec", "bands": [band.to_dict() for band in self.bands],
             "evaluable": self.evaluable,
             "not_evaluated_reason": self.not_evaluated_reason,
         }

@@ -13,11 +13,10 @@ import wave
 
 import numpy as np
 
+from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ, band_ladder_name
 from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
-
-from ..measurement_bass import BASS_BANDS_HZ
 
 from .derivation import ArtifactHeader, derive_offline_render_config
 from .render import DEPLOYED_PROCESSING_PRECISION, RenderBounds, render_config, resolve_render_binary
@@ -66,5 +65,5 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],
             "main_db": manifest["main_db"], "bass_reference_db": manifest["bass_reference_db"],
             "window_s": [first / rate, last / rate], "window": "rectangular",
-            "channels": [{"channel": channel, "bands": band_levels_dbfs(data[first:last, channel], rate, named_bands, window="rectangular")}
+            "channels": [{"channel": channel, "ladder": band_ladder_name(bands), "bands": band_levels_dbfs(data[first:last, channel], rate, named_bands, window="rectangular")}
                          for channel in range(channels)]}

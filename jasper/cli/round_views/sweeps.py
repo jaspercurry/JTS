@@ -57,11 +57,11 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     resolve_set(banked.inputs, args.set)
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
-    payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
+    payload: dict[str, Any] = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
     written = _write(payload, args.out, resolved_out(banked.round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set))
     return answer(
         args.command, out=written, scope=args.scope, overall_within_target=report.overall_within_target,
-        bands=[
+        ladder=payload["spec"]["ladder"], bands=[
             {
                 "band_hz": [band.f_lo_hz, band.f_hi_hz],
                 "within_target": band.within_target,
@@ -102,7 +102,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     return answer(
         args.command, out=written, scope=args.scope, poses=len(report["poses"]),
         rungs_ms=report["frame"]["rungs_ms"],
-        bands=[
+        ladder=report["ladder"], bands=[
             {"band_hz": band["band_hz"], "verdict": band["window_verdict"]}
             for band in report["bands"]
         ],

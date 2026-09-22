@@ -422,6 +422,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
 
     assert set(d.keys()) == {
         "reference_db",
+        "ladder",
         "bands",
         "overall_within_target",
         "excluded_intervals",
