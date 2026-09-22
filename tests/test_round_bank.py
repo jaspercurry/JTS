@@ -734,7 +734,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
     document = json.loads((root / "candidates.json").read_text())
     assert document["summary"]["candidates"] == list(candidates)
     assert (document["summary"]["poses"], document["summary"]["pairs"]) == (3, 18)
-    assert [table["position_deg"] for table in document["tables"]] == [-20, 0, 20]
+    assert [table["deg"] for table in document["tables"]] == [-20, 0, 20]
     for table in document["tables"]:
         assert table["played"] == list(candidates)
         assert {row["window"] for row in table["roles"]} == {
@@ -746,7 +746,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
             for delta in row["deltas"]:
                 assert delta["bins"] > 0
                 assert [delta[k] for k in ("mean_abs_db", "max_abs_db", "rms_db")] == pytest.approx([0] * 3, abs=0.05)
-                if table["position_deg"] == 0 and row["window"] == "gated" and delta["a"] == "candidate-a":
+                if table["deg"] == 0 and row["window"] == "gated" and delta["a"] == "candidate-a":
                     assert delta["b"] == "candidate-b"
                     assert delta["level_offset_db"] == pytest.approx(-6.0, abs=0.05)
 

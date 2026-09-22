@@ -23,9 +23,11 @@ from jasper.active_speaker.crossover_v2.candidate_ladder import (
     candidate_ladder,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.frequency_view import (
     FREQUENCY_VIEW_FILENAME, FrequencyRun, FrequencySeries, build_frequency_view,
 )
+from jasper.active_speaker.measurement_programs import program
 
 from tests.crossover_v2_banked_round import bank_measure_round
 # The banked-take writer the round-views suite already owns, consumed rather
@@ -41,6 +43,64 @@ pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 
 def _ladder(round_dir: Path) -> dict:
     return candidate_ladder(round_dir, round_inputs(round_dir))
+
+
+@pytest.mark.parametrize("source", ["records", "frequency"])
+@pytest.mark.parametrize("layout", ["seat", "bearing"])
+def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    poses = program("seat", "express").poses if layout == "seat" else program("room", "arm").poses
+    grid = np.array([500.0, 1000.0, 4000.0])
+    series, expected = [], {}
+    for index, pose in enumerate(poses):
+        metadata = {
+            "position_deg": pose.azimuth_deg, "vertical_deg": pose.elevation_deg,
+            "pose_kind": pose.kind, "seat_offset_m": pose.seat_offset_m,
+            "mark_distance_m": pose.distance_m,
+        }
+        position = {
+            "deg": pose.azimuth_deg, "vertical_deg": pose.elevation_deg,
+            "kind": pose.kind, "seat_offset_m": list(pose.seat_offset_m) if pose.seat_offset_m else None,
+            "distance_m": pose.distance_m,
+        }
+        expected[doc_pose_key(metadata)] = (position, float(index + 1))
+        for candidate, scale in (("cfg-a", 0), ("cfg-b", index + 1)):
+            take_id = f"lateral_{index:02d}_{candidate}"
+            curve = _summed_curve(grid, np.array([0.0, 0.0, float(scale)]))
+            _bank_lateral_pose(
+                session_dir, take_id=take_id, position_deg=pose.azimuth_deg,
+                vertical_deg=pose.elevation_deg, candidate_id=candidate, curves=[curve],
+            )
+            path, = session_dir.glob(f"evidence/v1/artifacts/crossover_v2/*/positions/{take_id}.json")
+            path.write_text(json.dumps({**json.loads(path.read_text()), **metadata}))
+            series.append(FrequencySeries(
+                take_id, candidate, "measurement", tuple(grid), tuple(curve["magnitude_db"]),
+                details={**curve, "phase": "lateral", "take_id": take_id,
+                         "candidate_id": candidate, "position": position, "window": "full"},
+            ))
+    if source == "frequency":
+        view = build_frequency_view(FrequencyRun("speaker", "speaker", tuple(series)))
+        (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
+
+    document = json.loads(json.dumps(_ladder(round_dir), allow_nan=False))
+
+    assert (document["summary"]["poses"], document["summary"]["pairs"]) == (3, 3)
+    assert {row["pose_key"] for row in document["tables"]} == set(expected)
+    assert [row["deg"] for row in document["tables"]] == sorted(p.azimuth_deg for p in poses)
+    for row in document["tables"]:
+        position, gap = expected[row["pose_key"]]
+        assert {key: row[key] for key in position} == position
+        assert row["played"] == ["cfg-a", "cfg-b"]
+        role, = row["roles"]
+        assert role["role"] == "summed"
+        assert role.get("window") == ("full" if source == "frequency" else None)
+        assert [candidate["candidate_id"] for candidate in role["candidates"]] == ["cfg-a", "cfg-b"]
+        delta, = role["deltas"]
+        assert (delta["a"], delta["b"], delta["bins"]) == ("cfg-a", "cfg-b", 3)
+        assert delta["max_abs_db"] == pytest.approx(gap)
+        assert delta["mean_abs_db"] == pytest.approx(gap / 3)
+        assert delta["level_offset_db"] == pytest.approx(0)
 
 
 def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_path):

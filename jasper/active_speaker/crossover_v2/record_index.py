@@ -15,13 +15,14 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 
 from ..bundles import BUNDLE_KIND
 from ..commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
+from ..measurement_programs import POSE_KIND_BEARING
 from .contracts import (
     BANKED_TAKE_GLOB,
     MEASURE_KIND_KEY,
@@ -51,6 +52,9 @@ class Measurement:
     captured_at: str | None
     graph_scope: str = ""
     graph_fingerprint: str = ""
+    pose_kind: str = POSE_KIND_BEARING
+    seat_offset_m: Sequence[float] | None = None
+    mark_distance_m: float | None = None
 
 
 def record_path(row: Measurement) -> str:
@@ -144,6 +148,9 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _captured_at(document.get("captured_at")),
         _text(document.get("graph_scope")),
         _text(document.get("graph_fingerprint")),
+        _text(document.get("pose_kind")) or POSE_KIND_BEARING,
+        document.get("seat_offset_m"),
+        document.get("mark_distance_m"),
     )
 
 
