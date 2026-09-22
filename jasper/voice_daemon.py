@@ -35,8 +35,9 @@ from .voice.session import LiveConnection
 from .voice.content_activity import ContentActivityTracker
 from .voice.conversation_capture import ConversationCapture
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
-from .voice.conversation import (
-    END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC,
+from .voice.conversation import NO_SPEECH_ABORT_SEC
+from .voice.speech_activity import (
+    END_OF_UTTERANCE_SILENCE_SEC, END_OF_UTTERANCE_SPEECH_THRESHOLD, SPEECH_RUN_PEAK_MIN,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
 from .voice._tasks import cancel_tracked_tasks, capture_cleanup_error, track_task
@@ -104,53 +105,6 @@ PAUSED_CONNECTION_WAIT_SEC = 1.2
 # 7 × 80 ms = 560 ms covers the wake-word tail + the start of the
 # command for fast speakers.
 PRE_ROLL_FRAMES = 7
-
-# Silero speech-probability threshold for marking "the user has
-# actually spoken" within a turn. Decoupled from
-# JASPER_VAD_BARGE_IN_THRESHOLD (default 0.5) — that one is tuned
-# strict to avoid TTS-bleed false-positives in the barge-in gate;
-# this one is tuned LOOSE so soft / quiet speech still flips
-# `_turns.user_speech_seen` so the silence detector arms.
-# Range: AirPlay music vocals scored 0.13 (0.10 was loose enough to let
-# them flip the flag and feed a false wake to the model); real user
-# speech in the same session bottomed out at 0.19. 0.15 sits between
-# music transients and the softest real speech observed.
-END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.15
-
-# End-of-turn timing — owned by TtsPlayout.expected_drain_at /
-# wait_drained. Drain tail configured via JASPER_TTS_DRAIN_TAIL_SEC.
-
-# Sustained-speech threshold for arming the end-of-utterance silence
-# detector. After wake fires, Silero must report ≥ THRESHOLD
-# speech-probability for at least this many seconds *continuously*
-# before `_turns.user_speech_seen` flips. Then — and only then — does
-# trailing silence start counting toward end-of-utterance.
-#
-# 200 ms, not the 0.3 s default of OpenVoiceOS's dinkum-listener
-# `speech_begin` parameter (ovos-dinkum-listener voice_loop.py): short
-# single-word commands ("next", "pause") span only ~250 ms of audio, and
-# 300 ms would miss them.
-#
-# Duration alone does NOT reject wake-word tail — wake-word phoneme tail
-# plus room reverb routinely clears 3 consecutive 80 ms frames at Silero
-# ≥ 0.15. SPEECH_RUN_PEAK_MIN is the other half of the gate; without it
-# the tail arms the detector, 800 ms of silence fires end-of-utterance,
-# and the model answers from pre-roll plus cached context while the user
-# is still mid-pause.
-SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
-
-# Minimum PEAK Silero score that the arming speech-run must reach.
-# Real user speech peaks well above this within 2-3 frames while
-# wake-tail residual maxes out in the 0.15-0.55 band. A sweep over an
-# 83-event wake corpus found 0.60 rejects the tail (peak 0.52) while
-# keeping every real-speech turn armed within 2 s. See
-# scripts/probe-wake-gate.py for the harness used to derive this.
-#
-# Trade-off: a frame at >= 0.60 must appear within the arming run, so a
-# mumbled or very quiet start may delay arming until a louder frame
-# lands. NO_SPEECH_ABORT_SEC still applies, so the worst degradation is
-# "turn aborts and user re-wakes" rather than a confabulated answer.
-SPEECH_RUN_PEAK_MIN = 0.60
 
 
 class WakeLoop:
@@ -287,11 +241,6 @@ class WakeLoop:
         # `_begin_turn(anchor_at=...)`), because a wake that opens no turn
         # leaves it set.
         self._wake_event_at_monotonic: float = 0.0
-
-        self._silence_started_at: float = 0.0
-        self._speech_run_started_at: float = 0.0
-        self._speech_run_max_silero: float = 0.0
-        self._speech_run_signalled: bool = False
 
         self._barge_in_reference_available = contract_from_config(cfg).echo_cancelled
         # Reconciliation kind for the active provider (resolved once — the
@@ -432,27 +381,6 @@ class WakeLoop:
         if (release := self._turns.take_pending_release()) is not None:
             await asyncio.wait({release}, timeout=SESSION_CLOSE_TIMEOUT_SEC)
         await cancel_tracked_tasks(self._fire_and_forget)
-
-    def _sustained_run(
-        self, score: float, threshold: float, now: float, *, peak_min: float = SPEECH_RUN_PEAK_MIN,
-    ) -> bool:
-        """Advance the speech run with this frame; True once it has armed.
-
-        A frame at or above `threshold` extends the run and its peak; any
-        frame below ends it. Armed means the run has lasted
-        SUSTAINED_SPEECH_TO_ARM_SEC and peaked at peak_min, and
-        stays true for every later frame of the same run — what each caller
-        does on that is its own.
-        """
-        if score < threshold:
-            self._speech_run_started_at = self._speech_run_max_silero = 0.0
-            self._speech_run_signalled = False
-            return False
-        if not self._speech_run_started_at:
-            self._speech_run_started_at = now
-        self._speech_run_max_silero = max(self._speech_run_max_silero, score)
-        return (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
-                and self._speech_run_max_silero >= peak_min)
 
     async def play_cue(self, slug: str) -> str:
         return await self._assistant_output.play_cue_admitted(slug)
@@ -806,9 +734,8 @@ class WakeLoop:
     def _reset_session_input(self) -> None:
         if self._vad is not None:
             self._vad.reset()
-        self._speech_run_started_at = self._silence_started_at = 0.0
-        self._speech_run_max_silero = 0.0
-        self._speech_run_signalled = False
+        self._turns.speech.reset_run()
+        self._turns.speech.silence_started_at = 0.0
 
     def _reset_turn_input(self) -> None:
         """Both VADs. The mid-session resets re-arm the primary leg only."""
@@ -1107,15 +1034,15 @@ class WakeLoop:
         # rather than being silently swallowed here.
         speech_prob = self._vad.predict(frame)
         now = time.monotonic() if captured_at is None else captured_at
-        armed = self._sustained_run(
+        armed = self._turns.speech.update(
             speech_prob, self._cfg.vad_barge_in_threshold, now,
             peak_min=0.0,
         )
-        if not armed or self._speech_run_signalled:
+        if not armed or self._turns.speech.signalled:
             return
-        self._speech_run_signalled = True
+        self._turns.speech.signalled = True
         self._signal_barge_in(
-            silero=self._speech_run_max_silero, sustained=now - self._speech_run_started_at,
+            silero=self._turns.speech.peak, sustained=now - self._turns.speech.run_started_at,
         )
 
     def _signal_barge_in(self, *, silero: float, sustained: float) -> None:
@@ -1172,8 +1099,7 @@ class WakeLoop:
         or the push-to-talk cap without a stack trace.
         """
         self._turns.input_ended = True
-        self._speech_run_started_at = self._speech_run_max_silero = 0.0
-        self._speech_run_signalled = False
+        self._turns.speech.reset_run()
         self._turn_timeline.stamp("end_input")
         try:
             await self._turns.turn.end_input()
@@ -1191,9 +1117,7 @@ class WakeLoop:
             await self._end_session_input("push-to-talk hold cap")
             return
         if self._turns.turn is not None and self._turns.turn.continuous_input:
-            if not self._turns.continuous_speech_started:
-                self._turns.continuous_speech_started = time.monotonic()
-            self._turns.continuous_last_speech = time.monotonic()
+            self._turns.speech.confirm(now)
             self._turns.user_speech_seen = True
         await self._send_session_audio(frame)
 
@@ -1229,18 +1153,18 @@ class WakeLoop:
             await self._end_session_input("cap")
             return
 
-        armed = self._sustained_run(speech_prob, END_OF_UTTERANCE_SPEECH_THRESHOLD, now)
+        armed = self._turns.speech.update(speech_prob, END_OF_UTTERANCE_SPEECH_THRESHOLD, now)
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
             if armed and not self._turns.user_speech_seen:
                 self._turns.user_speech_seen = True
                 self._turns.silero_aec_armed_at_ms = int(elapsed * 1000)
                 await self._wake_telemetry.stage("speech_detected")
-            self._silence_started_at = 0.0
+            self._turns.speech.silence_started_at = 0.0
         elif self._turns.user_speech_seen:
-            if self._silence_started_at == 0.0:
-                self._silence_started_at = now
+            if self._turns.speech.silence_started_at == 0.0:
+                self._turns.speech.silence_started_at = now
                 self._turn_timeline.stamp("speech_end", first=False)
-            elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
+            elif now - self._turns.speech.silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
                 await self._end_session_input("end-of-utterance")
                 return
         await self._send_session_audio(frame)
@@ -1261,21 +1185,15 @@ class WakeLoop:
         score = self._vad.predict(frame)
         threshold = self._cfg.vad_barge_in_threshold if speaking else END_OF_UTTERANCE_SPEECH_THRESHOLD
         self._turns.max_silero_aec = max(self._turns.max_silero_aec, score)
-        armed = self._sustained_run(score, threshold, now)
-        if score >= threshold:
-            if armed:
-                if not self._turns.continuous_speech_started or now - self._turns.continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC:
-                    self._turns.continuous_speech_started = self._speech_run_started_at
-                    if speaking and self._turns.barge_in_active:
-                        self._signal_barge_in(
-                            silero=self._speech_run_max_silero,
-                            sustained=now - self._speech_run_started_at,
-                        )
-                self._turns.continuous_last_speech = now
-                self._turns.user_speech_seen = True
-                self._turns.input_ended = False
-        elif (self._turns.user_speech_seen and not self._turns.input_ended
-                and now - self._turns.continuous_last_speech >= END_OF_UTTERANCE_SILENCE_SEC):
+        speech = self._turns.speech
+        if speech.update(score, threshold, now):
+            new_utterance = speech.confirm(now)
+            if new_utterance and speaking and self._turns.barge_in_active:
+                self._signal_barge_in(silero=speech.peak, sustained=now - speech.run_started_at)
+            self._turns.user_speech_seen = True
+            self._turns.input_ended = False
+        elif (score < threshold and self._turns.user_speech_seen and not self._turns.input_ended
+                and now - speech.last_at >= END_OF_UTTERANCE_SILENCE_SEC):
             await self._end_session_input("continuous speech pause")
         await self._send_session_audio(frame)
 

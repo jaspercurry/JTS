@@ -101,7 +101,7 @@ async def test_mid_hold_silence_does_not_end_input_on_a_button_turn():
     wl = _session_loop(manual=True)
     now = asyncio.get_event_loop().time()
     wl._turns.user_speech_seen = True
-    wl._silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
+    wl._turns.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
     await wl._handle_session_frame(silent_frame())
 
@@ -124,7 +124,7 @@ async def test_mid_hold_silence_DOES_end_input_without_the_bypass():
     wl = _session_loop(manual=False)
     now = asyncio.get_event_loop().time()
     wl._turns.user_speech_seen = True
-    wl._silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
+    wl._turns.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
     await wl._handle_session_frame(silent_frame())
 

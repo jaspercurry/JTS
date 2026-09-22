@@ -322,7 +322,8 @@ class OpenAILiveTurn(BaseLiveTurn):
         if not pcm:
             return
         now = time.monotonic()
-        if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
+        audible = audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR
+        if audible:
             self._note_audio_chunk(now)
         elif self._last_chunk_at and now - self._last_chunk_at <= SILENCE_BRIDGE_SEC:
             self._quiet_played += 1
@@ -350,7 +351,7 @@ class OpenAILiveTurn(BaseLiveTurn):
                 )
         self._last_delta_at = now
         self._last_delta_audio_sec = len(pcm) / OUTPUT_PCM_BYTES_PER_SEC
-        self._enqueue_audio(AudioOutChunk(pcm))
+        self._enqueue_audio(AudioOutChunk(pcm, audible=audible))
 
     async def _on_backend_event(self, envelope: dict) -> None:
         event = envelope["event"]

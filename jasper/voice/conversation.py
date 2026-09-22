@@ -10,11 +10,11 @@ import logging
 import time
 
 from ..log_event import log_event
+from .speech_activity import END_OF_UTTERANCE_SILENCE_SEC
 
 logger = logging.getLogger(__name__)
 
 
-END_OF_UTTERANCE_SILENCE_SEC = 0.8
 # Both turn watchdogs poll on this; every condition they read is
 # second-scale.
 WATCHDOG_POLL_SEC = 0.25
@@ -27,8 +27,8 @@ FIRST_ANSWER_SEC = 5.0
 
 
 async def continuous_watchdog(
-    turn, tts, *, followup_seconds, stall_seconds, user_activity, last_accepted_at,
-    spend_allowed=lambda: True, write_started_at=lambda: 0.0,
+    turn, tts, *, followup_seconds, stall_seconds, speech, playback,
+    spend_allowed=lambda: True,
 ):
     started_at = time.monotonic()
     next_spend_check = started_at
@@ -41,16 +41,18 @@ async def continuous_watchdog(
             next_spend_check = now + 1.0
             if not spend_allowed():
                 return "spend_cap_reached"
-        speech_started, last_speech = user_activity()
+        speech_started, last_speech = speech.started_at, speech.last_at
         if not lost:
+            if speech.confirming(now, WATCHDOG_POLL_SEC):
+                continue
             if not speech_started:
                 if now - started_at >= NO_SPEECH_ABORT_SEC:
                     return "no_speech"
                 continue
             if now - last_speech < END_OF_UTTERANCE_SILENCE_SEC:
                 continue
-        accepted_at = last_accepted_at()
-        writing_since = write_started_at()
+        accepted_at = playback.last_accepted_at
+        writing_since = playback.write_started_at
         if writing_since:
             if now - writing_since >= stall_seconds:
                 return _resolved(
@@ -80,7 +82,7 @@ async def continuous_watchdog(
             deadline = last_speech + FIRST_ANSWER_SEC
             wait = "first_answer"
         else:
-            deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
+            deadline = max(drain_at, followup_seconds + max(last_speech, playback.audible_drain_at))
             wait = "followup"
             if (
                 speech_started <= turn.backend_completed_at
@@ -98,12 +100,13 @@ async def continuous_watchdog(
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,
                 drain_at, pending, turn, deadline, wait=wait,
+                audible_drain_at=playback.audible_drain_at,
             )
 
 
 def _resolved(
     reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
-    writing_since=0.0, *, wait=None,
+    writing_since=0.0, *, wait=None, audible_drain_at=0.0,
 ):
     """Disambiguate a follow-up close from a playout stall in the turn timeline.
 
@@ -115,6 +118,7 @@ def _resolved(
         last_speech_age_ms=int((now - last_speech) * 1000),
         accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
         drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,
+        audible_drain_age_ms=int((now - audible_drain_at) * 1000) if audible_drain_at else None,
         overdue_ms=None if deadline is None else int((now - deadline) * 1000),
         chunks_pending=pending,
         backend_pending=turn.backend_pending,

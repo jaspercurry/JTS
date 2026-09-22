@@ -100,7 +100,7 @@ def _arm_turn(wl, *, wake: bool) -> None:
     wl._turns.session_id = 1
     wl._turns.bg_tasks = set()
     wl._turns.input_ended = False
-    wl._silence_started_at = 0.0
+    wl._turns.speech.silence_started_at = 0.0
     wl._turns.started_at_loop = asyncio.get_event_loop().time()
     wl._turn_timeline.anchor_at(time.monotonic() if wake else 0.0)
 
