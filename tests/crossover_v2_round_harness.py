@@ -170,7 +170,6 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     return []
 
 def _restoring_stage_2(monkeypatch, *, load_ok=True) -> tuple[Any, list[int]]:
-    """A real stage 2 with a banked prior graph and a hardware stand-in."""
     from pathlib import Path
     import hashlib
 
@@ -213,7 +212,7 @@ def _round_session(*, camilla_factory, index_phase_map=None):
     publish_check, publish_candidate, refs = evidence.bind_evidence_publishers(
         store, _MINTED_CAPTURE_SESSION_ID, _bg_run_async)
     phases = index_phase_map or {1: journey.PHASE_VERIFY}
-    opening = journey.open_stage(journey.STAGE_VERIFY_CAPABILITIES, index_phase_map=phases)
+    opening = journey.open_stage(journey.STAGE_MEASURE_CAPABILITIES, index_phase_map=phases, verify_capture_target=0)
     seams = v2host.bind_v2_stage_seams(opening, evidence_store=store,
         capture_session_id=_MINTED_CAPTURE_SESSION_ID, refs=refs,
         publish_check=publish_check, publish_candidate=publish_candidate,

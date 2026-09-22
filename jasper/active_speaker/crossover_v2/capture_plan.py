@@ -623,15 +623,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
 
-# The apply hold's screen body. It carries a REPOSITION instruction because the
-# pre-apply cloud ends at a wide offset while VERIFY's tracking comparator is
-# only meaningful back on the design axis.
-VERIFY_ANCHOR_HOLD_MESSAGE = (
-    "Applying the measured crossover to your speaker. While that finishes, put "
-    "the microphone back on the mark — same spot, same height, pointed at the "
-    "speaker."
-)
-
 # What the geometry-locked retake asks for. Two rungs, so a second retake is a
 # genuinely different instruction. Same register as the position table (#1805):
 # numeric distances in both units, absolute poses measured from the mark.

@@ -326,81 +326,25 @@ class CommissionJourney:
 #: The seams a stage may or may not bind, and the priors a stage may need handed
 #: to it. Slugs rather than an enum: they are journal vocabulary first.
 CAPABILITY_FINDINGS = "findings"
-CAPABILITY_COMMANDED_DELTA = "commanded_delta"
-CAPABILITY_PREDICTED_SUM = "predicted_sum"
-CAPABILITY_ENTRY_BASELINE = "entry_baseline"
 
 
 @dataclass(frozen=True)
 class V2StageCapabilities:
-    """What ONE commission stage binds, and what it needs handed to it.
-
-    The v2 commission runs as two capture sessions against two session objects,
-    binding identical seams except in two places.
-
-    ``provides`` lists ONLY the seams that DIFFER between stages — the ones
-    :func:`jasper.web.correction_crossover_v2.bind_v2_stage_seams` branches on.
-    ``requires`` is what a stage needs the PREVIOUS one to have left on disk,
-    and it is OBSERVABILITY, not a gate: a stage opens either way and a missing
-    input is journalled, because refusing to open would strand a household whose
-    only remaining move is the one being refused.
-    """
+    """The seams a measurement session provides and the inputs it declares."""
 
     stage: str
     provides: frozenset[str]
     requires: frozenset[str] = frozenset()
 
 
-#: Stage 1 — measure, then stop. Binds the findings publisher because a
-#: level-frame finding is banked only by the MEASURE candidate's own gate
-#: (#1866), and stage 2 builds no MEASURE candidate. Requires nothing: it is the
-#: first stage and hydrates its own prior snapshot.
 STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
     stage="measure",
     provides=frozenset({CAPABILITY_FINDINGS}),
 )
 
-STAGE_VERIFY_CAPABILITIES = V2StageCapabilities(
-    stage="verify",
-    provides=frozenset(),
-    requires=frozenset({
-        CAPABILITY_COMMANDED_DELTA,
-        CAPABILITY_PREDICTED_SUM,
-        CAPABILITY_ENTRY_BASELINE,
-    }),
-)
-
-
-def available_stage_priors(
-    *,
-    commanded_delta: bool,
-    predicted_sum: bool,
-    entry_baseline: bool,
-) -> tuple[str, ...]:
-    """Which of stage 2's required priors actually crossed the bridge.
-
-    The slug↔prior binding is stated where the slug is declared rather than at
-    the host call site that happens to hold the value. Sorted, because the
-    shortfall it feeds is.
-    """
-    return tuple(sorted(
-        slug
-        for slug, present in (
-            (CAPABILITY_COMMANDED_DELTA, commanded_delta),
-            (CAPABILITY_PREDICTED_SUM, predicted_sum),
-            (CAPABILITY_ENTRY_BASELINE, entry_baseline),
-        )
-        if present
-    ))
-
-
 @dataclass(frozen=True)
 class StageOpening:
-    """One stage's journey shape, and what it opened without.
-
-    The single contract both host preparers build; they differ in their
-    arguments and nothing else.
-    """
+    """A measurement session's plan, capabilities, and missing inputs."""
 
     capabilities: V2StageCapabilities
     plan: JourneyPlan

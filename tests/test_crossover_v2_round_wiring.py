@@ -1753,28 +1753,6 @@ def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
 
     assert set(stage_1_state) == _PERSISTED_TOP_LEVEL_KEYS
 
-def test_the_two_stages_declare_the_capabilities_that_differ():
-    measure = v2host.STAGE_MEASURE_CAPABILITIES
-    verify = journey.STAGE_VERIFY_CAPABILITIES
-
-    assert measure.stage == "measure"
-    assert measure.provides == {v2host.CAPABILITY_FINDINGS}
-    assert measure.requires == frozenset()
-
-    assert verify.stage == "verify"
-    assert verify.provides == set()
-    assert verify.requires == {
-        journey.CAPABILITY_COMMANDED_DELTA,
-        journey.CAPABILITY_PREDICTED_SUM,
-        journey.CAPABILITY_ENTRY_BASELINE,
-    }
-
-def test_no_capability_is_provided_by_both_stages():
-    measure = v2host.STAGE_MEASURE_CAPABILITIES
-    verify = journey.STAGE_VERIFY_CAPABILITIES
-
-    assert not (measure.provides & verify.provides)
-
 def test_stage_1_declares_itself_too(monkeypatch, caplog):
     """Both stages declare; the measuring one needs nothing handed to it."""
     with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
