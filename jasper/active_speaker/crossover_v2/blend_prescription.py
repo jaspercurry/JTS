@@ -10,10 +10,6 @@ returns a validated :class:`BlendPrescription` or a refusal naming which gate
 said no, by slug from :data:`BLEND_PRESCRIPTION_REFUSAL_REASONS` and never by
 prose. Refusals raise and are never clamped to the boundary.
 
-The gate measures against the evidence PACKET the prescriber answered, not
-against the incumbent, and provenance is content-addressed: the proposal echoes
-:data:`PACKET_FINGERPRINT_FIELD`, so one answering a different round is refused
-rather than graded against evidence it never saw.
 
 Cuts and boosts are different classes and the receipt says which. A boost's
 physics is why: a minimum-phase shortfall can be filled, an interference null
@@ -64,7 +60,6 @@ PositionalEvidence = tuple[list[dict[str, Any]], list[float], float]
 __all__ = [
     "BLEND_CANDIDATE_FIELD",
     "BLEND_PRESCRIPTION_MALFORMED",
-    "BLEND_PRESCRIPTION_PROVENANCE_MISSING",
     "BLEND_PRESCRIPTION_REFUSAL_REASONS",
     "BOOST_MIN_DIP_DB",
     "BOOST_MIN_TESTIFYING_POSITIONS",
@@ -106,7 +101,6 @@ PRESCRIPTION_SCHEMA_VERSION = 1
 #: files and stdin, where "that was the wrong file" is the likelier mistake.
 PRESCRIPTION_KIND = "jts_crossover_blend_prescription"
 
-#: The packet field a proposal must echo back.
 PACKET_FINGERPRINT_FIELD = "packet_fingerprint"
 
 #: Byte ceiling on one proposal document, read before it is parsed. The largest
@@ -191,8 +185,6 @@ PRESCRIPTION_TOO_LARGE = "prescription_too_large"
 #: identifiers differ — the VALUES are the same strings that door uses.
 BLEND_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_SCHEMA_UNSUPPORTED = "prescription_schema_unsupported"
-PRESCRIPTION_PACKET_MISMATCH = "prescription_packet_mismatch"
-BLEND_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_PROHIBITED_FIELD = "prescription_prohibited_field"
 FILTER_MALFORMED = "filter_malformed"
 FILTER_COUNT_EXCEEDED = "filter_count_exceeded"
@@ -213,8 +205,6 @@ BLEND_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_TOO_LARGE,
     BLEND_PRESCRIPTION_MALFORMED,
     PRESCRIPTION_SCHEMA_UNSUPPORTED,
-    PRESCRIPTION_PACKET_MISMATCH,
-    BLEND_PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_PROHIBITED_FIELD,
     FILTER_MALFORMED,
     FILTER_COUNT_EXCEEDED,
@@ -240,6 +230,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "kind",
     PACKET_FINGERPRINT_FIELD,
     "prescriber",
+    "answers_packet",
     "filters",
     "rationale",
     # Written BY the gate, accepted on the way back in so a durable block
@@ -346,10 +337,7 @@ class BlendPrescription:
     #: positive. The receipt's attribution key: the two classes are graded the
     #: same way and must stay separable when the series is read back.
     prescription_class: str
-    #: The packet fingerprint this answered, so a round receipt names the exact
-    #: evidence document the prescription was derived from.
     packet_fingerprint: str
-    #: Who authored it. Both fields required.
     prescriber_model: str
     prescriber_operator: str
     #: The region the proposal was checked against, echoed from the packet.
@@ -366,6 +354,7 @@ class BlendPrescription:
     #: bank that predates the field; ``0`` means the whole rationale was
     #: banked.
     rationale_dropped_chars: int | None = None
+    answers_packet: bool | None = None
 
     @property
     def is_boost(self) -> bool:
@@ -380,6 +369,7 @@ class BlendPrescription:
             "filters": [dict(f) for f in self.filters],
             "band_hz": [self.band_hz[0], self.band_hz[1]],
             PACKET_FINGERPRINT_FIELD: self.packet_fingerprint,
+            "answers_packet": self.answers_packet,
             "prescriber": {
                 "model": self.prescriber_model,
                 "operator": self.prescriber_operator,
@@ -410,14 +400,6 @@ def prescription_response_format() -> dict[str, Any]:
         "required_top_level": {
             "artifact_schema_version": PRESCRIPTION_SCHEMA_VERSION,
             "kind": PRESCRIPTION_KIND,
-            PACKET_FINGERPRINT_FIELD: (
-                "copy the packet's own fingerprint field verbatim; a "
-                "prescription that names a different packet is refused"
-            ),
-            "prescriber": {
-                "model": "the model that authored this, e.g. 'claude-opus-5'",
-                "operator": "the person who ran it",
-            },
             "filters": (
                 f"0 to {BLEND_MAX_FILTERS} objects, each exactly "
                 "{biquad_type: 'Peaking', freq: <Hz>, q: <number>, "
@@ -425,6 +407,8 @@ def prescription_response_format() -> dict[str, Any]:
             ),
         },
         "optional_top_level": {
+            PACKET_FINGERPRINT_FIELD: "evidence echo; a mismatch is disclosed as answers_packet=false",
+            "prescriber": {"model": "optional author", "operator": "optional operator"},
             "rationale": (
                 f"free text; the first {RATIONALE_MAX_CHARS} characters are "
                 "banked and any excess is dropped, with the dropped count on "
@@ -884,17 +868,13 @@ def _parse_prescription(
             f"got {version!r}",
             supported=PRESCRIPTION_SCHEMA_VERSION,
         )
-    fingerprint = raw.get(PACKET_FINGERPRINT_FIELD)
-    if not isinstance(fingerprint, str) or not fingerprint.strip():
-        _refuse(
-            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
-            f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
-        )
-    model, operator = _prescriber(raw.get("prescriber"), reason=BLEND_PRESCRIPTION_PROVENANCE_MISSING)
+    fingerprint = raw.get(PACKET_FINGERPRINT_FIELD, "")
+    fingerprint = fingerprint.strip() if isinstance(fingerprint, str) else ""
+    model, operator = _prescriber(raw.get("prescriber"))
     rationale, rationale_dropped = _rationale(raw.get("rationale"), reason=BLEND_PRESCRIPTION_MALFORMED)
     return (
         _parse_filters(raw.get("filters")),
-        fingerprint.strip(),
+        fingerprint,
         model,
         operator,
         rationale,
@@ -933,21 +913,6 @@ def read_blend_prescription(
         filters, fingerprint, model, operator, rationale, rationale_dropped,
     ) = _parse_prescription(raw)
 
-    if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
-        _refuse(
-            PRESCRIPTION_PACKET_MISMATCH,
-            "the evidence packet carries no fingerprint to compare against",
-        )
-    if fingerprint != packet_fingerprint:
-        _refuse(
-            PRESCRIPTION_PACKET_MISMATCH,
-            "this prescription answers a different evidence packet "
-            f"({fingerprint[:12]}...) than the one supplied "
-            f"({packet_fingerprint[:12]}...)",
-            prescription_answers=fingerprint,
-            packet_is=packet_fingerprint,
-        )
-
     if band_hz is None:
         _refuse(
             REGION_UNAVAILABLE,
@@ -981,7 +946,8 @@ def read_blend_prescription(
     prescription = BlendPrescription(
         filters=filters,
         prescription_class=prescription_class,
-        packet_fingerprint=fingerprint,
+        packet_fingerprint=packet_fingerprint,
+        answers_packet=fingerprint == packet_fingerprint if PACKET_FINGERPRINT_FIELD in raw else None,
         prescriber_model=model,
         prescriber_operator=operator,
         band_hz=band,
@@ -1099,6 +1065,7 @@ def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
             "boost" if any(float(f["gain"]) > 0.0 for f in filters) else "cut"
         ),
         packet_fingerprint=fingerprint,
+        answers_packet=raw.get("answers_packet"),
         prescriber_model=model,
         prescriber_operator=operator,
         band_hz=band,

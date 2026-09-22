@@ -29,7 +29,6 @@ from typing import Any, NoReturn
 
 import numpy as np
 
-from jasper.active_speaker._common import require_sha256_hex
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCES,
     ROOM_FLOOR_HZ,
@@ -68,7 +67,6 @@ from .blend_prescription import (
     # Renamed only to stay distinct from this module's own identifiers: the
     # VALUES are that door's, which is what makes one vocabulary cover both.
     BLEND_PRESCRIPTION_MALFORMED as PRESCRIPTION_MALFORMED,
-    BLEND_PRESCRIPTION_PROVENANCE_MISSING as PRESCRIPTION_PROVENANCE_MISSING,
     # Shared with the blend door rather than re-typed: this door raises the
     # same exception class and refuses under both readers' own values.
     _FILTER_FIELDS,
@@ -81,7 +79,6 @@ __all__ = [
     "LAYOUT_UNAVAILABLE",
     "ROOM_COMPOSED_TOLERANCE_DB",
     "ROOM_MEDIAN_FIELD",
-    "ROOM_MEDIAN_MISMATCH",
     "ROOM_MEDIAN_UNAVAILABLE",
     "ROOM_PRESCRIPTION_KIND",
     "ROOM_PRESCRIPTION_REFUSAL_REASONS",
@@ -109,7 +106,6 @@ ROOM_PRESCRIPTION_SCHEMA_VERSION = 1
 #: The ``kind`` discriminator, and what the CLI switches its evidence on.
 ROOM_PRESCRIPTION_KIND = "jts_room_prescription"
 
-#: The median field a proposal must echo back.
 ROOM_MEDIAN_FIELD = "room_median_sha256"
 
 #: Slack, dB, on the COMPOSED cascade's per-frequency allowance. A Q >= 1 bell
@@ -123,8 +119,6 @@ ROOM_COMPOSED_TOLERANCE_DB = 0.5
 # refusal vocabulary — closed, by slug, never by prose
 # --------------------------------------------------------------------------- #
 
-#: The echoed digest names a different median than the one supplied.
-ROOM_MEDIAN_MISMATCH = "room_median_mismatch"
 #: No median artifact, or one this door cannot read into limits.
 ROOM_MEDIAN_UNAVAILABLE = "room_median_unavailable"
 #: No readable applied profile, so nothing can say which sides this speaker
@@ -143,7 +137,6 @@ SIDE_MALFORMED = "side_malformed"
 ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_MALFORMED,
     PRESCRIPTION_SCHEMA_UNSUPPORTED,
-    PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_PROHIBITED_FIELD,
     FILTER_MALFORMED,
     FILTER_COUNT_EXCEEDED,
@@ -151,7 +144,6 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_Q_OUT_OF_RANGE,
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
-    ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
     LAYOUT_UNAVAILABLE,
     FILTER_CUT_TOO_DEEP,
@@ -326,7 +318,6 @@ class RoomPrescription:
     #: positive. The receipt's attribution key, spelled as the blend class
     #: spells it.
     prescription_class: str
-    #: The median document this answered, content-addressed.
     room_median_sha256: str
     prescriber_model: str
     prescriber_operator: str
@@ -348,6 +339,7 @@ class RoomPrescription:
     rationale_dropped_chars: int | None = None
     coverage_hz: tuple[float, float] | None = None
     measured_basis: Mapping[str, Any] | None = None
+    answers_median: bool | None = None
 
     @property
     def filters(self) -> list[dict[str, Any]]:
@@ -381,6 +373,7 @@ class RoomPrescription:
             "ceiling_source": self.ceiling_source,
             "round_id": self.round_id,
             ROOM_MEDIAN_FIELD: self.room_median_sha256,
+            "answers_median": self.answers_median,
             "prescriber": {
                 "model": self.prescriber_model,
                 "operator": self.prescriber_operator,
@@ -406,14 +399,6 @@ def room_prescription_response_format() -> dict[str, Any]:
         "required_top_level": {
             "artifact_schema_version": ROOM_PRESCRIPTION_SCHEMA_VERSION,
             "kind": ROOM_PRESCRIPTION_KIND,
-            ROOM_MEDIAN_FIELD: (
-                "copy the sha256 of the room median document you were given; "
-                "a prescription naming a different median is refused"
-            ),
-            "prescriber": {
-                "model": "the model that authored this",
-                "operator": "the person who ran it",
-            },
             "sides": (
                 "one entry per side this speaker declares, keyed by exactly "
                 "those side names (a mono layout declares one side, named "
@@ -422,6 +407,8 @@ def room_prescription_response_format() -> dict[str, Any]:
             ),
         },
         "optional_top_level": {
+            ROOM_MEDIAN_FIELD: "evidence echo; a mismatch is disclosed as answers_median=false",
+            "prescriber": {"model": "optional author", "operator": "optional operator"},
             "rationale": (
                 f"free text; the first {RATIONALE_MAX_CHARS} characters are "
                 "banked and the excess is dropped with its count disclosed. "
@@ -538,7 +525,7 @@ def _parse_sides(raw: Any) -> dict[str, tuple[dict[str, Any], ...]]:
 
 def _parse_prescription(
     raw: Mapping[str, Any],
-) -> tuple[dict[str, tuple[dict[str, Any], ...]], str, str, str, str, int]:
+) -> tuple[dict[str, tuple[dict[str, Any], ...]], Any, str, str, str, int]:
     """Shape, identity and provenance — and none of the bounds."""
     if not isinstance(raw, Mapping):
         _refuse(
@@ -577,41 +564,21 @@ def _parse_prescription(
             f"{ROOM_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
             supported=ROOM_PRESCRIPTION_SCHEMA_VERSION,
         )
-    try:
-        echoed = require_sha256_hex(
-            raw.get(ROOM_MEDIAN_FIELD), ROOM_MEDIAN_FIELD, ValueError
-        )
-    except ValueError as exc:
-        _refuse(PRESCRIPTION_PROVENANCE_MISSING, str(exc))
-    model, operator = _prescriber(raw.get("prescriber"), reason=PRESCRIPTION_PROVENANCE_MISSING)
+    echoed = raw.get(ROOM_MEDIAN_FIELD)
+    model, operator = _prescriber(raw.get("prescriber"))
     rationale, dropped = _rationale(raw.get("rationale"), reason=PRESCRIPTION_MALFORMED)
     return _parse_sides(raw.get("sides")), echoed, model, operator, rationale, dropped
 
 
 def _checked_median(
-    median: RoomMedian | None, supplied_sha256: Any, echoed: str, round_id: str
+    median: RoomMedian | None, supplied_sha256: Any, round_id: str
 ) -> RoomMedian:
-    """The evidence this proposal is measured against, or why there is none.
-
-    Content-addressed like the blend door's packet fingerprint: a proposal
-    answering a median nobody supplied is refused rather than graded against
-    evidence it never saw.
-    """
     if median is None:
         _unavailable("no room median was supplied to check this prescription against")
     if not isinstance(supplied_sha256, str) or not supplied_sha256:
         _unavailable("the supplied room median carries no digest to compare against")
     if not round_id.strip():
         _unavailable("no round names the supplied room median")
-    if echoed != supplied_sha256:
-        _refuse(
-            ROOM_MEDIAN_MISMATCH,
-            f"this prescription answers a different room median "
-            f"({echoed[:12]}...) than the one supplied "
-            f"({supplied_sha256[:12]}...)",
-            prescription_answers=echoed,
-            median_is=supplied_sha256,
-        )
     return median
 
 
@@ -768,7 +735,7 @@ def _room_inputs(
     room_median_sha256: str | None,
     round_id: str,
     sides: Sequence[str],
-) -> tuple[dict[str, tuple[dict[str, Any], ...]], str, str, str, str, int, RoomMedian]:
+) -> tuple[dict[str, tuple[dict[str, Any], ...]], bool | None, str, str, str, int, RoomMedian]:
     prescribed, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
     if set(prescribed) != set(sides):
         _refuse(
@@ -777,21 +744,23 @@ def _room_inputs(
             f"key its sides by exactly those names, not {sorted(prescribed)}",
             expected_sides=sorted(sides),
         )
-    median = _checked_median(room_median, room_median_sha256, echoed, round_id)
+    median = _checked_median(room_median, room_median_sha256, round_id)
     measured_side = (median.evidence or {}).get("basis", {}).get("side")
     if measured_side is not None and set(sides) != {measured_side}:
         _refuse(SIDE_MALFORMED, "the median measures another side", measured_side=measured_side)
-    return prescribed, echoed, model, operator, rationale, dropped, median
+    answers_median = echoed == room_median_sha256 if ROOM_MEDIAN_FIELD in raw else None
+    return prescribed, answers_median, model, operator, rationale, dropped, median
 
 
 def preview_room_prescription(raw: Mapping[str, Any], *, room_median: RoomMedian,
                               room_median_sha256: str, round_id: str, sides: Sequence[str]) -> dict[str, Any]:
-    prescribed, *_, median = _room_inputs(
+    prescribed, answers_median, *_, median = _room_inputs(
         raw, room_median=room_median, room_median_sha256=room_median_sha256, round_id=round_id, sides=sides,
     )
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
     try:
-        return room_composition(prescribed, median, floor_db).preview(median, ROOM_COMPOSED_TOLERANCE_DB)
+        return {**room_composition(prescribed, median, floor_db).preview(median, ROOM_COMPOSED_TOLERANCE_DB),
+                ROOM_MEDIAN_FIELD: room_median_sha256, "round_id": round_id, "answers_median": answers_median}
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
         _refuse(FILTER_MALFORMED, str(exc))
 
@@ -803,7 +772,7 @@ def read_room_prescription(
     """Parse the measured basis, then check filters, boost admission and composition."""
     if raw is None:
         return None
-    prescribed, echoed, model, operator, rationale, dropped, median = _room_inputs(
+    prescribed, answers_median, model, operator, rationale, dropped, median = _room_inputs(
         raw, room_median=room_median, room_median_sha256=room_median_sha256, round_id=round_id, sides=sides,
     )
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
@@ -813,7 +782,8 @@ def read_room_prescription(
     return RoomPrescription(
         sides=prescribed,
         prescription_class=prescription_class,
-        room_median_sha256=echoed,
+        room_median_sha256=room_median_sha256 or "",
+        answers_median=answers_median,
         coverage_hz=median.coverage_hz,
         measured_basis=(median.evidence or {}).get("basis"),
         prescriber_model=model,

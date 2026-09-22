@@ -36,7 +36,6 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     FILTER_CUT_TOO_DEEP,
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
-    ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_COMPOSED_TOLERANCE_DB,
     ROOM_PRESCRIPTION_KIND,
@@ -251,10 +250,6 @@ def test_an_unreadable_median_is_not_evidence(break_document):
             id="one_side_named_twice_around_whitespace",
         ),
         pytest.param(
-            ROOM_MEDIAN_MISMATCH, {"sha256": "b" * 64}, {},
-            id="answers_a_different_median",
-        ),
-        pytest.param(
             ROOM_MEDIAN_UNAVAILABLE, {}, {"window": "gated"},
             id="a_median_the_gate_measured_instead_of_the_room",
         ),
@@ -270,6 +265,25 @@ def test_the_room_door_refuses_by_slug(reason, document, median_knobs):
     if reason == FILTER_Q_OUT_OF_RANGE:
         assert excinfo.value.evidence == {"q": document["filters"][0]["q"],
                                          "q_range": [ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX]}
+
+
+@pytest.mark.parametrize("echo,author", [(None, None), ("b" * 64, {}), ("", {"model": "m"})])
+def test_optional_median_echo_and_author_are_disclosed(echo, author):
+    raw = _document()
+    raw.pop("room_median_sha256")
+    raw.pop("prescriber")
+    if echo is not None:
+        raw.update(room_median_sha256=echo, prescriber=author)
+    receipt = _read(raw).to_dict()
+    assert receipt["room_median_sha256"] == MEDIAN_SHA256
+    assert receipt["round_id"] == "round-7"
+    assert receipt["answers_median"] is (None if echo is None else False)
+    assert receipt["prescriber"] == {"model": "m" if author else "", "operator": ""}
+    preview = preview_room_prescription(raw, room_median=read_room_median(_room_median()),
+                                       room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=SIDES)
+    assert {key: preview[key] for key in ("room_median_sha256", "round_id", "answers_median")} == {
+        key: receipt[key] for key in ("room_median_sha256", "round_id", "answers_median")}
+
 
 
 @pytest.mark.parametrize("sides", [("mono",), ("left", "right")])

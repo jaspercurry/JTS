@@ -1003,10 +1003,6 @@ def test_one_roles_composed_spend_is_not_charged_to_the_other(packet, tmp_path):
     ({"kind": PRESCRIPTION_KIND}, dp.DRIVER_PRESCRIPTION_MALFORMED),
     ({"kind": None}, dp.DRIVER_PRESCRIPTION_MALFORMED),
     ({"artifact_schema_version": 2}, dp.DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED),
-    ({"packet_fingerprint": "not-this-round"}, dp.DRIVER_PRESCRIPTION_PACKET_MISMATCH),
-    ({"prescriber": {"model": "m"}}, dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
-    ({"prescriber": {"model": "m", "operator": " "}},
-     dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
     ({"typo": 1}, dp.DRIVER_PRESCRIPTION_MALFORMED),
     # A rationale that is not TEXT still refuses: the document was built by
     # something that does not speak this contract. Its LENGTH no longer does —
@@ -1020,26 +1016,27 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
     assert excinfo.value.reason == reason
 
 
-@pytest.mark.parametrize(("filters", "pin", "reason"), [
-    ([], None, None),
-    ([], {"tweeter": -9.52}, None),
-    ([_cut()], None, dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
+@pytest.mark.parametrize("filters,pin,echo,author", [
+    ([], None, None, None), ([], {"tweeter": -9.52}, None, None),
+    ([_cut()], None, None, None),
+    ([_cut()], None, "not-this-round", {"model": "m"}),
+    ([_cut()], None, "", {"model": "m", "operator": " "}),
 ])
-def test_only_a_nonempty_driver_chain_requires_packet_provenance(
-    packet, filters, pin, reason,
-):
+def test_optional_evidence_echo_and_author_are_disclosed(packet, filters, pin, echo, author):
     document = _document(filters, packet, **({"pinned_trim_db": pin} if pin else {}))
     document.pop("packet_fingerprint")
     document.pop("prescriber")
+    if echo is not None:
+        document.update(packet_fingerprint=echo, prescriber=author)
+    accepted = _gate(packet, document)
+    assert list(accepted.filters) == filters
+    assert dict(accepted.pinned_trim_db) == (pin or {})
+    receipt = accepted.to_dict()
+    assert receipt["packet_fingerprint"] == packet["packet_fingerprint"]
+    assert receipt["answers_packet"] is (None if echo is None else False)
+    assert receipt["prescriber"] == {"model": "m" if author else "", "operator": ""}
+    assert {"driver_prescription_packet_mismatch", "driver_prescription_provenance_missing"}.isdisjoint(dp.DRIVER_PRESCRIPTION_REFUSAL_REASONS)
 
-    if reason:
-        with pytest.raises(BlendPrescriptionRefused) as excinfo:
-            _gate(packet, document)
-        assert excinfo.value.reason == reason
-    else:
-        accepted = _gate(packet, document)
-        assert accepted.filters == ()
-        assert dict(accepted.pinned_trim_db) == (pin or {})
 
 
 @pytest.mark.parametrize(("filters", "reason"), [
@@ -1059,19 +1056,7 @@ def test_only_an_empty_chain_may_pin_a_role_known_by_branch_context(
         assert dict(_gate(packet, document, context=context).pinned_trim_db) == {"aux": -3.0}
 
 
-def test_a_packet_mismatch_discloses_which_evidence_this_side_had(packet):
-    """F-7: a laptop-built and a Pi-built packet of the same round can
-    disagree on fingerprint because the evidence INPUTS differed, not
-    because either build is wrong. The refusal says so, in structured
-    fields a caller can act on rather than a bare pair of hashes.
-    """
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet, packet_fingerprint="not-this-round"))
 
-    assert excinfo.value.reason == dp.DRIVER_PRESCRIPTION_PACKET_MISMATCH
-    assert excinfo.value.evidence["packet_is_evidence_present"] == {
-        "drivers": True, "classification": True, "incumbent_linearization": False,
-    }
 
 
 @pytest.mark.parametrize("over_by", [1, 800])

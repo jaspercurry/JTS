@@ -30,14 +30,11 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
     ALIGNMENT_PRESCRIPTION_KIND,
     ALIGNMENT_PRESCRIPTION_MALFORMED,
-    ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
     ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS,
     ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
     ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
-    PRESCRIPTION_BASIS_INVALID,
     PRESCRIPTION_DELAY_INVALID,
     PRESCRIPTION_FC_UNKNOWN,
-    PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_POLARITY_INVALID,
     AlignmentPrescription,
@@ -149,12 +146,6 @@ def _arm(arm_us: float, **overrides: object) -> dict:
 
 
 def test_the_bound_is_a_half_period_at_fc_and_nothing_else():
-    """The gate and the aligner's own lobe tripwire share one geometry.
-
-    Not a re-derivation: the reader is asked for the widest legal prescription
-    and the answer has to BE ``half_period_us``, so the two cannot drift into
-    two opinions about where a comb lobe ends.
-    """
     lobe_us = half_period_us(FC_HZ)
     widest = _read(
         _arm(BASIS_US + lobe_us), fc_hz=FC_HZ,
@@ -164,129 +155,72 @@ def test_the_bound_is_a_half_period_at_fc_and_nothing_else():
 
 
 @pytest.mark.parametrize("direction", (1.0, -1.0))
-def test_exactly_at_the_bound_is_legal_and_past_it_is_refused(direction):
-    """Edge-exact, in BOTH directions, and refused by NAME.
-
-    Exactness is legal in this repository's gates. A strict comparison would
-    make the legality of a round depend on floating-point noise in the sixth
-    decimal of a corner frequency — and, worse, would do it asymmetrically
-    depending on which side of the basis the candidate sits.
-    """
+def test_exactly_at_the_lobe_and_past_it_are_disclosed(direction):
     lobe_us = half_period_us(FC_HZ)
     at_bound = BASIS_US + direction * lobe_us
-    assert abs(at_bound - BASIS_US) <= lobe_us, "the at-bound candidate is at it"
-    assert _read(_arm(at_bound), fc_hz=FC_HZ) is not None
-
-    # The smallest representable step past the bound IN THE DELAY, walked until
-    # the residual it produces actually exceeds the lobe — the sum's own ULP is
-    # coarser than the lobe's, so nudging the lobe instead can round straight
-    # back onto the boundary. Asserted rather than assumed, so the test cannot
-    # quietly become a second copy of the at-bound case.
+    assert abs(at_bound - BASIS_US) <= lobe_us
+    assert _read(_arm(at_bound)).to_dict()["out_of_lobe"] is False
     past_delay = at_bound
     for _ in range(8):
         if abs(past_delay - BASIS_US) > lobe_us:
             break
         past_delay = float(np.nextafter(past_delay, direction * np.inf))
-    assert abs(past_delay - BASIS_US) > lobe_us, "the past-bound candidate is past it"
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(_arm(past_delay), fc_hz=FC_HZ)
-    assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
+    assert abs(past_delay - BASIS_US) > lobe_us
+    receipt = _read(_arm(past_delay)).to_dict()
+    assert receipt["out_of_lobe"] is True
+    assert receipt["residual_us"] == past_delay - BASIS_US
+    assert receipt["lobe_us"] == lobe_us
 
 
-def test_the_corrected_arm_set_clears_the_bound_and_the_control_arm_does_not():
-    """Print-what-you-assert, on the candidates this harness was built to run.
-
-    Four of the diagnosis's five candidates are admissible; the ``0 µs``
-    control is not, because zero delay leaves the drivers 405.7 µs apart —
-    241° of phase error at Fc, well outside the lobe. That is the correct
-    verdict rather than a gap: refusing to bless a known-misaligned state as
-    measurement-backed is what the gate is for, and "no prescription" is how
-    a control candidate is run.
-    """
-    admitted = {}
-    for arm_us in ARMS_US:
-        try:
-            admitted[arm_us] = _read(
-                _arm(arm_us), fc_hz=FC_HZ,
-            ).residual_us
-        except AlignmentPrescriptionRefused as exc:
-            admitted[arm_us] = exc.reason
-    assert admitted == {
-        0.0: PRESCRIPTION_OUT_OF_LOBE,
-        -250.0: pytest.approx(155.7),
-        -350.0: pytest.approx(55.7),
-        -450.0: pytest.approx(-44.3),
-        -550.0: pytest.approx(-144.3),
+def test_the_arm_set_and_control_disclose_residuals():
+    receipts = {arm: _read(_arm(arm)).to_dict() for arm in ARMS_US}
+    assert {arm: receipt["residual_us"] for arm, receipt in receipts.items()} == {
+        0.0: pytest.approx(405.7), -250.0: pytest.approx(155.7),
+        -350.0: pytest.approx(55.7), -450.0: pytest.approx(-44.3), -550.0: pytest.approx(-144.3),
+    }
+    assert {arm: receipt["out_of_lobe"] for arm, receipt in receipts.items()} == {
+        arm: arm == 0 for arm in ARMS_US
     }
 
 
-def test_every_swept_corner_admits_the_same_four_arms():
-    """The bound is validated once, at the commissioned corner — and on this
-    candidate set that choice is not load-bearing.
-
-    A FROZEN regression guard over the corners the banked r1b round actually
-    swept, back when an alternative-Fc sweep re-scored the same prescription at
-    each of them. No live path re-scores a prescription at a second corner — a
-    round runs at one corner, and the sweep and the selector that ranked its
-    results are both retired (``docs/tuning-master-plan.md`` tickets 2.3, 2.4).
-    What the guard is still worth: the half-period lobe tightens with frequency,
-    so a corner other than the commissioned one could in principle exclude a
-    candidate the boundary admitted. It does not across this banked span — the
-    tightest corner in it (1847.7 Hz, lobe 270.6 µs) still clears every
-    candidate, whose worst residual is 155.7 µs. Pinned so a future candidate
-    set that DOES straddle one of these corners fails here rather than
-    surprising a bench session.
-    """
-    per_corner = {}
+def test_every_swept_corner_discloses_the_same_four_arms_inside_the_lobe():
     for fc_hz in SWEPT_CORNERS_HZ:
-        admitted = []
-        for arm_us in ARMS_US:
-            try:
-                _read(_arm(arm_us), fc_hz=fc_hz)
-            except AlignmentPrescriptionRefused:
-                continue
-            admitted.append(arm_us)
-        per_corner[fc_hz] = tuple(admitted)
-    assert set(per_corner.values()) == {(-250.0, -350.0, -450.0, -550.0)}
+        receipts = {arm: _read(_arm(arm), fc_hz=fc_hz).to_dict() for arm in ARMS_US}
+        assert tuple(arm for arm, receipt in receipts.items() if not receipt["out_of_lobe"]) == (-250.0, -350.0, -450.0, -550.0)
 
 
-def test_the_bound_is_measured_from_the_basis_not_from_the_incumbent():
-    """The design decision, pinned as behaviour.
-
-    The series-2 incumbent (+96.0 µs applied) sits 501.7 µs from the measured
-    basis — **1.65 half-period lobes**, 0.83 of a period at Fc. A bound anchored
-    on it would refuse every candidate that could fix the misalignment, which is
-    how a fail-closed guard becomes decorative. Anchored on the declared basis,
-    the optimum candidate is admitted and the incumbent itself would not be.
-
-    The ratio is asserted, not narrated: this docstring justified the design
-    deviation with "more than a period and a half" for one review round, which
-    was wrong by half a lobe — the conclusion survived, the arithmetic did not,
-    and a number a test does not own is a number that can drift again.
-    """
+def test_the_lobe_is_measured_from_the_basis_not_from_the_incumbent():
     incumbent_us = 96.0
-    lobes = abs(incumbent_us - BASIS_US) / half_period_us(FC_HZ)
-    assert lobes == pytest.approx(1.6543, abs=5e-4)
-    assert abs(incumbent_us - BASIS_US) / (1e6 / FC_HZ) == pytest.approx(
-        0.8272, abs=5e-4,
-    )
-    assert abs(incumbent_us - BASIS_US) > half_period_us(FC_HZ)
-    assert _read(_arm(-450.0), fc_hz=FC_HZ) is not None
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(_arm(incumbent_us), fc_hz=FC_HZ)
-    assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
+    assert abs(incumbent_us - BASIS_US) / half_period_us(FC_HZ) == pytest.approx(1.6543, abs=5e-4)
+    assert abs(incumbent_us - BASIS_US) / (1e6 / FC_HZ) == pytest.approx(0.8272, abs=5e-4)
+    assert _read(_arm(-450.0)).out_of_lobe is False
+    assert _read(_arm(incumbent_us)).out_of_lobe is True
 
 
-@pytest.mark.parametrize("fc_hz", (0.0, -1648.7, float("nan"), float("inf"), True, "x"))
-def test_an_unusable_corner_is_its_own_refusal(fc_hz):
-    """A corner the bound is undefined at never reads as an out-of-lobe candidate.
-
-    Two different problems, and reporting the second would send an operator to
-    re-derive a number that was fine.
-    """
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(_arm(-450.0), fc_hz=fc_hz)
-    assert excinfo.value.reason == PRESCRIPTION_FC_UNKNOWN
+@pytest.mark.parametrize("mutation,fc_hz", [
+    ({}, None), ({}, 0.0), ({}, -1648.7), ({}, float("nan")), ({}, float("inf")), ({}, True), ({}, "x"),
+    ({"basis_delay_us": "-405.7"}, FC_HZ), ({"basis_delay_us": False}, FC_HZ), ({"basis_delay_us": float("nan")}, FC_HZ),
+    ({"basis_artifacts": []}, FC_HZ), ({"basis_artifacts": None}, FC_HZ),
+    ({"basis_artifacts": ["  "]}, FC_HZ), ({"basis_artifacts": [None]}, FC_HZ),
+    ({"basis_artifacts": "one.json,two.json"}, FC_HZ), ({"basis_note": 7}, FC_HZ),
+])
+def test_missing_or_unusable_context_is_disclosed(mutation, fc_hz):
+    raw = _arm(-450.0)
+    for key in ("basis_delay_us", "basis_artifacts", "basis_note"):
+        raw.pop(key)
+    if fc_hz != FC_HZ:
+        raw["basis_delay_us"] = BASIS_US
+    accepted = _read({**raw, **mutation}, fc_hz=fc_hz)
+    receipt = accepted.to_dict()
+    assert receipt["delay_us"] == -450.0
+    assert receipt["basis_delay_us"] == (BASIS_US if fc_hz != FC_HZ else None)
+    assert receipt["residual_us"] == (pytest.approx(-44.3) if fc_hz != FC_HZ else None)
+    assert receipt["out_of_lobe"] is None
+    assert receipt["basis_artifacts"] == []
+    assert receipt["basis_note"] == ""
+    assert receipt["lobe_us"] == (half_period_us(FC_HZ) if fc_hz == FC_HZ else None)
+    assert alignment_prescription_from_mapping(receipt) == accepted
+    assert {"prescription_out_of_lobe", "prescription_basis_invalid", "prescription_fc_unknown", "prescription_provenance_missing"}.isdisjoint(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS)
 
 
 def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
@@ -303,45 +237,8 @@ def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
 
 
 # --------------------------------------------------------------------------- #
-# 2. Provenance is required, and the shape is strict
+# 2. Delay and envelope shape
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    ("mutation", "reason"),
-    [
-        ({"basis_artifacts": []}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": None}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": ["  "]}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": [None]}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
-        # A bare string would make "a,b" one artifact and ["a","b"] two,
-        # decided by punctuation.
-        (
-            {"basis_artifacts": "one.json,two.json"},
-            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-        ),
-        ({"basis_note": 7}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
-    ],
-)
-def test_a_prescription_without_real_provenance_is_refused(mutation, reason):
-    """The bound checks a prescription against a basis somebody NAMED.
-
-    Without the name the bound is arithmetic, not provenance: a prescriber
-    could declare any basis it liked and pass. What makes the basis
-    trustworthy is that the receipt says where it came from and a human can go
-    and read it.
-    """
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(_arm(-450.0, **mutation), fc_hz=FC_HZ)
-    assert excinfo.value.reason == reason
-
-
-def test_a_prescription_missing_its_artifacts_key_entirely_is_refused():
-    body = _arm(-450.0)
-    del body["basis_artifacts"]
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(body, fc_hz=FC_HZ)
-    assert excinfo.value.reason == ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING
 
 
 @pytest.mark.parametrize(
@@ -352,9 +249,6 @@ def test_a_prescription_missing_its_artifacts_key_entirely_is_refused():
         ({"delay_us": None}, PRESCRIPTION_DELAY_INVALID),
         ({"delay_us": float("nan")}, PRESCRIPTION_DELAY_INVALID),
         ({"delay_us": float("-inf")}, PRESCRIPTION_DELAY_INVALID),
-        ({"basis_delay_us": "-405.7"}, PRESCRIPTION_BASIS_INVALID),
-        ({"basis_delay_us": False}, PRESCRIPTION_BASIS_INVALID),
-        ({"basis_delay_us": float("nan")}, PRESCRIPTION_BASIS_INVALID),
         # The typo that would otherwise silently drop the provenance.
         ({"basis_artifact": ["x"]}, ALIGNMENT_PRESCRIPTION_MALFORMED),
     ],
@@ -407,10 +301,6 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
     for body, fc_hz in (
         ("not a mapping", FC_HZ),
         (_arm(-450.0, delay_us="x"), FC_HZ),
-        (_arm(-450.0, basis_delay_us="x"), FC_HZ),
-        (_arm(-450.0, basis_artifacts=[]), FC_HZ),
-        (_arm(-450.0), 0.0),
-        (_arm(0.0), FC_HZ),
         (_arm(-450.0, polarity="inverted"), FC_HZ),
         (_arm(-450.0, artifact_schema_version=2), FC_HZ),
     ):
@@ -537,8 +427,7 @@ def test_the_presets_declared_window_is_asked_at_the_tap_not_ten_minutes_later()
         except AlignmentPrescriptionRefused as exc:
             horn_verdicts[arm_us] = exc.reason
     assert horn_verdicts == {
-        # Still the lobe: 0 µs never gets as far as the window question.
-        0.0: PRESCRIPTION_OUT_OF_LOBE,
+        0.0: "accepted",
         -250.0: "accepted",
         -350.0: "accepted",
         -450.0: PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
@@ -553,26 +442,15 @@ def test_the_presets_declared_window_is_asked_at_the_tap_not_ten_minutes_later()
     assert tonight == {-250.0: -250.0, -350.0: -350.0, -450.0: -450.0, -550.0: -550.0}
 
 
-def test_the_hardware_window_is_answered_before_the_measurements_lobe():
-    """Two refusals send an operator to two different places.
-
-    A prescription the preset could never emit is refused for THAT — go
-    re-declare the region — rather than for a lobe it also happens to miss,
-    which would say go re-derive the basis. The ordering is what keeps the
-    named reason actionable.
-    """
+def test_the_declared_window_refuses_and_the_lobe_discloses():
     both_wrong = _arm(-900.0)
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(both_wrong, declared_bounds_us=HORN_WINDOW_US)
     assert excinfo.value.reason == PRESCRIPTION_OUTSIDE_DECLARED_WINDOW
-    # …and with no declaration to answer, the same candidate falls through
-    # to the measurement's own bound rather than passing.
-    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
-        _read(both_wrong, declared_bounds_us=None)
-    assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
+    assert _read(both_wrong, declared_bounds_us=None).to_dict()["out_of_lobe"] is True
 
 
-def test_a_preset_that_declares_no_window_gates_on_the_lobe_alone():
+def test_a_preset_that_declares_no_window_discloses_the_lobe():
     """``None`` is ``alignment_delay_search_bounds_us``'s own answer for a
     preset with no ``delay_range_ms``, and it means nothing to gate on — the
     same posture ``alignment_delay_plausible`` takes. It must not read as a
@@ -593,18 +471,9 @@ def test_no_prescription_reads_as_the_automatic_path():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_read_back_does_not_re_apply_the_bound():
-    """One owner for the bound, and it is the request boundary.
-
-    The only mappings that reach the read-back were written after the boundary
-    accepted them, so re-applying the bound could not catch a prescription it
-    let through — it could only refuse one whose corner moved between the stage
-    that MEASURED a round and the stage that GRADES it, discarding the evidence
-    of a round that really ran.
-    """
+def test_the_read_back_preserves_an_out_of_lobe_delay():
     out_of_lobe = _arm(0.0)
-    with pytest.raises(AlignmentPrescriptionRefused):
-        _read(out_of_lobe, fc_hz=FC_HZ)
+    assert _read(out_of_lobe, fc_hz=FC_HZ).to_dict()["out_of_lobe"] is True
     recovered = alignment_prescription_from_mapping(out_of_lobe)
     assert recovered is not None
     assert recovered.delay_us == 0.0
@@ -613,7 +482,7 @@ def test_the_read_back_does_not_re_apply_the_bound():
 def test_the_read_back_still_refuses_a_mangled_record(caplog):
     """A hand-edited state file must not become half a provenance."""
     with caplog.at_level(logging.WARNING):
-        assert alignment_prescription_from_mapping(_arm(-450.0, basis_artifacts=[])) is None
+        assert alignment_prescription_from_mapping(_arm(-450.0, delay_us="invalid")) is None
     assert event_records(
         caplog, "correction.crossover_v2_alignment_prescription_unreadable"
     )
@@ -750,10 +619,7 @@ def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
     assert not hasattr(ap, "PRESCRIPTION_PROVENANCE_MISSING")
     assert not hasattr(ap, "PRESCRIPTION_REFUSAL_REASONS")
     assert ap.ALIGNMENT_PRESCRIPTION_MALFORMED == "prescription_malformed"
-    assert (
-        ap.ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING
-        == "prescription_provenance_missing"
-    )
+    assert "prescription_provenance_missing" not in ap.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS
 
 
 # --------------------------------------------------------------------------- #

@@ -44,7 +44,7 @@ from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_rou
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
-from jasper.active_speaker import candidate_parts
+from jasper.active_speaker import candidate_parts, commissioning_experiment
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
 from jasper.active_speaker.crossover_v2.alignment_prescription import PRESCRIPTION_OUTSIDE_DECLARED_WINDOW, PRESCRIPTION_OUT_OF_LOBE
@@ -52,6 +52,36 @@ from jasper.active_speaker.measured_crossover_candidate import effective_preset
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.crossover_v2_fixtures import _fixture_applied_profile
+
+
+@pytest.mark.parametrize("basis,fc_hz", [(None, 2500), (120, None)])
+def test_commissioning_requires_known_alignment_lobe(tmp_path, monkeypatch, basis, fc_hz):
+    topology = mono_output_topology()
+    draft = standard_design_draft(topology)
+    declared = candidate_from_design_draft(topology, draft)
+    read_prescription = commissioning_experiment.read_alignment_prescription
+
+    def read_at_corner(document, **kwargs):
+        prescription = read_prescription(document, **{**kwargs, "fc_hz": fc_hz})
+        assert prescription.out_of_lobe is None
+        return prescription
+
+    monkeypatch.setattr(commissioning_experiment, "read_alignment_prescription", read_at_corner)
+    alignment = {
+        "base": True, "pose": {"deg": 0, "elevation_deg": 0},
+        "committed": {"delay_us": 157.5, "polarity": "inverted"},
+        "seed": {"delay_us": basis}, "trim_db": {"woofer": 0, "tweeter": -3},
+        "timing_verdict": "measured", "status": ALIGNMENT_OK,
+        "objective": "summed_fit_committed", "record_id": "mark.json",
+    }
+    result = commissioning_experiment.bank_commissioning_experiment(
+        tmp_path / "round", {"run_id": "test"}, {"draft": draft}, [alignment],
+    )
+    assert result["status"] == "alignment_unmeasured"
+    assert result["reason"] == "commissioning_alignment_unavailable"
+    candidate = find_banked_candidate(result["candidate_fingerprint"], root=tmp_path).candidate
+    assert candidate.alignment == declared.alignment
+    assert candidate.role_attenuations_db == alignment["trim_db"]
 
 
 @pytest.fixture

@@ -27,9 +27,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from jasper.log_event import log_event
+from jasper.json_fields import finite_float
 
 from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS
+from ._prescription_common import _read_artifacts
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
@@ -84,7 +86,6 @@ TOPOLOGY_ORDER_INVALID = "topology_order_invalid"
 #: An order the graph cannot emit. Its own reason so a well-formed but
 #: unsupported integer sends a prescriber to the supported set, not the shape.
 TOPOLOGY_ORDER_UNSUPPORTED = "topology_order_unsupported"
-TOPOLOGY_PROVENANCE_MISSING = "topology_provenance_missing"
 #: The published-slope bound: only a manufacturer's PUBLISHED condition may
 #: refuse a corner, never the commissioning figure derived from it (#2874).
 #: The code is kept across that narrowing so receipts banked either side of it
@@ -97,7 +98,6 @@ TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_NO_CROSSOVER_REGION,
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
-    TOPOLOGY_PROVENANCE_MISSING,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
     TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
     # The AUTOMATIC path's own two frequency codes, reused rather than
@@ -261,52 +261,6 @@ def _read_order(value: Any) -> int:
     return int(value)
 
 
-def _read_artifacts(value: Any) -> tuple[str, ...]:
-    """The named provenance, strictly and non-empty.
-
-    A bare string is refused rather than wrapped: ``"a,b"`` and ``["a", "b"]``
-    would otherwise be one artifact and two, decided by punctuation.
-    """
-    if value is None:
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_PROVENANCE_MISSING,
-            "a prescription must name the basis_artifacts it was proposed from",
-        )
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_PROVENANCE_MISSING,
-            "basis_artifacts must be a list of names, got "
-            f"{type(value).__name__}",
-        )
-    artifacts: list[str] = []
-    for entry in value:
-        if not isinstance(entry, str) or not entry.strip():
-            raise TopologyPrescriptionRefused(
-                TOPOLOGY_PROVENANCE_MISSING,
-                "every basis_artifacts entry must be a non-blank name",
-            )
-        artifacts.append(entry.strip())
-    if not artifacts:
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_PROVENANCE_MISSING,
-            "a prescription must name at least one basis artifact",
-        )
-    return tuple(artifacts)
-
-
-def _optional_number(value: Any) -> float | None:
-    """A finite number, or ``None`` — never a raise.
-
-    These fields are the GATE's own record of what it checked, not a
-    requester's claim, so an unreadable one is missing context rather than a
-    malformed prescription.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
 def _parse_prescription(
     raw: Mapping[str, Any], *, read_back: bool = False,
 ) -> TopologyPrescription:
@@ -367,11 +321,6 @@ def _parse_prescription(
             TOPOLOGY_ORDER_INVALID, "a prescription must state its order",
         )
     note = raw.get("basis_note", "")
-    if not isinstance(note, str):
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_PROVENANCE_MISSING,
-            f"basis_note must be text, got {type(note).__name__}",
-        )
     authority = raw.get("authority", "")
     if not isinstance(authority, str):
         raise TopologyPrescriptionRefused(
@@ -382,17 +331,17 @@ def _parse_prescription(
         fc_hz=fc_hz,
         order=_read_order(raw["order"]),
         basis_artifacts=_read_artifacts(raw.get("basis_artifacts")),
-        basis_note=note,
+        basis_note=note if isinstance(note, str) else "",
         authority=authority,
-        checked_against_floor_hz=_optional_number(raw.get("checked_against_floor_hz")),
-        checked_against_ceiling_hz=_optional_number(
+        checked_against_floor_hz=finite_float(raw.get("checked_against_floor_hz")),
+        checked_against_ceiling_hz=finite_float(
             raw.get("checked_against_ceiling_hz")
         ),
-        checked_against_slope_db_per_octave=_optional_number(
+        checked_against_slope_db_per_octave=finite_float(
             raw.get("checked_against_slope_db_per_octave")
         ),
-        beaming_ceiling_hz=_optional_number(raw.get("beaming_ceiling_hz")),
-        recommended_slope_db_per_octave=_optional_number(
+        beaming_ceiling_hz=finite_float(raw.get("beaming_ceiling_hz")),
+        recommended_slope_db_per_octave=finite_float(
             raw.get("recommended_slope_db_per_octave")
         ),
     )
@@ -563,7 +512,7 @@ def candidate_topology(candidate: Any) -> dict[str, Any] | None:
     region = next(iter(regions or ()), None)
     if region is None:
         return None
-    fc_hz = _optional_number(getattr(region, "fc_hz", None))
+    fc_hz = finite_float(getattr(region, "fc_hz", None))
     order = getattr(region, "order", None)
     if fc_hz is None or isinstance(order, bool) or not isinstance(order, int):
         return None
@@ -609,7 +558,7 @@ def topology_prescription_response_format() -> dict[str, Any]:
                 "and disclosed on the record instead"
             ),
             "basis_artifacts": (
-                "required non-empty list of names — what proposed this corner"
+                "optional list of names — what proposed this corner"
             ),
             "basis_note": "optional human line beside the artifacts",
         },
