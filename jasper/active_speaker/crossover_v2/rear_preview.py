@@ -8,8 +8,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
+from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import read_rear_calibration, rear_operating_facts
 from jasper.audio_measurement import rear_evidence as figures

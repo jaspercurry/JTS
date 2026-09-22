@@ -16,7 +16,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
@@ -55,6 +55,10 @@ from jasper.output_topology import cardioid_cabinet_channels, measurement_target
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
+from .branch_chain import (
+    CrossoverSection, branch_chain_peak_db, branch_headroom_db,
+    rear_branch_sum_headroom_db, sections_by_role,
+)
 from .camilla_names import (
     baseline_protection_name, bass_management_hp_name,
     driver_baseline_gain_name, driver_baseline_limiter_name, driver_delay_name,
@@ -107,12 +111,6 @@ logger = logging.getLogger(__name__)
 EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR = (
     "blocked_tweeter_crossover_below_declared_floor"
 )
-
-if TYPE_CHECKING:
-
-    # Type-only: the runtime import stays inside the two functions that need
-    # it, so a cut-only emit never pulls numpy (see branch_chain's docstring).
-    from .branch_chain import CrossoverSection
 
 # The PARKED graph's on-disk name + internal vocabulary — a generated,
 # topology-derived, all-muted boot graph. See emit_active_speaker_parked_config
@@ -581,54 +579,6 @@ def _validated_rear_calibration(
         return read_rear_calibration(document, sample_rate=sample_rate)
     except RearCalibrationError as exc:
         raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
-
-
-def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
-    """Peak the compiled cardioid stage puts above unity, dB.
-
-    Charged pre-split beside the room-PEQ boost: the stage is the one place a
-    cardioid graph can exceed the program it was handed. The charge is the
-    stage's REALISED peak — every chain evaluated as the complex response of its
-    gain, polarity, delay and filters, the two rear branches summed as complex
-    numbers, and the louder of that sum and the front chain taken across
-    :func:`~.branch_chain.camilla_evaluation_grid`. The branches never see one
-    band at full gain (the bass branch low-passes; the cancellation branch
-    high-passes AND inverts), so charging the in-phase sum of their gains cost
-    5.372 dB on jts3's own fitted document against a realised +0.194 dB.
-
-    An UPPER BOUND on what the emitted graph can do, so every term that can put
-    the stage above unity is evaluated, not argued away: shelf and high/low-pass
-    resonance, all-pass phase rotation (bounded at
-    ``rear_calibration.MAX_ALLPASS_Q`` so the grid resolves it), and the front
-    chain in EVERY rear mode. The one thing not modelled is a ``fir`` rear's
-    taps, which cannot reach the runtime: the candidate boundary refuses
-    ``rear.mode == "fir"`` in v1 (ADR-0322). A STEADY-TONE bound: overshoot
-    between grid points stays backstopped by the per-output soft-clip limiter.
-    See ADR-0324.
-    """
-    # An acoustic-targets document carries no electrical chains at all; the
-    # splice refuses it outright a few steps later (``_rear_calibration_graph``).
-    if not document or document["case"] != "electrical_dsp":
-        return 0.0
-    import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
-
-    from .branch_chain import (  # lazy: cycle with branch_chain
-        camilla_evaluation_grid, rear_stage_response,
-    )
-
-    rear = document["rear"]
-    branches = [rear[branch] for branch in ("bass", "cancellation")] if rear["mode"] == "branches" else []
-    boundary = document["boundary"]
-    # The grid carries every chain's features whether or not the rear is muted:
-    # a muted rear still fixes where the front chain is sampled.
-    freqs = camilla_evaluation_grid([
-        *document["front"]["filters"], *boundary["front"], *boundary["rear"],
-        *(item for branch in branches for item in branch["filters"]),
-    ])
-    peak = max(
-        float(np.max(np.abs(response))) for response in rear_stage_response(document, freqs)
-    )
-    return max(0.0, 20.0 * math.log10(peak)) if peak > 0.0 else 0.0
 
 
 def _rear_calibration_graph(
@@ -1678,6 +1628,33 @@ def program_headroom_db(
             + max(0.0, output_trim_db))
 
 
+def boost_headroom_by_role(
+    *, branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    room_peqs: Sequence[PeqFilter] = (),
+    session_volume_db: float | None = None,
+    spl_headroom_db: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Disclose playback's program headroom cost, in dB, using the emitter's charge.
+
+    Full-scale branch peak is session volume + trim + crossover/linearization
+    peak - program absorption (dBFS). Absorption includes the largest positive
+    branch peak plus its margin, so boost spends maximum SPL without raising
+    the branch above the fader. Measurement excitation caps do not apply here;
+    session volume and measured SPL headroom are disclosures only.
+    """
+    spent = program_headroom_db(linearization, branch_context=branch_context, room_peqs=room_peqs)
+    return {role: {
+        "composed_boost_db": max(0.0, branch_chain_peak_db((linearization or {}).get(role, ()))),
+        "program_headroom_spent_db": spent,
+        "program_headroom_remaining_db": max(0.0, MAX_PROGRAM_HEADROOM_DB - spent),
+        "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
+        "session_volume_db": session_volume_db,
+        "spl_headroom_db": spl_headroom_db,
+        "binding": "program_headroom" if spent >= MAX_PROGRAM_HEADROOM_DB else None,
+    } for role in branch_context}
+
+
 def linearization_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
     *,
@@ -1707,11 +1684,9 @@ def linearization_headroom_db(
     """
     # A branch with no positive gain cannot reach unity through a crossover and
     # a non-positive trim, so a cut-only graph is charged 0.0 without evaluating
-    # anything — and without importing numpy, kept lazy on a 1 GB Pi.
+    # anything.
     if not linearization_has_boost(linearization):
         return 0.0
-    from .branch_chain import branch_headroom_db
-
     worst = 0.0
     for role, filters in (linearization or {}).items():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
@@ -1731,8 +1706,7 @@ def linearization_has_boost(
     """Does any emitted linearization filter carry positive gain?
 
     The guard that keeps a cut-only graph off the chain-evaluation path
-    entirely, so neither this emitter nor the runtime contract imports numpy for
-    it. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
+    entirely. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
     trim are each <= 0 dB everywhere.
 
     Public because the adoption table asks the same question of the APPLIED
@@ -1768,8 +1742,6 @@ def _branch_context(
     rather than under-charges, and keeps this identical to what the runtime
     contract can re-derive without walking optional filters.
     """
-    from .branch_chain import sections_by_role
-
     return {
         role: (
             role_sections,

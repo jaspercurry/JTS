@@ -30,7 +30,7 @@ from jasper.active_speaker.baseline_profile import (
     profile_program_headroom_db,
 )
 from jasper.camilla_config_contract import PeqFilter
-from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, linearization_headroom_db
+from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, boost_headroom_by_role, linearization_headroom_db
 from jasper.active_speaker.camilla_names import driver_linearization_peak_name, driver_linearization_shelf_name, driver_linearization_taper_name
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
@@ -43,6 +43,7 @@ from jasper.active_speaker.runtime_contract import (
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_crossover_v2_driver_prescription import BRANCH_CONTEXT, _boost
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 
@@ -407,6 +408,19 @@ def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
     assert _headroom_gain_db(both) > _headroom_gain_db(flat) - (
         woofer_alone + tweeter_alone
     )
+
+
+@pytest.mark.parametrize("volume,spl", [(-21.09, 36.0), (None, None), (-21.09, -3.0)])
+def test_program_headroom_discloses_cost_without_measurement_caps(volume, spl):
+    filters = {"woofer": [_boost(gain=6.0, role="woofer")], "tweeter": [_boost(gain=6.0)]}
+    bounds = boost_headroom_by_role(branch_context=BRANCH_CONTEXT, linearization=filters,
+                                   session_volume_db=volume, spl_headroom_db=spl)
+    for row in bounds.values():
+        assert row == {
+            "composed_boost_db": pytest.approx(6.0), "program_headroom_spent_db": pytest.approx(7.0),
+            "program_headroom_remaining_db": pytest.approx(33.0), "max_program_headroom_db": 40.0,
+            "session_volume_db": volume, "spl_headroom_db": spl, "binding": None,
+        }
 
 
 def test_linearization_headroom_is_zero_for_a_cut_only_correction():

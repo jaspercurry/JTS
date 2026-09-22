@@ -31,8 +31,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from jasper.active_speaker.baseline_profile import applied_layer_names
-from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
+from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.measurement_programs import (
     BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR,
