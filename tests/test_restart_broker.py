@@ -68,8 +68,7 @@ def test_control_unit_declares_broker_runtime_dir():
 def test_verb_vocabulary_is_closed_and_complete():
     # The exact set the clients use. A new verb must be added deliberately.
     assert restart_broker.ALLOWED_VERBS == frozenset({
-        "restart", "try-restart", "start", "stop",
-        "enable", "enable-now", "disable-now", "reset-failed",
+        "restart", "try-restart", "start", "stop", "reset-failed",
         "reboot", "poweroff",
     })
     assert restart_broker.POWER_VERBS == frozenset({"reboot", "poweroff"})
@@ -81,10 +80,7 @@ def test_verb_vocabulary_is_closed_and_complete():
     ("try-restart", True, ["systemctl", "try-restart", "--no-block", "jasper-voice.service"]),
     ("start", True, ["systemctl", "start", "--no-block", "jasper-voice.service"]),
     ("stop", True, ["systemctl", "stop", "--no-block", "jasper-voice.service"]),
-    # enable / reset-failed never take --no-block even when asked.
-    ("enable", True, ["systemctl", "enable", "jasper-voice.service"]),
-    ("enable-now", True, ["systemctl", "enable", "--now", "--no-block", "jasper-voice.service"]),
-    ("disable-now", False, ["systemctl", "disable", "--now", "jasper-voice.service"]),
+    # reset-failed never takes --no-block even when asked.
     ("reset-failed", True, ["systemctl", "reset-failed", "jasper-voice.service"]),
 ])
 def test_build_argv(verb, no_block, expected):
@@ -720,23 +716,13 @@ def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
     assert calls == []
 
 
-def test_enable_now_maps_through_broker(broker):
+@pytest.mark.parametrize("verb", ["exec", "enable", "enable-now", "disable-now"])
+def test_unknown_verb_rejected_without_running_anything(broker, verb):
     sock_path, calls, _ = broker
     resp = _request_restart_retrying_transient_failures(
-        "shairport-sync.service", verb="enable-now", no_block=False,
-        socket_path=sock_path,
-    )
-    assert resp["ok"] is True
-    assert calls == [["systemctl", "enable", "--now", "shairport-sync.service"]]
-
-
-def test_unknown_verb_rejected_without_running_anything(broker):
-    sock_path, calls, _ = broker
-    resp = _request_restart_retrying_transient_failures(
-        "jasper-voice.service", verb="exec", socket_path=sock_path,
+        "jasper-voice.service", verb=verb, socket_path=sock_path,
     )
     assert resp["ok"] is False
-    assert "unknown verb" in resp["error"]
     assert calls == []
 
 
