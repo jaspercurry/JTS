@@ -105,14 +105,18 @@ def bass_packet():
 
 
 @pytest.fixture
-def round_bank(tmp_path):
+def round_bank(tmp_path, request):
     bank = tmp_path / "round"
     session, _ = _bundle(bank / "bundle")
     write_manifest(bank)
     artifact = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
     preset = _two_way_preset()
-    (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))
     draft = _draft()
+    if getattr(request, "param", False):
+        rear_preset, box = _rear_pair("mono")
+        preset = rear_preset.to_dict()
+        draft["topology"] = box.to_dict()
+    (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))
     draft["manual_settings"]["drivers"][1].update(
         recommended_highpass_hz=1000.0, recommended_highpass_slope_db_per_octave=12.0,
     )
@@ -252,7 +256,10 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
     assert list(reads.values()) == [1, 1, 1]
 
 
-@pytest.mark.parametrize("section", PLAIN_PROGRAMS)
+@pytest.mark.parametrize("round_bank,section", [
+    *[(False, section) for section in PLAIN_PROGRAMS],
+    pytest.param(True, "rear", id="cardioid-rear"),
+], indirect=["round_bank"])
 def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, capsys, section):
     bank, session = round_bank
     output = tmp_path / f"{section}.json"

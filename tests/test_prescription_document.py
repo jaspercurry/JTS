@@ -716,12 +716,21 @@ def rear_base(bank):
     ), root=bank)
 
 
-def test_a_rear_calibration_section_composes_into_the_banked_candidate(rear_base):
+@pytest.mark.parametrize("base_fixture,code", [
+    ("base", "prescription_section_unavailable"), ("rear_base", None),
+])
+def test_a_rear_calibration_section_composes_into_the_banked_candidate(request, base_fixture, code):
+    base = request.getfixturevalue(base_fixture)
     section = _rear_document()
+    raw = document(base.fingerprint, {"rear_calibration": section})
+    if code is not None:
+        with pytest.raises(PrescriptionDocumentRefused) as caught:
+            judge_prescription_document(raw, base=base)
+        assert (caught.value.code, caught.value.section) == (code, "rear_calibration")
+        return
 
-    fitted = judge_prescription_document(
-        document(rear_base.fingerprint, {"rear_calibration": section}), base=rear_base)
-    inherited = judge_prescription_document(document(rear_base.fingerprint), base=rear_base)
+    fitted = judge_prescription_document(raw, base=base)
+    inherited = judge_prescription_document(document(base.fingerprint), base=base)
 
     assert fitted.rear_calibration == section
     assert fitted.analysis["resolution"]["rear_calibration"] == "document"
