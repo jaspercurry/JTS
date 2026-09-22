@@ -3,7 +3,7 @@
 
 from types import SimpleNamespace
 
-from jasper.active_speaker.measurement_programs import program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -21,7 +21,7 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
                               driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     planned = []
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
@@ -44,7 +44,7 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
                               driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
         "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
     picked = {}
@@ -72,7 +72,7 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
     monkeypatch.setattr(
         "jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", _refuse,
     )
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
         "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
 

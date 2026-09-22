@@ -14,7 +14,7 @@ from jasper.output_topology import OutputTopology, cardioid_cabinet_channels, to
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, available_programs, program
+from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, available_programs, program
 from .wizard_client import APPLY_PATH, CAPTURE_CANCEL_PATH
 from .round_copy import round_lines, packet_lines, round_verdict
 
@@ -64,20 +64,22 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     )
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
 
-    default = program(load_commissioning_view()["next_action"].get("program") or "speaker")
+    view = load_commissioning_view()
+    programs = view["programs"]
+    default = program(view["next_action"].get("program") or programs[0])
     default_id = f"{default.program_id}/{default.size}"
     choices = []
     for name, size in available_programs():
         plan = program(name, size)
+        if ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
+                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)):
+            continue
         choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}",
                                   "default": f"{name}/{size}" == default_id,
                                   "poses": plan.mic_move_count, "captures": plan.capture_count}
         if choice["id"] == (selected_id or default_id):
             if plan.regime == REGIME_BRANCHES:
-                # A branches round measures one saved candidate's two branches
-                # and this picker names no candidate, so the row discloses the
-                # refusal ``request_for_program`` raises rather than let it
-                # escape the route as a 500 (#5321).
+                # See issue #5321.
                 copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
                 choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
             else:
@@ -228,7 +230,7 @@ def build_commissioning_view(
               "required": int(summary.get("required_driver_check_count") or summary.get("required_driver_count") or 0)}
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
-        "steps": steps, "current_step": current, "next_action": action,
+        "steps": steps, "current_step": current, "next_action": action, "programs": programs,
         "first_experiment": {**experiment, "complete": experiment_complete}, "combined_groups": [],
         "applied_profile": {
             "stands": profile_applied, "verdict": applied_profile_verdict if profile_applied else "",

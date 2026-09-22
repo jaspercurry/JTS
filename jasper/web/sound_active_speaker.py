@@ -29,7 +29,7 @@ from jasper.active_speaker.playback_route import (
 )
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
+from jasper.active_speaker.tuning_handoff import program_entries, build_tuning_handoff
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
@@ -965,7 +965,8 @@ def _active_speaker_baseline_profile_payload(
 ) -> dict[str, Any]:
     from jasper.active_speaker.baseline_profile import compile_commissioning_profile  # lazy: graph compilation imports NumPy
 
-    _, payload = compile_commissioning_profile(design_draft=design_draft, write=write)
+    topology = load_output_topology()
+    _, payload = compile_commissioning_profile(topology=topology, design_draft=design_draft, write=write)
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",
@@ -975,7 +976,7 @@ def _active_speaker_baseline_profile_payload(
         issue_count=len(payload.get("issues") or []),
         config=str((payload.get("config") or {}).get("basename")),
     )
-    return {**payload, "tuning_programs": PROGRAM_ENTRIES}
+    return {**payload, "tuning_programs": program_entries(topology)}
 
 
 async def _active_speaker_baseline_profile_apply_payload(

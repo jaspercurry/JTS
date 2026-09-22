@@ -5677,7 +5677,7 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
         lambda **_kwargs: [],
     )
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
             "applied_at": "2026-09-13T12:00:00Z", "config_path": "/var/lib/camilladsp/applied.yml",
         }},
@@ -5717,7 +5717,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "applied_at": "2026-09-13T12:00:00Z" if has_applied else None,
     }
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"applied_profile": applied},
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": applied},
         design_draft={"revision": 5},
         program_id=program_id,
     )
@@ -5765,7 +5765,7 @@ def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
         lambda **_kwargs: [],
     )
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"applied_profile": {
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": {
             "exists": True, "stands": True, "candidate_fingerprint": "fp",
         }},
         design_draft={"revision": 1},
@@ -5786,7 +5786,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
-        lambda *a, **k: {"applied_profile": {
+        lambda *a, **k: {"programs": RUNNABLE_PROGRAMS, "applied_profile": {
             "exists": True, "stands": True, "candidate_fingerprint": "applied-fp",
             "record": "record-12", "applied_at": "2026-09-13T12:00:00Z",
         }},

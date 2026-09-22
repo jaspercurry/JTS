@@ -14,14 +14,14 @@ from jasper.active_speaker import baseline_profile, commissioning_experiment, co
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
-from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
+from jasper.active_speaker import tuning_handoff
 from jasper.cli.round import build_parser
 from jasper.active_speaker.crossover_v2 import round_inputs
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import parse_utc_iso
-from jasper.web import correction_crossover_v2_status as v2status
+from jasper.web import correction_crossover_v2_status as v2status, sound_active_speaker
 from jasper.web.correction_crossover_v2_grade import GRADE_NOT_APPLIED
 from tests.test_active_speaker_baseline_profile import _v2_candidate
 from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
@@ -136,21 +136,47 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     assert {"driver_values", "driver_checks"} <= view.keys()
 
 
-@pytest.mark.parametrize("consumer", ["cli", "handoff", "coordinator"])
+@pytest.mark.parametrize("consumer", ["cli", "coordinator"])
 def test_program_order_consumers(consumer):
     if consumer == "cli":
         commands = next(action for action in build_parser()._actions
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
-    elif consumer == "handoff":
-        order = tuple(entry["id"] for entry in PROGRAM_ENTRIES)
     else:
         order = tuple(next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
             {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
         )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
     assert tuple(order) == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
+
+
+@pytest.mark.parametrize("rear,passive", [(False, False), (True, False), (False, True)])
+def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
+    topology = passive_stereo_output_topology() if passive else _topology()
+    if rear:
+        group, = topology.speaker_groups
+        channel = replace(group.channels[0], output_variant="rear", physical_output_index=2)
+        topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, channel)),))
+    view = build_commissioning_view(topology)
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: view)
+    monkeypatch.setattr(tuning_handoff, "build_tuning_handoff_binding", lambda *args: {})
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: (None, {}))
+
+    choices = coordinator.round_choices({}, "front_rear/express")
+    ids = {choice["id"] for choice in choices}
+    rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
+    assert ids & rear_ids == (rear_ids if rear else set())
+    assert ("speaker/mark" in ids) is not passive
+    assert ("branches/express" in ids) is not passive
+    assert {"seat/cube", "room/cloud", "room/seat", "close/spot"} <= ids
+    assert sum(choice["default"] for choice in choices) == 1
+    programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
+    handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})
+    page = sound_active_speaker._active_speaker_baseline_profile_payload()
+    assert tuple(entry["id"] for entry in handoff["programs"]) == programs
+    assert tuple(entry["id"] for entry in page["tuning_programs"]) == programs
 
 
 @pytest.mark.parametrize("rear", [False, True])
@@ -234,6 +260,7 @@ def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: profile)
     view = load_commissioning_view(topology)
     assert identities == [(applied_identity(profile), ("speaker", "bass", "room"))]
+    assert view["programs"] == identities[0][1]
     assert view["next_action"]["id"] == "copy_prompt"
     assert view["next_action"]["program"] == "speaker"
     assert view["next_action"]["round_dir"] == "/bank/speaker"
@@ -327,7 +354,7 @@ def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     status = {"active": True, "setup": {"active": True, "status": "ready"},
               "capture": {"status": "complete", "run": {"status": "complete", "poses": 1}}}
     choices = coordinator.round_choices(status, selected_id)
