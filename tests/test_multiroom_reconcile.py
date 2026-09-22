@@ -1389,6 +1389,42 @@ def test_plan_leader_owns_only_snap_units():
 
 
 @pytest.mark.parametrize(
+    ("returncode", "state", "expected"),
+    [
+        (0, "active", True),
+        (0, "activating", True),
+        (0, "reloading", True),
+        (0, "deactivating", True),
+        (0, "inactive", False),
+        (0, "failed", False),
+        (0, "unknown", None),
+        (1, "active", None),
+    ],
+)
+def test_unit_active_barrier_requires_successful_show(
+    monkeypatch, returncode, state, expected,
+):
+    import subprocess as sp
+
+    def fake_run(argv, **kwargs):
+        assert argv[1] == "show"
+        assert "u.service" in argv
+        assert kwargs["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+        stdout = state if "--value" in argv else f"ActiveState={state}"
+        return sp.CompletedProcess(
+            argv, returncode, stdout=f"{stdout}\n", stderr="",
+        )
+
+    monkeypatch.setattr(
+        reconcile_mod.subprocess,
+        "run",
+        fake_run,
+    )
+
+    assert reconcile_mod._unit_active("u.service") is expected
+
+
+@pytest.mark.parametrize(
     ("active_states", "expect_changed"),
     [
         pytest.param(
@@ -1420,12 +1456,11 @@ def test_plan_changes_units_reflects_live_state(
     from jasper.multiroom.reconcile import _plan_changes_units
 
     def fake_run(argv, **kw):
-        # `service_units.read_unit_property`'s reply shape: one Key=value
-        # block per unit, the units last in argv.
+        unit = argv[2]
         return sp.CompletedProcess(
             argv,
             0,
-            stdout=f"ActiveState={active_states[argv[-1]]}\n",
+            stdout=f"{active_states[unit]}\n",
             stderr="",
         )
 
