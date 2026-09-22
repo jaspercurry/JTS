@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, Sequence, Typ
 
 import numpy as np
 
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 
 from ..delta_probe import (
@@ -1039,10 +1040,10 @@ def _model_departure_target(probe: Any | None) -> list[str]:
         return []
     if not bool(getattr(probe, "model_departure_over_tolerance", False)):
         return []
-    amount = _finite_or_none(getattr(probe, "max_signed_error_db", None))
+    amount = finite_float(getattr(probe, "max_signed_error_db", None))
     if amount is None:
         return []
-    where = _finite_or_none(getattr(probe, "max_signed_error_hz", None))
+    where = finite_float(getattr(probe, "max_signed_error_hz", None))
     at = "" if where is None else f"@{where:.0f}Hz"
     return [f"{QUALITY_MODEL_DEPARTURE}:{amount:.2f}dB{at}"]
 
@@ -1259,8 +1260,8 @@ def evaluate_iteration_headroom(
         "movement_db": movement_db,
         # The frame the two objectives above were graded in, banked BESIDE them
         # so the next round can check the frame rather than assume it.
-        "trusted_floor_hz": _finite_or_none(trusted_floor_hz),
-        "previous_trusted_floor_hz": _finite_or_none(previous_trusted_floor_hz),
+        "trusted_floor_hz": finite_float(trusted_floor_hz),
+        "previous_trusted_floor_hz": finite_float(previous_trusted_floor_hz),
         "movement_comparable": movement_comparable,
     }
 
@@ -1277,19 +1278,6 @@ def evaluate_iteration_headroom(
     if movement_comparable and movement_db is not None and movement_db < plateau:
         return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_PLATEAUED, evidence)
     return Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, evidence)
-
-
-def _finite_or_none(value: float | None) -> float | None:
-    """A finite number, or ``None`` — the same unknown-vs-zero rule as elsewhere.
-
-    Banking a NaN would give the next round a number that compares false
-    against everything: a silent permanent refusal rather than an absence.
-    """
-
-    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
 
 
 # --------------------------------------------------------------------------

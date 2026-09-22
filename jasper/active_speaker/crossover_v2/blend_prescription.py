@@ -45,6 +45,7 @@ import numpy as np
 # imported from the ONE biquad evaluator and from the deterministic solver
 # rather than restated, so a door's ceiling and the arithmetic it protects
 # cannot drift apart.
+from jasper.json_fields import finite_float
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.sound.profile import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 
@@ -507,23 +508,6 @@ def prescription_response_format() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _finite_or_none(value: Any) -> float | None:
-    """One real number, or ``None`` — never a raise, never a coercion.
-
-    The reading counterpart of :func:`_finite_number`, which refuses. Same
-    rejections — ``bool`` (an ``int`` subclass), non-numerics, non-finite
-    values — plus the ``OverflowError`` an arbitrary-precision ``int`` raises
-    after passing the isinstance check.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
-
-
 def positional_support(
     freq_hz: float,
     *,
@@ -544,8 +528,8 @@ def positional_support(
     # reachable with values that never passed `_finite_number` — a hand-edited
     # banked artifact can hand it anything JSON admits — so an unusable input
     # is reported as "nothing could testify" rather than raising.
-    target_hz = _finite_or_none(freq_hz)
-    reference = _finite_or_none(reference_db)
+    target_hz = finite_float(freq_hz)
+    reference = finite_float(reference_db)
     try:
         grid = np.asarray(freqs_hz, dtype=np.float64)
     except (TypeError, ValueError, OverflowError):
@@ -592,14 +576,14 @@ def positional_support(
         # vouch for a frequency its own gate may have excluded.
         raw_floor = entry.get("validity_floor_hz")
         if raw_floor is not None:
-            floor = _finite_or_none(raw_floor)
+            floor = finite_float(raw_floor)
             if floor is None:
                 unreadable += 1
                 continue
             if evaluated_at < floor:
                 below_floor += 1
                 continue
-        value = _finite_or_none(magnitude[index])
+        value = finite_float(magnitude[index])
         if value is None:
             unreadable += 1
             continue
