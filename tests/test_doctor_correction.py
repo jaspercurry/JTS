@@ -607,27 +607,6 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
     assert r.reason == correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED
 
 
-def test_a_measured_tuning_trial_does_not_require_speaker_verify(monkeypatch):
-    from jasper.web import correction_crossover_v2_status as v2status
-
-    monkeypatch.setattr(
-        v2status,
-        "crossover_v2_status_block",
-        lambda: {
-            "post_apply_grade": {
-                "state": v2grade.GRADE_TUNING_TRIAL_MEASURED,
-                "scope": v2grade.GRADE_SCOPE_TUNING_TRIAL,
-                "verify_outcome": None,
-            },
-        },
-    )
-
-    r = correction.check_crossover_v2_cloud_pipeline()
-
-    assert r.status == "ok"
-    assert r.reason == correction.REASON_CLOUD_NOT_RUN
-
-
 def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     """Walking-class guard (S1, #2242). ``GRADE_SPATIAL_*`` and ``GRADE_SCOPE_*``
     are consumed by literal membership tests in more than one surface — this
@@ -661,7 +640,6 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     assert scope_members == {
         v2grade.GRADE_SCOPE_NONE,
         v2grade.GRADE_SCOPE_MARK,
-        v2grade.GRADE_SCOPE_TUNING_TRIAL,
         v2grade.GRADE_SCOPE_SPATIAL,
     }
 
@@ -694,7 +672,6 @@ def test_grade_state_member_set_is_pinned_for_its_consumers():
         v2grade.GRADE_INCONCLUSIVE,
         v2grade.GRADE_FAILED,
         v2grade.GRADE_UNVERIFIED,
-        v2grade.GRADE_TUNING_TRIAL_MEASURED,
     }
 
 

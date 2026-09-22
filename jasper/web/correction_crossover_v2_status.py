@@ -93,7 +93,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "measure": (state or {}).get("measure"),
         # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
-        "tuning_trial": (state or {}).get("tuning_trial"),
         "verify": (state or {}).get("verify"),
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),

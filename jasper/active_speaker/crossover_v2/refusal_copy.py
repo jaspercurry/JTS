@@ -14,7 +14,6 @@ from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.log_event import log_event
 
-from ..boost_protection import BOOST_OVER_DECLARED_BOUND
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -1044,10 +1043,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Measure again — if it repeats, check that nothing moved during "
             "the sweep.",
         ),
-    ),
-    BOOST_OVER_DECLARED_BOUND: ReasonSpec(
-        BOOST_OVER_DECLARED_BOUND, TEMPLATE_HARD_STOP, 0, "",
-        "The measured boost exceeded its bound. Check the restore result before applying another tuning.",
     ),
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,

@@ -2,20 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The excess-boost stop restores through the normal apply door."""
+"""Identify the applied tuning graph."""
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2 import refusal_copy
-from jasper.web import correction_crossover_v2_state as v2state
-
-import threading
-from typing import Any, Callable
+from typing import Any, Mapping
 
 from jasper.active_speaker import baseline_profile
-from jasper.active_speaker.boost_protection import config_graph_fingerprint
-from jasper.web import correction_crossover_v2_apply as apply_host
-from jasper.web import correction_crossover_v2_status as status
+
+
+def config_graph_fingerprint(profile: Mapping[str, Any] | None) -> str:
+    return str(((profile or {}).get("config") or {}).get("sha256") or "")[:16]
 
 
 def current_graph_fingerprint() -> str:
@@ -23,32 +20,3 @@ def current_graph_fingerprint() -> str:
     if profile is None or baseline_profile.applied_profile_displacement(profile) == baseline_profile.APPLIED_PROFILE_DISPLACED:
         return ""
     return config_graph_fingerprint(profile)
-
-
-def bind_boost_restore(run_async: Any, camilla_factory: Any) -> Callable[[str], dict[str, Any]]:
-    lock = threading.Lock()
-    outcome: dict[str, Any] = {}
-
-    def restore(graph_fingerprint: str) -> dict[str, Any]:
-        with lock:
-            if outcome:
-                return dict(outcome)
-            outcome.update(status="restore_failed", restored=False)
-            state = v2state.load_v2_state()
-            previous = status.rollback_candidate(state)
-            if not graph_fingerprint or current_graph_fingerprint() != graph_fingerprint:
-                outcome["status"] = "graph_displaced"
-            elif previous is None:
-                outcome["status"] = "previous_profile_unavailable"
-            else:
-                try:
-                    result = apply_host.handle_v2_apply(
-                        {"expected_candidate_fingerprint": previous}, run_async, camilla_factory,
-                    )
-                    if result.get("status") == "applied":
-                        outcome.update(status="restored", restored=True)
-                except refusal_copy.CrossoverV2Refused as exc:
-                    outcome["refusal_code"] = exc.code
-            return dict(outcome)
-
-    return restore

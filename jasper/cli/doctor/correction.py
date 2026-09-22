@@ -584,7 +584,7 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     grade = grade if isinstance(grade, dict) else {}
     from jasper.web.correction_crossover_v2_grade import (
         GRADE_FAILED, GRADE_GRADED, GRADE_INCONCLUSIVE, GRADE_MARK_VERIFIED,
-        GRADE_NOT_APPLIED, GRADE_TUNING_TRIAL_MEASURED, GRADE_SPATIAL_ABSENT,
+        GRADE_NOT_APPLIED, GRADE_SPATIAL_ABSENT,
         GRADE_SPATIAL_FAILED, GRADE_SPATIAL_PASSED, GRADE_SPATIAL_UNMEASURABLE,
     )
     # `.get` with a default rather than a lookup: a durable state written by a
@@ -602,8 +602,6 @@ def _applied_grade_finding(block: dict) -> tuple[str, str]:
     )
     if state == GRADE_NOT_APPLIED:
         return "no applied measured crossover", ""
-    if state == GRADE_TUNING_TRIAL_MEASURED:
-        return "applied from its measured tuning trial; speaker trial advice unavailable", ""
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
         # A non-empty word this build does not recognize is a later build's
