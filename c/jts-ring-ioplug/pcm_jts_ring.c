@@ -881,18 +881,9 @@ static snd_pcm_sframes_t jts_ring_capture_transfer(snd_pcm_ioplug_t *io,
         p->stage_frames -= take;
         delivered += take;
     }
-    // STARVATION BACKSTOP (defense in depth; should be unreachable). ALSA only
-    // calls `transfer` when its avail gate granted frames, and after the
-    // occupancy clamp + silence-first refill above, avail > 0 always implies
-    // refill can serve — so a zero-delivery call means the reported position
-    // and the deliverable state have diverged. alsa-lib's rw loop treats a
-    // 0-frame transfer as "try again" and only poll-waits at avail == 0, so
-    // left alone it re-enters here in a tight loop — on CamillaDSP's SCHED_FIFO
-    // capture thread that is the RLIMIT_RTTIME SIGKILL. Convert any residual
-    // divergence into a bounded, RTTIME-resetting nap per call: the loop then
-    // runs at the poll cadence (~1500/s) until real data or an armed period
-    // resolves it. Counted + logged (close line; first occurrence at SNDERR) so
-    // it cannot become a silent failure mode.
+    // alsa-lib retries a 0-frame transfer without polling when avail > 0.
+    // Pace that divergence here to reset RTTIME, even without Python restart
+    // coordination (a quality policy with no measured audible benefit yet).
     if (delivered == 0 && size > 0) {
         p->transfer_starved_naps++;
         if (p->transfer_starved_naps == 1) {

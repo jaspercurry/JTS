@@ -442,21 +442,15 @@ def ring_wire_declarations(
 def resolve_wire_for_gate(topology: Any = None) -> tuple[Any | None, str]:
     """``(wire, "")`` — or ``(None, why)`` when the box declares an illegal wire.
 
-    ``resolve_ring_wire`` FAILS LOUD on a ``JASPER_FANIN_RING_WIRE_FORMAT`` value
-    neither language recognizes, which is right for an emitter and wrong for a
-    GATE: the arm has already written the ring env by the time the preflights
-    run, and an uncaught exception would skip the snapshot restore that makes a
-    refused arm non-destructive.
-
-    So every gate that needs the wire resolves it through here, and a gate added
-    later gets the behaviour by using it.
+    Convert an invalid wire declaration to a gate refusal (ADR-0100).
+    The arm may already have written env changes; refusal retains them.
     """
     try:
         return fanin_coupling.resolve_ring_wire(topology), ""
     except ValueError as exc:
         return None, (
             f"{exc} — refusing to arm on a wire this box cannot declare; "
-            "fails closed and leaves the box exactly as it was found — "
+            "fails closed and retains applied changes — "
             "never a fallback (ADR-0100)"
         )
 
@@ -488,7 +482,7 @@ def ring_edge_width_ready(
     THE INVARIANT. For each ring, ``(sample_format, channels)`` is resolved once
     per box by ``jasper.fanin_coupling.resolve_ring_wire``, and every end that
     declares a geometry must declare exactly that. Any end that cannot ⇒ refuse
-    to arm: the gate fails closed and leaves the box exactly as it was found —
+    to arm: the gate fails closed and retains applied changes —
     never a fallback (ADR-0100) — naming the end and the value it declared.
     **Equality only, never a ranking**: no width-comparison primitive exists
     in-repo for ALSA format strings, and ``S24_3LE`` — live on the DAC edge —
@@ -594,7 +588,7 @@ def ring_edge_width_ready(
             "these ends disagree: "
             + "; ".join(problems)
             + ". Every declaring end must state the SAME wire or the gate "
-            "fails closed and leaves the box exactly as it was found — "
+            "fails closed and retains applied changes — "
             "never a fallback (ADR-0100) — until they agree"
         )
     # The COUNT and the NAMES come from the declarations actually compared, so
@@ -660,8 +654,8 @@ def ring_assets_ready() -> tuple[bool, str]:
     Fail-SAFE: if the ioplug ``.so`` / conf.d / ``/dev/shm/jts-ring`` are not all
     present, arming would install a CamillaDSP config whose ring devices cannot
     resolve — CamillaDSP would crash-loop on its statefile and the fan-in
-    ``StartLimitAction=reboot`` could compound it. So the reconciler leaves the
-    box exactly as it was found, never a fallback (ADR-0100).
+    ``StartLimitAction=reboot`` could compound it. The reconciler refuses the arm,
+    retaining applied changes (ADR-0100).
 
     Presence-only; the doctor owns the deep open-probe, and
     ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
@@ -834,12 +828,9 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     from jasper.active_speaker.staging import load_staged_startup_config  # lazy: import cost
 
     staged = load_staged_startup_config()
-    # ``isinstance`` rather than ``(… or {}).get(…)``: that shape raises
-    # AttributeError on a record whose ``config`` is a truthy NON-mapping, and an
-    # exception escaping the reconciler's ordered arm would skip the snapshot
-    # restore that makes a refused arm non-destructive.
     status = staged.get("status")
     config_record = staged.get("config")
+    # isinstance avoids (config_record or {}).get(...) raising AttributeError on truthy non-mappings.
     anchor_path = (
         config_record.get("path") if isinstance(config_record, Mapping) else None
     )
@@ -1107,7 +1098,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
             f"capture and playback formats are baked when it is EMITTED, so "
             f"re-running the hardware reconciler alone leaves a stale narrow "
             f"boot graph and the next arm refuses again. The gate fails "
-            f"closed: the box is left exactly as it was found, never a "
+            f"closed: applied changes remain, never a "
             f"fallback."
         )
     return True, (
@@ -1239,13 +1230,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         topology = load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
         if strict_unreadable:
-            # An unreadable topology is NOT proven eligible — fail closed and
-            # leave the box exactly as it was found rather than arm a ring we
-            # cannot prove is eligible.
             return False, (
-                f"topology unreadable ({exc}); fail-closed (box left exactly "
-                "as it was found) rather than arm a ring it cannot prove is "
-                "eligible"
+                f"topology unreadable ({exc}); fail-closed (applied changes "
+                "remain) rather than arm a ring it cannot prove is eligible"
             )
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):

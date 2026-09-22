@@ -291,12 +291,7 @@ _CAMILLA_START_TIMEOUT_SEC = (
 def _stop_camilla(reason: str) -> tuple[bool, str]:
     """Stop jasper-camilla through the broker. (ok, detail).
 
-    Used to pause CamillaDSP with a clean SIGTERM BEFORE a coordinated fan-in
-    restart so it exits cleanly instead of hitting the RLIMIT_RTTIME SIGKILL its
-    ring-ioplug capture reader triggers when fan-in's writer detaches (see
-    :func:`_restart_fanin_coordinated`). ``jasper-camilla.service`` is already a
-    broker ``MANAGED_UNITS`` member (polkit-granted for ``manage-units``, which
-    covers stop/start) — no new grant is needed.
+    See :func:`_restart_fanin_coordinated` for the restart quality policy.
 
     The 8 s bound is deliberately NOT the start bound's derivation: a stop pulls
     none of the start's dependencies, so the critical-path term that dominates
@@ -549,40 +544,12 @@ def _restart_fanin_coordinated(
     reason: str,
     phase: str,
 ) -> _CoordinatedFaninRestart:
-    """Restart fan-in without collaterally SIGKILLing CamillaDSP.
+    """Pause CamillaDSP around a deliberate fan-in restart.
 
-    THE HAZARD this guards: while the fan-in-written ``shm_ring`` coupling is
-    live, CamillaDSP captures the transport via the ``jts_ring_capture`` ioplug,
-    and a bare fan-in *process* restart detaches the ring WRITER. An unpaced
-    capture reader busy-spins on that, and camilladsp (``SCHED_FIFO``,
-    ``LimitRTTIME=200000`` us in ``jasper-camilla.service``) takes the kernel's
-    ``RLIMIT_RTTIME`` hard SIGKILL ~213 ms later -> ``Restart=always``
-    start-limit -> ``OnFailure=jasper-camilla-recover`` -> a core-graph bounce.
-
-    So this pauses CamillaDSP with a clean SIGTERM FIRST, restarts fan-in, waits
-    for it to come back (the ``Type=notify`` blocking broker restart returns only
-    after fan-in re-attaches its ring writer + ``sd_notify`` READY=1), then
-    resumes CamillaDSP — the fan-in -> camilla order
-    ``deploy/bin/jasper-camilla-recover`` uses.
-
-    FAILURE HONESTY: if CamillaDSP cannot be STOPPED it may still be running on
-    the ring, so we do NOT restart fan-in and instead ensure camilla is running
-    (a ``start`` is a no-op if it never stopped) and abort, ``ok=False``. If the
-    fan-in restart fails AFTER camilla was stopped, we STILL start camilla back
-    — never leave the DSP stopped forever. Either way
-    ``OnFailure=jasper-camilla-recover`` stays the backstop for a resume that
-    also fails; nothing here disables it.
-
-    (Stopping camilla is safe for jasper-outputd even though camilla is outputd's
-    Ring B writer: outputd's reader is DAC-clocked — an absent writer yields
-    paced silence, not a busy-spin — so only the camilla side needs
-    coordination.)
-
-    SCOPE: DELIBERATE Python-side fan-in restarts only. RTTIME safety no longer
-    rests on this coordination — the ring-ioplug capture reader paces itself
-    (``c/jts-ring-ioplug/``), so an UNCOORDINATED fan-in death degrades to <=2 s
-    of paced silence while camilla blocks on the reader's timerfd. The
-    coordination is kept for the gap-free UX.
+    The ring reader paces starvation itself (c/jts-ring-ioplug/).
+    Coordination is a quality policy; its audible benefit is not yet measured.
+    The blocking Type=notify restart waits for fan-in's ring writer and READY=1.
+    CamillaDSP is started again even if stopping it or restarting fan-in fails.
     """
     stop_ok, stop_detail = do_stop_camilla()
     if not stop_ok:
@@ -606,7 +573,7 @@ def _restart_fanin_coordinated(
             camilla_started=start_ok,
             detail=(
                 f"camilla pause failed ({stop_detail}); aborted fan-in restart to "
-                "avoid an RTTIME-SIGKILL of a running CamillaDSP"
+                "keep the coordinated restart quality policy"
                 + ("" if start_ok else f"; camilla start-back failed ({start_detail})")
             ),
         )
@@ -727,9 +694,7 @@ def _converge_ring(
     and re-confirms CamillaDSP only, so a ``/sources/`` toggle does not bounce
     the shared fan-in daemon.
 
-    NOTHING IS ROLLED BACK: a failing step returns ``ok=False`` with the reason
-    and the box parks under its own name. The daemon ops are injectable for
-    tests and default to the real broker + reconcile_current_dsp.
+    Applied changes remain on failure (ADR-0100); the result reports the reason.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
@@ -968,8 +933,7 @@ def reconcile_auto(
        unset, defeating jasper.env precedence). Idempotent.
     2. Delegate the ring convergence to :func:`reconcile_coupling`. A combo-only
        change that took the no-bounce path issues one extra
-       CamillaDSP-coordinated fan-in restart, so it cannot RTTIME-SIGKILL
-       camilla.
+       CamillaDSP-coordinated fan-in restart for the quality policy above.
 
     If canonical USB intent is malformed or unreadable, the pass narrows itself
     to the safety action: resolve effective USB intent False, run the same
@@ -1092,7 +1056,7 @@ def reconcile_auto(
     # If the fan-in combo changed but the ring convergence did NOT restart fan-in
     # (a combo-only change on an already-coherent box takes the no-bounce path),
     # the new combo is not live until fan-in restarts. Issue one —
-    # CamillaDSP-coordinated so it cannot RTTIME-SIGKILL camilla off the ring.
+    # See _restart_fanin_coordinated for the restart quality policy.
     restarted_for_combo = False
     if combo_changed and not coupling_result.restarted_fanin:
         do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))

@@ -12,6 +12,7 @@ from rapidfuzz import fuzz
 
 from . import tool
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from ..renderer import airplay_now_playing
 from ..spotify_routing import resolve_target, stop_renderers
 
 logger = logging.getLogger(__name__)
@@ -433,7 +434,6 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
     router is currently empty, so re-linking via the web wizard
     recovers the daemon without a manual restart."""
     from ..spotify_router import airplay_client_name
-    from .transport import _mpris_now_playing
 
     def _no_account_msg() -> str:
         """Pick the right user-facing message based on why the router is
@@ -499,7 +499,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         if airplay_active:
             client_name = await airplay_client_name()
             try:
-                metadata = await _mpris_now_playing()
+                metadata = await airplay_now_playing()
                 title = metadata.get("title", "")
             except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
                 title = ""

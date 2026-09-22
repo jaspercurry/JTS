@@ -54,7 +54,7 @@ def test_play_airplay_short_circuits_to_sender_device():
         "jasper.spotify_router.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.spotify.airplay_now_playing",
         new=lambda: _coro_return({"title": "Hey Jude", "artist": "The Beatles"}),
     ):
         tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
@@ -88,7 +88,7 @@ def test_play_airplay_short_circuit_falls_through_when_no_device_id():
         "jasper.spotify_router.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.spotify.airplay_now_playing",
         new=lambda: _coro_return({"title": "Hey Jude", "artist": "The Beatles"}),
     ), patch(
         "jasper.tools.spotify.resolve_target",

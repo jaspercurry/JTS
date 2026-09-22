@@ -18,7 +18,7 @@ expect a real token spend, and steer it phase by phase.
 > was too shallow than that the code is flawless. The mechanisms in this
 > playbook exist to make flattery structurally hard.
 
-Pairs with: the COAH bar and per-subsystem rules in
+Pairs with: the Defaults and non-negotiables in
 [AGENTS.md](../AGENTS.md); the tool index in
 [testing-tooling.md](testing-tooling.md); the boundary lens in
 [extensibility.md](extensibility.md). This playbook does not restate those —
@@ -136,7 +136,7 @@ lens decides what's "there":
 - **Coverage gaps.** Source files (especially in `jasper/`) with **no
   corresponding test**; tools the LLM can call with no `tests/voice_eval`
   scenario; documented invariants ("X disables Y", "this never runs") with no
-  guard test.
+  behaviour test.
 - **Doc/code surface mismatch.** Docs describing files/flags/commands that no
   longer exist; code subsystems with **no** doc in the README atlas (orphan
   docs *and* orphan code).
@@ -177,7 +177,7 @@ Parallel specialist agents, each sweeping the whole tree on one axis:
   or UI; env ownership (right file, single writer, correct mode/redaction).
 - **JTS hardware/audio safety** — volume ceilings, positive-gain clamps, source
   handoff, TTS gain, CamillaDSP config safety, XVF brick hazards, deploy/runtime
-  path ownership (the AGENTS.md COAH checklist, applied tree-wide).
+  path ownership (AGENTS.md’s non-negotiables, applied tree-wide).
 - **Resilience** — unbounded loops/buffers/subprocess/network; **silent restart
   loops**; wake-blocking failure paths with **no audible cue**; resources that
   can vanish and not self-recover.
@@ -265,7 +265,7 @@ For each file the Phase-1 agent opens, answer:
   a special case that should live in a registry/protocol?
 - **Honest?** Do its comments/docstrings match what it does? Stale prose that
   contradicts the code is a finding.
-- **Tested?** Does its documented behaviour / invariant have a guard test?
+- **Tested?** Is externally observable behaviour covered where it can break?
 - **Sized right?** Could it be meaningfully smaller without losing a real
   capability? (And the inverse — is it doing too much, hiding two concerns?)
 - **Current?** Last-touched recency + debt markers + dead-flag references.
@@ -328,17 +328,12 @@ Every hit is a **suspect, not a verdict** — Phase 3 verification decides.
 5. Completeness-critic output (gaps / next round).
 6. A short, specific "what's genuinely strong" — earned, not flattering.
 
-**Immutable snapshot vs live ledger (do not mix them).** The Phase-4 report is a
-*frozen historical artifact*: findings with stable ids, evidence, and the
-completeness-critic verdict, pinned to the audited SHA + the re-verification
-date. It must NOT accumulate live status. Current disposition — open / fixed /
-mooted / deferred, the owning PR, and any required runtime validation — lives in
-a *separate ledger* keyed on the same stable finding ids. Two failure modes this
-prevents: (a) already-fixed findings continuing to read as active work; (b)
-private artifact links and local absolute paths leaking into a repo doc. Sanitize
-both: repo-relative paths only, no session/artifact URLs, no `\n`-escaped blobs
-pasted from a transcript (parse transcript JSONL properly — never string-read it
-into a committed file).
+**Frozen report vs live issues (ADR-0284).** Write one report per run at
+`docs/audits/YYYY-MM-DD-<scope>.md`, pinned to the audited SHA, with stable
+finding ids, evidence, and the completeness-critic verdict. Never add live
+status to it. Track each finding in a GitHub issue labelled `audit` and
+`audit-<date>`; keep disposition, owning PR, and runtime validation there.
+Use repo-relative paths and no private session/artifact URLs in the report.
 
 ---
 
