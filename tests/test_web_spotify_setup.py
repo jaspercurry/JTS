@@ -370,6 +370,42 @@ def test_reset_credentials_describes_the_restart_it_actually_got(
     assert flash == "Credentials cleared." + RESTART_CLAUSE[outcome]
 
 
+@pytest.mark.parametrize("outcome", list(RestartOutcome))
+def test_playlist_remove_uses_guarded_voice_restart(monkeypatch, outcome):
+    token = "y" * 64
+    effects = []
+    registry = types.SimpleNamespace(
+        remove_playlist=lambda account, uri: True,
+        save=lambda: effects.append("save"),
+    )
+    monkeypatch.setattr(
+        spotify_setup.Registry, "load", lambda path: registry,
+    )
+    monkeypatch.setattr(
+        spotify_setup,
+        "restart_voice_daemon",
+        lambda: effects.append("restart") or outcome,
+    )
+
+    body = urllib.parse.urlencode({
+        "csrf_token": token,
+        "account": "brittany",
+        "uri": "spotify:playlist:123",
+    }).encode()
+    h = _Request(
+        _handler_cls(), "/playlist-remove", body=body,
+        cookies="jts_csrf=" + token,
+    )
+    h.do_POST()
+
+    flash = urllib.parse.unquote(
+        next(c for c in h.header_values("Set-Cookie") if "jts_flash=" in c)
+        .split("jts_flash=", 1)[1].split(";", 1)[0],
+    )
+    assert effects == ["save", "restart"]
+    assert flash == "Removed playlist from brittany." + RESTART_CLAUSE[outcome]
+
+
 def test_get_root_unconfigured_renders_setup_wizard():
     h = _Request(_handler_cls(client_id=""), "/")
     h.do_GET()
