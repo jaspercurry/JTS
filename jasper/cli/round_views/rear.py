@@ -22,9 +22,6 @@ from ._common import (
     answer, default_out, refused_by_name, round_inputs,
 )
 
-#: This family's own "no data" refusal, in the room/delay convention
-#: (``room_no_seat_takes``, ``delay_confirm_no_measured_rows``) rather than
-#: the generic stage bucket.
 REFUSE_NO_REAR = "rear_no_entries"
 
 

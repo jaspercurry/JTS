@@ -131,10 +131,10 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
 @pytest.mark.parametrize("program,excluded", [
     ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
     ("room", {"entry", "frozen", "cloud-binding", "delay-landscape",
-              "delay-confirm", "close-reference", "distortion", "classify-features",
+              "close-reference", "distortion", "classify-features",
               "bass", "bass-compare", "bass-fit-table"}),
     ("bass", {"entry", "frozen", "per-seat", "agreement", "co-metrics", "directivity",
-              "cloud-binding", "delay-landscape", "delay-confirm",
+              "cloud-binding", "delay-landscape",
               "close-reference", "distortion", "classify-features", "room", "room-grade"}),
 ])
 def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, excluded):

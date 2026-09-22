@@ -2,11 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read banked delay curves, publish confirmation commands and refusal fields."""
+"""Read banked delay curves, publish predictions and refusal fields."""
 
 import json
 import math
-import shlex
 from pathlib import Path
 
 import numpy as np
@@ -25,9 +24,6 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
 from jasper.active_speaker.delay_sweep import sweep_spec
-from jasper.audio_measurement.analysis import ShoulderSpan
-from jasper.cli import null_door
-from jasper.cli.null_door import build_parser as null_parser
 from jasper.cli.round_views import main
 
 FC_HZ = 1800.0
@@ -130,23 +126,6 @@ def test_the_door_reads_the_bank_the_store_wrote_and_finds_the_offset(
     assert landscape["shoulders"]["used_hz"] == [FC_HZ / 2.0, FC_HZ * 2.0]
     assert landscape["shoulders"]["lower_clamped"] is False
     assert err.strip()
-
-
-@pytest.mark.parametrize("arrival_us", [0.0, 200.0])
-def test_confirmation_commands_carry_the_proposed_coordinates(tmp_path, capsys, arrival_us):
-    bundle = _bank(tmp_path, curves=[_curve("woofer", arrival_us=arrival_us), _curve("tweeter")])
-    code, payload, _ = _propose(bundle, capsys)
-    assert code == 0
-    assert len(payload["next"]) == len(payload["confirmation_coordinates_us"])
-    for line, coordinate in zip(payload["next"], payload["confirmation_coordinates_us"]):
-        argv = shlex.split(line)
-        assert argv[0] == "jasper-null"
-        args = null_parser().parse_args(argv[1:])
-        assert args.delays == [coordinate]
-        assert args.position == 0
-        assert args.polarity == "invert"
-        assert args.inverted_role == "tweeter"
-        assert Path(args.bundle_dir) == bundle
 
 
 def test_curves_that_cannot_span_the_shoulders_carry_refusal_fields(
@@ -312,57 +291,7 @@ def test_a_retaken_pose_reads_the_retake_not_the_take_it_replaced(
     assert payload["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
 
 
-def _null_row(bundle: Path, *, delay_us: float, depth_db: float | None = None,
-              inverted: bool = True, refusal=None):
-    """One `<bundle>/null_runs/` row, written by the door that owns their shape.
-
-    Built through `null_door`'s own writer rather than a hand copy, so a change
-    to the banked row fails here instead of being read past.
-    """
-
-    spec = sweep_spec(
-        crossover_fc_hz=FC_HZ, upper_role="tweeter", lower_role="woofer",
-        signed_acoustic_path_difference_m=0.0,
-    )
-    span = ShoulderSpan(
-        crossover_fc_hz=FC_HZ, overlap_hz=(FC_HZ / 2.0, FC_HZ * 2.0),
-        used_hz=(FC_HZ / 2.0, FC_HZ * 2.0), samples_below_fc=64, samples_above_fc=64,
-    )
-    row = null_door._row(
-        fc_hz=FC_HZ,
-        candidate=spec.dsp_candidate(delay_us),
-        inverted=inverted,
-        inverted_role="tweeter",
-        position_deg=0,
-        trims_db={"woofer": 0.0, "tweeter": -10.0},
-        trims_source="banked_base_trim",
-        gap_ceiling_db=3.3,
-        graph_fingerprint="abc123",
-        wav_sha256="0" * 64,
-        depth_db=depth_db,
-        span=None if refusal else span,
-        refusal=refusal,
-    )
-    return null_door._write_row(bundle / "null_runs", row)
-
-
-def _refused():
-    return null_door.NullDoorRefused(
-        "null_no_shoulders", "the band cannot place a shoulder"
-    )
-
-
-def _confirm(bundle: Path, capsys, *extra):
-    code = main(["delay-confirm", str(bundle), "--fc-hz", str(FC_HZ), *extra])
-    captured = capsys.readouterr()
-    return code, json.loads(captured.out), captured.err
-
-
 def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None:
-    """The prediction is an artifact, not just stdout: `delay-confirm` is graded
-    against it later, and a number an operator only ever saw scroll past is
-    not evidence."""
-
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", arrival_us=200.0), _curve("tweeter"),
     ])
@@ -376,64 +305,7 @@ def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None
     assert payload["bytes"] == banked.stat().st_size
 
 
-def test_confirm_grades_the_played_rows_against_the_computed_optimum(
-    tmp_path, capsys,
-) -> None:
-    """The loop closes here: the coordinates `delay-landscape` printed were played,
-    `jasper-null` banked a row for each, and the verdict is read off those
-    rows rather than off the model that proposed them."""
-
-    bundle = _bank(tmp_path, curves=[
-        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
-    ])
-    _code, proposed, _err = _propose(bundle, capsys)
-    optimum = proposed["best_coordinate_us"]
-    for coordinate in proposed["confirmation_coordinates_us"]:
-        _null_row(
-            bundle, delay_us=coordinate,
-            depth_db=26.0 if coordinate == optimum else 6.0,
-        )
-
-    code, payload, err = _confirm(bundle, capsys)
-
-    assert code == 0
-    assert payload["verdict"] == "delay_resolved_robust"
-    assert payload["prescribable_delay_us"] == pytest.approx(optimum)
-    banked = json.loads((bundle / "delay_confirmation.json").read_text())
-    assert banked["verdict"]["verdict"] == payload["verdict"]
-    assert banked["verdict"]["computed_optimum_us"] == pytest.approx(optimum)
-    # Every graded row is named with its coordinate and depth, and nothing
-    # from the capture rides along.
-    assert len(banked["graded_rows"]) == len(
-        proposed["confirmation_coordinates_us"]
-    )
-    assert all(
-        "wav_sha256" not in row and {"delay_us", "depth_db"} <= set(row)
-        for row in banked["graded_rows"]
-    )
-    assert err.strip()
-
-
-def test_confirm_refuses_rows_it_cannot_compare(tmp_path, capsys) -> None:
-    """A refused row has no depth and an in-phase row read the summed corner
-    rather than the reverse null — neither is a confirmation, and grading a
-    landscape off nothing is refused by name, not answered."""
-
-    bundle = _bank(tmp_path, curves=[
-        _curve("woofer", arrival_us=200.0), _curve("tweeter"),
-    ])
-    _null_row(bundle, delay_us=0.0, depth_db=22.0, inverted=False)
-    _null_row(bundle, delay_us=200.0, refusal=_refused())
-
-    code, payload, _err = _confirm(bundle, capsys)
-
-    assert code == 1
-    assert payload["status"] == "refused"
-    assert payload["reason"] == "delay_confirm_no_measured_rows"
-    assert not (bundle / "delay_confirmation.json").exists()
-
-
-def test_complete_tune_delay_proposal_selects_one_take_and_cannot_grade_neutral_rows(tmp_path, capsys):
+def test_complete_tune_delay_proposal_selects_one_take(tmp_path, capsys):
     _bank(tmp_path, curves=[_curve("woofer", arrival_us=100), _curve("tweeter")],
           phase="lateral", composition="complete_tune_measured", take_id="p0_a01")
     _bank(tmp_path, curves=[_curve("woofer", arrival_us=-100), _curve("tweeter")],
@@ -444,9 +316,6 @@ def test_complete_tune_delay_proposal_selects_one_take_and_cannot_grade_neutral_
     assert payload["take_path"] == take
     assert payload["best_coordinate_us"] == pytest.approx(100)
     assert _banked(payload)["delay_coordinates"] == "residual addition to measured tune"
-    code, payload, _err = _confirm(tmp_path, capsys, "--phase", "lateral", "--take-path", take)
-    assert code == 1
-    assert payload["reason"] == "delay_confirm_graph_mismatch"
 
 
 def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):

@@ -2,38 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Propose an inter-driver delay from banked transfers; confirm it acoustically.
-
-PROPOSE complex-sums the two banked per-driver transfers across
-``null_walk``'s whole delay grid and reads the null depth each coordinate
-would produce — no audio plays, ruling S3 having banked magnitude AND phase
-for every curve (:func:`~.spatial.pose_curve_record`). DISPOSE plays the
-computed optimum and its neighbours and measures what cancels. Disagreement
-is a banked result, not an error, and the shoulders are the canonical span
-clamped into the measured overlap
-(:class:`~jasper.audio_measurement.analysis.ShoulderSpan`).
-"""
+"""Predict inter-driver delay from banked complex transfers (ADR-0319)."""
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple, Sequence
+from typing import Any, Mapping, NamedTuple
 
-from jasper.active_speaker.delay_sweep import (
-    ROBUST_NULL_DEPTH_DB,
-    USABLE_NULL_DEPTH_DB,
-    VERDICT_AXIS_LIMITED,
-    VERDICT_ROBUST,
-    VERDICT_WEAK,
-)
 from jasper.audio_measurement.analysis import ShoulderSpan, crossover_null_depth_db, shoulder_span
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
 from .round_inputs import round_artifact_dir
-from .position_cycle import PoseCurvePair
+from .position_cycle import PoseCurvePair, parse_curve_complex
 
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
 LANDSCAPE_SCHEMA_VERSION = 1
@@ -43,14 +25,6 @@ REFUSAL_NO_ROUND = "delay_landscape_no_round"
 REFUSAL_NO_BANKED_CURVES = "delay_landscape_no_banked_curves"
 REFUSAL_FC_OUTSIDE_OVERLAP = "shoulder_overlap_excludes_fc"
 REFUSAL_SHOULDER_RUN_UP = "shoulder_run_up_too_short"
-
-#: How far the measured null may sit from the computed one before the two are
-#: telling different stories. Wider than the walk's own repeat spread (2 dB):
-#: this compares a two-transfer model against a real acoustic sum.
-MODEL_AGREEMENT_DB = 6.0
-
-VERDICT_MODEL_BROKE = "model_break_at_alignment_band"
-VERDICT_NO_EVIDENCE = "confirmation_missing"
 
 #: Phase-overlay corridor. Convention layered on the summation math below, not
 #: a derived bound: van Veen's "555" mnemonic, whose mathematically clean
@@ -98,8 +72,6 @@ def _curve(
     narrow the real one was. ``expected_role`` is checked against the banked
     ``role`` because the two curves reach the caller positionally.
     """
-
-    from .position_cycle import parse_curve_complex
 
     if not isinstance(raw, Mapping):
         raise DelayLandscapeError(f"{field_name} must be a banked curve mapping")
@@ -484,129 +456,6 @@ def landscape_from_bank(
     )
 
 
-def graded_null_rows(rows_dir: Path, *, fc_hz: float) -> list[dict[str, Any]]:
-    """The banked ``null_runs`` rows this landscape can be graded against.
-
-    Three filters, each because the remainder is not the same quantity: a
-    refused row has no depth, an in-phase row read the summed corner rather
-    than the reverse null, and a row played at another corner was read at
-    other shoulders. A row that will not parse is skipped rather than fatal —
-    an interrupted run leaves a half-written last row, and the coordinates
-    before it are still evidence.
-    """
-
-    graded: list[dict[str, Any]] = []
-    for path in sorted(rows_dir.glob("*.json")):
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-            if row.get("status") != "measured" or row.get("polarity") != "inverted":
-                continue
-            if not math.isclose(float(row["fc_hz"]), fc_hz, rel_tol=1e-6):
-                continue
-            entry = {
-                "row": path.name,
-                "delay_us": float(row["delay_us"]),
-                "depth_db": float(row["depth_db"]),
-                "delayed_role": row.get("delayed_role"),
-                "inverted_role": row.get("inverted_role"),
-                "position_deg": row.get("position_deg"),
-            }
-        except (AttributeError, KeyError, TypeError, ValueError):
-            continue
-        graded.append(entry)
-    return graded
-
-
-def depth_by_coordinate(graded: Sequence[Mapping[str, Any]]) -> dict[float, float]:
-    """One depth per coordinate: the deepest of a repeat.
-
-    Near the optimum the corner level is second-order flat in delay, so the
-    shallow member of a repeat pair is bounded by the run's own sigma rather
-    than by the coordinate. Every row stays visible in the banked rows.
-    """
-
-    depths: dict[float, float] = {}
-    for row in graded:
-        coordinate = float(row["delay_us"])
-        depth = float(row["depth_db"])
-        depths[coordinate] = max(depths.get(coordinate, depth), depth)
-    return depths
-
-
-def confirmation_verdict(
-    landscape: DelayLandscape,
-    measured_null_depth_db: Mapping[float, float],
-) -> dict[str, Any]:
-    """Grade the acoustic confirmation against what the model predicted.
-
-    None of the five verdicts is an error. Depth is not compared directly: a
-    modelled cancellation can be arbitrarily deep while a measured one floors
-    on noise and room, so "measured shallower than predicted" is the ordinary
-    case and what is checked is WHERE the null is. The delta is banked either
-    way, as this band's controllability evidence.
-    """
-
-    measured = {float(k): float(v) for k, v in measured_null_depth_db.items()}
-    at_optimum = next(
-        (
-            depth
-            for coordinate, depth in measured.items()
-            if math.isclose(coordinate, landscape.best_coordinate_us, abs_tol=1e-6)
-        ),
-        None,
-    )
-    predicted = landscape.best_predicted_null_depth_db
-    base = {
-        "schema_version": LANDSCAPE_SCHEMA_VERSION,
-        "computed_optimum_us": landscape.best_coordinate_us,
-        "predicted_null_depth_db": predicted,
-        "measured_null_depth_db": at_optimum,
-        "measured_minus_predicted_db": (
-            None if at_optimum is None else at_optimum - predicted
-        ),
-        "agreement_tolerance_db": MODEL_AGREEMENT_DB,
-        "robustness_bar_db": ROBUST_NULL_DEPTH_DB,
-        "usable_floor_db": USABLE_NULL_DEPTH_DB,
-        "confirmed_coordinates_us": sorted(measured),
-    }
-    if at_optimum is None:
-        return {**base, "verdict": VERDICT_NO_EVIDENCE, "model_agrees": False,
-                "prescribable_delay_us": None}
-
-    deepest_measured = max(measured.values())
-    # Read against the coordinates that were CONFIRMED — the optimum and its
-    # neighbours, not the whole grid — so this claims only "no confirmed
-    # neighbour beat the optimum". A null living somewhere else entirely is
-    # caught by `promised_unkept` below.
-    located = at_optimum >= deepest_measured - MODEL_AGREEMENT_DB
-    # The one depth claim that IS comparable: the model said this coordinate
-    # would give a usable null, and the room did not.
-    promised_unkept = (
-        predicted >= USABLE_NULL_DEPTH_DB and at_optimum < USABLE_NULL_DEPTH_DB
-    )
-    model_agrees = located and not promised_unkept
-
-    if not model_agrees:
-        verdict = VERDICT_MODEL_BROKE
-    elif at_optimum < USABLE_NULL_DEPTH_DB:
-        verdict = VERDICT_AXIS_LIMITED
-    elif at_optimum >= ROBUST_NULL_DEPTH_DB:
-        verdict = VERDICT_ROBUST
-    else:
-        verdict = VERDICT_WEAK
-    return {
-        **base,
-        "verdict": verdict,
-        "model_agrees": model_agrees,
-        # Only a verdict the measurement actually supports hands out a number.
-        "prescribable_delay_us": (
-            landscape.best_coordinate_us
-            if verdict in {VERDICT_ROBUST, VERDICT_WEAK}
-            else None
-        ),
-    }
-
-
 def optimum_line(landscape: DelayLandscape) -> str:
     """The answer and the basis it was read on, in one operator line.
 
@@ -635,29 +484,8 @@ def optimum_line(landscape: DelayLandscape) -> str:
     )
 
 
-def verdict_line(
-    verdict: Mapping[str, Any], depths: Mapping[float, float]
-) -> str:
-    """The grade, the depth at the optimum and the deepest one, in one line."""
-
-    at_optimum = verdict["measured_null_depth_db"]
-    measured = (
-        "not measured there" if at_optimum is None else
-        f"{at_optimum:.1f} dB "
-        f"(delta {verdict['measured_minus_predicted_db']:+.1f} dB)"
-    )
-    deepest_us, deepest_db = max(depths.items(), key=lambda item: item[1])
-    return (
-        f"{verdict['verdict']}: optimum {verdict['computed_optimum_us']:g} us "
-        f"predicted {verdict['predicted_null_depth_db']:.1f} dB, measured "
-        f"{measured}; deepest {deepest_db:.1f} dB at {deepest_us:g} us over "
-        f"{len(depths)} coordinates"
-    )
-
-
 __all__ = [
     "LANDSCAPE_KIND",
-    "MODEL_AGREEMENT_DB",
     "PHASE_OVERLAY_ADDITIVE_DEG",
     "PHASE_OVERLAY_TIGHT_DEG",
     "REFUSAL_FC_OUTSIDE_OVERLAP",
@@ -665,18 +493,12 @@ __all__ = [
     "REFUSAL_NO_ROUND",
     "REFUSAL_SHOULDER_RUN_UP",
     "REFUSAL_UNSUPPORTED",
-    "VERDICT_MODEL_BROKE",
-    "VERDICT_NO_EVIDENCE",
     "BankedLandscape",
     "DelayLandscape",
     "DelayLandscapeError",
     "compute_landscape",
-    "confirmation_verdict",
     "landscape_from_bank",
     "curve_shoulder_span",
-    "depth_by_coordinate",
-    "graded_null_rows",
     "optimum_line",
     "predicted_null_depth_db",
-    "verdict_line",
 ]

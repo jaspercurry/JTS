@@ -85,7 +85,7 @@ when it answers the question.
 
 Settle structure before response. Decide topology and trims in the same document. Re-derive filters fitted to another alignment (`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`; `docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
 
-If SNR is low, inspect `snr`, then use `delay-landscape`. If a measured answer would change the prescription, a person starts `jasper-null`; `delay-confirm` compares the result. It plays sound. A reverse null near −20 dB on delay alone is a delay answer. One that will not pass −10 dB at any delay points to level or slope (`02-dissertation-measure-diagnose-prescribe.md`, Stage 3).
+Read packet `alignment` / `alignment_verdict` (ADR-0319) for timing. Use `delay-landscape` for a prediction, then author candidate variants with the residual delay changes and compare real captures with `jasper-round trial`.
 A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`). That reference differs from shoulder-based null depth.
 
 Cut peaks; leave dips. A broad, low-Q peak can be audible near a quarter dB;

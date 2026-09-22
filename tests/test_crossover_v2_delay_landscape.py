@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compute-then-confirm: the delay landscape, and how a confirmation grades it."""
+"""Predict the delay landscape from banked transfers."""
 
 import math
 from typing import Any
@@ -11,22 +11,14 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.delay_landscape import (
-    MODEL_AGREEMENT_DB,
     REFUSAL_FC_OUTSIDE_OVERLAP,
     REFUSAL_SHOULDER_RUN_UP,
-    VERDICT_MODEL_BROKE,
-    VERDICT_NO_EVIDENCE,
     DelayLandscapeError,
     compute_landscape,
-    confirmation_verdict,
     predicted_null_depth_db,
 )
 from jasper.active_speaker.delay_sweep import (
     ROBUST_NULL_DEPTH_DB,
-    USABLE_NULL_DEPTH_DB,
-    VERDICT_AXIS_LIMITED,
-    VERDICT_ROBUST,
-    VERDICT_WEAK,
     sweep_spec,
 )
 
@@ -268,112 +260,6 @@ def test_shoulders_clamp_into_the_measured_overlap_instead_of_refusing(
     assert span.canonical_hz == pytest.approx((fc_hz / 2.0, fc_hz * 2.0))
     # And the disclosure reaches whoever reads the landscape, not just its caller.
     assert landscape.to_dict()["shoulders"] == span.to_dict()
-
-
-# --------------------------------------------------------------------------- #
-# DISPOSE — the acoustic confirmation
-# --------------------------------------------------------------------------- #
-
-
-def _measured(landscape, *, at_optimum, falloff=8.0):
-    best = landscape.best_coordinate_us
-    return {
-        coordinate: (at_optimum if coordinate == best else at_optimum - falloff)
-        for coordinate in landscape.confirmation_coordinates_us
-    }
-
-
-def test_a_deep_measured_null_where_the_model_put_it_grades_robust():
-    landscape = _landscape(100.0)
-    verdict = confirmation_verdict(landscape, _measured(landscape, at_optimum=26.0))
-    assert verdict["verdict"] == VERDICT_ROBUST
-    assert verdict["model_agrees"] is True
-    assert verdict["prescribable_delay_us"] == pytest.approx(100.0)
-
-
-def test_agreement_at_a_shallow_null_grades_weak_and_still_prescribes():
-    # Between the usable floor and the robustness bar, located where the model
-    # put it: a real answer, handed over with its shallowness stated.
-    landscape = _landscape(100.0)
-    verdict = confirmation_verdict(landscape, _measured(landscape, at_optimum=17.0))
-    assert verdict["verdict"] == VERDICT_WEAK
-    assert verdict["model_agrees"] is True
-    assert verdict["prescribable_delay_us"] is not None
-
-
-def test_a_measured_null_far_shallower_than_an_ideal_model_is_not_a_break():
-    # The model's cancellation is near-perfect; the room's floors on noise.
-    # That gap is physics, not disagreement -- only WHERE the null sits is a
-    # claim the model makes.
-    landscape = _landscape(100.0)
-    verdict = confirmation_verdict(landscape, _measured(landscape, at_optimum=26.0))
-    assert landscape.best_predicted_null_depth_db > 35.0
-    assert verdict["measured_minus_predicted_db"] < -2 * MODEL_AGREEMENT_DB
-    assert verdict["model_agrees"] is True
-    assert verdict["verdict"] == VERDICT_ROBUST
-
-
-def test_a_promised_null_the_room_did_not_produce_is_a_model_break():
-    landscape = _landscape(100.0)
-    # The model promised a deep null; the acoustic sum barely dipped.
-    verdict = confirmation_verdict(landscape, _measured(landscape, at_optimum=4.0))
-    assert verdict["verdict"] == VERDICT_MODEL_BROKE
-    assert verdict["model_agrees"] is False
-    # No delay is prescribed on the strength of a computation the room refused.
-    assert verdict["prescribable_delay_us"] is None
-    assert verdict["measured_minus_predicted_db"] < -MODEL_AGREEMENT_DB
-
-
-def test_the_measured_minus_computed_delta_is_always_banked():
-    landscape = _landscape(0.0)
-    for measured_db in (2.0, 12.0, 30.0):
-        verdict = confirmation_verdict(
-            landscape, _measured(landscape, at_optimum=measured_db)
-        )
-        assert verdict["measured_null_depth_db"] == pytest.approx(measured_db)
-        assert verdict["measured_minus_predicted_db"] == pytest.approx(
-            measured_db - landscape.best_predicted_null_depth_db
-        )
-
-
-def test_a_deeper_null_at_a_neighbour_than_at_the_optimum_is_a_model_break():
-    landscape = _landscape(0.0)
-    best = landscape.best_coordinate_us
-    measured = {c: 6.0 for c in landscape.confirmation_coordinates_us}
-    neighbour = next(c for c in landscape.confirmation_coordinates_us if c != best)
-    measured[neighbour] = 30.0  # the real null is not where the model put it
-    verdict = confirmation_verdict(landscape, measured)
-    assert verdict["verdict"] == VERDICT_MODEL_BROKE
-    assert verdict["prescribable_delay_us"] is None
-
-
-def test_agreement_on_a_null_nobody_can_use_reads_axis_limited():
-    # The branches are 6 dB apart, so the complex sum CANNOT cancel deeply and
-    # the model itself predicts an unusable null. That is the only shape this
-    # verdict is reachable on: where the model promises a usable null and the
-    # room refuses, `promised_unkept` fires and the answer is a model break.
-    landscape = compute_landscape(
-        _curve("woofer", arrival_us=0.0, gain_db=-6.0),
-        _curve("tweeter", arrival_us=0.0),
-        spec=_spec(),
-        inverted_role="tweeter",
-    )
-    assert landscape.best_predicted_null_depth_db < USABLE_NULL_DEPTH_DB
-    verdict = confirmation_verdict(
-        landscape,
-        {c: 3.0 for c in landscape.confirmation_coordinates_us},
-    )
-    assert verdict["model_agrees"] is True
-    assert verdict["verdict"] == VERDICT_AXIS_LIMITED
-    assert verdict["prescribable_delay_us"] is None
-
-
-def test_a_confirmation_that_missed_the_optimum_says_so():
-    landscape = _landscape(100.0)
-    verdict = confirmation_verdict(landscape, {landscape.best_coordinate_us + 1e4: 30.0})
-    assert verdict["verdict"] == VERDICT_NO_EVIDENCE
-    assert verdict["measured_null_depth_db"] is None
-    assert verdict["prescribable_delay_us"] is None
 
 
 def test_the_landscape_serializes_every_coordinate_it_scored():

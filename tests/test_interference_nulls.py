@@ -2,38 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the interference-null identification gate.
-
-Five layers, per the plan's second honesty instrument
-(docs/historical/linearization-campaign-2026-07.md "S0 executed" section e.1, and
-docs/historical/linearization-campaign-2026-07.md PR-1):
-
-A. **Synthetic ground truth** — a two-path impulse response with a known
-   ``tau`` and ``r``, and the magnitude curve derived from that *same* IR, so
-   the time-domain and frequency-domain evidence the gate insists must agree
-   really are two views of one physical object rather than two fixtures that
-   happen to match. Recovery is asserted against the truth, with the
-   estimator biases the module documents stated as tolerances rather than
-   hidden inside a loose ``approx``.
-B. **The depth statistic's own calibration** — the sweep quoted by
-   ``NULL_DEPTH_STATISTIC``, re-derived: how much a 1/6-octave window fills a
-   null versus how much it shaves a peak. The whole "read the flank smoothed,
-   read the null raw" design rests on that asymmetry, so it runs rather than
-   being quoted.
-C. **Refusal paths** — every ``REASON_*`` and every ``CANDIDATE_*`` the
-   module can emit, each from a cloud built to produce exactly that shape.
-   A gate whose refusals are untested is a gate that silently identifies.
-D. **Invariants** — the runaway-exclusion guard as a property over a sweep of
-   synthetic clouds, and the arithmetic identities the physics helpers claim.
-E. **Real-data acceptance** against the 2026-07-25 S0 session: the 8-16 kHz
-   family the plan is pre-registered against, the 1.8 kHz dip's acquittal by
-   depth ceiling, the ground plane's refusal to fabricate, and the four-way
-   calibration table every constant in the module quotes. Gated on
-   ``JTS_FLAT_LIN_S0``; absent in CI, where these skip. **A corpus-acceptance
-   PR is not done until they have been seen to PASS** — a wrong-but-existing
-   path skips silently.
-"""
+"""Interference-null identification and cancellation depth."""
 from __future__ import annotations
+
+import math
 
 from types import MappingProxyType
 
@@ -71,6 +43,7 @@ from jasper.audio_measurement.interference_nulls import (
     classify_dip_position_variance,
     identify_interference_nulls,
     null_depth_ceiling_db,
+    branch_gap_null_depth_ceiling_db,
     reflection_ratio_from_depth,
 )
 from jasper.audio_measurement.spatial_combine import (
@@ -2045,3 +2018,18 @@ def test_f_presence_proximity_is_derived_from_the_smoothing_window(monkeypatch):
     # curve gives a wider window at the same frequency. Asked of ``real``,
     # which the patch never replaced.
     assert real(4000.0, 3) > real(4000.0, 6)
+
+
+@pytest.mark.parametrize(
+    "gap_db,expected",
+    [(0.0, math.inf), (10.0, 3.30), (33.0, 0.20)],
+)
+def test_the_branch_gap_bounds_the_depth(gap_db, expected):
+    """Two branches ``gap`` apart cannot cancel deeper than this however right
+    the delay is. 10 dB → ~3.3 dB and 33 dB → ~0.2 dB are the two figures the
+    propose door and the composer already state in prose."""
+    ceiling = branch_gap_null_depth_ceiling_db(gap_db)
+    if math.isinf(expected):
+        assert math.isinf(ceiling)
+    else:
+        assert ceiling == pytest.approx(expected, abs=0.01)
