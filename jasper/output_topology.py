@@ -627,7 +627,7 @@ class TopologyRouting:
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "TopologyRouting":
-        raw = raw if isinstance(raw, Mapping) else {}
+        raw = _require_mapping(raw, "routing")
         subs = raw.get("subwoofer_group_ids", [])
         return cls(
             main_left_group_id=_optional_id(raw.get("main_left_group_id")),
@@ -662,7 +662,7 @@ class OutputTopology:
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputTopology":
         raw = _require_mapping(raw, "output_topology")
-        if raw.get("artifact_schema_version") not in {SCHEMA_VERSION, OUTPUT_VARIANT_SCHEMA_VERSION}:
+        if raw.get("artifact_schema_version") not in (SCHEMA_VERSION, OUTPUT_VARIANT_SCHEMA_VERSION):
             raise OutputTopologyError("unsupported output topology schema version")
         if raw.get("kind") != OUTPUT_TOPOLOGY_KIND:
             raise OutputTopologyError("unsupported output topology kind")
@@ -675,7 +675,7 @@ class OutputTopology:
                 SpeakerGroup.from_mapping(item).channels_with_output_labels(hardware)
                 for item in _sequence(raw.get("speaker_groups", []), "speaker_groups")
             ),
-            routing=TopologyRouting.from_mapping(raw.get("routing")),
+            routing=TopologyRouting.from_mapping(raw.get("routing", {})),
             pairing_intent=_enum(
                 raw.get("pairing_intent", DEFAULT_PAIRING_INTENT),
                 "pairing_intent",

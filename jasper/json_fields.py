@@ -184,7 +184,7 @@ class JsonFields:
     def integer(self, value: Any, field_name: str) -> int:
         try:
             return int(value)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise self.error_type(f"{field_name} must be an integer", code="field_not_integer") from exc
 
     def optional_integer(self, value: Any, field_name: str) -> int | None:

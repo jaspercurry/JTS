@@ -14,7 +14,15 @@ from unittest.mock import patch
 import pytest
 
 from jasper import output_topology as output_topology_mod
-from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+from jasper.active_speaker.profile import (
+    SUB_CROSSOVER_HZ_HI as PROFILE_HI,
+    SUB_CROSSOVER_HZ_LO as PROFILE_LO,
+)
+from jasper.camilla_emit import (
+    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+    BASS_MANAGEMENT_CORNER_HZ_HI as SHARED_HI,
+    BASS_MANAGEMENT_CORNER_HZ_LO as SHARED_LO,
+)
 from jasper.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
@@ -29,6 +37,8 @@ from jasper.output_topology import (
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
@@ -190,6 +200,42 @@ def _sub_group(index: int) -> dict:
         "mode": "subwoofer",
         "channels": [{"role": "subwoofer", "physical_output_index": index}],
     }
+
+
+@pytest.mark.parametrize("count", [float("inf"), float("-inf"), float("nan")])
+def test_topology_rejects_nonfinite_physical_output_count(count: float) -> None:
+    raw = new_topology_draft().to_dict(include_evaluation=False)
+    raw["hardware"]["physical_output_count"] = count
+    with pytest.raises(OutputTopologyError) as caught:
+        OutputTopology.from_mapping(raw)
+    assert caught.value.code == "field_not_integer"
+
+
+@pytest.mark.parametrize("version", [[], {}, [1], {"version": 1}])
+def test_topology_rejects_container_schema_version(version: object) -> None:
+    raw = new_topology_draft().to_dict(include_evaluation=False)
+    raw["artifact_schema_version"] = version
+    with pytest.raises(OutputTopologyError):
+        OutputTopology.from_mapping(raw)
+
+
+@pytest.mark.parametrize("routing", [None, [], ["mono"], "", "mono", 0, False])
+def test_topology_rejects_non_mapping_routing(routing: object) -> None:
+    raw = new_topology_draft().to_dict(include_evaluation=False)
+    raw["routing"] = routing
+    with pytest.raises(OutputTopologyError) as caught:
+        OutputTopology.from_mapping(raw)
+    assert caught.value.code == "field_not_object"
+
+
+@pytest.mark.parametrize("omitted", [True, False])
+def test_topology_accepts_omitted_or_empty_routing(omitted: bool) -> None:
+    draft = new_topology_draft()
+    raw = draft.to_dict(include_evaluation=False)
+    raw.pop("routing")
+    if not omitted:
+        raw["routing"] = {}
+    assert OutputTopology.from_mapping(raw).routing == draft.routing
 
 
 def test_passive_shape_predicates_separate_subless_from_with_sub() -> None:
@@ -1236,19 +1282,6 @@ def test_sub_crossover_bounds_mirror_profile() -> None:
     # output_topology, the active-speaker profile, AND the one shared corner
     # home (jasper.camilla_emit) must all agree — since P5 they are bound to the
     # same constant, not three independent numbers.
-    from jasper.active_speaker.profile import (
-        SUB_CROSSOVER_HZ_HI as PROFILE_HI,
-        SUB_CROSSOVER_HZ_LO as PROFILE_LO,
-    )
-    from jasper.camilla_emit import (
-        BASS_MANAGEMENT_CORNER_HZ_HI as SHARED_HI,
-        BASS_MANAGEMENT_CORNER_HZ_LO as SHARED_LO,
-    )
-    from jasper.output_topology import (
-        SUB_CROSSOVER_HZ_HI,
-        SUB_CROSSOVER_HZ_LO,
-    )
-
     assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
     assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0
 
