@@ -55,7 +55,7 @@ def test_voice_file_routes_to_voice_docs():
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
     assert "docs/extensibility.md" in report[0]["docs"]
-    assert "docs/tool-platform-plan.md" in report[0]["docs"]
+    assert "docs/adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md" in report[0]["docs"]
 
 
 def test_vad_file_routes_to_voice_and_vad_docs():
@@ -100,7 +100,7 @@ def test_landing_page_routes_to_web_design_system_not_conversation_history():
 
     assert [item["id"] for item in report] == ["web-design-system"]
     assert "docs/design-language.md" in report[0]["docs"]
-    assert "docs/conversation-history-plan.md" not in report[0]["docs"]
+    assert "docs/privacy.md" not in report[0]["docs"]
 
 
 def test_voice_service_unit_does_not_trigger_global_deploy_docs():

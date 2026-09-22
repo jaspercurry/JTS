@@ -11,7 +11,7 @@ After the wake word fires, the live voice turn sends microphone audio from the
 wake interaction, including up to about 0.6 seconds of audio captured
 immediately before the wake word fired, to the configured voice provider
 selected by `JASPER_VOICE_PROVIDER` in `/var/lib/jasper/voice_provider.env`
-(`gemini`, `openai`, or `grok`). That provider performs the realtime
+(`gemini`, `openai`, `openai_live`, or `grok`). That provider performs the realtime
 speech-to-speech turn.
 
 Endpointed adapters close the conversation as soon as playback drains. GPT-Live
@@ -58,17 +58,6 @@ application content. Its RAM timeline records controller, interrupt, and USB
 network counters; deliberate captures retain only a bounded tail plus the
 gadget's technical state.
 
-Conversation history is separate from spend accounting. When
-`JASPER_CONVERSATION_CAPTURE=1` (or the matching wizard-owned
-conversation-history env file enables capture), JTS stores text-only turns in
-`/var/lib/jasper/conversation_history.db` by default
-(`JASPER_CONVERSATION_HISTORY_DB`): the perceived user command transcript, the
-assistant transcript, and provider/session metadata. It never stores speech
-audio in this database, and capture is skipped while the voice assistant is paused. Capture is
-default-off; retained rows stay on the speaker, are pruned by the configured
-conversation-history retention window and row cap, and can be cleared from
-`/assistant/chat/`.
-
 System logs stay in journald on the speaker unless an operator exports them,
 for example with `scripts/fetch-pi-logs.sh`. OpenAI transcript events log
 metadata such as character counts, not transcript text; that keeps both normal
@@ -76,6 +65,58 @@ INFO logs and flight-recorder DEBUG dumps free of household utterances.
 Content-bearing tool payload previews for Gmail, Calendar, and Home Assistant
 are redacted at INFO, and Home Assistant's natural-language tool argument is
 also redacted.
+
+## Conversation History
+
+Capture is **default-off**. The household can enable it or clear all saved
+turns at `/assistant/chat/`. This is a shared LAN history, not a per-member
+account or a text-chat input. Turning capture off does not delete saved rows.
+
+The wizard writes `JASPER_CONVERSATION_CAPTURE` in
+`/var/lib/jasper/conversation_history.env`. The capture writer reads this file
+fresh for each write; the file overrides the process setting. The legacy
+`JASPER_CONVERSATION_HISTORY_ENABLED` name is also accepted. Capture is skipped
+when the turn is marked voice-assistant-paused. This control does not stop the
+cloud voice service from receiving audio during an otherwise active turn.
+
+History uses `/var/lib/jasper/conversation_history.db`
+(`JASPER_CONVERSATION_HISTORY_DB`), separate from `usage.db` and wake-event
+storage. Each row contains an id, UTC timestamp, provider, nullable perceived
+user transcript, nullable assistant transcript, optional JSON data, and a
+nullable usage-session id. The perceived command is what speech recognition
+heard, not a verified account of what was said. The reserved `tool_calls_json`
+column is currently null in production writes; tool arguments are not saved
+there. This database stores no audio.
+
+Text comes from the active provider's native events; history adds no separate
+speech-to-text pass. OpenAI and Grok use the shared transcript path. Gemini
+requests input and output transcription and also records a `voice_turn` marker,
+a transcript-availability flag, and tool names when present. GPT-Live stores
+user/assistant transcript deltas with start/end times and voice-usage data in
+addition to the text. Missing provider text stays null; a turn can contain only
+metadata. The page displays that absence instead of inventing a transcript.
+
+Rows stay on the speaker; history has no upload or cloud-sync path. People on
+the trusted household LAN can read them through the page and
+`/assistant/chat/data.json`. The JSON response (`schema_version: 1`) contains
+capture/store status, retention settings, statistics, and newest-first turns.
+It accepts a `since` timestamp and a `limit` (default 50, capped at 200).
+Provider/session and JSON fields are included in these rows; the page is not
+an access-control boundary. See the trust boundary below.
+
+After each successful capture write, retention removes rows older than
+30 days and keeps at most 500 rows by default. Configure these limits with
+`JASPER_CONVERSATION_HISTORY_RETENTION_DAYS` and
+`JASPER_CONVERSATION_HISTORY_MAX_ROWS`; blank or zero disables the respective
+limit. Pruning is write-triggered, not a background expiry timer. Store or
+pruning failures are reported without blocking the voice turn, so retention
+is best effort. Clear-all deletes the stored rows; there is no per-row delete
+control in the UI. Capture does not put transcript text in system logs.
+
+Implementation: [store and settings](../jasper/conversation_history.py),
+[capture writer](../jasper/voice/conversation_capture.py), and
+[web/API](../jasper/web/chat_setup.py). The design decision is
+[ADR-0337](adr/0337-conversation-history-is-local-opt-in-native-text.md).
 
 ## Voice Assistant Pause and USB Microphone Scope
 

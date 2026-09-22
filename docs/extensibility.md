@@ -1,33 +1,11 @@
 # JTS extensibility — the doctrine
 
-> **Status: canonical doctrine.** This is the cross-cutting *lens* for how
-> JTS is extended. It owns the shared invariant, the taxonomy of extension
-> contracts, the decision tree, and the build-now-vs-defer line. It does
-> **not** restate the per-contract details — those live in their own docs
-> (linked below) and remain the single source of truth for their domain.
-> When in doubt about *how* to add something, start here; for the specifics
-> of a given contract, follow the link.
-
-JTS already extends in several distinct ways — LLM tools, audio sources,
-model providers, hardware profiles, and a newer kind of cross-cutting
-"feature." They were built at different times and look different, but they
-are the *same shape* underneath. This doc names that shape so every future
-addition is reasoned about the same way, and so a future contributor can
-follow the lead with a clear, understood contract.
-
-It was distilled from JTS's own in-repo prior art (the config-ownership
-decision tree — now the pattern-selector table in Step 2 below,
-the transit registry, the reconcilers, the tool platform) plus an external
-deep-research pass over how the best extension ecosystems draw these lines
-(Home Assistant, VS Code, Figma, Django/Backstage, CLAP/LV2, Kubernetes, and
-the cautionary tales — see the appendix).
-
-> **On names:** the contract names below (Tool, Source, Provider, Profile,
-> Feature) are working labels. The *lens* is the point, not the vocabulary —
-> don't relitigate naming. Where an existing doc uses a different word for the
-> same thing, the concept is what matters.
-
----
+The host owns shared services; extensions declare what they contribute.
+This document owns the extension contracts and configuration decision tree.
+The tool-authoring guide at `/assistant/tools/guide/`
+([source](../jasper/web/tools_setup.py)) gives contributor instructions.
+[ADR-0338](adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md)
+retains the tool platform's decisions and deferred trust/distribution work.
 
 ## 1. The one rule that matters: host-mediated indirection
 
@@ -105,26 +83,48 @@ keeps its own detailed contract doc; this table is the map.
 
 | Contract | The unit | Why it's its own contract | Canonical doc |
 |---|---|---|---|
-| **Tools** | a tool (grouped into a pack) | an LLM-callable action; declared to the provider at connect time; spends the model's token budget; dispatched uniformly | [`tool-platform-plan.md`](tool-platform-plan.md) |
+| **Tools** | a tool (grouped into a pack) | an LLM-callable action; declared to the provider at connect time; spends the model's token budget; dispatched uniformly | [Tools below](#tools) |
 | **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`audio-paths.md`](audio-paths.md) |
 | **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (the realtime `LiveConnection`) | the provider catalog, `jasper/voice/catalog.py` |
 | **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | the pattern-selector table (Step 2, below) |
-| **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md) |
+| **Features** (§4) | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [Feature contract below](#4-the-feature-contract) |
 
-The first four are mature and shipped to varying degrees. The fifth — the
-**Feature** — is the one with no agreed contract yet, and it is the gap this
-doctrine most exists to close.
+### Tools
+
+A `CapabilityPack` in [packs.py](../jasper/tools/packs.py) owns build/setup
+logic and receives host dependencies. Its ordered build returns decorated
+callables or explicit `Tool` objects; gate/build/registration failures are
+isolated per pack. Extend the pack registry, not daemon/provider branches.
+
+[ToolDefinition and ToolExecutor](../jasper/tools/__init__.py) separate
+provider-neutral schema, prompt, visibility, timeout, labels, and risk metadata
+from execution. `@tool` builds that same pair with a `PythonExecutor`.
+`dispatch_tool` owns timeout, logging/redaction, result/error shaping, and
+call/completion observation. Labels do not enter provider prompts; risk flags
+are declarations, not a general permission enforcement layer.
+
+Keep full human descriptions; use `llm_description` for shorter model copy.
+A household override takes precedence, with the code default retained for
+reset. Provider serializers, manifests, and catalog use the effective prompt.
+
+The wizard reads generated catalog JSON and wizard-owned settings, without
+importing tool modules. `CatalogPack` is display grouping, distinct from the
+runtime pack; singleton groups support standalone tools. Pack and tool disable
+sets remain separate. Saves stage changes; Apply restarts voice once.
+Authoring examples, setup ownership, failure contracts, and tests live in the
+[web guide source](../jasper/web/tools_setup.py); the minimal example is
+[tool_pack_starter.py](examples/tool_pack_starter.py).
 
 ---
 
-## 4. The Feature contract (the new one)
+## 4. The Feature contract
 
-A **Feature** is a self-contained vertical that the host *composes*. Today
-JTS has exactly one: the conversation-history page, with its own store, its
-own web surface, and its own background-work and proactive-speech hooks. One
-instance cannot show which of those the host should own, so the contract
-below stays a sketch until a second Feature arrives and the duplication
-becomes visible.
+A **Feature** is a vertical that composes existing contracts and owns a user
+surface. Conversation history is the first proving instance: a capture hook,
+store, and web page ([ADR-0337](adr/0337-conversation-history-is-local-opt-in-native-text.md)).
+Its public data contract lives in [privacy.md](privacy.md#conversation-history).
+The shared contract below is a design sketch, not a shipped scheduler,
+background-work facility, or proactive-speech framework.
 
 The answer is the **Django-app / Backstage-plugin / Rails-engine** model:
 **the Feature *declares* its contributions; the host *owns and injects* the
@@ -155,13 +155,8 @@ audible cue (a proactive Feature that fails must speak), a `/system/snapshot`
 field or `doctor` check for a health fact (`/state` is the daemon's own
 posture, not a health fact — ADR-0270), and mic-mute / privacy gating.
 
-**Build discipline (this matters):** do **not** build a generic Feature
-framework speculatively. Build the next instance —
-[`conversation-history`](conversation-history-plan.md) is the chosen first
-deliberate Feature — *concretely*, extracting each shared host facility (a storage
-helper, a web-mount helper, a scheduler helper) only when a **second** caller
-needs it. Let the *contract* crystallize last. Even Backstage got its
-composition contract right only on the second iteration, by evolving it.
+Build each Feature concretely. Extract a shared store, web-mount, or scheduler
+helper only when a second caller needs it; let that use define the contract.
 
 > Status: the generic Feature *contract* is **not built yet** (by design —
 > it crystallizes on the second instance). Its first proving instance,
@@ -208,7 +203,7 @@ send PRs you review and run yourself.** They stay trusted the same way your
 own code is, so they need *review discipline and good fault isolation*, **not
 a sandbox**. The full phasing (Phase 1 "just me" → Phase 2 "trusted PRs" →
 Phase 3 "untrusted at scale") and the per-trigger deferral catalogue live in
-[`tool-platform-plan.md`](tool-platform-plan.md) §§1, 6 — this doctrine does
+[ADR-0338](adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) — this doctrine does
 not restate them.
 
 **Adopt now** (foundational regardless of trust — each pays off for *your own*
@@ -231,7 +226,7 @@ code immediately):
 
 **Defer until untrusted, out-of-tree authors actually exist** (Phase 3 — may
 never arrive; each gated by its own trigger in
-[`tool-platform-plan.md`](tool-platform-plan.md) §6):
+[ADR-0338](adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md)):
 - process/VM **sandboxing**;
 - permission **enforcement** / capability brokering;
 - a **secret-broker daemon** (beyond simple host-stored credentials);
@@ -277,4 +272,4 @@ draw these boundaries. Kept here as rationale, not operational truth.
 
 ---
 
-Last verified: 2026-06-19
+Last verified: 2026-09-22 (Tool and conversation-history contract references)

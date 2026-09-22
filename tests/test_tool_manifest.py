@@ -119,7 +119,7 @@ def test_manifest_providers_none_for_universal_tool():
 def test_transit_tools_carry_city_and_mode_labels():
     """The transit city is a label on the tool (not a CityPack toggle) —
     the catalog will filter/sort on these. Declared order is preserved.
-    See docs/tool-platform-plan.md."""
+    See docs/extensibility.md."""
     by_name = {e["name"]: e for e in _full_registry().to_manifest()}
     assert by_name["get_subway_arrivals"]["labels"] == ["transit", "nyc", "subway"]
     assert by_name["get_bus_arrivals"]["labels"] == ["transit", "nyc", "bus"]
