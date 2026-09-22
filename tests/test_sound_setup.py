@@ -3348,21 +3348,32 @@ def _stub_baseline_apply(
     monkeypatch.setattr(
         sound_active_speaker, "mux_socket_command", fake_mux_command
     )
+    monkeypatch.setattr(sound_active_speaker, "trigger_reconcile", lambda **kw: {"ok": True})
     return apply_calls, mux_commands
 
 
-async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
+@pytest.mark.parametrize("route_ready", [True, False])
+async def test_active_speaker_baseline_apply_converges_route_before_source_auto(monkeypatch, route_ready):
     apply_calls, mux_commands = _stub_baseline_apply(
         monkeypatch, applied_profile=False
     )
+    def reconcile(**kwargs):
+        assert len(apply_calls) == 1
+        assert mux_commands == []
+        return {"ok": route_ready}
+    monkeypatch.setattr(sound_active_speaker, "trigger_reconcile", reconcile)
 
     payload = await sound_active_speaker._active_speaker_baseline_profile_apply_payload(
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
-    assert mux_commands == ["AUTO"]
-    assert payload["source_selection_restore"]["status"] == "ok"
-    assert payload["source_selection_restore"]["state"]["mode"] == "auto"
+    assert payload["reconcile"]["ok"] is route_ready
+    assert mux_commands == (["AUTO"] if route_ready else [])
+    assert payload["status"] == ("applied" if route_ready else "needs_attention")
+    if route_ready:
+        assert payload["source_selection_restore"]["state"]["mode"] == "auto"
+    else:
+        assert payload["issues"][-1]["code"] == "output_route_not_ready"
 
 
 @pytest.mark.parametrize("echo", [None, "stale-candidate", "reviewed-candidate"])

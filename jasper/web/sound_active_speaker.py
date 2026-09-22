@@ -10,6 +10,7 @@ here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -68,6 +69,7 @@ from jasper.output_hardware import (
     load_state as load_output_hardware_state,
     topology_hardware_from_state,
 )
+from jasper.output_topology_runtime import trigger_reconcile
 from jasper.active_speaker.commission_wiring import (
     commission_seams,
 )
@@ -998,6 +1000,10 @@ async def _active_speaker_baseline_profile_apply_payload(
         on_candidate_verified=on_candidate_verified,
     )
     if payload.get("status") == "applied":
+        payload["reconcile"] = await asyncio.to_thread(trigger_reconcile, reason="baseline_apply")
+        if not payload["reconcile"].get("ok"):
+            issue = {"code": "output_route_not_ready", "message": "The configuration is saved, but the audio output is not ready. Try Save to speaker again."}
+            return {**payload, "status": "needs_attention", "issues": [*payload.get("issues", []), issue]}
         payload["source_selection_restore"] = await _active_speaker_restore_auto_source(
             reason="baseline_apply",
         )
