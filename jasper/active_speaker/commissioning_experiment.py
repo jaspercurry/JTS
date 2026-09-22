@@ -83,8 +83,8 @@ def bank_commissioning_experiment(
             }, fc_hz=preset.crossover_regions[0].fc_hz if preset.crossover_regions else None,
                declared_bounds_us=alignment_delay_search_bounds_us(preset), way_count=preset.way_count))
             fields = alignment_to_candidate_fields({**committed, "alignment_status": alignment["status"]}, roles=required_driver_roles(preset.way_count))
-            if prescription.out_of_lobe:
-                reason = PRESCRIPTION_OUT_OF_LOBE
+            if prescription.out_of_lobe is not False:
+                reason = PRESCRIPTION_OUT_OF_LOBE if prescription.out_of_lobe else "commissioning_alignment_unavailable"
             elif fields[0] is None:
                 reason = alignment["status"] or "commissioning_alignment_unavailable"
             else:
