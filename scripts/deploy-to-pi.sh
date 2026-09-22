@@ -478,8 +478,7 @@ warn_if_pi_host_on_gadget_network() {
 
     [[ -n "$matched" ]] || return 0
 
-    cat <<EOF >&2
-─────────────────────────────────────────────────────────────
+    printf '%s\n' "─────────────────────────────────────────────────────────────
  ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
    management allocation (${matched_cidr}).
    If the gadget's composition changes mid-install, this deploy's own
@@ -487,8 +486,7 @@ warn_if_pi_host_on_gadget_network() {
    this reconnects (event=deploy.install_poll_reconnect). To avoid the gap,
    deploy over the Wi-Fi/LAN address instead:
      PI_HOST=<pi-lan-hostname-or-ip> bash scripts/deploy-to-pi.sh
-─────────────────────────────────────────────────────────────
-EOF
+─────────────────────────────────────────────────────────────" >&2
 }
 
 mark_airplay_health_maintenance() {
