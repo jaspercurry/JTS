@@ -64,7 +64,7 @@ safety = "safe-ci"
 # Cross-cutting: the host-mediated-indirection invariant, the five extension
 # contracts (tools / sources / model providers / hardware profiles / features),
 # and the what-kind -> which-pattern decision tree. The per-contract docs
-# (tool-platform-plan, source-capabilities, audio-capability-platform, transit,
+# (tool decisions, source-capabilities, audio-capability-platform, transit,
 # dac-registry) keep their own subsystems; this routes the SHARED
 # registry/dispatch/reconciler seams + the Config-ownership decision tree to the
 # lens. Overlapping globs are intentional (a change routes to both).
@@ -190,7 +190,7 @@ code = [
 ]
 docs = [
   "docs/extensibility.md",
-  "docs/conversation-history-plan.md",
+  "docs/privacy.md",
 ]
 
 [[subsystem]]
@@ -219,14 +219,8 @@ code = [
 docs = [
   # Cross-cutting extensibility lens (the Tool + Feature contracts live here):
   "docs/extensibility.md",
-  # Mic presence-gate: a jasper-voice.service / mic_capture / daemon_main
-  # change near the no-mic park path must route here (ConditionPathExists
-  # marker + exit-66 park + the cross-component convergence model).
-  # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
-  # the /tools/ wizard). The core tool code globbed above must route here so a
-  # pack-walk / catalog / wizard change surfaces the living plan for review.
-  "docs/tool-platform-plan.md",
-  "docs/conversation-history-plan.md",
+  "docs/adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md",
+  "docs/privacy.md",
   "tests/voice_eval/README.md",
 ]
 
@@ -699,7 +693,7 @@ code = [
 docs = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
-  "docs/tool-platform-plan.md",
+  "docs/adr/0338-tools-share-one-boundary-and-defer-untrusted-distribution.md",
 ]
 
 [[subsystem]]

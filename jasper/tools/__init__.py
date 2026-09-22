@@ -227,7 +227,7 @@ class ToolDefinition:
     user_description_override: str | None = None
     # Catalog facet for the future tools UI / marketplace (never sent to
     # the model — zero token cost). See `tool()`'s `labels` param and
-    # docs/tool-platform-plan.md.
+    # docs/extensibility.md.
     labels: tuple[str, ...] = ()
     # Prompt-injection risk category. DECLARATIVE metadata for the planned
     # tool store's policy/permission layer — NOT yet wired to runtime

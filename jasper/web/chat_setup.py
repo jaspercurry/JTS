@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conversation-history dashboard and household controls at /assistant/chat/."""
+"""Household history at /assistant/chat/; data contract: docs/privacy.md."""
 from __future__ import annotations
 
 import json

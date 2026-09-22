@@ -21,15 +21,13 @@ expect a real token spend, and steer it phase by phase.
 Pairs with: the Defaults and non-negotiables in
 [AGENTS.md](../AGENTS.md); the tool index in
 [testing-tooling.md](testing-tooling.md); the boundary lens in
-[extensibility.md](extensibility.md). This playbook does not restate those —
-it consumes them as the standard to audit *against*.
+[extensibility.md](extensibility.md).
+Acceptance and test requirements come from AGENTS.md; this file owns only
+the audit method, not a separate per-change gate.
 
 ---
 
-## Hard rules (each one paid for in a real miss)
-
-These are non-negotiable. Most trace to a specific failure of an earlier,
-sloppier audit pass.
+## Audit method rules
 
 1. **Evidence before judgment.** Every finding cites the `file:function` (or
    `file:line` when the line is the point) the agent actually re-read. "Looks
@@ -90,13 +88,12 @@ sloppier audit pass.
 
 ## Severity taxonomy
 
-Reuse the project bar verbatim so findings are actionable, not style noise:
+Use these labels to sort findings. AGENTS.md governs acceptance:
 
 - **Blocker** — likely correctness, safety, data/secret, rollback, deploy,
   hardware, audio-output, connectivity, or security problem.
 - **Should-fix** — real debt this code carries: a boundary/contract violation,
-  scaling trap, observability gap, dead/duplicated code, or missing test that
-  shouldn't ship un-ticketed.
+  scaling trap, observability gap, or dead/duplicated code.
 - **Nit** — polish or maintainability; must not block.
 - **Earns-its-keep / No-issue** — a thing (or whole subsystem) that was
   scrutinised and **passed**. Record these with the evidence; they are how the
@@ -133,10 +130,8 @@ lens decides what's "there":
 - **Debt markers.** `TODO`/`FIXME`/`XXX`/`HACK`/`DEPRECATED`/`temporary`/
   `for now`/`remove after` — every one is a candidate; the "remove after X"
   ones get checked against whether X happened.
-- **Coverage gaps.** Source files (especially in `jasper/`) with **no
-  corresponding test**; tools the LLM can call with no `tests/voice_eval`
-  scenario; documented invariants ("X disables Y", "this never runs") with no
-  behaviour test.
+- **Behavior gaps.** Look for externally observable behavior that can break;
+  assess test needs under AGENTS.md, not a one-test-per-file/doc rule.
 - **Doc/code surface mismatch.** Docs describing files/flags/commands that no
   longer exist; code subsystems with **no** doc in the README atlas (orphan
   docs *and* orphan code).
@@ -242,9 +237,8 @@ A final pass produces:
    thin; everything deliberately skipped, with reasons. *No silent gaps.*
 3. **Unknown-unknowns surfaced** — the edge-of-map / orphan / dead-flag corners
    Phase 0 found that weren't on anyone's radar.
-4. **Honest grades** per attribute (Clean, Observable, Available/resilient,
-   Hardware-safe, plus boundaries/perf/security/tests/docs) **with a confidence
-   level** and the static-vs-runtime split from rule 7.
+4. **Evidence limits** for each finding: confidence and the static-vs-runtime
+   split from rule 7; use AGENTS.md for acceptance.
 5. **Completeness critic** — a dedicated agent asks *"what did no one open?
    which claim is still unverified? which corner did we rationalise past?"* Its
    answer is either the next round's work-list or an explicitly documented gap.
@@ -303,11 +297,6 @@ for s in $(git ls-files 'scripts/*' 'deploy/bin/*'); do
   git grep -q "$(basename "$s")" -- ':!'"$s" || echo "unreferenced?: $s"
 done
 
-# Source files with no obvious test
-for f in $(git ls-files 'jasper/**/*.py' | grep -v __init__); do
-  b=$(basename "$f" .py); ls tests/ 2>/dev/null | grep -q "$b" || echo "untested?: $f"
-done
-
 # Edge-of-map: top-level entries not named in the canonical docs
 for d in $(git ls-files | cut -d/ -f1 | sort -u); do
   git grep -q "$d" -- AGENTS.md README.md docs/doc-map.toml || echo "off-map?: $d"
@@ -324,15 +313,17 @@ Every hit is a **suspect, not a verdict** — Phase 3 verification decides.
    what · evidence read · cleanest fix`.
 2. Coverage ledger (files opened / total, thin tiles, skipped-with-reason).
 3. Unknown-unknowns surfaced.
-4. Honest grades + confidence + static-vs-runtime split.
+4. Confidence + static-vs-runtime limits.
 5. Completeness-critic output (gaps / next round).
 6. A short, specific "what's genuinely strong" — earned, not flattering.
 
-**Frozen report vs live issues (ADR-0284).** Write one report per run at
-`docs/audits/YYYY-MM-DD-<scope>.md`, pinned to the audited SHA, with stable
-finding ids, evidence, and the completeness-critic verdict. Never add live
-status to it. Track each finding in a GitHub issue labelled `audit` and
-`audit-<date>`; keep disposition, owning PR, and runtime validation there.
+Follow [ADR-0284](adr/0284-audits-are-frozen-reports-and-issues-are-the-ledger.md)
+for storage: one immutable report at `docs/audits/YYYY-MM-DD-<scope>.md`,
+naming the audited SHA; findings in issues labelled `audit` and `audit-<date>`
+(and `owner-decision` when approved). Update the audit index, not the report.
+Include stable finding ids, evidence, and the completeness-critic verdict.
+Keep evidence trails on the tracking issue or a SHA-pinned release asset,
+never in a new committed evidence directory or live status ledger in docs.
 Use repo-relative paths and no private session/artifact URLs in the report.
 
 ---
@@ -355,9 +346,8 @@ Use repo-relative paths and no private session/artifact URLs in the report.
 > Drive it phase by phase with the `Workflow` engine and **stop after each
 > phase so I can read the output before you spend more**. Start with Phase 0
 > (cartography) and show me the map + suspect list before Phase 1. Scale agent
-> count to the tree and the token budget I give you. End with honest per-
-> attribute grades carrying confidence levels and an explicit "what only
-> hardware/runtime can prove" section.
+> count to the tree and the token budget I give you. End with confidence
+> levels and an explicit "what only hardware/runtime can prove" section.
 
 ---
 
