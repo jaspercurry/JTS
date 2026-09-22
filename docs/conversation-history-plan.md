@@ -45,7 +45,7 @@ mis-hear debugger ("turn on the bedroom lights" logged as "turn on the
 
 Before this Feature, there was **no conversation text stored anywhere** — the
 code deliberately threw it away (`openai_session.py` logged `chars=len(text)`
-and dropped the string; [PRIVACY.md](privacy.md) promised `usage.db` stores
+and dropped the string; [privacy.md](privacy.md) promised `usage.db` stores
 no transcripts). The Feature's real work is *capturing* text, and the strategy
 (verified against `main`) is **native-first** — use the transcript the realtime
 API already emits; do **not** add audio capture or a local/cloud STT pass (that

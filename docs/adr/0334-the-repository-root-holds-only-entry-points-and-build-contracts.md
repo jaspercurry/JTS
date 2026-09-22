@@ -31,10 +31,9 @@ CONTRIBUTING.md and CODE_OF_CONDUCT.md move to `.github/`. The empty logs
 placeholder is deleted; `scripts/fetch-pi-logs.sh` creates the directory.
 
 CI classification follows the new paths and keeps its full-CI fallback.
-The six-file root-existence test becomes one privacy-visibility pin:
-a non-empty privacy file exists and README links it directly. Packaging
-already enforces LICENSE and NOTICE. Doc-map classification tests are
-removed; routing and existing-path checks remain.
+The launch-blocker existence pin follows all six documents to their new
+paths and checks that each is non-empty. README still links privacy directly.
+Doc-map classification tests are removed; routing and existing-path checks remain.
 
 PLAN.md stays as the roadmap entry point. SECURITY.md stays because CLI
 and control responses name it. The three license files stay where

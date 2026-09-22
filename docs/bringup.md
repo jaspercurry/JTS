@@ -90,10 +90,8 @@ laptop-side onboarder from the repo checkout on your computer:
 bash scripts/onboard.sh <hostname>.local --adopt
 ```
 
-The remaining phases are advanced/operator detail. They include
-hardware verification and manual service checks, but the supported
-install path still runs from the laptop unless a section explicitly
-labels a Pi-local developer alternative.
+The remaining phases cover hardware verification and manual service checks.
+Deploy from the laptop with `bash scripts/deploy-to-pi.sh`.
 
 For the manual path, once SSH works:
 
@@ -787,12 +785,9 @@ starting a measurement should bring up the standard iOS microphone
 permission prompt.
 
 If the cert was reissued after a hostname change, only the leaf cert
-changes — the CA on the iPhone keeps working, no re-trust needed. For
-Pi-local reruns, pass the hostname explicitly:
-`sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh`. The
-normal laptop-side `scripts/deploy-to-pi.sh` path forwards it
-automatically. If you ever wipe `/var/lib/jasper/ca` and run
-`install.sh` again, the old CA on the iPhone still appears in
+changes — the CA on the iPhone keeps working, no re-trust needed.
+`bash scripts/deploy-to-pi.sh` forwards the hostname automatically.
+If you wipe `/var/lib/jasper/ca` and redeploy, the old CA still appears in
 Certificate Trust Settings but no longer matches; remove it (Settings
 → General → VPN & Device Management → JTS Speaker Local CA → Remove
 Profile) and repeat steps 1-4.
