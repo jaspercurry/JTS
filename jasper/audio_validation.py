@@ -40,6 +40,8 @@ from .chip_aec.policy import (
 from .platform import control_client as control
 from .env_load import env_file_path, parse_env_file
 from .service_units import (
+    AEC_BRIDGE_SERVICE,
+    CAMILLA_SERVICE,
     FANIN_SERVICE,
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
@@ -433,7 +435,7 @@ def _service_state_check(
 ) -> dict[str, artifacts.JsonValue]:
     required_units = (
         OUTPUTD_SERVICE,
-        "jasper-aec-bridge.service",
+        AEC_BRIDGE_SERVICE,
         "jasper-aec-init.service",
         JASPER_VOICE_SERVICE,
     )
@@ -461,7 +463,7 @@ def _outputd_pipeline_service_state_check(
 ) -> dict[str, artifacts.JsonValue]:
     required_units = (
         OUTPUTD_SERVICE,
-        "jasper-camilla.service",
+        CAMILLA_SERVICE,
         FANIN_SERVICE,
     )
     missing = {
@@ -1166,7 +1168,7 @@ def build_chip_aec_readiness_artifact(
             unit: service_state(unit)
             for unit in (
                 OUTPUTD_SERVICE,
-                "jasper-aec-bridge.service",
+                AEC_BRIDGE_SERVICE,
                 "jasper-aec-init.service",
                 JASPER_VOICE_SERVICE,
             )
@@ -1192,7 +1194,7 @@ def build_chip_aec_readiness_artifact(
         intent,
         runtime,
         mic_probe,
-        bridge_active=service_states.get("jasper-aec-bridge.service") == "active",
+        bridge_active=service_states.get(AEC_BRIDGE_SERVICE) == "active",
         chip_available=chip_available,
         chip_gate=chip_gate.to_dict(),
     )
@@ -1270,7 +1272,7 @@ def build_outputd_stability_hardware_validation_artifact(
             unit: service_state(unit)
             for unit in (
                 OUTPUTD_SERVICE,
-                "jasper-camilla.service",
+                CAMILLA_SERVICE,
                 FANIN_SERVICE,
             )
         }

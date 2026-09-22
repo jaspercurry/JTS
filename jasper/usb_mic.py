@@ -31,6 +31,7 @@ from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
 from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
+from .service_units import USBGADGET_SERVICE
 from .systemd_probe import unit_active
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
@@ -41,7 +42,7 @@ USB_MIC_PRIMARY_LEG = "primary"
 USB_MIC_RAW_XVF_LEG = "raw0"
 GADGET_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
 RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
-USBGADGET_UNIT = "jasper-usbgadget.service"
+USBGADGET_UNIT = USBGADGET_SERVICE
 USBMIC_UNIT = "jasper-usbmic.service"
 USB_HOST_MIC_UDP_PORT = 9894
 # The dedicated USB-host mic leg carries bridge-emit timing metadata. This is

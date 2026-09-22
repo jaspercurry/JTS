@@ -20,17 +20,22 @@ JASPER_VOICE_SERVICE = "jasper-voice.service"
 OUTPUTD_SERVICE = "jasper-outputd.service"
 FANIN_SERVICE = "jasper-fanin.service"
 LIBRESPOT_SERVICE = "librespot.service"
+CAMILLA_SERVICE = "jasper-camilla.service"
+AEC_RECONCILE_SERVICE = "jasper-aec-reconcile.service"
+AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
+USBGADGET_SERVICE = "jasper-usbgadget.service"
+SHAIRPORT_SYNC_SERVICE = "shairport-sync.service"
 
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
 # renders, under "JTS".
 JASPER_SERVICE_GROUPS = {
-    "jasper-aec-bridge.service": "Mic",
+    AEC_BRIDGE_SERVICE: "Mic",
     JASPER_VOICE_SERVICE: "Voice",
-    "jasper-camilla.service": "Audio",
+    CAMILLA_SERVICE: "Audio",
     FANIN_SERVICE: "Audio",
     OUTPUTD_SERVICE: "Audio",
     "jasper-mux.service": "Audio",
-    "jasper-usbgadget.service": "Audio",
+    USBGADGET_SERVICE: "Audio",
     "jasper-usbsink.service": "Audio",
     "jasper-usbsink-volume.service": "Audio",
     "jasper-control.service": "Control",
@@ -42,7 +47,7 @@ JASPER_SERVICE_GROUPS = {
 }
 
 EXTRA_SERVICE_GROUPS = {
-    "shairport-sync.service": "Audio",
+    SHAIRPORT_SYNC_SERVICE: "Audio",
     LIBRESPOT_SERVICE: "Audio",
     "bluealsa.service": "Audio",
     "bluealsa-aplay.service": "Audio",

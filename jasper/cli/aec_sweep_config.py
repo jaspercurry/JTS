@@ -25,9 +25,10 @@ from jasper.aec_sweep import (
     validate_aec3_sweep_config_payload,
     write_aec3_sweep_config,
 )
+from jasper.service_units import AEC_BRIDGE_SERVICE
 
 
-BRIDGE_UNIT = "jasper-aec-bridge.service"
+BRIDGE_UNIT = AEC_BRIDGE_SERVICE
 
 
 def _read_payload(path: Path) -> Any:
