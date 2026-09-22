@@ -579,7 +579,7 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     so pytest dies with dozens of ModuleNotFoundError on a clean checkout. uv
     0.11 has no `[tool.uv] default-extras` knob to fix that from config, so the
     docs and help spell the extras out explicitly. Pin ALL THREE surfaces — the
-    CONTRIBUTING.md quick start, the conftest wrong-Python rebuild hint, and the
+    .github/CONTRIBUTING.md quick start, the conftest wrong-Python rebuild hint, and the
     test lanes' unresolvable-interpreter FATAL block — so the front door can't
     silently re-break (the 2026-06 OSS due-diligence finding, which regressed
     once because only one surface was fixed).
@@ -598,7 +598,7 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     # (run the documented command and collect) belongs in CI; it's omitted here
     # only to avoid editing a workflow file from a non-`workflow`-scoped token.
     surfaces = {
-        "CONTRIBUTING.md": (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"),
+        ".github/CONTRIBUTING.md": (ROOT / ".github/CONTRIBUTING.md").read_text(encoding="utf-8"),
         "tests/conftest.py": (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8"),
         "scripts/_test_lane.sh": (
             ROOT / "scripts" / "_test_lane.sh"

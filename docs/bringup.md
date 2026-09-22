@@ -8,7 +8,7 @@ This is the long-form **advanced/operator** runbook. It includes
 manual SSH, Pi-local package installs, hardware checks, firmware
 flashing, and calibration steps. If this is your first JTS speaker
 and you want the guided consumer setup, start with
-[QUICKSTART.md](QUICKSTART.md) instead. The normal beginner install
+[docs/quickstart.md](quickstart.md) instead. The normal beginner install
 path runs from your computer:
 
 ```sh
@@ -90,10 +90,8 @@ laptop-side onboarder from the repo checkout on your computer:
 bash scripts/onboard.sh <hostname>.local --adopt
 ```
 
-The remaining phases are advanced/operator detail. They include
-hardware verification and manual service checks, but the supported
-install path still runs from the laptop unless a section explicitly
-labels a Pi-local developer alternative.
+The remaining phases cover hardware verification and manual service checks.
+Deploy from the laptop with `bash scripts/deploy-to-pi.sh`.
 
 For the manual path, once SSH works:
 
@@ -163,29 +161,6 @@ the venv and re-applies configs. Watch the output for warnings about
 missing ALSA cards (the dongle and mic should be detected; if either
 is missing, fix and re-run).
 
-<details>
-<summary>Advanced/developer Pi-local checkout path</summary>
-
-Use this only when intentionally developing directly on the Pi or when
-you cannot rsync from a laptop. It makes the Pi a checkout host and
-therefore requires `git`; it is not the normal public install path.
-
-```sh
-ssh pi@jts.local
-sudo apt install -y git
-git clone https://github.com/jaspercurry/JTS.git ~/jts
-cd ~/jts
-sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
-```
-
-Substitute the Pi's actual speaker hostname. A direct Pi-local
-`install.sh` run reads `JASPER_HOSTNAME` from the process environment;
-it does not source an existing `/etc/jasper/jasper.env` first. The
-normal laptop-side `scripts/deploy-to-pi.sh` path forwards the hostname
-for you.
-
-</details>
-
 After it finishes:
 
 ```sh
@@ -227,7 +202,7 @@ mid-session:
 For the JTS appliance, **passwordless sudo is the right posture.** It is a
 trusted-LAN device you own, its deploys already require root to install and
 update system services (and the boot/recovery reconcilers still run as root),
-and the threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
+and the threat model ([SECURITY.md](../SECURITY.md)) already assumes a trusted
 household network. The alternative — re-typing a password on every deploy
 and blocking every agent session — buys you almost nothing here.
 
@@ -706,7 +681,7 @@ You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/assistant/wake/` from any LAN device, or run
 `bash scripts/switch-wake-word.sh <key>` from your laptop. The model registry (and how to add one) lives in
-[`jasper/wake_models.py`](jasper/wake_models.py).
+[`jasper/wake_models.py`](../jasper/wake_models.py).
 
 If wake isn't firing:
 
@@ -810,12 +785,9 @@ starting a measurement should bring up the standard iOS microphone
 permission prompt.
 
 If the cert was reissued after a hostname change, only the leaf cert
-changes — the CA on the iPhone keeps working, no re-trust needed. For
-Pi-local reruns, pass the hostname explicitly:
-`sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh`. The
-normal laptop-side `scripts/deploy-to-pi.sh` path forwards it
-automatically. If you ever wipe `/var/lib/jasper/ca` and run
-`install.sh` again, the old CA on the iPhone still appears in
+changes — the CA on the iPhone keeps working, no re-trust needed.
+`bash scripts/deploy-to-pi.sh` forwards the hostname automatically.
+If you wipe `/var/lib/jasper/ca` and redeploy, the old CA still appears in
 Certificate Trust Settings but no longer matches; remove it (Settings
 → General → VPN & Device Management → JTS Speaker Local CA → Remove
 Profile) and repeat steps 1-4.
@@ -881,7 +853,7 @@ Two-channel firmware uses direct capture. Channels 0/1 depend on the
 firmware geometry and chip profile: the production square chip-AEC plan
 routes fixed ASR beams there. Six channels do not imply identical processed
 outputs or a production chip beam plan. The
-[microphone reference](jasper/mics/README.md) owns that support boundary.
+[microphone reference](../jasper/mics/README.md) owns that support boundary.
 
 #### Which firmware to flash
 
@@ -898,7 +870,7 @@ geometry. Use the linear Flex blob on Flex LINEAR-4. Its software-AEC3
 fallback is implemented; it has no registered production chip beam plan.
 
 Before using another firmware version, verify its geometry, channel mapping
-and control contract against [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+and control contract against [`jasper/mics/xvf3800.py`](../jasper/mics/xvf3800.py).
 A matching channel count alone is not enough.
 
 #### How DFU works on this chip (no button combo needed)
@@ -1018,7 +990,7 @@ voice's mic source at the AEC bridge's UDP output, and resets the kernel
 ALSA mixer to known-good values for the newly-exposed ch2-5 (the stale-mute
 trap — see "Why the reconciler step matters" below). `jasper-aec-commission`
 then measures and banks this box's chip-AEC alignment. Neither is a gate
-([ADR-0101](docs/adr/0101-proven-once-disclose-on-change.md)): until an
+([ADR-0101](adr/0101-proven-once-disclose-on-change.md)): until an
 alignment is banked the speaker still hears — software
 AEC3 on 6-channel firmware, the chip's plain capture on 2-channel — and
 discloses what chip AEC is missing. The stack parks only for a microphone
@@ -1158,9 +1130,9 @@ persist them to flash via that command.
   `hw:Loopback,*` or retired `jasper_renderer_in` wiring.
 
 **iPhone / Mac volume slider does nothing.**
-- The volume coordinator polls each source's slider at 1 Hz.
-  Phone sliders should be reflected within ~2 s. If not, check
-  `journalctl -u jasper-voice -f` for "VolumeObserver" log lines.
+- Only active Spotify or Bluetooth volume is polled at 1 Hz; AirPlay
+  and USB use events. Check `journalctl -u jasper-voice -f` for
+  `event=volume.observer_tick_failed` and `event=volume.observer_tick_recovered`.
 
 For deeper debugging:
 

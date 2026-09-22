@@ -10,7 +10,7 @@
 #
 # Prerequisites:
 #   - Raspberry Pi Imager 2.0.6 or later (older 2.0.x have an open
-#     pubkey-breaks-customization bug on Trixie — see QUICKSTART.md)
+#     pubkey-breaks-customization bug on Trixie — see docs/quickstart.md)
 #   - Imager's OS Customization sets hostname + WiFi + a password.
 #     The beginner/friendly path uses --adopt to install this laptop's
 #     pubkey with ssh-copy-id. Pre-populated pubkey SSH without
@@ -268,7 +268,7 @@ Could not reach ${HOST}. Try (in order):
      2.0.0-2.0.5 have an open bug where selecting public-key auth
      silently breaks all OS customization on Trixie images — the Pi
      boots into the first-boot wizard expecting keyboard+monitor.
-     Update Imager, re-flash, and try again. See QUICKSTART.md.
+     Update Imager, re-flash, and try again. See docs/quickstart.md.
 
   2. Find the Pi's IP from your router's admin page (look for a
      hostname like "raspberrypi" or whatever you set in Imager).

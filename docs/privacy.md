@@ -107,5 +107,5 @@ operator starts them.
 The management surface is designed for a trusted household LAN and is not a
 multi-user authenticated web app. Local setup pages and controls are meant to
 be used by people who already control the speaker and network. See
-[SECURITY.md](SECURITY.md) for the current threat model, reporting path, and
+[SECURITY.md](../SECURITY.md) for the current threat model, reporting path, and
 known LAN-trust limitations.

@@ -28,7 +28,7 @@ The software-AEC main input uses `MIC_CHANNEL_INDEX` (channel 1) with
 `SHF_BYPASS=1`; it does not select raw mic 0. The separate raw0 leg uses
 channel 2. Channels 2–5 carry raw microphones, while channels 0/1 depend on
 the active chip profile. Channel count alone does not make firmware variants
-interchangeable. See [BRINGUP](../../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
+interchangeable. See [bringup.md](../../docs/bringup.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
 for flashing and commissioning.
 
 ## Consumers

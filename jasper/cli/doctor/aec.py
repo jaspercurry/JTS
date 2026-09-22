@@ -539,7 +539,7 @@ def check_audio_validation_readiness() -> CheckResult:
 def _dfu_flash_remedy() -> str:
     """`xvf3800.dfu_flash_command` owns the command text so no hint drifts from it."""
     from ...mics import xvf3800
-    return ("BRINGUP.md 'XVF firmware: switch to 6-channel variant via DFU' has the "
+    return ("docs/bringup.md 'XVF firmware: switch to 6-channel variant via DFU' has the "
             f"procedure — in-system DFU, no Safe Mode entry: {xvf3800.dfu_flash_command()}")
 
 

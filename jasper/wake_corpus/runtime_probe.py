@@ -449,7 +449,7 @@ def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
             },
             # Provenance for the DETECTED board, never the legacy square
             # build's by default: a Flex recording used to carry a blob name
-            # BRINGUP.md says not to run on a linear board, beside a
+            # docs/bringup.md says not to run on a linear board, beside a
             # `geometry: linear` that contradicted it (#4361). Keys a family
             # does not publish are omitted rather than borrowed.
             "recommended_firmware": {

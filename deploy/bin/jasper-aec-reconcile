@@ -42,7 +42,7 @@ ALIGNMENT_RECORD_FILE="${JASPER_AEC_ALIGNMENT_RECORD_FILE:-/run/jasper-aec-init/
 # directly and says what the flash would buy. Same remedy the doctor's
 # check_xvf_firmware_6ch names, in the same vocabulary.
 XVF_2CH_DISCLOSURE="echo cancellation unavailable until DFU flash to 6-channel firmware"
-XVF_2CH_ACTION="Re-flash the XVF to 6-channel firmware; BRINGUP.md 'XVF firmware: switch to 6-channel variant via DFU' has the procedure"
+XVF_2CH_ACTION="Re-flash the XVF to 6-channel firmware; docs/bringup.md 'XVF firmware: switch to 6-channel variant via DFU' has the procedure"
 # install.sh's verified-install marker, and the /run record of which build the
 # last voice (re)start was made under. Read together they answer "is the
 # running jasper-voice already this build?".

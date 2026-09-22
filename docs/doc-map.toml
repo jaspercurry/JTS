@@ -6,45 +6,8 @@
 # because the lookup is advisory (`scripts/docs-impact.py --changed-file …`),
 # never a gate. CI validates the map; it does not enforce it.
 
-[document_classes]
-# Intentionally present top-level docs that are not canonical subsystem
-# scan targets. They still satisfy the no-orphan-doc invariant, but a
-# code change should not route future maintainers to them as current
-# operational truth. Most executed session artifacts move to
-# docs/historical/, which sits outside both the orphan sweep and this
-# routing map; this list retains the few top-level snapshots that still
-# have active links or near-term reference value.
-session_artifacts = [
-  "docs/speaker-setup-cleanup-plan.md",
-  # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
-  # historical decision archaeology, no longer a scan target; current truth
-  # is tuning-operator-runbook.md.)
-  # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
-  # active target for multiroom-grouping code-change routing until the plan
-  # is re-verified and executed. Current operational truth remains
-  # docs/dumb-endpoint-bringup.md (see docs/doc-map.toml's multiroom-grouping
-  # subsystem). Tracked by #1852.
-  "docs/multiroom-pairing-reliability-plan.md",
-  # docs/audits/ is the archive of frozen whole-repo audit and
-  # quality-review snapshots (see docs/audits/README.md). Each report is
-  # pinned to its audited SHA and never edited; disposition lives in
-  # GitHub issues, not here. The 2026-09-05 review's evidence directory
-  # was deleted per ADR-0284; its rows are ledgered as issues #4786-#4812.
-  "docs/audits/2026-08-25-deep-audit.md",
-  "docs/audits/2026-09-05-codebase-quality-review.md",
-  "docs/audits/2026-09-09-deep-audit.md",
-]
-# Prior-art research artifacts: long-lived studies kept as reference (each
-# tagged `Status: research` in-doc), not canonical operational scan targets.
-# They satisfy the no-orphan-doc invariant without routing a future maintainer
-# to them as current operational truth.
-research = [
-  "docs/RESEARCH-pipewire-low-latency.md",
-]
-
 [[subsystem]]
 id = "ci-and-branch-protection"
-title = "CI gates and branch protection"
 safety = "safe-ci"
 code = [
   ".github/workflows/tests.yml",
@@ -52,7 +15,7 @@ code = [
   # The executable test lanes and the PR lane classifier. AGENTS.md's "Agent
   # test routing" names these scripts as the source of truth for what a lane
   # runs ("update the script first, then adjust this short routing note and
-  # CONTRIBUTING.md"), so a lane change here is exactly the case that must
+  # .github/CONTRIBUTING.md"), so a lane change here is exactly the case that must
   # scan those two docs.
   "scripts/test-fast",
   "scripts/test-merge",
@@ -63,26 +26,19 @@ code = [
   "scripts/rust-ci-needed",
 ]
 docs = [
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   "AGENTS.md",
   "docs/testing-tooling.md",
-]
-requires_docs_when = [
-  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, branch-protection expectation, or what a named test lane (`scripts/test-fast` / `scripts/test-merge` / `scripts/check-rust.sh`) actually runs changes.",
-]
-verification = [
-  "python3 scripts/docs-impact.py --validate-only",
 ]
 
 [[subsystem]]
 id = "docs-governance"
-title = "Documentation governance and AI-agent context"
 safety = "safe-ci"
 code = [
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
   ".github/workflows/docs-*.yml",
   "scripts/docs-impact.py",
@@ -96,22 +52,14 @@ docs = [
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   "docs/README.md",
   "docs/testing-tooling.md",
   "docs/DEEP-AUDIT-PLAYBOOK.md",
 ]
-requires_docs_when = [
-  "The documentation paradigm, README atlas, agent context loading, the docs CI link check, or the docs routing map changes.",
-]
-verification = [
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file README.md",
-]
 
 [[subsystem]]
 id = "extensibility-doctrine"
-title = "Extensibility doctrine — the cross-cutting lens for adding modular subsystems"
 safety = "safe-ci"
 # Cross-cutting: the host-mediated-indirection invariant, the five extension
 # contracts (tools / sources / model providers / hardware profiles / features),
@@ -132,17 +80,9 @@ docs = [
   "docs/extensibility.md",
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "A new KIND of extension contract is added, or the host-mediated-indirection invariant, the five-contract taxonomy, the what-kind decision tree, or the build-now-vs-defer trust line changes.",
-]
-verification = [
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/extensibility.md",
-]
 
 [[subsystem]]
 id = "deploy-and-onboarding"
-title = "Deploy, install, and first-run onboarding"
 safety = "boot-risk"
 code = [
   "deploy/install.sh",
@@ -165,23 +105,12 @@ code = [
 docs = [
   "README.md",
   "AGENTS.md",
-  "QUICKSTART.md",
-  "BRINGUP.md",
-]
-requires_docs_when = [
-  "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
-  "A build/download/provenance input or runtime install location changes.",
-  "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes.",
-  "The mandatory-v1 / optional-v2 boundary, enhanced-AEC build target, verified activation, or deploy/boot retry behavior changes.",
-  "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change.",
-]
-verification = [
-  "python3 scripts/check-provenance.py when build/install fetches or direct URL dependencies changed",
+  "docs/quickstart.md",
+  "docs/bringup.md",
 ]
 
 [[subsystem]]
 id = "first-party-arm64-release"
-title = "First-party ARM64 runtime release artifact"
 safety = "boot-risk"
 code = [
   ".github/workflows/first-party-arm64-release.yml",
@@ -195,18 +124,9 @@ code = [
 docs = [
   "LICENSE-third-party.md",
 ]
-requires_docs_when = [
-  "The artifact set, target ABI, build environment, metadata schema, dependency/license evidence, publication lane, source-identity coupling, or install transaction changes.",
-]
-verification = [
-  "pytest -q tests/test_first_party_arm64_release.py",
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file LICENSE-third-party.md",
-]
 
 [[subsystem]]
 id = "audio-hardware-profiles"
-title = "Output hardware profile registry"
 safety = "audio-output-risk"
 code = [
   "jasper/audio_hardware/**",
@@ -214,19 +134,9 @@ code = [
 docs = [
   "docs/audio-paths.md",
 ]
-requires_docs_when = [
-  "A DAC profile id, physical output count, mixer/headphone policy, outputd sink, validation profile, or composite-output invariant changes.",
-  "A runtime consumer starts relying on the registry for topology, doctor, reconcile, ALSA, outputd, or commissioning behavior.",
-]
-verification = [
-  "pytest tests/test_dac_profiles.py",
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/audio-paths.md",
-]
 
 [[subsystem]]
 id = "audio-routing-and-renderers"
-title = "Renderer source policy, fan-in, ALSA, and audio routing"
 safety = "audio-output-risk"
 code = [
   "jasper/music_sources.py",
@@ -266,19 +176,9 @@ code = [
 docs = [
   "docs/audio-paths.md",
 ]
-requires_docs_when = [
-  "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
-  "A source starts using a different volume carrier or bypasses/enters CamillaDSP differently.",
-  "Output hardware profile detection, DAC hotplug reconcile behavior, or Apple DAC mixer pinning changes.",
-  "A snd-aloop renderer lane or a ring transport is added, migrated, or deleted.",
-]
-verification = [
-  "pytest tests/test_fanin_wiring.py tests/test_fanin_systemd.py tests/test_volume_coordinator.py tests/test_airplay_render.py",
-]
 
 [[subsystem]]
 id = "conversation-history"
-title = "Conversation history storage and capture plan"
 safety = "voice-runtime"
 code = [
   "jasper/conversation_history.py",
@@ -292,18 +192,9 @@ docs = [
   "docs/extensibility.md",
   "docs/conversation-history-plan.md",
 ]
-requires_docs_when = [
-  "Conversation-history storage schema, retention behavior, privacy boundaries, capture hooks, web surface, or Feature-contract ownership changes.",
-]
-verification = [
-  "pytest tests/test_conversation_history.py",
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file docs/conversation-history-plan.md",
-]
 
 [[subsystem]]
 id = "voice-runtime-and-providers"
-title = "Voice runtime, provider switching, prompts, and tools"
 safety = "voice-runtime"
 code = [
   "jasper/mic_capture.py",
@@ -338,19 +229,9 @@ docs = [
   "docs/conversation-history-plan.md",
   "tests/voice_eval/README.md",
 ]
-requires_docs_when = [
-  "Provider env ownership, provider defaults, model/voice selection, cue generation, LiveConnection/LiveTurn semantics, system prompt, or tool-calling behavior changes.",
-  "TTS playout, drain, flush, output routing, or realtime truncation semantics change.",
-  "Voice-eval scenarios, cost discipline, or regression expectations change.",
-]
-verification = [
-  "pytest tests/test_voice_setup.py tests/test_switch_voice_provider_script.py tests/test_system_prompt_unclear_audio.py",
-  "Voice-eval only when justified by AGENTS.md cost discipline.",
-]
 
 [[subsystem]]
 id = "wake-and-wake-corpus"
-title = "Wake word, wake telemetry, and corpus collection"
 safety = "voice-runtime"
 code = [
   # voice_daemon.py hosts WakeLoop, so wake-internals changes here should
@@ -374,16 +255,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
-]
-verification = [
-  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_*.py",
-]
 
 [[subsystem]]
 id = "aec-and-mic"
-title = "AEC bridge, mic profiles, and XVF3800 control"
 safety = "audio-input-risk"
 code = [
   "jasper/cli/aec_*.py",
@@ -420,18 +294,9 @@ docs = [
   "docs/audio-paths.md",
   "jasper/mics/README.md",
 ]
-requires_docs_when = [
-  "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, or debug captures change.",
-  "AEC reference source, reference transport, or speaker-reference semantics change.",
-  "The mandatory-v1 / optional-v2 capability boundary, background install state, runtime authorization gate, or enhancement status API changes.",
-]
-verification = [
-  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_aec_ref_source_retirement.py tests/test_control_aec_state.py tests/test_enhanced_aec.py tests/test_enhanced_aec_systemd.py",
-]
 
 [[subsystem]]
 id = "wifi-and-network-recovery"
-title = "Wi-Fi wizard, scan repair, and profile guardian"
 safety = "connectivity-risk"
 code = [
   "jasper/web/wifi_setup.py",
@@ -447,16 +312,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "Wi-Fi lockout protection, scan suppression repair, rollback behavior, guardian persistence, or NetworkManager recovery semantics change.",
-]
-verification = [
-  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py tests/test_wifi_recover_script.py tests/test_restart_broker.py tests/test_polkit_jasper_control.py",
-]
 
 [[subsystem]]
 id = "speaker-identity"
-title = "Speaker identity, mDNS collision handling, and the management-host allowlist"
 safety = "connectivity-risk"
 code = [
   "jasper/net/http_security.py",
@@ -469,16 +327,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "The host allowlist semantics, identity.env schema, collision/rename behavior, or the supported rename flow change.",
-]
-verification = [
-  "pytest tests/test_http_security.py tests/test_identity_state.py tests/test_identity_reconcile_script.py tests/test_doctor_network.py tests/test_lib_peer_identity.py",
-]
 
 [[subsystem]]
 id = "volume-and-sound"
-title = "Volume coordination and sound preferences"
 safety = "audio-output-risk"
 code = [
   "jasper/control/state_aggregate.py",
@@ -504,16 +355,9 @@ code = [
 docs = [
   "docs/audio-paths.md",
 ]
-requires_docs_when = [
-  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
-]
-verification = [
-  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_tts_playout.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py tests/test_dsp_apply.py",
-]
 
 [[subsystem]]
 id = "spotify-and-music-accounts"
-title = "Spotify playback, OAuth, and multi-user account routing"
 safety = "safe-ci"
 code = [
   "jasper/spotify*.py",
@@ -531,16 +375,9 @@ code = [
 docs = [
   "docs/multi-user-spotify.md",
 ]
-requires_docs_when = [
-  "Spotify OAuth, account storage, account routing, cold-start playback, librespot state, or Spotify voice-tool behavior changes.",
-]
-verification = [
-  "pytest tests/test_spotify_routing.py tests/test_spotify_uri.py",
-]
 
 [[subsystem]]
 id = "local-source-lifecycle"
-title = "Local source intent and lifecycle convergence"
 safety = "boot-risk"
 code = [
   "jasper/source_intent.py",
@@ -597,16 +434,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "A source intent key/default, desired-versus-effective state, source resource declaration, AirPlay/Spotify unit convergence, Bluetooth RF-kill/BlueZ/accessory ordering, USB transition ordering, follower parking interaction, any maintenance path that can restart a source, boot/deploy replay, or source-aware health behavior changes.",
-]
-verification = [
-  "pytest tests/test_source_intent_reconcile.py tests/test_web_sources_setup.py tests/test_local_sources_status.py tests/test_web_bluetooth_setup.py tests/test_bluetooth_setup_ui.py tests/test_local_sources_registry.py tests/test_multiroom_reconcile.py tests/test_source_intent_systemd.py tests/test_install_core_audio_graph_loop.py",
-]
 
 [[subsystem]]
 id = "usb-audio-input"
-title = "USB Audio Input"
 safety = "boot-risk"
 code = [
   "jasper/audio_hardware/usb_port_role.py",
@@ -627,21 +457,13 @@ code = [
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
-  "PRIVACY.md",
+  "docs/privacy.md",
   "docs/audio-paths.md",
 ]
 
-requires_docs_when = [
-  "Gadget enablement, reboot requirements, USB source state, USB host-microphone export/privacy, host volume observation, preemption, or source-lane wiring changes.",
-  "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes.",
-]
-verification = [
-  "pytest tests/test_usbsink_volume_bridge.py tests/test_usbsink_systemd.py tests/test_local_sources_status.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
-]
 
 [[subsystem]]
 id = "usb-management-network"
-title = "USB management network (composite gadget)"
 safety = "boot-risk"
 code = [
   "jasper/audio_hardware/usb_port_role.py",
@@ -671,16 +493,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
-]
-verification = [
-  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
-]
 
 [[subsystem]]
 id = "audio-latency-lean-lane"
-title = "Audio-latency foundation / lean File-capture lane"
 safety = "boot-risk"
 code = [
   "jasper/audio_runtime_plan.py",
@@ -698,20 +513,9 @@ code = [
 docs = [
   "docs/testing-tooling.md",
 ]
-requires_docs_when = [
-  "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
-  "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes.",
-  "The click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see testing-tooling.md's harness section).",
-  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS shape, or servo constants change.",
-  "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table.",
-]
-verification = [
-  "pytest tests/test_audio_runtime_plan.py tests/test_sound_camilla_yaml.py tests/test_active_speaker_runtime_contract.py tests/test_route_latency_click_track.py tests/test_route_latency_impulse_detect.py tests/test_route_latency_pairing.py tests/test_route_latency_harness.py tests/test_platform_status_socket.py tests/test_route_latency_tap_transport.py tests/test_usbsink_impulse_tap_contract.py tests/test_doctor_usbsink.py tests/test_usbsink_systemd.py",
-]
 
 [[subsystem]]
 id = "room-correction-and-calibration"
-title = "Measurement daemon and speaker tuning"
 safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
@@ -748,22 +552,9 @@ docs = [
   "docs/research/2026-07-27-acoustics-round-2/README.md",
   "docs/research/2026-07-29-attribution/README.md",
 ]
-requires_docs_when = [
-  "Measurement workflow, sweep playback, generated correction config, confidence scoring, or active-speaker DSP assumptions change.",
-  "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, rollback-state identity, or the Active-to-Room eligibility gate changes.",
-  "The v2 crossover commission session (open/measure/close lifecycle, four seam fields, excitation program, or temporary trial scope) or its session-volume, apply, verify, or republish contract changes — scan tuning-operator-runbook.md.",
-]
-verification = [
-  "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
-  "pytest tests/test_web_correction_setup.py tests/test_doctor_correction.py",
-  "bash scripts/check-js-syntax.sh",
-  "pytest tests/test_web_sync_flow.py",
-  "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_evidence_store.py tests/test_attribution_persistence.py",
-]
 
 [[subsystem]]
 id = "testing-and-diagnostics"
-title = "Testing tools, diagnostics, and evidence capture"
 safety = "safe-ci"
 code = [
   "docs/testing-tooling.md",
@@ -780,16 +571,11 @@ code = [
 ]
 docs = [
   "docs/testing-tooling.md",
-  "BRINGUP.md",
-]
-requires_docs_when = [
-  "A diagnostic/capture/audit script is added, removed, renamed, or changes its output contract.",
-  "The first-line diagnostic path for broken speakers changes.",
+  "docs/bringup.md",
 ]
 
 [[subsystem]]
 id = "transit-and-citibike"
-title = "Transit, Citi Bike, and travel-time tools"
 safety = "safe-ci"
 code = [
   "jasper/google_routes.py",
@@ -808,16 +594,9 @@ code = [
 docs = [
   "docs/adr/0167-each-transit-network-is-its-own-provider-module.md",
 ]
-requires_docs_when = [
-  "Provider registry shape, setup wizard behavior, cache semantics, route/arrival answer shape, station drift handling, or API key requirements change.",
-]
-verification = [
-  "pytest tests/test_google_routes.py tests/test_transit_*.py tests/test_citibike.py tests/test_tools_citibike.py",
-]
 
 [[subsystem]]
 id = "home-assistant"
-title = "Home Assistant integration"
 safety = "safe-ci"
 code = [
   "jasper/home_assistant.py",
@@ -829,16 +608,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "Conversation API usage, wizard setup flow, token handling, tool prompt/answer behavior, or observability surfaces change.",
-]
-verification = [
-  "pytest tests/test_home_assistant*.py tests/test_tools_home_assistant.py",
-]
 
 [[subsystem]]
 id = "peering-and-accessories"
-title = "Peering and supported accessory devices"
 safety = "hardware-risk"
 code = [
   "jasper/peering/**",
@@ -856,17 +628,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "Wake arbitration, peer discovery, supported accessory roles, or accessory microphone profiles change.",
-  "The WiiM remote mic's convergence path changes — adapter gating, the BLE connection-event reservation, or what happens when either fails.",
-]
-verification = [
-  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_accessories_bridge.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
-]
 
 [[subsystem]]
 id = "multiroom-grouping"
-title = "Multi-room speaker grouping (stereo pair)"
 safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
@@ -906,22 +670,18 @@ code = [
   "deploy/lib/jasper-camilla-guard-common.sh",
 ]
 docs = [
-  "docs/dumb-endpoint-bringup.md",
-]
-requires_docs_when = [
-  "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
-  "The follower/leader Layer-A path (active crossover across a wireless pair): member-config role resolution, the round-trip capture repoint, outputd dac_content lane vs CamillaDSP re-entry, or the active-follower fail-closed/clock contract changes.",
-  "The Zero 2 W streambox bring-up path, the full/streambox install profile boundary, streambox DAC assumptions, or the lab spike invocation changes.",
-  "The /sound/pair/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
-  "The shared mDNS browse (jasper/net/mdns.py), the Avahi *.service renderer (jasper/net/avahi_service.py), the speaker-identity reader (jasper/identity/reader.py), or where the room label lives (jasper/identity/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
-]
-verification = [
-  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",
+  "AGENTS.md",
+  "docs/adr/0110-buy-the-sync-engine-one-stream-leader-bakes.md",
+  "docs/adr/0111-one-fixed-leader-no-election.md",
+  "docs/adr/0112-assistant-audio-never-rides-the-synced-stream.md",
+  "docs/adr/0113-the-leader-self-loop-is-never-a-single-point-of-failure.md",
+  "docs/adr/0120-one-management-frontend-gated-by-capability.md",
+  "docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md",
+  "docs/adr/0218-rate-adjust-follows-the-sink.md",
 ]
 
 [[subsystem]]
 id = "future-integrations-and-updates"
-title = "Future integrations, remote updates, and roadmap briefs"
 safety = "design-only"
 code = [
   "PLAN.md",
@@ -938,20 +698,15 @@ docs = [
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
   "docs/tool-platform-plan.md",
 ]
-requires_docs_when = [
-  "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",
-  "The tool-platform vision, trust-gradient phasing, or the first-version tool-modularization plan changes.",
-]
 
 [[subsystem]]
 id = "security-oss-and-maintainer-backlog"
-title = "Security, OSS readiness, licensing, and maintainer backlog"
 safety = "safe-ci"
 code = [
   "SECURITY.md",
-  "PRIVACY.md",
-  "CODE_OF_CONDUCT.md",
-  "CHANGELOG.md",
+  "docs/privacy.md",
+  ".github/CODE_OF_CONDUCT.md",
+  "docs/changelog.md",
   "LICENSE",
   "NOTICE",
   "LICENSE-third-party.md",
@@ -966,21 +721,14 @@ code = [
 ]
 docs = [
   "SECURITY.md",
-  "PRIVACY.md",
-  "CODE_OF_CONDUCT.md",
-  "CHANGELOG.md",
+  "docs/privacy.md",
+  ".github/CODE_OF_CONDUCT.md",
+  "docs/changelog.md",
   "LICENSE-third-party.md",
-]
-requires_docs_when = [
-  "Security posture, diagnostic redaction, vulnerability reporting, license/provenance inventory, management-surface hardening, or OSS-readiness priorities change.",
-]
-verification = [
-  "python3 scripts/check-provenance.py when dependency or build inputs changed",
 ]
 
 [[subsystem]]
 id = "resilience-and-system-dashboard"
-title = "Resilience, watchdogs, system dashboard, and health surfaces"
 safety = "boot-risk"
 code = [
   "jasper/_oom_adj.py",
@@ -1028,17 +776,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "Watchdog, OOM, restart, dashboard health, AirPlay conf render/health, or systemd unit resilience behavior changes.",
-  "Logging verbosity, the debug-mode toggle, or log/journald volume behavior changes.",
-]
-verification = [
-  "pytest tests/test_watchdog.py tests/test_system_supervisor.py tests/test_system_metrics.py tests/test_airplay_health.py tests/test_shairport_supervisor.py tests/test_platform_systemd.py",
-]
 
 [[subsystem]]
 id = "web-design-system"
-title = "Management UI design system + static asset delivery"
 safety = "safe-ci"
 code = [
   "jasper/web/*.py",
@@ -1052,18 +792,9 @@ docs = [
   "docs/design-language.md",
   "docs/web-ia.md",
 ]
-requires_docs_when = [
-  "The shared page shell (canonical_page), the design tokens or shared components in app.css, the static ES-module delivery convention, or the /assets static-asset routing changes.",
-  "A craft rule changes — the type ladder, the text ramp, depth, radii, touch targets, or motion — or a rule gains/loses a known offender.",
-  "A page's URL, its landing/hub row label, its parent, or a single-owner shared primitive changes.",
-]
-verification = [
-  "pytest tests/test_web_common.py tests/test_web_design_system.py tests/test_web_wizard_conventions.py",
-]
 
 [[subsystem]]
 id = "privilege-separation"
-title = "Daemon hardening + privilege separation (WS1)"
 safety = "boot-risk"
 # Code scope is deliberately the restart-broker boundary plus the hardening
 # drift-guard, NOT every unit file: the repo pins each jasper unit to exactly one
@@ -1081,16 +812,9 @@ code = [
 docs = [
   "AGENTS.md",
 ]
-requires_docs_when = [
-  "A Tier-A unit's hardening stanza (ProtectSystem, capability/syscall/namespace restriction, User/Group), the restart-broker boundary, the auto-generated control token, or the user-drop / recovery-validation plan changes.",
-]
-verification = [
-  "pytest tests/test_systemd_hardening.py",
-]
 
 [[subsystem]]
 id = "control-plane-auth"
-title = "Control-plane authentication (device-to-device / household)"
 safety = "connectivity-risk"
 # The per-DEVICE CSRF control token stays owned by the privilege-separation
 # stanza above. THIS doc owns the cross-device / machine-to-machine path — the
@@ -1109,10 +833,4 @@ code = [
 ]
 docs = [
   "AGENTS.md",
-]
-requires_docs_when = [
-  "The authentication posture of the cross-device grouping path (the /grouping/set bond/unbond fan-out, who may set another speaker's grouping, or the household-credential mint/distribute/verify) changes, or a token-gated-route client's token delivery changes.",
-]
-verification = [
-  "pytest tests/test_control_server.py",
 ]

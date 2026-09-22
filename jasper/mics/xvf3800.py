@@ -220,7 +220,7 @@ class FirmwareUpdateTarget:
     expected_capture_channels: int = RECOMMENDED_CAPTURE_CHANNELS
     #: Provenance the LEGACY square build publishes and the Flex family does
     #: not: the Flex blobs carry no build-repo hash and their date lives in
-    #: prose (BRINGUP.md). Empty means "this family does not report it" — a
+    #: prose (docs/bringup.md). Empty means "this family does not report it" — a
     #: recording's metadata omits the key rather than borrowing another
     #: family's answer (#4361). ``sha256`` above is the provenance every
     #: family does carry.

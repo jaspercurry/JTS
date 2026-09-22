@@ -16,7 +16,7 @@ or [xAI Grok Voice Agent](https://docs.x.ai/docs/guides/voice/agent)
 (`jasper/voice/{gemini,openai,grok}_session.py`). This is a personal
 hobby project; not a product.
 
-Privacy: [PRIVACY.md](PRIVACY.md) covers cloud egress, local retention,
+Privacy: [docs/privacy.md](docs/privacy.md) covers cloud egress, local retention,
 voice-assistant pause scope, and the USB microphone export.
 
 **Want to set one up?**
@@ -25,10 +25,10 @@ voice-assistant pause scope, and the USB microphone export.
   speaker"*. Claude reads the [`/onboard-pi`](.claude/commands/onboard-pi.md)
   skill and walks through Raspberry Pi Imager, flash, first boot, network
   discovery (including multi-speaker collision detection), and install.
-- **Prefer to read the steps?** [QUICKSTART.md](QUICKSTART.md) is the same
+- **Prefer to read the steps?** [docs/quickstart.md](docs/quickstart.md) is the same
   flow as a human-readable walkthrough.
 - **Doing the full long-form bringup** (hardware calibration, XVF firmware
-  flashing)? See [BRINGUP.md](BRINGUP.md).
+  flashing)? See [docs/bringup.md](docs/bringup.md).
 
 The setup docs default to the hostname `jts`, which becomes `jts.local` on
 your home network. If you choose another hostname in Imager, such as
@@ -189,14 +189,14 @@ deploy/            install.sh + lib/install/, systemd units, nginx confs,
                      ALSA/CamillaDSP templates, web assets (app.css)
 scripts/           Laptop-side operator tools (deploy, logs, diagnostics)
 tests/             Hardware-free pytest suite; voice_eval/ makes paid calls
-docs/              ADRs, designs, research archive
+docs/              Operator manuals, ADRs, designs, research archive
 release/           first-party-arm64 artifact contract + BUILD-INFO schema
 experiments/       Lab spikes — except usb-turntable/, which is production
                      (turntable-driven speaker measurement) despite the path
 logs/              Landing directory fetch-pi-logs.sh writes into (gitignored)
 LICENSES/          Apache-2.0 plus vendored third-party license texts
 .claude/           Repo-scoped Claude Code commands (onboard-pi, reviews)
-.github/           CI workflows, PR template, CODEOWNERS, dependabot
+.github/           Community files, CI, PR template, CODEOWNERS, dependabot
 ```
 
 The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
@@ -206,8 +206,8 @@ The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
 
 ## Start here
 
-- [QUICKSTART.md](QUICKSTART.md) — install a speaker from a fresh Raspberry Pi.
-- [BRINGUP.md](BRINGUP.md) — perform full hardware bring-up and calibration.
+- [docs/quickstart.md](docs/quickstart.md) — install a speaker from a fresh Raspberry Pi.
+- [docs/bringup.md](docs/bringup.md) — perform full hardware bring-up and calibration.
 - [docs/audio-paths.md](docs/audio-paths.md) — understand the live audio path.
 - [docs/design-language.md](docs/design-language.md) — use the shared public
   interface language.
@@ -215,7 +215,7 @@ The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
   shared primitives.
 - [docs/README.md](docs/README.md) — find current references, decisions, plans,
   research, and historical records.
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) — change the
+- [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) — change the
   repository safely.
 
 ---
@@ -247,7 +247,7 @@ per-leg toggles as advanced custom controls. Changing either runs
 The bridge opens a 6-channel XVF capture endpoint; 2-channel firmware uses
 direct capture. Firmware and beam-plan support are owned by the
 [microphone reference](jasper/mics/README.md). Flashing procedure:
-[BRINGUP.md](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
+[docs/bringup.md](docs/bringup.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
 
 `jasper/xvf/xvf_host.py` is a JTS-owned USB control helper for the command
 subset JTS uses, and is a useful standalone diagnostic:
@@ -265,8 +265,8 @@ call `SAVE_CONFIGURATION` — a known brick hazard.
 
 ## Getting started
 
-Fresh Pi: start with [QUICKSTART.md](QUICKSTART.md). Long-form operator
-runbook: [BRINGUP.md](BRINGUP.md).
+Fresh Pi: start with [docs/quickstart.md](docs/quickstart.md). Long-form operator
+runbook: [docs/bringup.md](docs/bringup.md).
 
 Already deployed and just pushing changes:
 
@@ -314,7 +314,7 @@ bash scripts/tail-pi-logs.sh                      # live tail all units
 bash scripts/jasper-trace.sh                      # filter to event= lines
 ```
 
-`jasper-doctor` runs BRINGUP.md's smoke tests as code. `fetch-pi-logs.sh`
+`jasper-doctor` runs docs/bringup.md's smoke tests as code. `fetch-pi-logs.sh`
 pulls journals, previous-boot OOM/watchdog clues, configs, and ALSA state
 into `./logs/`, redacting environment-style secret assignments first.
 `pi-run-diagnostic.sh` is the safe path for ad-hoc Pi-side experiments: it
@@ -323,5 +323,5 @@ bounds. `GET /state` on `jasper-control` returns one fail-soft JSON snapshot
 of the daemon's own in-process posture — voice, audio, fanin/outputd
 (ADR-0270); a health fact lives in `/system/snapshot` or a doctor row.
 
-Common failure modes are at the bottom of [BRINGUP.md](BRINGUP.md). Start at
+Common failure modes are at the bottom of [docs/bringup.md](docs/bringup.md). Start at
 [docs/README.md](docs/README.md) for current subsystem references.

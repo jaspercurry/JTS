@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to JTS will be documented in this file.
+Selected release changes to JTS.
 
 This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 format. Release tags are cut manually by a maintainer.
@@ -149,7 +149,7 @@ hardware.
   non-pairable-at-rest floor at runtime.
 - Privacy logging hardened: voice transcripts log metadata (character counts),
   not content; content-bearing tool payloads are redacted; wake enrollment is
-  mic-mute gated. PRIVACY.md documents what leaves the device and what stays
+  mic-mute gated. docs/privacy.md documents what leaves the device and what stays
   local.
 
 ### Removed

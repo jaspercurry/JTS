@@ -24,22 +24,6 @@ def load_docs_impact():
     return module
 
 
-def _exclude_gitignored(paths: set[str]) -> set[str]:
-    if not paths:
-        return paths
-    proc = subprocess.run(
-        ["git", "check-ignore", "--stdin"],
-        cwd=ROOT,
-        input="\n".join(sorted(paths)) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    ignored = set(proc.stdout.splitlines()) if proc.returncode == 0 else set()
-    return paths - ignored
-
-
 def test_doc_map_valid():
     docs_impact = load_docs_impact()
 
@@ -49,34 +33,9 @@ def test_doc_map_valid():
     assert any(subsystem.id == "docs-governance" for subsystem in subsystems)
 
 
-def test_root_and_top_level_docs_are_intentionally_mapped():
-    docs_impact = load_docs_impact()
-    subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
-    classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
-    mapped_docs = {doc for subsystem in subsystems for doc in subsystem.docs}
-    root_docs = _exclude_gitignored(
-        {str(path.relative_to(ROOT)) for path in ROOT.glob("*.md")}
-    )
-    docs_top = _exclude_gitignored(
-        {str(path.relative_to(ROOT)) for path in (ROOT / "docs").glob("*.md")}
-    )
-
-    assert sorted((root_docs | docs_top) - mapped_docs - set(classified_docs)) == []
-
-
 def test_historical_docs_are_never_canonical_routes():
-    """Archived docs must stay out of the routing layer entirely.
-
-    docs/historical/ holds executed runbooks and other frozen records
-    (the moOde removal, the 2026-06-10 hw-validation runbook). They are
-    outside the orphan sweep by construction (it globs top-level
-    docs/*.md only), and nothing in doc-map.toml — neither a subsystem
-    route nor a session-artifact classification — may point future
-    maintainers at them as current operational truth.
-    """
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
-    classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
 
     historical = sorted(
         str(path.relative_to(ROOT))
@@ -85,7 +44,6 @@ def test_historical_docs_are_never_canonical_routes():
     assert historical, "docs/historical/ is empty — archive layout moved?"
     for doc in historical:
         assert all(doc not in subsystem.docs for subsystem in subsystems), doc
-        assert doc not in classified_docs, doc
         assert docs_impact.impact_report(subsystems, (doc,)) == [], doc
 
 
@@ -93,9 +51,7 @@ def test_voice_file_routes_to_voice_docs():
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
 
-    report = docs_impact.impact_report(
-        subsystems, ("jasper/voice/openai_session.py",)
-    )
+    report = docs_impact.impact_report(subsystems, ("jasper/voice/openai_session.py",))
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
     assert "docs/extensibility.md" in report[0]["docs"]
@@ -173,12 +129,13 @@ def test_doc_map_code_globs_match_at_least_one_tracked_file():
     docs. Every code glob must match at least one git-tracked file, using
     the same fnmatch semantics scripts/docs-impact.py applies to changed
     paths."""
-    import subprocess
-
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
     tracked = subprocess.run(
-        ["git", "ls-files"], cwd=ROOT, check=True, text=True,
+        ["git", "ls-files"],
+        cwd=ROOT,
+        check=True,
+        text=True,
         stdout=subprocess.PIPE,
     ).stdout.splitlines()
 
