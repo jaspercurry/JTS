@@ -11,6 +11,27 @@
   margin-block: 1rem;
 }
 
+.voice-key {
+  position: relative;
+}
+
+.voice-key input[type="password"] {
+  padding-inline-end: 3rem;
+}
+
+.voice-key__clear {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 16px;
+}
+
 .spend-cap__form {
   display: grid;
   gap: 0.75rem;

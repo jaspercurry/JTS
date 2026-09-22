@@ -261,7 +261,7 @@ def test_apply_save_keeps_unknown_model_value():
 # ---------- Clear logic ----------------------------------------------------
 
 
-def test_apply_clear_removes_key_model_voice_for_one_provider():
+def test_apply_clear_removes_only_the_key():
     current = {
         "OPENAI_API_KEY": "sk-x",
         "JASPER_OPENAI_MODEL": "gpt-realtime-2",
@@ -272,17 +272,7 @@ def test_apply_clear_removes_key_model_voice_for_one_provider():
     }
     new, err = voice_setup._apply_clear({"provider": "openai"}, current)
     assert err is None
-    # All openai-owned keys gone.
-    for k in (
-        "OPENAI_API_KEY", "JASPER_OPENAI_MODEL",
-        "JASPER_OPENAI_VOICE", "JASPER_OPENAI_REASONING_EFFORT",
-    ):
-        assert k not in new
-    # Other providers untouched.
-    assert new["GEMINI_API_KEY"] == "AIza-y"
-    # Active is preserved — the page render will surface that the
-    # active provider is now broken so the user can fix it.
-    assert new["JASPER_VOICE_PROVIDER"] == "openai"
+    assert new == {key: value for key, value in current.items() if key != "OPENAI_API_KEY"}
 
 
 def test_apply_clear_unknown_provider_errors():
@@ -933,7 +923,7 @@ def test_e2e_clear_credentials_removes_provider_keys(
         # WS1 Phase 4a — OPENAI creds gone from BOTH files; the kept GEMINI key
         # lives in the split-out keys file; the non-secret model stays broad.
         assert "OPENAI_API_KEY" not in loaded and "OPENAI_API_KEY" not in keys
-        assert "JASPER_OPENAI_MODEL" not in loaded
+        assert loaded["JASPER_OPENAI_MODEL"] == "gpt-realtime-2"
         assert keys["GEMINI_API_KEY"] == "AIza-keep"
     finally:
         server.shutdown()

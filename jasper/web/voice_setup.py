@@ -216,20 +216,13 @@ def _apply_save(form: dict[str, str], current: dict[str, str]) -> tuple[dict[str
 
 
 def _apply_clear(form: dict[str, str], current: dict[str, str]) -> tuple[dict[str, str], str | None]:
-    """Clear one provider's stored key + model + voice + extras. The
-    active provider is NOT changed by this — if the user clears their
-    active provider, the next page render will show "no key" on it
-    and warn at save time. Operator can recover by either pasting a
-    new key or hand-editing /etc/jasper/jasper.env."""
+    """Remove only the selected provider's saved key."""
     pid = (form.get("provider") or "").strip()
     p = provider_by_id(pid)
     if p is None:
         return current, f"Unknown provider {pid!r}."
     new = dict(current)
-    for env in (p.key_env, p.model_env, p.voice_env):
-        new.pop(env, None)
-    for spec in p.extras:
-        new.pop(spec.env, None)
+    new.pop(p.key_env, None)
     return new, None
 
 

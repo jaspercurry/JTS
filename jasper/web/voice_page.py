@@ -40,33 +40,31 @@ def _key_html(settings: ProviderSettings, csrf_token: str) -> str:
     provider = settings.provider
     configured = bool(settings.masked_key)
     placeholder = "Key saved — type a new key to replace" if configured else provider.key_prefix_hint
-    key_field = f"""
+    clear_form = f"""
+      <form method="post" action="clear-credentials" id="clear-key-form" hidden
+            data-confirm="Remove the saved {html.escape(provider.vendor)} API key? Any provider using this key will need a new key."
+            data-confirm-danger="1">
+        {csrf_field_html(csrf_token)}
+        <input type="hidden" name="provider" value="{provider.id}">
+      </form>""" if configured else ""
+    return f"""
       <div class="field">
         <label for="{provider.id}_key">{html.escape(provider.vendor)} API key</label>
-        <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
-               type="password" autocomplete="off" autocapitalize="off"
-               autocorrect="off" spellcheck="false"{'' if configured else ' required'}
-               placeholder="{html.escape(placeholder)}">
+        <div class="voice-key">
+          <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
+                 type="password" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false"{'' if configured else ' required'}
+                 placeholder="{html.escape(placeholder)}">
+          <button id="clear-key" class="btn btn--ghost voice-key__clear"
+                  {'type="submit" form="clear-key-form"' if configured else 'type="button"'}
+                  aria-label="Clear API key" aria-controls="{provider.id}_key"
+                  data-busy-label="…"><span aria-hidden="true">×</span></button>
+        </div>
         {f'<p class="form-hint">Saved: <code>{html.escape(settings.masked_key)}</code>. Leave blank to keep.</p>' if configured else ''}
         <p class="form-hint"><a href="{html.escape(provider.key_url)}"
            target="_blank" rel="noopener">Get an API key ↗</a></p>
-      </div>"""
-    if not configured:
-        return key_field
-    return f"""
-      {key_field}
-      <details class="disclosure">
-        <summary>Remove saved key</summary>
-        <div class="disclosure__body">
-          <form method="post" action="clear-credentials"
-                data-confirm="Clear this saved key and model/voice settings? Providers that share this key will also need a key."
-                data-confirm-danger="1">
-            {csrf_field_html(csrf_token)}
-            <input type="hidden" name="provider" value="{provider.id}">
-            <button class="btn btn--danger" type="submit">Clear key</button>
-          </form>
-        </div>
-      </details>"""
+      </div>
+      {clear_form}"""
 
 
 def _provider_html(
