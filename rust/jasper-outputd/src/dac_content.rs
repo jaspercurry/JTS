@@ -2,43 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The DAC-content return lane — a grouping LEADER's round-trip ingress.
+//! An armed bonded member's return ring (ADR-0220).
 //!
-//! On a grouping LEADER the music the DAC plays must come back OUT of the
-//! sync engine, so the leader is sample-locked with its followers: the
-//! leader's own localhost snapclient re-plays the bond's shared stereo, and
-//! this module reads it one DAC period at a time. Without it a leader plays
-//! its program ahead of every follower.
+//! snapclient writes through the C ioplug; outputd reads one DAC period at
+//! a time. Transport identity belongs to `jasper.multiroom.dac_content_ring`.
+//! An armed ring is the sole content source: starvation emits silence, with
+//! no last-good replay or fallback. Health is reported in STATUS.
 //!
-//! ## One transport
+//! The DAC write is the sole pacer. Each period makes one non-blocking
+//! try-consume; it never waits for the producer.
 //!
-//! snapclient writes the SHM ring `jasper::multiroom::dac_content_ring`
-//! names, through the C ioplug, and this module attaches as its reader
-//! (ADR-0100). Undeclared ⇒ this module does not run at all: no attach, no
-//! syscalls, no per-period work.
-//!
-//! ## Starvation is SILENCE (owner ruling D4)
-//!
-//! A period the lane cannot fill is emitted as silence (one journal line
-//! per process); there is no last-good replay and
-//! no fallback source. The lane IS the content source on an armed box, so
-//! there is nothing to fall back TO. Health is self-reported on the STATUS
-//! surface (`DacContentMetrics` → the `dac_content` block) — daemon truth,
-//! never a Python mirror of env intent.
-//!
-//! ## Timing
-//!
-//! All I/O is non-blocking and happens on the DAC loop thread; the DAC write
-//! remains the sole pacer (inv-1). Worst case per period is one try-consume
-//! on the ring — never a blocking wait on the producer.
-//!
-//! ## Channel pick
-//!
-//! The lane carries the bond's SHARED stereo program (L = leader-seat
-//! corrected, R = follower-seat corrected). A stereo-pair leader plays
-//! only ITS channel, and — unlike a follower, whose snapclient plays
-//! through an ALSA `ttable` plug — this lane has no ALSA hop to do the
-//! drop. `ChannelPick` therefore mirrors the channel-split vocabulary:
+//! Channel selection happens here, without an ALSA channel-split hop:
 //! `left`/`right` duplicate that program channel onto both DAC channels;
 //! `mono` averages (the clip-safe L+R sum at −6.02 dB, matching
 //! `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo` is passthrough.
