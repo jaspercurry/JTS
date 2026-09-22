@@ -73,7 +73,8 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         needs_recovery = bool(v2volume.session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
         needs_recovery = True  # unreadable volume state fails closed
-    identity = applied_identity(load_applied_baseline_profile_state())
+    applied_profile = load_applied_baseline_profile_state()
+    identity = applied_identity(applied_profile)
     block: dict[str, Any] = {
         "phase": _projection.crossover_v2_phase(
             state, review_declined=v2state.review_declined(state),
@@ -119,7 +120,8 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status(),
     }
-    block["post_apply_grade"] = v2grade._post_apply_grade(block, spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}))
+    block["post_apply_grade"] = v2grade._post_apply_grade(block,
+        spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}, applied_profile=applied_profile))
     return block
 
 

@@ -198,18 +198,44 @@ def test_prove_static_delay_binding_rejects_non_delay_filter():
     assert caught.value.code == "delay_filter_invalid"
 
 
-def test_prove_static_delay_binding_rejects_positive_volume_limit():
+@pytest.mark.parametrize(
+    ("volume_limit", "error_code"),
+    [
+        (None, "volume_limit_invalid"),
+        (True, "volume_limit_invalid"),
+        ("0.0", "volume_limit_invalid"),
+        (float("nan"), "snapshot_invalid"),
+        (1.0, "volume_limit_invalid"),
+        (0.0, None),
+        (-12.5, None),
+    ],
+)
+def test_prove_static_delay_binding_checks_volume_limit_contract(
+    volume_limit: object,
+    error_code: str | None,
+) -> None:
     graph = _graph("as_positive_delay", "as_negative_delay")
     graph["filters"]["as_positive_delay"]["parameters"]["delay"] = 0.0
-    graph["devices"]["volume_limit"] = 1.0
-    with pytest.raises(DelayGraphProofError) as caught:
-        prove_static_delay_binding(
+    if volume_limit is None:
+        graph["devices"].pop("volume_limit")
+    else:
+        graph["devices"]["volume_limit"] = volume_limit
+    if error_code is None:
+        assert prove_static_delay_binding(
             graph,
             delay_filter_name="as_positive_delay",
             channels=(0,),
             delay_us=0.0,
-        )
-    assert caught.value.code == "volume_limit_invalid"
+        ) == 0.0
+    else:
+        with pytest.raises(DelayGraphProofError) as caught:
+            prove_static_delay_binding(
+                graph,
+                delay_filter_name="as_positive_delay",
+                channels=(0,),
+                delay_us=0.0,
+            )
+        assert caught.value.code == error_code
 
 
 def test_quantized_delay_ms_is_the_single_fmt_quantizer():

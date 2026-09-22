@@ -43,7 +43,7 @@ from ..env_load import (
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import OUTPUTD_SERVICE, read_unit_property
+from ..service_units import OUTPUTD_SERVICE, run_systemctl
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -660,12 +660,16 @@ def _unit_active(unit: str) -> bool | None:
     ``None`` on a probe failure or an unrecognized state; callers treat that
     as unproven and take the safe branch.
     """
-    values = read_unit_property(
-        "ActiveState", (unit,), timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-    )
-    if not values:
+    try:
+        proc = run_systemctl(
+            ["show", unit, "--property=ActiveState", "--value"],
+            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    state = values[0].strip().lower()
+    state = (proc.stdout or "").strip().lower()
+    if proc.returncode != 0:
+        return None
     if state in {"active", "activating", "reloading", "deactivating"}:
         return True
     if state in {"inactive", "failed"}:

@@ -1,4 +1,4 @@
-# ADR-0331: Live follow-up counts from audible playout
+# ADR-0333: Live follow-up counts from audible playout
 
 - **Date:** 2026-09-22
 - **Status:** Accepted; refines [ADR-0320](0320-live-hangup-is-one-silence-window.md).

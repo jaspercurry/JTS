@@ -3176,7 +3176,7 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
         state["candidate"] = {"fingerprint": "applied-candidate"}
         state["session_id"] = "recovery"
         write_asked_poses(tmp_path, state, [{"deg": 0}])
-        monkeypatch.setattr("jasper.active_speaker.grade_coverage.status_banked_candidate",
+        monkeypatch.setattr("jasper.active_speaker.grade_coverage.load_applied_candidate",
                             lambda fingerprint, **kw: SimpleNamespace(path=original / "candidate.json"))
     v2state.save_v2_state(state)
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -3196,13 +3196,13 @@ def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypa
     if not initial_manifest:
         shutil.rmtree(root / "asked-run" / "evidence")
     monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
-    assert asked_beyond_mark(state) is False
+    assert asked_beyond_mark(state, applied_profile=None) is False
     write_asked_poses(tmp_path, state, [{"deg": 20}])
-    assert asked_beyond_mark(state) is True
+    assert asked_beyond_mark(state, applied_profile=None) is True
     target = tmp_path / "campaigns" / state["session_id"] / "bundle"
     target.mkdir(parents=True)
     shutil.move(root / "asked-run", target)
-    assert asked_beyond_mark(state) is True
+    assert asked_beyond_mark(state, applied_profile=None) is True
 
 
 _PASSING_GROUP = {"passed": True, "flatness": {

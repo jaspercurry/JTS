@@ -187,10 +187,10 @@ def load_commissioning_view(
     preview = build_crossover_preview(design_draft)
     measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()
-    _, baseline = compile_commissioning_profile(
-        topology=topology, design_draft=design_draft, crossover_preview=preview,
-    )
     applied = load_applied_baseline_profile_state()
+    _, baseline = compile_commissioning_profile(
+        applied_profile=applied, topology=topology, design_draft=design_draft, crossover_preview=preview,
+    )
     experiment = {}
     if applied is None:
         try:

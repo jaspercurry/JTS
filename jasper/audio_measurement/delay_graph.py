@@ -15,6 +15,7 @@ import math
 from typing import Any, Literal, Mapping, NoReturn, TypeAlias
 
 from jasper.camilla_emit import fmt
+from jasper.camilla_config_contract import ensure_volume_limit_db
 
 from .null_walk import (
     MAX_DSP_DELAY_US,
@@ -81,8 +82,10 @@ def _require_volume_limit(
         code=code,
         field_name="devices.volume_limit",
     )
-    if limit_db > 0.0:
-        _refuse(code, "devices.volume_limit must not exceed the 0 dB JTS ceiling")
+    try:
+        ensure_volume_limit_db(limit_db)
+    except ValueError as exc:
+        _refuse(code, str(exc))
 
 
 def quantized_delay_ms(delay_us: float) -> float:

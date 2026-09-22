@@ -15,7 +15,7 @@ from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 from jasper.output_topology import OutputTopology, load_output_topology_strict
 
 from .branch_chain import branch_headroom_db, sections_by_role
-from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
+from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate, load_applied_candidate
 from .baseline_profile import (
     load_applied_baseline_profile_state,
 )
@@ -66,6 +66,11 @@ def candidate_from_applied_profile(
     """Look up the applied candidate, migrating pre-bank records once."""
     if applied_profile.get("status") != "applied":
         raise CandidateBankRefusal("composition_saved_tune_unavailable", "there is no applied candidate")
+    if find_candidate is None and applied_profile.get("candidate_artifact_path"):
+        return load_applied_candidate(
+            (applied_profile.get("source") or {}).get("measured_candidate_fingerprint", ""),
+            applied_profile=applied_profile,
+        ).candidate
     find_candidate = find_candidate or find_banked_candidate
     fingerprint = (applied_profile.get("source") or {}).get("measured_candidate_fingerprint")
     if fingerprint:

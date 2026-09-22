@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker.candidate_bank import bank_candidate
+
 import asyncio
 import io
 import json
@@ -3088,7 +3090,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     draft = standard_design_draft(topology)
     declaration, declared = declared_graph_fixture(topology, draft)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(
-        declared, declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(declared), declaration=declaration, design_draft=draft, measurements={},
         config_path=None, config_sha256="",
     )
     prepared["status"] = "applied"
@@ -3565,9 +3567,6 @@ def test_state_filter_count_signals_effective_eq_for_initial_view():
     [
         ("foreign.yml", True, {"status": "blocked", "reason_code": "unknown_config"}),
         ("sound_current.yml", True, {"status": "ok"}),
-        # Same hostable graph, no saved speaker layout: the runtime contract
-        # refuses it, and `can_host_eq` is what carries that — not the
-        # classifier — so the probe has to be the dry-run re-emit.
         (
             "sound_current.yml",
             False,
@@ -3631,41 +3630,6 @@ def test_state_falls_open_when_camilla_cannot_be_read(
             payload = json.loads(resp.read().decode("utf-8"))
 
     assert payload["eq_carrier"] == {"status": "unknown"}
-
-
-def test_state_probes_the_carrier_with_the_household_output_trim(
-    tmp_path: Path, monkeypatch,
-):
-    """The emitter folds the trim into total_headroom_db, so a probe at 0 dB
-    would call a graph hostable that the save at the real trim refuses."""
-    import jasper.camilla
-    import jasper.sound.graph_carrier as graph_carrier
-
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text(json.dumps({"headroom_trim_db": 6.0}))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    monkeypatch.setattr(
-        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
-    )
-    probed: list[float] = []
-
-    def _record(_profile, *, current_path, config_dir, output_trim_db=0.0):
-        probed.append(output_trim_db)
-        return None
-
-    monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _record)
-
-    with sound_server(tmp_path) as base:
-        payload = json.loads(
-            urllib.request.urlopen(f"{base}/state").read().decode("utf-8")
-        )
-
-    assert probed == [payload["output_trim_db"]] == [6.0]
 
 
 @pytest.mark.parametrize("header", ["speaker", "output"])

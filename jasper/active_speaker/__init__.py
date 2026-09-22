@@ -79,9 +79,7 @@ __all__ = sorted(_LAZY_ATTRS)
 def __getattr__(name: str) -> Any:
     # Caching into globals() keeps the old eager re-export's binding
     # semantics: the name is resolved once, so patching the defining
-    # submodule afterwards does not retarget it. jasper.multiroom's
-    # __getattr__ deliberately does the opposite (#1270, #1678) — it
-    # resolves per access because its callables are monkeypatched.
+    # submodule afterwards does not retarget it.
     module = _LAZY_ATTRS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

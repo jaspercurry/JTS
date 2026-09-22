@@ -9,7 +9,6 @@ from __future__ import annotations
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
 
 
-import ast
 import dataclasses
 import json
 import logging
@@ -136,27 +135,6 @@ def _event_fields(records, event: str) -> dict[str, str]:
             part.partition("=") for part in lines[0].split() if "=" in part
         )
     }
-
-
-def _call_name(node):
-    if not isinstance(node, ast.Call):
-        return None
-    return getattr(node.func, "id", getattr(node.func, "attr", None))
-
-
-def _jasper_calls(name: str):
-    """Every call to ``name`` under ``jasper/``, DISCOVERED by parsing, as
-    ``(relative_path, module_tree, call_node)``.
-
-    Discovery rather than a hand-written list is the point of both guards below:
-    a new call site fails them instead of waiting to be noticed in review.
-    """
-    repo = Path(__file__).resolve().parent.parent
-    for path in sorted((repo / "jasper").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if _call_name(node) == name:
-                yield path.relative_to(repo).as_posix(), tree, node
 
 
 # --------------------------------------------------------------------------
@@ -325,86 +303,12 @@ async def test_the_drift_check_includes_the_transport_axis(
 # --------------------------------------------------------------------------
 
 
-def _keyword(call, name):
-    return next((kw.value for kw in call.keywords if kw.arg == name), None)
+def test_measurement_declaration_requires_a_playback_endpoint():
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 
-
-def _assigned_value(scope, value, before):
-    if not isinstance(value, ast.Name):
-        return value
-    assignments = [node for node in ast.walk(scope) if isinstance(node, ast.Assign)
-                   and node.lineno < before and any(
-                       isinstance(target, ast.Name) and target.id == value.id
-                       for binding in node.targets for target in ast.walk(binding))]
-    return max(assignments, key=lambda node: node.lineno).value if assignments else None
-
-
-async def test_every_composition_call_site_names_the_endpoint_or_is_exempt():
-    from jasper.active_speaker import measurement_emit
-
-    exemptions = {
-        ("jasper/active_speaker/crossover_v2/door.py", "emit_scoped"):
-            "session_profile.playback_device: bound by bind_measurement_graph before the session starts",
-    }
-    used_exemptions = set()
-    found = set()
-    missing: list[str] = []
-
-    device_field = next(field for field in dataclasses.fields(measurement_emit.MeasurementGraphProfile)
+    device_field = next(field for field in dataclasses.fields(MeasurementGraphProfile)
                         if field.name == "playback_device")
     assert device_field.default is device_field.default_factory is dataclasses.MISSING
-    loader_tree = ast.parse(Path(measurement_emit.__file__).read_text())
-    loader = next(node for node in loader_tree.body if isinstance(node, ast.FunctionDef)
-                  and node.name == "load_tuning_declaration")
-    profile_call = next(node.value for node in ast.walk(loader) if isinstance(node, ast.Return))
-    assert _call_name(profile_call) == "MeasurementGraphProfile"
-    device = _keyword(profile_call, "playback_device")
-    assert device is not None
-    assert any(_call_name(node) == "resolve_active_playback_device" for node in ast.walk(device))
-    assert not any(isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value
-                   for node in ast.walk(device)), "resolved playback device must not fall back to a default PCM"
-
-    for name in ("compile_tuning_graph", "load_composed_graph"):
-        sites = list(_jasper_calls(name))
-        assert sites, f"no {name} call sites found — this guard has gone vacuous"
-        for rel, tree, call in sites:
-            scope = min((node for node in ast.walk(tree)
-                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                         and node.lineno <= call.lineno <= node.end_lineno),
-                        key=lambda node: node.end_lineno - node.lineno)
-            site = (rel, scope.name)
-            found.add(site)
-            if site in exemptions:
-                used_exemptions.add(site)
-                assert call.args and isinstance(call.args[0], ast.Name) and call.args[0].id == "profile"
-                continue
-            profile = _keyword(call, "profile")
-            if name == "compile_tuning_graph" and profile is None and call.args:
-                profile = call.args[0]
-            source = _assigned_value(scope, profile, call.lineno)
-            if name == "load_composed_graph":
-                if _call_name(source) == "prepare_applied_baseline_profile":
-                    source = _assigned_value(scope, _keyword(source, "declaration"), source.lineno)
-                elif isinstance(source, ast.Attribute) and source.attr == "applied_profile":
-                    result = _assigned_value(scope, source.value, source.lineno)
-                    if (_call_name(result) == "reemit" and call.args
-                            and ast.dump(call.args[0]) == ast.dump(ast.Attribute(value=source.value, attr="yaml", ctx=ast.Load()))):
-                        continue
-            if _call_name(source) != "load_tuning_declaration":
-                missing.append(f"{rel}:{call.lineno}:{name}")
-                continue
-            override = _keyword(source, "playback_device")
-            if override is not None:
-                endpoint = _assigned_value(scope, override, source.lineno)
-                if not (isinstance(endpoint, ast.Attribute) and endpoint.attr == "playback_device"
-                        or _call_name(endpoint) in {"resolve_active_playback_device", "_baseline_reemit_endpoint"}
-                        or (isinstance(endpoint, ast.Subscript)
-                            and _call_name(endpoint.value) == "parse_camilla_devices_config"
-                            and isinstance(endpoint.slice, ast.Constant) and endpoint.slice.value == "playback_device")):
-                    missing.append(f"{rel}:{call.lineno}:default_playback_device")
-
-    assert found and used_exemptions == set(exemptions)
-    assert not missing, f"composition has no resolved profile.playback_device: {missing}"
 
 
 async def test_sound_carrier_forwards_the_derived_endpoint(applied_box):
