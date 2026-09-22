@@ -35,7 +35,7 @@ from ._doctor_audio_runtime_fixtures import (
 )
 from .doctor_test_support import record_active_dac
 from .ring_abi import ring_abi
-from .test_ring_stall_alarm import _ring_file
+from .test_ring_header import _ring_file
 
 
 def _point_entry_lock_at(monkeypatch, tmp_path: Path) -> Path:

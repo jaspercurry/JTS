@@ -43,7 +43,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ..env_load import GROUPING_ENV_FILE
-from ..ring_assets import RingFlowState, ring_flow_state
+from ..ring_header import RingFlowState, ring_flow_state
 from ..systemd_probe import unit_states
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
@@ -398,8 +398,8 @@ def _derive_runtime_health(
     if cfg.error is not None:
         return {"health": "invalid", "detail": cfg.error, "units": {}}
 
-    from .reconcile import desired_snapfifo_path
-    from .reconcile_plan import plan
+    from .reconcile import desired_snapfifo_path  # lazy: import cost on solo boxes
+    from .reconcile_plan import plan  # lazy: import cost on solo boxes
 
     expected = {it.unit: it.desired for it in plan(cfg).intents}
     units: dict[str, dict[str, str]] = {}
@@ -516,7 +516,7 @@ def _ring_age_ms(age_ns: int | None) -> int | None:
 
 
 def _grouping_ring_signal(flow: RingFlowState) -> dict[str, Any]:
-    """Project one :class:`~jasper.ring_assets.RingFlowState` into the ``ring``
+    """Project one :class:`~jasper.ring_header.RingFlowState` into the ``ring``
     block. PURE.
 
     The ingress transport's own health, which no unit state can see: every
@@ -640,7 +640,7 @@ def read_grouping_state(
         stream_clients: Any = None
         local_outputd_status: Any = None
         if cfg.error is None:
-            from .reconcile_plan import plan
+            from .reconcile_plan import plan  # lazy: import cost on solo boxes
 
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])

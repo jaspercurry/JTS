@@ -43,9 +43,10 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_conf
-from jasper import ring_assets
+from jasper import ring_conf, ring_header
+from jasper.cli.doctor import audio_runtime_ring
 from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.multiroom.config import GroupingConfig
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
     GROUPING_RING_CONF_D,
@@ -56,6 +57,8 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_SLOTS,
     GROUPING_RING_WRITER_LOCK,
 )
+from jasper.multiroom.reconcile_plan import snapserver_argv
+from jasper.ring_assets import ring_writer_lock_path
 from tests.ring_abi import ring_abi
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -409,9 +412,6 @@ def test_the_grouping_ring_wire_is_the_snapcast_streams_wire():
     Read off ``snapserver_argv``'s emitted command line rather than the module
     source, so the pin follows the value actually shipped to snapserver.
     """
-    from jasper.multiroom.config import GroupingConfig
-    from jasper.multiroom.reconcile_plan import snapserver_argv
-
     cfg = GroupingConfig(
         enabled=True,
         role="leader",
@@ -451,8 +451,6 @@ def test_the_writer_lock_path_is_derived_from_the_platforms_own_rule():
     the C header; this asserts the grouping ring goes through it rather than
     around it.
     """
-    from jasper.ring_assets import ring_writer_lock_path
-
     assert GROUPING_RING_WRITER_LOCK == ring_writer_lock_path(GROUPING_RING_FILE)
     assert GROUPING_RING_WRITER_LOCK != GROUPING_RING_FILE
 
@@ -485,19 +483,16 @@ def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
     actually asks about are recorded, so an entry deleted or respelled fails
     here.
     """
-    from jasper import ring_assets
-    from jasper.cli.doctor import audio_runtime_ring
-
     # An absent file is not present -> the check skips it. The inertness claim.
-    assert ring_assets.ring_stall_verdict(str(tmp_path / "absent.ring")).present is False
+    assert ring_header.ring_stall_verdict(str(tmp_path / "absent.ring")).present is False
 
     asked: list[str] = []
 
-    def _spy(path: str, **kwargs: object) -> ring_assets.RingStallVerdict:
+    def _spy(path: str, **kwargs: object) -> ring_header.RingStallVerdict:
         asked.append(path)
-        return ring_assets.RingStallVerdict(present=False, detail="absent (test)")
+        return ring_header.RingStallVerdict(present=False, detail="absent (test)")
 
-    monkeypatch.setattr(ring_assets, "ring_stall_verdict", _spy)
+    monkeypatch.setattr(ring_header, "ring_stall_verdict", _spy)
     result = audio_runtime_ring.check_ring_reader_stall()
 
     assert GROUPING_RING_FILE in asked, (

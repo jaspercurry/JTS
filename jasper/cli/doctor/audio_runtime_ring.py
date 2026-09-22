@@ -788,7 +788,7 @@ def check_ring_reader_stall() -> CheckResult:
     is STALE. Not ``read_seq``-flat — the writer advances ``read_seq`` on the
     absent reader's behalf at demotion, so a ``read_seq`` clause goes false
     exactly when the drops begin. See
-    :class:`jasper.ring_assets.RingStallVerdict`.
+    :class:`jasper.ring_header.RingStallVerdict`.
 
     Judges every ring below and reports per-ring so an operator knows which
     daemon to look at. ``present=False`` keeps absent/idle rings silent, which
@@ -822,7 +822,6 @@ def check_ring_reader_stall() -> CheckResult:
         RING_A_PROGRAM_FILE,
         RING_ACTIVE_CONTENT_FILE,
         RING_B_CONTENT_FILE,
-        ring_stall_verdict,
     )
 
     name = "ring reader stall"
@@ -838,7 +837,7 @@ def check_ring_reader_stall() -> CheckResult:
     # Ring A: judged by its own header when coherent, else by fan-in's own
     # witness (issue #1524) — the same evidence memo key every other fan-in
     # check reads, so asking for it this pass costs nothing extra.
-    ring_a_verdict = ring_stall_verdict(RING_A_PROGRAM_FILE)
+    ring_a_verdict = ring_header.ring_stall_verdict(RING_A_PROGRAM_FILE)
     ring_a_stalled = False
     status = evidence.fanin_status()
     output = status.payload.get("output") if status.payload else None
@@ -870,7 +869,7 @@ def check_ring_reader_stall() -> CheckResult:
             drops_reason = REASON_RING_READER_STALL_DROPS
 
     for label, path in other_rings:
-        verdict = ring_stall_verdict(path)
+        verdict = ring_header.ring_stall_verdict(path)
         if not verdict.present:
             continue
         judged.append(label)
