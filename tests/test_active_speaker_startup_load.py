@@ -4,15 +4,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
-import pytest
-
 import jasper.active_speaker.commission_load as commission_load_mod
 import jasper.active_speaker.startup_load as startup_load_mod
-from jasper.active_speaker.startup_hold import startup_hold_marker_path
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
@@ -22,8 +18,6 @@ from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.startup_load import (
     STARTUP_LOAD_PREFLIGHT_KIND,
     build_startup_load_preflight,
-    load_protected_startup_config,
-    load_startup_load_state,
 )
 from jasper.output_topology import (
     OutputTopology,
@@ -32,7 +26,6 @@ from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
 )
-from tests.sound_camilla_fixtures import FakeCamilla
 
 
 def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
@@ -64,21 +57,6 @@ def _protected_prior(tmp_path: Path, staged: dict, name: str = "prior_active.yml
     prior = tmp_path / name
     prior.write_text(
         Path(staged["config"]["path"]).read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    return prior
-
-
-def _normal_prior(tmp_path: Path, name: str = "prior_stereo.yml") -> Path:
-    prior = tmp_path / name
-    prior.write_text(
-        "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
-        "devices:\n"
-        "  volume_limit: 0\n"
-        "  playback:\n"
-        "    type: Alsa\n"
-        "    device: outputd_content_playback\n"
-        "    channels: 2\n",
         encoding="utf-8",
     )
     return prior
@@ -211,342 +189,6 @@ def test_startup_load_preflight_blocks_stale_path_safety_rollback_binding(
     assert "path_safety_evidence_stale" in {
         issue["code"] for issue in report["issues"]
     }
-
-
-def test_startup_load_blocks_when_rollback_anchor_is_missing(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    staged = _staged(tmp_path)
-    missing_prior = tmp_path / "missing-prior.yml"
-    fake = FakeCamilla(str(missing_prior))
-    state_path = tmp_path / "startup_load.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-
-    result = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=missing_prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    state = load_startup_load_state(state_path=state_path)
-
-    assert result["preflight"]["load_allowed"] is False
-    assert result["load"]["status"] == "blocked"
-    assert fake.set_calls == []
-    assert "rollback_target_available_not_verified" in {
-        issue["code"] for issue in result["preflight"]["issues"]
-    }
-    assert state["status"] == "blocked"
-    assert state["rollback_available"] is False
-
-
-def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path) -> None:
-    stage = _staged(tmp_path)
-    prior = _normal_prior(tmp_path)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    reconcile_calls = _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-
-    result = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=stage,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    state = load_startup_load_state(state_path=state_path)
-
-    assert result["preflight"]["load_allowed"] is True
-    assert result["load"]["status"] == "loaded"
-    assert fake.set_calls == [stage["config"]["path"]]
-    assert state["rollback_available"] is True
-    assert state["previous_config_path"] == str(prior)
-    assert state["candidate_config_path"] == stage["config"]["path"]
-    assert reconcile_calls == [{
-        "units": (startup_load_mod.AUDIO_HARDWARE_RECONCILE_UNIT,),
-        "verb": "start",
-        "reason": "active_speaker_startup_load",
-        "no_block": False,
-        "timeout": 15.0,
-    }]
-
-
-def test_startup_load_sets_staged_hold(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    marker = startup_hold_marker_path()
-
-    assert not marker.exists()
-    load = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    assert load["load"]["status"] == "loaded"
-    assert marker.exists()  # anchor is held while the commission is in flight
-
-
-def test_startup_load_refuses_when_the_staged_hold_cannot_be_taken(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    # The hold's write is what keeps the reconcile this load kicks from restoring
-    # the saved baseline over the anchor. When it cannot be taken — the shape
-    # jasper-web hit on hardware before the unit declared
-    # RuntimeDirectory=jasper-active-speaker, where /run is read-only under
-    # ProtectSystem=strict — the load must refuse instead of answering success
-    # for durable work the next reconcile would undo, and must apply nothing.
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    reconcile_calls = _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    monkeypatch.setattr(startup_load_mod, "hold_staged_startup", lambda: False)
-
-    result = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-    state = load_startup_load_state(state_path=state_path)
-
-    # The preflight itself still passes — the refusal is the hold, not a gate.
-    assert result["preflight"]["load_allowed"] is True
-    assert result["load"]["status"] == "blocked"
-    assert result["load"]["last_action"] == "load_blocked"
-    assert "staged_startup_hold_unavailable" in {
-        issue["code"] for issue in result["load"]["issues"]
-    }
-    # Nothing applied, nothing kicked: no DSP load, and no reconcile to undo it.
-    assert fake.set_calls == []
-    assert reconcile_calls == []
-    assert state["status"] == "blocked"
-    assert state["rollback_available"] is False
-    # The blocker names the directory the writing unit has to own.
-    message = next(
-        issue["message"]
-        for issue in result["load"]["issues"]
-        if issue["code"] == "staged_startup_hold_unavailable"
-    )
-    assert "RuntimeDirectory=jasper-active-speaker" in message
-
-
-def test_startup_load_releases_the_staged_hold_when_the_apply_fails(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    # The hold is taken before the apply, so a failed apply — which leaves the
-    # anchor off the durable statefile — has to give it back, or the next
-    # reconcile would preserve an anchor this session never loaded.
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    marker = startup_hold_marker_path()
-
-    # Spy through the real writer so the final `not marker.exists()` cannot pass
-    # vacuously — it has to mean "taken, then given back", not "never taken".
-    held: list[bool] = []
-    real_hold = startup_load_mod.hold_staged_startup
-
-    def spy_hold() -> bool:
-        taken = real_hold()
-        held.append(taken and marker.exists())
-        return taken
-
-    monkeypatch.setattr(startup_load_mod, "hold_staged_startup", spy_hold)
-
-    async def refuse_load(_path: str) -> bool:
-        return False
-
-    result = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=refuse_load,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-
-    assert result["load"]["status"] == "failed"
-    assert held == [True]  # the hold really was taken before the apply
-    assert not marker.exists()  # and given back when the apply failed
-
-
-def test_startup_load_proceeds_when_a_root_owned_marker_already_holds(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    # End-to-end shape of the gate's blocker: a root writer (UMask=0077)
-    # left a root:root 0600 marker that nothing releases, then /sound/ runs the
-    # protected load. touch() raises there, but the anchor IS held, so the load
-    # must PROCEED rather than refuse with a remedy that cannot fix it.
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    reconcile_calls = _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-
-    marker = startup_hold_marker_path()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("", encoding="utf-8")  # the sibling root writer's leftover
-
-    real_touch = Path.touch
-
-    def touch_denied_for_the_marker(self, *args, **kwargs):
-        if self == marker:
-            raise PermissionError(13, "Permission denied")
-        return real_touch(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "touch", touch_denied_for_the_marker)
-
-    result = asyncio.run(
-        load_protected_startup_config(
-            _topology(),
-            load_config=fake.set_config_file_path,
-            get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(
-                tmp_path / "path_safety.json",
-                staged=staged,
-                current_config_path=prior,
-            ),
-            state_path=state_path,
-            validate=_valid_config,
-        )
-    )
-
-    assert result["load"]["status"] == "loaded"
-    assert fake.set_calls == [staged["config"]["path"]]
-    assert reconcile_calls  # the reconcile was kicked, under a real hold
-    assert marker.exists()
-
-
-def test_startup_load_releases_the_staged_hold_on_a_non_dsp_apply_error(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    # apply_dsp_config raises types that do NOT subclass DspApplyError on the
-    # writer-lock path the web surfaces contend for. Those escape the handler
-    # that renders a payload, so without the catch-all the pre-apply hold would
-    # leak and keep preserving a silent anchor this session never loaded.
-    from jasper.dsp_apply import DspWriterLockTimeout
-
-    staged = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, staged)
-    fake = FakeCamilla(str(prior))
-    state_path = tmp_path / "startup_load.json"
-    _record_reconcile_triggers(monkeypatch)
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
-    marker = startup_hold_marker_path()
-
-    async def raise_lock_timeout(**_kwargs):
-        assert marker.exists()  # the hold really was taken before the apply
-        raise DspWriterLockTimeout(
-            tmp_path / "dsp.lock",
-            timeout_s=5.0,
-            waited_s=5.0,
-            source="active_speaker_startup_load",
-        )
-
-    monkeypatch.setattr(startup_load_mod, "apply_dsp_config", raise_lock_timeout)
-
-    with pytest.raises(DspWriterLockTimeout):
-        asyncio.run(
-            load_protected_startup_config(
-                _topology(),
-                load_config=fake.set_config_file_path,
-                get_current_config_path=fake.get_config_file_path,
-                path_safety_evidence_path=_write_path_safety(
-                    tmp_path / "path_safety.json",
-                    staged=staged,
-                    current_config_path=prior,
-                ),
-                state_path=state_path,
-                validate=_valid_config,
-            )
-        )
-
-    assert not marker.exists()  # released on the way out, and the type re-raised
 
 
 def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(

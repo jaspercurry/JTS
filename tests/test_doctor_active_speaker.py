@@ -578,57 +578,6 @@ def test_active_speaker_baseline_canonical_discloses_missing_canonical(
     assert r.reason == active_speaker.REASON_BASELINE_CANONICAL_MISSING
 
 
-# ------------------------------------------------- active speaker startup hold
-
-
-def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
-    # The conftest fixture points the marker at a per-test path that starts
-    # absent, which is the no-hold baseline.
-    r = active_speaker.check_active_speaker_startup_hold()
-
-    assert r.status == "ok"
-    assert r.reason == active_speaker.REASON_STARTUP_HOLD_NONE
-
-
-@pytest.mark.parametrize(
-    "load_status, live_is_anchor, status, reason, silent",
-    [
-        ("loaded", True, "ok", active_speaker.REASON_STARTUP_HOLD_IN_FLIGHT, False),
-        # A hold with no load behind it keeps a box that is STILL on the anchor
-        # silent across every reconcile.
-        ("rolled_back", True, "fail", active_speaker.REASON_STARTUP_HOLD_STALE, True),
-        # Off the anchor the box plays: the selector rung the marker feeds also
-        # requires the anchor graph, and /run empties before the next boot.
-        ("rolled_back", False, "warn", active_speaker.REASON_STARTUP_HOLD_STALE, False),
-    ],
-    ids=["in-flight", "stale-on-anchor", "stale-but-playing"],
-)
-def test_active_speaker_startup_hold_verdicts(
-    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason, silent
-):
-    from jasper.active_speaker.startup_hold import hold_staged_startup
-
-    _seed_control_reports_playing()
-    assert hold_staged_startup() is True
-    anchor = tmp_path / "active_speaker_staged_startup.yml"
-    state = tmp_path / "startup_load.json"
-    state.write_text(
-        json.dumps(
-            {"status": load_status, "candidate_config_path": str(anchor)}
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
-    live = anchor if live_is_anchor else tmp_path / "active_speaker_baseline.yml"
-    evidence.seed("camilla_config", (str(tmp_path / "statefile.yml"), str(live)))
-
-    r = active_speaker.check_active_speaker_startup_hold()
-
-    assert r.status == status
-    assert r.reason == reason
-    assert r.speaker_silent is silent
-
-
 # ------------------------------------------------- active speaker setup notices
 
 

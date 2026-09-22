@@ -287,16 +287,6 @@ def test_startup_muted_prefers_fully_muted_gate_over_text_scan(tmp_path: Path) -
     assert _startup_muted_by_candidate(payload) is False
 
 
-# --- #2135 blocker F1: a PARKED graph is a legitimate rollback target ---------
-# Excluding the parked classification from `restore_classifications` made
-# `rollback_target_available` false, which fails the `rollback_configs`
-# requirement, which blocks `evaluate_path_safety_evidence`, which makes
-# `/sound/speaker/`'s commission-startup anchor return
-# `commission_startup_anchor_path_safety_blocked`. Net effect: a parked box
-# could not START commissioning — the first of the two exits parking tells the
-# household to take was itself refused.
-
-
 def _parked_config(tmp_path: Path) -> Path:
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 

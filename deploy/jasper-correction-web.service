@@ -62,13 +62,9 @@ ReadWritePaths=/var/lib/jasper /var/lib/camilladsp
 # jasper.atomic_io with an explicit mode, so this governs only the private
 # set.
 UMask=0077
-# /run is root-owned 0755, so the non-root process cannot create the
-# staged-startup hold marker's directory itself; RuntimeDirectory= creates it
-# as jasper-web:jasper. Same name/mode/preserve triple as jasper-web.service —
-# both units write jasper.active_speaker.startup_hold's marker, and
-# Preserve=yes is load-bearing because either daemon can idle out while a
-# commission hold is still in force (/run is tmpfs, so a reboot still clears
-# it, which is the property the selector's guard rung depends on).
+# audition.py writes /run/jasper-active-speaker/audition.json as jasper-web.
+# RuntimeDirectory= permits this under ProtectSystem=; Preserve=yes keeps
+# audition state when either web service idles out. Reboot clears /run.
 RuntimeDirectory=jasper-active-speaker
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes

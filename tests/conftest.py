@@ -255,8 +255,6 @@ _host_state_dirs = itertools.count()
 
 # (env var, file name) — reader module + why absent is the hermetic baseline.
 _HOST_STATE_FILES = (
-    # startup_hold: /run/jasper-active-speaker is unwritable on a test host; absent = no hold.
-    ("JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER", "staged-startup-hold"),
     # Runs require a banked session level; tests that open them supply one.
     ("JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", "seat_level_reference.json"),
     # identity.reader.resolve_hostname's JASPER_HOSTNAME source; absent falls back to the

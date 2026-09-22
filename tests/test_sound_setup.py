@@ -5392,7 +5392,6 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
             statefile_path=statefile,
             parked_config_path=parked,
             staged_metadata_path=tmp_path / "staged.json",
-            staged_startup_hold_path=tmp_path / "startup-hold",
         )
         apply_safe_graph_decision_to_statefile(
             decision, statefile_path=statefile, topology=topology,

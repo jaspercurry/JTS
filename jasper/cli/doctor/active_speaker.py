@@ -50,9 +50,6 @@ REASON_APPLIED_GRAPH_STAGED_ANCHOR = "applied_graph_staged_anchor"
 REASON_APPLIED_GRAPH_NOT_EVALUATED = "applied_graph_not_evaluated"
 REASON_APPLIED_GRAPH_MISMATCH = "applied_graph_mismatch"
 
-REASON_STARTUP_HOLD_NONE = "startup_hold_none"
-REASON_STARTUP_HOLD_IN_FLIGHT = "startup_hold_in_flight"
-REASON_STARTUP_HOLD_STALE = "startup_hold_stale"
 
 REASON_SETUP_NOTICES_NONE = "setup_notices_none"
 REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
@@ -514,63 +511,6 @@ def check_active_speaker_applied_graph() -> CheckResult:
         "and apply it, to make the two agree",
         reason=REASON_APPLIED_GRAPH_MISMATCH,
         applied_identity=identity,
-    )
-
-
-@doctor_check(label="active speaker startup hold")
-def check_active_speaker_startup_hold() -> CheckResult:
-    """A staged-startup hold marker with no startup load behind it is stale.
-
-    ``load_protected_startup_config`` takes an ephemeral ``/run`` marker before
-    applying the all-muted staged anchor; while it is present
-    ``safe_graph_for_current_topology`` preserves that anchor instead of the
-    saved baseline, which the household-facing
-    ``staged_startup_hold_unavailable`` copy points at. That rung ALSO requires
-    the live graph to BE the anchor, so a marker outliving its load silences
-    only a box still on the anchor path (`fail`); over any other live graph it
-    holds nothing and ``/run`` empties before the next boot reads it (`warn`,
-    not silent).
-    """
-
-    from ...active_speaker.startup_hold import (
-        staged_startup_hold_active,
-        startup_hold_marker_path,
-    )
-    from ...active_speaker.startup_load import load_startup_load_state
-
-    label = "active speaker startup hold"
-    marker = startup_hold_marker_path()
-    if not staged_startup_hold_active():
-        return CheckResult(
-            label, "ok", f"no staged-startup hold in flight ({marker})",
-            reason=REASON_STARTUP_HOLD_NONE,
-        )
-    state = load_startup_load_state()
-    status = str(state.get("status") or "unknown")
-    if status == "loaded":
-        return CheckResult(
-            label, "ok",
-            f"staged-startup hold held by an in-flight protected load ({marker})",
-            reason=REASON_STARTUP_HOLD_IN_FLIGHT,
-        )
-    anchor = str(state.get("candidate_config_path") or "")
-    live = evidence.camilla_config_path() or ""
-    on_anchor = bool(anchor and live and Path(anchor) == Path(live))
-    return CheckResult(
-        label, "fail" if on_anchor else "warn",
-        f"stale staged-startup hold at {marker}: the startup load is "
-        f"'{status}', not 'loaded', so no commission is in flight, and the live "
-        f"graph ({live or 'unknown'}) is "
-        + ("still the anchor it staged, so the selector keeps preserving that "
-           "silent graph instead of the saved baseline."
-           if on_anchor else
-           f"not the anchor it staged ({anchor or 'unknown'}), so the hold "
-           "silences nothing and /run empties at the next boot.")
-        + " Roll the startup load back from http://jts.local/sound/.",
-        # Not gated on jasper-control: the held anchor graph keeps filling
-        # periods, so no signal-path code names this silence.
-        speaker_silent=on_anchor,
-        reason=REASON_STARTUP_HOLD_STALE,
     )
 
 

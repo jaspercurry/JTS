@@ -82,7 +82,6 @@ from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_dri
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
 from .rear_calibration import rear_operating_facts
 from . import passive_profile as _passive
-from .startup_hold import release_staged_startup_hold
 from .state_paths import baseline_profile_state_path
 
 logger = logging.getLogger(__name__)
@@ -1734,7 +1733,6 @@ def persist_applied_baseline_profile(
 ) -> dict[str, Any]:
     if apply_state.get("result") != "success":
         raise ValueError("successful apply proof is required")
-    release_staged_startup_hold()
     _bank_applied_base_trim(candidate)
     target = baseline_profile_state_path(state_path)
     existing = _load_saved_state(target)
