@@ -313,3 +313,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | accepted |
 | [0337](0337-conversation-history-is-local-opt-in-native-text.md) | Conversation history is local, opt-in native text | accepted |
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
+| [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |

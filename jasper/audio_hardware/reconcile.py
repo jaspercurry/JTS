@@ -59,13 +59,13 @@ from jasper.env_file import read_env_file
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
+from jasper.paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
 from jasper.output_hardware import (
-    DEFAULT_TOPOLOGY_PATH,
     ObservedOutput,
-    observed_output,
     degraded_marker_path,
     state_path,
 )
+from jasper.output_topology_observation import observed_output
 from jasper.service_units import (
     FANIN_SERVICE,
     OUTPUTD_SERVICE,

@@ -519,7 +519,8 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
     from jasper.active_speaker.runtime_contract import classify_output_contract
-    from jasper.output_topology import OutputTopologyError, clock_domain_report
+    from jasper.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
+    from jasper.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
 
     try:
         topology = evidence.output_topology_strict()
@@ -563,7 +564,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
     clock_blockers: list[dict[str, object]] = []
     if hardware_matches:
         clock_blockers = _observed_output_hardware_clock_blockers(
-            clock_domain_report(topology)
+            clock_domain_report(topology, observed)
         )
         if not clock_blockers:
             return CheckResult("active speaker output hardware", "ok", detail)

@@ -109,8 +109,8 @@ from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
-    new_topology_draft,
 )
+from jasper.output_topology_store import new_topology_draft
 from jasper.output_topology_store import (
     OutputTopologyMutation,
     load_output_topology,

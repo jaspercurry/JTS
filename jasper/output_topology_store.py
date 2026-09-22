@@ -18,19 +18,50 @@ from pathlib import Path
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from .log_event import log_event
-from .output_hardware import DEFAULT_TOPOLOGY_PATH
+from .output_hardware import load_state as load_output_hardware_state
 from .output_topology import (
+    OutputHardware,
     OutputTopology,
     OutputTopologyError,
-    new_topology_draft,
+    TopologyRouting,
     subwoofer_speaker_groups,
     topology_config_fingerprint,
+    topology_hardware_from_state,
+    unknown_output_hardware,
 )
+from .paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
 from .transition_log import TransitionLog
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
+
+
+def new_topology_draft(
+    *,
+    topology_id: str = "default",
+    name: str = "Speaker outputs",
+    hardware: OutputHardware | None = None,
+) -> OutputTopology:
+    if hardware is None:
+        observed = load_output_hardware_state()
+        if observed is not None and observed.physical_output_count > 0:
+            try:
+                hardware = OutputHardware.from_mapping(
+                    topology_hardware_from_state(observed)
+                )
+            except OutputTopologyError:
+                log_event(
+                    logger, "output_topology.observed_hardware_invalid",
+                    level=logging.WARNING, profile_id=observed.profile_id,
+                )
+    return OutputTopology(
+        topology_id=topology_id,
+        name=name,
+        hardware=hardware or unknown_output_hardware(),
+        speaker_groups=(),
+        routing=TopologyRouting(),
+    )
 
 
 def topology_path(path: str | Path | None = None) -> Path:

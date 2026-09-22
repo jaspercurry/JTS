@@ -102,7 +102,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/active_speaker/staging.py": {"*"},
     "jasper/active_speaker/commission_load.py": {"*"},
     "jasper/active_speaker/startup_load.py": {"*"},
-    "jasper/output_topology.py": {"*"},
     "jasper/sound/camilla_yaml.py": {"*"},
     "jasper/tools/__init__.py": {"*"},
     "jasper/tools/audio.py": {"*"},
@@ -114,13 +113,12 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
 
 # An active-zone deferral's path must start with one of these — the tripwire
 # that keeps DEFERRED_ACTIVE_ZONE from becoming a dumping ground for
-# "migration skipped here." (output_topology.py and sound/camilla_yaml.py are
+# "migration skipped here." (sound/camilla_yaml.py is an
 # active-crossover-adjacent backend; listed explicitly above.)
 _ACTIVE_ZONE_PREFIXES = (
     "jasper/active_speaker/",
     "jasper/tools/",
     "jasper/sound/",
-    "jasper/output_topology.py",
 )
 
 # There is NO permanent exemption. A field whose name collides with a reserved

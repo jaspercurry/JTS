@@ -14,13 +14,19 @@ import pytest
 
 from jasper import output_topology_store as output_topology_mod
 from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology, OutputTopologyError, new_topology_draft
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputHardware,
+    OutputTopology,
+    OutputTopologyError,
+)
 from jasper.output_topology_store import (
     bass_management_corner_hz,
     clear_topology_fingerprint_stamp,
     load_output_topology,
     load_output_topology_snapshot,
     load_output_topology_strict,
+    new_topology_draft,
     read_topology_fingerprint_stamp,
     save_output_topology,
     topology_fingerprint_stamp,
@@ -464,3 +470,25 @@ def test_an_unreadable_or_empty_stamp_reads_as_unknown(tmp_path: Path) -> None:
     (tmp_path / "empty").write_text("\n", encoding="utf-8")
     assert read_topology_fingerprint_stamp(tmp_path / "empty") is None
     assert read_topology_fingerprint_stamp(tmp_path) is None
+
+
+def test_topology_draft_reads_the_reconciler_record_never_the_env(monkeypatch) -> None:
+    """With no usable record the draft is unknown hardware, whatever the env
+    publication says — the env copy can outlive the DAC it names."""
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+
+    draft = new_topology_draft()
+
+    assert draft.hardware.device_id == "unknown"
+    assert draft.hardware.physical_output_count == 0
+
+
+def test_empty_topology_draft_is_honest_and_no_audio_allowed() -> None:
+    topology = new_topology_draft(hardware=OutputHardware.from_mapping(_base_hardware()))
+    payload = topology.to_dict(include_evaluation=True)
+
+    assert payload["status"] == "draft"
+    assert payload["hardware"]["physical_output_count"] == 8
+    assert payload["safety"]["sound_tests_allowed"] is False
+    assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"

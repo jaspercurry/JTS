@@ -65,7 +65,7 @@ from tests.test_active_speaker_runtime_contract import (
     _full_range_stereo,
 )
 from jasper.output_topology_store import save_output_topology
-from jasper.output_topology import new_topology_draft
+from jasper.output_topology_store import new_topology_draft
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 

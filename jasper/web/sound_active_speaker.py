@@ -55,21 +55,23 @@ from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
+    topology_hardware_from_state,
+)
+from jasper.output_topology_observation import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
-    new_topology_draft,
     repin_composite_child_serials,
 )
 from jasper.output_topology_store import (
     load_output_topology,
+    new_topology_draft,
     load_output_topology_snapshot,
     output_topology_mutation,
 )
 from jasper.output_hardware import (
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
-    topology_hardware_from_state,
 )
 from jasper.output_topology_runtime import trigger_reconcile
 from jasper.active_speaker.commission_wiring import (
@@ -224,7 +226,7 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_mismatch": declared_hardware_mismatch(topology, observed_hardware),
         "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
-        "clock_domain": clock_domain_report(topology),
+        "clock_domain": clock_domain_report(topology, observed_hardware),
     }
 
 

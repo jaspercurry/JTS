@@ -14,20 +14,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, cast
 
-from .json_fields import CodedFieldError, JsonFields
-from .json_fields import issue as _issue
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
     by_id as _dac_by_id,
-    clock_domain_contract_for as _dac_clock_domain_contract_for,
     clock_domain_label_for as _dac_clock_domain_label_for,
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
@@ -36,23 +32,22 @@ from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
-from .output_hardware import (
-    OutputCardFact,
-    OutputHardwareState,
-    detected_hardware_adoption_precondition,
-    load_state as load_output_hardware_state,
-    normalize_output_device_id,
-    topology_hardware_from_state,
+from .fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from .json_fields import (
+    CodedFieldError,
+    JsonFields,
+    issue as _issue,
 )
-
-logger = logging.getLogger(__name__)
+from .output_hardware import (
+    OutputHardwareState,
+    normalize_output_device_id,
+)
 
 SCHEMA_VERSION = 1
 OUTPUT_VARIANT_SCHEMA_VERSION = 2
 SUPPORTED_OUTPUT_VARIANTS = {"primary", "rear"}
 
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
-CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 
 # Active-output route resolution. Owned here, not on the IO-free DAC registry,
 # because resolution reads env + the topology's card identity. Re-exported from
@@ -801,33 +796,6 @@ def unknown_output_hardware() -> OutputHardware:
     )
 
 
-def new_topology_draft(
-    *,
-    topology_id: str = "default",
-    name: str = "Speaker outputs",
-    hardware: OutputHardware | None = None,
-) -> OutputTopology:
-    if hardware is None:
-        observed = load_output_hardware_state()
-        if observed is not None and observed.physical_output_count > 0:
-            try:
-                hardware = OutputHardware.from_mapping(
-                    topology_hardware_from_state(observed)
-                )
-            except OutputTopologyError:
-                logger.warning(
-                    "event=output_topology.observed_hardware_invalid profile_id=%s",
-                    observed.profile_id,
-                )
-    return OutputTopology(
-        topology_id=topology_id,
-        name=name,
-        hardware=hardware or unknown_output_hardware(),
-        speaker_groups=(),
-        routing=TopologyRouting(),
-    )
-
-
 def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return one verdict per speaker group whose drivers span two child DACs.
 
@@ -1157,190 +1125,6 @@ def _dual_apple_clock_issues(
     return issues
 
 
-def _observed_dual_apple_hardware_issues(
-    hardware: OutputHardware,
-    observed: OutputHardwareState | None,
-) -> list[dict[str, str]]:
-    """Return blockers/warnings from current runtime hardware observation."""
-
-    if observed is None:
-        return [
-            _issue(
-                "blocker",
-                "dual_apple_observation_missing",
-                "current dual-Apple output hardware state has not been observed",
-            )
-        ]
-    if observed.profile_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        return [
-            _issue(
-                "blocker",
-                "dual_apple_observed_profile_mismatch",
-                f"current output hardware is {observed.profile_id}, not "
-                f"{DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}",
-            )
-        ]
-
-    issues: list[dict[str, str]] = []
-    for raw_issue in observed.issues:
-        severity = str(raw_issue.get("severity") or "warning")
-        if severity not in {"blocker", "warning"}:
-            severity = "warning"
-        code = str(raw_issue.get("code") or "dual_apple_observed_issue")
-        message = str(raw_issue.get("message") or "observed dual-Apple hardware issue")
-        issues.append(_issue(severity, code, message))
-
-    if observed.status != "ready" and not any(
-        issue.get("severity") == "blocker" for issue in issues
-    ):
-        issues.append(_issue(
-            "blocker",
-            "dual_apple_observed_hardware_not_ready",
-            f"current dual-Apple output hardware state is {observed.status}",
-        ))
-
-    topology_serials = {
-        child.serial for child in hardware.child_devices if child.serial
-    }
-    observed_serials = {
-        child.serial for child in observed.child_devices
-        if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID and child.serial
-    }
-    if topology_serials:
-        if len(observed_serials) != 2:
-            issues.append(_issue(
-                "blocker",
-                "dual_apple_observed_serials_missing",
-                "current dual-Apple hardware observation lacks two DAC serials",
-            ))
-        elif observed_serials != topology_serials:
-            issues.append(_issue(
-                "blocker",
-                "dual_apple_observed_serial_mismatch",
-                "current dual-Apple DAC serials do not match the saved topology",
-            ))
-
-    return issues
-
-
-def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
-    """Return read-only output clocking evidence for the topology.
-
-    This does not implement multi-DAC aggregation. It names the single-device
-    clock-domain assumption and holds the boundary: active-crossover playback
-    uses one coherent multi-output device until a lab path proves multi-device
-    skew/drift.
-    """
-
-    hardware = topology.hardware
-    issues: list[dict[str, str]] = []
-    notes: list[str]
-    clock_contract = _dac_clock_domain_contract_for(hardware.device_id)
-    if (
-        clock_contract == "measured_sync_required"
-        and hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-    ):
-        issues = _dual_apple_clock_issues(hardware)
-        observed = load_output_hardware_state()
-        issues.extend(_observed_dual_apple_hardware_issues(hardware, observed))
-        passed = not any(issue.get("severity") == "blocker" for issue in issues)
-        status = (
-            "dual_apple_composite_clock"
-            if passed
-            else "dual_apple_composite_clock_blocked"
-        )
-        notes = [
-            "This is a constrained dual-DAC output profile, not generic ALSA aggregation.",
-            "Each Apple DAC remains one speaker-local stereo device; JTS must own both sinks in one process.",
-        ]
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": CLOCK_DOMAIN_REPORT_KIND,
-            "status": status,
-            "clock_domain_id": hardware.clock_domain_id,
-            "clock_domain_label": hardware.clock_domain_label,
-            "clock_domain_count": len(hardware.child_devices) or 2,
-            "coherent_physical_output_count": (
-                hardware.physical_output_count if passed else 0
-            ),
-            "multi_device_aggregate_supported": False,
-            "composite_clock_supported": passed,
-            "future_multi_device_lab_path": not passed,
-            "sound_tests_allowed": False,
-            "issues": issues,
-            "notes": notes,
-            "child_devices": [
-                child.to_dict() for child in hardware.child_devices
-            ],
-            "observed_hardware": (
-                observed.to_dict()
-                if observed is not None else None
-            ),
-            "recommendation": (
-                "Proceed only through the measured dual-Apple active-output "
-                "owner: one process opens both serial-pinned DACs, writes "
-                "silence first, monitors xruns/delay/frame counts, and aborts "
-                "both sinks on mismatch."
-            ),
-        }
-
-    notes = [
-        "All current physical outputs are assumed to belong to one output device clock domain.",
-        "Multiple independent USB DACs are not aggregated by this topology contract.",
-    ]
-    if hardware.physical_output_count <= 0:
-        status = "missing_hardware"
-        issues.append(
-            _issue(
-                "blocker",
-                "no_output_hardware",
-                "no recognized output hardware is available",
-            )
-        )
-    elif clock_contract is None:
-        status = "unknown_device_clock"
-        issues.append(
-            _issue(
-                "warning",
-                "unknown_clock_domain",
-                "output hardware clocking is not recognized by JTS",
-            )
-        )
-    elif clock_contract == "single_device":
-        status = "single_device_clock"
-    elif clock_contract in {"independent", "measured_sync_required"}:
-        status = "unsupported_clock_contract"
-        issues.append(
-            _issue(
-                "warning",
-                "unsupported_clock_contract",
-                f"output hardware clock contract {clock_contract} is not supported",
-            )
-        )
-
-    return {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": CLOCK_DOMAIN_REPORT_KIND,
-        "status": status,
-        "clock_domain_id": hardware.clock_domain_id,
-        "clock_domain_label": hardware.clock_domain_label,
-        "clock_domain_count": 1 if hardware.physical_output_count > 0 else 0,
-        "coherent_physical_output_count": hardware.physical_output_count
-        if status == "single_device_clock"
-        else 0,
-        "multi_device_aggregate_supported": False,
-        "future_multi_device_lab_path": True,
-        "sound_tests_allowed": False,
-        "issues": issues,
-        "notes": notes,
-        "recommendation": (
-            "Use one coherent multi-output DAC/interface for active crossover. "
-            "Treat multiple USB DACs as future lab work until JTS can measure "
-            "and compensate inter-device skew and drift."
-        ),
-    }
-
-
 @dataclass(frozen=True)
 class OutputLayout:
     """Resolved active-output route for a saved topology.
@@ -1406,10 +1190,6 @@ def resolve_output_layout(
         and profile.supports_active_outputd_lane
         and profile.active_outputd_lane_channels
     ):
-        # Lazy import: fanin_coupling is import-cheap but this module is on the
-        # topology layer.
-        from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-
         # The ACTIVE ring, unconditionally — there is no second legal endpoint
         # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
         #
@@ -1442,253 +1222,60 @@ def resolve_output_layout(
     )
 
 
-@dataclass(frozen=True)
-class CompositeRepinPlan:
-    """The number of composite children replaced by a same-shape re-pin."""
+def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
+    """Convert observed state into an ``OutputHardware`` JSON mapping."""
 
-    child_count: int
-    replaced_child_count: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "child_count": self.child_count,
-            "replaced_child_count": self.replaced_child_count,
-        }
-
-
-def _composite_repin_pairs(
-    topology: OutputTopology,
-    observed: OutputHardwareState | None,
-) -> tuple[tuple[str, OutputChildDevice, OutputCardFact], ...] | None:
-    """Pair each saved composite child with the DAC now in its USB port.
-
-    Returns ``None`` unless the attached hardware is the SAME SHAPE as the
-    saved declaration — same profile, same physical output count, same child
-    count, one child of the same kind per saved USB port — so the only thing
-    that can differ is WHICH physical unit is plugged into each port. Whether
-    the attached hardware is usable at all is
-    ``detected_hardware_adoption_precondition``'s verdict, not this one's.
-
-    The pairing anchor is ``usb_path`` — the sysfs port topology path, which
-    survives a unit swap in the same port and is the first identity token the
-    runtime child-order matcher tries
-    (``jasper.output_hardware.dual_apple_runtime_mapping``). Serial cannot be
-    the anchor: it is the thing that changed. A DAC moved to a DIFFERENT port
-    is therefore not a re-pin — nothing then says which physical unit landed on
-    which lanes, and the saved speaker/role assignment has no anchor to keep.
-
-    ``physical_output_indexes`` are deliberately NOT compared against the
-    observed projection: observed lane order follows ALSA enumeration, which is
-    precisely what a saved topology exists to override. Those indexes are
-    declaration, and a re-pin preserves them.
-    """
-
-    if observed is None:
-        return None
-    if not detected_hardware_adoption_precondition(observed)["allowed"]:
-        return None
-    hardware = topology.hardware
-    # Two or more child DACs is what "composite" means in a saved topology
-    # (mirrors ``active_speaker.runtime_contract.topology_sink_is_composite``);
-    # a single-child DAC has no serial-keyed pairing contract to repair.
-    if len(hardware.child_devices) < 2:
-        return None
-    if normalize_output_device_id(observed.profile_id) != hardware.device_id:
-        return None
-    if observed.physical_output_count != hardware.physical_output_count:
-        return None
-    if len(observed.child_devices) != len(hardware.child_devices):
-        return None
-
-    saved_by_port: dict[str, OutputChildDevice] = {}
-    for child in hardware.child_devices:
-        if not child.usb_path or child.usb_path in saved_by_port:
-            return None
-        saved_by_port[child.usb_path] = child
-    attached_by_port: dict[str, OutputCardFact] = {}
-    for card in observed.child_devices:
-        if not card.usb_path:
-            return None
-        attached_by_port[card.usb_path] = card
-    if set(saved_by_port) != set(attached_by_port):
-        return None
-
-    pairs: list[tuple[str, OutputChildDevice, OutputCardFact]] = []
-    # Walks the saved child order (dict insertion order).
-    for port, child in saved_by_port.items():
-        card = attached_by_port[port]
-        if card.device_id != child.device_id or not card.serial:
-            return None
-        pairs.append((port, child, card))
-    return tuple(pairs)
-
-
-def _composite_repin_plan(
-    pairs: tuple[tuple[str, OutputChildDevice, OutputCardFact], ...],
-) -> CompositeRepinPlan | None:
-    """Project paired children into a plan, or ``None`` when nothing changed."""
-
-    replaced = [
-        child for _port, child, card in pairs if child.serial != card.serial
-    ]
-    if not replaced:
-        return None
-    return CompositeRepinPlan(
-        child_count=len(pairs),
-        replaced_child_count=len(replaced),
-    )
-
-
-def composite_serial_repin_plan(
-    topology: OutputTopology,
-    observed: OutputHardwareState | None,
-) -> CompositeRepinPlan | None:
-    """Return the same-shape re-pin available for ``topology``, if any.
-
-    ``None`` means "not offerable": the attached hardware is a different shape,
-    is not usable, or is the very same pair of units already pinned.
-    """
-
-    pairs = _composite_repin_pairs(topology, observed)
-    if pairs is None:
-        return None
-    return _composite_repin_plan(pairs)
-
-
-_OBSERVED_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
-    "dual_apple_observation_missing",
-    "dual_apple_usb_topology_mismatch",
-    "dual_apple_usb_topology_unknown",
-    "dual_apple_stable_identity_missing",
-    "dual_apple_endpoint_not_synchronous",
-})
-
-
-def _is_observed_hardware_clock_issue(code: str) -> bool:
-    return (
-        code.startswith("dual_apple_observed_")
-        or code in _OBSERVED_HARDWARE_CLOCK_ISSUE_CODES
-    )
-
-
-def declared_hardware_mismatch(
-    topology: OutputTopology,
-    observed: OutputHardwareState | None,
-) -> dict[str, Any] | None:
-    """Compare the topology's DECLARED hardware against what's attached now.
-
-    The ONE implementation of this rule.
-    The output view reads this result as ``payload.hardware_mismatch`` (published by
-    ``jasper.web.sound_active_speaker._output_topology_payload``) rather than
-    recomputing it. ``jasper.control.audio_health`` calls this directly — it
-    runs in a different daemon and cannot read the wizard's HTTP response — as
-    the "outer conjunct" alongside
-    ``jasper.output_hardware.detected_hardware_adoption_precondition``'s inner
-    one: adoption being allowed only says the DETECTED hardware is usable,
-    never that it differs from what is already declared, so without this check
-    an already-armed box hitting an ordinary outputd hiccup is told to "finish
-    setup" for a setup that already happened (#2812).
-
-    This function CANNOT by itself distinguish "genuinely never declared" from
-    "already matches". ``topology`` has no ``None`` state for "undeclared" — a
-    caller reading a missing topology file gets a ``new_topology_draft`` back
-    regardless, and that draft's ``hardware`` is auto-seeded FROM the observed
-    record whenever it has outputs. So on a fresh box whose detected hardware
-    is ready, the auto-seeded draft and the observed record match by
-    construction and this reports no mismatch. Callers that need "was anything
-    ever actually persisted?" must ask ``load_output_topology_snapshot``
-    (``snapshot.revision == "missing"``); see
-    ``jasper.control.audio_signal_path._undeclared_hardware_signal``.
-    """
-    clock_blockers = [
-        issue
-        for issue in clock_domain_report(topology).get("issues", [])
-        if issue.get("severity") == "blocker"
-        and _is_observed_hardware_clock_issue(str(issue.get("code") or ""))
-    ]
-    if observed is None and not clock_blockers:
-        return None
-    saved = topology.hardware
-    saved_id = saved.device_id
-    current_id = observed.profile_id if observed is not None else ""
-    saved_count = saved.physical_output_count
-    current_count = observed.physical_output_count if observed is not None else 0
-    id_mismatch = bool(saved_id and current_id and saved_id != current_id)
-    count_mismatch = saved_count != current_count
-    if not id_mismatch and not count_mismatch and not clock_blockers:
-        return None
-    saved_label = saved.device_label or saved.device_id or "Saved hardware"
-    current_label = (
-        (observed.profile_label or observed.profile_id)
-        if observed is not None
-        else "Attached hardware"
-    )
-    current_summary = (
-        f"currently attached hardware is {current_label} "
-        f"({current_count} physical output{'' if current_count == 1 else 's'})"
-        if observed is not None
-        else "current output hardware has not been observed"
-    )
-    blocker_messages = [
-        str(issue.get("message") or "")
-        for issue in clock_blockers
-        if issue.get("message")
-    ]
-    message = (
-        f"Saved topology expects {saved_label} "
-        f"({saved_count} physical output{'' if saved_count == 1 else 's'}), "
-        f"but {current_summary}."
-    )
-    if blocker_messages:
-        message = f"{message} {' '.join(blocker_messages)}"
-    return {
-        "saved_label": saved_label,
-        "current_label": current_label,
-        "saved_count": saved_count,
-        "current_count": current_count,
-        "clock_blockers": clock_blockers,
-        "message": message,
-    }
-
-
-def repin_composite_child_serials(
-    topology: OutputTopology,
-    observed: OutputHardwareState | None,
-) -> OutputTopology:
-    """Return a copy pinned to the units now attached, keeping the design.
-
-    The NARROW counterpart to :func:`new_topology_draft`'s wipe: the design a
-    swapped dongle cannot invalidate survives, and only each child's observed
-    physical identity is rewritten.
-
-    Raises ``OutputTopologyError`` when the attached hardware is not a
-    same-shape re-pin — callers offer this only after
-    :func:`composite_serial_repin_plan` returns a plan.
-    """
-
-    pairs = _composite_repin_pairs(topology, observed)
-    plan = _composite_repin_plan(pairs) if pairs is not None else None
-    if pairs is None or plan is None:
-        raise OutputTopologyError(
-            "attached output hardware is not a same-shape re-pin of the saved "
-            "speaker setup"
+    outputs = []
+    if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        labels = (
+            ("Apple DAC A left", "A-L"),
+            ("Apple DAC A right", "A-R"),
+            ("Apple DAC B left", "B-L"),
+            ("Apple DAC B right", "B-R"),
         )
-    composed = replace(
-        topology.hardware,
-        child_devices=tuple(
-            replace(
-                child,
-                serial=card.serial,
-                card_id=card.card_id,
-                stable_path=card.stable_path,
-                controller=card.controller,
-            )
-            for _port, child, card in pairs
-        ),
-    )
-    # Round-trip through the artifact contract before it can be persisted: the
-    # rewritten fields are observed strings from the reconciler, and `replace`
-    # bypasses every check `from_mapping` owns (id shape, length caps, lane
-    # coverage).
-    hardware = OutputHardware.from_mapping(composed.to_dict())
-    return replace(topology, hardware=hardware)
+    else:
+        labels = tuple(
+            (f"DAC output {index + 1}", str(index + 1))
+            for index in range(state.physical_output_count)
+        )
+    for index in range(state.physical_output_count):
+        human_label, terminal_label = labels[index]
+        outputs.append({
+            "index": index,
+            "human_label": human_label,
+            "terminal_label": terminal_label,
+        })
+
+    child_devices = []
+    for idx, child in enumerate(state.child_devices):
+        physical = (
+            [idx * 2, idx * 2 + 1]
+            if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+            and idx < 2
+            else list(range(state.physical_output_count))
+        )
+        child_devices.append({
+            "child_id": f"apple_dac_{idx + 1}"
+            if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
+            else child.card_id,
+            "device_id": child.device_id,
+            "device_label": _dac_label_for(child.device_id) or child.label,
+            "physical_output_indexes": physical,
+            **({"serial": child.serial} if child.serial else {}),
+            **({"card_id": child.card_id} if child.card_id else {}),
+            **({"stable_path": child.stable_path} if child.stable_path else {}),
+            **({"usb_path": child.usb_path} if child.usb_path else {}),
+            **({"controller": child.controller} if child.controller else {}),
+        })
+
+    out: dict[str, Any] = {
+        "device_id": state.profile_id,
+        "device_label": state.profile_label,
+        "physical_output_count": state.physical_output_count,
+        "outputs": outputs,
+    }
+    if state.selected_card_id:
+        out["card_id"] = state.selected_card_id
+    if child_devices:
+        out["child_devices"] = child_devices
+    return out
