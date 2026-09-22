@@ -15,7 +15,7 @@ from .frequency_view import FrequencyRun, build_frequency_view, manifest_frequen
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
 from .measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
 from .measurement_bass import bass_view
-from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
+from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose, run_purposes
 from .run_manifest import room_sets
 from .crossover_v2.gate_sweep import reference_gated_measurement
 from .crossover_v2.rear_views import rear_document
@@ -123,9 +123,10 @@ def rear(inputs: RoundInputs, target: Path, set_id: str | None,
 
 
 def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: Path | None = None) -> dict[str, Any]:
-    selected = resolve_set(inputs, set_id)
+    manifest = read_run_manifest(inputs)
+    selected = resolve_set(inputs, set_id, manifest=manifest)
     selection = select_seat_takes(
-        inputs.session_dir,
+        inputs.session_dir, purposes=(*run_purposes(manifest["program"]), PURPOSE_ROOM),
         take_ids=selected.selected_ids, basis=selected.capture_basis, calibration_root=calibration_root,
     )
     if not selection.takes:
@@ -135,7 +136,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
         selection.takes, set_id=selected.set_id, evidence=selection.evidence,
         bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=inputs.declared_geometry_path,
-        manifest=read_run_manifest(inputs),
+        manifest=manifest,
     )
     return payload
 

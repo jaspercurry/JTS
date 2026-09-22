@@ -147,6 +147,8 @@ Read `alignment_verdict.saved` and its `verification` line: `residual_rms_db` as
 
 ## Room
 
+`room-grade` across candidate sets of one seat trial is not a candidate comparison because the rear weight changes the band level.
+
 The room layer reads the seat median through the applied speaker tune.
 One seat cannot show which features persist. Seek at least three
 positions before a room claim; three is the boost-admission minimum, not a

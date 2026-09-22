@@ -7,7 +7,7 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 from typing import Any
-from .measurement_programs import bookkeeping_views, run_purpose
+from .measurement_programs import bookkeeping_views, run_purposes
 from .run_manifest import room_sets
 from .crossover_v2.round_inputs import (RoundInputs, read_run_manifest, resolve_set, set_artifact_name,
                                         round_artifact_dir, default_out)
@@ -48,13 +48,14 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
     sets = [resolve_set(inputs, requested_set, manifest=manifest)] if requested_set else [
         resolve_set(inputs, row["set_id"], manifest=manifest) for row in manifest["sets"]
     ]
-    program = run_purpose(manifest["program"])
+    purposes = run_purposes(manifest["program"])
+    program = purposes[0]
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []
     order = dict.fromkeys((
-        *(name for name, _, _ in bookkeeping_views(program, has_room=bool(room_sets(manifest)))),
+        *(name for name, _, _ in bookkeeping_views(program, has_room=bool(room_sets(manifest)), co_purposes=purposes[1:])),
         *(name for name, spec in ARTIFACT_BY_VIEW.items()
-          if not spec.purposes or program in spec.purposes),
+          if not spec.purposes or set(purposes).intersection(spec.purposes)),
     ))
     for view in order:
         spec = ARTIFACT_BY_VIEW[view]

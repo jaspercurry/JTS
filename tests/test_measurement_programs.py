@@ -125,6 +125,20 @@ def test_shipped_rows(
     assert row.room_sweep is (program_id in {"speaker", "baseline"})
 
 
+@pytest.mark.parametrize("program_id,size", mp.available_programs())
+def test_shipped_run_purposes(program_id, size):
+    row = mp.program(program_id, size)
+    expected = ("rear", "room") if (program_id, size) == ("rear", "seat") else (row.purpose,)
+    assert mp.run_purposes(f"{program_id}/{size}") == expected
+    assert mp.run_purpose(f"{program_id}/{size}") == expected[0]
+    assert row.co_purposes == expected[1:]
+
+
+@pytest.mark.parametrize("name", ["rear", "rear/custom", "speaker/express", "reference", ""])
+def test_run_purposes_preserves_primary_identity_without_a_registry_row(name):
+    assert mp.run_purposes(name) == (mp.run_purpose(name),)
+
+
 @pytest.mark.parametrize("purpose", ["room", "bass"])
 def test_summed_bookkeeping_includes_one_frequency_image(purpose):
     assert ("frequency", False, False) in mp.bookkeeping_views(purpose)
@@ -152,6 +166,17 @@ def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected
         row = ARTIFACT_BY_VIEW[view]
         module, _, builder = row.builder.rpartition(".")
         assert callable(getattr(import_module(f".{module}", "jasper.active_speaker"), builder))
+
+
+def test_rear_co_purpose_banks_the_room_views_in_order():
+    assert mp.bookkeeping_views("rear", co_purposes=("room",)) == tuple(
+        (name, row.per_set, row.grades_against_base) for name in BOOKKEEPING_ORDER
+        if {"room", "rear"}.intersection((row := ARTIFACT_BY_VIEW[name]).bookkeeping))
+
+
+@pytest.mark.parametrize("purpose,expected", [("rear", ("room",)), ("room", ()), ("bass", ()), ("speaker", ())])
+def test_retargeted_seats_carry_the_target_programs_co_purposes(purpose, expected):
+    assert mp.run_program(purpose, "rear/seat").co_purposes == expected
 
 
 @pytest.mark.parametrize("poses,pair", [
@@ -198,11 +223,14 @@ def test_express_geometry() -> None:
 
 @pytest.mark.parametrize("program_id,size", [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")])
 def test_unknown_lookup_names_the_valid_choices(program_id: str, size: str) -> None:
-    with pytest.raises(mp.UnknownProgramError) as excinfo:
-        mp.program(program_id, size)
-
-    assert excinfo.value.choices == mp.available_programs()
-    assert (excinfo.value.program_id, excinfo.value.size) == (program_id, size)
+    lookups = [lambda: mp.program(program_id, size)]
+    if program_id:
+        lookups.append(lambda: mp.run_purposes(f"{program_id}/{size}"))
+    for lookup in lookups:
+        with pytest.raises(mp.UnknownProgramError) as excinfo:
+            lookup()
+        assert excinfo.value.choices == mp.available_programs()
+        assert (excinfo.value.program_id, excinfo.value.size) == (program_id, size)
 
 
 def test_available_programs_is_the_sorted_registry() -> None:
@@ -471,10 +499,18 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key",
                                     "mover", "room_sweep", "room_sweep_mode",
-                                    "branch_pair", "branch_pair_regime"])
+                                    "branch_pair", "branch_pair_regime", "co_unknown", "co_primary",
+                                    "co_regime", "co_not_list", "co_duplicate", "co_not_text"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
-    if broken == "branch_pair":
+    if broken.startswith("co_"):
+        config["programs"][0].update(purpose="rear", regime="summed", room_sweep=False, co_purposes={
+            "co_unknown": ["unknown"], "co_primary": ["rear"], "co_regime": ["room"],
+            "co_not_list": "room", "co_duplicate": ["room", "room"], "co_not_text": [None],
+        }[broken])
+        if broken == "co_regime":
+            config["programs"][0]["regime"] = "branches"
+    elif broken == "branch_pair":
         config["programs"][0].update(regime="branches", room_sweep=False, branch_pair="both")
     elif broken == "branch_pair_regime":
         config["programs"][0]["branch_pair"] = "front_rear"

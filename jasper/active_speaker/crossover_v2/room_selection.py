@@ -76,18 +76,14 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         late_energy=summed.get("late_energy") if summed else None,
     )
 
-def is_purpose_take(row: Measurement, record: Mapping[str, Any], purpose: str) -> bool:
-    """Whether this banked take is one of THIS round's lateral takes of
-    ``purpose``. The ONE filter :func:`analyzed_purpose_takes` and
-    :func:`purpose_take_records` share, so an analyzed reader and a
-    records-only reader cannot disagree about which takes a round has."""
+def is_purpose_take(row: Measurement, record: Mapping[str, Any], purposes: tuple[str, ...] = (PURPOSE_ROOM,)) -> bool:
     try:
         resolved = resolved_measurement_purpose(
             record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
         )
     except ValueError:
         return False
-    return row.phase == PHASE_LATERAL and resolved == purpose
+    return row.phase == PHASE_LATERAL and resolved in purposes
 
 
 def purpose_take_records(
@@ -102,19 +98,15 @@ def purpose_take_records(
     reads it here instead of paying for an analysis it cannot have.
     """
     return [(row, record) for row, record in measurement_documents(bundle_dir)
-            if is_purpose_take(row, record, purpose)]
+            if is_purpose_take(row, record, (purpose,))]
 
 
 def analyzed_purpose_takes(
     bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
+    purposes: tuple[str, ...] | None = None,
     take_ids: tuple[str, ...] | None = None, calibration_root: Path | None = None,
 ) -> list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]:
-    """This round's lateral takes of ONE measurement purpose, each with the
-    summed curve this reader can use, or ``None`` when it has none.
-
-    The analyzer skips a capture with no WAV, so a ``None`` take is a
-    disclosure its caller carries; it is never a shorter round.
-    """
+    """A missing WAV yields a ``None`` take for the caller to disclose."""
     documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
                  if take_ids is None or record.get("take_id") in take_ids}
     analyzed: set[str] = set()
@@ -124,11 +116,12 @@ def analyzed_purpose_takes(
         documents[measurement.record_path] = row, measurement.document()
     return [(row, record, _take(row, record) if path in analyzed else None)
             for path, (row, record) in documents.items()
-            if is_purpose_take(row, record, purpose)]
+            if is_purpose_take(row, record, purposes if purposes is not None else (purpose,))]
 
 
 def select_seat_takes(
     bundle_dir: Path, *, capture_id: str | None = None,
+    purposes: tuple[str, ...] = (PURPOSE_ROOM,),
     take_ids: tuple[str, ...] | None = None, basis: Mapping[str, Any] | None = None,
     calibration_root: Path | None = None,
 ) -> SeatSelection:
@@ -140,7 +133,7 @@ def select_seat_takes(
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]] = {}
     bases: dict[str, dict[str, Any]] = {}
     for row, record, take in analyzed_purpose_takes(
-        bundle_dir, purpose=PURPOSE_ROOM, take_ids=take_ids, calibration_root=calibration_root,
+        bundle_dir, purposes=purposes, take_ids=take_ids, calibration_root=calibration_root,
     ):
         row_basis = dict(basis) if basis is not None else capture_basis(record)
         key = "manifest" if take_ids is not None else json_fingerprint(row_basis)
