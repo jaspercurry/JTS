@@ -49,7 +49,6 @@ from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile
 
 _ABORTS = {SeamFailure: "seam_failed"}
 
-
 def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
         ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate)
@@ -1277,7 +1276,7 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
         _, _, _, execute = correction_run_host.bind_run_door(
             host=None, device=None, evidence_store=None, manifest=outer, production=fakes,
             conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
-            camilla_factory=lambda: box, verify_only=False,
+            camilla_factory=lambda: box,
             ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
         )
         with pytest.raises(ProgramPlaybackRefused):

@@ -110,10 +110,9 @@ def _handle_crossover_v2_retake(
 def _handle_crossover_v2_capture(
     handler: BaseHTTPRequestHandler,
     *,
-    verify_only: bool,
     idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> dict[str, Any]:
-    """Stage an inline session, or start the existing verification route."""
+    """Stage an inline session."""
     raw = correction_runtime.read_json_body(handler)
 
     from . import correction_crossover_backend, correction_crossover_v2 as v2host
@@ -130,7 +129,6 @@ def _handle_crossover_v2_capture(
         status=status,
         run_async=correction_runtime.run_async,
         camilla_factory=correction_runtime.camilla_controller,
-        verify_only=verify_only,
     )
     kind = CaptureKind(
         label=prepared.label,
@@ -143,8 +141,7 @@ def _handle_crossover_v2_capture(
         session_id=prepared.session_id,
         join_entry=prepared.join_spec.capture_plan.entries[0] if prepared.join_spec is not None else None,
     )
-    start = correction_capture._run_capture if verify_only else correction_capture._stage_capture
-    return {"capture": start(kind, idle_hold=idle_hold)}
+    return {"capture": correction_capture._stage_capture(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:

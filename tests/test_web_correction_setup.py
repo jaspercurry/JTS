@@ -44,7 +44,6 @@ from tests.test_web_wizard_cli import (
 
 _IMPORTED_FIXTURES = (_wizard_harness_fixture,)
 
-
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
     """HTTP tests that drive correction apply declare flat-graph authority."""
@@ -238,7 +237,7 @@ def test_known_post_routes_reach_csrf_guard():
         # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
         # since W5b retired the legacy per-driver flow and the
         # JASPER_CROSSOVER_FLOW selector.
-        "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
+        "/crossover/v2/session", "/crossover/v2/apply",
         # Retired routes still reject missing CSRF before returning HTTP 410.
         "/crossover/v2/republish",
         # A gated session's position release — an external driver's POST, or a

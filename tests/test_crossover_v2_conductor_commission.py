@@ -11,9 +11,7 @@ import re
 import pytest
 import yaml
 from dataclasses import replace
-from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
-from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec, build_crossover_sweep_spec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -22,11 +20,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
-    CAPTURE_PLAN_MAX_ATTEMPTS,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
     GEOMETRY_RETRY_OFFSET_CM,
@@ -34,24 +29,18 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
     MIN_CLOUD_VERIFY_POSITIONS,
-    REVERIFY_NO_REWALK_HEADLINE,
     WIDE_OFFSET_MIN_CM,
-    VERIFY_ANCHOR_HOLD_MESSAGE,
     _program_duration_ms,
     _pose,
-    build_inline_session_spec,
-    build_v2_verify_capture_plan,
-    build_v2_verify_session_spec,
     format_position_distance,
     resolve_plan_shape,
 )
 from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_ONAX, POSITION_ROLES
-from jasper.active_speaker.crossover_v2.programs import PILOT_LEVEL_DELTA_DB
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
-    build_check_program, build_measure_program, build_verify_program,
+    build_check_program, build_measure_program,
 )
 from tests.crossover_v2_fixtures import (
     FC_HZ,
@@ -59,6 +48,7 @@ from tests.crossover_v2_fixtures import (
     SESSION,
     SESSION_VOLUME_DB,
     _conductor,
+    _inline_spec,
     _dummy_program,
     _preset,
     _roles,
@@ -67,64 +57,6 @@ from tests.crossover_v2_fixtures import (
 
 
 # --- commission tiers + the retake/confirm contract (flow-simplification) ----
-
-
-def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
-    """The 1-entry recovery re-arm is byte-identical to what it always was
-    (work order D2: "the 1-entry form remains what it is today"), so a failed
-    stage 2 still offers one cheap sweep and says so.
-    """
-    plan = build_v2_verify_capture_plan(FC_HZ)
-    assert plan.capture_target == 1
-    assert plan.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
-    (entry,) = plan.entries
-    assert entry.kind_label == "verify"
-    assert entry.screen["title"] == REVERIFY_NO_REWALK_HEADLINE
-    assert entry.screen["body"] == (
-        "Put the microphone back on the mark and hold it still."
-    )
-    assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    # It is a recovery, not the end of a journey: no done copy, no confirm tap.
-    assert "done_title" not in entry.screen
-    assert "confirm_title" not in entry.screen
-
-
-def test_the_verify_anchor_keeps_its_confirm_tap_on_stage_2s_own_begin():
-    """§2.2's confirm-then-tone tap, RE-ANCHORED (work order D10).
-
-    §2.2 established begin-first-then-confirm and is SHIPPED; what the split
-    supersedes is only its ordering premise — that the confirm follows an
-    in-session apply. There is no in-session apply any more, so the tap moves
-    with the anchor to stage 2's own begin, keeping the same two strings the
-    page renders and gates the arm on.
-
-    §2.2's fallback-safety rule is re-derived rather than dropped.
-    ``validate_capture_page`` still admits a phone carrying a cached
-    pre-redesign bundle, which ignores ``confirm_title``/``confirm_body`` and
-    renders ``title``/``body`` instead. Those two used to have to stay the
-    apply-hold copy because that page would show them AS the hold heading;
-    stage 2 has no hold, so they become the plain pre-arm instruction — which
-    is exactly what that page needs them to be, and is true for it.
-    """
-    verify = build_v2_verify_capture_plan(
-        FC_HZ, plan_shape=resolve_plan_shape(),
-    ).entries[0]
-    assert verify.kind_label == "verify"
-    assert verify.screen["confirm_title"] == "Back on the mark, holding still?"
-    assert verify.screen["confirm_body"] == (
-        "Same spot, same height, pointed at the speaker."
-    )
-    # No apply to arm on, so no on_apply policy anywhere in either stage.
-    assert verify.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    # An older cached page reads title/body — and reads something TRUE.
-    assert "mark" in verify.screen["title"]
-    assert verify.screen["body"]
-    assert verify.screen["title"] != "Applying"
-    assert verify.screen["body"] != VERIFY_ANCHOR_HOLD_MESSAGE
-    # …and the hold copy itself is retained, not deleted (D10): the deferral
-    # that carries it is unreachable in a shipped session but still the honest
-    # answer for any conductor built without a prior apply.
-    assert VERIFY_ANCHOR_HOLD_MESSAGE
 
 
 def test_the_measure_sweep_fit_rides_the_snapshot():
@@ -227,21 +159,6 @@ def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
     rebuilt, _downstream_db, _prelude = he.rebuild_measure_program(state, bands)
 
     assert rebuilt.program_id == program.program_id
-
-
-def test_the_reverify_plan_leads_with_the_no_re_walk_sentence():
-    """§2.4: the 2026-07-27 session ABANDONED this recovery because no screen
-    said it is one sweep rather than another walk. Both of its surfaces — the
-    consent steps and the entry instruction — now lead with the same
-    sentence, from one constant so they cannot drift."""
-    plan = build_v2_verify_capture_plan(FC_HZ)
-    assert plan.capture_target == 1
-    assert plan.entries[0].screen["title"] == REVERIFY_NO_REWALK_HEADLINE
-    assert "do NOT need to redo the walk" in REVERIFY_NO_REWALK_HEADLINE
-
-    spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding="b" * 24)
-    steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-    assert steps[0] == REVERIFY_NO_REWALK_HEADLINE
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
@@ -363,35 +280,6 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
         _program_duration_ms(build_check_program(roles)) + CAPTURE_ENTRY_MARGIN_MS
     ) == pytest.approx(_courtesy_prelude_ms(), abs=1)
 
-    stage2 = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    for entry in stage2.entries:
-        program = build_verify_program(
-            FC_HZ,
-            leading_pilot_gains_db=(BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS),
-            courtesy_prelude=courtesy_prelude_for_phase(entry.kind_label),
-        )
-        assert entry.duration_ms == _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS
-    assert stage2.entries[0].duration_ms - stage2.entries[1].duration_ms == pytest.approx(
-        _courtesy_prelude_ms(), abs=1,
-    )
-
-
-def test_verify_only_capture_plan_duration_includes_courtesy_prelude():
-    from jasper.audio_measurement.program import (
-        BASE_STIMULUS_PEAK_DBFS,
-        build_verify_program,
-    )
-
-    plan = build_v2_verify_capture_plan(FC_HZ)
-    entry = plan.entries[0]
-    nominal_verify = build_verify_program(
-        FC_HZ,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=True,
-    )
-    assert entry.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
 
 
 def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
@@ -577,16 +465,6 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
         asyncio.run(composition.confirm_graph_is_live(cam, "!!not-yaml\n"))
 
 
-def _inline_spec():
-    request = ac.per_driver_at([0])
-    captures = prepare_plan_captures(request, roles_bands=_roles())
-    return build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        roles_bands=_roles(), fc_hz=FC_HZ,
-        acknowledgement_binding="b" * 24, retries_per_pose=0,
-    )
-
-
 def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
     spec = _inline_spec()
     assert spec.kind == "crossover_sweep"
@@ -596,10 +474,8 @@ def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
 
 
-@pytest.mark.parametrize("verify_only", [False, True], ids=["inline", "verify"])
-def test_the_summed_consent_heading_names_the_job_not_the_driver(verify_only):
-    spec = (build_v2_verify_session_spec(FC_HZ, acknowledgement_binding="b" * 24)
-            if verify_only else _inline_spec())
+def test_the_summed_consent_heading_names_the_job_not_the_driver():
+    spec = (_inline_spec())
     assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
     summed = build_crossover_sweep_spec(driver_label="unused", driver_role="summed")
     assert next(c for c in spec.screen if c["type"] == "heading") == next(

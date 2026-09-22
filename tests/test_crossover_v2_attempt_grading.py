@@ -17,11 +17,12 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     MAX_ATTEMPT_HISTORY, AttemptIntegrity,
 )
 
+from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
 from tests.crossover_v2_fixtures import (
     SESSION,
     FakeSeams,
     _run_phase,
-    _verify_only_conductor, _verify_analysis,
+    _stage2_conductor, _verify_analysis,
 )
 
 
@@ -48,7 +49,7 @@ def test_the_flow_reads_the_candidate_only_when_no_tuning_id_is_in_hand():
     up as a read.
     """
     with_id = _RecordingCandidate()
-    c = _verify_only_conductor(FakeSeams(), tuning_attempt_id="candidate-a")
+    c = _stage2_conductor(FakeSeams(), tuning_attempt_id="candidate-a", index_phase_map={1: PHASE_VERIFY})
     c._candidate = with_id
     assert _run_phase(c, 1, 1)["accepted"] is True
     assert with_id.reads == 0
@@ -58,7 +59,7 @@ def test_the_flow_reads_the_candidate_only_when_no_tuning_id_is_in_hand():
     # so a zero above is the rung working rather than the fixture never
     # looking.
     without_id = _RecordingCandidate()
-    c2 = _verify_only_conductor(FakeSeams(), tuning_attempt_id="")
+    c2 = _stage2_conductor(FakeSeams(), tuning_attempt_id="", index_phase_map={1: PHASE_VERIFY})
     c2._candidate = without_id
     assert _run_phase(c2, 1, 1)["accepted"] is True
     assert without_id.reads > 0
@@ -70,11 +71,11 @@ def test_an_unidentifiable_attempt_gets_a_session_scoped_id():
     captures of an unidentified proposal are never mistaken for a repeat of
     one. An empty fingerprint is as absent as no candidate — falling back is
     what keeps an unidentifiable capture out of another attempt's identity."""
-    c = _verify_only_conductor(FakeSeams(), tuning_attempt_id="")
+    c = _stage2_conductor(FakeSeams(), tuning_attempt_id="", index_phase_map={1: PHASE_VERIFY})
     assert _run_phase(c, 1, 1)["accepted"] is True
     assert [item.attempt_id for item in c.attempt_history] == [f"{SESSION}:1"]
 
-    c2 = _verify_only_conductor(FakeSeams(), tuning_attempt_id="")
+    c2 = _stage2_conductor(FakeSeams(), tuning_attempt_id="", index_phase_map={1: PHASE_VERIFY})
     c2._candidate = SimpleNamespace(fingerprint="")
     assert _run_phase(c2, 1, 1)["accepted"] is True
     assert [item.attempt_id for item in c2.attempt_history] == [f"{SESSION}:1"]
@@ -83,7 +84,7 @@ def test_an_unidentifiable_attempt_gets_a_session_scoped_id():
 def test_store_write_precedes_journey_history():
     observed: list[dict[str, Any]] = []
     fakes = FakeSeams()
-    c = _verify_only_conductor(
+    c = _stage2_conductor(
         fakes,
         seams=replace(fakes.seams(), record_model_error=lambda **obs: (
             observed.append({
@@ -93,8 +94,7 @@ def test_store_write_precedes_journey_history():
                 ),
             }) or True
         )),
-        tuning_attempt_id="candidate-a",
-    )
+        tuning_attempt_id="candidate-a", index_phase_map={1: PHASE_VERIFY})
 
     assert _run_phase(c, 1, 1)["accepted"] is True
 
@@ -108,9 +108,8 @@ def test_history_retention_does_not_limit_further_human_started_experiments():
     history = ()
     cap = MAX_ATTEMPT_HISTORY
     for attempt in range(cap + 2):
-        c = _verify_only_conductor(
-            FakeSeams(), tuning_attempt_id=f"candidate-{attempt}", attempt_history=history,
-        )
+        c = _stage2_conductor(
+            FakeSeams(), tuning_attempt_id=f"candidate-{attempt}", attempt_history=history, index_phase_map={1: PHASE_VERIFY})
         assert _run_phase(c, 1, 1)["accepted"] is True
         history = c.attempt_history
     assert len(history) == cap
@@ -129,7 +128,7 @@ def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypa
         )
 
     monkeypatch.setattr(flow, "attempt_record_from_verify", _incomparable_record)
-    c = _verify_only_conductor(FakeSeams(), tuning_attempt_id="candidate-a")
+    c = _stage2_conductor(FakeSeams(), tuning_attempt_id="candidate-a", index_phase_map={1: PHASE_VERIFY})
     assert _run_phase(c, 1, 1)["accepted"] is True
     assert c.attempt_history == ()
 
@@ -137,7 +136,7 @@ def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypa
 def test_failed_verify_grade_is_durable_advice_without_a_retake(tmp_path):
     fakes = FakeSeams()
     fakes.verify = lambda program: _verify_analysis(program, max_db=3.0)
-    conductor = _verify_only_conductor(fakes, tuning_attempt_id="failed-grade")
+    conductor = _stage2_conductor(fakes, tuning_attempt_id="failed-grade", index_phase_map={1: PHASE_VERIFY})
     verdict = _run_phase(conductor, 1, 1)
     assert verdict["accepted"] is True
     assert verdict["next"] == "accept"

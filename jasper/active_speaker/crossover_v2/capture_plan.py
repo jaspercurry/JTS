@@ -44,7 +44,6 @@ from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
 from .journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
@@ -52,7 +51,6 @@ from .journey import (
 )
 from .programs import (
     SessionExcitation,
-    PILOT_LEVEL_DELTA_DB,
     courtesy_prelude_for_phase,
     measurement_band_hz,
 )
@@ -625,22 +623,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
 
-# The apply hold's screen body. It carries a REPOSITION instruction because the
-# pre-apply cloud ends at a wide offset while VERIFY's tracking comparator is
-# only meaningful back on the design axis.
-VERIFY_ANCHOR_HOLD_MESSAGE = (
-    "Applying the measured crossover to your speaker. While that finishes, put "
-    "the microphone back on the mark — same spot, same height, pointed at the "
-    "speaker."
-)
-
-# The sentence the 1-entry re-verify re-arm leads with, on BOTH of its surfaces
-# (the consent screen's steps and the plan entry's own instruction), so the two
-# cannot drift apart.
-REVERIFY_NO_REWALK_HEADLINE = (
-    "One sweep, back at the mark — you do NOT need to redo the walk."
-)
-
 # What the geometry-locked retake asks for. Two rungs, so a second retake is a
 # genuinely different instruction. Same register as the position table (#1805):
 # numeric distances in both units, absolute poses measured from the mark.
@@ -912,10 +894,6 @@ def _validated_cloud_counts(
             f"cloud_verify_positions must be at least "
             f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
         )
-    # The PRE-apply group indexes :data:`CLOUD_POSITION_PROMPTS`, so that table
-    # bounds N here. M is deliberately NOT bounded: the post-apply group walks a
-    # table resolved at plan-build time, so its fit is checked where that table
-    # is known, in :func:`build_v2_verify_capture_plan`.
     if n - 1 > len(CLOUD_POSITION_PROMPTS):
         raise PlanShapeError(
             f"the pre-apply cloud group needs {n - 1} position prompts but "
@@ -1058,17 +1036,6 @@ def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]
     )
 
 
-def build_v2_verify_index_phase_map(
-    *,
-    plan_shape: V2PlanShape | None = None,
-) -> dict[int, str]:
-    m = 1 if plan_shape is None else plan_shape.verify_capture_target
-    mapping = {1: PHASE_VERIFY}
-    for offset in range(m - 1):
-        mapping[2 + offset] = PHASE_CLOUD_VERIFY
-    return mapping
-
-
 # --------------------------------------------------------------------------- #
 # capture plan + session spec
 # --------------------------------------------------------------------------- #
@@ -1120,21 +1087,6 @@ def capture_progress_label(index: int, capture_target: int) -> str:
     not the 0-based ``CapturePlanEntry.index``.
     """
     return f"Measurement {int(index)} of {int(capture_target)}"
-
-
-def _positioned_prompt(
-    prompt: CloudPositionPrompt, shape: V2PlanShape | None,
-) -> CloudPositionPrompt:
-    """One pose's prompt, in the vocabulary the shape's OPERATOR acts on.
-
-    A tap-paced shape keeps the tape-measure copy verbatim; a gated one restates
-    the same pose as its angle. Only the sentence differs — ``offset_cm`` and
-    ``role`` are untouched, so a gated session's evidence stays comparable with
-    a tape-measured one's.
-    """
-    if shape is not None and shape.positions_gated and not prompt.preserve_text:
-        return remote_position_prompt(prompt)
-    return prompt
 
 
 def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
@@ -1204,23 +1156,6 @@ def pose_batch_screens(
     return screens
 
 
-def _entry_policy(
-    shape: V2PlanShape | None, prompt: CloudPositionPrompt | None = None,
-) -> dict[str, str]:
-    """One entry's non-copy ``screen`` fields: advance policy + target position.
-
-    ``prompt is None`` means an entry with no prompted pose of its own — CHECK,
-    MEASURE, the entry baseline, stage 2's anchor — each a 0° design-axis
-    capture, which is what it declares. Those are gated too, so a gated
-    session's operator is asked to put the microphone back on the axis rather
-    than trusted to have left it there.
-    """
-    policy = _entry_advance(shape)
-    if shape is None or not shape.positions_gated:
-        return policy
-    return {**policy, **position_screen_keys(prompt)}
-
-
 def position_screen_keys(
     prompt: CloudPositionPrompt | None,
 ) -> dict[str, str]:
@@ -1236,17 +1171,6 @@ def position_screen_keys(
         **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
         **({POSITION_KIND_KEY: prompt.kind} if prompt is not None and prompt.kind != POSE_KIND_BEARING else {}),
-    }
-
-
-def _cloud_entry_screen(
-    *, progress: str, title: str, body: str, policy: Mapping[str, str],
-) -> dict[str, str]:
-    return {
-        "progress": progress,
-        "title": title,
-        "body": body,
-        **policy,
     }
 
 
@@ -1275,192 +1199,6 @@ def verify_pose_table(
     return (
         CLOUD_VERIFY_POSE_PROMPTS if verify_prompts is None
         else tuple(verify_prompts)
-    )
-
-
-def build_v2_verify_capture_plan(
-    fc_hz: float | None,
-    *,
-    measurement_band_hz: tuple[float, float] | None = None,
-    plan_shape: V2PlanShape | None = None,
-    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
-) -> Any:
-    from jasper.capture_protocol import CapturePlan, CapturePlanEntry
-
-    # The anchor is stage 2's OPENING capture, so it is announced; the prompted
-    # positions behind it are not. Two nominal programs because the phone
-    # budgets each entry from the program that entry will actually record.
-    verify = build_verify_program(
-        fc_hz,
-        measurement_band_hz=measurement_band_hz,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
-    )
-    cloud = build_verify_program(
-        fc_hz,
-        measurement_band_hz=measurement_band_hz,
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
-        ),
-        courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
-    )
-    verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
-    cloud_ms = _program_duration_ms(cloud) + CAPTURE_ENTRY_MARGIN_MS
-    if plan_shape is None:
-        entry = CapturePlanEntry(
-            index=0,
-            kind_label="verify",
-            duration_ms=verify_ms,
-            screen={
-                "progress": capture_progress_label(1, 1),
-                "title": REVERIFY_NO_REWALK_HEADLINE,
-                "body": "Put the microphone back on the mark and hold it still.",
-                **_entry_advance(None),
-            },
-        )
-        return CapturePlan(
-            capture_target=1,
-            max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
-            schema_version=2,
-            entries=(entry,),
-        )
-    index_phase = build_v2_verify_index_phase_map(plan_shape=plan_shape)
-    target = plan_shape.verify_capture_target
-    done_screen = {
-        "done_title": "Your speaker is tuned",
-        "done_body": (
-            "The speaker page has the result — manage or undo there."
-            if plan_shape.has_cloud_verify_group
-            else "Confirmed at the mark and applied. Run a Full measurement "
-            "for the result checked at several spots around the mark, or "
-            "manage this one on the speaker page."
-        ),
-    }
-    advance = _entry_policy(plan_shape)
-    # Asked separately: the COPY follows the pose statement, the confirm tap
-    # below follows the advance policy.
-    positions_gated = plan_shape is not None and plan_shape.positions_gated
-    externally_positioned = (
-        plan_shape is not None and plan_shape.externally_positioned
-    )
-    anchor_screen: dict[str, str] = {
-        "progress": capture_progress_label(1, target),
-        "title": (
-            "Back on the design axis (0°) — one sweep to check the result."
-            if positions_gated
-            else "Back at the mark — one sweep to check the result."
-        ),
-        "body": (
-            f"{MARK_DISTANCE_M:g} m out, pointed at the speaker."
-            if positions_gated
-            else "Same spot, same height, pointed at the speaker."
-        ),
-        **advance,
-    }
-    if not externally_positioned:
-        # A present ``confirm_title`` holds the tone until somebody taps, so an
-        # unattended session would burn the runner's ``awaiting_arm`` budget.
-        # A hand-released shape keeps the confirmation, which is why this reads
-        # the advance policy rather than ``positions_gated``.
-        anchor_screen.update({
-            "confirm_title": "Back on the mark, holding still?",
-            "confirm_body": "Same spot, same height, pointed at the speaker.",
-        })
-    if not plan_shape.has_cloud_verify_group:
-        anchor_screen.update(done_screen)
-    entries: list[Any] = [
-        CapturePlanEntry(
-            index=0,
-            kind_label="verify",
-            duration_ms=verify_ms,
-            screen=anchor_screen,
-        )
-    ]
-    cloud_verify_indexes = [
-        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
-    ]
-    table = verify_pose_table(verify_prompts)
-    # EQUALITY, not "the table is long enough": a longer table is silently
-    # walked as a PREFIX, while :func:`build_v2_verify_session_spec` quotes the
-    # orientation's reach off the WHOLE table, so the wire would promise a reach
-    # the walk never takes. Gated on
-    # :attr:`V2PlanShape.has_cloud_verify_group` because express (``M = 1``)
-    # emits no cloud-verify entry at all.
-    if plan_shape.has_cloud_verify_group and len(cloud_verify_indexes) != len(table):
-        raise CrossoverV2FlowError(
-            f"a post-apply group of {target} positions walks "
-            f"{len(cloud_verify_indexes)} prompted poses but the pose set "
-            f"supplies {len(table)} — give the shape the M its table earns "
-            "(1 + len(poses))"
-        )
-    for offset, capture_index in enumerate(cloud_verify_indexes):
-        prompt = _positioned_prompt(table[offset], plan_shape)
-        screen = _cloud_entry_screen(
-            progress=capture_progress_label(capture_index, target),
-            title=prompt.headline,
-            body=prompt.detail,
-            policy=_entry_policy(plan_shape, prompt),
-        )
-        if offset == len(cloud_verify_indexes) - 1:
-            screen.update(done_screen)
-        entries.append(
-            CapturePlanEntry(
-                index=capture_index - 1,
-                kind_label="cloud_verify",
-                duration_ms=cloud_ms,
-                screen=screen,
-            )
-        )
-    return CapturePlan(
-        capture_target=target,
-        max_attempts=plan_shape.verify_max_attempts,
-        schema_version=2,
-        entries=tuple(entries),
-    )
-
-
-def build_v2_verify_session_spec(
-    fc_hz: float | None,
-    *,
-    measurement_band_hz: tuple[float, float] | None = None,
-    acknowledgement_binding: str,
-    plan_shape: V2PlanShape | None = None,
-    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
-    **spec_kwargs: Any,
-) -> Any:
-    # Resolved ONCE and handed to both readers below, so the orientation's
-    # sentence and the walk's entries come from the same object.
-    verify_table = verify_pose_table(verify_prompts)
-    plan = build_v2_verify_capture_plan(
-        fc_hz, measurement_band_hz=measurement_band_hz,
-        plan_shape=plan_shape, verify_prompts=verify_table,
-    )
-    walked = plan.capture_target > 1
-    extra: dict[str, Any] = (
-        {
-            "guided_captures": plan.capture_target,
-            # Quoted off the SAME resolved pose set the entries above were
-            # built from, so the sentence cannot describe a reach the walk does
-            # not have.
-            "walk_shape": cloud_walk_shape(verify_table, post_apply=True),
-            # Stage 2 announces its anchor and nothing behind it.
-            "announced_captures": announced_capture_indexes(
-                build_v2_verify_index_phase_map(plan_shape=plan_shape)
-            ),
-        }
-        if walked
-        else {"reverify_lead": REVERIFY_NO_REWALK_HEADLINE}
-    )
-    return build_crossover_sweep_spec(
-        driver_label="crossover verification",
-        driver_role="summed",
-        acknowledgement_binding=acknowledgement_binding,
-        stimulus_duration_ms=max(entry.duration_ms for entry in plan.entries),
-        capture_plan=plan,
-        **extra,
-        **spec_kwargs,
     )
 
 

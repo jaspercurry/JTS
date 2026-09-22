@@ -27,10 +27,6 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker.crossover_v2.journey import (
-    CAPABILITY_COMMANDED_DELTA,
-    CAPABILITY_ENTRY_BASELINE,
-    CAPABILITY_FINDINGS,
-    CAPABILITY_PREDICTED_SUM,
     GROUP_PHASES,
     PHASE_REVIEW,
     PHASE_CHECK,
@@ -42,10 +38,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     STAGE_MEASURE_CAPABILITIES,
-    STAGE_VERIFY_CAPABILITIES,
     CommissionJourney,
     JourneyPlan,
-    available_stage_priors,
     open_stage,
 )
 
@@ -187,7 +181,7 @@ def test_open_stage_reads_the_tiers_post_apply_position_count(target, expected):
 
 def test_open_stage_without_a_target_leaves_the_walk_derived_reading():
     opening = open_stage(
-        STAGE_VERIFY_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
+        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
     )
     assert opening.plan.post_apply_verifies is True
 
@@ -344,76 +338,9 @@ def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
 # --------------------------------------------------------------------------
 
 
-def test_the_two_stages_declare_the_capabilities_that_differ():
-    assert STAGE_MEASURE_CAPABILITIES.stage == "measure"
-    assert STAGE_MEASURE_CAPABILITIES.provides == {CAPABILITY_FINDINGS}
-    assert STAGE_MEASURE_CAPABILITIES.requires == frozenset()
-    assert STAGE_VERIFY_CAPABILITIES.stage == "verify"
-    assert STAGE_VERIFY_CAPABILITIES.provides == set()
-    assert STAGE_VERIFY_CAPABILITIES.requires == {
-        CAPABILITY_COMMANDED_DELTA,
-        CAPABILITY_PREDICTED_SUM,
-        CAPABILITY_ENTRY_BASELINE,
-    }
-
-
-def test_the_shortfall_is_requires_minus_available_sorted():
-    opening = open_stage(
-        STAGE_VERIFY_CAPABILITIES,
-        index_phase_map=VERIFY_ONLY_MAP,
-        available=(CAPABILITY_PREDICTED_SUM,),
-    )
-    assert opening.missing == (CAPABILITY_COMMANDED_DELTA, CAPABILITY_ENTRY_BASELINE)
-    assert opening.stage == "verify"
-
-
-def test_a_stage_handed_everything_it_requires_is_missing_nothing():
-    opening = open_stage(
-        STAGE_VERIFY_CAPABILITIES,
-        index_phase_map=VERIFY_ONLY_MAP,
-        available=STAGE_VERIFY_CAPABILITIES.requires,
-    )
-    assert opening.missing == ()
-
-
 def test_a_stage_requiring_nothing_is_missing_nothing_when_handed_nothing():
     opening = open_stage(STAGE_MEASURE_CAPABILITIES, index_phase_map=STAGE1_MAP)
     assert opening.missing == ()
-
-
-def test_a_missing_prior_does_not_refuse_the_opening():
-    """Observability, not a gate — a stage that refused to open on a prior it
-    could still run without would strand the household."""
-
-    opening = open_stage(
-        STAGE_VERIFY_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
-    )
-    assert opening.missing == (
-        CAPABILITY_COMMANDED_DELTA,
-        CAPABILITY_ENTRY_BASELINE,
-        CAPABILITY_PREDICTED_SUM,
-    )
-    assert opening.plan.phases == (PHASE_VERIFY,)
-
-
-def test_available_stage_priors_names_only_the_facts_that_are_true():
-    assert available_stage_priors(
-        commanded_delta=True, predicted_sum=False, entry_baseline=True
-    ) == (CAPABILITY_COMMANDED_DELTA, CAPABILITY_ENTRY_BASELINE)
-    assert available_stage_priors(
-        commanded_delta=False, predicted_sum=False, entry_baseline=False
-    ) == ()
-    assert set(
-        available_stage_priors(
-            commanded_delta=True, predicted_sum=True, entry_baseline=True
-        )
-    ) == STAGE_VERIFY_CAPABILITIES.requires
-
-
-def test_no_capability_is_provided_by_both_stages():
-    assert not (
-        STAGE_MEASURE_CAPABILITIES.provides & STAGE_VERIFY_CAPABILITIES.provides
-    )
 
 
 # --------------------------------------------------------------------------
@@ -884,9 +811,9 @@ def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():
     second = JourneyPlan.from_index_map(dict(STAGE1_MAP))
     assert first == second
     assert open_stage(
-        STAGE_VERIFY_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
+        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
     ) == open_stage(
-        STAGE_VERIFY_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
+        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
     )
 
 

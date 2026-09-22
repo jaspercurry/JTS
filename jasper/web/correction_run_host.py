@@ -34,11 +34,11 @@ from jasper.audio_measurement.program import ExcitationProgram
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
-                       verify_only: bool = False, provenance: Any = None,
+                       provenance: Any = None,
                        check_target_capture_dbfs: float | None = None,
                        capture_indexes: tuple[int, ...] = ()) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
-    index = attempt = 0
+    index = 0
     phase = ""
     answer: Any = None
 
@@ -91,7 +91,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
                   conductor._measure_priors() if phase == PHASE_MEASURE else
-                  conductor._verify_priors() if verify_only else conductor._lateral_priors())
+                  conductor._lateral_priors())
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
         analysis = conductor._seams.analyze(
@@ -104,9 +104,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         return analysis
 
     def analyze(record: Any, record_id: str) -> Any:
-        nonlocal index, attempt, phase, answer
+        nonlocal index, phase, answer
         answer, analysis = answers.pop(record_id)
-        index, attempt = index_of(record), record["attempt"]
+        index = index_of(record)
         phase = conductor._phase_of_index(index)
         if isinstance(analysis, Exception):
             raise analysis
@@ -120,10 +120,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             verdict = PhaseVerdict.from_take(level_verdict)
         elif phase == PHASE_CHECK:
             verdict = conductor._check_verdict(analysis)
-        elif verify_only:
-            verdict = (conductor._consume_verify(index, attempt, analysis, answer, phase=phase)
-                       if phase == PHASE_VERIFY else
-                       conductor._consume_cloud_position(PHASE_CLOUD_VERIFY, index, attempt, analysis, answer))
         prior = None if verdict is None else TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
@@ -159,7 +155,7 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None,
 def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
-                  camilla_factory: Any, verify_only: bool, provenance: Any = None,
+                  camilla_factory: Any, provenance: Any = None,
                   level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
                   capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
     if ladder is not None:
@@ -170,7 +166,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                     if predicted is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
-                                          evidence=refs, verify_only=verify_only, provenance=provenance,
+                                          evidence=refs, provenance=provenance,
                                           check_target_capture_dbfs=check_target, capture_indexes=capture_indexes)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
@@ -209,7 +205,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,
                 ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
-                verify_only=False, provenance=provenance, level=plan.level, context=context,
+                provenance=provenance, level=plan.level, context=context,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
             )
             bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)

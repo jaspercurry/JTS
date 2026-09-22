@@ -47,7 +47,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_TAP,
     POSITION_DEG_KEY,
     POSITION_ROLE_KEY,
-    build_v2_verify_capture_plan,
     position_angle_deg,
 )
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -74,9 +73,6 @@ from jasper.active_speaker.crossover_v2.position_gate import (
 )
 
 from tests._log_events import event_fields, event_records
-from tests.crossover_v2_fixtures import (
-    FC_HZ,
-)
 
 # The stage-bridge harness: one definition of "what a real preparer needs
 # stubbed", borrowed exactly as ``tests/test_crossover_v2_round_wiring.py``
@@ -84,7 +80,7 @@ from tests.crossover_v2_fixtures import (
 # ``prepare_v2_session`` rather than a restatement of its source. The two
 # autouse fixtures come with it by name, under the redundant-alias form that
 # says the module-level name is deliberate.
-from tests.test_crossover_v2_stage_bridge import (
+from tests.crossover_v2_fixtures import (
     _isolated_v2_state as _isolated_v2_state,
     _production_host_seams as _production_host_seams,
 )
@@ -107,10 +103,6 @@ STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 
 # Production refuses a session with no volume owner; stand one up.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
-
-def _stage2_of(shape):
-    return build_v2_verify_capture_plan(FC_HZ, plan_shape=shape)
-
 
 def _entry(degrees, role=POSITION_ROLE_ONAX):
     """The one thing the gate reads off a plan entry."""
@@ -517,7 +509,7 @@ _GOLDEN_REMOTE_PLAN_BYTES = {
 def _opened_conductor(monkeypatch, v2host, prepared):
     """Run a prepared session's real ``_open`` and hand back its conductor.
 
-    ``tests.test_crossover_v2_stage_bridge._open_prepared`` does this by
+    ``tests.crossover_v2_fixtures._open_prepared`` does this by
     stubbing the runner builder, which is also where it catches the conductor;
     this is the same capture point, kept local so the two suites do not share
     a harness across modules.

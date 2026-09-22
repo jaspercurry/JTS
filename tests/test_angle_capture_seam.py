@@ -388,15 +388,7 @@ def test_mover_changes_the_advance_policy_and_nothing_else() -> None:
 
 
 def test_the_string_and_protractor_combination_is_reachable() -> None:
-    """Degrees PLUS a tap -- the combination no shipped tier can express.
-
-    This is the weld this seam exists to break. In the shipped flow
-    `_positioned_prompt` restates a pose as an angle only when
-    `externally_positioned`, which also forces the countdown and the position
-    gate: the tiers offer (centimetres, tap) or (degrees, gate), never
-    (degrees, tap). The ratified household method -- a string swung to a
-    protractor angle -- is exactly that third combination.
-    """
+    """A human move uses an angle prompt and waits for a tap."""
     stop, = ac.resolve_request(ac.per_driver_at([22], mover=ac.MOVER_HUMAN))
     assert "22" in stop.prompt.headline                       # degrees...
     assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP  # ...and a tap
@@ -408,14 +400,7 @@ def test_the_string_and_protractor_combination_is_reachable() -> None:
 
 
 def test_human_mover_taps_and_declares_no_position() -> None:
-    """A person's tap IS the settle signal, and this REQUEST declares no target.
-
-    Whether a person's walk is HELD is the session's fact, not the request's
-    (``V2PlanShape.positions_gated``) -- a session that gates one builds its own
-    entries through ``_entry_policy`` off its own shape. This bag is the dry
-    run's, so guessing a target from the mover alone would be a second answer
-    to a question this seam cannot see.
-    """
+    """A human move waits for a tap and declares no position target."""
     for stop in ac.resolve_request(ac.both_at([0, 22])):
         assert stop.screen == {"auto_advance": capture_plan.AUTO_ADVANCE_TAP}
         assert capture_plan.POSITION_DEG_KEY not in stop.screen

@@ -37,7 +37,7 @@ neither is derived from the other and section 4's round trip is what keeps them
 one fact.
 
 Section 5's tests drive the REAL preparers through
-``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
+``tests/crossover_v2_fixtures.py``'s harness.  That harness used to
 leak fakes into any module that first imported them inside its patched window
 (issue #2312), so this file carried a warning not to share a pytest process
 with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
@@ -100,17 +100,11 @@ from tests.crossover_v2_fixtures import (
 # in the module namespace, so nothing here CALLS them and a plain import reads
 # as unused. The alias form says the same thing a lint-suppression comment
 # would, without adding to the repo's frozen suppression debt.
-from tests.test_crossover_v2_stage_bridge import (
-    _ENTRY_BASELINE_DB,
-    _ENTRY_BASELINE_EXCLUDED,
-    _ENTRY_BASELINE_FREQS_HZ,
-    _ENTRY_BASELINE_GRAPH,
-    _ENTRY_BASELINE_PROGRAM_ID,
+from tests.crossover_v2_fixtures import (
     _isolated_v2_state as _isolated_v2_state,
     _production_host_seams as _production_host_seams,
     _seed_applied_stage_1_state,
     _stage_1,
-    _stage_2,
 )
 
 
@@ -580,51 +574,6 @@ def test_a_captured_baseline_reaches_the_durable_state(tmp_path):
     )
 
 
-def test_the_baseline_crosses_the_bridge_with_its_values_intact(monkeypatch):
-    """Stage 1 writes it, stage 2 is constructed with it — values and all.
-
-    "Not None" would pass for a conductor handed anything at all, so every
-    field the benefit comparison reads is checked: the curve's points, the
-    exclusion mask, the program id, and the mark. The mask especially — a
-    dropped mask would still produce a comparable-looking record while
-    silently changing which bins the residual is pooled over.
-    """
-    _seed_applied_stage_1_state()
-
-    conductor, _state = _stage_2(monkeypatch)
-
-    baseline = conductor.measure_entry_baseline
-    assert baseline is not None
-    assert list(baseline.curve.hz) == _ENTRY_BASELINE_FREQS_HZ
-    assert list(baseline.curve.db) == _ENTRY_BASELINE_DB
-    assert list(baseline.excluded) == _ENTRY_BASELINE_EXCLUDED
-    assert baseline.program_id == _ENTRY_BASELINE_PROGRAM_ID
-    assert baseline.reference_mark == REFERENCE_MARK_DESIGN_AXIS
-    assert baseline.graph_fingerprint == _ENTRY_BASELINE_GRAPH
-
-
-def test_stage_2_persist_does_not_erase_the_baseline_it_was_handed(monkeypatch):
-    """The carry-forward, on the write that happens before any tone plays.
-
-    Stage 2 never captures a baseline, so its conductor persists ``None`` for
-    this key on every write — including the verify-only prepare's own opening
-    persist. Without the carry-forward that first write would erase the exact
-    measurement stage 2 exists to grade against, and the round would report
-    ``entry_baseline_unavailable`` about a record it had just been handed.
-    """
-    _seed_applied_stage_1_state()
-
-    _conductor_2, state = _stage_2(monkeypatch)
-
-    assert state["verify_priors"]["entry_baseline"] is not None
-    assert (
-        state["verify_priors"]["entry_baseline"]["program_id"]
-        == _ENTRY_BASELINE_PROGRAM_ID
-    )
-    # …and it is still readable as a record, not merely present as a dict.
-    assert v2durable.entry_baseline_prior_from_state(state) is not None
-
-
 def test_a_measuring_session_replaces_the_baseline_rather_than_inheriting_one(
     monkeypatch,
 ):
@@ -642,34 +591,6 @@ def test_a_measuring_session_replaces_the_baseline_rather_than_inheriting_one(
 
     assert journey.PHASE_MEASURE in state["session_phases"]
     assert state["verify_priors"]["entry_baseline"] is None
-
-
-def test_stage_2_without_a_baseline_says_so_on_the_capability_line(
-    monkeypatch, caplog,
-):
-    """The absence has to be observable, not only visible in the verdict.
-
-    ``requires`` is observability, not a gate: stage 2 still opens and still
-    verifies. What it cannot do is claim the speaker got better — so the one
-    line a support read greps has to name the missing input, or an
-    ``indeterminate`` benefit verdict arrives with nothing anywhere explaining
-    it.
-    """
-    state = _seed_applied_stage_1_state()
-    del state["verify_priors"]["entry_baseline"]
-    v2state.save_v2_state(state)
-
-    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
-        conductor, _state = _stage_2(monkeypatch)
-
-    assert conductor.measure_entry_baseline is None
-    unavailable = [
-        record.getMessage() for record in caplog.records
-        if "event=correction.crossover_v2_stage_capability_unavailable"
-        in record.getMessage()
-    ]
-    assert len(unavailable) == 1
-    assert "missing=entry_baseline" in unavailable[0]
 
 
 @pytest.mark.parametrize(

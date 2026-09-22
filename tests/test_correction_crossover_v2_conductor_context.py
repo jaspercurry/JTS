@@ -63,7 +63,6 @@ _TWO_WAY_GROUP = [{
     ],
 }]
 
-
 def _topology(device_id: str, count: int, *, card_id: str | None = None) -> OutputTopology:
     """Mirror the fixture builder in tests/test_active_speaker_playback_route.py."""
 
@@ -771,7 +770,7 @@ def _isolated_v2_state(tmp_path, monkeypatch):
 def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch):
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-    from tests.test_crossover_v2_stage_bridge import _inline_body
+    from tests.crossover_v2_fixtures import _inline_body
 
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")

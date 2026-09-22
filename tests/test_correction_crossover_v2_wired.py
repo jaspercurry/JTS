@@ -5,13 +5,14 @@
 """Wired capture, host binding, record metadata, and frame integrity."""
 from __future__ import annotations
 
+from tests.crossover_v2_fixtures import _inline_spec
+
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
-from jasper.web import correction_crossover_v2_volume as v2volume
 
 import asyncio
 import io
@@ -106,18 +107,8 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     assert device.model_key == "minidsp_umik2"
 
 
-def _real_verify_spec():
-    from jasper.active_speaker.crossover_v2.capture_plan import (  # lazy: avoid measurement-stack import cost on unused paths
-        build_v2_verify_session_spec,
-    )
-
-    return build_v2_verify_session_spec(
-        1600.0, acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
-    )
-
-
 def test_open_wired_capture_mints_identity_and_validates_the_spec():
-    opened = v2wired.open_wired_capture(_real_verify_spec(), device=_device())
+    opened = v2wired.open_wired_capture(_inline_spec(), device=_device())
     assert opened.pi_session.session_id.startswith("wired-")
     # The 48 kHz pin reaches the wired path through the same validate the
     # capture registration runs.
@@ -130,13 +121,13 @@ def test_open_wired_capture_refuses_an_invalid_spec():
 
     from jasper.capture_protocol import CaptureSpecError
 
-    bad = dataclasses.replace(_real_verify_spec(), sample_rate_hz=44_100)
+    bad = dataclasses.replace(_inline_spec(), sample_rate_hz=44_100)
     with pytest.raises(CaptureSpecError):
         v2wired.open_wired_capture(bad, device=_device())
 
 
 def test_two_wired_sessions_mint_distinct_identities():
-    spec = _real_verify_spec()
+    spec = _inline_spec()
     first = v2wired.open_wired_capture(spec, device=_device())
     second = v2wired.open_wired_capture(spec, device=_device())
     assert first.pi_session.session_id != second.pi_session.session_id
@@ -168,62 +159,6 @@ def test_resolve_prepare_wired_mic_translates_to_a_refusal(
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host._resolve_prepare_wired_mic()
     assert caught.value.code == expected_code
-
-
-@pytest.mark.parametrize("preparer", ["verify"])
-def test_a_refused_prepare_leaves_the_bundle_store_untouched(
-    monkeypatch, tmp_path, preparer,
-):
-    """S3's behavioral pin, BOTH preparers: the missing-mic refusal fires
-    BEFORE ``open_v2_evidence_store`` — a refused start must not abandon the
-    prior bundle and write a new one on its way to the 400. The gates ahead
-    of the mic resolution are stubbed to pass — for verify that is the
-    recovery gate (needs_recovery False) and the applied-state gate (state
-    applied True); the evidence store is a bomb."""
-    import jasper.active_speaker.branch_chain as branch_chain
-
-    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
-    try:
-        def _no_mic():
-            raise WiredMicMissing("no mic")
-
-        monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _no_mic)
-        monkeypatch.setattr(
-            v2volume, "session_volume_plan",
-            lambda: SimpleNamespace(needs_recovery=False),
-        )
-        monkeypatch.setattr(
-            v2volume, "reconcile_session_volume_for_new_session",
-            lambda run_async, camilla_factory: None,
-        )
-        monkeypatch.setattr(
-            v2host, "resolve_conductor_context",
-            lambda status: SimpleNamespace(
-                safety_profile={}, role_targets={}, fc_hz=1600.0, preset=None,
-            ),
-        )
-        monkeypatch.setattr(
-            branch_chain, "confirmed_protection_sections",
-            lambda safety_profile, role_targets: {},
-        )
-        if preparer == "verify":
-            # Stage 2's own preceding gate: an applied durable state.
-            v2state.save_v2_state({"applied": True, "tier": ""})
-
-        def _bomb(topology):
-            raise AssertionError(
-                "a refused prepare must not open an evidence bundle"
-            )
-
-        monkeypatch.setattr(v2evidence, "open_v2_evidence_store", _bomb)
-        with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
-            v2host.prepare_v2_session(
-                {}, status={}, run_async=None, camilla_factory=None,
-                verify_only=preparer == "verify",
-            )
-        assert caught.value.code == CODE_WIRED_MIC_MISSING
-    finally:
-        v2state.set_state_path_for_tests(None)
 
 
 def test_the_mint_opens_the_capture_on_the_resolved_mic(monkeypatch):
@@ -1040,7 +975,7 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
         assert (baseline.artifact_ref if baseline else None) == anchor
 
 
-@pytest.mark.parametrize("phase", ["check", "measure", "verify"])
+@pytest.mark.parametrize("phase", ["check", "measure"])
 @pytest.mark.parametrize("clipped_take", [False, True])
 async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, phase, clipped_take):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
@@ -1055,17 +990,9 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     fakes = FakeSeams(**{phase: clipped})
     conductor = _conductor(fakes, index_phase_map={1: phase},
                            gain_plan_db={"woofer": -11.0, "tweeter": -13.0})
-    if phase == "verify":
-        loop, consume = asyncio.get_running_loop(), conductor._consume_verify
-        async def bridge():
-            return True
-        def grade(*args, **kwargs):
-            assert asyncio.run_coroutine_threadsafe(bridge(), loop).result(timeout=1)
-            return consume(*args, **kwargs)
-        monkeypatch.setattr(conductor, "_consume_verify", grade)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records,
-        manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={}, verify_only=phase == "verify")
+        manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
     spec = MeasureSpec(kind="baseline", graph_scope="candidate" if phase == "verify" else "drivers",
                        candidate_id="baseline-room" if phase == "verify" else "", program_phase=phase)
     gain = None
@@ -1092,15 +1019,14 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     assert fakes.published_candidates == []
 
 
-@pytest.mark.parametrize(("anchor", "verify_only", "sensitivity"), [
-    (74.9, False, MicSensitivity(-12.07)),
-    (0.0, False, MicSensitivity(-12.07)),
-    (None, False, MicSensitivity(-12.07)),
-    (None, True, MicSensitivity(-12.07)),
-    (74.9, False, None),
+@pytest.mark.parametrize(("anchor", "sensitivity"), [
+    (74.9, MicSensitivity(-12.07)),
+    (0.0, MicSensitivity(-12.07)),
+    (None, MicSensitivity(-12.07)),
+    (74.9, None),
 ])
 @pytest.mark.parametrize("offset", [0, -10, 2])
-def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, verify_only, sensitivity, offset):
+def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, sensitivity, offset):
     fakes = FlowSeams()
     conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
                            gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
@@ -1116,13 +1042,13 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
             host=SimpleNamespace(session_volume_plan=lambda: None),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
-            ceiling_s=30, ceiling_db_spl=85, camilla_factory=None, verify_only=verify_only,
+            ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
             level=LevelPolicy(level_db=-15 + offset, resolved=ResolvedLevel(anchor, -15, "1234") if anchor is not None else None),
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
             expected = (conductor._check_priors() if phase == "check" else
                         conductor._measure_priors() if phase == "measure" else
-                        conductor._verify_priors() if verify_only else conductor._lateral_priors())
+                        conductor._lateral_priors())
             if phase == "check" and target is not None:
                 expected = replace(expected, target_capture_dbfs=target)
             program = conductor.program_for_phase(phase)
@@ -1275,7 +1201,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     manifest = RunManifest("drift", _Store(EngineSeams().records))
     manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
-    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={}, verify_only=True)
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
