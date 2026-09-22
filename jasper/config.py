@@ -585,26 +585,7 @@ class Config:
                 "JASPER_MANUAL_MIC_SOURCES",
                 "",
             ),
-            # JASPER_MIC_DEVICE_RAW: optional second mic source for
-            # dual-stream wake detection. When set (typically to
-            # `udp:9877` paired with the bridge's chip-direct stream
-            # introduced in the wake-telemetry PR 1), the WakeLoop
-            # opens a second mic + a second WakeWordDetector and
-            # OR-gates fires across both legs — recovering the union
-            # of post-AEC and chip-direct detections.
-            #
-            # Empty / absent → single-stream behaviour (the existing
-            # production default while PR 2 rolls out). Accepts the
-            # same forms as JASPER_MIC_DEVICE (`udp:PORT`,
-            # `udp://HOST:PORT`, or a PortAudio device string for
-            # hypothetical hardware-second-mic configurations).
             mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
-            # JASPER_MIC_DEVICE_DTLN: optional third mic source for
-            # triple-stream wake detection (raw + AEC3-BEST_A + DTLN).
-            # When set (typically `udp:9878` paired with the bridge's
-            # DTLN-aec parallel output added in Phase 1.2 of the
-            # triple-stream rollout), the WakeLoop spawns a third
-            # WakeWordDetector and OR-gates fires across all three legs.
             mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
             # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional extra wake
             # detector legs carrying the XVF3800's hardware-AEC ASR beams
@@ -664,16 +645,7 @@ class Config:
                 "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
                 False,
             ),
-            # End-of-stream drain tail. After the last sample is queued
-            # to PortAudio's ring, the dmix layer + DAC still take a
-            # short moment to flush. Adding this to TtsPlayout's
-            # sample-counted deadline guarantees the speaker is silent
-            # before the daemon ends the turn (un-ducks music, fires
-            # the end-of-turn chirp). Measured on the Apple dongle dmix
-            # at ~60-85 ms; 0.085 s gives a small margin without
-            # holding the duck noticeably long. Bump on a Pi if you
-            # ever observe truncated tails; lower if end-of-turn feels
-            # sluggish.
+            # Seconds added to the sample-counted playout deadline.
             tts_drain_tail_sec=_env_float(
                 "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
             ),
