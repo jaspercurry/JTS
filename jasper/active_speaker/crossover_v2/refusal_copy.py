@@ -139,6 +139,7 @@ REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
+REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
 REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
@@ -941,6 +942,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'in speaker setup, then measure again.',
         next_action={"id": 'speaker_setup', "label": 'Open speaker setup',
                      "href": '/sound/speaker/'},
+    ),
+    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS: ReasonSpec(
+        REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, 0, "",
+        'This layout has three driver roles. Speaker-purpose programs that measure each driver '
+        'are not built for it yet. Room, bass and rear programs still run.',
+        next_action={"id": 'review_plan', "label": 'Choose a room, bass or rear program',
+                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
         REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",

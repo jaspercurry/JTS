@@ -9,10 +9,14 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_program
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED, TEMPLATE_HARD_STOP
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
+    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
+)
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_programs import program
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
+from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import AnchorFacts
@@ -112,6 +116,32 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
                                   "invalid_branch_target_ids": invalid_pairs}
         assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
         assert REASON_REGISTRY[issue.code].retry_budget == 0
+    else:
+        assert report.issues == ()
+
+
+@pytest.mark.parametrize("layout", ["active_3_way", "cardioid", "active_2_way"],
+                         ids=["three_way_active", "cardioid", "two_way_active"])
+def test_preflight_per_driver_layout(layout):
+    topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
+    targets = active_driver_targets(topology)
+    plan = request_for_program(program("speaker", "mark"), mover="human")
+    program_ids = Mock(return_value=("fixture-sweep",))
+    report = preflight(plan, ready_facts(
+        plan, program_ids_for=program_ids,
+        declared_target_ids=tuple(measurement_target_id(t["role"], t.get("output_variant", "primary")) for t in targets),
+        roles_bands=tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
+                          if t.get("output_variant", "primary") == "primary"),
+    ))
+    assert report.blocking is (layout == "active_3_way")
+    if report.blocking:
+        issue, = report.issues
+        assert issue.code == REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
+        assert issue.evidence == {"driver_roles": DRIVER_ROLES_BY_WAY[3]}
+        assert report.schedule == () and report.price == {}
+        assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
+        assert REASON_REGISTRY[issue.code].retry_budget == 0
+        program_ids.assert_not_called()
     else:
         assert report.issues == ()
 
