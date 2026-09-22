@@ -257,16 +257,6 @@ async def test_control_verb_table_parses_each_shape(mux, command, method, args):
         handlers[method].assert_awaited_once_with(*args)
 
 
-async def test_preempt_control_command_runs_the_one_preempt_path(mux):
-    """The socket verb is a thin front door onto ``_pause`` — the same
-    escalation a lost arbitration runs, so no caller needs its own weaker
-    stop."""
-    _stub_pauses(mux)
-
-    assert await _control(mux, "PREEMPT airplay") == {"preempted": "airplay"}
-    mux._pause.assert_awaited_once_with(Source.AIRPLAY)
-
-
 @pytest.mark.parametrize(
     "command",
     ["PREEMPT spotify", "PREEMPT bluetooth", "PREEMPT usbsink",
@@ -277,6 +267,7 @@ async def test_preempt_control_command_serves_airplay_only(mux, command):
 
     assert "error" in await _control(mux, command)
     mux._pause.assert_not_awaited()
+    mux._airplay_session.release.assert_not_awaited()
 
 
 async def test_notify_control_command_only_marks_source_dirty(mux):
@@ -2103,8 +2094,9 @@ async def test_airplay_cleanup_outcome_keeps_new_source_authoritative(
     assert fact["attempted_at"] > 0
 
 
+@pytest.mark.parametrize("preempt", [False, True], ids=["takeover", "preempt"])
 async def test_airplay_cleanup_finishes_before_a_new_selection(
-    mux, patched_probes, monkeypatch,
+    mux, patched_probes, monkeypatch, preempt,
 ):
     entered, finish = asyncio.Event(), asyncio.Event()
 
@@ -2119,14 +2111,21 @@ async def test_airplay_cleanup_finishes_before_a_new_selection(
     _stub_probes(patched_probes, airplay=True)
     await mux._tick()
     _stub_probes(patched_probes, usbsink=True)
-    takeover = asyncio.create_task(mux._tick())
-    await wait_signalled(entered, "AirPlay cleanup entered")
+    if preempt:
+        await mux.select_source(Source.USBSINK)
+    operation = _control(mux, "PREEMPT airplay") if preempt else mux._tick()
+    takeover = asyncio.create_task(operation)
+    await wait_signalled(entered, "AirPlay cleanup entered", producer=takeover)
     newer_selection = asyncio.create_task(mux.select_source(Source.AIRPLAY))
     await asyncio.sleep(0)
+    assert not takeover.done()
     assert not newer_selection.done()
     assert mux._status_payload()["airplay_session_cleanup"]["reason"] == "cleanup_pending"
     finish.set()
-    await asyncio.gather(takeover, newer_selection)
+    result, _ = await asyncio.gather(takeover, newer_selection)
+    if preempt:
+        assert result == {"preempted": "airplay"}
+    assert mux._status_payload()["airplay_session_cleanup"]["reason"] == "drop_acknowledged"
     assert mux._manual_source is Source.AIRPLAY
 
 
