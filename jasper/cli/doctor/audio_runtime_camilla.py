@@ -23,6 +23,7 @@ from ...camilla_config_contract import (
     read_camilla_devices_config,
 )
 from ...config import Config
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -149,9 +150,6 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
     finally:
         if controller is not None:
             await controller.close()
-
-
-CAMILLA_CONFIGS_DIR = Path("/var/lib/camilladsp/configs")
 
 
 def _camilla_configs_writable_result(

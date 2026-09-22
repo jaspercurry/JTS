@@ -52,6 +52,8 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..atomic_io import write_env_file
+from ..env_file import read_env_file
 from ..google_creds import (
     GOOGLE_SCOPES,
     GoogleAccount,
@@ -71,11 +73,9 @@ from ._common import (
     dispatch_post,
     flash_error,
     form_guarded,
-    read_env_file,
     restart_voice_daemon,
     send_html_response,
     send_see_other,
-    write_env_file,
     SECRET_ENV_MODE,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href

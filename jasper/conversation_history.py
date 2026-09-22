@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .atomic_io import write_env_file
+from .env_file import read_env_file
+from .env_load import read_env_file_state
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "/var/lib/jasper/conversation_history.db"
@@ -330,8 +334,6 @@ def read_settings(
     ``/state`` and ``jasper-doctor`` must not rely on their process
     environment, because those daemons are not restarted by a wizard save.
     """
-    from .env_load import read_env_file_state
-
     base_env = dict(os.environ if environ is None else environ)
     settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
     file_state = read_env_file_state(settings_path)
@@ -421,12 +423,10 @@ def write_settings(
     environment: `/assistant/chat/`, `/state`, doctor, and jasper-voice all read this
     file fresh so a browser toggle takes effect without a restart.
     """
-    from . import env_file
-
     base_env = dict(os.environ if environ is None else environ)
     settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
     current = read_settings(path=settings_path, environ=base_env)
-    values = dict(env_file.read_env_file(settings_path))
+    values = dict(read_env_file(settings_path))
 
     values[CAPTURE_ALIAS_ENV] = "1" if capture_enabled else "0"
     # Keep a single capture flag in the wizard-owned file. read_settings()
@@ -434,7 +434,7 @@ def write_settings(
     values.pop(CAPTURE_ENABLED_ENV, None)
     values[DB_PATH_ENV] = current.db_path
 
-    env_file.write_env_file(
+    write_env_file(
         settings_path, values, mode=SETTINGS_FILE_MODE,
         owner="JTS /assistant/chat wizard",
     )

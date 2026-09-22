@@ -60,7 +60,7 @@ from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.state import read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
-from ..env_file import write_env_file
+from ..atomic_io import write_env_file
 from . import rooms_peers
 from ._common import (
     begin_request,

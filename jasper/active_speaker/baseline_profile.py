@@ -31,6 +31,7 @@ from jasper.dsp_apply import (
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
@@ -88,9 +89,8 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
-DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
+DEFAULT_CONFIG_PATH = CANONICAL_CAMILLA_CONFIG_DIR / "active_speaker_baseline.yml"
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
-
 REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
 REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
 REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"

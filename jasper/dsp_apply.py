@@ -49,7 +49,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.json_fields import sha256_file, utc_now_iso
 from jasper.log_event import log_event
-from jasper.paths import resolve_state_path
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,6 @@ DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0
 # A wait longer than this is announced while it is still happening, so a
 # stalled apply is visible in flight rather than only once it ends.
 _LOCK_WAIT_ANNOUNCE_AFTER_S = 0.01
-CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 CANONICAL_DSP_WRITER_LOCK_PATH = CANONICAL_CAMILLA_CONFIG_DIR / ".dsp_apply.lock"
 
 

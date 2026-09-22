@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from jasper import env_file
+from jasper import atomic_io, env_file
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import chrome, voice_setup
 
@@ -152,7 +152,7 @@ def test_get_root_renders_canonical_page(tmp_path):
 def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, monkeypatch, provider, page):
     state_path = tmp_path / "voice.env"
     state = {"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_MODEL": "custom-live"}
-    env_file.write_env_file(str(state_path), state)
+    atomic_io.write_env_file(str(state_path), state)
     calls = []
     monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: calls.append("restart"))
     monkeypatch.setattr(voice_setup, "refresh_provider_cache", lambda *a, **k: calls.append("refresh"))

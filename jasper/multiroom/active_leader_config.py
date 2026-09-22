@@ -68,7 +68,7 @@ import shutil
 from pathlib import Path
 
 from .. import atomic_io
-from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig

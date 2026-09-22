@@ -22,9 +22,8 @@ Walks the household through three states:
      affordance, and a "Disconnect" danger button.
 
 Persistence: /var/lib/jasper-intsecrets/home_assistant.env (mode 0640 group
-jasper-intsecrets — WS1 Phase 4b, so jasper-voice/jasper-control/jasper-web can
-read it and jasper-input cannot), sourced into jasper-voice via the
-EnvironmentFile= chain in deploy/systemd/jasper-voice.service. Keys:
+jasper-intsecrets), sourced into jasper-voice via the EnvironmentFile= chain
+in deploy/systemd/jasper-voice.service. Keys:
 
   JASPER_HA_URL          base URL, e.g. http://homeassistant.local:8123
   JASPER_HA_TOKEN        Long-Lived Access Token (JWT, ~180-220 chars)
@@ -65,7 +64,8 @@ from typing import Any
 
 from .. import home_assistant as _ha_mod
 from ..log_event import log_event
-from ..env_file import delete_env_file, read_env_file, write_env_file
+from ..atomic_io import write_env_file
+from ..env_file import delete_env_file, read_env_file
 from ._common import (
     RESTART_CLAUSE,
     RestartOutcome,

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import env_file
+from jasper import atomic_io, env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup
 from tests._log_events import event_records, leaked_lines
@@ -156,7 +156,7 @@ def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
     from jasper.web import weather_setup
 
     tp = str(tmp_path / "transit.env")
-    env_file.write_env_file(tp, {
+    atomic_io.write_env_file(tp, {
         transit_setup.LAT_ENV: "40.646",
         transit_setup.LON_ENV: "-73.994",
         transit_setup.DISPLAY_NAME_ENV: "Sunset Park",
@@ -184,7 +184,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     survive. Symmetric with the weather.env concurrency test (DA-0036)."""
     tp = str(tmp_path / "transit.env")
     # Start with only a foreign key: no coords, so the seed is eligible.
-    env_file.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
+    atomic_io.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
 
     # A transit save that writes an explicit coord set (as _post_geocode
     # would after resolving an address).
@@ -723,7 +723,7 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
 def test_handler_post_save_restarts_voice(wizard_server):
     base_url, state_path, restarts = wizard_server
     # Seed with coords so the save path doesn't trip the locked card.
-    env_file.write_env_file(state_path, {
+    atomic_io.write_env_file(state_path, {
         transit_setup.LAT_ENV: "40.646",
         transit_setup.LON_ENV: "-73.994",
     }, mode=transit_setup.TRANSIT_FILE_MODE)
@@ -739,7 +739,7 @@ def test_handler_post_save_restarts_voice(wizard_server):
 
 def test_handler_post_clear_wipes_owned_keys(wizard_server):
     base_url, state_path, restarts = wizard_server
-    env_file.write_env_file(state_path, {
+    atomic_io.write_env_file(state_path, {
         "JASPER_SUBWAY_STATION_ID": "B12",
         "JASPER_TRANSIT_LAT": "40.646",
         "FOREIGN": "kept",
@@ -760,7 +760,7 @@ def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):
     its locked (no-key) state again: even with an env-var ghost
     present, the rendered page reflects persisted state only."""
     base_url, state_path, _restarts = wizard_server
-    env_file.write_env_file(state_path, {
+    atomic_io.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_MTA_BUSTIME_KEY": "configured-key",
@@ -790,7 +790,7 @@ def test_handler_save_uses_registry_bus_provider_by_default(wizard_server, monke
     registry's bus provider with a stub and observing the probe."""
     from jasper import transit as transit_mod
     base_url, state_path, _restarts = wizard_server
-    env_file.write_env_file(state_path, {
+    atomic_io.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
     }, mode=transit_setup.TRANSIT_FILE_MODE)
@@ -827,7 +827,7 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
     """BusTime key is mildly sensitive — broader than wake (0644) but
     narrower than OAuth secrets (0600). 0640 is the documented choice."""
     p = tmp_path / "transit.env"
-    env_file.write_env_file(str(p), {"K": "v"}, mode=transit_setup.TRANSIT_FILE_MODE)
+    atomic_io.write_env_file(str(p), {"K": "v"}, mode=transit_setup.TRANSIT_FILE_MODE)
     assert os.stat(p).st_mode & 0o777 == 0o640
 
 

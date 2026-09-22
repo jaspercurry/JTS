@@ -4,8 +4,7 @@
 
 """Bridge + leg orchestration for the wake-corpus recorder.
 
-Pure-function / systemctl layer extracted verbatim from
-``jasper/web/wake_corpus_setup.py``. No asyncio; the only heavy import is
+No asyncio; the only heavy import is
 NumPy (used for ``np.ndarray`` typing in ``build_capture_health`` and the
 buffer shapes the recorder passes in).
 
@@ -47,7 +46,8 @@ from jasper.cli.wake_enroll import (
     VOICE_UNIT,
 )
 from jasper.wake_ports import build_ports
-from jasper.env_file import delete_env_file, read_env_file, write_env_file
+from jasper.atomic_io import write_env_file
+from jasper.env_file import delete_env_file, read_env_file
 from . import runtime_probe
 # Both blocks carry names this module only re-exports: the thin
 # ``jasper.web.wake_corpus_setup`` HTTP adapter and ``session_store`` import

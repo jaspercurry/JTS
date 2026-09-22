@@ -26,6 +26,7 @@ from ._shared import (
     _systemctl_unavailable_result,
 )
 from ...identity import identity_state
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
     camilla_statefile_path,
@@ -448,7 +449,6 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
 
 @doctor_check()
 def check_correction_current_config() -> CheckResult:
-    from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
     from jasper.sound.camilla_yaml import (
         extract_room_peqs_from_config_text,
         is_base_config,

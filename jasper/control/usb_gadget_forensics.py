@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 
-from ..env_file import write_env_file
+from ..atomic_io import write_env_file
 
 ENABLED_FILE = "/var/lib/jasper/usb_gadget_forensics.env"
 RUNTIME_DIR = "/run/jasper-usb-gadget-forensics"
