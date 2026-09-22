@@ -393,8 +393,6 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
                            "angles_deg": [-20, 0, 20]}},
         "",
         session_dir=None,
-        evidence=[],
-        state=None,
     )
 
     assert payload["banked"]["available"] is False
@@ -415,16 +413,12 @@ def test_a_raised_walk_publishes_its_elevations():
                            "angles_deg": [0], "elevations_deg": [0, 10]}},
         "",
         session_dir=None,
-        evidence=[],
-        state=None,
     )["banked"]["walk"]
     flat = cli.status_document(
         {"lateral_poses": {"available": True, "n_takes": 2,
                            "angles_deg": [0], "elevations_deg": [0]}},
         "",
         session_dir=None,
-        evidence=[],
-        state=None,
     )["banked"]["walk"]
 
     assert (raised["angles_deg"], raised["elevations_deg"], raised["n_takes"]) == (
@@ -474,7 +468,7 @@ def test_the_bank_lists_candidates_but_leaves_the_tournament_shortlist_unstaged(
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
     payload = cli.status_document(
-        None, "no bundle here", session_dir=None, evidence=[], state=None
+        None, "no bundle here", session_dir=None
     )
 
     assert payload["banked"]["walk"]["available"] is False
@@ -998,7 +992,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
         session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(
-        packet, "", session_dir=None, evidence=[], state=None
+        packet, "", session_dir=None
     )
 
     assert set(doc_payload) == _STATUS_DOCUMENT_KEYS

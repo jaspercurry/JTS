@@ -268,7 +268,7 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
         _say(f"    {'blend correction':<24}" + ("none" if not blend else str(blend)))
     return answered(
         {
-            "status": "applied",
+            "result": "applied",
             "candidate_fingerprint": fingerprint,
             "proof": proof,
             "issues": issues,
@@ -293,9 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-basic-profile",
         description=(
-            "Review and apply the basic profile -- the chosen crossover plus "
-            "per-driver trim, delay and polarity, with no linearization and no "
-            "blend correction, replacing the live tune and deleting no evidence."
+            "Review and reapply the current candidate, including its tuning layers. "
+            "Without an applied candidate, use the saved profile or commissioning "
+            "candidate. No evidence is deleted."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -305,9 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  sudo /opt/jasper/.venv/bin/jasper-basic-profile apply\n"
             "\n"
             "  `apply` prints a proof read back from the speaker's own\n"
-            "  applied record: `structure_and_trim_only True` means the\n"
-            "  graph now playing carries no linearization filters, no blend\n"
-            "  correction, and tuning owner `manual` -- the basic profile.\n"
+            "  applied record. It reports the layers actually applied;\n"
+            "  linearization and blend correction can remain in the tune.\n"
             "  `sudo` is for that read: the record is group-readable only,\n"
             "  and without it the apply still succeeds but prints no proof.\n"
             "\n"
@@ -316,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
             "    GRAPH and touches no round, candidate or journey state;\n"
             "    starting the measurement journey over is\n"
             "    `POST /crossover/reset` on the correction wizard\n"
-            "  - you want a MEASURED candidate applied -- that door is\n"
+            "  - you want a different banked candidate applied -- use\n"
             "    `jasper-round apply <fp>`\n"
             "\n"
             "EXIT CODES\n"

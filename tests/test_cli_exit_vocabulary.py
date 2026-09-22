@@ -30,6 +30,8 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from jasper.active_speaker.wizard_client import WizardClient
+from jasper.active_speaker.crossover_v2 import prescription_document
+from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.cli import _refusal, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
@@ -214,6 +216,33 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
     assert printed.err.startswith(
         f"{document['status']} ({document['reason']}): "
     )
+
+
+@pytest.mark.parametrize("module_name,verb", [
+    ("jasper.cli.crossover_prescriber", "judge"),
+    ("jasper.cli.crossover_prescriber", "compose"),
+    ("jasper.cli.round", "reset"),
+])
+def test_document_failures_use_the_shared_contract(module_name, verb, tmp_path, monkeypatch, capsys):
+    error = prescription_document.PrescriptionDocumentRefused(
+        "bass_fit_inputs_missing", "bass", "missing takes", evidence={"round_id": "round-1"})
+    def refuse(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(prescription_document, "saved_base", refuse)
+    path = tmp_path / "document.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": "saved",
+                                "sections": {}, "rationale": "Test a refusal."}))
+    module = importlib.import_module(module_name)
+    if verb != "reset":
+        monkeypatch.setattr(module, "saved_base", refuse)
+    assert module.main([verb, *([] if verb == "reset" else [str(path)])]) == _refusal.EXIT_REFUSED
+    printed = capsys.readouterr()
+    assert json.loads(printed.out) == {
+        "status": "refused", "reason": error.code, "code": error.code,
+        "detail": {"section": error.section, "error": error.error, "evidence": error.evidence},
+        "next_action": refusal_copy_for(error.code)[1],
+    }
+    assert printed.err
 
 
 #: The ceiling on a numeric array an answer may carry: a curve or a grid

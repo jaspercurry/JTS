@@ -42,7 +42,8 @@ def _preview(tmp_path, capsys, sections, root=None, extra=()):
         "judge", "--preview", str(path), *(["--round", str(root)] if root else []), *extra,
     ])
     answer = json.loads(capsys.readouterr().out)
-    assert (status == 0) == answer["ok"]
+    assert (status == 0) == ("status" not in answer)
+    assert not {"ok", "error"} & answer.keys()
     if answer.get("code") == "evidence_unreadable":
         assert status == EXIT_UNREADABLE
     return answer
@@ -109,7 +110,7 @@ def test_bad_grid_path_refuses_the_call_without_writing(tmp_path, capsys):
     answer = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, extra=(
         "--vary", "rear_calibration.rear_muted=true,false", "--vary", "rear_calibration.missing=1,2",
         "--out-dir", str(directory)))
-    assert (answer["ok"], answer["code"], answer["section"]) == (False, "prescription_malformed", "rear_calibration")
+    assert (answer["status"], answer["code"], answer["detail"]["section"]) == ("refused", "prescription_malformed", "rear_calibration")
     assert not directory.exists()
 
 
@@ -245,7 +246,7 @@ def test_preview_refusals(tmp_path, capsys, case, code):
     root = None if case in ("both", "no_round") else (
         rear_round(tmp_path) if case == "summed" else pair_round(tmp_path))
     answer = _preview(tmp_path, capsys, sections, root)
-    assert (answer["code"], answer["section"]) == (code, "rear_calibration")
+    assert (answer["code"], answer["detail"]["section"]) == (code, "rear_calibration")
 
 
 def test_pair_takes_share_a_window_and_remove_each_clock_shift():

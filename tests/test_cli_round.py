@@ -43,7 +43,7 @@ from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
-from jasper.cli import _run_request, crossover_prescriber, round as cli
+from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
@@ -269,13 +269,13 @@ def test_reset_composes_and_applies_the_selected_scope(
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", pre_apply_read)
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", post_apply_read)
     monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda: topology)
-    real_compose = crossover_prescriber.compose_prescription_document
+    real_compose = prescription_document_mod.judge_prescription_document
     composed_with: dict = {}
     def _spy_compose(document, *, base, evidence=None, base_profile=None):
         composed_with["document"] = document
         composed_with["base_profile"] = base_profile
         return real_compose(document, base=base, evidence=evidence, base_profile=base_profile)
-    monkeypatch.setattr(crossover_prescriber, "compose_prescription_document", _spy_compose)
+    monkeypatch.setattr(prescription_document_mod, "judge_prescription_document", _spy_compose)
 
     opener = _opener()
     code, body = _run(["reset", *(["--program", program] if program else []),
@@ -1300,10 +1300,11 @@ def test_arm_preflight_refuses_before_opening(
 
 
 @pytest.mark.parametrize("command", ["run", "trial"])
-def test_arm_requires_wait(command, monkeypatch, capsys):
+def test_arm_requires_wait(command, monkeypatch, capsys, bank_trial, preflight_ready):
     opener = _opener()
+    fingerprint = bank_trial({"bass": "document"}) if command == "trial" else None
     with pytest.raises(SystemExit) as exc:
-        cli.main([command, *([_FINGERPRINT] if command == "trial" else []),
+        cli.main([command, *([fingerprint] if command == "trial" else []),
                   "--mover", "arm", "--attest-rig-clear"], opener=opener)
     assert exc.value.code == 2
     assert capsys.readouterr().out == ""

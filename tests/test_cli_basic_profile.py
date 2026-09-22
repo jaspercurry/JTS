@@ -222,7 +222,7 @@ def test_apply_reports_the_fingerprint_from_the_applied_record(
         if line.lstrip().startswith("fingerprint ")
     )
     assert headline == ["fingerprint", fingerprint]
-    assert payload["status"] == "applied"
+    assert payload["result"] == "applied" and "status" not in payload
     assert payload["candidate_fingerprint"] == fingerprint
     assert payload["issues"] == [disclosure]
     assert payload["proof"] == {

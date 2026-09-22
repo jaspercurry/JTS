@@ -31,12 +31,12 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
     parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
 )
+from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, latest_banked_rounds, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
-from jasper.active_speaker.measurement_programs import prescription_sections
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
@@ -50,26 +50,6 @@ AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a can
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
-
-def reset_prescription_document(
-    *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
-) -> dict[str, Any]:
-    sections: dict[str, Any] = {
-        name: None if name == "rear_calibration" else {}
-        for name in prescription_sections(program) if not (keep_timing and name == "alignment")
-    }
-    if "driver" in sections:
-        sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
-    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
-            "sections": sections, "rationale": "Reset the applied tuning layers."}
-
-
-def compose_prescription_document(
-    document: Mapping[str, Any], *, base: BankedCandidate,
-    evidence: PrescriptionEvidence | None = None,
-    base_profile: Mapping[str, Any] | None = None,
-) -> MeasuredCrossoverCandidate:
-    return judge_prescription_document(document, base=base, evidence=evidence, base_profile=base_profile)
 
 def _cmd_rear_calibration(args: argparse.Namespace) -> int:
     try:
@@ -133,8 +113,10 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
     except RoundSetRefused as exc:
         section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
-    return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                         base=base, evidence=evidence, capture_id=capture_id)
+    result = preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
+                                           base=base, evidence=evidence, capture_id=capture_id)
+    result.pop("ok")
+    return result
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
@@ -159,7 +141,7 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
                      **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
                         else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
-    return answered({"ok": True, "section": kind,
+    return answered({"section": kind,
                      "axes": [{"paths": paths, "values": values} for paths, values in axes],
                      "variants": rows, "adopted": False, "banked": False})
 
@@ -171,42 +153,41 @@ def _cmd_document(args: argparse.Namespace) -> int:
         except BlendPrescriptionRefused as exc:
             raise PrescriptionDocumentRefused(exc.reason, None, exc.detail, evidence=exc.evidence) from exc
         document = read_prescription_document(raw)
-        if args.base is not None and args.base != document["base"]:
-            raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
         if args.command == "judge" and args.preview:
             return _cmd_vary_document(args, document) if args.vary else answered(_preview_document(args, document))
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
-        candidate = compose_prescription_document(document, base=base, evidence=evidence,
-                                                  base_profile=base_profile)
+        candidate = judge_prescription_document(document, base=base, evidence=evidence,
+                                                 base_profile=base_profile)
     except PrescriptionDocumentRefused as exc:
-        print(json.dumps(exc.to_dict(), sort_keys=True))
-        return EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED
+        return failed(EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED, exc.code,
+                      {"section": exc.section, "error": exc.error, "evidence": exc.evidence},
+                      code=exc.code, next_action=refusal_copy_for(exc.code)[1])
     except RoundSetRefused as exc:
-        print(json.dumps(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail).to_dict(), sort_keys=True))
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, exc.reason, {"section": "room", "error": str(exc), "evidence": exc.detail},
+                      code=exc.reason, next_action=refusal_copy_for(exc.reason)[1])
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
-        return EXIT_REFUSED
+        return failed(EXIT_REFUSED, exc.code, {"section": None, "error": exc.detail, "evidence": {}},
+                      code=exc.code, next_action=refusal_copy_for(exc.code)[1])
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         code = getattr(exc, "code", REASON_UNREADABLE)
-        print(json.dumps(PrescriptionDocumentRefused(code, None, str(exc)).to_dict(), sort_keys=True))
-        return EXIT_UNREADABLE
-    answer = {"ok": True, "code": None, "section": None, "next_action": None, "error": None,
-              "candidate_fingerprint": candidate.fingerprint,
+        return failed(EXIT_UNREADABLE, code, {"section": None, "error": str(exc), "evidence": {}},
+                      code=code, next_action=refusal_copy_for(code)[1])
+    answer = {"section": None, "next_action": None, "candidate_fingerprint": candidate.fingerprint,
               "resolution": candidate.analysis["resolution"], "measurement_status": "unmeasured", "adopted": False}
+    if args.base is not None and args.base != document["base"]:
+        answer["base_override_ignored"] = {"requested": args.base, "base": document["base"]}
     if args.command == "judge":
         answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
     else:
         try:
             published = publish_authored_candidate(candidate, root=root)
-        except CandidateBankRefusal as exc:
-            print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
-            return EXIT_REFUSED
-        except (OSError, BundleError) as exc:
-            print(json.dumps(PrescriptionDocumentRefused(REASON_UNWRITABLE, None, str(exc)).to_dict(), sort_keys=True))
-            return EXIT_WRITE_FAILED
+        except (CandidateBankRefusal, OSError, BundleError) as exc:
+            code = exc.code if isinstance(exc, CandidateBankRefusal) else REASON_UNWRITABLE
+            return failed(EXIT_REFUSED if isinstance(exc, CandidateBankRefusal) else EXIT_WRITE_FAILED, code,
+                          {"section": None, "error": str(exc), "evidence": {}},
+                          code=code, next_action=refusal_copy_for(code)[1])
         answer["out"] = str(published.path)
     return answered(answer)
 
@@ -538,8 +519,6 @@ def _next_commands(
     packet_error: str,
     seat_level_db: float | None,
     session_dir: str | None,
-    evidence: list[str],
-    state: str | None,
 ) -> list[str]:
     """What to RUN next, with the paths already resolved.
 
@@ -581,8 +560,6 @@ def status_document(
     packet_error: str,
     *,
     session_dir: str | None,
-    evidence: list[str],
-    state: str | None,
     applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read retained evidence and candidate status."""
@@ -643,7 +620,7 @@ def status_document(
                  "reason_code": action["reason_code"]},
         "next_commands": _next_commands(
             sections, packet_error=packet_error, seat_level_db=seat_level_db,
-            session_dir=session_dir, evidence=evidence, state=state,
+            session_dir=session_dir,
         ),
     }
 
@@ -669,7 +646,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return answered(status_document(
         packet, packet_error,
         session_dir=args.session_dir,
-        evidence=[args.session_dir] if args.session_dir else [], state=args.state,
         applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,
     ))
 
@@ -698,7 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
         if verb == "compose":
-            command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
+            command.add_argument("--base", metavar="FINGERPRINT|saved", help="compatibility hint; document.base selects the base")
         else:
             command.set_defaults(base=None)
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")

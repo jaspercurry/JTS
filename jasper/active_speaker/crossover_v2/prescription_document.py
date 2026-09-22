@@ -14,7 +14,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
+from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
@@ -23,7 +23,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
-from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
@@ -327,6 +327,26 @@ def saved_base() -> tuple[BankedCandidate, Mapping[str, Any]]:
     return BankedCandidate(saved, "", "", baseline_profile_state_path()), state
 
 
+def reset_prescription_document(
+    *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
+) -> dict[str, Any]:
+    sections: dict[str, Any] = {
+        name: None if name == "rear_calibration" else {}
+        for name in prescription_sections(program) if not (keep_timing and name == "alignment")
+    }
+    if "driver" in sections:
+        sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
+    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
+            "sections": sections, "rationale": "Reset the applied tuning layers."}
+
+
+def rear_cleared_candidate() -> str:
+    """Bank the applied tune without its rear stage for raw pair capture (issue #5330)."""
+    return publish_authored_candidate(bank_section(
+        "rear_calibration", None, rationale="Measure both woofers with no rear stage.",
+    )).fingerprint
+
+
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
     """Judge ONE authored section on the applied baseline, as ``--base saved`` does.
 
@@ -345,8 +365,6 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                                evidence: PrescriptionEvidence | None = None,
                                base_profile: Mapping[str, Any] | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
-    if document["base"] != "saved" and document["base"] != base.fingerprint:
-        raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
     evidence = evidence or PrescriptionEvidence()
     sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
     contracts = prescription_contracts(programs=contract_programs(sources), **sources)
