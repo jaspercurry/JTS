@@ -12,7 +12,10 @@ const visible = node => (node.tag === 'details' && !node.open
   ? (node.children || []).filter(n => n.tag === 'summary') : node.children || []).map(visible).join('') + (node.textContent || '');
 const make = tag => Object.assign(element(tag), {
   value: '', open: false, selected: false,
-  appendChild(node) { this.children.push(node); },
+  appendChild(node) { this.children.push(node); node.parent = this; },
+  remove() { this.parent.children = this.parent.children.filter(node => node !== this); },
+  focus() {},
+  select() { this.selected = true; },
   replaceChildren(...children) { this.children = children.map(child => typeof child === 'object' ? child : {textContent: String(child)}); },
   removeAttribute(key) { delete this[key]; },
 });
@@ -33,15 +36,15 @@ const state = stage => ({
   applied: {config_path: '/var/lib/camilladsp/private-config.yml', candidate_fingerprint: 'opaque-identity'},
   programs: [{id: 'speaker', title: 'Driver linearization', description: 'Fit the drivers.'}, {id: 'room', title: 'Room', description: 'Fit the room.'}],
 });
-function setup(initial = state('research'), handler = async () => ({setup: state('apply')})) {
+function setup(initial = state('research'), handler = async () => ({setup: state('apply')}), clipboard = {ok: true}) {
   const root = make('view-body'), status = make('status'), requests = [], copies = [];
-  const document = {getElementById: id => id === 'view-body' ? root : status, createElement: make,
+  const document = {body: make('body'), getElementById: id => id === 'view-body' ? root : status, createElement: make,
     createTextNode: textContent => ({textContent})};
   start(document, async path => path === './setup' ? initial : {prompt: 'Tune this speaker using /opt/jasper'},
     async (path, body) => { requests.push({path, body: structuredClone(body)}); return handler(path, body); },
-    async input => { copies.push(input.value); return true; }, async () => true);
+    async input => { assert.ok(document.body.children.includes(input)); copies.push(input.value); return clipboard.ok; }, async () => true);
   const button = label => nodes(root).find(n => n.tag === 'button' && text(n) === label);
-  return {root, status, requests, copies, button};
+  return {root, status, requests, copies, button, document};
 }
 
 test('pasting and applying use server state and reveal the tuning menu without reload', async () => {
@@ -50,6 +53,10 @@ test('pasting and applying use server state and reveal the tuning menu without r
   await flush();
   assert.doesNotMatch(visible(ui.root), /private-config|opaque-identity|\/var\/lib|false/);
   assert.equal(ui.button('Save to speaker'), undefined);
+  const copyStyle = ui.button('Copy prompt').className;
+  await ui.button('Copy prompt').click();
+  assert.deepEqual(ui.copies, ['Research the W6']);
+  assert.equal(ui.document.body.children.length, 0);
   const input = nodes(ui.root).find(n => n['aria-label'] === 'Paste research result');
   input.value = '```json\n{"driver": "raw result"}\n```';
   await ui.button('Load values').click();
@@ -63,10 +70,13 @@ test('pasting and applying use server state and reveal the tuning menu without r
   const tuning = nodes(ui.root).find(n => n.className === 'speaker-program');
   for (const program of nodes(ui.root).filter(n => n.className === 'speaker-program')) {
     assert.deepEqual(nodes(program).filter(n => n.tag === 'button').map(text), ['Copy prompt']);
+    assert.equal(nodes(program).find(n => n.tag === 'button').className, copyStyle);
     assert.equal(nodes(program).filter(n => n.tag === 'a').length, 0);
   }
   await nodes(tuning).find(n => n.tag === 'button').click();
-  assert.deepEqual(ui.copies, ['Tune this speaker using /opt/jasper']);
+  assert.deepEqual(ui.copies, ['Research the W6', 'Tune this speaker using /opt/jasper']);
+  assert.equal(ui.document.body.children.length, 0);
+  assert.equal(nodes(ui.root).filter(n => n.tag === 'summary' && text(n) === 'View prompt').length, 0);
   assert.doesNotMatch(visible(ui.root), /\/opt\/jasper/);
   const reloaded = setup(state('tune')); await flush();
   assert.match(visible(reloaded.root), /Driver linearization/);
@@ -85,4 +95,21 @@ test('failed import keeps pasted text; failed apply never reports an active setu
   await failed.button('Save to speaker').click();
   assert.doesNotMatch(visible(failed.root), /setup is active/);
   assert.match(failed.status.textContent, /could not be applied/);
+});
+
+for (const stage of ['research', 'tune']) test(`${stage} prompt can be copied manually if clipboard access fails`, async () => {
+  const clipboard = {ok: false};
+  const ui = setup(state(stage), undefined, clipboard);
+  await flush();
+  const card = stage === 'tune' ? nodes(ui.root).find(n => n.className === 'speaker-program') : ui.root;
+  const copy = nodes(card).find(n => n.tag === 'button' && text(n) === 'Copy prompt');
+  await copy.click();
+  const prompt = nodes(card).find(n => n['aria-label'] === 'Prompt');
+  assert.equal(prompt.value, ui.copies[0]);
+  assert.equal(prompt.selected, true);
+  assert.equal(prompt['aria-hidden'], undefined);
+  assert.equal(ui.document.body.children.length, 0);
+  clipboard.ok = true;
+  await copy.click();
+  assert.equal(nodes(card).find(n => n['aria-label'] === 'Prompt'), undefined);
 });

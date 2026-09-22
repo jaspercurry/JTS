@@ -161,22 +161,37 @@ function detailsCard() {
   return card;
 }
 
-function promptCopy(id, prompt) {
-  const text = h('textarea', { className: 'speaker-textarea', id, value: prompt, readOnly: true, rows: 8, 'aria-label': 'Prompt' });
-  const details = h('details', {}, h('summary', {}, 'View prompt'), text);
+function promptCopy(getPrompt) {
   const copy = button('Copy prompt', async () => {
-    details.open = true;
-    const ok = await copyText(text);
-    if (ok) details.open = false;
-    copy.textContent = ok ? 'Copied' : 'Select and copy the prompt';
-  }, true);
-  return h('div', {}, copy, details);
+    const response = await run(getPrompt);
+    if (!response?.prompt) return;
+    const text = h('textarea.sr-only', { value: response.prompt, readOnly: true, 'aria-hidden': 'true' });
+    document.body.appendChild(text);
+    let ok;
+    try {
+      ok = await copyText(text);
+    } finally {
+      text.remove();
+      copy.focus({ preventScroll: true });
+    }
+    holder.replaceChildren(copy);
+    if (!ok) {
+      text.className = 'speaker-textarea';
+      text.removeAttribute('aria-hidden');
+      text.setAttribute('aria-label', 'Prompt');
+      holder.appendChild(text);
+      text.select();
+    }
+    message(ok ? 'Prompt copied.' : 'Select and copy the prompt below.', !ok);
+  });
+  const holder = h('div', {}, copy);
+  return holder;
 }
 
 function researchForm() {
   const input = h('textarea', { className: 'speaker-textarea', rows: 6, 'aria-label': 'Paste research result', placeholder: 'Paste the JSON result here' });
   return h('div', {}, h('p', {}, 'Copy the prompt into your research assistant, then paste its result below.'),
-    promptCopy('driver-prompt', view.draft.prompt), input,
+    promptCopy(() => ({ prompt: view.draft.prompt })), input,
     button('Load values', () => run(() => postJSON('./setup/research', { text: input.value }), 'Starting values loaded.'), true));
 }
 
@@ -216,23 +231,13 @@ function startingCard() {
 }
 
 function tuningCard() {
-  return section('4. Tuning', view.stage === 'tune', h('p.form-hint', {}, 'Optional. Copy a program’s prompt to begin.'),
-    view.programs.map(program => {
-      const holder = h('div');
-      return h('div.speaker-program', {}, h('h3', {}, program.title), h('p', {}, program.description),
+  return section('4. Tuning', view.stage === 'tune',
+    h('div', {}, h('h3', {}, 'Tune with an AI assistant'),
+      h('p', {}, 'Connect to this Pi from an AI coding assistant such as Claude or Codex. Copy a program’s prompt into that session. The assistant will guide you and provide a link to take measurements.')),
+    view.programs.map(program =>
+      h('div.speaker-program', {}, h('h3', {}, program.title), h('p', {}, program.description),
         program.applied && h('p.form-hint', {}, 'Correction applied'),
-        button('Copy prompt', async () => {
-          const response = await run(() => getJSON(`./active-speaker/tuning-handoff?program=${program.id}`));
-          if (response?.prompt) {
-            const text = h('textarea', { className: 'speaker-textarea', value: response.prompt, readOnly: true, rows: 8, 'aria-label': `${program.title} prompt` });
-            const details = h('details', { open: true }, h('summary', {}, 'View prompt'), text);
-            holder.replaceChildren(details);
-            const ok = await copyText(text);
-            details.open = !ok;
-            message(ok ? 'Prompt copied.' : 'Select and copy the prompt below.');
-          }
-        }, program.id === 'speaker'), holder);
-    }));
+        promptCopy(() => getJSON(`./active-speaker/tuning-handoff?program=${program.id}`)))));
 }
 
 function render() {
