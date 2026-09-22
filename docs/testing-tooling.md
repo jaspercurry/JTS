@@ -213,11 +213,7 @@ is what `commission-rollback` and `ack --outcome too_loud` reload.
 The `/sound/active-speaker/…` web surface exposes read-only status GETs plus
 CSRF-protected POSTs for design-draft, stop, calibration-level,
 the `commission-*` verbs, summed validation and baseline apply. **No endpoint
-changes normal listening volume**, and product outputd/CamillaDSP lanes are
-forbidden as direct test writers — the banned list is
-`FORBIDDEN_TEST_PCM_TOKENS` in
-[`playback.py`](../jasper/active_speaker/playback.py); read the tuple, not a
-restatement.
+changes normal listening volume**.
 
 ---
 

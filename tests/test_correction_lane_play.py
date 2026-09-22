@@ -25,8 +25,7 @@ Three groups of checks:
 
 Deliberate non-guards (static shape scan, aimed at the accidental new
 site, not adversarial evasion): a variable binary (``[self.aplay_binary,
-...]`` — jasper.active_speaker.playback's audio-lab backend, which has its
-own FORBIDDEN_TEST_PCM_TOKENS fence), argv assembled by concatenation
+...]``), argv assembled by concatenation
 (``["aplay"] + rest``), and ``shell=True`` command strings. None exist in
 ``jasper/`` for the correction lane — verified by sweep, NOT self-enforcing
 (those shapes are exactly what the scan cannot see).

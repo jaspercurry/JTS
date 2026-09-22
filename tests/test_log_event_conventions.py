@@ -98,7 +98,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/active_speaker/camilla_yaml/emit_program.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_program_bake.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_startup.py": {"*"},
-    "jasper/active_speaker/playback.py": {"*"},
     "jasper/active_speaker/staging.py": {"*"},
     "jasper/active_speaker/commission_load.py": {"*"},
     "jasper/active_speaker/startup_load.py": {"*"},
