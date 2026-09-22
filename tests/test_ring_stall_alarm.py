@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_assets
-from jasper.ring_assets import RING_LIVENESS_TIMEOUT_NS, ring_stall_verdict
+from jasper import ring_assets, ring_header as rh
+from jasper.ring_assets import ring_stall_verdict
 from tests.ring_abi import ring_abi
 
 NOW = 100_000_000_000  # an arbitrary CLOCK_MONOTONIC "now", 100 s
@@ -39,18 +39,18 @@ def _ring_file(
     version: int = 1,
 ) -> str:
     """A synthetic 128-byte v1 ring header with the runtime fields set."""
-    head = bytearray(ring_assets._RING_HEADER_BYTES)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_MAGIC, magic)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_VERSION, version)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_RATE, 48000)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_CHANNELS, 4)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_SAMPLE_FORMAT, 2)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_PERIOD_FRAMES, 128)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_N_SLOTS, 2)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITE_SEQ, write_seq)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_READ_SEQ, read_seq)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITER_HEARTBEAT_NS, writer_hb)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_READER_HEARTBEAT_NS, reader_hb)
+    head = bytearray(rh._RING_HEADER_BYTES)
+    struct.pack_into("<I", head, rh._RING_OFF_MAGIC, magic)
+    struct.pack_into("<I", head, rh._RING_OFF_VERSION, version)
+    struct.pack_into("<I", head, rh._RING_OFF_RATE, 48000)
+    struct.pack_into("<I", head, rh._RING_OFF_CHANNELS, 4)
+    struct.pack_into("<I", head, rh._RING_OFF_SAMPLE_FORMAT, 2)
+    struct.pack_into("<I", head, rh._RING_OFF_PERIOD_FRAMES, 128)
+    struct.pack_into("<I", head, rh._RING_OFF_N_SLOTS, 2)
+    struct.pack_into("<Q", head, rh._RING_OFF_WRITE_SEQ, write_seq)
+    struct.pack_into("<Q", head, rh._RING_OFF_READ_SEQ, read_seq)
+    struct.pack_into("<Q", head, rh._RING_OFF_WRITER_HEARTBEAT_NS, writer_hb)
+    struct.pack_into("<Q", head, rh._RING_OFF_READER_HEARTBEAT_NS, reader_hb)
     path = tmp_path / "active-content.ring"
     path.write_bytes(bytes(head))
     return str(path)
@@ -69,7 +69,7 @@ def test_the_liveness_window_is_the_rings_own_number():
     staying silent through one it is. Both ends take it from the generated ring
     ABI, which the C test pins its own ``#define`` against.
     """
-    assert RING_LIVENESS_TIMEOUT_NS == ring_abi()["writer_liveness_timeout_ns"]
+    assert rh.RING_LIVENESS_TIMEOUT_NS == ring_abi()["writer_liveness_timeout_ns"]
 
 
 # --- the conjunction ---------------------------------------------------------

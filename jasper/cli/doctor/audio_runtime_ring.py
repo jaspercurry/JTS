@@ -17,7 +17,7 @@ import subprocess
 import time
 from typing import Any
 
-from ... import ring_assets
+from ... import ring_assets, ring_header
 from ...audio_hardware.dac import latency_floor_for
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
@@ -973,7 +973,7 @@ def check_ring_geometry_coherence() -> CheckResult:
         )
 
     # Axis 3: the on-disk ring header (what the writer actually created).
-    header = ring_assets.read_ring_header(ring_assets.RING_A_PROGRAM_FILE)
+    header = ring_header.read_ring_header(ring_assets.RING_A_PROGRAM_FILE)
     if not header.valid:
         # No coherent on-disk ring yet (fan-in between restarts, or the ring was
         # cleared). env/conf.d agree, so the next writer create is coherent.

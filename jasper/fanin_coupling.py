@@ -124,7 +124,7 @@ RING_CAPTURE_DEVICE = "jts_ring_capture"
 # ring spells identically: the conf.d ``format`` field (C ioplug), fan-in's
 # ``JASPER_FANIN_RING_WIRE_FORMAT``, outputd's ``JASPER_OUTPUTD_CONTENT_FORMAT``,
 # and CamillaDSP's emitted capture/playback ``format:``. They map onto the
-# header's ``sample_format`` ids (``jasper.ring_assets.RING_SAMPLE_FORMAT_*``),
+# header's ``sample_format`` ids (``jasper.ring_header.RING_SAMPLE_FORMAT_*``),
 # which the attach compares field-by-field.
 #
 # ``RING_WIRE_FORMAT`` is the NARROW token specifically — the C ioplug's

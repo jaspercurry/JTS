@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_assets
+from jasper import ring_assets, ring_header
 from jasper.ring_assets import (
     RING_FLOW_ABSENT,
     RING_FLOW_FLOWING,
@@ -52,9 +52,9 @@ from jasper.ring_assets import (
     RING_FLOW_PRIMING,
     RING_FLOW_READER_STALLED,
     RING_FLOW_UNREADABLE,
-    RING_LIVENESS_TIMEOUT_NS,
     ring_flow_state,
 )
+from jasper.ring_header import RING_LIVENESS_TIMEOUT_NS
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
@@ -89,23 +89,23 @@ def _header(
 
     Using ``ring_assets``' offsets rather than literals keeps this helper honest
     about one thing only — the VALUES — and leaves the offsets themselves to the
-    cross-language pin in ``tests/test_ring_assets.py``.
+    cross-language pin in ``tests/test_ring_header.py``.
     """
     head = bytearray(128)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_MAGIC, magic)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_VERSION, version)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_RATE, _RATE)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_CHANNELS, 2)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_SAMPLE_FORMAT, 1)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_PERIOD_FRAMES, _PERIOD_FRAMES)
-    struct.pack_into("<I", head, ring_assets._RING_OFF_N_SLOTS, n_slots)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITER_EPOCH, writer_epoch)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITE_SEQ, write_seq)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_READ_SEQ, read_seq)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITER_PID, writer_pid)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_READER_PID, reader_pid)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITER_HEARTBEAT_NS, writer_hb)
-    struct.pack_into("<Q", head, ring_assets._RING_OFF_READER_HEARTBEAT_NS, reader_hb)
+    struct.pack_into("<I", head, ring_header._RING_OFF_MAGIC, magic)
+    struct.pack_into("<I", head, ring_header._RING_OFF_VERSION, version)
+    struct.pack_into("<I", head, ring_header._RING_OFF_RATE, _RATE)
+    struct.pack_into("<I", head, ring_header._RING_OFF_CHANNELS, 2)
+    struct.pack_into("<I", head, ring_header._RING_OFF_SAMPLE_FORMAT, 1)
+    struct.pack_into("<I", head, ring_header._RING_OFF_PERIOD_FRAMES, _PERIOD_FRAMES)
+    struct.pack_into("<I", head, ring_header._RING_OFF_N_SLOTS, n_slots)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_WRITER_EPOCH, writer_epoch)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_WRITE_SEQ, write_seq)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_READ_SEQ, read_seq)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_WRITER_PID, writer_pid)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_READER_PID, reader_pid)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_WRITER_HEARTBEAT_NS, writer_hb)
+    struct.pack_into("<Q", head, ring_header._RING_OFF_READER_HEARTBEAT_NS, reader_hb)
     return bytes(head)
 
 
@@ -450,10 +450,10 @@ def test_reading_a_ring_header_never_opens_it_for_writing(tmp_path, monkeypatch)
         modes.append(mode)
         return real_open(path, mode, *args, **kwargs)
 
-    monkeypatch.setattr(ring_assets, "open", _spy, raising=False)
+    monkeypatch.setattr(ring_header, "open", _spy, raising=False)
     ring = _ring(tmp_path, writer_pid=1, reader_pid=2, writer_hb=_FRESH)
 
-    ring_assets.read_ring_header(ring)
+    ring_header.read_ring_header(ring)
     _state(ring)
 
     assert modes and set(modes) == {"rb"}

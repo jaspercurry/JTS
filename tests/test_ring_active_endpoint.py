@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import ring_assets
+from jasper import ring_assets, ring_header
 from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
@@ -248,18 +248,16 @@ def _ring_file(path, *, channels=2, sample_format=None, period=128, n_slots=2):
     """Write a VALID ring header at a chosen geometry (the attach-compared axes)."""
     import struct
 
-    from jasper import ring_assets as ra
-
     if sample_format is None:
-        sample_format = ra.RING_SAMPLE_FORMAT_S16LE
-    hdr = bytearray(ra._RING_HEADER_BYTES)
-    struct.pack_into("<I", hdr, ra._RING_OFF_MAGIC, 0x4A52_494E)
-    struct.pack_into("<I", hdr, ra._RING_OFF_VERSION, 1)
-    struct.pack_into("<I", hdr, ra._RING_OFF_RATE, 48000)
-    struct.pack_into("<I", hdr, ra._RING_OFF_CHANNELS, channels)
-    struct.pack_into("<I", hdr, ra._RING_OFF_SAMPLE_FORMAT, sample_format)
-    struct.pack_into("<I", hdr, ra._RING_OFF_PERIOD_FRAMES, period)
-    struct.pack_into("<I", hdr, ra._RING_OFF_N_SLOTS, n_slots)
+        sample_format = ring_header.RING_SAMPLE_FORMAT_S16LE
+    hdr = bytearray(ring_header._RING_HEADER_BYTES)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_MAGIC, 0x4A52_494E)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_VERSION, 1)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_RATE, 48000)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_CHANNELS, channels)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_SAMPLE_FORMAT, sample_format)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_PERIOD_FRAMES, period)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_N_SLOTS, n_slots)
     path.write_bytes(bytes(hdr) + b"\x00" * 256)
     return path
 
@@ -1309,7 +1307,6 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     does not simply delete everything.
     """
     import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
     from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS
     paths = _point_all_ring_files_at(monkeypatch, tmp_path)
     # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
@@ -1321,13 +1318,13 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     # this "coherent" fixture actually matches what the conf.d declares.
     _ring_file(
         paths["a"],
-        sample_format=ra.RING_SAMPLE_FORMAT_S32LE,
+        sample_format=ring_header.RING_SAMPLE_FORMAT_S32LE,
         n_slots=DEFAULT_FANIN_RING_SLOTS,
     )
-    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    _ring_file(paths["b"], sample_format=ring_header.RING_SAMPLE_FORMAT_S32LE)
     # The conf.d's active block declares the ioplug default (2); this file says 6.
     _ring_file(
-        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE, channels=6
+        paths["active"], sample_format=ring_header.RING_SAMPLE_FORMAT_S32LE, channels=6
     )
 
     cr._delete_stale_ring_files("t", "")

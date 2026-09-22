@@ -124,7 +124,7 @@ RestartSec=5
 # this repo, tmpfs ACL behaviour is unverified on the Pi, and it would make a
 # second writer of permission state for one observability read. What keeps the
 # grant read-only in practice is the code: jasper-control opens the ring
-# O_RDONLY only (jasper.ring_assets.read_ring_header), pinned by
+# O_RDONLY only (jasper.ring_header.read_ring_header), pinned by
 # tests/test_grouping_ring_observability.py. See deploy/tmpfiles/jts-ring.conf
 # for why the group exists and exactly what it grants.
 User=jasper-control
