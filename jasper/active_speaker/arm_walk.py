@@ -103,7 +103,7 @@ _VENDOR_RETRY_S = 1.0
 
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
-_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "offset"})
+_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "home", "offset"})
 
 
 # --------------------------------------------------------------------------- #
@@ -328,12 +328,14 @@ class TurntableMover:
     sleep: Callable[[float], None] = time.sleep
     move_failure: Mapping[str, Any] = field(init=False, default_factory=dict)
     _stderr_tail: str = field(init=False, default="")
+    _after_retry: bool = field(init=False, default=False)
 
     def _invoke(self, subcommand: str, *rest: str) -> tuple[int, Mapping[str, Any]]:
         if subcommand not in _TOOL_SUBCOMMANDS:
             raise AssertionError(f"not an allowed adapter verb: {subcommand!r}")
         argv = [self.python, str(self.tool_path), "--json", subcommand, *rest]
         for attempt in (1, 2):
+            self._after_retry = attempt == 2
             try:
                 proc = self.run(
                     argv, capture_output=True, text=True, timeout=self.timeout_s
@@ -353,9 +355,12 @@ class TurntableMover:
             error = f"{stderr}\n{payload.get('error', '')}"
             if (
                 attempt == 1
-                and subcommand == "stop"
                 and code
-                and _VENDOR_HEARTBEAT_FRAME_ERROR in error
+                and (
+                    (subcommand == "stop" and _VENDOR_HEARTBEAT_FRAME_ERROR in error)
+                    or (subcommand in {"stop", "position", "home"}
+                        and payload.get("code") == "port_busy")
+                )
             ):
                 log_event(
                     logger,
@@ -404,7 +409,9 @@ class TurntableMover:
         self.move_failure = {
             "subcommand": subcommand,
             "exit_code": code,
+            "code": payload.get("code", ""),
             "stderr_tail": self._stderr_tail or str(payload.get("error", ""))[-200:],
+            "after_retry": self._after_retry or bool(payload.get("retried")),
         }
         log_event(
             logger,
@@ -876,6 +883,9 @@ class ArmWalk:
         self._cancel_capture(reason)
         try:
             moved = self._mover.move_to(0)
+            if not moved and getattr(self._mover, "move_failure", {}).get("code") == "port_busy":
+                self._sleep(_VENDOR_RETRY_S)
+                moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)
             offset = self._mover.offset_deg()
         except (ArmWalkRefused, OSError, RuntimeError, ValueError,

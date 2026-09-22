@@ -14,6 +14,7 @@ import errno
 import fcntl
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -97,7 +98,7 @@ RETRYABLE_COMMANDS = frozenset({"offset", "probe", "position"})
 _T = TypeVar("_T")
 
 
-def _acquire_port_lock() -> tuple[Any | None, Path]:
+def _acquire_port_lock(argv: Sequence[str]) -> tuple[Any | None, Path]:
     path = PORT_LOCK_PATH
     try:
         handle = path.open("a+")
@@ -112,6 +113,10 @@ def _acquire_port_lock() -> tuple[Any | None, Path]:
     except BlockingIOError:
         handle.close()
         return None, path
+    handle.seek(0)
+    handle.truncate()
+    json.dump({"pid": os.getpid(), "argv": list(argv)}, handle)
+    handle.flush()
     return handle, path
 
 
@@ -827,12 +832,20 @@ def main(
     lock_path_token = _JSON_LOCK_PATH.set(None)
     try:
         if args.command not in {"detect", "power"}:
-            lock_handle, lock_path = _acquire_port_lock()
+            lock_handle, lock_path = _acquire_port_lock(
+                sys.argv if argv is None else [sys.argv[0], *argv]
+            )
             if lock_handle is None:
+                try:
+                    holder = json.loads(lock_path.read_text())
+                    if not isinstance(holder, dict) or not {"pid", "argv"} <= holder.keys():
+                        holder = "unknown"
+                except (OSError, ValueError):
+                    holder = "unknown"
                 _emit(
                     {"ok": False, "error": "another jts_turntable invocation holds the port",
                      "error_type": "PortBusy", "code": "port_busy",
-                     "lock_path": str(lock_path)},
+                     "lock_path": str(lock_path), "holder": holder},
                     compact=args.json,
                 )
                 return 1

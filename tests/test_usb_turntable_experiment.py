@@ -9,6 +9,7 @@ import ast
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from decimal import Decimal
@@ -211,17 +212,23 @@ def parse_json_lines(capsys) -> list[dict]:
     return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
 
+@pytest.mark.parametrize("metadata", [None, "", "{", "null"])
 def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
-    turntable, monkeypatch, tmp_path, capsys
+    turntable, monkeypatch, tmp_path, capsys, metadata
 ) -> None:
     lock_path = tmp_path / "turntable.lock"
+    lock_path.write_text("stale" * 100)
     monkeypatch.setattr(turntable, "PORT_LOCK_PATH", lock_path)
     api, factory, controller = fake_api(turntable)
+    holder = {"pid": os.getpid(), "argv": [sys.argv[0], "--json", "stop"]}
     second_result = []
 
     def nested_stop():
         controller.calls.append(("stop",))
-        second_result.append(turntable.main(["--json", "stop"], api=api))
+        assert json.loads(lock_path.read_text()) == holder
+        if metadata is not None:
+            lock_path.write_text(metadata)
+        second_result.append(turntable.main(["--json", "offset"], api=api))
         return controller.operation_result
 
     controller.stop = nested_stop
@@ -230,6 +237,7 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
     busy = next(row for row in parse_json_lines(capsys) if row.get("code") == "port_busy")
     assert busy["ok"] is False
     assert busy["lock_path"] == str(lock_path)
+    assert busy["holder"] == (holder if metadata is None else "unknown")
     assert factory.open_calls == [{"port": None}]
 
 

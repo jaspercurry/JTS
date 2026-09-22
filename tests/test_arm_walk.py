@@ -678,12 +678,35 @@ def test_a_second_signal_during_the_park_cannot_abandon_the_arm():
     assert trail.one("parked")["ok"] is True
 
 
-def test_the_park_runs_once():
-    mover = FakeMover()
-    walk = _walk(mover, FakeSession([_QUIET]), idle_ceiling_s=10.0)
+@pytest.mark.parametrize("failure_code,failures,attempts,parked", [
+    ("", 0, 1, True),
+    ("port_busy", 2, 2, True),
+    ("port_busy", 4, 2, False),
+    ("travel_offset_unreadable", 1, 1, False),
+])
+def test_the_park_runs_once(failure_code, failures, attempts, parked):
+    calls = []
+
+    def run(argv, **_):
+        nonlocal failures
+        calls.append(argv[3:])
+        if argv[3] == "position" and failures:
+            failures -= 1
+            return _Proc(json.dumps({"ok": False, "code": failure_code}), 1)
+        return _Proc(json.dumps({"ok": True, "result": {"offset_degrees": 0.0}}))
+
+    clock, trail = FakeWalkClock(), _RecordingTrail()
+    mover = aw.TurntableMover(attest_rig_clear=True, run=run, sleep=clock.sleep)
+    session = FakeSession([_QUIET])
+    walk = _walk(mover, session, clock=clock, trail=trail, idle_ceiling_s=10.0)
     walk.run()
     walk._park()
-    assert mover.moves == [0]
+    assert [call[0] for call in calls].count("stop") == attempts
+    assert [call[0] for call in calls].count("offset") == 1
+    assert all(call[1] == "0" for call in calls if call[0] == "position")
+    assert failures == 0
+    assert session.cancels == 1
+    assert trail.one("parked")["ok"] is parked
 
 # --------------------------------------------------------------------------- #
 # set-zero is unreachable
@@ -821,12 +844,13 @@ def test_a_failed_stop_never_sends_a_position(payload, code):
     assert not mover.power().clean
 
 
-def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
+@pytest.mark.parametrize("retried", [False, True])
+def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog, retried):
     responses = iter([
         _Proc(json.dumps({"ok": True, "power": {"status": {
             "available": True, "current_flags": [], "history_flags": [],
             "raw": "0x0"}}})),
-        _Proc('{"ok": false, "error": "protocol frame broke"}', 3),
+        _Proc(json.dumps({"ok": False, "error": "protocol frame broke", "retried": retried}), 3),
     ])
 
     trail = _RecordingTrail()
@@ -834,46 +858,48 @@ def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog):
     walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
     assert walk._serve(aw.Pending(1, 1, 7, "onax")) == aw.EXIT_MOVE_FAILED
 
-    expected = {"subcommand": "stop", "exit_code": 3,
-                "stderr_tail": "protocol frame broke"}
+    expected = {"subcommand": "stop", "exit_code": 3, "code": "", "after_retry": retried}
     failed = trail.error("move_failed")
     assert {key: failed[key] for key in expected} == expected
-    assert event_fields(caplog, "arm_walk.vendor_tool_failed") == {
-        key: str(value) for key, value in expected.items()
-    }
+    fields = event_fields(caplog, "arm_walk.vendor_tool_failed")
+    assert fields["subcommand"] == "stop" and fields["exit_code"] == "3"
+    assert fields["after_retry"] == str(retried).lower()
+    assert isinstance(failed["stderr_tail"], str)
 
 
 @pytest.mark.parametrize(
-    "failure_at,retry_succeeds,expected",
+    "failure_at,error_code,retry_succeeds,expected",
     [
-        ("stop", True, None),
-        ("stop", False, aw.EXIT_MOVE_FAILED),
-        ("position", None, aw.EXIT_MOVE_FAILED),
+        ("stop", None, True, None),
+        ("stop", None, False, aw.EXIT_MOVE_FAILED),
+        ("position", None, None, aw.EXIT_MOVE_FAILED),
+        ("stop", "port_busy", True, None),
+        ("stop", "port_busy", False, aw.EXIT_MOVE_FAILED),
+        ("position", "port_busy", True, None),
+        ("position", "port_busy", False, aw.EXIT_MOVE_FAILED),
+        ("position", "travel_offset_unreadable", None, aw.EXIT_MOVE_FAILED),
     ],
 )
-def test_heartbeat_frame_failure_retries_only_stop(
-    failure_at, retry_succeeds, expected, caplog
+def test_transient_vendor_failure_retries_once(
+    failure_at, error_code, retry_succeeds, expected, caplog
 ):
     caplog.set_level(logging.INFO, logger=aw.__name__)
     good = json.dumps({"ok": True, "result": {}})
     power = json.dumps({"ok": True, "power": {"status": {
         "available": True, "current_flags": [], "history_flags": [], "raw": "0x0",
     }}})
-    framing_failure = _Proc(json.dumps({
+    failure = _Proc(json.dumps({
         "ok": False,
-        "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR,
-        "error_type": "ProtocolError",
+        "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR if error_code is None else "port_busy",
+        "code": error_code,
     }), 1)
-    if failure_at == "stop":
-        responses = [
-            _Proc(power),
-            framing_failure,
-            _Proc(good) if retry_succeeds else framing_failure,
-        ]
-        if retry_succeeds:
-            responses.append(_Proc(good))
-    else:
-        responses = [_Proc(power), _Proc(good), framing_failure]
+    responses = [_Proc(power)] + ([_Proc(good)] if failure_at == "position" else [])
+    responses.append(failure)
+    retried = retry_succeeds is not None
+    if retried:
+        responses.append(_Proc(good) if retry_succeeds else failure)
+    if retry_succeeds and failure_at == "stop":
+        responses.append(_Proc(good))
 
     sleeps = []
     mover = aw.TurntableMover(
@@ -885,18 +911,41 @@ def test_heartbeat_frame_failure_retries_only_stop(
     walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
 
     assert walk._serve(aw.Pending(1, 1, 7, "onax")) == expected
-    assert sleeps == ([aw._VENDOR_RETRY_S] if failure_at == "stop" else [])
-    if failure_at == "stop":
+    assert responses == []
+    assert sleeps == ([aw._VENDOR_RETRY_S] if retried else [])
+    if retried:
         assert event_fields(caplog, "arm_walk.vendor_tool_retried") == {
-            "subcommand": "stop",
+            "subcommand": failure_at,
             "attempt": "2",
         }
     else:
         assert event_records(caplog, "arm_walk.vendor_tool_retried") == []
     if expected is None:
         assert trail.one("moved")["degrees"] == 7
+        assert event_records(caplog, "arm_walk.vendor_tool_failed") == []
     else:
-        assert trail.error("move_failed")["subcommand"] == failure_at
+        failed = trail.error("move_failed")
+        assert failed["subcommand"] == failure_at
+        assert failed["after_retry"] is retried
+        assert event_fields(caplog, "arm_walk.vendor_tool_failed")["after_retry"] == str(retried).lower()
+
+
+@pytest.mark.parametrize("subcommand,structured,attempts", [
+    ("home", True, 2),
+    ("home", False, 1),
+    ("offset", True, 1),
+    ("detect", True, 1),
+    ("power", True, 1),
+])
+def test_port_busy_retry_requires_a_motion_command_and_structured_code(subcommand, structured, attempts):
+    run = Mock(return_value=_Proc(json.dumps({
+        "ok": False, "code": "port_busy" if structured else "", "error": "port_busy",
+    }), 1, stderr="port_busy"))
+    sleeps = []
+    mover = aw.TurntableMover(run=run, sleep=sleeps.append)
+    assert mover._invoke(subcommand)[0] == 1
+    assert run.call_count == attempts
+    assert sleeps == [aw._VENDOR_RETRY_S] * (attempts - 1)
 
 
 def test_an_adapter_that_cannot_be_launched_is_a_failed_move():
