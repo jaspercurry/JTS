@@ -19,8 +19,11 @@ from jasper.active_speaker.crossover_v2.rear_views import pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed
-from jasper.audio_measurement import rear_evidence as figures
+from jasper.audio_measurement import seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
+from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT
+from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, gradient_residual_db, magnitude_db
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
 from tests.test_prescription_document import document
@@ -80,7 +83,7 @@ def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
             for band in source["bands"]:
                 low, high = band["band_hz"]
                 assert position["bands"][f"{low:g}-{high:g}"] == band["change_db"]
-                if band["reason"] == figures.REASON_COVERAGE_SHORT:
+                if band["reason"] == REASON_COVERAGE_SHORT:
                     assert position["bands"][f"{low:g}-{high:g}"] is None
 
 
@@ -154,7 +157,7 @@ def test_muted_document_is_exactly_zero_and_needs_no_document_base(
         )] == [0, 0, 0]
         for band in row["bands"]:
             if band["reason"]:
-                assert band["reason"] == figures.REASON_COVERAGE_SHORT
+                assert band["reason"] == REASON_COVERAGE_SHORT
                 assert (band["change_db"], band["muted_db"], band["predicted_db"]) == (None, None, None)
             else:
                 assert band["change_db"] == 0
@@ -188,17 +191,17 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
         predicted = take.front * front + take.rear * rear
         null = np.argmin(np.abs(take.freqs_hz - 1 / (2 * _PAIR_GAP_MS / 1000)))
         if not boost_db:
-            assert figures.magnitude_db(predicted)[null] < -40
+            assert magnitude_db(predicted)[null] < -40
         sampled = lateral_pose_curve(SimpleNamespace(
             role="summed", freqs_hz=take.freqs_hz, complex_tf=predicted,
             validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz)
         display_db = smooth_fractional_octave(
-            sampled.freqs_hz, figures.magnitude_db(sampled.complex_tf), fraction=figures.FIGURE_FRACTION)
+            sampled.freqs_hz, magnitude_db(sampled.complex_tf), fraction=figures.FIGURE_FRACTION)
         reference = lateral_pose_curve(SimpleNamespace(
             role="woofer", freqs_hz=take.freqs_hz, complex_tf=take.front * front,
             validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz)
         change = display_db - smooth_fractional_octave(
-            reference.freqs_hz, figures.magnitude_db(reference.complex_tf), fraction=figures.FIGURE_FRACTION)
+            reference.freqs_hz, magnitude_db(reference.complex_tf), fraction=figures.FIGURE_FRACTION)
         display = (sampled.freqs_hz >= row["coverage_hz"][0]) & (sampled.freqs_hz <= min(row["coverage_hz"][1], 5000.0))
         assert row["curve"]["freqs_hz"] == [round(float(hz), 3) for hz in sampled.freqs_hz[display]]
         assert row["curve"]["change_db"] == pytest.approx(change[display] - charge, abs=0.0005)
@@ -208,9 +211,9 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
             change[np.argmin(abs(sampled.freqs_hz - dip["hz"]))] - charge, abs=0.0005)
         assert row["trough_fill_db"] == row["curve"]["change_db"][row["curve"]["freqs_hz"].index(dip["hz"])]
         keep = (take.freqs_hz >= row["coverage_hz"][0]) & (take.freqs_hz <= row["coverage_hz"][1])
-        expected_gradient = figures.gradient_residual_db(
+        expected_gradient = gradient_residual_db(
             take.freqs_hz[keep], rear[keep] / front[keep],
-            figures.confident_arrival_gap_s(row["arrival_gap"]), row["band_hz"])
+            confident_arrival_gap_s(row["arrival_gap"]), row["band_hz"])
         assert row["gradient_residual"]["db"] == pytest.approx(expected_gradient, abs=0.001)
         assert row["gradient_residual"]["reason"] == ""
         for band in row["bands"]:
@@ -220,7 +223,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
                 assert band["change_db"] == pytest.approx(
                     band["predicted_db"] - band["muted_db"] - preview["stage"]["headroom_charge_db"], abs=0.001)
         muted, predicted_energy = [figures.impulse_energy_figures(
-            figures.band_limited_impulse(take.freqs_hz, tf, figures.LATE_ENERGY_BAND_HZ),
+            figures.band_limited_impulse(take.freqs_hz, tf, LATE_ENERGY_BAND_HZ),
             sample_rate_hz=take.sample_rate_hz,
         ) for tf in (take.front * front, predicted)]
         for output, source in (("early_late_change_db", "early_late_db"),
@@ -267,8 +270,8 @@ def test_short_coverage_discloses_missing_acoustics(tmp_path, capsys):
     root = pair_round(tmp_path, swept_hz=(20.0, 20.1))
     preview = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, root)["preview"]
     for row in preview["positions"].values():
-        assert row["figures"]["predicted"]["reason"] == figures.REASON_COVERAGE_SHORT
-        assert row["late_energy"]["reason"] == figures.REASON_COVERAGE_SHORT
+        assert row["figures"]["predicted"]["reason"] == REASON_COVERAGE_SHORT
+        assert row["late_energy"]["reason"] == REASON_COVERAGE_SHORT
         assert row["late_energy"]["early_late_change_db"] is None
         assert row["curve"] == {"freqs_hz": [], "change_db": []}
 
@@ -283,14 +286,14 @@ def test_figures_band_and_gradient_reason_are_independent(tmp_path, capsys, monk
             {"type": "BiquadCombo", "parameters": {"type": kind, "freq": hz, "order": 2}}
             for kind, hz in zip(("ButterworthHighpass", "ButterworthLowpass"), declared)
         ]
-    monkeypatch.setattr(figures, "confident_arrival_gap_s", lambda gap: None)
+    monkeypatch.setattr(rear_preview.rear_evidence, "confident_arrival_gap_s", lambda gap: None)
     preview = _preview(tmp_path, capsys, {"rear_calibration": section}, root)["preview"]
     for row in preview["positions"].values():
         assert row["figures_band_hz"] == (row["band_hz"] if declared is None else expected)
         assert row["reason"] == ""
-        assert row["gradient_residual"] == {"db": None, "reason": figures.REASON_GAP_NOT_CONFIDENT}
+        assert row["gradient_residual"] == {"db": None, "reason": REASON_GAP_NOT_CONFIDENT}
         assert "gradient_residual_db" not in row
-        assert row["figures"]["predicted"]["reason"] == ("" if row["figures_band_hz"] else figures.REASON_COVERAGE_SHORT)
+        assert row["figures"]["predicted"]["reason"] == ("" if row["figures_band_hz"] else REASON_COVERAGE_SHORT)
 
 
 def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys, monkeypatch):
@@ -317,16 +320,16 @@ def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys
         role="summed", freqs_hz=take.freqs_hz, complex_tf=take.front * front + take.rear * rear,
         validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz) for take in takes]
     freqs = curves[0].freqs_hz
-    mean_db = np.mean([figures.magnitude_db(curve.complex_tf) for curve in curves], axis=0)
+    mean_db = np.mean([magnitude_db(curve.complex_tf) for curve in curves], axis=0)
     sampled_front = lateral_pose_curve(SimpleNamespace(
         role="woofer", freqs_hz=original.freqs_hz, complex_tf=original.front * front,
         validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), original.coverage_hz)
     expected = figures.position_figures(
-        freqs, mean_db, reference_db=figures.reference_curve_db(freqs, figures.magnitude_db(sampled_front.complex_tf)),
+        freqs, mean_db, reference_db=figures.reference_curve_db(freqs, magnitude_db(sampled_front.complex_tf)),
         band_hz=row["figures_band_hz"], coverage_hz=row["coverage_hz"])
     assert row["figures"]["predicted"]["ripple_db"] == pytest.approx(expected["ripple_db"], abs=0.0005)
     levels = band_levels_from_magnitude(freqs, smooth_fractional_octave(
-        freqs, mean_db, fraction=figures.FIGURE_FRACTION), figures.LEVEL_BANDS_HZ)
+        freqs, mean_db, fraction=figures.FIGURE_FRACTION), LEVEL_BANDS_HZ)
     for band, level in zip(row["bands"], levels):
         if not band["reason"]:
             assert band["predicted_db"] == pytest.approx(level, abs=0.0005)

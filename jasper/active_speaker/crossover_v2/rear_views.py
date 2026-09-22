@@ -8,7 +8,7 @@ A SUMMED batch plays, at the same microphone positions and the same session
 level, the incumbent tune, the same tune with its rear muted, and one to three
 variants that each change one control family. This module selects those takes,
 freezes the batch's comparison band and per-position reference curve ONCE, and
-hands :mod:`jasper.audio_measurement.rear_evidence` the arrays.
+hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
 
 A PAIR batch plays ONE candidate the run composed itself — the applied tune
 with its rear calibration cleared, so the two woofers are raw — and banks each
@@ -49,12 +49,14 @@ from jasper.active_speaker.rear_calibration import (
 )
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
+from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
 from jasper.audio_measurement.rear_evidence import (
-    ARRIVAL_GAP_BAND_HZ, BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, LEVEL_BANDS_HZ,
-    across_positions,
-    arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
-    late_energy_change, pair_band_levels, position_figures, rear_polarity, reference_curve_db,
-    repeat_spread, superposition_residual_db, band_level_changes,
+    arrival_gap_ms, confident_arrival_gap_s, gradient_residual_db,
+    pair_band_levels, rear_polarity, superposition_residual_db,
+)
+from jasper.audio_measurement.seat_figures import (
+    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, across_positions, band_level_changes,
+    comparison_band, late_energy_change, position_figures, reference_curve_db, repeat_spread,
 )
 from jasper.json_fields import finite_float
 

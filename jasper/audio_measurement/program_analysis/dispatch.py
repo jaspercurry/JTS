@@ -15,7 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
-from jasper.audio_measurement.rear_evidence import impulse_late_energy
+from jasper.audio_measurement.seat_figures import impulse_late_energy
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
 from .branches import analyze_branches

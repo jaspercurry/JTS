@@ -11,8 +11,10 @@ import numpy as np
 from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import read_rear_calibration, rear_operating_facts
-from jasper.audio_measurement import rear_evidence as figures
+from jasper.audio_measurement import rear_evidence, seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
+from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT
 
 from .pose_curve import lateral_evidence_grid_hz, nearest_native_bins
 from .rear_views import PairTake, front_on_axis, pair_takes, rear_document
@@ -73,7 +75,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     # See ADR-0325: the reference carries this document's front chain.
     muted = [take.front * front for take in takes]
     predicted = [reference + take.rear * rear for take, reference in zip(takes, muted)]
-    muted_db, predicted_db = (np.mean([figures.magnitude_db(tf[bins]) for tf in repeats], axis=0)
+    muted_db, predicted_db = (np.mean([rear_evidence.magnitude_db(tf[bins]) for tf in repeats], axis=0)
                               for repeats in (muted, predicted))
     reference = figures.reference_curve_db(freqs, muted_db)
     symptoms = {name: figures.position_figures(
@@ -84,9 +86,9 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     muted_db, predicted_db = (smooth_fractional_octave(
         freqs, curve, fraction=figures.FIGURE_FRACTION) for curve in (muted_db, predicted_db))
     change = predicted_db - muted_db - charge_delta
-    front_db = figures.magnitude_db(front)
+    front_db = rear_evidence.magnitude_db(front)
     bands = []
-    for low, high in figures.LEVEL_BANDS_HZ:
+    for low, high in LEVEL_BANDS_HZ:
         electrical = band_levels_from_magnitude(grid, front_db, [(low, high)])[0]
         covered = coverage[0] <= low and high <= coverage[1]
         muted_level = predicted_level = None
@@ -95,26 +97,26 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
             predicted_level = band_levels_from_magnitude(freqs, predicted_db, [(low, high)])[0]
         bands.append({"band_hz": [low, high], "muted_db": muted_level, "predicted_db": predicted_level,
                       "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level - charge_delta,
-                      "front_chain_db": electrical, "reason": "" if covered else figures.REASON_COVERAGE_SHORT})
-    late_covered = coverage[0] <= figures.LATE_ENERGY_BAND_HZ[0] and figures.LATE_ENERGY_BAND_HZ[1] <= coverage[1]
+                      "front_chain_db": electrical, "reason": "" if covered else REASON_COVERAGE_SHORT})
+    late_covered = coverage[0] <= LATE_ENERGY_BAND_HZ[0] and LATE_ENERGY_BAND_HZ[1] <= coverage[1]
     energies = [[figures.impulse_energy_figures(
-        figures.band_limited_impulse(grid, tf, figures.LATE_ENERGY_BAND_HZ),
+        figures.band_limited_impulse(grid, tf, LATE_ENERGY_BAND_HZ),
         sample_rate_hz=take.sample_rate_hz,
     ) for tf in pair] for pair in zip(muted, predicted)] if late_covered else []
-    late = {"band_hz": figures.LATE_ENERGY_BAND_HZ,
-            "reason": "" if late_covered else figures.REASON_COVERAGE_SHORT,
+    late = {"band_hz": LATE_ENERGY_BAND_HZ,
+            "reason": "" if late_covered else REASON_COVERAGE_SHORT,
             **{label: float(np.median([after[key] - before[key] for before, after in energies]))
                if energies else None for label, key in figures.LATE_ENERGY_CHANGE_KEYS}}
-    gap = figures.confident_arrival_gap_s(row["arrival_gap"])
+    gap = rear_evidence.confident_arrival_gap_s(row["arrival_gap"])
     keep = (grid >= coverage[0]) & (grid <= min(coverage[1], 5000.0))
     display = (freqs >= coverage[0]) & (freqs <= min(coverage[1], 5000.0))
     return {**{key: row[key] for key in ("coverage_hz", "band_hz", "arrival_gap", "superposition_residual_db", "reason")},
             "pose_kind": take.pose_kind, "repeats": len(takes), "figures": symptoms, "figures_band_hz": band,
             "trough_fill_db": None if dip is None else change[np.argmin(np.abs(freqs - dip["hz"]))],
             "ladder": "rear_level", "bands": bands, "late_energy": late,
-            "gradient_residual": {"db": None if not np.all(front[keep]) else figures.gradient_residual_db(
+            "gradient_residual": {"db": None if not np.all(front[keep]) else rear_evidence.gradient_residual_db(
                 grid[keep], rear[keep] / front[keep], gap, pair_band),
-                "reason": figures.REASON_GAP_NOT_CONFIDENT if gap is None else ""},
+                "reason": REASON_GAP_NOT_CONFIDENT if gap is None else ""},
             "curve": {"freqs_hz": freqs[display], "change_db": change[display]}}
 
 

@@ -45,11 +45,12 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.audio_measurement.rear_evidence import (
-    ARRIVAL_GAP_BAND_HZ, BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP,
-    POLARITY_INVERTED, LEVEL_BANDS_HZ,
+from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
+from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
+from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
 from jasper.cli import round_views
 from tests.crossover_v2_banked_round import (
     SEAT_BAND_HZ, SEAT_GRID_HZ, _reopen, bank_seat_round,
@@ -588,7 +589,7 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
         positions = candidate["positions"]
         placed, = (row for key, row in positions.items() if key.startswith(f"{pose_kind}_"))
         front, = (row for key, row in positions.items() if not key.startswith(f"{pose_kind}_"))
-        assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "handover", "low_bass",
+        assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "own_trend_ripple_db", "handover", "low_bass",
                               "band_level_db", "late_energy", "upper_bands", "ladder"}
         assert [band["band_hz"] for band in front["upper_bands"]] == (
             [list(band) for band in LEVEL_BANDS_HZ[-3:]] if covered_bands == 7 else [])
@@ -598,6 +599,7 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
         assert placed["upper_bands"] == []
         assert placed["reason"] == ""
         assert isinstance(placed["ripple_db"], float)
+        assert isinstance(placed["own_trend_ripple_db"], float)
         assert isinstance(placed["band_level_db"], float)
         assert isinstance(placed["handover"], dict) and isinstance(placed["low_bass"], dict)
         assert placed["trough_fill_db"] is None

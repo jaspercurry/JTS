@@ -27,6 +27,7 @@ from jasper.audio_measurement.room_boundary import (
 )
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
+from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.json_fields import finite_float
 from ..run_manifest import room_sets, view_sets
 
@@ -337,6 +338,9 @@ def room_document(
     return {
         "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
         "median": median,
+        "spread_rms_db": spread_rms_db(
+            median["spread_db"], median["freqs_hz"],
+            band_hz=[median["coverage_hz"][0], ceiling.ceiling_hz]),
         ROOM_MEDIAN_FIELD: room_median_sha256(median),
         "persistence": persistence,
         "admit_boost": limits.pop("admit_boost"),
