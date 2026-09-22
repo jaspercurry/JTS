@@ -18,7 +18,7 @@ from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_protection_profile,
 )
-from .driver_safety import DRIVER_RESEARCH_KIND, DRIVER_SAFETY_FIELDS
+from .driver_safety import DRIVER_RESEARCH_KIND
 from .test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURATIONS_S
 
 
@@ -27,6 +27,7 @@ _PROMPT_TARGET_KEYS = (
     "role",
     "manufacturer_and_model",
     "driver_style",
+    "installation",
 )
 
 # Only excitation limits carry per-field provenance in the ask.
@@ -35,14 +36,6 @@ _PROMPT_PROVENANCE_KEYS = (
     "level_duration_limits", "sensitivity_db_2v83_1m",
 )
 assert set(_PROMPT_PROVENANCE_KEYS) <= set(MANUAL_DRIVER_FIELDS)
-
-
-def driver_field_vocabulary() -> dict[str, list[str]]:
-    echo_fields = set(_PROMPT_PROVENANCE_KEYS) | set(DRIVER_SAFETY_FIELDS)
-    return {
-        "driver_fields": list(MANUAL_DRIVER_FIELDS),
-        "driver_echo_back_fields": [field for field in MANUAL_DRIVER_FIELDS if field in echo_fields],
-    }
 
 
 def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:

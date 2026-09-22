@@ -2,11 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Unit tests for the pure /rooms bond-card presentation helpers.
-//
-// grouping-view.js is a dependency-free ES module (no DOM, no imports), so
-// node can import it directly — no harness/DOM stubbing needed (mirrors
-// active_speaker_ui_test.mjs). Run via tests/test_web_rooms_setup.py.
+// Pure /rooms bond-card helpers; run via tests/test_web_rooms_setup.py.
 import assert from "node:assert/strict";
 
 import {

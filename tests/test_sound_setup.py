@@ -28,10 +28,8 @@ from tests.test_rear_preview import compare_evidence as compare_evidence
 import numpy as np
 import pytest
 
-from jasper.active_speaker import playback_route, profile as active_profile
-from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
-from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
-from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, programs_for_topology
+from jasper.active_speaker import playback_route
 from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
     update_calibration_level_state,
@@ -41,7 +39,6 @@ from jasper.active_speaker.commissioning_coordinator import build_commissioning_
 from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
 from jasper.active_speaker.runtime_contract import (
@@ -435,24 +432,7 @@ _SOUND_MODULE = (
 )
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
 
-_ACTIVE_SPEAKER_UI_TEST = (
-    Path(__file__).resolve().parent / "js" / "active_speaker_ui_test.mjs"
-)
 _NODE = shutil.which("node")
-
-
-def test_active_speaker_ui_level_match_helpers():
-    if _NODE is None:
-        pytest.skip("node not on PATH")
-    proc = subprocess.run(
-        [_NODE, str(_ACTIVE_SPEAKER_UI_TEST)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert out["ok"] is True
 
 
 @contextmanager
@@ -823,7 +803,8 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     assert f'"mode": "{page_mode}"' in html
     # The editor is a static ES module (served + revalidated by nginx), the
     # same delivery model as /system/, with no inline logic left in the page.
-    assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
+    module = "speaker" if page_mode == "speaker" else "main"
+    assert f'<script type="module" src="/assets/sound-profile/js/{module}.js">' in html
     assert "<script>" not in html
 
     if page_mode == "eq":
@@ -834,15 +815,6 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     else:
         assert 'id="view-body"' in html
         assert not any(marker in html for marker in _EQ_ONLY_CHROME)
-    # Only the speaker page links its child row, and RELATIVELY: an absolute
-    # link would land the household on the self-signed 443 origin (#2632).
-    # Both halves come from the nav row that owns the child page.
-    href, label = _crossover_child_row()
-    child = re.findall(
-        r'<a class="btn" href="([^"]*)">' + re.escape(label) + "</a>", html
-    )
-    assert child == ([href] if page_mode == "speaker" else [])
-    assert "/sound/speaker/crossover/" not in html
     assert 'id="seat-level-card"' not in html
 
 
@@ -880,66 +852,11 @@ def _island_payload(html: str, element_id="sound-page-data") -> dict:
 
 @pytest.mark.parametrize("follower", [False, True])
 @pytest.mark.parametrize("page_mode", ["eq", "speaker", "output"])
-def test_sound_page_serves_sub_crossover_bounds(monkeypatch, follower, page_mode):
+def test_sound_page_island_carries_page_identity(monkeypatch, follower, page_mode):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    assert _island_payload(
-        sound_setup._index_html(page_mode=page_mode).decode(), "jts-sub-crossover-bounds",
-    ) == {
-        "default_hz": active_profile.DEFAULT_SUB_CROSSOVER_HZ,
-        "lo_hz": active_profile.SUB_CROSSOVER_HZ_LO,
-        "hi_hz": active_profile.SUB_CROSSOVER_HZ_HI,
+    assert _island_payload(sound_setup._index_html(page_mode=page_mode).decode()) == {
+        "mode": page_mode, "follower": follower,
     }
-
-
-@pytest.mark.parametrize("follower", [False, True])
-def test_sound_page_serves_driver_vocabulary(monkeypatch, follower):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    vocabulary = _island_payload(
-        sound_setup._index_html(page_mode="setup").decode(), "jts-driver-fields",
-    )
-    echo_fields = set(_PROMPT_PROVENANCE_KEYS) | set(DRIVER_SAFETY_FIELDS)
-    assert vocabulary == {
-        "driver_fields": list(MANUAL_DRIVER_FIELDS),
-        "driver_echo_back_fields": [field for field in MANUAL_DRIVER_FIELDS if field in echo_fields],
-    }
-    assert set(vocabulary["driver_echo_back_fields"]) == echo_fields
-
-
-@pytest.mark.parametrize("follower", [False, True])
-def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
-    monkeypatch, follower,
-):
-    """The page offers exactly what the compiler builds, and is TOLD what that is.
-
-    Before this the filter picker carried its own list (including a Butterworth
-    the compiler refuses) and the slope was a free ``step="6"`` field, so the
-    editor could author a crossover that only failed at
-    ``crossover_preview_filter_unsupported`` several screens later. Deriving the
-    offer here is what makes widening
-    :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
-    ``SUPPORTED_LR_ORDERS`` reach the wizard with no edit in main.js. A bonded
-    follower keeps its LOCAL driver domain, so it gets the same offer.
-    """
-    from jasper.active_speaker.crossover_preview import (
-        DEFAULT_FILTER_TYPE,
-        DEFAULT_SLOPE_DB_PER_OCTAVE,
-    )
-    from jasper.active_speaker.declaration_vocabulary import (
-        supported_declaration_filter_types,
-        supported_declaration_slopes_db_per_octave,
-    )
-
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    island = _island_payload(sound_setup._index_html(page_mode="setup").decode())
-    vocabulary = island["crossover_vocabulary"]
-
-    assert island["follower"] is follower
-    assert vocabulary["filter_types"] == list(supported_declaration_filter_types())
-    assert vocabulary["slopes_db_per_octave"] == list(
-        supported_declaration_slopes_db_per_octave()
-    )
-    assert vocabulary["default_filter_type"] == DEFAULT_FILTER_TYPE
-    assert vocabulary["default_slope_db_per_octave"] == DEFAULT_SLOPE_DB_PER_OCTAVE
 
 
 @pytest.mark.parametrize("manual,code", [
@@ -1018,19 +935,13 @@ def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch
     assert leader_paths == ["/sound/speaker/"]
     assert "http://jts3.local/sound/speaker/" in html
     assert 'id="view-body"' in html
-    assert "/assets/sound-profile/js/main.js" in html
+    assert "/assets/sound-profile/js/speaker.js" in html
     assert '"mode": "speaker"' in html
     assert '"follower": true' in html
     assert 'id="tab-off"' not in html
     assert 'id="plot"' not in html
     # The local page owns the driver domain, so it offers no way back to it.
     assert "Open local speaker setup" not in html
-    # It is also the follower's ONLY way into its own crossover wizard: the
-    # row moved under this page, so nothing else links it. Relative, on the
-    # origin the household is already on (#2632).
-    href, label = _crossover_child_row()
-    assert f'<a class="btn" href="{href}">{label}</a>' in html
-    assert "/sound/speaker/crossover/" not in html
 
 
 def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
@@ -3340,7 +3251,7 @@ def _stub_baseline_apply(
     apply_calls: list[dict] = []
     mux_commands: list[str] = []
 
-    async def fake_apply_candidate(**kwargs):
+    async def fake_apply_candidate(candidate=None, **kwargs):
         apply_calls.append(kwargs)
         if refusal is not None:
             return refusal
@@ -3380,21 +3291,32 @@ def _stub_baseline_apply(
     monkeypatch.setattr(
         sound_active_speaker, "mux_socket_command", fake_mux_command
     )
+    monkeypatch.setattr(sound_active_speaker, "trigger_reconcile", lambda **kw: {"ok": True})
     return apply_calls, mux_commands
 
 
-async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
+@pytest.mark.parametrize("route_ready", [True, False])
+async def test_active_speaker_baseline_apply_converges_route_before_source_auto(monkeypatch, route_ready):
     apply_calls, mux_commands = _stub_baseline_apply(
         monkeypatch, applied_profile=False
     )
+    def reconcile(**kwargs):
+        assert len(apply_calls) == 1
+        assert mux_commands == []
+        return {"ok": route_ready}
+    monkeypatch.setattr(sound_active_speaker, "trigger_reconcile", reconcile)
 
     payload = await sound_active_speaker._active_speaker_baseline_profile_apply_payload(
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
-    assert mux_commands == ["AUTO"]
-    assert payload["source_selection_restore"]["status"] == "ok"
-    assert payload["source_selection_restore"]["state"]["mode"] == "auto"
+    assert payload["reconcile"]["ok"] is route_ready
+    assert mux_commands == (["AUTO"] if route_ready else [])
+    assert payload["status"] == ("applied" if route_ready else "needs_attention")
+    if route_ready:
+        assert payload["source_selection_restore"]["state"]["mode"] == "auto"
+    else:
+        assert payload["issues"][-1]["code"] == "output_route_not_ready"
 
 
 @pytest.mark.parametrize("echo", [None, "stale-candidate", "reviewed-candidate"])
@@ -3582,36 +3504,10 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
     assert sound_harness_out["liveTabMarked"] is True
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        # The module boots in follower mode (tabs + plot absent) and renders
-        # the local driver/crossover UI without fetching /state.
-        "followerModeRendersLocalDriverUi",
-        # A graph that cannot host EQ is the page's state (no tabs, no editor),
-        # and an unprobed /state keeps the editor.
-        "blockedEqCarrierIsThePageState",
-        "resetPartialCleanupSurfacesWarning",
-        "driverResearchImportPreservesOperatorInstalledConfiguration",
-        # #2883: the handoff card renders only once a baseline plays, mints its
-        # prompt server-side, and discloses a copy the declarations moved past.
-        "tuningHandoffCardMintsAndGoesStale",
-        "nextActionOwnsTheSpeakerPage",
-        "seatLevelSurvivesStepRenders",
-        "cardioidRearCalibrationPanelGatedOnSavedRearOutput",
-        "activeCrossoverFirstStepRendered",
-        "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat",
-        "passiveMainWithSubUsesResearchableMainTargetOnly",
-        "partialSavePreservesUnchosenEnclosure",
-        "directCrossoverEditRefreshesProposalAndFooter",
-        "pasteEditSaveKeepsReplyAndVisibleValues",
-        # The cross-child verdict is a warning, so the notice IS the disclosure:
-        # evaluate_output_topology reports speaker_group_spans_child_devices
-        # without blocking the save, and nothing else tells the household. This
-        # render is the whole user-facing half of #2486.
-        "crossChildSpeakerGroupIsDisclosedInTheMapStep",
-    ],
-)
+@pytest.mark.parametrize("scenario", [
+    "blockedEqCarrierIsThePageState", "splitPageModesRenderAndBootOnlyOwnedSurfaces",
+    "eqSliderDragSendsNoLiveAudioUntilRelease", "volumeFloorRequiresExplicitSaveButAuditionsDraft",
+])
 def test_the_sound_module_passes_its_harness_scenario(sound_harness_out, scenario):
     assert {scenario: True} in sound_harness_out["results"]
 
@@ -5786,7 +5682,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
-        lambda *a, **k: {"programs": RUNNABLE_PROGRAMS, "applied_profile": {
+        lambda *a, **k: {"programs": ("speaker", "bass", "room"), "applied_profile": {
             "exists": True, "stands": True, "candidate_fingerprint": "applied-fp",
             "record": "record-12", "applied_at": "2026-09-13T12:00:00Z",
         }},
@@ -5806,7 +5702,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
-    assert tuple(entry["id"] for entry in payload["programs"]) == RUNNABLE_PROGRAMS
+    assert tuple(entry["id"] for entry in payload["programs"]) == ("speaker", "bass", "room")
     assert all("prompt" not in entry for entry in payload["programs"])
     assert payload["program"] == "room"
     assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
@@ -6181,3 +6077,186 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
     assert len(client.active_raw_values) == 1
     assert not record.exists()
     assert sound_active_speaker._cardioid_compare_payload()["state"] == "normal"
+
+
+@pytest.mark.parametrize('layout,crossover,channels,cardioid,count', [
+    ('mono', 'passive', 2, False, 1), ('stereo', 'passive', 2, False, 2),
+    ('mono', 'active', 2, False, 2), ('stereo', 'active', 2, False, 4),
+    ('mono', 'active', 3, False, 3), ('stereo', 'active', 3, False, 6),
+    ('mono', 'active', 3, True, 3), ('stereo', 'active', 3, True, 6),
+])
+def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, channels, cardioid, count):
+    from jasper.active_speaker.layout import build_speaker_layout, layout_choices
+    from jasper.active_speaker.measurement_programs import programs_for_topology
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    choices = dict(layout=layout, crossover=crossover, channels=channels, cardioid=cardioid)
+    topology = build_speaker_layout(mono_output_topology(), choices)
+    targets = [channel.target_id(group.id) for group in topology.speaker_groups for channel in group.channels]
+    outputs = [channel.physical_output_index for group in topology.speaker_groups for channel in group.channels]
+    assert len(set(targets)) == len(set(outputs)) == count
+    assert topology.evaluation()['status'] == 'valid'
+    assert layout_choices(topology) == choices
+    assert ('rear' in programs_for_topology(topology)) is cardioid
+
+
+def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_path, monkeypatch):
+    from jasper.web import sound_speaker_setup as setup
+    from jasper.active_speaker.design_inputs import resolved_draft_inputs
+    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
+
+    topology = mono_output_topology()
+    path = tmp_path / 'draft.json'
+    monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(path))
+    monkeypatch.setattr(setup, 'load_output_topology', lambda: topology)
+    inputs = _operator_inputs()
+    target = topology.speaker_groups[0].channels[0].target_id(topology.speaker_groups[0].id)
+    edits = {'drivers': [{'target_id': target, 'role': 'woofer', 'gain_offset_db': -3,
+                         'cabinet': {'enclosure_kind': 'sealed'}}]}
+    save_design_draft(topology, operator_inputs=inputs, manual_settings=edits)
+    context = build_driver_research_context(topology, inputs, edits)
+    assert context['targets'][0]['installation']['enclosure_kind'] == 'sealed'
+    assert context['targets'][0]['installation']['pad'] == {'kind': 'none'}
+    assert 'gain_offset_db' not in context['targets'][0]['installation']
+    research = _research_result(context)
+    research['drivers'][0]['sensitivity_db_2v83_1m'] = 85
+    setup.import_research({'text': 'Result:\n```json\n' + json.dumps(research) + '\n```'})
+    research['drivers'][0]['sensitivity_db_2v83_1m'] = 86
+    setup.import_research({'text': json.dumps(research)})
+    draft = load_design_draft(topology=topology)
+    resolved = resolved_draft_inputs(draft)['drivers'][0]
+    assert resolved['sensitivity_db_2v83_1m'] == 86
+    assert resolved['gain_offset_db'] == -3
+    assert resolved['gain_offset_db_provenance'] == 'operator_pinned'
+    assert resolved['cabinet']['enclosure_kind'] == 'sealed'
+    assert 'sensitivity_db_2v83_1m' not in draft['manual_settings']['drivers'][0]
+    before = path.read_bytes()
+    for bad in ('{', json.dumps({**research, 'drivers': [{**row, 'model': 'Wrong speaker'} for row in research['drivers']]})):
+        with pytest.raises(ValueError):
+            setup.import_research({'text': bad})
+        assert path.read_bytes() == before
+    inputs = {**inputs, 'target_models': {target: 'Replacement woofer'}}
+    setup.save_details({'operator_inputs': inputs, 'manual_settings': edits})
+    draft = load_design_draft(topology=topology)
+    assert draft['driver_research'] is None
+    assert draft['manual_settings']['drivers'][0]['gain_offset_db'] == -3
+
+
+def test_setup_preserves_unambiguous_legacy_trim_when_other_bindings_are_ambiguous(tmp_path, monkeypatch):
+    from jasper.web import sound_speaker_setup as setup
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.design_draft import save_design_draft
+    from jasper.active_speaker.design_inputs import resolved_draft_inputs
+    from jasper.active_speaker.layout import build_speaker_layout
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _operator_inputs
+
+    topology = build_speaker_layout(mono_output_topology(), {
+        "layout": "mono", "crossover": "active", "channels": 3, "cardioid": True,
+    })
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(tmp_path / "draft.json"))
+    monkeypatch.setattr(setup, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: None)
+    monkeypatch.setattr(setup.commissioning_coordinator, "load_commissioning_view", lambda topology: {
+        "programs": programs_for_topology(topology), "applied_profile": {"stands": False},
+        "driver_values": {"complete": False}, "review": {"issues": []},
+    })
+    inputs = _operator_inputs()
+    save_design_draft(topology, operator_inputs=inputs, manual_settings={"drivers": [
+        {"role": "woofer", "gain_offset_db": -2}, {"role": "tweeter", "gain_offset_db": -20},
+    ]})
+    manual = setup.load_setup_view()["draft"]["manual_settings"]
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            target = channel.target_id(group.id)
+            if not any(row.get("target_id") == target for row in manual["drivers"]):
+                manual["drivers"].append({"target_id": target, "role": channel.role})
+    setup.save_details({"operator_inputs": inputs, "manual_settings": manual})
+    draft = load_design_draft(topology=topology)
+    drivers = resolved_draft_inputs(draft)["drivers"]
+    assert next(row for row in drivers if row["role"] == "tweeter")["gain_offset_db"] == -20
+    assert any(row.get("target_id") is None and row["role"] == "woofer" and row["gain_offset_db"] == -2
+               for row in draft["manual_settings"]["drivers"])
+
+
+@pytest.mark.parametrize('style', ['', 'compression_driver'])
+def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch, style):
+    from jasper.web import sound_speaker_setup as setup
+    from jasper.active_speaker import baseline_profile
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _operator_inputs
+
+    topology = mono_output_topology()
+    target = topology.speaker_groups[0].channels[1].target_id(topology.speaker_groups[0].id)
+    saved_layouts = []
+    def save_layout(raw):
+        nonlocal topology
+        topology = type(topology).from_mapping(raw['output_topology'])
+        saved_layouts.append(topology)
+        return {'save': {'status': 'saved'}}
+    monkeypatch.setattr(sound_active_speaker, '_save_output_topology_payload', save_layout)
+    monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(tmp_path / 'draft.json'))
+    monkeypatch.setattr(setup, 'load_output_topology', lambda: topology)
+    monkeypatch.setattr(baseline_profile, 'load_applied_baseline_profile_state', lambda: None)
+    monkeypatch.setattr(setup.commissioning_coordinator, 'load_commissioning_view', lambda topology: {
+        'programs': programs_for_topology(topology),
+        'applied_profile': {'stands': False}, 'driver_values': {'complete': False},
+        'review': {'issues': [{'code': 'measurement_band_missing'}]},
+    })
+    response = setup.update_setup('/setup/details', {
+        'operator_inputs': _operator_inputs(), 'manual_settings': {}, 'driver_styles': {target: style},
+    }, camilla_factory=lambda: None)
+    view = response['setup']
+    assert view['stage'] == 'research'
+    assert view['next_action']['id'] == 'copy_research'
+    assert view['draft']['prompt']
+    assert len(saved_layouts) == bool(style)
+    assert view['draft']['targets'][1]['driver_style'] == (style or None)
+    assert view['issues'] == []
+    assert view == setup.load_setup_view()
+    assert [p['id'] for p in view['programs']] == ['speaker', 'bass', 'room']
+
+
+def test_setup_apply_uses_declared_base_instead_of_the_incumbent(tmp_path, monkeypatch):
+    from jasper.web import sound_speaker_setup as setup, sound_active_speaker
+    from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
+
+    _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    seen = []
+    async def apply(**kwargs):
+        seen.append(kwargs['candidate'])
+        return {'status': 'applied'}
+    monkeypatch.setattr(sound_active_speaker, '_active_speaker_finish_commissioning_payload', apply)
+    monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'tune', 'programs': [{'id': 'speaker'}]})
+    response = setup.update_setup('/setup/apply', {}, camilla_factory=lambda: None)
+    assert response['result']['status'] == 'applied'
+    assert response['setup'] == setup.load_setup_view()
+    assert seen[0].analysis['measurement_status'] == 'unmeasured'
+    assert not seen[0].linearization
+
+
+def test_speaker_setup_browser_contract():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    result = subprocess.run([_NODE, str(Path(__file__).parent / 'js/speaker_setup_test.mjs')], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('path,writer', [('/setup/save-layout', '_save_output_topology_payload'),
+                                      ('/setup/reset', '_reset_output_topology_payload')])
+def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypatch, path, writer):
+    from jasper.web import sound_speaker_setup as setup
+
+    async def audio_operation():
+        return {'status': 'saved'}
+    def save(raw):
+        return asyncio.run(audio_operation())
+    monkeypatch.setattr(sound_active_speaker, writer, save)
+    monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'details'})
+    with sound_server(tmp_path) as base:
+        response = json.loads(json_post_with_csrf(base, path, {}).read())
+    assert response['result']['status'] == 'saved'
+    assert response['setup']['stage'] == 'details'

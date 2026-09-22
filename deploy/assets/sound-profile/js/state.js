@@ -2,46 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Sound profile — the page's shared records and its boot island.
-//
-// The /sound/eq/, /sound/speaker/ and /sound/output/ views share these records
-// by reference: callers mutate their properties, never the bindings, so this
-// module stays the one owner of each. `pageData` reads the JSON island at
-// evaluation time, which is safe because the page loads main.js as a deferred
-// module script.
-
 import { readJsonIsland } from '../../shared/js/dom.js';
 
-var ACTIVE_GAIN_EPSILON_DB = 0.05;
-
-var outputTopology = {
-  loading: false, saving: false, resetting: false, repinning: false,
-  payload: null, draft: null,
-  clockDomain: null,
-  observedHardware: null,
-  hardwareAdoption: null,
-  hardwareMismatch: null,
-  hardwareRepin: null,
-  error: '', dirty: false, touched: false
-};
-
-var driverResearch = {
-  inputs: {
-    full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: '',
-    target_models: {}
-  },
-  settings: {drivers: {}, crossovers: {}},
-  prompt: '',
-  importText: '',
-  importedPayload: null,
-  designDraft: null,
-  error: '',
-  dirty: false,
-  safetyDirty: false,
-  editedDriverTargets: {},
-  saving: false
-};
-var crossoverPreview = {payload: null, error: ''};
+const ACTIVE_GAIN_EPSILON_DB = 0.05;
 
 // The EQ editor's record (/sound/eq/). resetEqEditor() serves the exits that
 // discard the naming UI outright — newDraft, editEntry, resetDraft,
@@ -83,44 +46,9 @@ var outputPage = {
   blocked: false,          // ./settings: the graph refused to carry EQ
   i2sHat: null,
   volumeFloorDraftDb: null,
-  stepOverride: '',
-  templateDraftAxes: {layout: '', speakerMode: ''}
 };
 
-// Clears templateDraftAxes only — the layout wizard's in-flight axis pick,
-// dropped when a saved topology supersedes it. `stepOverride` is not part of
-// that draft: which step is open is cleared by the re-pin path alone.
-function resetOutputTemplateDraft() {
-  outputPage.templateDraftAxes = {layout: '', speakerMode: ''};
-}
-
 function el(id) { return document.getElementById(id); }
-// The crossover filters and slopes this page may OFFER, served on the island
-// by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
-// (jasper/active_speaker/profile.py's SUPPORTED_CROSSOVER_TYPES /
-// SUPPORTED_LR_ORDERS, spelled by staging). Deliberately NOT re-stated here:
-// a literal list would be a second answer to "what can JTS build", and the
-// editor would go on offering a filter or slope the compiler refuses several
-// screens later. An island that carries none leaves the pickers empty and
-// blocks the save with a named reason rather than guessing a vocabulary.
-function crossoverVocabularyFromIsland(raw) {
-  var island = raw && typeof raw === 'object' ? raw : {};
-  var filterTypes = Array.isArray(island.filter_types) ? island.filter_types : [];
-  var slopes = Array.isArray(island.slopes_db_per_octave) ?
-    island.slopes_db_per_octave : [];
-  return {
-    filterTypes: filterTypes.map(String),
-    slopes: slopes.map(Number).filter(function(value) {
-      return isFinite(value) && value > 0;
-    }),
-    defaultFilterType: island.default_filter_type == null ?
-      '' : String(island.default_filter_type),
-    defaultSlope: Number(island.default_slope_db_per_octave) || null
-  };
-}
-// nginx selects one renderer mode on the same backend. EQ owns profiles and
-// Match Loudness; Speaker owns the layout, drivers and local commissioning;
-// Output owns the I2S HAT and volume shaping.
 var pageData = (function() {
   var id = (el('sound-page-data') || {}).textContent?.trim() ?
     'sound-page-data' : 'sound-follower-data';
@@ -132,25 +60,17 @@ var pageData = (function() {
   return {
     mode: id === 'sound-follower-data' && (el(id) || {}).textContent?.trim() ? 'speaker' : mode,
     follower: parsed.follower === true,
-    crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
   };
 })();
 var pageMode = pageData.mode;
 var followerMode = pageData.follower;
-var crossoverVocabulary = pageData.crossoverVocabulary;
 
 export {
   ACTIVE_GAIN_EPSILON_DB,
-  crossoverPreview,
-  crossoverVocabulary,
-  driverResearch,
   el,
   eqEditor,
   followerMode,
   outputPage,
-  outputTopology,
   pageMode,
-  readJsonIsland,
   resetEqEditor,
-  resetOutputTemplateDraft,
 };

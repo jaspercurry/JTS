@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.round_copy import RUN_ENDED
+from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
 from jasper.active_speaker import baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
@@ -82,9 +83,8 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("needs_layout", "layout", "declare_speaker", True, None, (), (), None),
     ("needs_driver_values", "research", "save_driver_values", True, None, (), (), None),
     ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), (), None),
-    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), (), None),
-    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), (), None),
-    ("blocked", "profile", "apply_candidate", False, None, (), (), None),
+    ("ready_to_save_profile", "profile", "save_baseline_profile", True, None, (), (), None),
+    ("blocked", "profile", "save_baseline_profile", False, None, (), (), None),
     ("applied", "profile", "run_program", True, "speaker", ("speaker",), (), None),
     ("not_required", "layout", "run_program", True, "bass", (), (), None),
     ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),), None),
@@ -113,9 +113,9 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
         topology, design_draft=draft, crossover_preview=_ready_preview(),
         baseline_profile=_applied_baseline_profile(permissions={"may_apply": status != "blocked"}),
         applied_profile=applied if status == "applied" else None, recent_rounds=recent,
-        first_experiment={"candidate_fingerprint": "measured-fp"} if action == "apply_candidate" else None,
+        first_experiment={"candidate_fingerprint": "measured-fp"} if action == "save_baseline_profile" else None,
     )
-    assert [step["id"] for step in view["steps"]] == ["layout", "research", "experiment", "profile"]
+    assert [step["id"] for step in view["steps"]] == ["layout", "research", "profile"]
     assert sum(step["status"] == "active" for step in view["steps"]) <= 1
     assert view["current_step"] == current
     assert view["status"] == status
@@ -125,8 +125,8 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
         assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
     assert view["combined_groups"] == []
-    if action == "apply_candidate":
-        assert view["next_action"]["body"] == {"expected_candidate_fingerprint": "measured-fp"}
+    if action == "save_baseline_profile":
+        assert view["next_action"]["body"] == {}
     elif action == "copy_prompt":
         assert view["next_action"]["round_dir"] == recent[program]["round_dir"]
     elif action == "declare_speaker":
@@ -164,7 +164,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: (None, {}))
 
-    choices = coordinator.round_choices({}, "front_rear/express")
+    choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices}
     rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
     assert ids & rear_ids == (rear_ids if rear else set())
@@ -174,6 +174,8 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert sum(choice["default"] for choice in choices) == 1
     programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})
+    assert (handoff["status"] == "ready") is passive
+    assert bool(handoff["prompt"]) is passive
     page = sound_active_speaker._active_speaker_baseline_profile_payload()
     assert tuple(entry["id"] for entry in handoff["programs"]) == programs
     assert tuple(entry["id"] for entry in page["tuning_programs"]) == programs
@@ -243,7 +245,7 @@ def test_preview_and_displaced_profile_keep_existing_actions(displaced):
         first_experiment={"candidate_fingerprint": "measured-fp"},
     )
     assert view["status"] == ("ready_to_save_profile" if displaced else "needs_driver_values")
-    assert view["next_action"]["id"] == ("apply_candidate" if displaced else "save_driver_values")
+    assert view["next_action"]["id"] == ("save_baseline_profile" if displaced else "save_driver_values")
     assert view["next_action"]["enabled"] is True
 
 
@@ -357,9 +359,8 @@ def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     status = {"active": True, "setup": {"active": True, "status": "ready"},
               "capture": {"status": "complete", "run": {"status": "complete", "poses": 1}}}
-    choices = coordinator.round_choices(status, selected_id)
+    choices = round_choices(status, selected_id)
     env = build_crossover_envelope_v2({**status, "round_choices": choices})
     action = next(c["action"] for c in env["round_choices"] if c["id"] == selected_id)
-    assert selected_id in action["label"]
     assert action["body"]["plan"]["program"] == selected_id
     assert (env["screen"], env["terminal_status"], env["verdict_text"]) == ("finished", "complete", RUN_ENDED)

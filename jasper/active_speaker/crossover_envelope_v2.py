@@ -13,7 +13,7 @@ from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
 from jasper.audio_measurement.timing_verification import timing_next_action
-from .commissioning_coordinator import round_capture
+from .measurement_view import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
@@ -451,9 +451,9 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
         return {"state": "none", "label": "No speaker profile applied"}
     owner = str(contract.get("owner") or "")
     if owner == "automatic":
-        return {"state": "automatic", "label": "Automatic crossover applied"}
+        return {"state": "automatic", "label": "Speaker configuration active"}
     if owner == "manual":
-        return {"state": "manual", "label": "Manual crossover applied"}
+        return {"state": "manual", "label": "Speaker configuration active"}
     return {"state": "applied", "label": "Speaker profile applied"}
 
 

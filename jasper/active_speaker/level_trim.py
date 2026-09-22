@@ -57,8 +57,11 @@ def declared_driver_gains(
         reference_db = min(sensitivities.values())
         for role, sensitivity in sensitivities.items():
             trim = reference_db - sensitivity
-            if provenance.get(role) != "operator_pinned" and trim < -0.05:
-                datasheet[role] = max(round(trim, 1), MAX_ATTENUATION_DB)
+            if provenance.get(role) != "operator_pinned":
+                gains.pop(role, None)
+                provenance[role] = "sensitivity_estimate"
+                if trim < -0.05:
+                    datasheet[role] = max(round(trim, 1), MAX_ATTENUATION_DB)
     return {**dict.fromkeys(roles, 0.0), **datasheet, **gains}, provenance, datasheet, issues
 
 

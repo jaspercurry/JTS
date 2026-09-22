@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
 
-CHOOSE_PROGRAM = "Choose a pose set, then start the round."
+CHOOSE_PROGRAM = "Start a measurement round when you are ready."
 RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
 PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
 
@@ -50,8 +50,8 @@ def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]
         return lines
     counts = facts.get("measurements_per_pose") or []
     if counts and not facts.get("pose"):
-        lines.append(f"Pose set {facts['program']}: {facts['poses']} poses ({facts['mover']}).")
-        lines.append("Measurements per pose: " + ", ".join(str(n) for n in counts) + f"; {facts['measurements']} measurements in total.")
+        lines.append(f"Microphone positions: {facts['poses']}.")
+        lines.append("Measurements per position: " + ", ".join(str(n) for n in counts) + f"; {facts['measurements']} measurements in total.")
         lines += ["A measurement that is too quiet can be taken again louder.",
                   f"Allow about {math.ceil(facts['estimated_seconds'] / 60)} minutes, plus time for retakes."]
     if facts.get("pose") and facts.get("pose_details"):

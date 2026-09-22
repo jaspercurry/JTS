@@ -13,6 +13,8 @@ from jasper.json_fields import CodedFieldError, JsonFields
 
 
 INSTALLATION_FIELDS: dict[str, dict[str, Any]] = {
+    "horn_model": {"label": "Horn or waveguide", "type": "text"},
+    "coil_wiring": {"label": "Voice-coil wiring", "type": "text"},
     "amplifier_model": {"label": "Amplifier model", "type": "text"},
     "amplifier_gain_control": {"label": "Amplifier gain control", "type": "text"},
     "supply_voltage_v": {"label": "Power supply (V)", "type": "number"},
