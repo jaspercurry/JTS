@@ -28,6 +28,7 @@ from tests.test_rear_preview import compare_evidence as compare_evidence
 import numpy as np
 import pytest
 
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, programs_for_topology
 from jasper.active_speaker import playback_route
 from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
@@ -6164,6 +6165,7 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
     monkeypatch.setattr(setup, 'load_output_topology', lambda: topology)
     monkeypatch.setattr(baseline_profile, 'load_applied_baseline_profile_state', lambda: None)
     monkeypatch.setattr(setup.commissioning_coordinator, 'load_commissioning_view', lambda topology: {
+        'programs': programs_for_topology(topology),
         'applied_profile': {'stands': False}, 'driver_values': {'complete': False},
         'review': {'issues': [{'code': 'measurement_band_missing'}]},
     })
