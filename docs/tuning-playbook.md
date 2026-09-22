@@ -33,18 +33,11 @@ The goal is the listening position. Measure the speaker layer at the mark:
 a gated direct-sound read is the only way to separate speaker from room.
 Judge the result at the seat.
 
-| Goal figure | Owner and current limit |
-|---|---|
-| Wall hole (SBIR: speaker-boundary interference response) depth at the seat | `rear_evidence` owns `dip.depth_db` at bearings and seats. The room program publishes no wall-hole depth. |
-| Trough fill | `rear_preview` owns `trough_fill_db`; preview only. |
-| Roughness / ripple | `rear_evidence` owns `ripple_db`, against the rear-muted reference's one-octave trend. Roughness against each curve's own trend is a different number, not yet a product figure. |
-| Early-arriving share | `rear_evidence` owns the late-energy figures: 90–250 Hz, early 0–10 ms versus late 10–40 ms. Rear program only. |
-| Cross-seat spread | `room_views` publishes `median.spread_db`. |
-| Repeat spread | Per program; a shared, comparable repeat spread is not yet a product figure. |
-
-The four programs measure and publish these differently today.
-A shared seat-figures module is the planned owner (#5439).
-The Rear chapter's roughness figures and pattern-ratio arithmetic come from laptop scripts, not the product.
+The [Seat loop](#seat) reads the listening-position figures owned by
+`jasper/audio_measurement/seat_figures.py`. Rear and room views use the same
+takes; each view states its limits. `rear_preview` owns predicted trough fill.
+The Rear chapter's hardware examples and pattern ratios are measured guidance,
+not software ranks.
 
 ## Speaker
 
@@ -146,8 +139,6 @@ Read `alignment_verdict.saved` and its `verification` line: `residual_rms_db` as
 `flatness_improvement_db` compares ripple on the same metric; `refinement_delta_us` is committed minus scored seed, `epsilon_ppm` is clock drift, and `gcc_delay_us` is the bare correlation estimate. Read `parallax_us` with `driver_spacing_source`; a geometric estimate is not a measured delay.
 
 ## Room
-
-`room-grade` across candidate sets of one seat trial is not a candidate comparison because the rear weight changes the band level.
 
 The room layer reads the seat median through the applied speaker tune.
 One seat cannot show which features persist. Seek at least three
@@ -257,75 +248,38 @@ that band it adds in-phase bass and the wall is part of the speaker. The
 `rear-calibration-tuning-fields.md`; decisions: ADR-0318, ADR-0322,
 ADR-0324, ADR-0325, ADR-0326, ADR-0327).
 
-The goal is a real cardioid at the listening positions: less late
-(reflected) energy and a filled wall trough, with the band above the rear
-stage — 350 Hz to the tweeter — unchanged. A front-side sweep cannot prove
-a polar pattern, so do not claim rejection. It can tell a cardioid from
-in-phase fill: a cardioid removes late energy in 90–250 Hz, fill adds it,
-and the two look alike on a smoothed magnitude curve.
+The goal is less reflected energy and a filled wall trough at the listening
+positions, with the band above the rear stage unchanged. A front-side sweep
+cannot prove a polar pattern. At the mark, late energy helps distinguish
+cancellation from in-phase fill; the [Seat section](#seat) gives its seat limit.
 
-The loop of record is one pair take, previews, one trial.
+The [Seat loop](#seat) is the loop of record. The pair take plays the front
+woofer alone, the rear alone and both on one clock, with the rear stage cleared.
+Read `packet["rear"][].pair.positions[*]`: `superposition_residual_db` tests
+the model; `arrival_gap` gives the rear-minus-front gap, confidence and
+`search_ms`; `rear_polarity` gives the measured sign. The gap uses the applied
+rear document's band or `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage;
+`band_hz` and `arrival_gap_band_source` disclose `rear_document` or `default`.
 
-1. Pair take first. `jasper-round run --program rear --poses rear/pair
-   --wait` plays, at each bearing, the front woofer alone, the rear woofer
-   alone and both, on one clock, with the rear stage cleared; use
-   `rear/pair_mark` for the one-placement pair take. Read its
-   `packet["rear"][].pair.positions[*]`: `superposition_residual_db` (the
-   trust number),
-   `arrival_gap` (rear-minus-front gap in the applied rear document's band,
-   or 90–315 Hz by default, clipped to sweep coverage; `band_hz` and
-   `arrival_gap_band_source` name the band and source (`rear_document` or `default`),
-   with confidence and `search_ms`) and
-   `rear_polarity`. This round is the model; everything after it is
-   computation until the trial.
+Preview predicts F·H_front + R·(H_bass + H_cancel) at each measured position.
+Read `positions[*]`: `trough_fill_db` is the rise at the muted curve's deepest
+dip in `figures_band_hz`, named by `figures.muted.dip.hz`. If that frequency
+is a band edge instead of the wall trough, read `curve.change_db` at the
+trough. `bands[].change_db` includes the headroom charge against this document
+with its rear muted; `front_chain_db` is the front chain's electrical level,
+the only prediction above the pair's coverage. `stage.headroom_charge_db`
+is the broadband attenuation cost already included in `change_db`.
 
-2. Preview before you play. Write a `jts_prescription` with one
-   `rear_calibration` section and run `jasper-crossover-prescriber judge
-   --preview DOC --round <pair round dir>` — no sound, no bank. It predicts
-   the document by superposition, F·H_front + R·(H_bass + H_cancel), at
-   every position. Read `positions[*]`: `trough_fill_db` (how much the wall
-   trough rises, read at the muted curve's deepest dip inside
-   `figures_band_hz`; `figures.muted.dip.hz` names that frequency. When
-   the band's upper edge wins over the wall trough — 335 Hz under a 350 Hz
-   low-pass, not the 130 Hz trough — read `curve.change_db` at the
-   trough's frequency instead);
-   `bands[]` (`change_db` is the level the listener gets against this
-   document with its rear muted, after the headroom charge;
-   `front_chain_db` is the front chain's electrical level — the only thing
-   the document can do above the pair's coverage);
-   `late_energy.early_late_change_db` (positive: less late energy, a
-   cardioid; negative: in-phase fill; the muted document reads 0) and
-   `arrival_shift_ms` (a cardioid pulls the energy centroid earlier);
-   `gradient_residual.db` (how far the rear/front chain sits from an ideal
-   gradient at that position's measured gap — the documents that measured
-   as cardioids sat below about −6 dB at every bearing, the ones that
-   behaved like fill sat at −2 to −4); `figures.muted` and
-   `figures.predicted` (the packet's own `dip`, `ripple_db`, `handover`,
-   `low_bass`, `band_level_db`); and `stage.headroom_charge_db` (the
-   loudness the boost costs — it lands as broadband attenuation, so it is
-   already inside `change_db`).
-
-3. Vary, then pick. Add `--vary PATH[,PATH]=v1,v2,... --out-dir DIR` to
-   preview a grid around one seed — the rear-weight Peaking gain on both
-   rear branches (coupled paths), the cancellation `delay_ms`, the
-   cancellation low-pass corner. Read the table; pick two or three;
-   `compose` each with `--base saved`.
-
-4. One trial, judged within the round. `jasper-round trial <fp>
-   --candidates base,<fp>,<fp>,<muted fp> --wait` plays them with the same
-   section carrying `rear_muted: true` as the reference at the three seats
-   by hand, banked as `rear/seat`; `--mover arm` uses `rear_express`.
-   Read `packet["rear"][].candidates[]`: the per-position `dip`, `ripple_db`,
-   `handover.hole_db`, `low_bass`, `band_level_db`; the measured
-   `late_energy` (candidate minus rear-muted at that position:
-   `early_late_change_db`, `band_energy_change_db`, `arrival_shift_ms`);
-   `bands` at seats; `upper_bands` at bearings (350–700, 700–1500,
-   1500–5000 Hz against rear-muted); then
-   `headroom_change_db` and `across_positions`. Compare within one round
-   only: the muted trough's depth drifts by up to 5 dB between rounds at the
-   same bearing while its frequency holds, and only the repeated bearing
-   resolves tenths.
-   Read `own_trend_ripple_db`: roughness against the candidate's own trend; `ripple_db` also charges an intended broad re-tilt.
+At the mark, positive `late_energy.early_late_change_db` means a higher
+early-to-late energy ratio. Read `arrival_shift_ms` beside it.
+`gradient_residual.db` measures distance from an ideal gradient at the measured
+gap: hardware cardioids read below about −6 dB at every bearing, while fills
+read −2 to −4. `figures.muted` and `figures.predicted` use the packet's figures.
+Vary the rear-weight Peaking gain on both branches together, cancellation
+`delay_ms`, or cancellation low-pass corner; judge the seat trial yourself.
+`upper_bands` at bearings uses `UPPER_BANDS_HZ`; seats carry `bands` instead.
+Compare within one round: the muted trough's depth moved by up to 5 dB between
+rounds at the same bearing while its frequency held.
 
 What held on jts3, and what the preview should show before a document is
 worth playing:
@@ -426,6 +380,66 @@ The switch compares only the applied tune with its rear off, not two banked tune
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass
 responses and refit them if needed.
+
+## Seat
+
+This is the hand loop of record for a cardioid box. Keep the cabinet at its wall.
+
+1. At the mark, run `jasper-round run --program speaker --poses speaker/mark --wait`.
+   Fit, trial and apply the speaker there, then bank the model:
+   `jasper-round run --program rear --poses rear/pair_mark --wait`.
+2. Write the rear seed and preview variants from that pair round:
+   `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
+   Compose the seed, selected variants and a copy with `rear_muted: true`:
+   `jasper-crossover-prescriber compose <doc> --base saved --round <pair-round>`.
+3. Compare them at the seats:
+   `jasper-round trial <seed-fp> --candidates base,<seed>,<v1>,<v2>,<muted> --wait`.
+   These placeholders are composed fingerprints. Read the figures below and choose.
+4. Join the chosen candidate to `packet["sets"]` by `candidate_id`, then to
+   `packet["room"]` by `set_id`; it holds a room document per candidate set.
+   Write the room fit from that set and keep the chosen rear stage as its base:
+   `jasper-crossover-prescriber compose <room-doc> --base <chosen-fp> --round <seat-round> --set <chosen-set-id>`.
+5. Measure the composed document: `jasper-round trial <document-fp> --wait`.
+   If its packet supports adoption, run `jasper-round apply <document-fp>`.
+
+Placement budget: **1 + 3 + 3** — the shared mark, the comparison seats, then
+the composed-document seats. Counts come from `measurement_plans.json`'s
+`layouts.speaker_mark` and `layouts.seat_express`, loaded by `measurement_programs._PROGRAMS`.
+Each candidate plays at each seat before the mic moves: candidates per seat,
+**candidates × seats** sweeps per trial; repeats add sweeps, not placements.
+The hand rear trial is `rear/seat`, with `co_purposes: ["room"]`; the banker
+runs rear and room views on the same takes. The arm uses `rear_express`.
+
+Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat
+rows, then `across_positions`: per-figure median, worst value and
+`worst_regression` against base. Keep missing-position reasons. Software never ranks.
+
+- Band levels (`band_levels`, reported as `bands`, ladder `rear_level`) are against
+  rear-muted over `band_ladders.LEVEL_BANDS_HZ`. Read level beside every shape.
+- `dip` is the front-wall hole only when front-wall geometry is declared:
+  the band's `source` is `declared_geometry`, printed as `comparison.band_source`.
+  Otherwise read `geometry_reason`: `geometry_undeclared`,
+  `front_baffle_geometry_undeclared` or `walls_undeclared`; a dip in the fallback
+  `section_band` or `coverage` is not proof of a wall hole.
+- `ripple_db` is mean-removed RMS against the rear-muted reference trend;
+  it also charges an intended broad re-tilt. `own_trend_ripple_db` measures
+  roughness against the candidate's own trend. Smoothing and trend use
+  `seat_figures.FIGURE_FRACTION` and `REFERENCE_FRACTION`.
+- `late_energy` at a seat describes modal decay, not "early arriving sound".
+  Read `early_late_change_db`, `band_energy_change_db` and `arrival_shift_ms`;
+  parameters are `band_ladders.LATE_ENERGY_BAND_HZ` and `seat_figures`'
+  `EARLY_WINDOW_MS`, `LATE_WINDOW_MS`, `CENTROID_WINDOW_MS`.
+- `comparison.repeat_spread` is variation for the same candidate, position
+  and level. Seat trials disclose `too_few_repeats`; cross-seat spread cannot replace it.
+- Room `spread_rms_db`, beside `median`, is RMS of per-bin cross-seat standard
+  deviations from coverage floor to ceiling. Read `median.n_positions` with it.
+  Three seats make this estimate noisy; seven or eleven use `run --layout seat_cube`
+  or `run --layout seat_cloud` (counts: `measurement_plans.json`'s named layouts).
+
+`room-grade` across this trial's candidate sets is not a candidate comparison:
+rear weight also changes band level. For a plain box, skip the rear pair and
+rear variants; use `jasper-round run --program room --poses room/seat --wait`,
+then compose the room fit with `--set`, trial it and apply the chosen document.
 
 ## Five rules that hold everywhere
 
