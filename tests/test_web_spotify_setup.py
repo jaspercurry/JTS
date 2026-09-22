@@ -23,6 +23,7 @@ import time
 import types
 import urllib.parse
 from email.message import Message
+from html.parser import HTMLParser
 from io import BytesIO
 
 import pytest
@@ -466,6 +467,50 @@ def test_post_unknown_route_404s():
     h = _Request(_handler_cls(), "/nope", body=b"")
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+def test_manual_start_paste_form_preserves_session_csrf(monkeypatch, tmp_path):
+    monkeypatch.setattr(spotify_setup, "_PENDING_FLOWS", {})
+    monkeypatch.setattr(
+        spotify_setup, "default_cache_path_for", lambda name: str(tmp_path / name),
+    )
+    handler_cls = _handler_cls(
+        client_id="0123456789abcdef0123456789abcdef", mode="manual",
+        registry_path=str(tmp_path / "accounts.json"),
+    )
+    index = _Request(handler_cls, "/")
+    index.do_GET()
+    cookie = next(c.split(";", 1)[0] for c in index.header_values("Set-Cookie")
+                  if c.startswith("jts_csrf="))
+    token = cookie.split("=", 1)[1]
+    start = _Request(handler_cls, "/start", cookies=cookie, body=urllib.parse.urlencode({
+        "csrf_token": token, "name": "jasper",
+    }).encode())
+    start.do_POST()
+    assert start.status == 200
+
+    class PasteForm(HTMLParser):
+        active = False
+        fields = {}
+
+        def handle_starttag(self, tag, attributes):
+            attrs = dict(attributes)
+            if tag == "form":
+                self.active = attrs.get("action") == "paste-callback"
+            if self.active and tag == "input" and attrs.get("type") == "hidden":
+                self.fields[attrs["name"]] = attrs.get("value", "")
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.active = False
+
+    form = PasteForm()
+    form.feed(start.wfile.getvalue().decode())
+    form.fields["pasted"] = "http://127.0.0.1:8888/callback?code=test&state=expired"
+    paste = _Request(handler_cls, "/paste-callback", cookies=cookie,
+                     body=urllib.parse.urlencode(form.fields).encode())
+    paste.do_POST()
+    assert (form.fields.get("csrf_token"), paste.status) == (token, 303)
 
 
 def test_post_setup_credentials_saves_and_restarts(monkeypatch):
