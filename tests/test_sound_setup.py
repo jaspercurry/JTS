@@ -5682,7 +5682,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
-        lambda *a, **k: {"programs": RUNNABLE_PROGRAMS, "applied_profile": {
+        lambda *a, **k: {"programs": ("speaker", "bass", "room"), "applied_profile": {
             "exists": True, "stands": True, "candidate_fingerprint": "applied-fp",
             "record": "record-12", "applied_at": "2026-09-13T12:00:00Z",
         }},
