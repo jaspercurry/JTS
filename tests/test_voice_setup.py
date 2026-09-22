@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from jasper import env_file
+from jasper import atomic_io, env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
 from jasper.web import _common, voice_cost_page, voice_costs, voice_setup
@@ -602,7 +602,7 @@ def test_e2e_a_saver_describes_the_restart_it_actually_got(
         voice_setup, "restart_voice_daemon", lambda: outcome,
     )
     state_path = tmp_path / "voice_provider.env"
-    env_file.write_env_file(str(state_path), {
+    atomic_io.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-keep",
     })
@@ -638,7 +638,7 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
         voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     state_path = tmp_path / "voice_provider.env"
-    env_file.write_env_file(str(state_path), {
+    atomic_io.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-keep",
     })
@@ -675,7 +675,7 @@ def test_e2e_refresh_models_writes_cache_without_restarting_voice(
         voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     state_path = tmp_path / "voice_provider.env"
-    env_file.write_env_file(str(state_path), {
+    atomic_io.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-existing",
     })
@@ -881,7 +881,7 @@ def test_e2e_get_index_renders_state(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     state_path = tmp_path / "voice_provider.env"
-    env_file.write_env_file(str(state_path), {
+    atomic_io.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-existing-12345abc",
         "JASPER_OPENAI_MODEL": "gpt-realtime-2",
@@ -906,7 +906,7 @@ def test_e2e_clear_credentials_removes_provider_keys(
         voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
     )
     state_path = tmp_path / "voice_provider.env"
-    env_file.write_env_file(str(state_path), {
+    atomic_io.write_env_file(str(state_path), {
         "JASPER_VOICE_PROVIDER": "gemini",
         "GEMINI_API_KEY": "AIza-keep",
         "OPENAI_API_KEY": "sk-clear",

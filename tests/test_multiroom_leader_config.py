@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
     SOLO_RESTORE_PATH,
@@ -137,7 +138,6 @@ def test_bonded_and_restore_names_are_jts_generated():
     as JTS-generated — else a profile save while bonded would refuse with
     the custom-config error (or worse, an unlisted name would be treated
     as hand-rolled). Pins the _JTS_GENERATED_RE registration."""
-    from jasper.multiroom.leader_config import CANONICAL_CAMILLA_CONFIG_DIR
     from jasper.sound.camilla_yaml import is_jts_generated_config
 
     assert is_jts_generated_config(

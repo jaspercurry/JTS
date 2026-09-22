@@ -47,7 +47,7 @@ from ..camilla_config_contract import (
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
-from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig

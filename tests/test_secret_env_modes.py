@@ -18,7 +18,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from jasper.env_file import write_env_file
+from jasper.atomic_io import write_env_file
 from jasper.web import _common
 
 ROOT = Path(__file__).resolve().parents[1]

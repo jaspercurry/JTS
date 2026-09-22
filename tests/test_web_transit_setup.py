@@ -9,9 +9,8 @@ save / clear behaviour). This file is the migration guard: it asserts the
 page now renders canonical design-system bytes (links /assets/app.css,
 carries the shared .app-header + icon sprite + page stylesheet, loads its
 behaviour as an ES module) and that the migration was presentation-only —
-the routes, the CSRF-protected forms, and the public module surface are
-unchanged. Network calls (GBFS, BusTime) are mocked so the suite stays
-hardware-free.
+the routes and CSRF-protected forms are unchanged. Network calls
+(GBFS, BusTime) are mocked so the suite stays hardware-free.
 """
 from __future__ import annotations
 
@@ -23,6 +22,7 @@ import urllib.parse
 
 import pytest
 
+from jasper import atomic_io
 from jasper.web import transit_page, transit_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
@@ -354,7 +354,7 @@ def test_post_save_writes_routes_key_to_secret_file_and_default_to_transit_env(
 
 def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypatch):
     monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
-    transit_setup.write_env_file(
+    atomic_io.write_env_file(
         str(tmp_path / "google_routes.env"),
         {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Keep_Key"},
         mode=transit_setup.SECRET_ENV_MODE,
@@ -375,7 +375,7 @@ def test_post_save_blank_routes_key_preserves_existing_secret(tmp_path, monkeypa
 
 def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
     monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
-    transit_setup.write_env_file(
+    atomic_io.write_env_file(
         str(tmp_path / "google_routes.env"),
         {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic-Clear_Key"},
         mode=transit_setup.SECRET_ENV_MODE,
@@ -432,7 +432,7 @@ def test_post_cities_enables_pack_writes_env_and_restarts(tmp_path, monkeypatch)
         transit_setup, "restart_voice_daemon", lambda: restarts.append(None) or RestartOutcome.RAN,
     )
     # Seed coords so the round-trip preserves them alongside the new toggle.
-    transit_setup.write_env_file(
+    atomic_io.write_env_file(
         str(tmp_path / "transit.env"), dict(NYC_STATE), mode=0o640,
     )
     token = "z" * 64
@@ -451,7 +451,7 @@ def test_post_cities_uncheck_all_writes_empty_value(tmp_path, monkeypatch):
     # absent) so enabled_pack_ids reads it as "no cities" rather than falling
     # back to the absent-key "all" default. This is the toggle's whole point.
     monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
-    transit_setup.write_env_file(
+    atomic_io.write_env_file(
         str(tmp_path / "transit.env"),
         {**NYC_STATE, "JASPER_TRANSIT_CITIES": "nyc"},
         mode=0o640,

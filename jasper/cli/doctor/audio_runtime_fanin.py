@@ -20,6 +20,7 @@ from ...camilla_config_contract import devices_playback_is_pipe
 from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...measurement_window import MEASUREMENT_FANIN_LABEL
 from ...music_sources import SOURCE_SPECS, Source
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -878,8 +879,7 @@ def check_fanin_coupling() -> CheckResult:
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH. Whether outputd consumes what this graph writes
-    belongs to :func:`check_content_transport_coherence`.
+    Outputd consumption belongs to :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -891,7 +891,7 @@ def check_fanin_coupling() -> CheckResult:
 
     label = "fan-in coupling"
     active_path = evidence.camilla_config_path()
-    config_path = Path(active_path or "/var/lib/camilladsp/configs/sound_current.yml")
+    config_path = Path(active_path or CANONICAL_CAMILLA_CONFIG_DIR / "sound_current.yml")
     devices = _loaded_device_fields(config_path)
     if not devices and config_path.exists():
         # A config IS loaded and its devices block did not parse (an absent or

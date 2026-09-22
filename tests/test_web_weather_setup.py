@@ -29,7 +29,7 @@ import urllib.parse
 import pytest
 
 import jasper.location_state as ls
-from jasper import env_file
+from jasper import atomic_io, env_file
 from jasper.web import _common, weather_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
@@ -316,7 +316,7 @@ def test_seed_weather_skips_atomically_when_coords_present(tmp_path):
     from jasper.web import transit_setup
 
     wp = str(tmp_path / "weather.env")
-    env_file.write_env_file(wp, {
+    atomic_io.write_env_file(wp, {
         ls.WEATHER_LAT_ENV: "1.000",
         ls.WEATHER_LON_ENV: "2.000",
         ls.WEATHER_DISPLAY_NAME_ENV: "Home",
@@ -348,7 +348,7 @@ def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
 
     wp = str(tmp_path / "weather.env")
     # Start with only a foreign key: no coords, so the seed is eligible.
-    env_file.write_env_file(wp, {"FOO": "bar"}, mode=ls.WEATHER_FILE_MODE)
+    atomic_io.write_env_file(wp, {"FOO": "bar"}, mode=ls.WEATHER_FILE_MODE)
 
     owned = weather_setup._owned_env_keys()
     # A realistic weather /save always carries a location (a location-less save

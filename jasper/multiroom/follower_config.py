@@ -39,7 +39,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig

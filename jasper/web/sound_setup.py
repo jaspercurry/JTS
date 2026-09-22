@@ -38,6 +38,7 @@ from jasper.active_speaker.audition import (
 )
 from jasper.platform.systemd import no_hold
 from jasper.log_event import log_event
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.profile import (
     PROFILE_LIBRARY_PATH,
     PROFILE_PATH,
@@ -131,8 +132,7 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
         "/profiles/rename",
         "/profiles/delete",
 })
-
-DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
+DEFAULT_CONFIG_DIR = str(CANONICAL_CAMILLA_CONFIG_DIR)
 MAX_JSON_BYTES = 64 * 1024
 
 #: The public path of each ``X-JTS-Sound-Page`` mode nginx may set. Any other

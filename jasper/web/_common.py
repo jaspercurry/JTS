@@ -99,9 +99,6 @@ from ..atomic_io import atomic_write_text
 from ..platform import control_client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
-# Re-exported: google_setup.py still imports both from this module. Drop
-# this line once it imports jasper.env_file directly.
-from ..env_file import read_env_file, write_env_file  # noqa: F401
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..local_sources.markers import local_sources_allowed
 from ..log_event import log_event

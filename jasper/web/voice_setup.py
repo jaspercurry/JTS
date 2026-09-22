@@ -45,7 +45,8 @@ from jasper.usage import (
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
 
-from ..env_file import delete_env_file, read_env_file, write_env_file
+from ..atomic_io import write_env_file
+from ..env_file import delete_env_file, read_env_file
 from ..platform import systemd
 from ._common import (
     RESTART_CLAUSE,
@@ -92,10 +93,8 @@ def _load_merged(cfg: dict[str, Any]) -> dict[str, str]:
 
 
 def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
-    """Persist ``new`` across the two files: provider API keys go to the
-    group-`jasper-secrets` ``keys_path``; everything else to the broad
-    ``state_path``. Each file is deleted when its slice is empty (so a
-    fully-cleared provider leaves no stale file). Atomic per file via
+    """Persist provider API keys to group-`jasper-secrets` ``keys_path``
+    and other settings to ``state_path``. Delete empty slices. Atomic via
     ``write_env_file``; the setgid jasper-secrets dir gives keys_path its
     narrowed group automatically. Raises OSError on write failure — the
     callers wrap this to surface a flash + keep the daemon's last-good

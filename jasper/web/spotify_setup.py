@@ -101,7 +101,8 @@ from ..spotify_oauth import (
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
-from ..env_file import delete_env_file, read_env_file, write_env_file
+from ..atomic_io import write_env_file
+from ..env_file import delete_env_file, read_env_file
 from ._common import (
     RESTART_CLAUSE,
     RestartOutcome,
@@ -202,7 +203,6 @@ def _read_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> dict[str, str]
 def _write_creds_file(
     client_id: str, mode: str, path: str = SPOTIFY_CREDENTIALS_ENV_PATH
 ) -> None:
-    # WS1 Phase 4b: 0640 group jasper-intsecrets. `mode` here is the OAuth mode.
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
         "SPOTIFY_OAUTH_MODE": mode,

@@ -2,19 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.atomic_io.atomic_write_bytes/atomic_write_text — the
-canonical atomic write helpers that hand-rolled tempfile+chmod+os.replace
-sites are being consolidated onto. ``atomic_write_text`` is a thin UTF-8
-wrapper over ``atomic_write_bytes``, so the shared contract is pinned once,
-against whichever helper best fits each behavior.
-
-Pins the contract callers depend on: a clean write+read round-trip, the
-requested mode landing on the published file, parent-dir creation, atomic
-overwrite of an existing file, UTF-8 fidelity, and — the property the whole
-pattern exists for — that a failed rename leaves no stray temp file behind AND
-propagates the error (this helper does NOT swallow; fail-soft is a caller
-policy).
-"""
+"""Atomic publication, permissions, durability, and env serialization."""
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +16,22 @@ import time
 
 import pytest
 
-from jasper import atomic_io as atomic_io_module
+from jasper import atomic_io as atomic_io_module, env_file
 from jasper.atomic_io import (
     advisory_file_lock,
     advisory_file_lock_async,
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
+    format_env_text,
     fsync_directory,
+    locked_transform_env_file,
+    locked_update_env_file,
+    locked_upsert_env_file,
+    write_env_file,
 )
+
+from jasper.env_file import parse_env_mapping, read_env_file
 
 from ._async_wait import wait_signalled
 from ._log_events import event_records
@@ -198,8 +193,6 @@ def foreign_parent_gid(tmp_path, monkeypatch):
 
 
 def _write(writer, path):
-    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
-
     return {
         "text": lambda: atomic_write_text(path, "JASPER_X=1\n", mode=0o640),
         "json": lambda: atomic_write_json(path, {"JASPER_X": "1"}, mode=0o640),
@@ -511,7 +504,6 @@ def test_shared_lock_refuses_symlink_without_mutating_target(tmp_path):
 def test_locked_env_writer_refuses_symlinked_data_without_disclosing_target(
     tmp_path, operation,
 ):
-    from jasper.atomic_io import locked_transform_env_file, locked_update_env_file
 
     target = tmp_path / "root-secret.env"
     target.write_text("API_SECRET=sentinel\n", encoding="utf-8")
@@ -534,8 +526,6 @@ def test_locked_env_writer_refuses_symlinked_data_without_disclosing_target(
 
 
 def test_locked_env_writer_rejects_fifo_without_blocking(tmp_path):
-    from jasper.atomic_io import locked_update_env_file
-
     path = tmp_path / "source_intent.env"
     os.mkfifo(path)
 
@@ -545,8 +535,6 @@ def test_locked_env_writer_rejects_fifo_without_blocking(tmp_path):
 
 
 def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
-    from jasper.atomic_io import locked_update_env_file
-
     path = tmp_path / "source_intent.env"
     original = b"A=" + b"x" * 64
     path.write_bytes(original)
@@ -559,11 +547,6 @@ def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
 
 
 def test_locked_update_env_file_owner_header_is_written_once(tmp_path):
-    # jasper/env_file.py's write_env_file docstring points racing writers at
-    # this helper; it must keep the same header a bare write_env_file call
-    # would produce, and a second update must not duplicate it.
-    from jasper.atomic_io import locked_update_env_file
-
     path = tmp_path / "source_intent.env"
     locked_update_env_file(path, {"A_KEY": "abc"}, owner="the /example wizard")
     text = path.read_text(encoding="utf-8")
@@ -768,8 +751,6 @@ def test_preserve_target_stat_survives_a_chown_permission_error(tmp_path, monkey
 
 
 def test_locked_transform_replaces_and_can_drop_keys(tmp_path):
-    from jasper.atomic_io import locked_transform_env_file
-
     path = tmp_path / "weather.env"
     path.write_text("A=1\nB=2\nC=3\n", encoding="utf-8")
 
@@ -785,8 +766,6 @@ def test_locked_transform_replaces_and_can_drop_keys(tmp_path):
 
 
 def test_locked_transform_none_deletes_file(tmp_path):
-    from jasper.atomic_io import locked_transform_env_file
-
     path = tmp_path / "weather.env"
     path.write_text("A=1\n", encoding="utf-8")
     assert locked_transform_env_file(path, lambda cur: None) is None
@@ -794,8 +773,6 @@ def test_locked_transform_none_deletes_file(tmp_path):
 
 
 def test_locked_transform_absent_file_is_empty_dict(tmp_path):
-    from jasper.atomic_io import locked_transform_env_file
-
     path = tmp_path / "weather.env"
     seen = {}
 
@@ -813,11 +790,6 @@ def test_locked_transform_serializes_concurrent_read_modify_writes(tmp_path):
     between the (internal) read and write. The shared flock must serialize
     them so NO update is lost — this is the exact two-writer shape weather.env
     faces from weather_setup + transit_setup."""
-    import threading
-    import time
-
-    from jasper.atomic_io import locked_transform_env_file
-
     path = tmp_path / "weather.env"
     path.write_text("", encoding="utf-8")
     n = 12
@@ -838,7 +810,6 @@ def test_locked_transform_serializes_concurrent_read_modify_writes(tmp_path):
     for t in threads:
         t.join(5.0)
 
-    from jasper.env_file import parse_env_mapping
     final = parse_env_mapping(path.read_text(encoding="utf-8"))
     assert final == {f"K{i}": str(i) for i in range(n)}  # nothing lost
 
@@ -853,7 +824,6 @@ def test_locked_upsert_preserves_the_targets_owner_and_surrounding_text(
     daemons out). The MODE is still asserted, which is what repairs a file
     another writer left too narrow. Real chown needs root, so this pins the
     CALL."""
-    from jasper.atomic_io import locked_upsert_env_file
 
     path = tmp_path / "outputd.env"
     path.write_text("# owned by the reconciler\nKEEP=yes\nDROP=1\n", encoding="utf-8")
@@ -884,7 +854,6 @@ def test_locked_upsert_preserves_the_targets_owner_and_surrounding_text(
 def test_locked_upsert_reports_a_non_utf8_target_as_an_os_error(tmp_path):
     """SD-card bit rot must reach the caller's designed write-failure path, not
     escape as a UnicodeDecodeError traceback; the file is left alone."""
-    from jasper.atomic_io import locked_upsert_env_file
 
     path = tmp_path / "outputd.env"
     path.write_bytes(b"KEEP=\xff\xfe\n")
@@ -900,7 +869,6 @@ def test_locked_upsert_publishes_an_emptied_file_unless_asked_to_delete_it(tmp_p
     """The two callers differ here and both are load-bearing: the audio-hardware
     reconciler matches ``jasper_env_file_unset``'s zero-byte publish, the
     coupling reconciler unlinks."""
-    from jasper.atomic_io import locked_upsert_env_file
 
     for delete, exists in ((False, True), (True, False)):
         path = tmp_path / f"delete-{delete}.env"
@@ -931,8 +899,6 @@ def test_both_env_readers_resolve_one_written_file_identically(tmp_path, value):
     ``EnvironmentFile``; a value written once must read back the same through
     either. Quoted values are the case that divided them — the bash writer
     (``deploy/lib/jasper-env-file.sh``) quotes, so they reach these files."""
-    from jasper.atomic_io import format_env_text, locked_update_env_file
-    from jasper.env_file import read_env_file
 
     path = tmp_path / "shared.env"
     path.write_text(format_env_text({"K": value}), encoding="utf-8")
@@ -941,3 +907,35 @@ def test_both_env_readers_resolve_one_written_file_identically(tmp_path, value):
     via_env_file = read_env_file(path)
 
     assert via_atomic_io == via_env_file
+
+
+def test_write_env_file_round_trips_at_the_default_secret_mode(tmp_path):
+    # API keys live in these files; a wider default would leak them under a
+    # daemon-readable path.
+    path = tmp_path / "v.env"
+    write_env_file(str(path), {"A_KEY": "abc", "PROVIDER": "acme"})
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc", "PROVIDER": "acme"}
+
+
+def test_write_env_file_owner_header_is_a_comment_line_readers_skip(tmp_path):
+    # AGENTS.md: a /var/lib/jasper/*.env file's header names its writer.
+    # The header must not become a parsed key/value pair for either reader.
+    path = tmp_path / "v.env"
+    write_env_file(
+        str(path), {"A_KEY": "abc"}, owner="the /example wizard",
+    )
+    text = path.read_text()
+    assert text.splitlines()[0] == "# Written by the /example wizard."
+    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc"}
+    assert env_file.parse_env_mapping(text) == {"A_KEY": "abc"}
+
+
+def test_write_env_file_rejects_a_newline_value_leaving_the_file_intact(tmp_path):
+    # systemd's parser neither quotes nor escapes, so a newline would land a
+    # bogus second assignment. Rejecting mid-write must publish nothing.
+    path = tmp_path / "v.env"
+    write_env_file(str(path), {"OK": "first"})
+    with pytest.raises(ValueError):
+        write_env_file(str(path), {"OK": "second", "BAD": "no\nline"})
+    assert env_file.read_env_file(str(path)) == {"OK": "first"}

@@ -13,14 +13,14 @@ Two halves, one quoting rule (:func:`_unquoted`, systemd's own):
   hand-written ``KEY = value`` is normalized) — harmless because every writer
   here emits clean ``KEY=value``, which is the ``EnvironmentFile`` form.
 * **The whole file**, for the wizards whose unit of work is the file: read it
-  into a mapping, publish a mapping as its complete contents, delete it.
+  into a mapping or delete it. Publication belongs to ``jasper.atomic_io``.
 
 Scope is deliberately small: no interpolation, no multi-line values, no
 ``export`` handling, because ``EnvironmentFile`` lines are plain ``KEY=value``
 — the format the daemons actually read. Callers own their key names, their
 value validation, and their restart/rollback; a caller whose writers race owns
 picking :func:`jasper.atomic_io.locked_update_env_file` over
-:func:`write_env_file`.
+:func:`jasper.atomic_io.write_env_file`.
 """
 
 from __future__ import annotations
@@ -191,36 +191,6 @@ def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
             logger.warning("could not read %s: %s", path, err)
         return {}
     return parse_env_mapping(text)
-
-
-def write_env_file(
-    path: str | os.PathLike[str],
-    values: Mapping[str, str],
-    *,
-    mode: int = 0o600,
-    owner: str | None = None,
-) -> None:
-    """Atomically publish ``values`` as the file's COMPLETE contents.
-
-    A whole-file replace, so a reader never sees a torn file — but two writers
-    that each read, change one key, and publish do lose each other's key. Use
-    :func:`jasper.atomic_io.locked_update_env_file` where writers race (the
-    threaded wizard server's own ``/save`` handlers do).
-
-    ``mode`` defaults to 0600 because these files carry API keys and OAuth
-    secrets; pass a group-readable mode for the ones a non-root daemon has to
-    read off disk. Raises ``ValueError`` for a value carrying a newline, which
-    systemd would read as a second assignment.
-
-    ``owner``, when given, is the operator-facing writer name AGENTS.md's Map
-    section requires in a ``/var/lib/jasper/*.env`` file's header (e.g.
-    "JTS /airplay mode control"); omit it for a file outside that invariant.
-    """
-    # lazy: import cost — env_file is a leaf every parse-only reader imports,
-    # and this pulls in tempfile/fcntl for the writers alone (ADR-0226).
-    from jasper.atomic_io import atomic_write_text, format_env_text
-
-    atomic_write_text(path, format_env_text(values, owner=owner), mode=mode)
 
 
 def delete_env_file(path: str | os.PathLike[str]) -> None:

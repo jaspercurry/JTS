@@ -2,54 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The single home for atomic text/bytes-file writes in JTS.
+"""Atomic publication and locked env-file updates.
 
-The codebase persists small bits of runtime state to disk all over
-(``mic_mute.env``, the volume-state file, the multiroom reconciler's
-derived-args env file, …). Every one of those wants the SAME guarantee: a
-reader either sees the OLD file or the COMPLETE new file, never a torn or
-half-written one. That is a tempfile-in-the-same-directory + ``os.replace``
-rename, which is atomic on a POSIX same-filesystem rename. This module is the
-canonical implementation; call it instead of hand-rolling the pattern.
+Same-directory tempfiles and ``os.replace`` keep readers from seeing partial
+writes. Modes are set before publication. Parent-group publication is best
+effort: a denied chgrp is logged and the writer keeps its own group.
+``group_from_parent=False`` keeps root-only files out of that policy.
 
-These properties are load-bearing and easy to get subtly wrong by hand:
-
-  - **Same-filesystem rename.** The tempfile is created in the SAME directory
-    as the target (``dir=parent``), not ``/tmp``. ``os.replace`` is only
-    atomic within one filesystem; a cross-FS rename degrades to copy+unlink,
-    which is not atomic.
-  - **No wider-permission window.** ``os.chmod`` is applied to the tempfile
-    BEFORE the rename, so the file is never visible at the final path with a
-    broader mode than requested (``mkstemp`` creates 0600, then we widen to
-    ``mode`` only after, and the published name appears already-correct).
-  - **Parent-group publishing, by default.** Some shared state files are written
-    by root during install and by non-root daemons at runtime. The unpublished
-    file — the tempfile, or a freshly opened lock — is chgrped to the parent
-    directory's group before it becomes visible, so a root-run atomic replace
-    does not publish ``root:root 0640`` into a group-readable state directory.
-    Publication is BEST EFFORT and has no strict mode: a writer that may not
-    chgrp (a non-root process outside the target group — every CLI writing to
-    an operator-named path) keeps its own group, which is never wider than the
-    parent's, logs one line, and publishes the file anyway.
-    ``group_from_parent=False`` opts out a root-only file that must keep
-    root's group.
-  - **Optional target-stat preservation.** A repair or migration that rewrites a
-    file it does not own must not re-own it. ``preserve_target_stat=True`` copies
-    the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
-    stricter form of the bullet above, which sets the group only.
-    ``preserve_target_owner=True`` is the middle rung: the target's uid/gid, but
-    the mode the caller asked for, for a writer that owns a file's permissions
-    without owning its ownership.
-  - **One shared lock mode.** Advisory locks — including the ones the env
-    writers take — default to ``SHARED_LOCK_MODE``, group-writable, so two
-    units running as different service users can share one lock.
-
-This module RAISES on failure (``OSError``) and cleans up the tempfile on any
-exception. Callers that want fail-soft behaviour (log-and-continue, as several
-``/var/lib/jasper`` writers do) wrap the call themselves — error handling is a
-caller policy decision, not swallowed here. It stays import-cheap for daemons:
-its only project imports are the stdlib-only structured-log emitter and the
-stdlib-only ``EnvironmentFile`` line mechanics.
+``preserve_target_stat`` retains an existing file's uid/gid/mode;
+``preserve_target_owner`` retains uid/gid with the caller's requested mode.
+Shared locks use ``SHARED_LOCK_MODE`` so service users can cooperate.
+Callers own fail-soft policy; publication raises and cleans up on failure.
+Only stdlib and the cheap env parser/log emitter belong in this import graph
+(ADR-0226).
 """
 from __future__ import annotations
 
@@ -90,6 +55,7 @@ __all__ = [
     "locked_update_env_file",
     "locked_upsert_env_file",
     "read_regular_bytes_nofollow",
+    "write_env_file",
 ]
 
 #: One env-file mutation: ``(key, value)`` to state it, ``(key, None)`` to drop
@@ -595,6 +561,32 @@ def format_env_text(values: Mapping[str, str], *, owner: str | None = None) -> s
     return "".join(lines)
 
 
+def write_env_file(
+    path: str | os.PathLike[str],
+    values: Mapping[str, str],
+    *,
+    mode: int = 0o600,
+    owner: str | None = None,
+) -> None:
+    """Atomically publish ``values`` as the file's COMPLETE contents.
+
+    A whole-file replace, so a reader never sees a torn file — but two writers
+    that each read, change one key, and publish do lose each other's key. Use
+    :func:`jasper.atomic_io.locked_update_env_file` where writers race (the
+    threaded wizard server's own ``/save`` handlers do).
+
+    ``mode`` defaults to 0600 because these files carry API keys and OAuth
+    secrets; pass a group-readable mode for the ones a non-root daemon has to
+    read off disk. Raises ``ValueError`` for a value carrying a newline, which
+    systemd would read as a second assignment.
+
+    ``owner``, when given, is the operator-facing writer name AGENTS.md's Map
+    section requires in a ``/var/lib/jasper/*.env`` file's header (e.g.
+    "JTS /airplay mode control"); omit it for a file outside that invariant.
+    """
+    atomic_write_text(path, format_env_text(values, owner=owner), mode=mode)
+
+
 def env_lock_path(path: str) -> str:
     parent = os.path.dirname(path) or "."
     basename = os.path.basename(path)
@@ -701,7 +693,7 @@ def locked_update_env_file(
     each other's keys. ``lock_mode`` is the lock's own mode; see
     :data:`SHARED_LOCK_MODE`. ``owner``, when given, is forwarded to
     :func:`format_env_text` so a racing writer keeps the same header a
-    :func:`jasper.env_file.write_env_file` caller would get. The old file is
+    :func:`write_env_file` caller would get. The old file is
     read with :func:`jasper.env_file.parse_env_mapping`, so the returned
     mapping carries values systemd would see — a quoted value written by
     another writer (``deploy/lib/jasper-env-file.sh`` quotes) arrives

@@ -6,11 +6,9 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from jasper import env_file
+from jasper import atomic_io, env_file
 
 
 @pytest.mark.parametrize(
@@ -124,41 +122,9 @@ def test_read_env_file_resolves_quotes_and_skips_malformed_lines(tmp_path):
     }
 
 
-def test_write_env_file_round_trips_at_the_default_secret_mode(tmp_path):
-    # API keys live in these files; a wider default would leak them under a
-    # daemon-readable path.
-    path = tmp_path / "v.env"
-    env_file.write_env_file(str(path), {"A_KEY": "abc", "PROVIDER": "acme"})
-    assert os.stat(path).st_mode & 0o777 == 0o600
-    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc", "PROVIDER": "acme"}
-
-
-def test_write_env_file_owner_header_is_a_comment_line_readers_skip(tmp_path):
-    # AGENTS.md: a /var/lib/jasper/*.env file's header names its writer.
-    # The header must not become a parsed key/value pair for either reader.
-    path = tmp_path / "v.env"
-    env_file.write_env_file(
-        str(path), {"A_KEY": "abc"}, owner="the /example wizard",
-    )
-    text = path.read_text()
-    assert text.splitlines()[0] == "# Written by the /example wizard."
-    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc"}
-    assert env_file.parse_env_mapping(text) == {"A_KEY": "abc"}
-
-
-def test_write_env_file_rejects_a_newline_value_leaving_the_file_intact(tmp_path):
-    # systemd's parser neither quotes nor escapes, so a newline would land a
-    # bogus second assignment. Rejecting mid-write must publish nothing.
-    path = tmp_path / "v.env"
-    env_file.write_env_file(str(path), {"OK": "first"})
-    with pytest.raises(ValueError):
-        env_file.write_env_file(str(path), {"OK": "second", "BAD": "no\nline"})
-    assert env_file.read_env_file(str(path)) == {"OK": "first"}
-
-
 def test_delete_env_file_is_idempotent(tmp_path):
     path = tmp_path / "gone.env"
-    env_file.write_env_file(str(path), {"A": "1"})
+    atomic_io.write_env_file(str(path), {"A": "1"})
     env_file.delete_env_file(str(path))
     assert not path.exists()
     env_file.delete_env_file(str(path))

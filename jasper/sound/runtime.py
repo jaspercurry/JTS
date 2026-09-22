@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR, same_config_file, dsp_writer_lock
+from jasper.dsp_apply import same_config_file, dsp_writer_lock
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CONFIG_DIR
 from jasper.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
 from jasper.sound.profile import (
@@ -29,7 +30,6 @@ from jasper.sound.settings import SoundSettings, load_sound_settings, output_tri
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_DIR = CANONICAL_CAMILLA_CONFIG_DIR
 RECONCILE_PROFILE_ID = "reconcile-current-dsp"
 
 

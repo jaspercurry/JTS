@@ -26,6 +26,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
     SpeakerGroup,
@@ -76,7 +77,6 @@ SCHEMA_VERSION = 1
 STAGED_STARTUP_CONFIG_KIND = "jts_active_speaker_staged_startup_config"
 DEFAULT_STAGED_CONFIG_NAME = "active_speaker_staged_startup.yml"
 DEFAULT_STAGED_METADATA_PATH = Path("/var/lib/jasper/active_speaker_staged_config.json")
-DEFAULT_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
 # A per-driver commissioning config is a TRANSIENT runtime load, never the
 # durable boot config: it is written to its own path so it can never overwrite
 # the all-muted staged boot config (the crash-recovery-MUTED invariant).

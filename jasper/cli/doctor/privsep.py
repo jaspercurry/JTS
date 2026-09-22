@@ -45,6 +45,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _systemctl_unavailable_result
@@ -117,10 +118,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # so a 0600 regression silently degrades the dashboard sound card.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
-            # Statefile -> active CamillaDSP config, read for the
-            # bonded-leader producer-liveness signal.
             "/var/lib/camilladsp/outputd-statefile.yml",
-            "/var/lib/camilladsp/configs/*.yml",
+            str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
         ),
     ),
     DaemonReadSpec(
@@ -144,7 +143,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         ),
         paths=(
             # EQ editor + the sound config family.
-            "/var/lib/camilladsp/configs/*.yml",
+            str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
             # Wizard SSOT / status files re-read fresh on page render.
             "/var/lib/jasper/voice_provider.env",
             "/var/lib/jasper/wake_model.env",
@@ -181,7 +180,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         supplementary_groups=("audio", "jts-ring"),
         paths=(
             # The graphs the measurement daemon validates, applies and rolls back.
-            "/var/lib/camilladsp/configs/*.yml",
+            str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
             # Written by whichever commissioning arm measured first — /sound/
             # as jasper-web, or this unit. An unreadable one reads as "no
             # measurements" and silently discards the household's captures.
