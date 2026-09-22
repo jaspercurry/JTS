@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import wave
 
+from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.cli._report import output_path
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -25,7 +26,8 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             from jasper.active_speaker.bench.bass_replay import replay_bass  # lazy: native bass attribution
             return replay_bass(args.graph, args.stimulus, args.out, main_db=args.main_db,
                 bass_reference_db=args.bass_reference_db,
-                descriptor=json.loads(args.bass_descriptor.read_text()), channels=tuple(args.bass_channels))
+                descriptor=json.loads(args.bass_descriptor.read_text()), channels=tuple(args.bass_channels),
+                preset=load_active_speaker_preset(args.preset) if args.preset is not None else None)
         if args.bass_channels:
             raise ValueError('bass_replay_descriptor_required')
         return replay_graph(args.graph, args.stimulus, args.out, main_db=args.main_db,
@@ -44,6 +46,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", type=Path, required=True, help="render directory; use pi-run-diagnostic.sh on the Pi")
     parser.add_argument("--bass-descriptor", type=Path, help="also render bass off, full boost and volume taper from this descriptor")
     parser.add_argument("--bass-channels", type=int, nargs="+", default=[], help="bass output indices; validated against the graph and descriptor")
+    parser.add_argument("--preset", type=Path, help="active-speaker preset JSON for shared cardioid bass detection")
     parser.set_defaults(func=_cmd_replay)
     levels = sub.add_parser("dsp-levels", help="read digital bass-band levels from an exact native render (laptop)")
     levels.add_argument("manifest", type=Path)

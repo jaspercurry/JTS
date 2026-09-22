@@ -12,19 +12,25 @@ import yaml
 
 from jasper.audio_measurement.snr_policy import DBFS_FLOOR
 from jasper.bass_extension.dynamic import LOUDNESS_TAPER_DB, DynamicBassDescriptor, validate_dynamic_bass_descriptor
-from jasper.bass_extension.dynamic_graph import build_native_dynamic_bass_graph, validated_base_graph
+from jasper.bass_extension.dynamic_graph import build_native_dynamic_bass_graph, dynamic_bass_owner_groups, validated_base_graph
 
+from ..profile import ActiveSpeakerPreset
 from .replay import replay_graph, replay_levels
 
 
 def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
-                bass_reference_db: float, descriptor: Mapping, channels: tuple[int, ...]) -> dict:
+                bass_reference_db: float, descriptor: Mapping, channels: tuple[int, ...],
+                preset: ActiveSpeakerPreset | None = None) -> dict:
     descriptor = validate_dynamic_bass_descriptor(descriptor)
     settings = DynamicBassDescriptor(**descriptor)
     source = yaml.safe_load(graph.read_text())
-    baseline = validated_base_graph(source, settings, channels)
+    groups = dynamic_bass_owner_groups(channels, (
+        (output.side, output.driver_role, output.output_variant, output.index)
+        for output in (preset.channel_map.outputs if preset is not None else ())
+    ))
+    baseline = validated_base_graph(source, settings, channels, groups)
     fragment = build_native_dynamic_bass_graph(channels=source['devices']['playback']['channels'],
-                                              owner_channels=channels, descriptor=settings)
+                                              owner_channels=channels, descriptor=settings, owner_groups=groups)
     uncompressed = {**source, 'pipeline': [step for step in source['pipeline']
         if not (step.get('type') == 'Processor' and step.get('name') in fragment.processors)]}
     out.mkdir(parents=True, exist_ok=True)

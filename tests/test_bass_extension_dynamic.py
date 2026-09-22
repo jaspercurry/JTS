@@ -129,18 +129,38 @@ def test_graph_forms_delta_and_preserves_non_owner_channels() -> None:
     ]
 
 
-def test_each_side_has_an_independent_post_volume_detector() -> None:
+@pytest.mark.parametrize("groups, expected", [
+    ((), {0: ([6], [4]), 2: ([7], [5])}),
+    (((0, 2),), {0: ([6], [4, 5])}),
+    (((2, 0),), {2: ([6], [5, 4])}),
+])
+def test_owner_groups_select_one_front_detector_per_reduction(groups, expected) -> None:
     graph = build_native_dynamic_bass_graph(
-        channels=4, owner_channels=(0, 2), descriptor=_descriptor()
+        channels=4, owner_channels=(0, 2), descriptor=_descriptor(), owner_groups=groups,
     )
+    assert set(graph.processors) == {f"bass_ext_dynamic_compress_{front}" for front in expected}
+    form = graph.mixers["bass_ext_dynamic_form_delta"]
+    assert form["channels"] == {"in": 6, "out": 6 + len(expected)}
+    assert graph.pipeline[-len(expected) - 2] == {
+        "type": "Filter", "channels": list(range(6, 6 + len(expected))),
+        "names": ["bass_ext_dynamic_detector_lowpass"],
+    }
+    for front, (monitor, process) in expected.items():
+        compressor = graph.processors[f"bass_ext_dynamic_compress_{front}"]
+        assert compressor["type"] == "Compressor"
+        assert compressor["parameters"]["monitor_channels"] == monitor
+        assert compressor["parameters"]["process_channels"] == process
+        assert compressor["parameters"]["makeup_gain"] == 0.0
+        assert form["mapping"][monitor[0]]["sources"] == [
+            {"channel": process[0], "gain": 0.0, "inverted": False},
+        ]
+        assert graph.mixers["bass_ext_dynamic_expand"]["mapping"][process[0]]["sources"][0]["channel"] == front
 
-    left = graph.processors["bass_ext_dynamic_compress_0"]["parameters"]
-    right = graph.processors["bass_ext_dynamic_compress_2"]["parameters"]
-    assert left["monitor_channels"] == [6]
-    assert left["process_channels"] == [4]
-    assert right["monitor_channels"] == [7]
-    assert right["process_channels"] == [5]
-    assert left["makeup_gain"] == right["makeup_gain"] == 0.0
+
+@pytest.mark.parametrize("groups", [((0,),), ((0, 2), (2,)), ((0, 1),), ((), (0, 2))])
+def test_owner_groups_must_cover_each_owner_once(groups):
+    with pytest.raises(ValueError):
+        build_native_dynamic_bass_graph(channels=4, owner_channels=(0, 2), descriptor=_descriptor(), owner_groups=groups)
 
 
 def test_optional_highpass_touches_only_the_extra_delta() -> None:
@@ -184,13 +204,14 @@ def _base_graph() -> dict:
     }
 
 
-def test_decorator_is_exactly_reversible_for_static_graph_proof() -> None:
+@pytest.mark.parametrize("groups", [(), ((0, 2),), ((2, 0),)])
+def test_decorator_is_exactly_reversible_for_static_graph_proof(groups) -> None:
     base = _base_graph()
 
-    decorated = apply_dynamic_bass_graph(base, _descriptor(), (0, 2))
+    decorated = apply_dynamic_bass_graph(base, _descriptor(), (0, 2), groups)
 
     assert base == _base_graph()
-    assert validated_base_graph(decorated, _descriptor(), (0, 2)) == base
+    assert validated_base_graph(decorated, _descriptor(), (0, 2), groups) == base
 
 
 def test_projection_refuses_a_changed_native_definition() -> None:

@@ -8,13 +8,32 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .dynamic import DynamicBassDescriptor, validate_dynamic_bass_descriptor
 
 
 PREFIX = "bass_ext_dynamic"
+
+
+def dynamic_bass_owner_groups(
+    owner_channels: tuple[int, ...],
+    outputs: Iterable[tuple[str, str, str, int | None]],
+) -> tuple[tuple[int, ...], ...]:
+    """Group (side, role, variant, index) declarations, front first (ADR-0335)."""
+    slots = {
+        (side, role, variant): index
+        for side, role, variant, index in outputs
+        if index is not None and index in owner_channels
+    }
+    pairs = {
+        front: (front, rear)
+        for (side, role, variant), rear in slots.items()
+        if variant == "rear" and (front := slots.get((side, role, "primary"))) is not None
+    }
+    rears = {rear for _, rear in pairs.values()}
+    return tuple(pairs.get(owner, (owner,)) for owner in sorted(owner_channels) if owner not in rears)
 
 
 @dataclass(frozen=True)
@@ -44,6 +63,7 @@ def build_native_dynamic_bass_graph(
     channels: int,
     owner_channels: tuple[int, ...],
     descriptor: DynamicBassDescriptor,
+    owner_groups: tuple[tuple[int, ...], ...] = (),
 ) -> NativeDynamicBassGraph:
     """Return a graph fragment that adds and demand-limits only LF delta.
 
@@ -61,14 +81,18 @@ def build_native_dynamic_bass_graph(
         raise ValueError("owner_channels must be unique channels in the graph")
 
     owners = tuple(sorted(owner_channels))
+    groups = owner_groups or tuple((owner,) for owner in owners)
+    if any(not group for group in groups) or sorted(owner for group in groups for owner in group) != list(owners):
+        raise ValueError("owner_groups must partition the owner channels")
     count = len(owners)
     loud_channels = tuple(range(channels, channels + count))
+    loud_by_owner = dict(zip(owners, loud_channels, strict=True))
     delta_channels = loud_channels
-    detector_channels = tuple(range(channels + count, channels + 2 * count))
+    detector_channels = tuple(range(channels + count, channels + count + len(groups)))
     control_channel = channels + count
     loud_count = channels + count
     expanded_channels = loud_count + 1
-    working_channels = channels + 2 * count
+    working_channels = channels + count + len(groups)
 
     filters: dict[str, dict[str, Any]] = {
         f"{PREFIX}_volume_ramp": {
@@ -115,7 +139,7 @@ def build_native_dynamic_bass_graph(
         [_source(loud), _source(owner, inverted=True)]
         for owner, loud in zip(owners, loud_channels, strict=True)
     )
-    form_sources.extend([[_source(loud)] for loud in loud_channels])
+    form_sources.extend([[_source(loud_by_owner[group[0]])] for group in groups])
     reduce_sources = [[_source(channel)] for channel in range(channels)]
     for owner, delta in zip(owners, delta_channels, strict=True):
         reduce_sources[owner].append(_source(delta))
@@ -127,7 +151,7 @@ def build_native_dynamic_bass_graph(
         f"{PREFIX}_reduce": _mixer(working_channels, channels, reduce_sources),
     }
     processors = {
-        f"{PREFIX}_compress_{owner}": {
+        f"{PREFIX}_compress_{group[0]}": {
             "type": "Compressor",
             "parameters": {
                 "channels": working_channels,
@@ -137,12 +161,10 @@ def build_native_dynamic_bass_graph(
                 "factor": descriptor.compressor_factor,
                 "makeup_gain": 0.0,
                 "monitor_channels": [detector],
-                "process_channels": [delta],
+                "process_channels": [loud_by_owner[owner] for owner in group],
             },
         }
-        for owner, delta, detector in zip(
-            owners, delta_channels, detector_channels, strict=True
-        )
+        for group, detector in zip(groups, detector_channels, strict=True)
     }
 
     pipeline: list[dict[str, Any]] = [
@@ -212,6 +234,7 @@ def apply_dynamic_bass_graph(
     payload: Mapping[str, Any],
     descriptor: DynamicBassDescriptor | Mapping[str, Any],
     bass_channels: tuple[int, ...],
+    owner_groups: tuple[tuple[int, ...], ...] = (),
 ) -> dict[str, Any]:
     """Decorate one static driver chain immediately before its limiter."""
 
@@ -225,6 +248,7 @@ def apply_dynamic_bass_graph(
         channels=channels,
         owner_channels=owners,
         descriptor=_coerce_descriptor(descriptor),
+        owner_groups=owner_groups,
     )
     sections = (
         ("filters", dynamic.filters),
@@ -255,6 +279,7 @@ def validated_base_graph(
     payload: Mapping[str, Any],
     descriptor: DynamicBassDescriptor | Mapping[str, Any],
     bass_channels: tuple[int, ...],
+    owner_groups: tuple[tuple[int, ...], ...] = (),
 ) -> dict[str, Any]:
     """Validate and remove the native block for the existing static proof."""
 
@@ -268,6 +293,7 @@ def validated_base_graph(
         channels=channels,
         owner_channels=owners,
         descriptor=_coerce_descriptor(descriptor),
+        owner_groups=owner_groups,
     )
     for section_name, definitions in (
         ("filters", expected.filters),

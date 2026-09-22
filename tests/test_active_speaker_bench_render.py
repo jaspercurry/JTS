@@ -10,6 +10,8 @@ binary, no real systemctl. Deterministic, no sleeps, no network.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import resource
 import subprocess
@@ -25,7 +27,9 @@ from jasper.active_speaker.bench import bass_replay, render
 from jasper.active_speaker.bench.replay import replay_levels
 from jasper.audio_measurement.bundles import sha256_file
 from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
+from jasper.cli.round_views import dsp_replay
 from tests.test_bass_extension_dynamic import _base_graph, _descriptor
+from tests.test_rear_output_foundation import _cardioid_baseline
 
 
 class _FakeCompleted:
@@ -57,9 +61,17 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path, ban
         replay_levels(manifest, raw, (1, 2))
 
 
-def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cardioid", [False, True])
+def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatch, cardioid):
     descriptor = _descriptor()
-    source = apply_dynamic_bass_graph(_base_graph(), descriptor, (0, 2))
+    preset = None
+    base = _base_graph()
+    if cardioid:
+        preset, _, text = _cardioid_baseline(bass_extension=asdict(descriptor))
+        source = yaml.safe_load(text)
+        base = yaml.safe_load(_cardioid_baseline()[2])
+    else:
+        source = apply_dynamic_bass_graph(base, descriptor, (0, 2))
     graph = tmp_path / 'source.yml'
     graph.write_text(yaml.safe_dump(source))
     calls = []
@@ -70,8 +82,8 @@ def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatc
 
     monkeypatch.setattr(bass_replay, 'replay_graph', replay)
     result = bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
-        main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(0, 2))
-    assert calls[0][0] == _base_graph()
+        main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(0, 2), preset=preset)
+    assert calls[0][0] == base
     assert calls[-1][0] == source
     assert calls[1][0] == calls[2][0]
     for payload, _ in calls[1:3]:
@@ -86,6 +98,32 @@ def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatc
         bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
             main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(1, 3))
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize("with_preset", [False, True])
+def test_bass_replay_cli_passes_the_optional_preset(tmp_path, monkeypatch, with_preset):
+    preset, _, _ = _cardioid_baseline()
+    preset_path = tmp_path / "preset.json"
+    preset_path.write_text(json.dumps(preset.to_dict()))
+    descriptor_path = tmp_path / "bass.json"
+    descriptor_path.write_text(json.dumps(asdict(_descriptor())))
+    calls = []
+
+    def replay(*args, **kwargs):
+        calls.append(kwargs)
+        return {"output": str(tmp_path / "output.f64le")}
+
+    monkeypatch.setattr(bass_replay, "replay_bass", replay)
+    parser = argparse.ArgumentParser()
+    dsp_replay.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "dsp-replay", "source.yml", "tone.wav", "--main-db", "-16", "--bass-reference-db", "-16",
+        "--out", str(tmp_path), "--bass-descriptor", str(descriptor_path), "--bass-channels", "0", "2",
+        *(["--preset", str(preset_path)] if with_preset else []),
+    ])
+    assert args.func(args) == 0
+    assert calls[0]["preset"] == (preset if with_preset else None)
+    assert calls[0]["channels"] == (0, 2)
 
 
 def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_path):

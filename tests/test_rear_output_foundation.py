@@ -274,11 +274,35 @@ def test_muted_rear_keeps_the_stage_but_silences_its_output_gain():
     assert payload["filters"]["rear_out2_bass_gain"]["parameters"]["mute"] is False
 
 
-def test_dynamic_bass_owns_both_woofers_and_leaves_the_stage_alone():
+@pytest.mark.parametrize("layout, swap, groups", [
+    ("mono", False, ((0, 2),)),
+    ("mono", True, ((2, 0),)),
+    ("stereo", False, ((0, 4), (2, 5))),
+])
+def test_dynamic_bass_owns_both_woofers_and_leaves_the_stage_alone(layout, swap, groups):
     descriptor = _dynamic_bass_descriptor()
-    text = _cardioid_baseline()[2]
-    decorated = yaml.safe_load(_cardioid_baseline(bass_extension=descriptor)[2])
-    assert validated_base_graph(decorated, descriptor, (0, 2)) == yaml.safe_load(text)
+    preset, _ = _rear_pair(layout)
+    if swap:
+        raw = preset.to_dict()
+        for output in raw["channel_map"]["outputs"]:
+            output["index"] = {0: 2, 2: 0}.get(output["index"], output["index"])
+        preset = ActiveSpeakerPreset.from_mapping(raw)
+    kwargs = {"rear_calibration": _rear_document()} if layout == "mono" else {}
+    base = yaml.safe_load(emit.emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, **kwargs))
+    decorated = yaml.safe_load(emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, bass_extension=descriptor, **kwargs,
+    ))
+    owners = tuple(sorted(owner for group in groups for owner in group))
+    assert validated_base_graph(decorated, descriptor, owners, groups) == base
+    assert set(decorated["processors"]) == {f"bass_ext_dynamic_compress_{front}" for front, _ in groups}
+    width = len(preset.channel_map.outputs)
+    for index, (front, rear) in enumerate(groups):
+        parameters = decorated["processors"][f"bass_ext_dynamic_compress_{front}"]["parameters"]
+        assert parameters["monitor_channels"] == [width + len(owners) + index]
+        assert parameters["process_channels"] == [width + owners.index(front), width + owners.index(rear)]
+    mixers = _mixer_names(decorated)
+    assert mixers == [*_mixer_names(base), "bass_ext_dynamic_expand", "bass_ext_dynamic_drop_control",
+                      "bass_ext_dynamic_form_delta", "bass_ext_dynamic_reduce"]
 
 
 def test_the_mixer_sequence_grows_by_exactly_the_stages_split_then_sum():
