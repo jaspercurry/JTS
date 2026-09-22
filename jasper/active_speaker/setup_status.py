@@ -445,6 +445,7 @@ def read_active_speaker_setup_status(
     active_config_path: str | None = None,
     active_config_text: str | None = None,
     baseline_state_path: str | Path | None = None,
+    include_diagnostics: bool = True,
 ) -> dict[str, Any]:
     """Return the authoritative active-speaker setup readiness snapshot.
 
@@ -455,8 +456,9 @@ def read_active_speaker_setup_status(
     fresh ``active_raw`` readback as ``active_config_text``; other callers get
     the durable statefile-path fallback.
 
-    Total and fail-closed: an unreadable topology or baseline profile returns a
-    blocked snapshot rather than treating the speaker as ready.
+    Volume controls omit diagnostics: they check the applied profile and
+    current config path without compiling a staging graph. All readiness
+    inputs are still read fresh; no cached permission survives a graph change.
     """
 
     issues: list[dict[str, str]] = []
@@ -565,11 +567,13 @@ def read_active_speaker_setup_status(
     applied_profile: Mapping[str, Any] | None = None
     profile: Mapping[str, Any] | None = None
     try:
-        design_draft = load_design_draft()
-        measurements = load_measurement_state(topology)
         applied_profile = load_applied_baseline_profile_state(baseline_state_path)
-        _, profile = compile_commissioning_profile(applied_profile=applied_profile, topology=topology, design_draft=design_draft,
-            find_candidate=lambda fingerprint: load_applied_candidate(fingerprint, applied_profile=applied_profile or {}))
+        profile = applied_profile or {}
+        if include_diagnostics:
+            design_draft = load_design_draft()
+            measurements = load_measurement_state(topology)
+            _, profile = compile_commissioning_profile(applied_profile=applied_profile, topology=topology, design_draft=design_draft,
+                find_candidate=lambda fingerprint: load_applied_candidate(fingerprint, applied_profile=applied_profile or {}))
     except _READINESS_DERIVATION_ERRORS as exc:
         profile = None
         issues.append(_issue(
@@ -633,17 +637,12 @@ def read_active_speaker_setup_status(
         current_topology_fingerprint = str(
             source.get("topology_fingerprint") or ""
         )
-        protected_topology_current = not (
+        protected_topology_current = None if not include_diagnostics else not (
             protected_topology_fingerprint
             and current_topology_fingerprint
             and protected_topology_fingerprint != current_topology_fingerprint
         )
-        # Topology staleness is deliberately NOT a readiness input (ruling S10,
-        # ADR-0019): this comparison enforces no cap — it hashes a dict and
-        # reports inequality. The declared facts that DO gate keep their own
-        # gates downstream, each reading the field rather than the hash
-        # (`require_driver_measurement_inputs`, `resolve_driver_excitation_ceilings`,
-        # the driver-protection clamps).
+        # Topology changes disclose staleness without parking (ADR-0019).
         protected_ready = bool(
             isinstance(protected_profile, Mapping)
             and protected_profile.get("status") == "applied"
@@ -667,9 +666,6 @@ def read_active_speaker_setup_status(
             ),
             "role": "applied_profile",
         }
-        # ...and whether the two agree, computed once rather than left to every
-        # reader to compare fingerprints across two differently-shaped blocks.
-        # `None` = no applied profile to compare against, not a disagreement.
         profile_summary["matches_applied"] = (
             None
             if not isinstance(protected_profile, Mapping)
@@ -687,7 +683,7 @@ def read_active_speaker_setup_status(
                     "active_baseline_config_missing",
                     "applied active speaker baseline config file is missing",
                 ))
-            elif not protected_topology_current:
+            elif protected_topology_current is False:
                 issues.append(_issue(
                     "warning",
                     BASELINE_TOPOLOGY_CHANGED,
@@ -713,11 +709,6 @@ def read_active_speaker_setup_status(
                         "control or grouping"
                     ),
                 ))
-        # This arm is gated on `not protected_ready`, which a topology change no
-        # longer clears, so a stale topology suppresses it. Acceptable because
-        # `config` is the CANDIDATE's, not the applied profile's: what is playing
-        # is the applied graph, checked above, and a candidate pointing at a file
-        # that was never written is a pending edit, not a reason to mute.
         if (
             not protected_ready
             and config.get("path")
@@ -729,28 +720,36 @@ def read_active_speaker_setup_status(
                 "active speaker baseline config file is missing",
             ))
 
-    current_source = _mapping(
-        profile.get("source") if isinstance(profile, Mapping) else None
-    )
-    applied_crossover = crossover_snapshot_state(
-        applied_profile,
-        expected_topology_id=topology.topology_id,
-        expected_topology_fingerprint=str(
-            current_source.get("topology_fingerprint") or ""
-        ) or None,
-    )
-    layer_a_binding = _applied_layer_a_binding(
-        topology,
-        applied_profile=applied_profile,
-        active_config_path=config_path,
-        active_config_text=active_config_text,
-    )
-    if protected_profile_summary is not None:
-        protected_profile_summary["layer_a_binding"] = layer_a_binding
-    manual_preservation = legacy_manual_preservation_state(
-        applied_profile,
-        current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
-    )
+    applied_crossover = manual_preservation = commissioning = None
+    if include_diagnostics:
+        current_source = _mapping(
+            profile.get("source") if isinstance(profile, Mapping) else None
+        )
+        applied_crossover = crossover_snapshot_state(
+            applied_profile,
+            expected_topology_id=topology.topology_id,
+            expected_topology_fingerprint=str(
+                current_source.get("topology_fingerprint") or ""
+            ) or None,
+        )
+        layer_a_binding = _applied_layer_a_binding(
+            topology,
+            applied_profile=applied_profile,
+            active_config_path=config_path,
+            active_config_text=active_config_text,
+        )
+        if protected_profile_summary is not None:
+            protected_profile_summary["layer_a_binding"] = layer_a_binding
+        manual_preservation = legacy_manual_preservation_state(
+            applied_profile,
+            current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
+        )
+        commissioning = commissioning_summary(
+            topology, profile=profile, applied_profile=applied_profile,
+            measurements=measurements,
+        )
+    else:
+        profile_summary = None
     # A blocker outranks a notice for the headline whichever was appended
     # first: the list carries both severities, and a household told "re-mint
     # when convenient" while the box is blocked is told the wrong thing.
@@ -762,12 +761,6 @@ def read_active_speaker_setup_status(
         headline[0]["message"]
         if headline
         else "active speaker baseline is applied and output control is ready"
-    )
-    commissioning = commissioning_summary(
-        topology,
-        profile=profile,
-        applied_profile=applied_profile,
-        measurements=measurements,
     )
     return {
         "artifact_schema_version": 1,

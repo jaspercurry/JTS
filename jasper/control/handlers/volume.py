@@ -70,7 +70,7 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _active_speaker_volume_block() -> dict[str, Any] | None:
-    setup = read_active_speaker_setup_status()
+    setup = read_active_speaker_setup_status(include_diagnostics=False)
     if setup.get("volume_allowed") is not True:
         return setup
     return None
@@ -262,13 +262,6 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        # Optional `source` field marks the caller as an
-        # observed source-side change (e.g. host moved its
-        # volume slider on the USB gadget). Route through
-        # observe_source_volume so the coordinator's echo
-        # window and source-active gate apply. Without
-        # `source`, the caller is treated as authoritative
-        # (management UI, HID accessory, voice "louder", etc.).
         source_name = body.get("source")
         observation_initial = body.get("observation_initial", False)
         if not isinstance(observation_initial, bool):
