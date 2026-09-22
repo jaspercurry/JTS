@@ -164,7 +164,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: (None, {}))
 
-    choices = coordinator.round_choices({}, "front_rear/express")
+    choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices}
     rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
     assert ids & rear_ids == (rear_ids if rear else set())

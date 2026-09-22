@@ -49,17 +49,15 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
 
     view = load_commissioning_view()
     programs = view["programs"]
-    selection = selected_id.split("/") if selected_id else []
-    default = program(*selection) if selection else program(view["next_action"].get("program") or programs[0])
-    default_id = f"{default.program_id}/{default.size}"
+    plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()}
+    plans = {key: plan for key, plan in plans.items()
+             if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
+                     or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs))}
+    default = program(view["next_action"].get("program") or programs[0])
+    default_id = selected_id if selected_id in plans else f"{default.program_id}/{default.size}"
     choices = []
-    for name, size in available_programs():
-        plan = program(name, size)
-        if ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
-                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)):
-            continue
-        choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}",
-                                  "default": f"{name}/{size}" == default_id,
+    for plan_id, plan in plans.items():
+        choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
                                   "poses": plan.mic_move_count, "captures": plan.capture_count}
         if choice["id"] == default_id:
             if plan.regime == REGIME_BRANCHES:

@@ -98,7 +98,7 @@ def load_setup_view() -> SpeakerSetupView:
                                      (draft.get("operator_inputs") or {}).get(channel.role, ""),
                             "values": values})
     has_models = bool(targets) and all(target["model"] for target in targets)
-    passive = "speaker" not in allowed
+    passive = "speaker" not in coordinator["programs"]
     stage = ("layout" if not topology.speaker_groups else "tune" if applied["stands"] or passive else
              "details" if not has_models else "apply" if coordinator["driver_values"]["complete"] or draft.get("driver_research") or manual.get("crossover_candidates") else "research")
     action = {"layout": ("save_layout", "Save layout"), "details": ("save_details", "Save details"),
@@ -122,7 +122,7 @@ def load_setup_view() -> SpeakerSetupView:
         "base_preview": {"crossovers": [crossover for group in preview.get("groups", []) for crossover in group["crossovers"]],
                          "trims": [{"role": role, "gain_db": gain, "source": "Custom" if provenance.get(role) == "operator_pinned" else "Estimated"}
                                    for role, gain in gains.items()],
-                         "rear_muted": "rear" in allowed},
+                         "rear_muted": "rear" in coordinator["programs"]},
         "applied": {**applied, "layers": layers}, "next_action": {"id": action[0], "label": action[1]},
         "programs": [{**entry, "applied": layers[entry["id"]]} for entry in program_entries(topology)],
         "issues": list(coordinator["review"]["issues"]) if stage == "apply" else [],
