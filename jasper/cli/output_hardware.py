@@ -10,7 +10,8 @@ import argparse
 import json
 
 from jasper.audio_hardware.output_probe import observe
-from jasper.output_hardware import OutputCardFact, OutputHardwareState, observed_output
+from jasper.output_hardware import OutputCardFact, OutputHardwareState
+from jasper.output_topology_observation import observed_output
 from jasper.shell_env import render_shell_assignments
 
 

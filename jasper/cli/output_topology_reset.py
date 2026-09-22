@@ -23,8 +23,8 @@ from jasper.output_topology_runtime import (
     reset_to_unconfigured,
     topology_summary,
 )
-from jasper.output_topology import OutputTopologyError, new_topology_draft
-from jasper.output_topology_store import topology_path
+from jasper.output_topology import OutputTopologyError
+from jasper.output_topology_store import new_topology_draft, topology_path
 
 
 def _describe(summary: dict[str, Any]) -> str:

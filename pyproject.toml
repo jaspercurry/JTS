@@ -487,11 +487,15 @@ exhaustive_ignores = [
   # upward imports row 6 of #4199 cuts; net ranks once identity does.
   "net",
   "oauth_redirect",
+  # Hardware still reaches cli.usb_port_role through audio_hardware.usb_port_role.
   "output_hardware",
+  # Layout resolution consumes fanin_coupling, whose runtime helpers reach cli/web.
   "output_topology",
-  # Store imports the held schema and its observation dependencies; ranks after
-  # the separate observation split removes that upward chain (#5515).
+  # Store consumes the held schema and hardware owners above.
   "output_topology_store",
+  # Observation consumes active_speaker.runtime_contract, whose graph helpers
+  # still reach cli/web. Rank it after that upward dependency is removed.
+  "output_topology_observation",
   "output_topology_runtime",
   "outputd_failure_reconcile_state",
   "peering",

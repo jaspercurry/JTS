@@ -10,10 +10,9 @@ by reconcile, `/state`, doctor, and `/sound/`.
 
 from __future__ import annotations
 
-import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -23,29 +22,27 @@ from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     DUAL_APPLE_USB_C_DAC_4CH,
     DUAL_APPLE_USB_C_DAC_4CH_ID,
-    DacProfile,
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
+    DacProfile,
     MixerControl,
-    by_id as _dac_profile_by_id,
-    kind_for,
-    label_for as _dac_label_for,
     mixer_control_groups_for,
-    percent_pinned_control_for,
+    by_id as _dac_profile_by_id,
+    label_for as _dac_label_for,
 )
 from .audio_hardware.hat_eeprom import HatEeprom
 from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
 )
-from .json_fields import utc_now_iso
-from .json_fields import issue as _issue
+from .json_fields import (
+    issue as _issue,
+    utc_now_iso,
+)
 from .paths import (
     OUTPUT_HARDWARE_STATE_PATH as DEFAULT_STATE_PATH,
-    OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH,
     resolve_state_path,
 )
-
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
@@ -359,29 +356,6 @@ def detected_hardware_adoption_precondition(
     }
 
 
-@dataclass(frozen=True)
-class DualAppleRuntimeMapping:
-    """Runtime child-device order for the dual-Apple outputd sink."""
-
-    ok: bool
-    reason: str
-    order_source: str = ""
-    child_devices: tuple[OutputCardFact, ...] = field(default_factory=tuple)
-
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "ok": self.ok,
-            "reason": self.reason,
-            "order_source": self.order_source,
-            "pcms": [
-                child.pcm or f"hw:CARD={child.card_id},DEV=0"
-                for child in self.child_devices
-            ],
-            "child_devices": [child.to_dict() for child in self.child_devices],
-        }
-        return out
-
-
 def _same_usb_bus(cards: tuple[OutputCardFact, ...]) -> bool | None:
     buses: list[tuple[str, str]] = []
     for card in cards:
@@ -592,44 +566,6 @@ class ObservedOutput:
         return bool(self.profile_id and self.status)
 
 
-def observed_output(
-    state: OutputHardwareState,
-    cards: tuple[OutputCardFact, ...],
-    *,
-    record_changed: bool = False,
-) -> ObservedOutput:
-    """The classifier's verdict as the one typed observation both readers share."""
-    usb = state.usb_data_role
-    mapping = dual_apple_runtime_mapping(state)
-    # Padded so an absent or partial composite still answers both PCM keys.
-    pcms = [child.pcm or "" for child in mapping.child_devices] + ["", ""]
-    return ObservedOutput(
-        profile_id=state.profile_id,
-        status=state.status,
-        kind=kind_for(state.profile_id) or "",
-        headphone_control=(
-            percent_pinned_control_for(state.active_profile_id or "") or ""
-        ),
-        selected_card_id=state.selected_card_id or "",
-        child_device_ids=tuple(child.device_id for child in state.child_devices),
-        apple_card_ids=tuple(apple_output_card_ids(cards)),
-        blocker_codes=tuple(
-            str(issue.get("code") or "unnamed")
-            for issue in state.issues
-            if issue.get("severity") == "blocker"
-        ),
-        record_changed=record_changed,
-        management_transport_available=(
-            usb.management_transport_available if usb else None
-        ),
-        dual_mapping_ok=mapping.ok,
-        dual_mapping_reason=mapping.reason,
-        dual_order_source=mapping.order_source,
-        dual_dac_a_pcm=pcms[0],
-        dual_dac_b_pcm=pcms[1],
-    )
-
-
 def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     raw = read_json_mapping(state_path(path))
     if raw is None:
@@ -771,397 +707,3 @@ def current_usb_data_role(
 
 def write_state(state: OutputHardwareState, path: str | Path | None = None) -> None:
     atomic_write_json(state_path(path), state.to_dict(), mode=0o644)
-
-
-def _identity_tokens(raw: Any) -> tuple[tuple[str, str], ...]:
-    if isinstance(raw, OutputCardFact):
-        values = {
-            "serial": raw.serial,
-            "stable_path": raw.stable_path,
-            "usb_path": raw.usb_path,
-        }
-    elif isinstance(raw, Mapping):
-        values = {
-            "serial": raw.get("serial"),
-            "stable_path": raw.get("stable_path"),
-            "usb_path": raw.get("usb_path"),
-        }
-    else:
-        values = {}
-    tokens: list[tuple[str, str]] = []
-    for key in ("serial", "stable_path", "usb_path"):
-        value = _text(values.get(key))
-        if value:
-            tokens.append((key, value))
-    return tuple(tokens)
-
-
-def _runtime_identity_candidates(raw: Any) -> tuple[tuple[str, str], ...]:
-    tokens = dict(_identity_tokens(raw))
-    return tuple(
-        (key, value)
-        for key in ("usb_path", "stable_path", "serial")
-        if (value := tokens.get(key))
-    )
-
-
-def _topology_path(path: str | Path | None = None) -> Path:
-    return resolve_state_path(path, "JASPER_OUTPUT_TOPOLOGY_PATH", DEFAULT_TOPOLOGY_PATH)
-
-
-def _read_topology_hardware(
-    path: str | Path | None = None,
-) -> tuple[bool, Mapping[str, Any] | None]:
-    """Read the saved speaker topology's ``hardware`` mapping.
-
-    Returns ``(exists, hardware)``. ``exists`` is False only when no topology
-    file is saved at all; ``hardware`` is None when a file is saved but carries
-    no readable ``hardware`` mapping.
-
-    That split has exactly one consumer, named here so the next reader does not
-    have to hunt for it: ``_load_dual_apple_topology_children`` maps absent to
-    ``None`` and corrupt to ``()``, which ``dual_apple_runtime_mapping`` turns
-    into "order by observed hardware" and ``saved_topology_unreadable``
-    respectively. ``apply_saved_topology_policy`` deliberately does **not** use
-    it — it leaves a corrupt topology on today's behaviour rather than parking
-    every box whose topology file happens to be unreadable, which would reach
-    far past a half-present composite. The split also keeps a single reader of
-    the file in this module.
-    """
-
-    target = _topology_path(path)
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return (False, None)
-    except (OSError, json.JSONDecodeError):
-        return (True, None)
-    if not isinstance(raw, Mapping):
-        return (True, None)
-    hardware = raw.get("hardware")
-    if not isinstance(hardware, Mapping):
-        return (True, None)
-    return (True, hardware)
-
-
-def _load_dual_apple_topology_children(
-    path: str | Path | None = None,
-) -> tuple[Mapping[str, Any], ...] | None:
-    exists, hardware = _read_topology_hardware(path)
-    if not exists:
-        return None
-    if hardware is None:
-        return ()
-    device_id = normalize_output_device_id(_text(hardware.get("device_id")))
-    if device_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        return None
-    children = hardware.get("child_devices") or []
-    if not isinstance(children, list):
-        return ()
-    out = [item for item in children if isinstance(item, Mapping)]
-    return tuple(sorted(out, key=_child_topology_order))
-
-
-def _child_topology_order(child: Mapping[str, Any]) -> int:
-    indexes = child.get("physical_output_indexes") or []
-    values: list[int] = []
-    if isinstance(indexes, list):
-        for item in indexes:
-            try:
-                values.append(int(item))
-            except (TypeError, ValueError):
-                pass
-    return min(values) if values else 999
-
-
-def _declared_child_devices(
-    hardware: Mapping[str, Any],
-) -> tuple[Mapping[str, Any], ...]:
-    """The child devices the saved topology declares, if it declares any."""
-
-    children = hardware.get("child_devices") or []
-    if not isinstance(children, list):
-        return ()
-    return tuple(item for item in children if isinstance(item, Mapping))
-
-
-def _missing_topology_child_labels(
-    hardware: Mapping[str, Any],
-    observed: Iterable[OutputCardFact],
-) -> tuple[str, ...]:
-    """Name the saved child devices that no observed card accounts for."""
-
-    observed_tokens: set[tuple[str, str]] = set()
-    for card in observed:
-        observed_tokens.update(_identity_tokens(card))
-    missing: list[str] = []
-    for child in _declared_child_devices(hardware):
-        tokens = _identity_tokens(child)
-        if tokens and observed_tokens.intersection(tokens):
-            continue
-        missing.append(
-            _text(child.get("serial"))
-            or _text(child.get("child_id"))
-            or _text(child.get("card_id"))
-            or "unidentified child"
-        )
-    return tuple(missing)
-
-
-def _saved_topology_requires_roleful_graph(
-    path: str | Path | None = None,
-) -> bool:
-    """Ask the topology's own owner whether it needs per-driver DSP.
-
-    Deferred import on purpose, twice over. ``output_topology`` imports this
-    module, so the predicate is unreachable at module scope — the same
-    circularity, the same predicate, and the same fix as
-    ``active_speaker.playback_route``. And this module advertises itself as
-    import-cheap: the import is paid only on the rare arm that reaches it (a
-    declared composite that is not the observed profile), never on an ordinary
-    reconcile pass.
-
-    **A topology that parses as JSON but is invalid as a topology does not
-    park, and that is the decision, not an oversight.**
-    ``load_output_topology`` fails soft to an empty draft — logging
-    ``event=output_topology.load_failed`` as it does — and an empty draft is
-    not roleful, so such a box keeps today's behaviour. Two reasons to leave it
-    there. Parking on it would mean parking every speaker whose topology file
-    is malformed for any reason, which reaches far past a half-present
-    composite; and the shape is already loud twice over — that WARN event, plus
-    ``jasper-doctor``'s own topology reporting — where this policy would only
-    add silence. It is the same call ``apply_saved_topology_policy`` makes for a
-    file that is not readable JSON at all, kept deliberately consistent so the
-    two malformations do not behave differently for no reason a reader could
-    name.
-    """
-
-    from .active_speaker.runtime_contract import (
-        active_topology_requires_roleful_graph,
-    )
-    from .output_topology_store import load_output_topology  # lazy: cycle: store imports output_hardware
-
-    return active_topology_requires_roleful_graph(load_output_topology(path))
-
-
-def apply_saved_topology_policy(
-    state: OutputHardwareState,
-    observed_cards: Iterable[OutputCardFact],
-    *,
-    topology_path: str | Path | None = None,
-) -> OutputHardwareState:
-    """Fail closed when a saved ROLEFUL composite is only partly present.
-
-    A roleful topology pins which physical child owns which driver. Unplug one
-    child and the survivor still classifies on its own as an ordinary
-    full-range stereo DAC, and accepting that observation rewires the final
-    output to the survivor as a plain stereo DAC.
-
-    What that does NOT do today, stated precisely because the tempting
-    shorthand is wrong: it does not put a flat full-range graph on those
-    drivers. Graph selection reads the saved topology and nothing else
-    (``active_speaker.runtime_contract`` names no observed-hardware reader at
-    all), and a roleful topology structurally cannot select the flat graph —
-    ``_flat_graph_allowed`` raises
-    ``flat_full_range_graph_illegal_for_roleful_topology``. So the box already
-    goes quiet rather than playing full range into a protected driver.
-
-    Nor is the situation unreported: ``jasper-doctor``'s "active speaker output
-    hardware" check already fails a roleful saved/attached mismatch. What was
-    missing is that no *decision* matched that report — the box went quiet as
-    the incidental sum of refusals in layers that know nothing about each
-    other, while this path went on marking the survivor recognized and wiring a
-    live edge onto it. This is the decision catching up with what doctor was
-    already saying, taken where the single/composite policy is decided.
-    Reconnecting the child re-runs the reconciler through the existing udev
-    chain and un-parks with no operator step.
-
-    **Rolefulness is the gate, not compositeness.** ``kind == "composite"`` is
-    profile vocabulary; it says a device has children, not that those children
-    carry declared drivers. A passive composite can legally place every
-    declared speaker on one child's outputs, and unplugging the child that
-    carries nothing must not park a working stereo — the same calibration
-    ``jasper-doctor`` already makes when it downgrades a non-roleful mismatch
-    from fail to warn. So a saved SINGLE topology, and a saved composite that
-    needs no per-driver DSP, are both returned untouched.
-    """
-
-    exists, hardware = _read_topology_hardware(topology_path)
-    if not exists or hardware is None:
-        return state
-    declared_id = normalize_output_device_id(_text(hardware.get("device_id")))
-    declared = _dac_profile_by_id(declared_id)
-    if declared is None or declared.kind != "composite":
-        return state
-    if state.profile_id == declared_id:
-        return state
-    # Last, because it is the only expensive check here.
-    if not _saved_topology_requires_roleful_graph(topology_path):
-        return state
-
-    # Diffed against every observed CARD, not against the classified record's
-    # children: a record can carry children that are not the Apple pair at all
-    # (attach a registered single DAC beside both dongles and the record's
-    # children are that DAC), which would report a plugged-in child missing.
-    # The one surface this policy exists to produce must not misname hardware.
-    # Three genuinely different situations reach this point, and they call for
-    # three different sentences. An earlier cut had one `else` reading "no saved
-    # child device could be matched", which fired EXACTLY when every child had
-    # matched — the inverse of the truth, on the one surface this policy exists
-    # to produce.
-    missing = _missing_topology_child_labels(hardware, observed_cards)
-    if missing:
-        detail = f"missing child devices: {', '.join(missing)}"
-    elif not _declared_child_devices(hardware):
-        detail = "the saved topology declares no child devices to look for"
-    else:
-        # Every declared child IS attached. Reaching here at all means
-        # classification went elsewhere, and it can only do that when other
-        # output hardware is also attached — two Apple children alone classify
-        # as the composite and return above. So the remediation is to remove
-        # the interloper, not to reconnect anything.
-        detail = (
-            "every declared child device is attached; other output hardware is "
-            "also present and was classified first — detach it so the declared "
-            "children are recognized as one device"
-        )
-    return replace(
-        state,
-        # An already-partial/missing observation keeps its own status; only a
-        # "ready" one is downgraded, because "ready" is the single word every
-        # consumer reads as "safe to drive this speaker with".
-        status="partial" if state.status == "ready" else state.status,
-        issues=state.issues + (
-            _issue(
-                "blocker",
-                "saved_composite_partially_present",
-                f"saved topology declares the composite {declared.label} "
-                f"({declared.physical_output_count} outputs) but observed output "
-                f"hardware is {state.profile_id}; {detail}",
-            ),
-        ),
-    )
-
-
-def dual_apple_runtime_mapping(
-    state: OutputHardwareState,
-    *,
-    topology_path: str | Path | None = None,
-) -> DualAppleRuntimeMapping:
-    """Return the child order outputd should use for the dual-Apple sink.
-
-    A saved speaker topology pins which physical dongle owns lanes 0/1 and
-    2/3. ALSA card order is only safe before that topology exists.
-    """
-
-    if state.profile_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        return DualAppleRuntimeMapping(False, "not_dual_apple_profile")
-    if state.status != "ready":
-        return DualAppleRuntimeMapping(False, f"profile_status_{state.status}")
-    if len(state.child_devices) != 2:
-        return DualAppleRuntimeMapping(False, "expected_two_child_devices")
-    if any(not child.pcm for child in state.child_devices):
-        return DualAppleRuntimeMapping(False, "missing_child_pcm")
-
-    topology_children = _load_dual_apple_topology_children(topology_path)
-    if topology_children is None:
-        return DualAppleRuntimeMapping(
-            True,
-            "ok",
-            "observed_hardware",
-            state.child_devices,
-        )
-    if not topology_children:
-        return DualAppleRuntimeMapping(False, "saved_topology_unreadable")
-    if len(topology_children) != 2:
-        return DualAppleRuntimeMapping(False, "saved_topology_expected_two_children")
-
-    remaining = list(state.child_devices)
-    ordered: list[OutputCardFact] = []
-    for topology_child in topology_children:
-        candidates = _runtime_identity_candidates(topology_child)
-        if not candidates:
-            return DualAppleRuntimeMapping(
-                False,
-                "saved_topology_child_identity_missing",
-            )
-        match = None
-        for token in candidates:
-            matches = [
-                child
-                for child in remaining
-                if token in _identity_tokens(child)
-            ]
-            if len(matches) == 1:
-                match = matches[0]
-                break
-        if match is None:
-            return DualAppleRuntimeMapping(
-                False,
-                "saved_topology_child_identity_mismatch",
-            )
-        ordered.append(match)
-        remaining.remove(match)
-
-    if ordered[0].pcm == ordered[1].pcm:
-        return DualAppleRuntimeMapping(False, "duplicate_child_pcm")
-    return DualAppleRuntimeMapping(True, "ok", "saved_topology", tuple(ordered))
-
-
-def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
-    """Convert observed state into an ``OutputHardware`` JSON mapping."""
-
-    outputs = []
-    if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        labels = (
-            ("Apple DAC A left", "A-L"),
-            ("Apple DAC A right", "A-R"),
-            ("Apple DAC B left", "B-L"),
-            ("Apple DAC B right", "B-R"),
-        )
-    else:
-        labels = tuple(
-            (f"DAC output {index + 1}", str(index + 1))
-            for index in range(state.physical_output_count)
-        )
-    for index in range(state.physical_output_count):
-        human_label, terminal_label = labels[index]
-        outputs.append({
-            "index": index,
-            "human_label": human_label,
-            "terminal_label": terminal_label,
-        })
-
-    child_devices = []
-    for idx, child in enumerate(state.child_devices):
-        physical = (
-            [idx * 2, idx * 2 + 1]
-            if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-            and idx < 2
-            else list(range(state.physical_output_count))
-        )
-        child_devices.append({
-            "child_id": f"apple_dac_{idx + 1}"
-            if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
-            else child.card_id,
-            "device_id": child.device_id,
-            "device_label": _dac_label_for(child.device_id) or child.label,
-            "physical_output_indexes": physical,
-            **({"serial": child.serial} if child.serial else {}),
-            **({"card_id": child.card_id} if child.card_id else {}),
-            **({"stable_path": child.stable_path} if child.stable_path else {}),
-            **({"usb_path": child.usb_path} if child.usb_path else {}),
-            **({"controller": child.controller} if child.controller else {}),
-        })
-
-    out: dict[str, Any] = {
-        "device_id": state.profile_id,
-        "device_label": state.profile_label,
-        "physical_output_count": state.physical_output_count,
-        "outputs": outputs,
-    }
-    if state.selected_card_id:
-        out["card_id"] = state.selected_card_id
-    if child_devices:
-        out["child_devices"] = child_devices
-    return out

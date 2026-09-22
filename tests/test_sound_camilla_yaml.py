@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from jasper.output_topology_store import new_topology_draft
 from jasper.camilla_config_contract import PeqFilter
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
@@ -751,7 +752,6 @@ def test_mono_on_output_1_renders_channel_0_hard_muted():
 
 
 def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
-    from jasper.output_topology import new_topology_draft
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     # Rendering is intentionally topology-shape-only: a saved stereo topology
@@ -767,7 +767,6 @@ def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
 
 
 def _unconfigured_draft():
-    from jasper.output_topology import new_topology_draft
 
     return new_topology_draft()
 
@@ -1380,7 +1379,6 @@ def test_production_call_shape_missing_topology_renders_the_golden(
     tmp_path, monkeypatch
 ):
     """A fresh box has no topology artifact — it must boot the golden graph."""
-    from jasper.output_topology import new_topology_draft
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     monkeypatch.setenv(
@@ -1402,7 +1400,6 @@ def test_production_call_shape_corrupt_topology_renders_the_golden_without_raisi
     A raise here would abort the deploy at the render step with a traceback
     instead.
     """
-    from jasper.output_topology import new_topology_draft
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     artifact = tmp_path / "output_topology.json"
