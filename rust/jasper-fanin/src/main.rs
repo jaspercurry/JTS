@@ -81,12 +81,11 @@ fn park_on_config_class(error: &anyhow::Error) {
         error!(
             "event=fanin.config_park exit={} detail={:#} — the unit does not \
              restart on config errors (RestartPreventExitStatus=78). If the \
-             detail names an env value (JASPER_FANIN_RING_WIRE_FORMAT / \
-             _RING_SLOTS / a slot-shearing period), fix it and \
-             `systemctl restart jasper-fanin`. If it names a ring header or \
-             geometry MISMATCH, the ring file on disk was built against a \
-             different geometry: `rm /dev/shm/jts-ring/program.ring` (or \
-             reboot — /dev/shm is tmpfs), then restart",
+             detail names an env value, fix it and `systemctl \
+             restart jasper-fanin`. If it names a ring header or geometry \
+             MISMATCH, the ring file on disk was built against a different \
+             geometry: `rm /dev/shm/jts-ring/program.ring` (or reboot — \
+             /dev/shm is tmpfs), then restart",
             code, error,
         );
         std::process::exit(code);
@@ -119,10 +118,6 @@ fn run() -> Result<()> {
 
     info!("event=fanin.boot version={}", env!("CARGO_PKG_VERSION"));
 
-    // Parse JASPER_FANIN_* env vars. Errors here are structural —
-    // the systemd EnvironmentFile didn't land or has a bad value.
-    // Fail-hard with a clear message; systemd's Restart=on-failure
-    // will retry on a 5 s backoff per the unit's RestartSec.
     let config = Config::from_env()?;
     info!(
         "event=fanin.config_loaded inputs={} sample_rate={} period_frames={} input_buffer_frames={}",

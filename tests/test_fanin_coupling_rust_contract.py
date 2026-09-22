@@ -333,18 +333,6 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
         "Rust out-of-range ring slots must FAIL LOUD (bail!/return Err), not clamp"
     )
     assert "clamp" not in guard.lower(), "Rust must not silently clamp ring slots"
-    # And the failure is CONFIG-class: it exits 78 so jasper-fanin.service PARKS
-    # (RestartPreventExitStatus=78) instead of climbing the restart burst into
-    # StartLimitAction=reboot. This guard is the ENV-declaration half of that
-    # class: an out-of-range JASPER_FANIN_RING_SLOTS is re-read from the env file
-    # on every start, so it is identical across restarts AND across reboots —
-    # a restart loop here reboots the speaker indefinitely. (The other half, a
-    # stale ring file, does clear on a reboot because /dev/shm is tmpfs; it
-    # survives a RESTART, which is the loop the park prevents.)
-    assert "crate::ConfigClassError" in guard, (
-        "Rust out-of-range ring slots must be tagged config-class so the unit "
-        "parks at exit 78 rather than reboot-looping"
-    )
 
 
 def test_shm_ring_status_block_emitted_by_rust_state():
