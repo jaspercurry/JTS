@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.active_speaker.candidate_trials import has_tuning_layers
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
@@ -718,7 +717,6 @@ def _candidate_summary(
     return {
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
-        "tuning_layers": has_tuning_layers(candidate),
         "trims_db": dict(candidate.role_attenuations_db),
         # …and which of those trims the round did NOT solve: the household
         # copy must never word a pinned number as a measured result. The

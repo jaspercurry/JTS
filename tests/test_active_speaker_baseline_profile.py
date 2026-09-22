@@ -28,6 +28,7 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_MEASURED,
     PROVENANCE_RECOMMENDED_START,
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
+    REAR_CALIBRATION_ROOM_BAND_OVERLAP,
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
     _GAIN_SOURCE_TO_PROVENANCE,
     active_layer_a_fingerprint,
@@ -515,11 +516,6 @@ _TRIM_DECISION = {
 
 
 def test_frozen_applied_profile_carries_linearization_top_level():
-    """Gap 3c: _frozen_applied_profile (a field-by-field allowlist, unlike
-    persist_applied_baseline_profile's whole-object spread) must copy
-    "linearization" -- otherwise a candidate saved OVER an applied,
-    linearized profile silently loses it from the retained
-    applied_recomposition_profile sidecar."""
     saved = {
         "status": "applied",
         "artifact_schema_version": 1,
@@ -552,8 +548,6 @@ def test_frozen_applied_profile_carries_linearization_top_level():
 
 
 def test_frozen_applied_profile_defaults_linearization_when_absent():
-    """Era-tolerant: a pre-PR-D applied dict with no "linearization" key at
-    all must not raise, defaulting to {}."""
     from jasper.active_speaker.baseline_profile import _frozen_applied_profile
 
     saved = {
@@ -971,20 +965,8 @@ def test_timing_reader_returns_none_for_invalid_record(record):
     assert applied_profile_timing({"timing": record}) is None
 
 
-def _fitted_rear_document() -> dict[str, Any]:
-    """The seed with one cut on the cancellation branch, inside ADR-0318's bounds."""
-    document = _rear_document()
-    rear = document["rear"]
-    return {**document, "rear": {**rear, "cancellation": {
-        **rear["cancellation"],
-        "filters": [{"type": "Biquad", "parameters": {
-            "type": "Peaking", "freq": 120.0, "q": 0.7, "gain": -3.0}}],
-    }}}
-
-
 @pytest.fixture
 def cardioid_declaration(tmp_path, monkeypatch):
-    """The declared cardioid speaker, its draft and its compiled declaration."""
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     topology = _rear_pair("mono")[1]
     draft = standard_design_draft(topology)
@@ -994,7 +976,9 @@ def cardioid_declaration(tmp_path, monkeypatch):
 
 def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tmp_path, cardioid_declaration):
     topology, draft, declaration, declared = cardioid_declaration
-    document = _fitted_rear_document()
+    document = _rear_document()
+    document["rear"]["cancellation"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 120.0, "q": 0.7, "gain": -3.0}}]
     candidate = compose_candidate(publish_authored_candidate(declared),
                                   sections={"rear_calibration": document})
     text = compile_tuning_graph(declaration, candidate=candidate)
@@ -1013,9 +997,6 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     assert (proof.allowed, proof.classification) == (True, GRAPH_APPROVED_ACTIVE_RUNTIME)
     assert not proof.issues
 
-    # The pre-apply proof composes its own snapshot from the candidate; every
-    # section the persisted writer carries has to be in it, or the door reads
-    # an absent document and refuses the graph it is about to load.
     pre_apply = baseline_profile_mod.recomposition_snapshot_for(
         candidate, declaration=declaration, design_draft=draft)
     assert set(pre_apply) == set(applied["recomposition_snapshot"])
@@ -1027,19 +1008,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     assert "rear_output_not_muted" in {issue["code"] for issue in without.issues}
 
 
-def _rear_candidate(gap_m: Any, front_delay_ms: float, alignment: str) -> MeasuredCrossoverCandidate:
-    document = _rear_document()
-    rear = {} if gap_m == "absent" else {
-        **document,
-        "geometry": {**document["geometry"], "cabinet_back_wall_m": gap_m},
-        "front": {**document["front"], "delay_ms": front_delay_ms},
-    }
-    candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration=rear)
-    return replace(candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}})
-
-
 def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration):
-    """The snapshot key the runtime door later reads is what this writer wrote."""
     topology, draft, declaration, declared = cardioid_declaration
     candidate = replace(declared, rear_calibration=_rear_document())
 
@@ -1078,8 +1047,41 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
         speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0, cabinet_back_wall_m=declared_m)
     monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda *a, **kw: geometry)
 
-    issues = baseline_profile_mod.rear_calibration_issues(
-        _rear_candidate(gap_m, front_delay_ms, alignment))
+    document = _rear_document()
+    document["geometry"]["cabinet_back_wall_m"] = None if gap_m == "absent" else gap_m
+    document["front"]["delay_ms"] = front_delay_ms
+    candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration={} if gap_m == "absent" else document)
+    issues = baseline_profile_mod.rear_calibration_issues(replace(
+        candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}}))
 
     assert [issue["code"] for issue in issues] == codes
     assert {issue["severity"] for issue in issues} <= {"warning"}
+
+
+@pytest.mark.parametrize("band,room,room_band", [
+    ([100.0, 200.0], _room_correction(), [93.69, 153.69]),
+    ([400.0, 500.0], _room_correction(), None),
+    ([300.0, 400.0], _room_correction(), None),
+    (None, _room_correction(), None),
+    ([100.0, 200.0], {}, None),
+    ([100.0, 200.0], _room_correction(sides={"mono": []}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 45.0, "q": 3.0, "gain": -4.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 90.0, "q": 1.0, "gain": -2.0}]}), [55.62, 145.62]),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 90.0, "q": 8.0, "gain": -2.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 0.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [
+        {"freq": 45.0, "q": 8.0, "gain": -2.0}, {"freq": 250.0, "q": 8.0, "gain": -2.0}]}), None),
+])
+def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaration, band, room, room_band):
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda: None)
+    document = _rear_document()
+    document["rear"]["cancellation"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": kind, "freq": freq, "q": 0.7}}
+        for kind, freq in zip(("Highpass", "Lowpass"), band or [])]
+    candidate = replace(cardioid_declaration[3], rear_calibration=document, room_correction=room)
+    issues = baseline_profile_mod.rear_calibration_issues(candidate)
+    assert [issue["code"] for issue in issues] == ([REAR_CALIBRATION_ROOM_BAND_OVERLAP] if room_band else [])
+    if room_band:
+        assert issues[0]["severity"] == "warning"
+        assert issues[0]["room_band_hz"] == pytest.approx(room_band, abs=0.01)
+        assert issues[0]["cancellation_band_hz"] == band

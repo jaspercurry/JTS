@@ -453,7 +453,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
 
 
 def _rear() -> dict[str, Any]:
-    """Electrical branches only; see ADR-0318, ADR-0322 and ADR-0324."""
+    """Electrical branches only; see ADR-0318, ADR-0322, ADR-0324 and ADR-0327."""
     return {
         "document_section": "rear_calibration",
         "case": "electrical_dsp",
@@ -479,9 +479,9 @@ def _rear() -> dict[str, Any]:
             "gain_kinds": sorted(rear_calibration.SHELVING),
             "stage_kinds": sorted(rear_calibration.STAGES),
             "gain_rule": (
-                "Peaking, Lowshelf and Highshelf gain must not exceed "
-                f"+{rear_calibration.MAX_CHAIN_BOOST_DB:g} dB; "
-                "a boost is charged to program headroom (ADR-0326)"
+                f"Peaking, Lowshelf and Highshelf gain must not exceed +{rear_calibration.MAX_CHAIN_BOOST_DB:g} dB. "
+                f"A boost uses shared program headroom (ceiling {MAX_PROGRAM_HEADROOM_DB:g} dB), applied "
+                "as broadband attenuation pre-split to every driver, including the tweeter (ADR-0327)."
             ),
             "emitted_delay_rule": (
                 "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; "
@@ -494,9 +494,8 @@ def _rear() -> dict[str, Any]:
                 "included_stages.<side> must not list boundary_correction while boundary.<side> carries filters"
             ),
             "comparison_scope": (
-                "a variant changes ONE control family -- rear gain, rear relative delay, or one band "
-                "edge -- and carries every other field of the incumbent's section verbatim, including "
-                "the front chain and the filter structure"
+                "change ONE family: rear gain, rear relative delay, or one band edge; "
+                "copy all other incumbent fields verbatim, including the front chain and filter structure"
             ),
             "rear_muted_reference": "the same section with rear_muted: true is the rear-muted reference",
             "inheritance_rule": (

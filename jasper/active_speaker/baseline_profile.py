@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Se
 import yaml as yaml_parser
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_apply import (
     DspApplyError,
@@ -78,6 +79,7 @@ from .measured_crossover_candidate import (
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
+from .rear_calibration import rear_operating_facts
 from . import passive_profile as _passive
 from .startup_hold import release_staged_startup_hold
 from .state_paths import baseline_profile_state_path
@@ -91,6 +93,7 @@ CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 
 REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
 REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
+REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
 # The wizard declares the wall gap in millimetres while a document carries an
 # inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
 REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
@@ -293,20 +296,14 @@ def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
     )]
 
 
-def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, str]]:
-    """Disclose what a cardioid document assumes but cannot prove (ADR-0101).
-
-    The declared-geometry reads live here. A disclosure the document alone
-    carries is attached to the candidate at construction instead
-    (``measured_crossover_candidate._rear_calibration_disclosure``), so it
-    already rides ``analysis["issues"]`` and is never re-derived here.
-    """
+def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, Any]]:
+    """Disclose geometry, timing and room-band interactions (ADR-0101, ADR-0322)."""
     from jasper.audio_measurement.measurement_geometry import load_declared_geometry  # lazy: geometry pulls NumPy in
 
     document = candidate.rear_calibration
     if not document:
         return []
-    issues: list[dict[str, str]] = []
+    issues: list[dict[str, Any]] = []
     fitted_m = (document.get("geometry") or {}).get("cabinet_back_wall_m")
     geometry = load_declared_geometry()
     declared_m = None if geometry is None else geometry.cabinet_back_wall_m
@@ -325,6 +322,19 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
             f"the rear calibration delays the front woofer by {front_delay_ms:g} ms, which moves it "
             "away from the measured woofer/tweeter arrival difference",
         ))
+    cancellation_band = rear_operating_facts(document)["band_hz"]
+    if cancellation_band:
+        for peq in (entry for filters in candidate.room_correction.get("sides", {}).values()
+                    for entry in filters if entry["gain"]):
+            width = 2 ** bell_half_width_oct(peq["q"])
+            room_band = [peq["freq"] / width, peq["freq"] * width]
+            if max(room_band[0], cancellation_band[0]) < min(room_band[1], cancellation_band[1]):
+                issues.append({
+                    **_issue("warning", REAR_CALIBRATION_ROOM_BAND_OVERLAP,
+                             "the room correction layer and the rear cancellation branch are "
+                             "not reconciled against each other in v1"),
+                    "room_band_hz": room_band, "cancellation_band_hz": cancellation_band,
+                })
     return issues
 
 
