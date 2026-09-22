@@ -23,7 +23,6 @@ state.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import sys
@@ -32,11 +31,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 try:
-    from _wake_pipeline_common import is_safe_wake_pipeline_output
+    from _wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 except ModuleNotFoundError as exc:
     if exc.name != "_wake_pipeline_common":
         raise
-    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 
 try:
     import numpy as np
@@ -91,14 +90,6 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             clean = {k: v for k, v in row.items() if not k.startswith("_")}
             f.write(json.dumps(clean, sort_keys=True) + "\n")
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _default_output_dir(feature_bank_dir: Path) -> Path:
@@ -436,17 +427,17 @@ def prepare_training_workdir(
         },
         "source_feature_bank": {
             "path": str(feature_bank_dir),
-            "feature_bank_sha256": _sha256(summary_path),
-            "feature_manifest_sha256": _sha256(manifest_path),
+            "feature_bank_sha256": sha256_file(summary_path),
+            "feature_manifest_sha256": sha256_file(manifest_path),
             "features": {
                 SOURCE_TRAIN_SPLIT: {
                     "path": train_source_file,
-                    "sha256": _sha256(train_source_path),
+                    "sha256": sha256_file(train_source_path),
                     "rows": int(train_features.shape[0]),
                 },
                 SOURCE_EVAL_SPLIT: {
                     "path": eval_source_file,
-                    "sha256": _sha256(eval_source_path),
+                    "sha256": sha256_file(eval_source_path),
                     "rows": int(eval_features.shape[0]),
                 },
             },
@@ -472,14 +463,14 @@ def prepare_training_workdir(
                 TRAINER_TEST_SPLIT: output_test_file,
             },
             "sha256": {
-                "real_positive_injection.json": _sha256(
+                "real_positive_injection.json": sha256_file(
                     output_dir / "real_positive_injection.json"
                 ),
-                "real_positive_manifest.jsonl": _sha256(
+                "real_positive_manifest.jsonl": sha256_file(
                     output_dir / "real_positive_manifest.jsonl"
                 ),
-                output_train_file: _sha256(train_output_path),
-                output_test_file: _sha256(test_output_path),
+                output_train_file: sha256_file(train_output_path),
+                output_test_file: sha256_file(test_output_path),
             },
         },
         "limitations": [

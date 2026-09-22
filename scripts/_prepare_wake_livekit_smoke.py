@@ -26,7 +26,6 @@ runtime state.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
@@ -37,11 +36,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 try:
-    from _wake_pipeline_common import is_safe_wake_pipeline_output
+    from _wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 except ModuleNotFoundError as exc:
     if exc.name != "_wake_pipeline_common":
         raise
-    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 
 try:
     import numpy as np
@@ -70,14 +69,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} does not contain a JSON object")
     return data
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _default_output_dir(training_workdir: Path) -> Path:
@@ -472,7 +463,7 @@ def prepare_livekit_smoke(
         "output_dir": str(output_dir),
         "training_workdir": {
             "path": str(training_workdir),
-            "summary_sha256": _sha256(summary_path),
+            "summary_sha256": sha256_file(summary_path),
             "positive_train": source_train_file,
             "positive_test": source_test_file,
         },
@@ -519,17 +510,17 @@ def prepare_livekit_smoke(
                 "negative_test": f"livekit-output/{model_name_resolved}/negative_features_test.npy",
             },
             "sha256": {
-                "livekit_smoke_config.yaml": _sha256(config_path),
-                f"livekit-output/{model_name_resolved}/positive_features_train.npy": _sha256(
+                "livekit_smoke_config.yaml": sha256_file(config_path),
+                f"livekit-output/{model_name_resolved}/positive_features_train.npy": sha256_file(
                     model_dir / "positive_features_train.npy"
                 ),
-                f"livekit-output/{model_name_resolved}/positive_features_test.npy": _sha256(
+                f"livekit-output/{model_name_resolved}/positive_features_test.npy": sha256_file(
                     model_dir / "positive_features_test.npy"
                 ),
-                f"livekit-output/{model_name_resolved}/negative_features_train.npy": _sha256(
+                f"livekit-output/{model_name_resolved}/negative_features_train.npy": sha256_file(
                     model_dir / "negative_features_train.npy"
                 ),
-                f"livekit-output/{model_name_resolved}/negative_features_test.npy": _sha256(
+                f"livekit-output/{model_name_resolved}/negative_features_test.npy": sha256_file(
                     model_dir / "negative_features_test.npy"
                 ),
             },

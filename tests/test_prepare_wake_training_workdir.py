@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -170,6 +171,8 @@ def test_prepares_livekit_positive_files_with_weighted_train_only(tmp_path: Path
     assert (out / "README.md").is_file()
     assert (out / "training_workdir.json").is_file()
     assert "feature_data/positive_features_train.npy" in summary["artifacts"]["sha256"]
+    for name, digest in summary["artifacts"]["sha256"].items():
+        assert digest == hashlib.sha256((out / name).read_bytes()).hexdigest()
 
 
 def test_rejects_manifest_feature_count_mismatch(tmp_path: Path) -> None:

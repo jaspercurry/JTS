@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 import wave
@@ -167,7 +168,7 @@ def test_export_bundle_copies_audio_and_writes_training_manifest(tmp_path: Path)
     assert chip["label_kind"] == ""
     assert chip["phrase"] == ""
     assert chip["transcript"] == ""
-    assert chip["sha256"]
+    assert chip["sha256"] == hashlib.sha256((out / chip["bundle_path"]).read_bytes()).hexdigest()
     assert (out / chip["bundle_path"]).is_file()
     assert "chip_aec_150" in (out / "manifest.csv").read_text()
     assert chip["sha256"] in (out / "SHA256SUMS").read_text()

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -84,6 +85,8 @@ def test_prepares_livekit_smoke_workdir_with_placeholder_negatives(tmp_path: Pat
     assert "  background_noise: 0\n" in config_text
     assert (out / "README.md").is_file()
     assert (out / "livekit_smoke.json").is_file()
+    for name, digest in summary["artifacts"]["sha256"].items():
+        assert digest == hashlib.sha256((out / name).read_bytes()).hexdigest()
 
 
 def test_accepts_operator_supplied_negative_features(tmp_path: Path) -> None:
