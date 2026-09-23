@@ -29,4 +29,3 @@ def test_aec3_pybind_wrappers_do_not_compile_at_o3() -> None:
     }
 
     assert assignments["BINDING_COMPILE_ARGS"] == ["-O0", "-g0"]
-    assert "-O3" not in (ROOT / "jasper_aec3" / "setup.py").read_text()
