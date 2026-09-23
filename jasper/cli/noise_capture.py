@@ -79,7 +79,7 @@ from jasper.cli.wake_enroll import (
     systemctl,
 )
 
-from ._logging import configure_verbose_logging
+from ..logging_setup import configure_verbose_logging
 
 logger = logging.getLogger("jasper-noise-capture")
 

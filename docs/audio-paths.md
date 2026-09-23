@@ -201,10 +201,13 @@ Those three sockets share one client and one vocabulary. Every sender goes
 through `jasper.platform.uds.daemon_command`, whose single timeout covers
 connect, send, response and close; every command line is built by a helper in
 `jasper.platform.wire`. For the verbs `wire.py` owns — the fan-in select and
-mute verbs, the mux verbs and the TTS verbs — neither a caller nor a test
-spells one as a literal, so a rename is one edit. The diagnostic tap is the
-exception: `jasper/route_latency/tap_client.py` builds `TAP_ARM`/`TAP_DISARM`
-as literals over its own `AF_UNIX` socket and uses neither helper.
+mute verbs, the mux verbs and the TTS verbs — no caller spells one as a
+literal, so a rename is one edit in `wire.py` plus its dedicated wire-format
+pin, `tests/test_platform_wire.py`, which spells every verb as a literal on
+purpose so a formatter change that moves a byte on the wire fails there. The
+diagnostic tap is the exception: `jasper/route_latency/tap_client.py` builds
+`TAP_ARM`/`TAP_DISARM` as literals over its own `AF_UNIX` socket and uses
+neither helper.
 
 ## Adding a new music source
 

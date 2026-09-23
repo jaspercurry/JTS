@@ -18,11 +18,12 @@ three name the same string, and the playback/capture pair an snd-aloop round
 trip needed collapses into one constant. That is what makes "the writer and the
 reader agree" structural instead of a claim someone has to check.
 
-**Here rather than in** :mod:`jasper.multiroom.reconcile`, which is a
-2600-line module whose transport constants are already imported piecemeal by
+**Here rather than in** :mod:`jasper.multiroom.reconcile`, which is a large
+module whose transport constants are already imported piecemeal by
 production and test modules that want nothing else from it — for example,
 ``jasper.cli.doctor.grouping``'s ``check_grouping_leader_pipe`` imports only
-``SNAPFIFO`` from the reconciler, not the whole module's surface.
+``SNAPFIFO`` from :mod:`jasper.multiroom.reconcile_plan`, not the whole
+module's surface.
 
 **Deliberately NOT a member of the ring platform's registries.**
 :data:`jasper.fanin_coupling.RING_PCM_DEVICES` is what
@@ -39,7 +40,7 @@ through machinery that is not about it.
 from __future__ import annotations
 
 from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
-from jasper.ring_assets import RING_SHM_DIR, ring_writer_lock_path
+from jasper.ring_assets import RING_SHM_DIR
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/62-jts-ring-grouping.conf`` defines —
 #: one string for snapclient's ``--soundcard`` and for CamillaDSP's capture
@@ -79,10 +80,3 @@ GROUPING_RING_CHANNELS = 2
 #: can get. See ADR-0261.
 GROUPING_RING_PERIOD_FRAMES = RING_CAMILLA_CHUNKSIZE
 GROUPING_RING_SLOTS = 16
-
-#: The exclusive ``flock`` a C ioplug WRITER holds for the life of its mapping,
-#: which is what makes a second writer's open fail loudly with ``-EBUSY``.
-#: DERIVED by calling the ring platform's own constructor rather than spelled
-#: again here — one suffix rule, one owner, already pinned against the generated
-#: ring ABI by ``tests/test_ring_assets.py``.
-GROUPING_RING_WRITER_LOCK = ring_writer_lock_path(GROUPING_RING_FILE)

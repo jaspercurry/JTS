@@ -45,6 +45,11 @@ ClockDomainContract = Literal[
 ChipAecQualification = Literal["approved", "needs_calibration"]
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
+# The only values ``DacProfile.__post_init__`` accepts for ``final_edge_format``.
+# tests/test_dac_profiles.py imports this directly to compare against
+# outputd's own config.rs parse arms.
+FINAL_EDGE_FORMATS: tuple[str, ...] = ("S16_LE", "S24_3LE", "S32_LE")
+
 
 @dataclass(frozen=True)
 class MixerControl:
@@ -246,7 +251,7 @@ class DacProfile:
                 f"{self.id}: unsupported chip_aec_qualification "
                 f"{self.chip_aec_qualification!r}"
             )
-        if self.final_edge_format not in ("S16_LE", "S24_3LE", "S32_LE"):
+        if self.final_edge_format not in FINAL_EDGE_FORMATS:
             raise ValueError(
                 f"{self.id}: unsupported final_edge_format {self.final_edge_format!r}"
             )

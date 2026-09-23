@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import assignments_for
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,11 +26,11 @@ def test_peering_env_file_is_sourced_by_voice_and_control_units():
     was missing the line). Mirrors
     `test_weather_plumbing.py`'s env-file plumbing assertion.
     """
-    voice_unit = (
-        ROOT / "deploy" / "systemd" / "jasper-voice.service"
-    ).read_text()
-    control_unit = (
-        ROOT / "deploy" / "systemd" / "jasper-control.service"
-    ).read_text()
-    assert "EnvironmentFile=-/var/lib/jasper/peering.env" in voice_unit
-    assert "EnvironmentFile=-/var/lib/jasper/peering.env" in control_unit
+    voice_unit = (ROOT / "deploy" / "systemd" / "jasper-voice.service").read_text()
+    control_unit = (ROOT / "deploy" / "systemd" / "jasper-control.service").read_text()
+    assert "-/var/lib/jasper/peering.env" in assignments_for(
+        voice_unit, "EnvironmentFile"
+    )
+    assert "-/var/lib/jasper/peering.env" in assignments_for(
+        control_unit, "EnvironmentFile"
+    )

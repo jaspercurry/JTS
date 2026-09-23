@@ -31,9 +31,9 @@ from .audio_profile_state import (
     runtime_env_from_mapping,
 )
 from .aec.bridge_telemetry import read_bridge_stats
+from .audio_hardware.dac import HIFIBERRY_DAC8X_ID
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,
-    HIFIBERRY_DAC8X_DAC_ID,
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
@@ -59,12 +59,9 @@ from .logging_setup import configure_logging
 
 CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
-DAC8X_DAC_ID = HIFIBERRY_DAC8X_DAC_ID
-CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
-DEFAULT_OUTPUTD_STATUS_SOCKET = Path(OUTPUTD_STATUS_SOCKET)
 DEFAULT_CHIP_WAKE_LEGS = ("on",)
 CHIP_AEC_PROFILE_READBACK_COMMANDS = (
     "SHF_BYPASS",
@@ -117,7 +114,7 @@ def outputd_socket_path(system_env: Mapping[str, str]) -> Path:
     raw = (
         system_env.get("JASPER_OUTPUTD_CONTROL_SOCKET")
         or os.environ.get("JASPER_OUTPUTD_CONTROL_SOCKET")
-        or str(DEFAULT_OUTPUTD_STATUS_SOCKET)
+        or OUTPUTD_STATUS_SOCKET
     )
     return Path(raw)
 
@@ -371,7 +368,7 @@ def _chip_aec_dac_support_check(
     }
     expected = {
         "status": STATUS_APPROVED,
-        "supported_dac_ids": sorted(CHIP_AEC_SUPPORTED_DAC_IDS),
+        "supported_dac_ids": sorted(APPROVED_DAC_IDS),
     }
     if gate.status == STATUS_APPROVED:
         return _check(
@@ -1287,7 +1284,7 @@ def build_outputd_stability_hardware_validation_artifact(
     checks: dict[str, Mapping[str, Any]] = {
         "runtime_identity": _runtime_identity_check(system_env),
         "service_state": _outputd_pipeline_service_state_check(service_states),
-        "dac_identity": _dac_identity_check(dac, expected_id=DAC8X_DAC_ID),
+        "dac_identity": _dac_identity_check(dac, expected_id=HIFIBERRY_DAC8X_ID),
         "dac_output": _outputd_dac_status_check(outputd_status),
         "outputd_reference_health": _outputd_reference_health_check(
             outputd_status_samples,

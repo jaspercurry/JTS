@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Active *leader* CamillaDSP apply/restore arm — the grouping reconciler's
-two-instance arm for an ACTIVE speaker that LEADS a bond (distributed-active
-Stage B / Slice 5).
+two-instance arm for an ACTIVE speaker that LEADS a bond.
 
 An active leader is **brains + an endpoint**: it bakes the program domain to the
 wire AND runs its own per-driver crossover on the round-tripped stream, so it
@@ -16,10 +15,9 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     ``File`` sink writing the snapserver pipe (``SNAPFIFO``), so the follower(s)
     receive a corrected stereo wire. ``enable_rate_adjust: false`` (a File sink
     has no output clock to steer; the one rate loop is downstream). This is
-    :func:`jasper.active_speaker.emit_active_speaker_program_bake_config`
-    (Slice-5 emit, PR #929).
+    :func:`jasper.active_speaker.emit_active_speaker_program_bake_config`.
   - **camilla#2** (the endpoint-crossover instance, ``:1235``,
-    ``jasper-camilla-crossover.service`` — INERT infra from PR #930) runs the
+    ``jasper-camilla-crossover.service``) runs the
     DRIVER domain — Layer A: the ``2->N`` split + per-driver crossover / delay /
     gain / soft-clip limiter (+ tweeter high-pass) — captured from the grouping
     ring (snapclient -> ``jts_ring_grouping`` -> camilla#2 -> DAC). This is
@@ -28,8 +26,9 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 
-This is the **music-only validated seam**: no
-``outputd-summer``, no leader TTS yet (Steps 2-3). camilla#2 runs the active
+This is the **music-only validated seam**: no ``outputd-summer`` — leader
+assistant TTS still goes through the ordinary fan-in path, unparked, not
+through this two-instance graph. camilla#2 runs the active
 follower's clock seam unchanged — same capture (the grouping ring), same
 per-sink rate-adjust resolution — so a failure here has one candidate cause (the
 two-instance setup), not a new clock topology.
@@ -383,9 +382,9 @@ def seed_crossover_statefile(
     """RE-SEED camilla#2's statefile to load the re-proven driver-domain config,
     then the reconciler ``systemctl enable --now``-s the crossover unit.
 
-    This closes the seam B1 (PR #930) flagged: the install seed is flat on a
-    non-active box and the crossover guard repairs ONLY a dead bonded pipe, NOT a
-    flat statefile — so the never-flat (never full-range to a tweeter) guarantee
+    The install seed is flat on a non-active box, and the crossover guard
+    repairs ONLY a dead bonded pipe, NOT a flat statefile — so the never-flat
+    (never full-range to a tweeter) guarantee
     for an ARMED camilla#2 rests on THIS arm-time re-seed pointing the statefile
     at the re-proven driver-domain (Layer-A-intact) graph. Reuses the canonical
     :func:`jasper.active_speaker.runtime_contract.write_camilla_statefile` (the

@@ -47,6 +47,9 @@ from jasper.source_intent import source_intent_enabled
 from jasper.service_units import USBGADGET_SERVICE
 from jasper.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,
+    GADGET_CONFIGFS_PATH,
+    UAC2_CARD_NAME,
+    UAC2_CARD_PATH,
     network_wanted,
     udc_host_connected,
 )
@@ -145,11 +148,9 @@ REASON_COMPOSITION_RETAINED_PENDING_REBOOT = "composition_retained_pending_reboo
 
 USBSINK_UNIT = "jasper-usbsink.service"
 USBGADGET_UNIT = USBGADGET_SERVICE
-USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
+USBSINK_GADGET_PATH = Path(GADGET_CONFIGFS_PATH)
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 USB_NAME_PATCH_SCHEMA = "3"
-UAC2_CARD_NAME = "UAC2Gadget"
-UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 # u_audio registers the volatile host-stream rate indicator on the PCM
 # interface, not MIXER, and its numid shifts with the composed direction set —
 # resolve it by name rather than pinning a numid.

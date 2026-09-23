@@ -574,7 +574,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     constant by construction, and
     ``test_fanin_control_command_vocabulary_matches_mux`` owns the override.
     """
-    from jasper import audio_validation, mux
+    from jasper import mux
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
     from jasper.control import audio_health_sampler, grouping_supervisor
@@ -605,7 +605,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         status_socket.OUTPUTD_STATUS_SOCKET,
         grouping_supervisor.OUTPUTD_CONTROL_SOCKET,
         audio_runtime_outputd.OUTPUTD_STATUS_SOCKET,
-        str(audio_validation.DEFAULT_OUTPUTD_STATUS_SOCKET),
         system_soak.STATUS_SOCKETS["outputd"],
     } == {outputd_sock}
     assert {

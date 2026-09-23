@@ -18,7 +18,7 @@ from .. import atomic_io
 
 
 def camilla():
-    """Return camilla#1 without coupling an apply arm to a web module."""
+    """Return camilla#1 (jasper.camilla.primary_controller)."""
     from jasper.camilla import primary_controller
 
     return primary_controller()

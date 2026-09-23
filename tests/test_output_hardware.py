@@ -21,7 +21,6 @@ from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_DEVICE_ID,
     OutputCardFact,
     OutputHardwareState,
     classify_output_cards,
@@ -52,7 +51,7 @@ def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> 
         {
             "artifact_schema_version": 1,
             "kind": "jts_output_hardware_state",
-            "profile_id": HIFIBERRY_DAC8X_DEVICE_ID,
+            "profile_id": dac.HIFIBERRY_DAC8X_ID,
             "profile_label": "HiFiBerry DAC8x",
             "status": "ready",
             "physical_output_count": 8,
@@ -60,7 +59,7 @@ def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> 
             "child_devices": [
                 {
                     "card_id": "sndrpihifiberry",
-                    "device_id": HIFIBERRY_DAC8X_DEVICE_ID,
+                    "device_id": dac.HIFIBERRY_DAC8X_ID,
                     "label": "snd_rpi_hifiberry_dac8x",
                     "has_playback": True,
                     "pcm": "hw:CARD=sndrpihifiberry,DEV=0",
@@ -77,14 +76,14 @@ def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> 
 def test_output_hardware_state_from_mapping_tolerates_bad_numeric_fields() -> None:
     state = OutputHardwareState.from_mapping(
         {
-            "profile_id": HIFIBERRY_DAC8X_DEVICE_ID,
+            "profile_id": dac.HIFIBERRY_DAC8X_ID,
             "status": "ready",
             "physical_output_count": "not-an-int",
             "apple_dac_count": "not-an-int",
             "child_devices": [
                 {
                     "card_id": "sndrpihifiberry",
-                    "device_id": HIFIBERRY_DAC8X_DEVICE_ID,
+                    "device_id": dac.HIFIBERRY_DAC8X_ID,
                 },
                 {
                     "card_id": "A",
@@ -344,7 +343,7 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
 
     path = tmp_path / "output_hardware.json"
     # The env publication names a DAC throughout; the resolver never reads it.
-    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", HIFIBERRY_DAC8X_DEVICE_ID)
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", dac.HIFIBERRY_DAC8X_ID)
 
     assert active_dac_profile_id(path) is None
     write_state(
@@ -405,6 +404,6 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
 
     assert published_dac_id({}) == "unknown"
     assert (
-        published_dac_id({"JASPER_AUDIO_DAC_ID": HIFIBERRY_DAC8X_DEVICE_ID})
-        == HIFIBERRY_DAC8X_DEVICE_ID
+        published_dac_id({"JASPER_AUDIO_DAC_ID": dac.HIFIBERRY_DAC8X_ID})
+        == dac.HIFIBERRY_DAC8X_ID
     )

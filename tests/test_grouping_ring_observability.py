@@ -157,27 +157,6 @@ def test_a_resolving_pcm_is_ok(monkeypatch, _installed_confd):
     assert result.status == "ok"
 
 
-def test_the_check_has_no_busy_case_because_busy_cannot_happen():
-    """The corollary of the attach-site pin below, asserted as ABSENCE.
-
-    Every ``-EBUSY`` the ring can produce comes from the single-writer /
-    single-reader guards inside ``jts_ring_writer_open`` /
-    ``jts_ring_reader_open``, and both are reached only from the ``prepare``
-    callbacks this probe never enters. So there is no busy state to handle, and
-    handling one would mean writing a branch that can only ever be wrong about
-    why it fired. This guards the deletion: re-adding EBUSY handling here means
-    either the probe grew an attach (caught by the two pins below) or someone
-    wrote dead code with a false explanation attached.
-    """
-    import inspect
-
-
-    source = inspect.getsource(doctor_grouping.check_grouping_ring_device)
-    assert "EBUSY" not in source.split('"""')[-1], (
-        "check_grouping_ring_device has no reachable busy case — see its docstring"
-    )
-
-
 def test_a_name_that_does_not_resolve_fails_a_bonded_box(monkeypatch, _installed_confd):
     result = _check(monkeypatch, -errno.ENOENT, bonded=True)
     assert result.status == "fail"

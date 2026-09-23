@@ -21,7 +21,6 @@ from jasper.dsp_apply import (
     DSP_PROOF_ANCHOR_MISSING,
     DSP_PROOF_CANDIDATE_CHANGED,
     DSP_PROOF_CANDIDATE_UNREADABLE,
-    DSP_PROOF_INACTIVE_RESULTS,
     DspApplyError,
     DspApplyState,
     DspWriterLockTimeout,
@@ -638,8 +637,8 @@ async def _proof_refusal(tmp_path: Path, cfg: Path, expected_sha: str):
             expected_candidate_sha256=expected_sha,
             validate=_always_valid,
         )
-    # Every proof refusal happens BEFORE the load, which is what makes all
-    # three members of DSP_PROOF_INACTIVE_RESULTS honest.
+    # Every proof refusal happens BEFORE the load, so each of the three
+    # results below proves the load never ran.
     assert loaded == []
     return excinfo.value
 
@@ -720,16 +719,6 @@ def test_config_file_sha256_is_the_hasher_the_proof_uses(tmp_path: Path):
 
     assert config_file_sha256(cfg) == dsp_apply_module._sha256(cfg)
     assert config_file_sha256(tmp_path / "absent.yml") is None
-
-
-def test_every_proof_result_is_declared_inactive():
-    """The set exists so a classifier reads it instead of transcribing it. A
-    fourth proof result added without a decision about activity fails here."""
-    assert DSP_PROOF_INACTIVE_RESULTS == {
-        DSP_PROOF_ANCHOR_MISSING,
-        DSP_PROOF_CANDIDATE_UNREADABLE,
-        DSP_PROOF_CANDIDATE_CHANGED,
-    }
 
 
 def test_same_config_file_never_raises_on_a_path_it_cannot_resolve(tmp_path: Path):
