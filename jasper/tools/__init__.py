@@ -747,7 +747,7 @@ def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
     # arm — otherwise an `int | None` tool param silently degrades to the
     # catch-all {"type": "string"}, sending the model a wrong schema. `X | None`
     # is the codebase's house style, so a copyable contributor pack would hit
-    # this first. (Python 3.14 unifies the two origins; we still support 3.11+.)
+    # this first. (Python 3.14 unifies the two origins.)
     if origin is typing.Union or origin is types.UnionType:
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:

@@ -453,9 +453,7 @@ audio through `snapclient → FIFO → jasper-outputd` (which carries the
 calibration-trim hook, serving-FIFO health, and silence-fill). The
 endpoint tier starts with `snapclient → ALSA` directly — no Rust on the
 Zero — accepting snapcast client volume as the trim knob and snapclient
-restart policy as the resilience story. If endpoint-side outputd ever
-earns its keep (uniform health/trim), it arrives as prebuilt artifacts,
-never as an on-Zero cargo build.
+restart policy as the resilience story.
 
 **Validation gate: streambox role.** The streambox software profile is
 built: AirPlay / Spotify Connect / Bluetooth / USB Audio Input, local

@@ -21,7 +21,7 @@ restate either.
 | Check JS↔Python math parity (PEQ, level trims) | [JS ↔ Python parity checks](#js--python-parity-checks) |
 | Run a lane from a worktree and be sure it exercised THAT copy | [DEEP-AUDIT-PLAYBOOK.md](DEEP-AUDIT-PLAYBOOK.md) item 4 — pin `PYTHONPATH` and confirm a known edit is visible; the venv's editable install hardcodes the main checkout's path, so an isolated worktree silently imports the LIVE tree |
 | Pin a documented invariant with a test | [Guard & contract test patterns](#guard--contract-test-patterns) |
-| Preview what install.sh would mutate, or check provenance | [Install, provenance, and release artifacts](#install-provenance-and-release-artifacts) |
+| Preview what install.sh would mutate, or check provenance | [Install and provenance](#install-and-provenance) |
 | Check live Pi state (services, config, mic, renderer clock) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Diagnose one correction run with synchronized UMIK audio | [Correction capture diagnostic](#correction-capture-diagnostic) |
 | Characterize CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
@@ -116,7 +116,7 @@ these two.
 **Node-on-runner reliance.** Some browser modules are behaviourally tested by a
 Node harness invoked from pytest (`tests/test_dialog_helper.py`,
 `tests/test_landing_page_html.py`) behind a `shutil.which("node")` skip-guard.
-`pytest-matrix` has no `actions/setup-node` step — it relies on the runner image
+The `pytest` job has no `actions/setup-node` step — it relies on the runner image
 shipping Node. If that wiring changes, these flip to **green-by-skip** and lose
 their coverage silently; keep Node preinstalled or move the harnesses to a job
 that installs it. `scripts/check-js-syntax.sh` only `node --check`s syntax.
@@ -145,15 +145,11 @@ guard style.
 
 ---
 
-## Install, provenance, and release artifacts
+## Install and provenance
 
 ```sh
 bash deploy/install.sh --dry-run          # or JASPER_INSTALL_DRY_RUN=1
 python3 scripts/check-provenance.py
-python3 scripts/build-first-party-arm64-release.py
-python3 scripts/verify-first-party-arm64-release.py \
-  dist/first-party-arm64/jts-first-party-runtime-<version>
-pytest -q tests/test_first_party_arm64_release.py
 ```
 
 - `--dry-run` exits before the root check and renders `install.sh`'s
@@ -163,8 +159,6 @@ pytest -q tests/test_first_party_arm64_release.py
 - `check-provenance.py` validates [`deploy/provenance.toml`](../deploy/provenance.toml)
   against `deploy/install.sh`, Python direct-URL dependencies, and the
   wake/DTLN model registries. Run it when touching install/build downloads.
-- Pass `--expected-source-sha <full-sha>` to the ARM64 verifier when validating
-  a bundle for install.
 
 ---
 

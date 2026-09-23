@@ -220,7 +220,7 @@ jobs:
       - name: Install the locked policy test toolchain
         run: uv sync --locked --group fast-landing
 
-      - name: Gate the Python matrix on CI-routing policy
+      - name: Gate pytest on CI-routing policy
         run: |
           set -euo pipefail
           routing_policy_output="$(
@@ -237,22 +237,14 @@ jobs:
           printf 'routing policy: %s\n' "${routing_policy_tests[@]}"
           .venv/bin/pytest -q --tb=short "${routing_policy_tests[@]}"
 
-  pytest-matrix:
-    name: pytest / py${{ matrix.python-version }}
+  pytest:
+    name: pytest
     needs: [classify, python-policy]
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     # Headroom over the ~28-minute full run until the suite's late-run
     # descriptor exhaustion is fixed (#5288).
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        # Deployed-interpreter only (PiOS Trixie ships python3.13 — see
-        # deploy/lib/install/python-runtime.sh). Campaign speed measure
-        # during the 2026-08 right-sizing refactor; restoring the full
-        # matrix afterward is an owner call, recorded via ADR either way.
-        python-version: ["3.13"]
     # Default provider for tests that load jasper.config (the config
     # loader hard-fails without this set). Individual tests can override.
     env:
@@ -265,11 +257,9 @@ jobs:
 
       - uses: ./.github/actions/setup-python-uv
         with:
-          python-version: ${{ matrix.python-version }}
           install-full: "true"
 
       - name: Lint (ruff)
-        if: matrix.python-version == '3.13'
         # ruff ships in the dev extras installed above. Config + rule
         # selection live in [tool.ruff] in pyproject.toml. Runs before
         # the suite for fast feedback on undefined names / dead imports.
@@ -277,29 +267,6 @@ jobs:
 
       - name: Test (hardware-free; voice_eval explicitly excluded)
         run: scripts/test-merge
-
-  pytest:
-    # Keep the historical stable `pytest` context visible during and after
-    # the branch-protection cutover. The versioned matrix above fans out the
-    # real work; `ci` is the sole long-term required context.
-    name: pytest
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [classify, python-policy, pytest-matrix]
-    if: ${{ always() && needs.classify.outputs.lane == 'full' }}
-    steps:
-      - name: Require Python policy and all matrix jobs
-        run: |
-          if [[ "${{ needs['python-policy'].result }}" != "success" ]]; then
-            echo "python policy result: ${{ needs['python-policy'].result }}" >&2
-            exit 1
-          fi
-          if [[ "${{ needs['pytest-matrix'].result }}" != "success" ]]; then
-            echo "pytest matrix result: ${{ needs['pytest-matrix'].result }}" >&2
-            exit 1
-          fi
-          echo "python policy result: success"
-          echo "pytest matrix result: success"
 
   js:
     needs: classify
@@ -392,7 +359,6 @@ jobs:
       - docs
       - shell
       - python-policy
-      - pytest-matrix
       - pytest
       - js
       - rust
@@ -406,7 +372,6 @@ jobs:
       DOCS_RESULT: ${{ needs.docs.result }}
       SHELL_RESULT: ${{ needs.shell.result }}
       PYTHON_POLICY_RESULT: ${{ needs['python-policy'].result }}
-      PYTEST_MATRIX_RESULT: ${{ needs['pytest-matrix'].result }}
       PYTEST_RESULT: ${{ needs.pytest.result }}
       JS_RESULT: ${{ needs.js.result }}
       RUST_RESULT: ${{ needs.rust.result }}
@@ -429,7 +394,6 @@ jobs:
                 "${DOCS_RESULT}" \
                 "${SHELL_RESULT}" \
                 "${PYTHON_POLICY_RESULT}" \
-                "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
                 "${RUST_RESULT}"
@@ -449,7 +413,6 @@ jobs:
                 "${FAST_LANDING_RESULT}" \
                 "${SHELL_RESULT}" \
                 "${PYTHON_POLICY_RESULT}" \
-                "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
                 "${RUST_RESULT}"
@@ -472,7 +435,6 @@ jobs:
               for result in \
                 "${SHELL_RESULT}" \
                 "${PYTHON_POLICY_RESULT}" \
-                "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
                 "${RUST_RESULT}"

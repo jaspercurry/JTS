@@ -321,17 +321,18 @@ def test_revoking_an_absent_record_is_silent_and_successful(tmp_path):
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
-def test_build_failure_does_not_remove_the_prior_so(tmp_path):
-    # The degrade path must LEAVE the prior .so installed (strictly less broken
-    # than none in the inert phase). We assert the file survives by having the
-    # (real) dest .so present before and after — the helper's own rm is stubbed
-    # here, but the branch must not add its own removal.
+@pytest.mark.parametrize("build_rc", [1, 0], ids=["build_failed", "no_artifact"])
+def test_a_non_producing_build_keeps_the_prior_so_and_revokes_its_record(
+    tmp_path, build_rc
+):
     plugin_dir = tmp_path / "plugindir"
     plugin_dir.mkdir()
     repo_src = tmp_path / "repo" / "c" / "jts-ring-ioplug"
     repo_src.mkdir(parents=True)
     dest_so = plugin_dir / SO_NAME
     dest_so.write_bytes(b"\x7fELF stale so")
+    record = tmp_path / "ring-ioplug.provenance"
+    record.write_text("JTS_RING_IOPLUG_SHA256=old\n", encoding="utf-8")
 
     script = f"""
 set -euo pipefail
@@ -348,7 +349,7 @@ rsync() {{ :; }}
 # load-bearing rather than belt: the revoke on this path runs a REAL rm, and without the override
 # its target is /var/lib/jasper/ring-ioplug.provenance on the host running the test.
 sudo() {{ :; }}
-run_contained_build() {{ return 1; }}
+run_contained_build() {{ return {build_rc}; }}
 source "{RING_PLATFORM_SH}"
 build_install_jts_ring_ioplug
 """
@@ -357,6 +358,7 @@ build_install_jts_ring_ioplug
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert dest_so.exists(), "failure branch must not remove the prior .so"
+    assert not record.exists(), "a non-producing build must revoke the record"
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
