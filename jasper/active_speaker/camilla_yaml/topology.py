@@ -22,7 +22,8 @@ def _ordered_regions(preset: ActiveSpeakerPreset) -> list[CrossoverRegion]:
     return [by_pair[pair] for pair in ADJACENT_PAIRS_BY_WAY[preset.way_count]]
 
 
-def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
+def role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
+    """A shared driver must have the same polarity across crossover regions."""
     polarity: dict[str, bool] = {}
     for region in preset.crossover_regions:
         for role, value in (
@@ -38,11 +39,6 @@ def _role_polarity(preset: ActiveSpeakerPreset) -> dict[str, bool]:
     for role in required_driver_roles(preset.way_count):
         polarity.setdefault(role, False)
     return polarity
-
-
-# Public spelling; `_role_polarity` survives only for two importers outside
-# this PR's ratified file set (retiring it is a follow-up).
-role_polarity = _role_polarity
 
 
 def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:

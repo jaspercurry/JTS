@@ -67,7 +67,6 @@ from .emit_program_bake import (
 from .emit_startup import emit_active_speaker_startup_config as emit_active_speaker_startup_config
 from .filters import (
     _BLEND_CORRECTION_BIQUAD_TYPES as _BLEND_CORRECTION_BIQUAD_TYPES,
-    _LINEARIZATION_BIQUAD_TYPES as _LINEARIZATION_BIQUAD_TYPES,
     APPLIED_RESPONSE_FILTER_MODE as APPLIED_RESPONSE_FILTER_MODE,
     BASELINE_LIMITER_CLIP_LIMIT_DB as BASELINE_LIMITER_CLIP_LIMIT_DB,
     COMMISSIONING_FILTER_MODE as COMMISSIONING_FILTER_MODE,
@@ -94,7 +93,6 @@ from .filters import (
     _emit_sub_baseline_definitions as _emit_sub_baseline_definitions,
     _emit_sub_commissioning_definitions as _emit_sub_commissioning_definitions,
     _emit_sub_startup_definitions as _emit_sub_startup_definitions,
-    _linearization_slot as _linearization_slot,
     _program_protection_name as _program_protection_name,
     _protective_tweeter_hp_frequency as _protective_tweeter_hp_frequency,
     _room_peq_name as _room_peq_name,
@@ -157,7 +155,6 @@ from .topology import (
     _channels_for_role as _channels_for_role,
     _ordered_regions as _ordered_regions,
     _output_count as _output_count,
-    _role_polarity as _role_polarity,
     audible_outputs_for_role as audible_outputs_for_role,
     role_polarity as role_polarity,
 )

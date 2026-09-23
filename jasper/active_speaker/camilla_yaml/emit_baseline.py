@@ -45,7 +45,7 @@ from .filters import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     _blend_correction_name,
     _emit_baseline_filter_definitions,
-    _linearization_slot,
+    linearization_slot,
     _room_peq_name,
     _validated_blend_correction,
     _validated_driver_corrections,
@@ -298,7 +298,7 @@ pipeline:
             1
             for filters in safe_linearization.values()
             for index in range(len(filters))
-            if _linearization_slot(index, len(filters), filters) in ("shelf", "taper")
+            if linearization_slot(index, len(filters), filters) in ("shelf", "taper")
         )
         logger.info(
             "event=active_speaker_baseline_config_written "

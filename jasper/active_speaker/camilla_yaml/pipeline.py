@@ -43,7 +43,7 @@ from .topology import (
     _channels_for_role,
     _ordered_regions,
     _output_count,
-    _role_polarity,
+    role_polarity,
 )
 
 
@@ -77,7 +77,7 @@ def _emit_split_mixer(
     # Only its RESULT is optionally suppressed: the baseline/driver-domain
     # emitters carry polarity through ``corrections`` instead, so the mixer must
     # stay a no-op inverter there or the two would cancel out.
-    region_polarity = _role_polarity(preset)
+    region_polarity = role_polarity(preset)
     polarity = (
         region_polarity
         if apply_region_polarity
@@ -537,7 +537,7 @@ def _emit_role_routed_mixer(
     a ``split_active_Nway`` name. Ecosystem vocabulary, not a routing claim: the
     ROUTING stays role-routed.
     """
-    region_polarity = _role_polarity(preset)
+    region_polarity = role_polarity(preset)
     polarity = (
         region_polarity
         if apply_region_polarity

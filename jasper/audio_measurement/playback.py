@@ -90,13 +90,8 @@ class PlaybackResult:
     diagnostic_tail: str = ""
 
 
-class SweepPlaybackError(RuntimeError):
-    """Typed WAV-process failure.
-
-    The historical class name remains canonical so legacy Room callers can
-    continue catching ``SweepPlaybackError`` while neutral callers use the
-    ``PlaybackError`` alias.
-    """
+class PlaybackError(RuntimeError):
+    """Typed WAV-process failure."""
 
     def __init__(
         self,
@@ -128,9 +123,6 @@ class SweepPlaybackError(RuntimeError):
             failure_code=self.code, cleanup_state=self.cleanup_state,
             returncode=self.returncode,
         )
-
-
-PlaybackError = SweepPlaybackError
 
 
 class WavSourceFailureCode(str, Enum):
