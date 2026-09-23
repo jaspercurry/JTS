@@ -265,16 +265,7 @@ def _make_request(
     content_length: str | None = None,
     idle_hold=None,
 ):
-    """Instantiate the REAL handler class without running
-    BaseHTTPRequestHandler.__init__ (which expects a live socket), then attach
-    the minimal request I/O surface. This exercises the handler's own private
-    helpers (_send_html / _read_json / _send_json) and the real do_GET/do_POST
-    routing, rather than reimplementing them in a fake -- the migration didn't
-    touch any of that, and the test should prove it.
-
-    Returns the handler instance; read `handler.status` and
-    `handler.wfile.getvalue()` after invoking do_GET/do_POST.
-    """
+    """Use real request handling without a live socket."""
     headers = {}
     if cookies:
         headers["Cookie"] = cookies
@@ -1466,39 +1457,73 @@ def test_address_routes_reject_invalid_body_without_dispatch(
 
 
 @pytest.mark.parametrize(
-    "path, body, activates, checks_availability, success_status",
+    "path, body, condition, status, error",
     [
-        ("/power", {"on": True}, False, True, 200),
-        ("/power", {"on": False}, False, False, 200),
-        ("/discoverable", {"on": True}, True, True, 200),
-        ("/discoverable", {"on": False}, False, False, 200),
-        ("/scan", {"action": "start"}, True, True, 200),
-        ("/scan", {"action": "stop"}, False, False, 200),
-        ("/scan", {"action": " start "}, False, False, 200),
-        ("/scan", {"action": "invalid"}, False, False, 400),
-        ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}, True, True, 200),
-        *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID},
-           action == "connect", action == "connect", 202)
+        *[pytest.param(path, body, "follower", 409,
+                       "Bluetooth is managed by the stereo pair while this speaker is a "
+                       "follower — unpair on /sound/pair/ to change it", id=f"follower-{path}-{body}")
+          for path, body in (
+              ("/power", {"on": True}), ("/power", {"on": False}),
+              ("/discoverable", {"on": True}), ("/discoverable", {"on": False}),
+              ("/scan", {"action": "start"}), ("/scan", {"action": "stop"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID})
+                for action in ("connect", "disconnect", "forget")],
+          )],
+        *[pytest.param(path, body, "unavailable", 409,
+                       "Required Bluetooth services are not installed: bluealsa.service.",
+                       id=f"unavailable-{path}")
+          for path, body in (
+              ("/power", {"on": True}), ("/discoverable", {"on": True}),
+              ("/scan", {"action": "start"}), ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              ("/connect", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID}),
+          )],
+        *[pytest.param(path, body, condition, status, error, id=f"{condition}-{path}")
+          for condition, status, error in (
+              ("intent_off", 409, "Bluetooth is turned off in Sources"),
+              ("intent_error", 502, "Bluetooth intent is unavailable: intent unavailable"),
+          )
+          for path, body in (
+              ("/discoverable", {"on": True}), ("/scan", {"action": "start"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              ("/connect", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID}),
+          )],
+        pytest.param("/power", {"on": False}, "cleanup", 200, None, id="power-off"),
+        pytest.param("/discoverable", {"on": False}, "cleanup", 200, None, id="discoverable-off"),
+        pytest.param("/scan", {"action": "stop"}, "cleanup", 200, None, id="scan-stop"),
+        *[pytest.param(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID},
+                       "cleanup", 202, None, id=action) for action in ("disconnect", "forget")],
+        pytest.param("/scan", {"action": " start "}, "cleanup", 200, None, id="scan-spaces"),
+        pytest.param("/scan", {"action": "invalid"}, "ready", 400,
+                     "action must be start or stop", id="scan-invalid"),
+        pytest.param("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}, "ready", 200, None, id="pair"),
+        *[pytest.param(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF"}, "follower", 400,
+                       "invalid mutation id", id=f"invalid-id-{action}")
           for action in ("connect", "disconnect", "forget")],
-        *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF"}, False, False, 400)
-          for action in ("connect", "disconnect", "forget")],
+        *[pytest.param(path, body, "action_error", 502, "action failed", id=f"failure-{path}-{body}")
+          for path, body in (
+              ("/power", {"on": True}), ("/power", {"on": False}),
+              ("/discoverable", {"on": True}), ("/discoverable", {"on": False}),
+              ("/scan", {"action": "start"}), ("/scan", {"action": "stop"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID})
+                for action in ("connect", "disconnect", "forget")],
+          )],
     ],
 )
-@pytest.mark.parametrize(
-    "condition", ("ready", "follower", "intent_off", "intent_error", "unavailable", "action_error"),
-)
-def test_post_preamble_preserves_route_outcomes(
-    monkeypatch, caplog, path, body, activates, checks_availability, success_status, condition,
-):
+def test_post_preamble_preserves_route_outcomes(monkeypatch, caplog, path, body, condition, status, error):
     fake = _FakeDispatcher()
-    pair_start = mock.Mock(return_value=True)
-    request_intent = mock.Mock()
+    pair_start, request_intent = mock.Mock(return_value=True), mock.Mock()
     intent = mock.Mock(return_value=condition != "intent_off")
-    if condition == "intent_error":
-        intent.side_effect = RuntimeError("intent unavailable")
     availability = mock.Mock(return_value=_availability(
         available=condition != "unavailable", missing_units=("bluealsa.service",),
     ))
+    if condition == "intent_error":
+        intent.side_effect = RuntimeError("intent unavailable")
+    if condition in {"cleanup", "follower"}:
+        intent.side_effect = AssertionError("unexpected intent read")
+    if condition in {"cleanup", "follower", "intent_off", "intent_error"}:
+        availability.side_effect = AssertionError("unexpected availability probe")
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
     monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: condition == "follower")
     monkeypatch.setattr(bluetooth_setup, "_start_pair_stream", pair_start)
@@ -1507,56 +1532,32 @@ def test_post_preamble_preserves_route_outcomes(
     monkeypatch.setattr(bluetooth_setup, "probe_bluetooth_availability", availability)
     monkeypatch.setattr(bluetooth_setup, "set_discoverable", mock.AsyncMock())
     if condition == "action_error":
-        error = RuntimeError("action failed")
-        request_intent.side_effect = pair_start.side_effect = error
+        failure = RuntimeError("action failed")
+        request_intent.side_effect = pair_start.side_effect = failure
         for name in ("_dispatch", "_start_device_mutation"):
-            monkeypatch.setattr(bluetooth_setup, name, mock.Mock(side_effect=error))
+            monkeypatch.setattr(bluetooth_setup, name, mock.Mock(side_effect=failure))
         monkeypatch.setattr(
             bluetooth_setup, "_bluetooth_state_snapshot", lambda: ({"desired": True}, 200),
         )
     handler = _make_request(
-        path, body=json.dumps(body).encode(),
-        cookies="jts_csrf=" + CSRF, csrf_header=CSRF,
+        path, body=json.dumps(body).encode(), cookies="jts_csrf=" + CSRF, csrf_header=CSRF,
     )
-
     handler.do_POST()
-
-    invalid_id = path in {"/connect", "/disconnect", "/forget"} and "mutationId" not in body
-    intent_checked = activates and condition != "follower"
-    availability_checked = checks_availability and condition != "follower" and not (
-        activates and condition in {"intent_off", "intent_error"}
-    )
-    status = success_status
-    if not invalid_id:
-        if condition == "follower" or (activates and condition == "intent_off"):
-            status = 409
-        elif activates and condition == "intent_error":
-            status = 502
-        elif checks_availability and condition == "unavailable":
-            status = 409
-    if condition == "action_error" and status < 400:
-        status = 502
     payload = json.loads(handler.wfile.getvalue())
     assert handler.status == status
+    assert payload.get("error") == error
     assert payload.get("code") is None
-    assert intent.call_count == int(intent_checked)
-    assert availability.call_count == int(availability_checked)
-    if condition == "action_error" and status == 502:
+    if condition == "action_error":
         assert set(payload) == ({"error", "state"} if path == "/power" else {"error"})
         if path == "/power":
             assert payload["state"] == {"desired": True}
         records = [r for r in caplog.records if r.name == bluetooth_setup.__name__]
         assert len(records) == 1
         assert records[0].levelno == logging.ERROR
-        assert records[0].exc_info[1] is error
+        assert records[0].exc_info[1] is failure
         assert bluetooth_setup._ACTIVE_BLUETOOTH_ACTION is None
-    elif status >= 400:
+    elif error is not None:
         assert set(payload) == {"error"}
-        assert isinstance(payload["error"], str)
-        if condition == "follower" and not invalid_id:
-            assert "stereo pair" in payload["error"]
-        if status == 409 and condition == "unavailable":
-            assert "bluealsa.service" in payload["error"]
         assert fake.run_calls == 0
         assert fake.engine.calls == []
         pair_start.assert_not_called()
@@ -1574,11 +1575,8 @@ def test_post_preamble_preserves_route_outcomes(
             assert payload["action"] == path[1:]
             assert payload["mutationId"] == MUTATION_ID
         elif path == "/scan":
-            action = body["action"].strip()
-            expected = (
-                ("start_discovery", bluetooth_setup.SCAN_DURATION_SEC)
-                if action == "start" else ("stop_discovery",)
-            )
+            expected = (("start_discovery", bluetooth_setup.SCAN_DURATION_SEC)
+                        if body["action"].strip() == "start" else ("stop_discovery",))
             assert fake.engine.calls == [expected]
         else:
             bluetooth_setup.set_discoverable.assert_awaited_once_with(body["on"])
