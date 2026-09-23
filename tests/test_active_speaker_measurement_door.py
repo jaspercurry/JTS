@@ -15,10 +15,9 @@ from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper import measurement_window as coordinator
-from jasper.cli.measure import DOOR_GATE_OWNER
-from jasper.mux import FANIN_TEST_OWNERS
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 from types import SimpleNamespace
 
@@ -29,7 +28,9 @@ from jasper.active_speaker.crossover_v2.door import (
     REFUSE_SESSION_LIVE,
     REFUSE_VOLUME_NOT_OPEN,
     MeasurementDoorRefused,
-    measurement_door,
+    bind_measurement_graph,
+    isolation_hold,
+    level_window,
 )
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
@@ -100,7 +101,12 @@ def _profile() -> MeasurementGraphProfile:
     )
 
 
-def _door(tmp_path, cam, **overrides: Any):
+@asynccontextmanager
+async def _door(tmp_path, cam, **overrides: Any):
+    """Compose the door the same way ``measurement_door`` used to (now inlined:
+    no product caller was left that needed the composed wrapper itself, only
+    the ``isolation_hold`` + ``level_window`` primitives it wired together).
+    """
     kwargs: dict[str, Any] = {
         "profile": _profile(),
         "spl_monitor": object(),
@@ -111,7 +117,17 @@ def _door(tmp_path, cam, **overrides: Any):
         "volume_state_path": tmp_path / VOLUME_STATE,
     }
     kwargs.update(overrides)
-    return measurement_door(**kwargs)
+    graph = bind_measurement_graph(
+        kwargs["profile"], camilla_factory=kwargs["camilla_factory"], config_dir=kwargs["config_dir"],
+    )
+    async with isolation_hold(
+        graph=graph, camilla_factory=kwargs["camilla_factory"], action=kwargs["action"],
+        volume_state_path=kwargs["volume_state_path"],
+    ) as hold:
+        async with level_window(
+            kwargs["measurement_volume_db"], hold=hold, spl_monitor=kwargs["spl_monitor"],
+        ) as window:
+            yield window
 
 
 async def test_the_door_installs_a_measurement_graph_and_puts_the_entry_back(
@@ -375,50 +391,6 @@ async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box
         "each variant axis must make a different graph with its own fingerprint"
     )
     assert "# inverted_roles=" in box.loaded[1]
-
-
-async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
-    tmp_path, monkeypatch,
-):
-    assert DOOR_GATE_OWNER == "jasper-measure"
-    assert DOOR_GATE_OWNER in FANIN_TEST_OWNERS
-    assert DOOR_GATE_OWNER != coordinator.MEASUREMENT_GATE_OWNER
-
-    seen: list[str | None] = []
-
-    class _Window:
-        async def __aenter__(self) -> Any:
-            return self
-
-        async def __aexit__(self, *exc: Any) -> bool:
-            return False
-
-    def _window(**kw: Any) -> Any:
-        seen.append(kw.get("gate_owner"))
-        return _Window()
-
-    monkeypatch.setattr(coordinator, "measurement_window", _window)
-    entry = tmp_path / ENTRY_CONFIG
-    entry.write_text("devices: {}\n", encoding="utf-8")
-    cam = FakeCam(entry, volume_db=HOUSEHOLD_DB)
-    install_volume_owner(
-        VolumeOwner(
-            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
-            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
-        )
-    )
-    try:
-        async with _door(tmp_path, cam, gate_owner="jasper-measure"):
-            pass
-        async with _door(tmp_path, cam):
-            pass
-    finally:
-        install_volume_owner(None)
-
-    assert seen == ["jasper-measure", coordinator.MEASUREMENT_GATE_OWNER]
-    # A stated owner the allowlist does not carry is refused the gate on the
-    # box, so a door may only name one that is registered.
-    assert set(seen) <= FANIN_TEST_OWNERS
 
 
 @pytest.mark.parametrize("inverted,delays,trims", [

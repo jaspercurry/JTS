@@ -196,24 +196,6 @@ async def level_window(
             hold.window_open = False
 
 
-@asynccontextmanager
-async def measurement_door(
-    *, profile: MeasurementGraphProfile, measurement_volume_db: float,
-    spl_monitor: WiredSplMonitor | None, camilla_factory: Callable[[], Any], action: str,
-    config_dir: str | Path | None = None, volume_state_path: str | Path | None = None,
-    wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
-) -> AsyncIterator[OpenMeasurementDoor]:
-    from ..staging import DEFAULT_CAMILLA_CONFIG_DIR  # lazy: graph binding
-
-    graph = bind_measurement_graph(profile, camilla_factory=camilla_factory,
-                                  config_dir=DEFAULT_CAMILLA_CONFIG_DIR if config_dir is None else config_dir)
-    async with isolation_hold(graph=graph, camilla_factory=camilla_factory, action=action,
-                              volume_state_path=volume_state_path, wall_clock_ceiling_s=wall_clock_ceiling_s,
-                              gate_owner=gate_owner) as hold:
-        async with level_window(measurement_volume_db, hold=hold, spl_monitor=spl_monitor) as window:
-            yield window
-
-
 async def _give_back(
     claim: Any, plan: Any, volume_door: Any, *, reason: str,
     restore_loudness: Callable[[], Awaitable[None]], body_error: BaseException | None = None,
