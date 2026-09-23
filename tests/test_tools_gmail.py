@@ -223,7 +223,7 @@ async def test_unread_summary_no_accounts_points_to_wizard(monkeypatch):
         client_id="x", client_secret="y",
         service_factory=lambda *a: pytest.fail("should not be called"),
     )
-    setup_url = "http://jts3.local/google"
+    setup_url = "http://jts3.local/assistant/google/"
     [unread, _read] = make_gmail_tools(clients, setup_url)
     out = await unread()
     assert out["ok"] is False
@@ -237,7 +237,7 @@ def test_no_account_error_returns_passed_setup_url():
     from jasper.tools import google_errors
 
     clients = types.SimpleNamespace(list_account_names=lambda: [])
-    setup_url = "http://jts3.local/google"
+    setup_url = "http://jts3.local/assistant/google/"
     out = google_errors.no_account_error(clients, "", setup_url)
     assert out["ok"] is False
     assert out["setup_url"] == setup_url
