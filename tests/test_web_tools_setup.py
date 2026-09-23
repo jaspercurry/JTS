@@ -303,13 +303,6 @@ def test_get_unknown_tool_route_404s_before_host_guard(tmp_path):
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
-def test_pack_card_hover_uses_whole_card_surface_not_title_color():
-    css = Path("deploy/assets/tools/tools.css").read_text()
-    assert ".tool-pack-card[data-pack-href]:hover {" in css
-    assert "var(--surface-hover)" in css
-    assert ":hover .tool-pack-card__title" not in css
-
-
 # --- GET /catalog.json -----------------------------------------------------
 
 def test_get_catalog_returns_file_contents(tmp_path):

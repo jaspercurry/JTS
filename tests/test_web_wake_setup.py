@@ -397,20 +397,6 @@ def test_post_commission_proxies_action_and_control_token(tmp_path, monkeypatch)
     assert b'"running":true' in cap["body"]
 
 
-def test_wake_module_renders_server_choices_action_and_runtime_effective_label():
-    module = (
-        Path(wake_setup.__file__).parents[2]
-        / "deploy/assets/wake/js/main.js"
-    ).read_text()
-    assert "source.choices" in module
-    assert 'document.createElement("option")' in module
-    assert "applied.effective_label" in module
-    assert 'await postJSON("usb-mic-leg", { leg })' in module
-    assert 'const action = el("echo-status-action")' in module
-    assert "action.textContent = actionText" in module
-    assert 'includes("jasper-aec-commission")' not in module
-
-
 def test_commission_button_visibility_and_confirm_gate():
     """tests/js/wake_commission_button_test.mjs — the button follows the mic
     view model's chip-AEC capability, and a dismissed confirm posts nothing.

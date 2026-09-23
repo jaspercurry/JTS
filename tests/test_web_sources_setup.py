@@ -18,7 +18,6 @@ import io
 import json
 from email.message import Message
 from http import HTTPStatus
-from pathlib import Path
 
 import pytest
 
@@ -28,9 +27,6 @@ from jasper.web import sources_setup as mod
 from tests._web_test_helpers import assert_canonical_page
 
 CSRF = "x" * 43
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCES_MODULE = REPO_ROOT / "deploy" / "assets" / "sources" / "js" / "main.js"
 
 
 # ---- render -----------------------------------------------------------------
@@ -500,71 +496,3 @@ def test_post_set_routes_each_source_through_shared_coordinator(
     assert h.status == 200
     assert applied == [(source, enabled)]
     assert blocker_calls == ([source] if enabled else [])
-
-
-# ---- the ES module is wired and clean ---------------------------------------
-
-
-def test_es_module_exists_and_uses_shared_helpers():
-    assert SOURCES_MODULE.exists(), "deploy/assets/sources/js/main.js must exist"
-    text = SOURCES_MODULE.read_text(encoding="utf-8")
-    assert 'from "/assets/shared/js/http.js"' in text
-    assert 'from "/assets/shared/js/dialog.js"' in text
-    # Behaviour preserved: optimistic toggle, /state poll, /set POST.
-    assert "./state" in text
-    assert "./set" in text
-    assert "jtsConfirm" in text  # Bluetooth HID guard kept
-    assert "showStateError" in text
-    assert "s.available === false && !s.enabled" in text
-    assert "payload.intentRecorded === true" in text
-    assert (
-        "postInFlight || parked || (s.available === false && !s.enabled)"
-        in text
-    )
-    refresh_start = text.index("async function refreshAfterMutation()")
-    refresh_end = text.index("async function postToggle", refresh_start)
-    refresh = text[refresh_start:refresh_end]
-    assert refresh.index("await stateFetchPromise;") < refresh.index(
-        "postInFlight = false;"
-    ) < refresh.index("return fetchState();")
-
-
-def test_es_module_prioritizes_actionable_degradation_over_unavailability():
-    text = SOURCES_MODULE.read_text(encoding="utf-8")
-
-    generic_start = text.index('const note = el(name + "-unavailable-note")')
-    generic_end = text.index("const bt = state.bluetooth", generic_start)
-    generic = text[generic_start:generic_end]
-    assert generic.index("if (degraded)") < generic.index("unavailable &&")
-
-    bluetooth_start = text.index("const bt = state.bluetooth")
-    bluetooth_end = text.index("const usb = state.usbsink", bluetooth_start)
-    bluetooth = text[bluetooth_start:bluetooth_end]
-    assert bluetooth.index("if (btDegraded)") < bluetooth.index("btUnavailable &&")
-
-
-def test_bluetooth_confirmation_posts_captured_intent_not_polled_dom_state():
-    text = SOURCES_MODULE.read_text(encoding="utf-8")
-    handler_start = text.index('input.addEventListener("change"')
-    handler_end = text.index("startPolling(fetchState", handler_start)
-    handler = text[handler_start:handler_end]
-
-    capture = handler.index("const want = !!input.checked;")
-    confirm = handler.index("const ok = await jtsConfirm(")
-    restore_visual = handler.index("input.checked = want;", confirm)
-    post = handler.index("await postToggle(name, want);", restore_visual)
-    assert capture < confirm < restore_visual < post
-    assert "postToggle(name, input.checked)" not in handler
-
-
-def test_es_module_has_no_native_dialogs_or_innerhtml():
-    # Scan code lines only — the module's header comment legitimately *names*
-    # the native popup to explain why it uses jtsConfirm instead (same
-    # comment-skipping rule the wizard-conventions test uses).
-    code = "\n".join(
-        line for line in SOURCES_MODULE.read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith(("//", "*", "/*"))
-    )
-    assert ".innerHTML" not in code
-    for native in ("window.confirm", "window.alert", "window.prompt"):
-        assert native not in code

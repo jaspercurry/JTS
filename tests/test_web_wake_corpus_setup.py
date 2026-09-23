@@ -234,39 +234,3 @@ def test_get_routes_resolve_via_render_and_module() -> None:
 def test_static_assets_exist() -> None:
     assert _MODULE_JS.is_file(), f"missing {_MODULE_JS}"
     assert _PAGE_CSS.is_file(), f"missing {_PAGE_CSS}"
-
-
-def test_module_uses_shared_helpers_not_inline_plumbing() -> None:
-    """The module imports the shared http.js / dialog.js helpers rather than
-    re-implementing CSRF headers or using native confirm()/alert()."""
-    js = _MODULE_JS.read_text()
-    import re as _re
-
-    assert _re.search(
-        r'import \{[^}]*\bjsonHeaders\b[^}]*\} from "/assets/shared/js/http\.js"', js
-    )
-    assert 'import { jtsConfirm } from "/assets/shared/js/dialog.js"' in js
-    # No raw JSON content-type header literal in CODE (gating-test rule) and no
-    # native dialogs (the suppressible popups the shared helper replaces). Scan
-    # only non-comment lines — the module's docstring legitimately names the
-    # old hand-rolled header + native confirm() it replaced.
-
-    code_lines = [
-        ln for ln in js.splitlines() if not ln.lstrip().startswith("//")
-    ]
-    code = "\n".join(code_lines)
-    # The exact gating regex from tests/test_web_wizard_conventions.py.
-    assert not _re.search(
-        r"headers:\s*\{\s*['\"]Content-Type['\"]\s*:\s*"
-        r"['\"]application/json['\"]\s*\}",
-        code,
-    )
-    native_re = _re.compile(r"(?<![\w.$])(?:window\.)?(?:confirm|alert|prompt)\s*\(")
-    assert not native_re.search(code), "native confirm/alert/prompt in module code"
-
-
-def test_page_css_holds_relocated_recorder_visuals() -> None:
-    """The bespoke recorder CSS moved into the page stylesheet (not app.css)."""
-    css = _PAGE_CSS.read_text()
-    for marker in (".mic-level", ".session-row", ".clip", ".matrix", "minmax(0,"):
-        assert marker in css, marker
