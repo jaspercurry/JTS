@@ -16,6 +16,8 @@ Stage-5 live gate, keeping that analysis separate from config construction.
   ``payload`` rather than a normalized view.
 * **Commissioning evidence** for emitted candidates and running read-back
   graphs, including the crash-recovery all-muted anchor predicate.
+* **Layer-A identity** (``active_layer_a_projection`` / ``_fingerprint``): the
+  driver-domain suffix of a graph, which room and preference EQ may not change.
 
 The complementary half — the normalized ``GraphView``, the parse adapters, the
 fail-closed wiring predicates (``output_hard_muted_and_wired``,
@@ -34,10 +36,12 @@ The raw config mapping these accessors read::
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import yaml
+
+from jasper.output_topology import canonical_fingerprint
 
 from . import graph_safety as gs
 
@@ -55,10 +59,12 @@ from .camilla_yaml import (
     audible_outputs_for_role,
     crossover_highpass_for_role,
 )
-from .profile import ActiveSpeakerPreset
+from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from .test_signal_plan import protective_tweeter_highpass_frequency_hz
 
 __all__ = [
+    "active_layer_a_fingerprint",
+    "active_layer_a_projection",
     "filter_spec",
     "filter_params",
     "filter_type",
@@ -553,3 +559,121 @@ def running_graph_matches_staged_anchor(
         )
         for index in audible
     )
+
+
+def _canonicalize_camilla_defaults(value: Any) -> Any:
+    """Remove representation-only null defaults from Camilla readback.
+
+    CamillaDSP's ``active_raw`` re-serialization writes omitted optional
+    mapping fields back as explicit YAML nulls.  Omitted and null mean the same
+    default to Camilla, so they must not make a safely loaded Layer-A graph
+    appear different from the immutable YAML that produced it.  Non-null
+    values and list positions remain exact and therefore hardware-bound.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _canonicalize_camilla_defaults(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_canonicalize_camilla_defaults(item) for item in value]
+    return value
+
+
+def active_layer_a_projection(config_text: str) -> dict[str, Any]:
+    """Project the exact driver-domain suffix of one active graph.
+
+    Room and preference EQ are allowed to change the program-domain filter
+    prefix before the active split.  Everything from the split onward, plus
+    the output-side device contract, is Layer A: routing, crossover filters,
+    polarity, delay, gain, and protection.  This projection lets Active bind
+    its immutable applied snapshot to the graph Room is about to preserve
+    without making Room reconstruct crossover evidence.
+
+    :func:`active_layer_a_fingerprint` is this projection hashed.  The
+    unhashed form exists so a caller that has already learned the two
+    fingerprints differ can name WHICH member moved, rather than handing an
+    operator two opaque digests.
+    """
+
+    try:
+        raw = yaml.safe_load(config_text)
+    except yaml.YAMLError as exc:
+        raise ActiveSpeakerConfigError(
+            "active Layer-A graph must be parseable YAML"
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A graph must be an object")
+
+    pipeline = raw.get("pipeline")
+    if not isinstance(pipeline, list):
+        raise ActiveSpeakerConfigError("active Layer-A graph pipeline is missing")
+    split_index = next(
+        (
+            index
+            for index, step in enumerate(pipeline)
+            if isinstance(step, Mapping) and step.get("type") == "Mixer"
+        ),
+        None,
+    )
+    if split_index is None:
+        raise ActiveSpeakerConfigError("active Layer-A driver split is missing")
+    suffix = pipeline[split_index:]
+
+    filters = raw.get("filters")
+    filter_map = filters if isinstance(filters, Mapping) else {}
+    referenced_filters: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list) or any(
+            not isinstance(name, str) or not name for name in names
+        ):
+            raise ActiveSpeakerConfigError(
+                "active Layer-A filter step has invalid names"
+            )
+        for name in names:
+            definition = filter_map.get(name)
+            if not isinstance(definition, Mapping):
+                raise ActiveSpeakerConfigError(
+                    f"active Layer-A filter {name!r} is missing"
+                )
+            referenced_filters[name] = definition
+
+    devices = raw.get("devices")
+    if not isinstance(devices, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A devices are missing")
+    output_devices = {
+        str(key): value
+        for key, value in devices.items()
+        if key != "capture"
+    }
+    mixers = raw.get("mixers")
+    if not isinstance(mixers, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A mixers are missing")
+    referenced_mixers: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Mixer":
+            continue
+        name = step.get("name")
+        definition = mixers.get(name) if isinstance(name, str) else None
+        if not name or not isinstance(definition, Mapping):
+            raise ActiveSpeakerConfigError("active Layer-A mixer is missing")
+        referenced_mixers[name] = definition
+
+    return _canonicalize_camilla_defaults({
+        "schema_version": 1,
+        "domain": "jts_active_layer_a_v1",
+        "output_devices": output_devices,
+        "mixers": referenced_mixers,
+        "pipeline_suffix": suffix,
+        "filters": referenced_filters,
+    })
+
+
+def active_layer_a_fingerprint(config_text: str) -> str:
+    """Hash :func:`active_layer_a_projection` — the Layer-A graph identity."""
+    return canonical_fingerprint(active_layer_a_projection(config_text))

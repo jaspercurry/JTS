@@ -365,10 +365,8 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     `ok`: the live graph is the audible truth until the next follower teardown
     restores the canonical over it.
     """
-    from jasper.active_speaker.baseline_profile import (
-        active_layer_a_fingerprint,
-        baseline_config_path,
-    )
+    from jasper.active_speaker.baseline_profile import baseline_config_path
+    from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     label = "active speaker baseline canonical"

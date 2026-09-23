@@ -26,9 +26,9 @@ from jasper.active_speaker.baseline_profile import (
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
     REAR_CALIBRATION_ROOM_BAND_OVERLAP,
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
-    active_layer_a_fingerprint,
     baseline_candidate_fingerprint,
 )
+from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )

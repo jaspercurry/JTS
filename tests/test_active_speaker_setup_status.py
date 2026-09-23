@@ -607,7 +607,7 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
 
 def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, monkeypatch):
-    from jasper.active_speaker.baseline_profile import active_layer_a_fingerprint
+    from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
     from tests.apply_fixtures import prepare_candidate

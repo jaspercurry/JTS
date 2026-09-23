@@ -26,6 +26,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .environment import read_camilla_statefile_config_path
+from .graph_evidence import active_layer_a_fingerprint, active_layer_a_projection
 from .profile import ActiveSpeakerConfigError
 from .setup_readiness import (
     IN_SEQUENCE_CAPTURE_ANCHOR_REASON as IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
@@ -196,8 +197,6 @@ _LAYER_A_DIFFERENCE_LIMIT = 6
 def _layer_a_filter_fields(config_text: str) -> dict[str, Any]:
     """Flatten one graph's Layer-A filters to ``<filter>.<parameter>`` values."""
 
-    from .baseline_profile import active_layer_a_projection
-
     filters = active_layer_a_projection(config_text).get("filters")
     fields: dict[str, Any] = {}
     for name, definition in (
@@ -244,7 +243,6 @@ def _applied_layer_a_binding(
 ) -> dict[str, Any]:
     """Compare the compiled applied candidate with the loaded graph."""
 
-    from .baseline_profile import active_layer_a_fingerprint  # lazy: baseline readers import setup status
     from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
     from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
