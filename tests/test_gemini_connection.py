@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from tests._provider_fakes import complete_gemini_turn as _complete_turn
 from tests._provider_fakes import GeminiConnect as _FakeConnect
 
 
@@ -104,12 +105,6 @@ async def _wait_until(predicate, timeout: float = 2.0):
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"predicate never became true within {timeout}s")
-
-
-async def _complete_turn(turn, session):
-    await turn.end_input()
-    session.feed(_Resp(server_content=_ServerContent(turn_complete=True)))
-    await _wait_until(turn.server_turn_complete)
 
 
 # ---------------------------------------------------------------------------
@@ -405,55 +400,6 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         # The connection cleared the cached handle.
         assert conn._resumption_handle is None
         await turn2.release()
-    finally:
-        await conn.stop()
-
-
-async def test_idle_context_reset_reopens_through_the_supervisor():
-    """The idle context reset hands its reopen to the supervisor.
-
-    One reopener per connection slot: the reset's session is opened from
-    a paused (supervisor-driven) state, and a drop signalled during that
-    reopen still settles CONNECTED with every superseded session closed.
-    """
-    conn, factory = _make_conn(context_reset_sec=0.01)
-    state_at_open: list[ConnectionState] = []
-
-    def recording_factory(*, model, config):
-        state_at_open.append(conn._state)
-        cm = factory(model=model, config=config)
-        if len(factory.sessions) == 2:
-            # A fresh drop lands while the reset's reopen is in flight.
-            conn._reconnect_event.set()
-        return cm
-
-    conn._connect_factory = recording_factory
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        turn1 = await conn.acquire_turn()
-        await _complete_turn(turn1, factory.sessions[0])
-        await turn1.release()
-        await asyncio.sleep(0.05)
-
-        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
-        await _complete_turn(turn2, factory.sessions[-1])
-        await turn2.release()
-        await _wait_until(
-            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
-        )
-        # The initial connect is the turn task's; every reopen after it
-        # belongs to the supervisor.
-        assert state_at_open[0] is ConnectionState.CONNECTING
-        assert state_at_open[1:] and all(
-            state is ConnectionState.PAUSED_FOR_BACKOFF
-            for state in state_at_open[1:]
-        )
-        assert len(factory.sessions) >= 2
-        # No orphan: the live session is the only one left open.
-        assert [s for s in factory.sessions if not s.closed] == [conn._session]
-        turn3 = await conn.acquire_turn()
-        await turn3.release()
     finally:
         await conn.stop()
 
@@ -877,31 +823,6 @@ async def test_planned_rotation_rolls_the_session_without_backoff():
         await conn.stop()
 
 
-async def test_planned_rotation_defers_until_the_active_turn_ends():
-    """A rotation that comes due mid-turn waits for the turn to be
-    released instead of cutting the user off."""
-    factory = _FakeConnect()
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
-        rotate_after_sec=0.05,
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        turn = await conn.acquire_turn()
-        await _wait_until(lambda: conn._deferred_reconnect.pending, timeout=3.0)
-        # Still on the original session while the turn is open.
-        assert len(factory.sessions) == 1
-        assert turn.turn_lost() is False
-        await turn.release()
-        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
-        assert conn._deferred_reconnect.pending is False
-    finally:
-        await conn.stop()
-
-
 @pytest.mark.parametrize(
     "exc, expected",
     [
@@ -919,36 +840,6 @@ def test_close_code_extraction(exc, expected):
     """Both exception shapes the receive loop can see must yield the
     close code as a value, not just as prose inside the message."""
     assert close_code_and_reason(exc) == expected
-
-
-async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
-    """A rotation deferred behind a live turn must not hand its
-    skip-the-backoff ticket to a real failure that lands first."""
-    delays: list[float] = []
-
-    async def _sleep(seconds: float) -> None:
-        delays.append(seconds)
-
-    factory = _FakeConnect()
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        backoff_schedule=None,
-        connect_factory=factory,
-        rotate_after_sec=0.05,
-        sleep=_sleep,
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        turn = await conn.acquire_turn()
-        await _wait_until(lambda: conn._deferred_reconnect.pending, timeout=3.0)
-        # The server drops us before the turn ends.
-        factory.sessions[0].feed_error(_ws_close_error(1006, "abnormal closure"))
-        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
-        assert delays and delays[0] > 0.0, delays
-        await turn.release()
-    finally:
-        await conn.stop()
 
 
 @pytest.mark.parametrize("end_input_sent", [True, False])

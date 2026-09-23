@@ -16,7 +16,8 @@ from pydantic import TypeAdapter
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import OpenAIRealtimeConnection
 from jasper.voice.openai_live_session import OpenAILiveConnection
-from tests._gemini_fakes import Response as _Resp
+from tests._async_wait import wait_until
+from tests._gemini_fakes import ServerContent, Response as _Resp
 
 try:
     from google.genai import types
@@ -233,9 +234,14 @@ class LiveSocket:
 
 
 
-def make_provider(provider, *, sleep=asyncio.sleep, **kwargs):
+def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs):
     if provider == "openai_live":
         return OpenAILiveConnection(api_key="test", connect=LiveSocket, **kwargs), None
+    if watchdog_sec is not None:
+        if provider == "gemini":
+            kwargs["rotate_after_sec"] = watchdog_sec
+        else:
+            kwargs.update(session_max_sec=2 * watchdog_sec, proactive_buffer_sec=watchdog_sec)
     kwargs.setdefault("backoff_schedule", (0.0, 0.0))
     kwargs.setdefault("context_reset_sec", 9999.0)
     if provider == "gemini":
@@ -264,3 +270,15 @@ def persistent_provider(request):
 @pytest.fixture(params=[*PERSISTENT_PROVIDERS, "openai_live"])
 def provider(request):
     return partial(make_provider, request.param)
+
+
+async def complete_gemini_turn(turn, session):
+    await turn.end_input()
+    session.feed(_Resp(server_content=ServerContent(turn_complete=True)))
+    await wait_until(turn.server_turn_complete)
+
+
+async def release_turn(turn, session):
+    if turn._conn.PROVIDER_NAME == "gemini":
+        await complete_gemini_turn(turn, session)
+    await turn.release()
