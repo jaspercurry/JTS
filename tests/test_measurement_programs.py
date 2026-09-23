@@ -24,6 +24,7 @@ from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER
 from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.cli import round as round_cli
 
 
 @pytest.mark.parametrize("actual,expected", [
@@ -205,6 +206,21 @@ def test_the_bass_handoff_names_a_layout_a_person_can_walk():
     """The default bass layout pins the arm, so the prompt names the hand one (#5632 F4)."""
     poses, mover = re.search(r"--poses (\S+) --mover (\S+)", th.build_tuning_handoff_prompt({}, "bass")).groups()
     assert (mp.program("bass").mover, mp.run_program("bass", poses).mover, mover) == ("arm", "human", "human")
+
+
+def test_the_rear_handoff_names_the_pair_model_its_previews_read():
+    """The seat loop previews rear documents against the front/rear pair take (#5632 F11)."""
+    poses, = re.search(r"--program rear --poses (\S+)", th.build_tuning_handoff_prompt({}, "rear")).groups()
+    row = mp.run_program("rear", poses)
+    assert (row.regime, row.branch_pair) == (mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
+
+
+def test_run_help_names_every_registry_pose_set(capsys):
+    """The hand-off sends the agent to ``jasper-round run --help`` for the plans (#5632 F11)."""
+    with pytest.raises(SystemExit):
+        round_cli.main(["run", "--help"])
+    words = set(re.split(r"[\s,()]+", capsys.readouterr().out))
+    assert {f"{name}/{size}" for name, size in mp.available_programs()} <= words
 
 
 def test_express_geometry() -> None:

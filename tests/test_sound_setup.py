@@ -5609,6 +5609,24 @@ def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
     assert "jasper-round trial" in prompt
 
 
+@pytest.mark.parametrize("banked", [True, False])
+def test_tuning_handoff_names_the_round_directory_not_its_bundle(tmp_path, monkeypatch, banked):
+    """A banked round is named by its own directory, the one every view and ``status`` take (#5632 F11)."""
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    round_dir = tmp_path / "campaigns" / "round-7"
+    bundle = round_dir / "bundle" / "session-7" if banked else tmp_path / "sessions" / "session-7"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text("{}")
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
+                        lambda **_kwargs: [bundle])
+
+    binding = tuning_handoff.build_tuning_handoff_binding({}, {})
+
+    assert binding["latest_round_dir"] == str(round_dir if banked else bundle)
+
+
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     from jasper.active_speaker import tuning_handoff
 
