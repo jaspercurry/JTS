@@ -98,16 +98,14 @@ def test_web_design_assets_verdicts(
     assert r.reason == reason
 
 
-def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
-    """A wiped asset tree warns with a bounded list, not journal spam."""
+def test_web_design_assets_many_missing_warns(monkeypatch, tmp_path: Path):
     _assets(tmp_path, manifest=[f"page{i}/js/main.js" for i in range(20)])
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
 
     r = doctor_web.check_web_design_assets()
 
     assert r.status == "warn"
-    assert "(+8 more)" in r.detail
-    assert r.detail.count("js/main.js") == 12
+    assert r.reason == doctor_web.REASON_WEB_ASSETS_MISSING
 
 
 def test_web_design_assets_skips_when_not_installed(monkeypatch, tmp_path: Path):

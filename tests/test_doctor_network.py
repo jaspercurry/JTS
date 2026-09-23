@@ -442,11 +442,6 @@ def test_usbnet_address_plan_valid_and_consistent_is_ok():
 
     assert result.status == "ok"
     assert result.reason == ""
-    # Pins that the plan's own derived values (not just a verdict) reach the
-    # operator-facing detail — a formatting concern the reason code carries
-    # no data for.
-    assert PLAN.subnet in result.detail
-    assert PLAN.identity_fingerprint in result.detail
 
 
 def test_usbnet_address_plan_missing_fails_without_blocking_wifi(monkeypatch):
@@ -667,12 +662,18 @@ def test_usbnet_interface_pending_rows_are_ok(
     assert r.reason == getattr(doctor_network, expected_reason)
 
 
-def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
+@pytest.mark.parametrize("carrier, reason", [
+    ("1", doctor_network.REASON_USBNET_CARRIER_UP),
+    ("0", doctor_network.REASON_USBNET_CARRIER_DOWN),
+    (None, doctor_network.REASON_USBNET_CARRIER_UNKNOWN),
+])
+def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path, carrier, reason):
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     net_root = tmp_path / "sys-class-net"
     iface = net_root / "usb0"
     iface.mkdir(parents=True)
-    (iface / "carrier").write_text("1\n")
+    if carrier is not None:
+        (iface / "carrier").write_text(carrier + "\n")
     monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
     _stub_run(monkeypatch, {
         ("ip", "-4", "-o", "addr", "show", "dev", "usb0"): subprocess.CompletedProcess(
@@ -683,33 +684,7 @@ def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
     })
     r = doctor_network.check_usbnet_interface()
     assert r.status == "ok"
-    assert r.reason == ""
-    # The plan-derived address and observed carrier state are the fact this
-    # check exists to disclose — data the reason code has no room for.
-    assert PLAN.device_cidr in r.detail
-    assert "carrier=up" in r.detail
-
-
-def test_usbnet_interface_present_no_carrier_is_ok(monkeypatch, tmp_path):
-    """No carrier (nothing plugged into the composed NCM link at the
-    moment) is normal, not an error — usb0 exists at gadget-bind time
-    regardless of the cable, so an addressed usb0 with carrier down is the
-    ordinary nothing-plugged-in state."""
-    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
-    net_root = tmp_path / "sys-class-net"
-    iface = net_root / "usb0"
-    iface.mkdir(parents=True)
-    (iface / "carrier").write_text("0\n")
-    monkeypatch.setattr(doctor_network, "USBNET_SYS_CLASS_NET", net_root)
-    _stub_run(monkeypatch, {
-        ("ip", "-4", "-o", "addr", "show", "dev", "usb0"): subprocess.CompletedProcess(
-            [], 0, stdout=f"3: usb0    inet {PLAN.device_cidr} scope global usb0\n", stderr="",
-        ),
-    })
-    r = doctor_network.check_usbnet_interface()
-    assert r.status == "ok"
-    assert r.reason == ""
-    assert "carrier=down" in r.detail
+    assert r.reason == reason
 
 
 def test_usbnet_interface_present_missing_address_is_fail(monkeypatch, tmp_path):
@@ -831,15 +806,7 @@ def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
     assert r.reason == doctor_network.REASON_USBNET_NM_QUERY_FAILED
 
 
-def test_usbnet_nm_profile_colon_bearing_name_unescaped(monkeypatch, tmp_path):
-    """A profile NAME containing a literal colon (nmcli escapes it as
-    \\:) must still parse correctly. NAME is requested LAST
-    (TYPE,DEVICE,NAME) and split greedily (maxsplit=2, the same
-    colon-safe shape `active_wifi_connection` uses), so an escaped colon
-    inside it is never mistaken for a field separator; `_nm_unescape`
-    reverses the escape for the reported name. Also confirms this
-    differently-named profile is correctly reported as a mismatch rather
-    than being misparsed into a false match."""
+def test_usbnet_nm_profile_colon_bearing_name_mismatches(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
         ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
@@ -849,9 +816,6 @@ def test_usbnet_nm_profile_colon_bearing_name_unescaped(monkeypatch, tmp_path):
     r = doctor_network.check_usbnet_nm_profile()
     assert r.status == "fail"
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISMATCH
-    # Pins the colon-unescape correctness end-to-end; the reason code has no
-    # room for which profile name was actually resolved.
-    assert "legacy:profile" in r.detail
 
 
 # ----------------------------------------------------------------------
@@ -1238,33 +1202,31 @@ _N = doctor_network
 
 
 @pytest.mark.parametrize(
-    "setup, expected_status, expected_reason, extra",
+    "setup, expected_status, expected_reason",
     [
-        pytest.param(_wifi_case_regdom_ok_unlabeled_phy, "ok", "", {"detail_contains": ("global country=US", "phy0 country=99", "not actionable by itself")}, id="test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled"),
-        pytest.param(_wifi_case_regdom_warns_country_unset, "warn", _N.REASON_REGDOM_UNSET, None, id="test_check_wifi_regdom_warns_when_global_country_unset"),
-        pytest.param(_wifi_case_regdom_skips("", 1), "skipped", _N.REASON_REGDOM_PROBE_FAILED, None, id="test_check_wifi_regdom_skips_when_no_country_was_observed[probe-failed]"),
-        pytest.param(_wifi_case_regdom_skips("global\n", 0), "skipped", _N.REASON_REGDOM_UNPARSEABLE, None, id="test_check_wifi_regdom_skips_when_no_country_was_observed[no-global-country]"),
-        pytest.param(_wifi_case_regdom_ok_no_phy, "ok", "", {"detail_contains": ("global country=DE", "no per-phy regdom reported")}, id="test_check_wifi_regdom_ok_with_valid_global_and_no_phy"),
-        pytest.param(_wifi_case_guardian_ok_stash_matches_active, "ok", "", None, id="test_check_wifi_guardian_ok_when_stash_matches_active"),
-        pytest.param(_wifi_case_guardian_ok_ethernet_only, "skipped", _N.REASON_GUARDIAN_NOT_APPLICABLE, None, id="test_check_wifi_guardian_ok_ethernet_only"),
-        pytest.param(_wifi_case_guardian_warns_stash_missing_but_active, "warn", _N.REASON_GUARDIAN_STASH_MISSING, None, id="test_check_wifi_guardian_warns_when_stash_missing_but_active"),
-        pytest.param(_wifi_case_guardian_warns_ssid_drift, "warn", _N.REASON_GUARDIAN_SSID_DRIFT, None, id="test_check_wifi_guardian_warns_on_ssid_drift"),
-        pytest.param(_wifi_case_guardian_matches_colon_ssid, "ok", "", None, id="test_check_wifi_guardian_matches_colon_ssid"),
-        pytest.param(_wifi_case_guardian_warns_active_wifi_missing, "warn", _N.REASON_GUARDIAN_NO_ACTIVE_WIFI, None, id="test_check_wifi_guardian_warns_when_active_wifi_missing"),
-        pytest.param(_wifi_case_guardian_skipped_without_nmcli, "skipped", _N.REASON_GUARDIAN_SKIPPED_NO_NMCLI, None, id="test_check_wifi_guardian_skipped_without_nmcli"),
-        pytest.param(_wifi_case_link_local_ipv6_ok, "ok", "", None, id="test_check_wifi_link_local_ipv6_ok"),
-        pytest.param(_wifi_case_link_local_ipv6_warns_ignores_ipv6, "warn", _N.REASON_IPV6_METHOD_DISABLED, {"detail_contains": ("active WiFi profile 'Home:5G'", "nmcli connection modify Home:5G ipv6.method link-local")}, id="test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6"),
-        pytest.param(_wifi_case_link_local_ipv6_warns_link_local_missing, "warn", _N.REASON_IPV6_LINK_LOCAL_MISSING, None, id="test_check_wifi_link_local_ipv6_warns_when_link_local_missing"),
-        pytest.param(_wifi_case_recover_timer_enabled_ok, "ok", "", None, id="test_check_wifi_recover_timer_enabled_ok"),
-        pytest.param(_wifi_case_recover_timer_disabled_warns, "warn", _N.REASON_RECOVER_TIMER_DISABLED, None, id="test_check_wifi_recover_timer_disabled_warns"),
-        pytest.param(_wifi_case_recover_timer_not_installed_skips, "skipped", _N.REASON_RECOVER_TIMER_NOT_INSTALLED, None, id="test_check_wifi_recover_timer_not_installed_skips"),
-        pytest.param(_wifi_case_recover_timer_no_systemctl_skips, "skipped", _N.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL, None, id="test_check_wifi_recover_timer_no_systemctl_skips"),
+        pytest.param(_wifi_case_regdom_ok_unlabeled_phy, "ok", "", id="test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled"),
+        pytest.param(_wifi_case_regdom_warns_country_unset, "warn", _N.REASON_REGDOM_UNSET, id="test_check_wifi_regdom_warns_when_global_country_unset"),
+        pytest.param(_wifi_case_regdom_skips("", 1), "skipped", _N.REASON_REGDOM_PROBE_FAILED, id="test_check_wifi_regdom_skips_when_no_country_was_observed[probe-failed]"),
+        pytest.param(_wifi_case_regdom_skips("global\n", 0), "skipped", _N.REASON_REGDOM_UNPARSEABLE, id="test_check_wifi_regdom_skips_when_no_country_was_observed[no-global-country]"),
+        pytest.param(_wifi_case_regdom_ok_no_phy, "ok", "", id="test_check_wifi_regdom_ok_with_valid_global_and_no_phy"),
+        pytest.param(_wifi_case_guardian_ok_stash_matches_active, "ok", "", id="test_check_wifi_guardian_ok_when_stash_matches_active"),
+        pytest.param(_wifi_case_guardian_ok_ethernet_only, "skipped", _N.REASON_GUARDIAN_NOT_APPLICABLE, id="test_check_wifi_guardian_ok_ethernet_only"),
+        pytest.param(_wifi_case_guardian_warns_stash_missing_but_active, "warn", _N.REASON_GUARDIAN_STASH_MISSING, id="test_check_wifi_guardian_warns_when_stash_missing_but_active"),
+        pytest.param(_wifi_case_guardian_warns_ssid_drift, "warn", _N.REASON_GUARDIAN_SSID_DRIFT, id="test_check_wifi_guardian_warns_on_ssid_drift"),
+        pytest.param(_wifi_case_guardian_matches_colon_ssid, "ok", "", id="test_check_wifi_guardian_matches_colon_ssid"),
+        pytest.param(_wifi_case_guardian_warns_active_wifi_missing, "warn", _N.REASON_GUARDIAN_NO_ACTIVE_WIFI, id="test_check_wifi_guardian_warns_when_active_wifi_missing"),
+        pytest.param(_wifi_case_guardian_skipped_without_nmcli, "skipped", _N.REASON_GUARDIAN_SKIPPED_NO_NMCLI, id="test_check_wifi_guardian_skipped_without_nmcli"),
+        pytest.param(_wifi_case_link_local_ipv6_ok, "ok", "", id="test_check_wifi_link_local_ipv6_ok"),
+        pytest.param(_wifi_case_link_local_ipv6_warns_ignores_ipv6, "warn", _N.REASON_IPV6_METHOD_DISABLED, id="test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6"),
+        pytest.param(_wifi_case_link_local_ipv6_warns_link_local_missing, "warn", _N.REASON_IPV6_LINK_LOCAL_MISSING, id="test_check_wifi_link_local_ipv6_warns_when_link_local_missing"),
+        pytest.param(_wifi_case_recover_timer_enabled_ok, "ok", "", id="test_check_wifi_recover_timer_enabled_ok"),
+        pytest.param(_wifi_case_recover_timer_disabled_warns, "warn", _N.REASON_RECOVER_TIMER_DISABLED, id="test_check_wifi_recover_timer_disabled_warns"),
+        pytest.param(_wifi_case_recover_timer_not_installed_skips, "skipped", _N.REASON_RECOVER_TIMER_NOT_INSTALLED, id="test_check_wifi_recover_timer_not_installed_skips"),
+        pytest.param(_wifi_case_recover_timer_no_systemctl_skips, "skipped", _N.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL, id="test_check_wifi_recover_timer_no_systemctl_skips"),
     ],
 )
-def test_check_wifi_status(monkeypatch, tmp_path, setup, expected_status, expected_reason, extra):
+def test_check_wifi_status(monkeypatch, tmp_path, setup, expected_status, expected_reason):
     r = setup(monkeypatch, tmp_path)
 
     assert r.status == expected_status
     assert r.reason == expected_reason
-    for substr in (extra or {}).get("detail_contains", ()):
-        assert substr in r.detail

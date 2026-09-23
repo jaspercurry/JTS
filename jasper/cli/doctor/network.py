@@ -93,6 +93,9 @@ REASON_USBNET_BIND_FAILED = "usbnet_bind_failed"
 REASON_USBNET_ADDR_PROBE_FAILED = "usbnet_addr_probe_failed"
 REASON_USBNET_ADDR_MISSING = "usbnet_addr_missing"
 REASON_USBNET_ADDR_PENDING = "usbnet_addr_pending"
+REASON_USBNET_CARRIER_UP = "usbnet_carrier_up"
+REASON_USBNET_CARRIER_DOWN = "usbnet_carrier_down"
+REASON_USBNET_CARRIER_UNKNOWN = "usbnet_carrier_unknown"
 
 REASON_USBNET_SKIPPED_NO_NMCLI = "usbnet_skipped_no_nmcli"
 REASON_USBNET_NM_QUERY_FAILED = "usbnet_nm_query_failed"
@@ -917,7 +920,11 @@ def check_usbnet_interface() -> CheckResult:
             detail + "; retained only until the pending host-role reboot",
             reason=REASON_USBNET_ROLE_CHANGE_PENDING,
         )
-    return CheckResult(label, "ok", detail)
+    return CheckResult(
+        label, "ok", detail,
+        reason=(REASON_USBNET_CARRIER_UNKNOWN if carrier is None else
+                REASON_USBNET_CARRIER_UP if carrier else REASON_USBNET_CARRIER_DOWN),
+    )
 
 
 @doctor_check()

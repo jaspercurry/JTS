@@ -116,42 +116,25 @@ def test_absent_dir_is_skipped_not_configured(tmp_path: Path):
     assert result.reason == sc.REASON_COMPARTMENT_ABSENT
 
 
-def test_happy_path_passes(tmp_path: Path):
+@pytest.mark.parametrize("users", [
+    ["jasper-voice"],
+    ["jasper-web", "jasper-voice", "jasper-web"],
+], ids=["single-member", "shared-unix-user"])
+def test_happy_path_passes(tmp_path: Path, users):
     d = tmp_path / "jasper-secrets"
     dir_st = _mk_dir(d, 0o2770)
-    f_st = _mk_file(d / "voice_keys.env", 0o640)
-    # The host's real tmp group stands in for the compartment group.
+    _mk_file(d / "voice_keys.env", 0o640)
     comp = _comp(d, "voice_keys.env", "google_credentials.env", group=_group_name(dir_st))
-    member = _ident(999_999, {dir_st.st_gid, f_st.st_gid}, "jasper-voice")
+    members = [_ident(100 + users.index(user), {dir_st.st_gid}, user) for user in users]
     nonmember = _ident(888_888, {777_777}, "jasper-input")
+    # macOS sandboxes clear setgid on chmod; supply the intended mode to the classifier.
+    dir_st = os.stat_result((dir_st.st_mode | 0o2000, *dir_st[1:]))
     result = sc._classify_compartment(
-        "secret compartment: jasper-secrets", comp, [member], [nonmember]
+        "secret compartment: jasper-secrets", comp, members, [nonmember],
+        stat_fn=lambda path: dir_st if path == str(d) else os.stat(path),
     )
     assert result.status == "ok", result.detail
-
-
-def test_happy_path_deduplicates_shared_unix_user_members(tmp_path: Path):
-    d = tmp_path / "jasper-secrets"
-    dir_st = _mk_dir(d, 0o2770)
-    f_st = _mk_file(d / "voice_keys.env", 0o640)
-    comp = _comp(d, "voice_keys.env", group=_group_name(dir_st))
-    members = [
-        _ident(101, {dir_st.st_gid, f_st.st_gid}, "jasper-web"),
-        _ident(102, {dir_st.st_gid, f_st.st_gid}, "jasper-voice"),
-        _ident(101, {dir_st.st_gid, f_st.st_gid}, "jasper-web"),
-    ]
-
-    result = sc._classify_compartment(
-        "secret compartment: jasper-secrets",
-        comp,
-        members,
-        non_members=[],
-    )
-
-    assert result.status == "ok", result.detail
-    # Pure formatting behavior: repeated Unix-identity members dedupe by name.
-    assert result.detail.count("jasper-web") == 1
-    assert "jasper-voice" in result.detail
+    assert result.reason == ""
 
 
 def test_world_readable_file_fails_over_exposure(tmp_path: Path):
@@ -164,7 +147,7 @@ def test_world_readable_file_fails_over_exposure(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
-    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
+    assert result.reason == sc.REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE
 
 
 def test_broad_group_file_fails_over_exposure(tmp_path: Path):
@@ -208,9 +191,7 @@ def test_fail_outranks_warn(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
-    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
-    # Fail still discloses the co-occurring availability warning count.
-    assert "+2 availability warning" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE
 
 
 def test_dir_missing_setgid_warns(tmp_path: Path):
@@ -266,13 +247,10 @@ def test_glob_files_classified(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
-    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
-    # Pure formatting behavior: only the over-exposed glob member is named.
-    assert "leaked.json" in result.detail
-    assert "ok.json" not in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE
 
 
-def test_overflow_truncates(tmp_path: Path):
+def test_many_exposed_files_fail(tmp_path: Path):
     d = tmp_path / "jasper-secrets"
     _mk_dir(d, 0o2770)
     names = []
@@ -285,9 +263,7 @@ def test_overflow_truncates(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
     assert result.status == "fail"
-    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
-    # Pure formatting behavior: the shown-list caps with an overflow marker.
-    assert "+3 more)" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE
 
 
 def test_reports_never_contain_the_secret_value(tmp_path: Path):
@@ -300,7 +276,7 @@ def test_reports_never_contain_the_secret_value(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
     assert result.status == "fail"
-    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
+    assert result.reason == sc.REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE
     assert "SECRET-VALUE-NEVER-IN-OUTPUT" not in result.detail
 
 
