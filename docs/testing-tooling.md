@@ -43,6 +43,7 @@ restate either.
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
 | Run, read, prescribe or apply a speaker-tuning round | [Tuning tools](#tuning-tools) |
 | Fit or re-fit the cardioid rear branches of a `jts_rear_calibration` document | [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — usage, input shapes and conventions in `--help` |
+| Predict a woofer pair without a room (near-field takes x a Boundary Lab cabinet solve), or fit the rear stage for the seat | [`scripts/cabinet-model/README.md`](../scripts/cabinet-model/README.md) — optional; needs Boundary Lab and a solved case from the CAD repo |
 | Sweep for roadmap-dated phrasing that may have gone stale | [`scripts/tense-grep.sh`](../scripts/tense-grep.sh) — advisory, always exits 0; `--all` sweeps the whole repo |
 
 ---

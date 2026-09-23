@@ -57,6 +57,10 @@ The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 
 Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `room/arm` keeps the three `room_quick` bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm --attest-rig-clear --wait` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
 
+## Cabinet model (optional, laptop-side)
+
+Given Boundary Lab and a solved case of the cabinet from the CAD repo, [`scripts/cabinet-model/`](../scripts/cabinet-model/README.md) turns woofer near-field takes into the pair's response without a room and at the seat, and can fit the rear stage for the seat. The speaker needs nothing extra; the output is a prescription document for the loop above ([ADR-0353](adr/0353-the-cabinet-model-is-an-optional-laptop-aid.md)).
+
 ## Evidence and recovery
 
 Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibration. Fix the named fault's action, then continue with the same loop. After an apply timeout, inspect saved state before another write. A losing candidate stays banked.
