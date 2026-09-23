@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from .analysis import smooth_fractional_octave
+from .band_ladders import EXCESS_PHASE_NORMALISE_BAND_HZ
 from .deconv import magnitude_response
 
 #: Magnitude smoothing. 1/12 octave keeps a feature's own shape while coarse
@@ -35,7 +36,7 @@ COMPLEX_SMOOTH_OCT = 1.0 / 24.0
 GD_SPAN_OCT = 1.0 / 24.0
 
 #: Normalisation band, Hz. The trusted floor is derived from the gate length.
-NORMALISE_BAND_HZ = (400.0, 8000.0)
+NORMALISE_BAND_HZ = EXCESS_PHASE_NORMALISE_BAND_HZ
 
 #: Analysis grid: logarithmic, and dense enough that a 1/12-octave feature has
 #: hundreds of samples across it at every frequency.
