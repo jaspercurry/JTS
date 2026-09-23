@@ -40,17 +40,13 @@ export async function postAction(path, btn, confirmLines, opts = {}) {
   btn.textContent = "Working…";
   if (statusEl) statusEl.textContent = "";
   try {
-    // postControlAction attaches the opt-in X-JTS-Token and, on a 403
-    // control_token_required, prompts once + retries — so reboot/power-off
-    // work whether or not the gate is enabled. (Shared helper; no per-page
-    // token plumbing.)
     const { ok, status, body } = await postControlAction(path);
     if (ok) {
       btn.textContent = "Sent";
       if (statusEl && sentMessage) statusEl.textContent = sentMessage;
     } else {
       console.error("system: action '" + path + "' failed", body);
-      btn.textContent = "Failed: " + (body.error || status);
+      btn.textContent = "Failed: " + (body.message || body.error || status);
     }
   } catch (e) {
     console.error("system: action '" + path + "' failed", e);
@@ -69,8 +65,6 @@ export async function setQuality(refs, converter, onApplied) {
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });
   aq.status.textContent = "Applying…";
   try {
-    // postJSON attaches X-JTS-Token and, on a 403 control_token_required,
-    // prompts once + retries — the same gate flow the restart buttons get.
     const body = await postJSON("/system/audio-quality", { converter });
     // Reflect the new active/pressed state immediately rather than waiting
     // for the next 5 s poll.
