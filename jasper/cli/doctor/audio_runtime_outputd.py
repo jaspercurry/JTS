@@ -15,12 +15,12 @@ import os
 import re
 
 from ...audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
+from ...json_fields import finite_float
 from ...platform.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _numeric_or_none,
     _service_state_failure,
     _systemctl_unavailable_result,
 )
@@ -137,9 +137,9 @@ def _outputd_xrun_rate_warning(
     for label, section in (("content", content), ("dac", dac)):
         if not isinstance(section, dict):
             continue
-        rate = _numeric_or_none(section.get("xrun_rate_per_hour"))
+        rate = finite_float(section.get("xrun_rate_per_hour"))
         # last_xrun_age_ms: null → None → no recent xrun
-        age = _numeric_or_none(section.get("last_xrun_age_ms"))
+        age = finite_float(section.get("last_xrun_age_ms"))
         if rate is None or age is None:
             continue
         if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:

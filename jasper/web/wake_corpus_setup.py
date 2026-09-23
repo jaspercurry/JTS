@@ -529,15 +529,14 @@ def _post_session(handler: _Handler, body: dict[str, Any]) -> None:
     except (ValueError, StateError) as e:
         handler._send_error_json(400, str(e))
         return
+    snapshot = handler.backend.status_snapshot()
     handler._send_json({
         "session_id": session_id, "member": member,
         **selection,
-        "chip_aec_config": handler.backend.chip_aec_config(),
-        "aec3_sweep_variants": handler.backend.aec3_sweep_variants(),
-        "aec3_sweep_config": handler.backend.aec3_sweep_config(),
-        "enabled_legs": list(handler.backend.enabled_legs()),
-        "capture_plan": handler.backend.capture_plan(),
-        "audio_context": handler.backend.audio_context(),
+        **{key: snapshot[key] for key in (
+            "chip_aec_config", "aec3_sweep_variants", "aec3_sweep_config",
+            "enabled_legs", "capture_plan", "audio_context",
+        )},
         "bridge_outputs": bridge_session.bridge_output_status(),
     })
 

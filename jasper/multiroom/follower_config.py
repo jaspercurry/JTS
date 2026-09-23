@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Active wireless follower CamillaDSP apply + solo restore — the grouping
-reconciler's *active-follower* arm (distributed-active Slice 3).
+reconciler's *active-follower* arm.
 
 A *dumb* (passive, single-DAC) follower plays the round-tripped stream through
 outputd's ``dac_content`` lane, dropping its channel with a ``ChannelPick``;

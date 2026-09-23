@@ -665,7 +665,7 @@ def test_dac8x_declares_the_soak_validated_floors() -> None:
 
 def test_final_edge_format_is_declared_and_within_allowed_set() -> None:
     for profile in dac.all_profiles():
-        assert profile.final_edge_format in ("S16_LE", "S24_3LE", "S32_LE"), (
+        assert profile.final_edge_format in dac.FINAL_EDGE_FORMATS, (
             f"{profile.id}: {profile.final_edge_format!r}"
         )
 
@@ -972,7 +972,7 @@ def test_final_edge_format_for_round_trips_for_bash() -> None:
     # at exit 78. Enumerated over the whole registry, not just the two named
     # above, so a new profile cannot introduce an unparseable value.
     for profile in dac.all_profiles():
-        assert dac.final_edge_format_for(profile.id) in ("S16_LE", "S24_3LE", "S32_LE")
+        assert dac.final_edge_format_for(profile.id) in dac.FINAL_EDGE_FORMATS
 
 
 def test_every_registry_row_declares_a_sink_outputd_can_parse() -> None:

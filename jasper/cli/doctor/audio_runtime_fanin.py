@@ -18,6 +18,7 @@ from pathlib import Path
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import devices_playback_is_pipe
 from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
+from ...json_fields import finite_float
 from ...measurement_window import MEASUREMENT_FANIN_LABEL
 from ...music_sources import SOURCE_SPECS, Source
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
@@ -26,7 +27,6 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _numeric_or_none,
     _service_state_failure,
     silence_unobserved,
 )
@@ -209,7 +209,7 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
     A daemon too old to publish the two inputs is held to the floor alone.
     """
 
-    final = _numeric_or_none(loudness.get("final_gain_db"))
+    final = finite_float(loudness.get("final_gain_db"))
     if final is None:
         return None
     if final < _ASSISTANT_GAIN_FLOOR_DB - _ASSISTANT_GAIN_ROUNDING_DB:
@@ -217,8 +217,8 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
             f"final_gain_db={final} is below the {_ASSISTANT_GAIN_FLOOR_DB} dB "
             "gain floor"
         )
-    requested = _numeric_or_none(loudness.get("requested_gain_db"))
-    peak_cap = _numeric_or_none(loudness.get("peak_cap_gain_db"))
+    requested = finite_float(loudness.get("requested_gain_db"))
+    peak_cap = finite_float(loudness.get("peak_cap_gain_db"))
     if requested is None or peak_cap is None:
         return None
     expected = max(_ASSISTANT_GAIN_FLOOR_DB, min(requested, peak_cap))
