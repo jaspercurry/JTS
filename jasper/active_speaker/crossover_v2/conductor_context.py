@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "V2ConductorContext",
-    "conductor_status",
     "ensure_crossover_preview_ready",
     "measurement_role_channels",
     "resolve_conductor_context",
@@ -44,33 +43,6 @@ _BOX_NOT_READY = "measure_box_not_ready"
 
 def driver_spacing_source(draft: Mapping[str, Any]) -> str:
     return "unknown" if declared_driver_spacing_m(draft) is None else "declared"
-
-
-def conductor_status(*, setup: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The live status :func:`resolve_conductor_context` reads.
-
-    Its three keys — ``targets``, ``setup`` and ``active`` — derived once here,
-    so the wizard's page payload
-    (``jasper.web.correction_crossover_backend.status_payload``, which extends
-    this) and a CLI door cannot disagree about whether a box may be measured.
-
-    ``active`` is read off the SUMMED targets alone, which only
-    ``active_2_way`` / ``active_3_way`` groups have: a subless
-    ``full_range_passive`` speaker carries a driver target too, so counting
-    those would flip the flag wrongly.
-
-    ``setup`` is a setup report the caller already holds; ``None`` reads it.
-    """
-    from jasper.active_speaker import web_measurement
-    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
-
-    payload = web_measurement.status_payload()
-    targets = payload.get("targets")
-    payload["active"] = bool(
-        targets.get("summed") if isinstance(targets, Mapping) else None
-    )
-    payload["setup"] = read_active_speaker_setup_status() if setup is None else setup
-    return payload
 
 
 @dataclass(frozen=True)

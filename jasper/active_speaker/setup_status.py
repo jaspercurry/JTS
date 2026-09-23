@@ -25,6 +25,7 @@ from .crossover_contract import (
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
+from . import web_measurement
 from .environment import read_camilla_statefile_config_path
 from .graph_evidence import active_layer_a_fingerprint, active_layer_a_projection
 from .profile import ActiveSpeakerConfigError
@@ -394,3 +395,29 @@ def read_active_speaker_setup_status(
         topology, profile=profile, applied_profile=applied_profile,
     )
     return status
+
+
+def conductor_status(*, setup: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The live status
+    :func:`~jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context`
+    reads.
+
+    Its three keys — ``targets``, ``setup`` and ``active`` — derived once here,
+    so the wizard's page payload
+    (``jasper.web.correction_crossover_backend.status_payload``, which extends
+    this) and a CLI door cannot disagree about whether a box may be measured.
+
+    ``active`` is read off the SUMMED targets alone, which only
+    ``active_2_way`` / ``active_3_way`` groups have: a subless
+    ``full_range_passive`` speaker carries a driver target too, so counting
+    those would flip the flag wrongly.
+
+    ``setup`` is a setup report the caller already holds; ``None`` reads it.
+    """
+    payload = web_measurement.status_payload()
+    targets = payload.get("targets")
+    payload["active"] = bool(
+        targets.get("summed") if isinstance(targets, Mapping) else None
+    )
+    payload["setup"] = read_active_speaker_setup_status() if setup is None else setup
+    return payload

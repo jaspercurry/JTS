@@ -29,7 +29,8 @@ from jasper.active_speaker.bundles import mark_state, open_bundle
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-from jasper.active_speaker.crossover_v2.conductor_context import conductor_status, resolve_conductor_context
+from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
+from jasper.active_speaker.setup_status import conductor_status
 from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, set_measurement_loudness
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
