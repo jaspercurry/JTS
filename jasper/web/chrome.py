@@ -46,16 +46,15 @@ def toggle_html(
 
 
 # ---------------------------------------------------------------------------
-# Canonical design system (the redesigned look).
+# Canonical design system.
 # ---------------------------------------------------------------------------
 #
-# The management landing page (deploy/index.html) and the redesigned
+# The management landing page (deploy/index.html) and the Python-rendered
 # wizards share one stylesheet — /assets/app.css — served static by nginx
 # and browser-cached. `canonical_page()` emits the document shell
 # (head + stylesheet link + CSRF meta + the shared icon sprite) so a
 # wizard authors only its body. Page-specific CSS rides in `page_css`;
-# shared primitives live in app.css. This is the seam every migrated
-# wizard reuses.
+# shared primitives live in app.css.
 
 
 def _asset_version() -> str:
@@ -76,7 +75,7 @@ def _asset_version() -> str:
     return sha if sha and sha != "unknown" else "dev"
 
 
-# Curated inline icon sprite for the redesigned pages AND the static landing
+# Curated inline icon sprite for the canonical pages and the static landing
 # page, which substitutes it at install time (jasper.web.landing). Reference
 # one with `<svg class="ico"><use href="#icon-NAME"></use></svg>`. Add a symbol
 # here when a page needs a new glyph — keep it a shared set, not per-page.
@@ -250,8 +249,7 @@ def canonical_page(
     app_css_version: str = "",
     control_token_meta: bool = True,
 ) -> bytes:
-    """Wrap a body fragment in a full HTML document on the canonical
-    design system (the redesigned management look).
+    """Wrap a body fragment in a full HTML document on the canonical design system.
 
     Shared tokens, fonts, and component primitives live in the static
     stylesheet /assets/app.css (one source of truth for every page); this
@@ -311,7 +309,7 @@ def canonical_header(
     tabs_html: str = "",
     tabs_id: str = "",
 ) -> str:
-    """The canonical sticky top bar (`.app-header`) for a migrated wizard.
+    """The canonical sticky top bar (`.app-header`) for a wizard.
 
     Single source of truth for the sub-page chrome: a round back button on
     the left (links ``back_href``, labelled ``back_label`` for screen
@@ -411,7 +409,7 @@ def safe_back_href(raw: str | None, *, default: str = "/") -> str:
 
 
 def canonical_banner(message: str) -> str:
-    """A canonical flash banner (`.banner`) for a migrated wizard.
+    """A canonical flash banner (`.banner`) for a wizard.
 
     A flash string written by the shared ``send_see_other(flash=...)`` maps
     to a stable status, danger, or info severity. An empty / blank message

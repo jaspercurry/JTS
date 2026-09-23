@@ -625,7 +625,7 @@ function initMic() {
     renderMic(want_muted, available);
     setMicState(want_muted ? 'Pausing' : 'Resuming');
     try {
-      // /mic/mute is WS1 token-gated; jsonHeaders() carries the token.
+      // /mic/mute is token-gated; jsonHeaders() carries the token.
       var resp = await fetch('/mic/mute', {
         method: 'POST',
         headers: jsonHeaders(),

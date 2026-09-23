@@ -34,8 +34,7 @@ Presentation: this page renders through the canonical design system
 behaviour — the setup-wizard progress tracker, the copy-to-clipboard
 buttons, the Client-ID reveal, and the destructive-action confirms —
 lives in the ES module `/assets/google/js/main.js`; there is no inline
-`<script>` here. The forms stay server-rendered request/response, same
-as before the restyle.
+`<script>` here. The forms are server-rendered request/response.
 """
 from __future__ import annotations
 
@@ -159,8 +158,7 @@ def _render_page(
 ) -> bytes:
     """Wrap a state's body in the canonical document shell.
 
-    Mirrors the reference migration (`speaker_setup._index_html`): a
-    `canonical_header` with the back button, the flash
+    Uses `canonical_header` with the back button, the flash
     `canonical_banner`, the body inside `<main class="page">`, then the
     page's ES module loaded by `src`. The CSRF token rides in the
     `<meta name="jts-csrf">` tag (emitted by `canonical_page` when

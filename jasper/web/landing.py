@@ -15,7 +15,7 @@ per request is substituted once, here, by install.sh:
   * the install profile's capability map, as the JSON data island the
     landing module gates on (every gated section ships ``hidden``, so gating
     only ever reveals — the page is right with every backend daemon down);
-  * the WS1 control token the assistant-pause button rides on POST /mic/mute
+  * the control token the assistant-pause button rides on POST /mic/mute
     (kept inside this process — never a shell argument or a log line);
   * the shared icon sprite, so the landing and the Python-rendered pages draw
     from one set (``chrome.CANONICAL_ICON_SPRITE``);

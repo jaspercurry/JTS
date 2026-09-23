@@ -9,18 +9,7 @@ with 60-min sparklines, software version, network + renderer state,
 and a few action buttons (restart voice / audio / reboot, run
 diagnostics). Voice spend status and cap settings live on /assistant/voice/.
 
-Data comes from jasper-control:
-  GET  /system/snapshot     metrics + build (5 s ring buffer)
-  GET  /system/diagnostics  serves cached jasper-doctor JSON and
-                             refreshes stale snapshots in the background
-  GET  /aec/enhanced-aec     enhanced AEC installation state, proxied to the
-                             browser as /optional-features/enhanced-aec
-  POST /aec/enhanced-aec/install
-                             start or retry the background installation,
-                             proxied from the matching browser route
-  POST /system/restart/*    restart voice / audio chain
-  POST /usb-forensics       persistent sampler toggle / capture / USB repair
-  POST /system/reboot       full Pi reboot
+Data and mutations are proxied to jasper-control.
 
 Wake detection lives on /assistant/wake/ — the model picker, the AEC + per-leg
 toggles, and the sensitivity slider all share that page now since they
@@ -77,8 +66,7 @@ def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
     # body is just a mount point plus the ES module entry. canonical_page
     # emits the shared app.css link, the CSRF meta tag (read by main.js for
     # mutating POSTs), and the icon sprite. The module graph is served
-    # static + revalidated from /assets/system-status/js/ (see the
-    # `location ~ \\.js$` block in deploy/nginx-jasper.conf).
+    # static + revalidated from /assets/system-status/js/.
     body = (
         # A visible placeholder inside the mount point: main.js replaces
         # it on first render, so if the ES module graph ever fails to load

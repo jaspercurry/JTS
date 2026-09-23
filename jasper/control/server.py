@@ -663,16 +663,11 @@ def _make_handler(
             getattr(self, handler_name)()
 
         def _guard_control_token(self) -> bool:
-            """Opt-in token gate for the high-impact mutations.
+            """Require the startup-created control token for high-impact mutations.
 
-            Runs AFTER the browser-origin/install-profile guards so an
-            unknown path still 404s as before. Default-off: when no token
-            file exists, control_token.verify() returns True and this is a
-            pass-through. When the operator has enabled the gate
-            (jasper-control-token --enable), a request to one of
-            _TOKEN_GATED_ROUTES without a matching X-JTS-Token header is
-            rejected 403 with an actionable JSON body and an audit log
-            line. The token value is never logged.
+            Runs after the browser-origin/install-profile guards so an unknown
+            path still returns 404. A request to a token-gated route without a
+            matching X-JTS-Token is rejected with 403. The token is never logged.
             """
             if self.path not in _TOKEN_GATED_ROUTES:
                 return True
@@ -681,7 +676,7 @@ def _make_handler(
             # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
             # fan-out (rooms_setup) or an autonomous re-group presents the
             # household credential (X-JTS-Household), which each member verifies
-            # against its own persisted copy — NOT the per-device CSRF token a
+            # against its own persisted copy — not the control token a
             # leader can't hold for a follower. Accept EITHER on this route only;
             # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
             # update) are browser->own-speaker and stay control-token-only.
