@@ -268,9 +268,6 @@ def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
 # (#3769 wave 10) and #4138 has merged, emptying this set.
 _ALLOWLIST = frozenset({
     "jasper/cli/active_speaker_emit_bench.py",
-    "jasper/cli/angle_capture.py",
-    "jasper/cli/audition.py",
-    "jasper/cli/seat_level.py",
     "jasper/web/correction_setup.py",
 })
 
