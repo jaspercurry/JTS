@@ -202,6 +202,8 @@ single take can swing ±4 dB.
 
 `jasper-crossover-prescriber judge --preview` answers limits and predicted
 residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
+A room preview's `summary` gives each side's `residual_rms_db`, the
+`seat_spread_rms_db` and `under_seat_spread` over its `band_hz`.
 Good means median residual under the seat spread, no boost into a dip that
 changes with position, and a response that respects the ceiling. A preview
 can settle which document to measure; it cannot prove the sound of an
