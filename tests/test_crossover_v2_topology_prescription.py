@@ -25,7 +25,6 @@ exactly the two that name a component-damage mechanism.
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -52,12 +51,10 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
     TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
-    TopologyPrescription,
     TopologyPrescriptionRefused,
     apply_topology_pin,
     candidate_topology,
     read_topology_prescription,
-    topology_prescription_from_mapping,
     topology_prescription_response_format,
 )
 from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
@@ -167,21 +164,6 @@ def test_a_prescription_must_be_a_mapping():
     assert excinfo.value.reason == TOPOLOGY_MALFORMED
 
 
-def test_every_accepted_field_survives_the_round_trip_the_receipt_needs():
-    """``to_dict()`` must re-parse, or the receipt is unreadable at grading.
-
-    The blend prescription's own lesson, pinned here before it can be
-    relearned: the durable record round-trips through a reader that REFUSES an
-    unknown field rather than ignoring it, so one extra key on the way out
-    makes the whole record ``None`` on the way back in.
-    """
-    pinned = _read(_pin(2400.0))
-    assert pinned is not None
-    again = topology_prescription_from_mapping(pinned.to_dict())
-    assert again is not None
-    assert again.to_dict() == pinned.to_dict()
-
-
 def test_the_receipt_carries_kind_and_schema_version():
     """The envelope, on the established shape.
 
@@ -265,7 +247,6 @@ def test_optional_basis_is_disclosed(mutation):
     accepted = _read({**raw, **mutation})
     assert accepted.to_dict()["basis_artifacts"] == []
     assert accepted.to_dict()["basis_note"] == ""
-    assert topology_prescription_from_mapping(accepted.to_dict()) == accepted
     assert "topology_provenance_missing" not in TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS
 
 
@@ -539,34 +520,6 @@ def test_the_recommendation_is_disclosed_even_when_nothing_was_published():
     )
 
 
-def test_the_disclosed_recommendation_survives_the_durable_read_back():
-    """A receipt banked today must still say what the pin crossed against when
-    it is graded, on the same round-trip rule the other stamped fields keep."""
-    pinned = _read(
-        _pin(2400.0, order=2),
-        minimum_slope_db_per_octave=DE250_PUBLISHED_SLOPE,
-    )
-    assert pinned is not None
-    again = topology_prescription_from_mapping(pinned.to_dict())
-    assert again is not None
-    assert again.recommended_slope_db_per_octave == (
-        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-    )
-    assert again.checked_against_slope_db_per_octave == DE250_PUBLISHED_SLOPE
-
-
-def test_a_receipt_banked_before_the_disclosure_still_reads_back():
-    """A block this build wrote last week names no recommendation. It is a
-    document this repository already wrote, so it loads with the field absent
-    rather than being refused for not carrying a field it predates."""
-    stale = _read(_pin(2400.0)).to_dict()
-    del stale["recommended_slope_db_per_octave"]
-    again = topology_prescription_from_mapping(stale)
-    assert again is not None
-    assert again.recommended_slope_db_per_octave is None
-    assert again.fc_hz == 2400.0
-
-
 def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
     """``order * 6`` has one meaning in this repository.
 
@@ -739,201 +692,20 @@ def test_the_response_format_names_the_request_time_door_and_its_severity():
 
 
 # --------------------------------------------------------------------------- #
-# 9. The durable read-back — same shape, deliberately not the bounds
+# 9. A field this build retired still refuses when freshly authored
 # --------------------------------------------------------------------------- #
 
 
-def test_the_read_back_does_not_reapply_the_bounds():
-    """A prescription whose DECLARATIONS moved between the stage that measured
-    the round and the stage that grades it must still be readable: refusing
-    there could only discard the evidence of a round that really ran. The
-    bounds have one owner, and it is the boundary."""
-    banked = _read(_pin(2400.0))
-    assert banked is not None
-    # A record from a round whose speaker has since re-declared a narrower
-    # ceiling. It was legal when it was accepted; grading must still read it.
-    record = banked.to_dict()
-    record["checked_against_ceiling_hz"] = 2000.0
-    again = topology_prescription_from_mapping(record)
-    assert again is not None
-    assert again.fc_hz == 2400.0
-
-
-#: A receipt this repository ACTUALLY WROTE before #2870, emitted by
-#: ``origin/main``'s own ``read_topology_prescription`` at jts3's declarations
-#: on 2026-08-22 and frozen verbatim — not a hand-typed approximation of one.
-#: Its ``checked_against_search_band_hz`` is the field the ruling retired.
-BANKED_PRE_2870_RECEIPT = {
-    "artifact_schema_version": 1,
-    "authority": "operator_pinned_no_measured_ranking",
-    "basis_artifacts": ["armloop-first-drive-2026-08/offline-fc-search"],
-    "basis_note": "offline candidate search, no measured ranking",
-    "beaming_ceiling_hz": None,
-    "checked_against_ceiling_hz": 4000.0,
-    "checked_against_floor_hz": 1600.0,
-    "checked_against_search_band_hz": [1600.0, 2500.0],
-    "checked_against_slope_db_per_octave": 24.0,
-    "fc_hz": 2400.0,
-    "kind": "jts_crossover_topology_prescription",
-    "order": 4,
-    "slope_db_per_octave": 24.0,
-}
-
-
-def test_a_receipt_banked_before_the_field_was_retired_still_reads_back(caplog):
-    """#2870 hazard 2, pinned: the deploy that deletes a field must not make
-    every receipt written before it unreadable.
-
-    ``_PRESCRIPTION_FIELDS`` refuses an unknown field rather than ignoring it,
-    so a banked receipt carrying ``checked_against_search_band_hz`` would have
-    become ``None`` at grading — silently discarding the provenance of a round
-    that really ran. The read-back drops a RETIRED field instead, on the same
-    posture split the pre-envelope tolerance already uses.
-
-    ``None`` is the failure mode to catch, so the WARNING is asserted absent:
-    a receipt that reads back but logs unreadable is still a receipt somebody
-    will go looking for.
-    """
-    with caplog.at_level(logging.WARNING):
-        again = topology_prescription_from_mapping(dict(BANKED_PRE_2870_RECEIPT))
-    assert again is not None
-    assert again.fc_hz == 2400.0
-    assert again.order == 4
-    # Everything the build still speaks survives the drop unharmed.
-    assert again.checked_against_floor_hz == 1600.0
-    assert again.checked_against_ceiling_hz == 4000.0
-    assert again.checked_against_slope_db_per_octave == 24.0
-    assert again.authority == TOPOLOGY_AUTHORITY_OPERATOR_PINNED
-    assert again.basis_artifacts == (
-        "armloop-first-drive-2026-08/offline-fc-search",
-    )
-    assert "crossover_v2_topology_prescription_unreadable" not in caplog.text
-    # DROPPED, never read: the retired value must not reappear on the way out,
-    # or a deleted concept keeps riding receipts this build cannot interpret.
-    assert "checked_against_search_band_hz" not in again.to_dict()
-
-
 def test_the_request_gate_still_refuses_a_freshly_authored_retired_field():
-    """The other half of the posture split, and the reason it is a split.
-
-    Tolerance is for documents this repository already wrote. A prescriber
-    AUTHORING ``checked_against_search_band_hz`` today is talking to a build
-    that no longer exists, and must learn at the tap rather than have the field
-    silently dropped — which would look like a bound being applied that is not.
+    """#2870 deleted ``checked_against_search_band_hz``. A prescriber
+    AUTHORING it today is talking to a build that no longer exists, and must
+    learn at the tap rather than have the field silently dropped — which
+    would look like a bound being applied that is not.
     """
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(2400.0, checked_against_search_band_hz=[1600.0, 2500.0]))
     assert excinfo.value.reason == TOPOLOGY_MALFORMED
     assert "checked_against_search_band_hz" in excinfo.value.detail
-
-
-def test_the_read_back_still_refuses_a_mangled_shape_and_says_so(caplog):
-    """A hand-edited or truncated state file is a real input here, and a round
-    graded at the wrong corner is worse than one graded with no provenance.
-    ``None`` plus one WARNING, so an empty slot on a receipt is always
-    distinguishable from a silently mangled one."""
-    with caplog.at_level(logging.WARNING):
-        assert topology_prescription_from_mapping({"fc_hz": 2400.0}) is None
-    assert "crossover_v2_topology_prescription_unreadable" in caplog.text
-
-
-def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    """The tolerant-read rule every door in this family shares, for a record
-    that is genuinely unreadable rather than merely pre-envelope.
-
-    Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
-    ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
-    prescription``: ``None``, an unrecognised ``kind``, and a totally empty
-    mapping (missing ``fc_hz``/``order`` too, so this is not the retrofit
-    case) all read as ``None`` rather than raising. See
-    ``test_a_pre_envelope_record_round_trips_through_the_read_back`` for the
-    shape that DOES carry a real pin and DOES round-trip.
-    """
-    assert topology_prescription_from_mapping(None) is None
-    assert topology_prescription_from_mapping({"kind": "nope"}) is None
-    assert topology_prescription_from_mapping({}) is None
-
-
-def test_a_pre_envelope_record_round_trips_through_the_read_back():
-    """The retrofit contract: durable state predates this envelope.
-
-    ``verify_priors.topology_prescription`` is carried unconditionally across
-    a deploy (``correction_crossover_v2.persist_conductor_state``), and
-    #2662/#2773 shipped writing it days before this envelope existed, so a
-    live speaker can already hold a record naming neither ``kind`` nor
-    ``artifact_schema_version``. Refusing it would silently grade a pinned
-    round's VERIFY against the crossover the speaker used to run — see
-    :func:`~jasper.active_speaker.crossover_v2.topology_prescription.
-    _parse_prescription`'s ``read_back`` paragraph.
-
-    Generated from a REAL pinned prescription's own ``to_dict()`` with the
-    two envelope keys removed, not hand-typed, so this is exactly the shape a
-    prior build wrote rather than a guess at it.
-    """
-    pinned = _read(_pin(2400.0))
-    assert pinned is not None
-    pre_envelope_record = pinned.to_dict()
-    del pre_envelope_record["kind"]
-    del pre_envelope_record["artifact_schema_version"]
-    recovered = topology_prescription_from_mapping(pre_envelope_record)
-    assert recovered is not None
-    assert recovered.fc_hz == pinned.fc_hz
-    assert recovered.order == pinned.order
-    assert recovered.basis_artifacts == pinned.basis_artifacts
-
-
-@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
-def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
-    """EITHER field present, even correctly, with the other missing, is not
-    the wholly-absent shape the retrofit tolerates — it tried to speak the
-    envelope and got it wrong."""
-    pinned = _read(_pin(2400.0))
-    assert pinned is not None
-    record = pinned.to_dict()
-    other = "artifact_schema_version" if keep == "kind" else "kind"
-    del record[other]
-    assert topology_prescription_from_mapping(record) is None
-
-
-def test_a_future_schema_version_still_refuses_even_on_read_back():
-    """The retrofit posture tolerates a wholly-absent envelope, never a
-    present-but-wrong one — a document naming a version this build does not
-    speak is refused under both the request gate and the durable read-back."""
-    pinned = _read(_pin(2400.0))
-    assert pinned is not None
-    record = pinned.to_dict()
-    record["artifact_schema_version"] = 2
-    assert topology_prescription_from_mapping(record) is None
-
-
-def test_the_read_back_of_nothing_is_nothing_and_is_silent(caplog):
-    """The ordinary round: no pin was made. It must not look like a failure."""
-    with caplog.at_level(logging.WARNING):
-        assert topology_prescription_from_mapping(None) is None
-    assert caplog.text == ""
-
-
-def test_a_pre_gate_record_reads_back_without_the_stamped_fields():
-    """A hand-built block that never went through the gate is missing the
-    GATE's own context, not malformed — refusing it would cost a round its
-    provenance entirely.
-
-    ``kind``/``artifact_schema_version`` are on the OTHER side of that line:
-    they are part of the document's required SHAPE, exactly as ``fc_hz`` /
-    ``order`` / ``basis_artifacts`` always were, so this record carries them —
-    what it omits is only the five fields the GATE stamps after its bounds
-    pass (``authority``, the four ``checked_against_*`` / beaming fields).
-    """
-    again = topology_prescription_from_mapping({
-        "kind": TOPOLOGY_PRESCRIPTION_KIND,
-        "artifact_schema_version": TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
-        "fc_hz": 2400.0, "order": 4, "basis_artifacts": ["bench"],
-    })
-    assert again == TopologyPrescription(
-        fc_hz=2400.0, order=4, basis_artifacts=("bench",),
-    )
-    assert again.authority == ""
-    assert again.checked_against_floor_hz is None
 
 
 # --------------------------------------------------------------------------- #

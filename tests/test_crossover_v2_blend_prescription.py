@@ -55,7 +55,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_MAX_TOTAL_BOOST_DB,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
-    blend_prescription_from_mapping,
     blend_prescription_to_candidate_fields,
     max_q_for_gain,
     positional_support,
@@ -1548,12 +1547,6 @@ def test_a_long_rationale_is_truncated_and_disclosed_never_refused(packet):
     assert accepted.rationale_dropped_chars == 800
     banked = _gate(packet, _document([_cut()], packet, rationale="short"))
     assert banked.rationale_dropped_chars == 0
-    # The durable read-back holds only the already-truncated text, so it
-    # cannot know what was dropped: re-parsing it would recompute 0 and
-    # silently zero the banked disclosure. `None` is the honest answer.
-    assert blend_prescription_from_mapping(
-        accepted.to_dict()
-    ).rationale_dropped_chars is None
 
 
 def test_a_rationale_is_stored_and_never_becomes_an_instruction(packet):
@@ -1731,7 +1724,6 @@ def test_optional_evidence_echo_and_author_are_disclosed(packet, echo, author, e
     assert receipt["packet_fingerprint"] == packet["packet_fingerprint"]
     assert receipt["answers_packet"] is (None if echo is None else False)
     assert receipt["prescriber"] == expected
-    assert blend_prescription_from_mapping(receipt).to_dict()["answers_packet"] is receipt["answers_packet"]
     assert {"prescription_packet_mismatch", "prescription_provenance_missing"}.isdisjoint(BLEND_PRESCRIPTION_REFUSAL_REASONS)
 
 
@@ -2524,16 +2516,6 @@ def test_the_unprefixed_names_colliding_with_alignment_prescription_are_gone():
     assert "prescription_provenance_missing" not in bp.BLEND_PRESCRIPTION_REFUSAL_REASONS
 
 
-def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet):
-    accepted = _gate(packet, _document([_cut(-1.25)], packet))
-    reread = blend_prescription_from_mapping(accepted.to_dict())
-    assert reread is not None
-    assert reread.filters == accepted.filters
-    assert reread.packet_fingerprint == accepted.packet_fingerprint
-    assert reread.prescriber_model == accepted.prescriber_model
-    assert reread.band_hz == accepted.band_hz
-
-
 def test_a_supplied_gate_written_field_is_ignored_not_trusted(packet):
     """Round-tripping through one parser must not become a way to dictate.
 
@@ -2561,12 +2543,6 @@ def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0)], packet, prescription_class="cut"))
     assert excinfo.value.reason == "boost_route_unavailable"
-
-
-def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    assert blend_prescription_from_mapping(None) is None
-    assert blend_prescription_from_mapping({"kind": "wrong"}) is None
-    assert blend_prescription_from_mapping({"filters": [], "band_hz": [1, 2]}) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -2621,9 +2597,9 @@ def test_a_boost_can_never_populate_the_blend_field_whatever_the_caller_did(pack
 
     ``read_blend_prescription`` routes before returning, so today nothing
     boost-class reaches here — but a :class:`BlendPrescription` can be built
-    directly or read back by ``blend_prescription_from_mapping``, neither of
-    which routes. The seam is the last thing before a fingerprinted candidate
-    field, so it asks the one owner of the rule itself.
+    directly, which does not route. The seam is the last thing before a
+    fingerprinted candidate field, so it asks the one owner of the rule
+    itself.
     """
     accepted = _gate(packet, _document([_cut(-1.5)], packet))
     boost = replace(

@@ -21,17 +21,14 @@ have two doors. Refusals raise and are never clamped or inherited.
 
 from __future__ import annotations
 
-import logging
-import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-from jasper.log_event import log_event
 from jasper.json_fields import finite_float
 
 from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS
-from ._prescription_common import _read_artifacts
+from ._prescription_common import BlendPrescriptionRefused, _finite_number, _read_artifacts
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
@@ -52,15 +49,8 @@ __all__ = [
     "apply_topology_pin",
     "candidate_topology",
     "read_topology_prescription",
-    "topology_prescription_from_mapping",
     "topology_prescription_response_format",
 ]
-
-logger = logging.getLogger(__name__)
-
-#: Said when a durable read-back cannot be parsed — the one line this module
-#: emits, so an empty receipt slot stays distinguishable from a mangled one.
-PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_topology_prescription_unreadable"
 
 #: The request-body key a prescription arrives under.
 TOPOLOGY_PRESCRIPTION_KEY = "topology_prescription"
@@ -117,9 +107,9 @@ _PRESCRIPTION_FIELDS = frozenset({
     "order",
     "basis_artifacts",
     "basis_note",
-    # Written BY the gate, accepted on the way back in so a durable block
-    # round-trips through this parser. A request that supplies them is
-    # harmless: the gate overwrites each with what it actually checked.
+    # Not required by the gate, but tolerated rather than refused as unknown:
+    # a request that echoes a receipt this gate already emitted is harmless,
+    # since the gate overwrites each with what it actually checked.
     "authority",
     "checked_against_floor_hz",
     "checked_against_ceiling_hz",
@@ -129,28 +119,10 @@ _PRESCRIPTION_FIELDS = frozenset({
     "slope_db_per_octave",
 })
 
-#: Field names this build once WROTE onto a receipt and no longer speaks.
-#: Dropped on the durable read-back only, never at the request gate: a banked
-#: receipt must stay readable across the deploy that retired the field, while a
-#: freshly-authored pin naming one learns at the tap.
-#: ``checked_against_search_band_hz`` recorded the crossover search band #2870
-#: deleted.
-_RETIRED_PRESCRIPTION_FIELDS = frozenset({
-    "checked_against_search_band_hz",
-})
 
-
-class TopologyPrescriptionRefused(ValueError):
-    """One prescription this module would not accept, and why.
-
-    ``reason`` is from :data:`TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS`, so the
-    classification travels with the raise.
-    """
-
-    def __init__(self, reason: str, detail: str) -> None:
-        super().__init__(detail)
-        self.reason = reason
-        self.detail = detail
+#: One refusal class for the whole prescription family (:mod:`._prescription_common`),
+#: so a caller's one ``except`` and the CLI's one handler cover every door.
+TopologyPrescriptionRefused = BlendPrescriptionRefused
 
 
 @dataclass(frozen=True)
@@ -222,24 +194,6 @@ class TopologyPrescription:
         }
 
 
-def _finite_number(value: Any, *, reason: str, field: str) -> float:
-    """One numeric field, strictly.
-
-    ``bool`` is refused explicitly (it is an ``int``, and ``float(True)`` is
-    ``1.0``); strings are refused because ``float("4000")`` succeeds.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TopologyPrescriptionRefused(
-            reason, f"{field} must be a number, got {type(value).__name__}",
-        )
-    number = float(value)
-    if not math.isfinite(number):
-        raise TopologyPrescriptionRefused(
-            reason, f"{field} must be finite, got {number!r}",
-        )
-    return number
-
-
 def _read_order(value: Any) -> int:
     """The Linkwitz-Riley order, strictly, and only one the graph can emit.
 
@@ -261,52 +215,32 @@ def _read_order(value: Any) -> int:
     return int(value)
 
 
-def _parse_prescription(
-    raw: Mapping[str, Any], *, read_back: bool = False,
-) -> TopologyPrescription:
-    """The shape and the provenance, and NOT the bounds.
-
-    Shared whole between the request gate and the durable read-back, so gate
-    policy is the only difference between them. Under ``read_back`` a record
-    naming NEITHER ``kind`` nor ``artifact_schema_version`` is the envelope-less
-    shape prior releases persisted, and reads as this build's own kind and
-    version 1; a record naming either field is refused normally. ``read_back``
-    also DROPS a :data:`_RETIRED_PRESCRIPTION_FIELDS` entry rather than
-    refusing the record — dropped, never read.
-    """
+def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
+    """The shape and the provenance, and NOT the bounds."""
     if not isinstance(raw, Mapping):
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
-    known = (
-        _PRESCRIPTION_FIELDS | _RETIRED_PRESCRIPTION_FIELDS
-        if read_back
-        else _PRESCRIPTION_FIELDS
-    )
-    unknown = sorted(set(raw) - known)
+    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
-    pre_envelope = (
-        read_back and "kind" not in raw and "artifact_schema_version" not in raw
-    )
-    if not pre_envelope:
-        if raw.get("kind") != TOPOLOGY_PRESCRIPTION_KIND:
-            raise TopologyPrescriptionRefused(
-                TOPOLOGY_MALFORMED,
-                f"a prescription must name kind={TOPOLOGY_PRESCRIPTION_KIND!r}, "
-                f"got {raw.get('kind')!r}",
-            )
-        version = raw.get("artifact_schema_version")
-        if version != TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION:
-            raise TopologyPrescriptionRefused(
-                TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-                f"this build speaks topology-prescription schema "
-                f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
-            )
+    if raw.get("kind") != TOPOLOGY_PRESCRIPTION_KIND:
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_MALFORMED,
+            f"a prescription must name kind={TOPOLOGY_PRESCRIPTION_KIND!r}, "
+            f"got {raw.get('kind')!r}",
+        )
+    version = raw.get("artifact_schema_version")
+    if version != TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION:
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+            f"this build speaks topology-prescription schema "
+            f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
+        )
     if "fc_hz" not in raw:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_FC_INVALID, "a prescription must state fc_hz",
@@ -453,28 +387,6 @@ def read_topology_prescription(
         ),
         recommended_slope_db_per_octave=PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
     )
-
-
-def topology_prescription_from_mapping(raw: Any) -> TopologyPrescription | None:
-    """A prescription read back out of this repository's own durable state.
-
-    Shape and provenance only — the bounds have one owner, and it is the
-    request gate; re-applying them here could only refuse a round that really
-    ran. Anything unreadable is ``None`` plus one WARNING.
-    """
-    if raw is None:
-        return None
-    try:
-        return _parse_prescription(raw, read_back=True)
-    except TopologyPrescriptionRefused as exc:
-        log_event(
-            logger,
-            PRESCRIPTION_UNREADABLE_EVENT,
-            level=logging.WARNING,
-            reason=exc.reason,
-            detail=exc.detail,
-        )
-        return None
 
 
 def apply_topology_pin(

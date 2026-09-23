@@ -25,12 +25,12 @@ class outright today.
 from __future__ import annotations
 
 from ._prescription_common import (
+    PRESCRIPTION_MALFORMED as _PRESCRIPTION_MALFORMED,
     RATIONALE_MAX_CHARS, BlendPrescriptionRefused, _refuse, _finite_number, _prescriber, _rationale,
 )
 
 import hashlib
 import json
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -75,7 +75,6 @@ __all__ = [
     "BlendPrescriptionRefused",
     "PositionalEvidence",
     "PositionalSupport",
-    "blend_prescription_from_mapping",
     "blend_prescription_to_candidate_fields",
     "composed_grid",
     "find_prohibited_keys",
@@ -180,10 +179,11 @@ BOOST_MAX_DISSENTING_POSITIONS = 1
 # --------------------------------------------------------------------------- #
 
 PRESCRIPTION_TOO_LARGE = "prescription_too_large"
-#: ``BLEND_PRESCRIPTION_`` prefixed on these three so the Python identifiers do
-#: not collide with :mod:`.alignment_prescription`'s bare ones. Only the
-#: identifiers differ — the VALUES are the same strings that door uses.
-BLEND_PRESCRIPTION_MALFORMED = "prescription_malformed"
+#: ``BLEND_PRESCRIPTION_`` prefixed on this identifier so it does not collide
+#: with :mod:`.alignment_prescription`'s bare one. The VALUE is
+#: :data:`~._prescription_common.PRESCRIPTION_MALFORMED`, shared by the whole
+#: family rather than redefined here.
+BLEND_PRESCRIPTION_MALFORMED = _PRESCRIPTION_MALFORMED
 PRESCRIPTION_SCHEMA_UNSUPPORTED = "prescription_schema_unsupported"
 PRESCRIPTION_PROHIBITED_FIELD = "prescription_prohibited_field"
 FILTER_MALFORMED = "filter_malformed"
@@ -1011,66 +1011,15 @@ def blend_prescription_to_candidate_fields(
     caller can splat it unconditionally.
 
     It RE-ASKS :func:`prescription_route` rather than trusting its input was
-    gated — a :class:`BlendPrescription` can be built directly or read back by
-    :func:`blend_prescription_from_mapping`, neither of which routes — which
-    makes "a boost can never populate ``blend_correction``" true of this
-    function rather than of the current call graph.
+    gated — a :class:`BlendPrescription` can be built directly, which does not
+    route — which makes "a boost can never populate ``blend_correction``" true
+    of this function rather than of the current call graph.
     """
     if prescription is None:
         return {}
     return {
         prescription_route(prescription): [dict(f) for f in prescription.filters]
     }
-
-
-def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
-    """A prescription read back out of this repository's own durable state.
-
-    Shape and provenance only — the bounds have one owner and it is the request
-    gate; re-applying them here could only refuse a round that really ran —
-    and ``None`` instead of a raise. A durable record is EXACTLY ``to_dict()``
-    and carries nothing else: this reader refuses an unknown field rather than
-    ignoring it, so one extra key makes the whole record unreadable.
-
-    It does NOT route: it re-derives ``prescription_class`` from the gains but
-    applies no seam check, which is why
-    :func:`blend_prescription_to_candidate_fields` asks
-    :func:`prescription_route` itself.
-    """
-    if raw is None:
-        return None
-    try:
-        # The dropped-character count is discarded: this reader holds the
-        # already-truncated text and cannot know what was originally written.
-        filters, fingerprint, model, operator, rationale, _dropped = (
-            _parse_prescription(raw)
-        )
-    except BlendPrescriptionRefused:
-        return None
-    band_raw = raw.get("band_hz") if isinstance(raw, Mapping) else None
-    band: tuple[float, float] | None = None
-    if isinstance(band_raw, (list, tuple)) and len(band_raw) == 2:
-        try:
-            lo, hi = float(band_raw[0]), float(band_raw[1])
-        except (TypeError, ValueError, OverflowError):
-            band = None
-        else:
-            if math.isfinite(lo) and math.isfinite(hi) and 0.0 < lo < hi:
-                band = (lo, hi)
-    if band is None:
-        return None
-    return BlendPrescription(
-        filters=filters,
-        prescription_class=(
-            "boost" if any(float(f["gain"]) > 0.0 for f in filters) else "cut"
-        ),
-        packet_fingerprint=fingerprint,
-        answers_packet=raw.get("answers_packet"),
-        prescriber_model=model,
-        prescriber_operator=operator,
-        band_hz=band,
-        rationale=rationale,
-    )
 
 
 def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:

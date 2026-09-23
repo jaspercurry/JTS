@@ -11,6 +11,12 @@ from typing import Any, NoReturn
 
 RATIONALE_MAX_CHARS = 1_200
 
+#: The shape refusal every judge in this family raises under its own prefixed
+#: name (``ALIGNMENT_PRESCRIPTION_MALFORMED``, ``BLEND_PRESCRIPTION_MALFORMED``,
+#: ...). One string, one owner, so a caller comparing codes across doors is
+#: comparing the same value rather than two literals that happened to match.
+PRESCRIPTION_MALFORMED = "prescription_malformed"
+
 
 class BlendPrescriptionRefused(ValueError):
     """A judge refusal with its code and measured evidence."""

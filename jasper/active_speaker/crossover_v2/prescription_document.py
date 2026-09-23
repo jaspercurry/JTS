@@ -29,6 +29,7 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper import output_topology_store as output_topology
+from ._prescription_common import PRESCRIPTION_MALFORMED
 from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
@@ -86,16 +87,16 @@ def read_prescription_document(raw: Any) -> Mapping[str, Any]:
     if type(raw.get("schema")) is not int or raw["schema"] != 1:
         raise PrescriptionDocumentRefused("prescription_schema_unsupported", None, "unsupported document schema")
     if set(raw) - {"kind", "schema", "base", "sections", "rationale"}:
-        raise PrescriptionDocumentRefused("prescription_malformed", None, "unknown document fields")
+        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, None, "unknown document fields")
     if not isinstance(raw.get("base"), str) or not raw["base"].strip():
         raise PrescriptionDocumentRefused("composition_base_required", None, "name a base fingerprint or saved")
     if not isinstance(raw.get("rationale"), str) or not isinstance(raw.get("sections"), Mapping):
-        raise PrescriptionDocumentRefused("prescription_malformed", None, "sections must be an object and rationale must be text")
+        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, None, "sections must be an object and rationale must be text")
     for name, value in raw["sections"].items():
         if name not in SECTION_KINDS:
             raise PrescriptionDocumentRefused("prescription_section_unknown", str(name), "unknown section")
         if value is not None and not isinstance(value, Mapping):
-            raise PrescriptionDocumentRefused("prescription_malformed", name, "section must be an object or null")
+            raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, name, "section must be an object or null")
         prohibited = blend.find_prohibited_keys(value) if name in {"driver", "blend", "room"} else []
         if prohibited:
             raise PrescriptionDocumentRefused(blend.PRESCRIPTION_PROHIBITED_FIELD, name, "prohibited fields", evidence={"fields": prohibited})
@@ -106,7 +107,7 @@ def parse_vary_axis(text: str) -> tuple[tuple[str, ...], tuple[Any, ...]]:
     paths_text, separator, values_text = text.partition("=")
     paths = tuple(path.strip() for path in paths_text.split(","))
     if not separator or not all(paths) or not all(token.strip() for token in values_text.split(",")):
-        raise PrescriptionDocumentRefused("prescription_malformed", "sections", "expected PATH[,PATH...]=VALUE[,VALUE...]")
+        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, "sections", "expected PATH[,PATH...]=VALUE[,VALUE...]")
     values = []
     for token in values_text.split(","):
         try:
@@ -114,7 +115,7 @@ def parse_vary_axis(text: str) -> tuple[tuple[str, ...], tuple[Any, ...]]:
         except json.JSONDecodeError:
             value = token.strip()
         if isinstance(value, (dict, list)):
-            raise PrescriptionDocumentRefused("prescription_malformed", "sections", "axis values must be JSON scalars")
+            raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, "sections", "axis values must be JSON scalars")
         values.append(value)
     return paths, tuple(values)
 
@@ -136,7 +137,7 @@ def _vary_target(sections: Mapping[str, Any], path: str) -> tuple[Any, str | int
                 parent, node = node, node[key]
         return parent, key
     except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise PrescriptionDocumentRefused("prescription_malformed", section if section in sections else "sections",
+        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, section if section in sections else "sections",
                                           f"axis path does not resolve: {path}") from exc
 
 
@@ -149,7 +150,7 @@ def vary_document(
             _vary_target(document["sections"], path)
             if path in seen:
                 section = path.split(".")[0]
-                raise PrescriptionDocumentRefused("prescription_malformed", section if section in document["sections"] else "sections",
+                raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, section if section in document["sections"] else "sections",
                                                   f"axis path is repeated: {path}")
             seen.add(path)
     for combination in product(*(values for _, values in axes)):
@@ -259,14 +260,14 @@ _PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for r
 def preview_kind(document: Mapping[str, Any]) -> str:
     sections = set(document["sections"])
     if "bass" in sections:
-        raise PrescriptionDocumentRefused("prescription_malformed", "bass", "bass has no preview model")
+        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, "bass", "bass has no preview model")
     for kind, names in _PREVIEW_ROWS.items():
         if sections & names:
             if sections <= names:
                 return kind
-            raise PrescriptionDocumentRefused("prescription_malformed", sorted(sections & names)[0],
+            raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, sorted(sections & names)[0],
                                               "preview sections must use one model")
-    raise PrescriptionDocumentRefused("prescription_malformed", None, "no preview model for these sections")
+    raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, None, "no preview model for these sections")
 
 
 def preview_prescription_document(
@@ -294,7 +295,7 @@ def preview_prescription_document(
             if kind == "room":
                 preview_function = room.preview_room_prescription
                 if not sections[kind]:
-                    raise PrescriptionDocumentRefused("prescription_malformed", kind, "preview requires a room section")
+                    raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, kind, "preview requires a room section")
                 sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
                 contracts = prescription_contracts(programs=contract_programs(sources), **sources)
                 payload = _section_payload(kind, sections[kind], document["rationale"], contracts)
@@ -401,7 +402,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         except rear_calibration.RearCalibrationError as exc:
             raise PrescriptionDocumentRefused("rear_calibration_invalid", name, str(exc)) from exc
         except (ValueError, TypeError, KeyError) as exc:
-            raise PrescriptionDocumentRefused("prescription_malformed", name, str(exc)) from exc
+            raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, name, str(exc)) from exc
     try:
         rows, _ = round_alignment({**(evidence.sources.get("manifest") or {}), "round_id": evidence.round_id},
                                  evidence.sources) if evidence.round_id else ([], {})
