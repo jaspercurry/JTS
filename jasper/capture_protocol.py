@@ -13,14 +13,13 @@ rather than inside either.
 Stdlib-only on purpose: the socket-activated wizard builds specs on a light
 process, and both sides import this unconditionally.
 
-The rest of the wire contract — ``CaptureSpec`` itself, its validation and its
-consent-surface vocabulary — lives in
-``jasper.active_speaker.crossover_v2.sweep_spec``, which imports these names
-back so there is one definition of each.
+The rest of the wire contract — ``CaptureSpec`` itself and its validation —
+lives in ``jasper.active_speaker.crossover_v2.sweep_spec``, which imports these
+names back so there is one definition of each.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,30 +32,9 @@ MAX_CAPTURE_PLAN_ATTEMPTS = 128
 # session's own budget.
 MAX_TTL_S = 3600
 
-CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts", "entries")
-CAPTURE_PLAN_ENTRY_KEYS = ("index", "kind_label", "duration_ms", "screen")
-
-# Per-capture allowance the displayed session-duration estimate adds on top of
-# each entry's own ``duration_ms`` for reading the prompt, moving the mic, and
-# tapping. The browser display and server-side consent copy derive from this
-# value so they cannot quote different durations for one session. It is
-# deliberately generous because this is a display promise, not a measurement.
-CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS = 20_000
-
 
 class CaptureSpecError(ValueError):
     """A capture spec violated the contract. Raised loudly at the boundary."""
-
-
-def as_int(data: Mapping[str, Any], key: str, *, default: int | None = None) -> int:
-    if key not in data or data.get(key) is None:
-        if default is None:
-            raise CaptureSpecError(f"{key} is required")
-        return default
-    value = data[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise CaptureSpecError(f"{key} must be an integer, got {type(value).__name__}")
-    return value
 
 
 @dataclass(frozen=True)
@@ -70,9 +48,7 @@ class CapturePlanEntry:
     transport session.
 
     ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
-    from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3);
-    :meth:`CapturePlan.entry_for_index` does that 1-based -> 0-based lookup
-    so callers never repeat the arithmetic.
+    from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3).
 
     - ``kind_label`` — a short slug naming what this capture measures (e.g.
       ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
@@ -85,8 +61,8 @@ class CapturePlanEntry:
       its own session-level ``timeout_s`` for every plan, entries or not.
     - ``screen`` — optional phone-side prompt copy for this capture (a
       string-to-string mapping such as ``{"title": ..., "body": ...}``).
-      Opaque like ``presentation_variant``: the schema bounds size and value
-      types, never the keys — the capture page decides what to render.
+      Opaque: the schema bounds size and value types, never the keys — the
+      capture page decides what to render.
     """
 
     index: int
@@ -103,31 +79,6 @@ class CapturePlanEntry:
         if self.screen is not None:
             data["screen"] = dict(self.screen)
         return data
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlanEntry:
-        if not isinstance(data, Mapping):
-            raise CaptureSpecError("capture_plan.entries[] must be an object")
-        extra = set(data) - set(CAPTURE_PLAN_ENTRY_KEYS)
-        if extra:
-            raise CaptureSpecError(
-                f"capture_plan.entries[] has unknown keys: {sorted(extra)}"
-            )
-        screen_raw = data.get("screen")
-        if screen_raw is not None and not isinstance(screen_raw, Mapping):
-            raise CaptureSpecError(
-                "capture_plan.entries[].screen must be an object or null"
-            )
-        return cls(
-            index=as_int(data, "index"),
-            kind_label=str(data.get("kind_label") or ""),
-            duration_ms=as_int(data, "duration_ms"),
-            screen=(
-                {str(k): str(v) for k, v in screen_raw.items()}
-                if isinstance(screen_raw, Mapping)
-                else None
-            ),
-        )
 
 
 @dataclass(frozen=True)
@@ -168,65 +119,3 @@ class CapturePlan:
         if self.entries is not None:
             data["entries"] = [entry.to_dict() for entry in self.entries]
         return data
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlan:
-        if not isinstance(data, Mapping):
-            raise CaptureSpecError("capture_plan must be an object")
-        extra = set(data) - set(CAPTURE_PLAN_KEYS)
-        if extra:
-            raise CaptureSpecError(
-                f"capture_plan has unknown keys: {sorted(extra)}"
-            )
-        entries_raw = data.get("entries")
-        entries: tuple[CapturePlanEntry, ...] | None = None
-        if entries_raw is not None:
-            if not isinstance(entries_raw, Sequence) or isinstance(
-                entries_raw, (str, bytes)
-            ):
-                raise CaptureSpecError("capture_plan.entries must be a list")
-            entries = tuple(
-                CapturePlanEntry.from_dict(item) for item in entries_raw
-            )
-        return cls(
-            capture_target=as_int(data, "capture_target"),
-            max_attempts=as_int(data, "max_attempts"),
-            schema_version=as_int(data, "schema_version", default=1),
-            entries=entries,
-        )
-
-    def estimated_minutes(self) -> int:
-        """Whole minutes this plan is DISPLAYED as taking, ``0`` when unknown.
-
-        This is the phone's own arithmetic, not a second estimate: every
-        entry's ``duration_ms`` plus
-        :data:`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS` of allowance, ``ceil`` to
-        minutes, floored at 1. Server-side consent copy that quotes a duration
-        MUST derive it here, or the household reads two different promises
-        about the same session (flow-simplification §1.1).
-
-        This is a conservative DISPLAY number — audio plus a generous
-        per-capture allowance for reading a prompt, moving the mic, and
-        tapping — never a measurement of real wall clock.
-        """
-        if not self.entries:
-            return 0
-        total_ms = sum(
-            int(entry.duration_ms) + CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS
-            for entry in self.entries
-        )
-        return max(1, -(-total_ms // 60_000))
-
-    def entry_for_index(self, index: int) -> CapturePlanEntry | None:
-        """The entry for a 1-based ``begin_capture.index`` (SPEC W2.3).
-
-        ``entries`` is keyed 0-based; the wire protocol is 1-based. Returns
-        ``None`` for a plan with no entry table (schema_version 1) or —
-        never reachable once ``validate()`` has run on the owning spec — an
-        index with no match."""
-        if self.entries is None:
-            return None
-        for entry in self.entries:
-            if entry.index == index - 1:
-                return entry
-        return None

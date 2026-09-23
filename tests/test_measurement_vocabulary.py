@@ -104,12 +104,9 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "deploy/assets/correction/js/crossover/main.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
-    # Cluster 4 — the capture page's setup screens.
+    # Cluster 4 — the capture spec, and capture_geometry, which composes the
+    # acknowledgement sentences the spec carries (#1978).
     "jasper/active_speaker/crossover_v2/sweep_spec.py",
-    # The placement and acknowledgement sentences the spec above renders INTO
-    # those screens are composed here, so the copy leaves the swept set the
-    # moment it crosses this module boundary (#1978). It is clean today; listing
-    # it is what keeps the consent screen's own words inside the guard.
     "jasper/active_speaker/capture_geometry.py",
 )
 
