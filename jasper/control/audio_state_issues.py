@@ -19,8 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ..service_units import unit_failed
-from .airplay_health import CAMILLA_UNIT_FULL
+from ..service_units import CAMILLA_SERVICE, unit_failed
 from ._health_fields import _mapping
 from ._health_sources import (
     SOURCE_OFF_DRIFT_DETAIL,
@@ -111,7 +110,7 @@ def _state_issues(
         ))
     if not warmup:
         camilla_stopped = _camilla_stopped(
-            _mapping(service_states).get(CAMILLA_UNIT_FULL)
+            _mapping(service_states).get(CAMILLA_SERVICE)
         )
         if camilla_stopped is not None:
             issues.append(issue_row(

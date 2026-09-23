@@ -305,7 +305,7 @@ for sock in sys.argv[1:]:
     print(json.dumps(read_status_socket_or_none(sock), indent=2, sort_keys=True))
     print()
 PY
-# The rate-storm forensic artifact (jasper/control/airplay_health.py writes it
+# The rate-storm forensic artifact (jasper/control/camilla_rate_storm.py writes it
 # and nothing else reads it) — newest capture only, tail-bounded.
 newest_storm="$(ls -1t /var/lib/jasper/rate-storms/storm-*.csv 2>/dev/null | head -1)"
 if [ -n "$newest_storm" ]; then

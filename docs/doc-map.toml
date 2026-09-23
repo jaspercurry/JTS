@@ -740,6 +740,7 @@ code = [
   "jasper/control/ha_status_cache.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
+  "jasper/control/camilla_rate_storm.py",
   "jasper/control/audio_*.py",
   "jasper/control/bootloop_guard_state.py",
   "jasper/control/camilla_recover_state.py",
