@@ -2,10 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// ui.js — UI primitives shared verbatim by the chat and system-status pages
-// (chat/js/components.js and system-status/js/components.js re-export
-// these). All build on dom.js so their arguments stay text nodes.
-
 import { h } from "/assets/shared/js/dom.js";
 
 // Pulsing "Live · …" indicator. Returns the element plus its label node so

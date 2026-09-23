@@ -2,14 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /assistant/chat/ dashboard entry point.
-//
-// Reads the CSRF meta tag like the other migrated pages and fetches data.json
-// via the shared HTTP helper, on the shared poller. Rendering lives in views.js
-// and uses text nodes only.
-
 import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
-import { getJSON, postJSON, startPolling } from "./api.js";
+import { getJSON, postJSON, startPolling } from "/assets/shared/js/http.js";
 import {
   buildPage,
   dateValueToSince,

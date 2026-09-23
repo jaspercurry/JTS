@@ -2,19 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — entry point. Builds the shared page chrome, switches the two
-// Status views in-document, and polls /system/snapshot once for the active
-// view. Mounts into <div id="app">.
-//
-// The shared poller owns the cadence and never overlaps a slow response. This
-// file separates a transport failure (→ "Disconnected", body dimmed) from
-// rendering: a render failure is isolated + logged per-section inside update(),
-// so one bad field never blanks the page or masquerades as a disconnect.
-
 import { buildSystemPanel, update } from "./views.js";
 import { buildAudioPanel, updateAudio } from "./audio-view.js";
 import { header } from "./components.js";
-import { getJSON, startPolling } from "./api.js";
+import { getJSON, startPolling } from "/assets/shared/js/http.js";
 import { postAction, setQuality, setLatencyMode, runDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
