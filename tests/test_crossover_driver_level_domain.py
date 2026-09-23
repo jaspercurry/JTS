@@ -68,64 +68,6 @@ def test_comparison_set_requires_all_drivers_and_recomputes_fingerprint(tmp_path
     assert comparison_set_valid(malformed) is False
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    (
-        (
-            "near_field_driver:mono:woofer",
-            ("near_field", "mono", "woofer"),
-        ),
-        (
-            "reference_axis_driver:rack:left:mid",
-            ("reference_axis", "rack:left", "mid"),
-        ),
-        (
-            "reference_axis_driver:stereo:right:tweeter",
-            ("reference_axis", "stereo:right", "tweeter"),
-        ),
-    ),
-)
-def test_driver_level_geometry_parser_round_trips_canonical_keys(value, expected):
-    from jasper.active_speaker.capture_geometry import (
-        driver_level_geometry,
-        parse_driver_level_geometry,
-    )
-
-    assert parse_driver_level_geometry(value) == expected
-    geometry, group_id, role = expected
-    assert driver_level_geometry(group_id, role, geometry) == value
-
-
-@pytest.mark.parametrize(
-    "value",
-    (
-        "",
-        " near_field_driver:mono:woofer",
-        "near_field_driver:mono:Woofer",
-        "Near_Field_driver:mono:woofer",
-        "browser_driver:mono:woofer",
-        "near_field_driver::woofer",
-        "near_field_driver:mono:",
-        "near_field_driver:mono",
-        "near_field_driver:mono:subwoofer",
-        "near_field_driver:mono:woofer:extra",
-        "near_field_driver:mono:woofer ",
-    ),
-)
-def test_driver_level_geometry_parser_rejects_noncanonical_keys(value):
-    from jasper.active_speaker.capture_geometry import parse_driver_level_geometry
-
-    with pytest.raises(ValueError):
-        parse_driver_level_geometry(value)
-
-
-def test_driver_level_geometry_writer_rejects_non_active_role():
-    from jasper.active_speaker.capture_geometry import driver_level_geometry
-
-    with pytest.raises(ValueError, match="unsupported driver role"):
-        driver_level_geometry("mono", "subwoofer", "reference_axis")
-
-
 def test_effective_excitation_includes_driver_main_lock():
     from jasper.active_speaker.baseline_profile import _effective_excitation_dbfs
 

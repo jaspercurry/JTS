@@ -36,8 +36,6 @@ def test_capture_quality_fails_on_clipping():
     )
     assert report.failed is True
     assert any(i.code == "capture_clipped" for i in report.issues)
-    with pytest.raises(quality.CaptureQualityError, match="clipped"):
-        raise quality.CaptureQualityError(report)
 
 
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])

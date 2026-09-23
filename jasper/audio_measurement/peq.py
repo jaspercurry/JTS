@@ -19,7 +19,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ, ROOM_FLOOR_HZ
-from jasper.camilla_config_contract import total_positive_boost_db
 
 
 @dataclass(frozen=True)
@@ -222,16 +221,6 @@ def design_peq(
         residual = residual + bell
 
     return peqs
-
-
-def total_max_boost_db(peqs: list[PEQ]) -> float:
-    """Worst-case additive boost across the PEQ set, in dB.
-
-    Boost stacking is the load-bearing concern: one +3 dB filter is fine, two
-    at adjacent frequencies summing to +6 dB is not. Delegates to the canonical
-    contract helper so design-time and emit-time share one definition.
-    """
-    return total_positive_boost_db(peqs)
 
 
 def predicted_response(

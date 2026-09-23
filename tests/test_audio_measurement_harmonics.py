@@ -10,7 +10,6 @@ import pytest
 from jasper.audio_measurement.analysis import (
     THIRD_OCTAVE_BASS_BANDS_HZ,
     band_levels_from_magnitude,
-    compression_curve,
     notch_excluded_band_mask,
     notch_excluded_tracking_error_db,
     thd_curve,
@@ -141,18 +140,6 @@ def test_extract_harmonic_ir_rejects_window_collision(f1, f2, duration):
     with pytest.raises(HarmonicWindowOutOfRange):
         extract_harmonic_ir(full_ir, SR, 500, meta, 2)
     assert harmonic_time_advance_s(meta, 2) == pytest.approx(meta.L * math.log(2))
-
-
-def test_compression_curve_on_soft_clipped_rungs():
-    assert compression_curve((
-        (-30.0, (-40.0, -42.0)),
-        (-27.0, (-37.5, -40.0)),
-        (-24.0, (-35.5, -38.0)),
-    )) == (
-        (0.0, 0.0),
-        (-0.5, -1.0),
-        (-1.5, -2.0),
-    )
 
 
 def test_tracking_error_is_level_offset_invariant():

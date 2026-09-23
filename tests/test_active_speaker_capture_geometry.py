@@ -51,7 +51,7 @@ def test_placement_proof_still_accepts_a_page_protocol_2_persisted_proof():
     """Regression: dropping 2 from the allowlist when the Pi stopped EMITTING
     protocol 2 would retroactively invalidate real persisted evidence.
 
-    `normalized_placement_proof` stamps the PAGE's `capture_protocol_version`,
+    A placement proof stamps the PAGE's `capture_protocol_version`,
     and the published capture page build 20260712.3 advertised protocol 2. Any
     proof captured against it carries 2 forever. Invalidating those breaks
     repeat admission, crossover readiness, and replay for already-commissioned

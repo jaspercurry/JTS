@@ -29,6 +29,7 @@ import pytest
 from scipy.signal import fftconvolve
 
 from jasper.audio_measurement import deconv, sweep
+from tests._deconvolve import deconvolve
 
 
 # ---------- sweep generation ------------------------------------------------
@@ -70,7 +71,6 @@ def test_synchronized_sweep_metadata_matches_realized_generator_plan():
 
     assert planned == realized
     assert planned.n_samples == len(signal)
-    assert sweep.SweepMeta.from_dict(planned.to_dict()) == planned
 
 
 def test_synchronized_sweep_metadata_does_not_allocate_pcm(monkeypatch):
@@ -204,7 +204,7 @@ def test_deconv_recovers_delta_ir():
     ir_truth[delay_samples] = 1.0
     captured = _convolve_with_ir(sig, ir_truth)
 
-    ir = deconv.deconvolve(
+    ir = deconvolve(
         captured.astype(np.float64), sig.astype(np.float64),
         sample_rate=48000,
     )
@@ -237,7 +237,7 @@ def test_deconv_recovers_short_decay_ir():
     ir_truth[reflection_idx] = 0.4  # 8 dB down reflection
     captured = _convolve_with_ir(sig, ir_truth)
 
-    ir = deconv.deconvolve(
+    ir = deconvolve(
         captured.astype(np.float64), sig.astype(np.float64),
         sample_rate=sr, post_arrival_ms=100.0,
     )
@@ -311,11 +311,11 @@ def test_deconv_caps_overlong_capture(caplog):
     assert len(overlong) > cap_samples
 
     with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
-        ir_capped = deconv.deconvolve(
+        ir_capped = deconvolve(
             overlong, sig.astype(np.float64),
             sample_rate=sr, max_capture_seconds=cap_s,
         )
-    ir_pretruncated = deconv.deconvolve(
+    ir_pretruncated = deconvolve(
         overlong[:cap_samples], sig.astype(np.float64),
         sample_rate=sr, max_capture_seconds=cap_s,
     )
@@ -342,10 +342,10 @@ def test_deconv_default_cap_leaves_normal_capture_untouched(caplog):
     assert len(captured) < int(deconv.DEFAULT_MAX_CAPTURE_SECONDS * sr)
 
     with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.deconv"):
-        ir_default = deconv.deconvolve(
+        ir_default = deconvolve(
             captured, sig.astype(np.float64), sample_rate=sr,
         )
-    ir_uncapped = deconv.deconvolve(
+    ir_uncapped = deconvolve(
         captured, sig.astype(np.float64), sample_rate=sr,
         max_capture_seconds=0,  # cap disabled
     )

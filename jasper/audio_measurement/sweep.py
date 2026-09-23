@@ -16,7 +16,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping
+from typing import BinaryIO
 
 import numpy as np
 
@@ -44,70 +44,6 @@ class SweepMeta:
             "sample_rate": self.sample_rate,
             "amplitude_dbfs": self.amplitude_dbfs,
         }
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "SweepMeta":
-        """Strictly reconstruct persisted synchronized-sweep metadata."""
-
-        required = {
-            "f1",
-            "f2",
-            "L",
-            "duration_s",
-            "n_samples",
-            "sample_rate",
-            "amplitude_dbfs",
-        }
-        if not isinstance(value, Mapping) or set(value) != required:
-            raise ValueError("sweep metadata schema is invalid")
-
-        def number(name: str) -> float:
-            raw = value[name]
-            if (
-                isinstance(raw, bool)
-                or not isinstance(raw, (int, float))
-                or not math.isfinite(float(raw))
-            ):
-                raise ValueError(f"sweep metadata {name} must be finite numeric")
-            return float(raw)
-
-        if (
-            type(value["n_samples"]) is not int
-            or value["n_samples"] <= 0
-            or type(value["sample_rate"]) is not int
-            or value["sample_rate"] <= 0
-        ):
-            raise ValueError("sweep sample count and rate must be positive integers")
-        f1 = number("f1")
-        f2 = number("f2")
-        rate = value["sample_rate"]
-        length = number("L")
-        duration = number("duration_s")
-        amplitude = number("amplitude_dbfs")
-        if not (
-            0.0 < f1 < f2 < rate / 2.0
-            and length > 0.0
-            and duration > 0.0
-            and amplitude <= 0.0
-        ):
-            raise ValueError("sweep metadata values are outside the valid domain")
-        expected_duration = length * math.log(f2 / f1)
-        expected_samples = int(round(expected_duration * rate))
-        if (
-            not math.isclose(duration, expected_duration, rel_tol=0.0, abs_tol=1e-9)
-            or value["n_samples"] != expected_samples
-            or not math.isclose(length * f1, round(length * f1), abs_tol=1e-9)
-        ):
-            raise ValueError("sweep synchronization metadata is inconsistent")
-        return cls(
-            f1=f1,
-            f2=f2,
-            L=length,
-            duration_s=duration,
-            n_samples=value["n_samples"],
-            sample_rate=rate,
-            amplitude_dbfs=amplitude,
-        )
 
 
 def synchronized_swept_sine(

@@ -328,18 +328,6 @@ def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
     assert pose.seat_offset_m is None
 
 
-@pytest.mark.parametrize(
-    ("azimuth", "elevation"),
-    [(0, 0), (-35, 10), (400, -400)],
-)
-def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -> None:
-    row = mp.spot_program(azimuth, elevation)
-
-    assert row.poses == (mp.ProgramPose(azimuth, elevation, 1),)
-    assert (row.mic_move_count, row.capture_count) == (1, 1)
-    assert (row.program_id, row.size) == ("spot", "express")
-
-
 def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
     assert {
         program_id: mp.program(program_id).size

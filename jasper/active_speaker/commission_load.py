@@ -348,21 +348,6 @@ def commission_load_state_with_runtime_status(
     return out
 
 
-def mark_commission_load_state_stale(
-    state: dict[str, Any],
-    runtime_status: dict[str, Any],
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Persist that a previously loaded transient commission graph has expired."""
-
-    payload = commission_load_state_with_runtime_status(state, runtime_status)
-    payload["last_action"] = "stale_detected"
-    payload["runtime_status"] = runtime_status
-    _record_commission_state(payload, state_path=state_path)
-    return load_commission_load_state(state_path=state_path)
-
-
 def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None:
     """Return the config_path the outputd/CamillaDSP statefile boots into."""
 

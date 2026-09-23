@@ -172,14 +172,11 @@ def test_driver_bring_up_note_is_identity_inert():
     """A per-driver ``bring_up_note`` string must never change preset identity.
 
     ``ActiveSpeakerPreset.notes``/``to_dict()`` feed a preset-identity
-    contract several consumers rely on: ``crossover_contract.
-    preset_matches_applied_profile`` compares ``to_dict()`` against a
-    persisted ``recomposition_snapshot`` and ``baseline_profile``'s
-    ``measured_candidate_preset_mismatch`` compares ``speaker_identity()``. The
-    shipped presets carry human-readable bring-up prose (e.g. "must be
-    measured with the final horn...") as an unrecognized per-driver JSON
-    key, ``bring_up_note``, specifically so it can never reach either --
-    ``DriverSpec.from_mapping`` drops unknown keys (see
+    contract: ``baseline_profile``'s ``measured_candidate_preset_mismatch``
+    compares ``speaker_identity()``. The shipped presets carry human-readable
+    bring-up prose (e.g. "must be measured with the final horn...") as an
+    unrecognized per-driver JSON key, ``bring_up_note``, specifically so it
+    can never reach it -- ``DriverSpec.from_mapping`` drops unknown keys (see
     ``test_driver_spec_drops_removed_legacy_fields`` above) rather than
     reading them into the dataclass.
 
@@ -207,7 +204,6 @@ def test_driver_bring_up_note_is_identity_inert():
     # baseline_profile's measured_candidate_preset_mismatch: the speaker identity
     assert preset_with_note == preset_without_note
     assert preset_with_note.speaker_identity() == preset_without_note.speaker_identity()
-    # crossover_contract.preset_matches_applied_profile: to_dict() comparison
     assert preset_with_note.to_dict() == preset_without_note.to_dict()
 
 

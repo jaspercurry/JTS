@@ -520,11 +520,7 @@ CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
-    """The ``(program_id, size)`` pairs a menu may offer, sorted.
-
-    ``spot`` is absent on purpose: it carries caller geometry, so it is reached
-    through :func:`spot_program` rather than looked up by name.
-    """
+    """The ``(program_id, size)`` pairs a menu may offer, sorted."""
     return tuple(sorted(_PROGRAMS))
 
 
@@ -537,13 +533,6 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
         return _PROGRAMS[(program_id, size)]  # type: ignore[index]
     except KeyError:
         raise UnknownProgramError(program_id, requested_size, available_programs()) from None
-
-
-def spot_program(azimuth_deg: int, elevation_deg: int) -> MeasurementProgram:
-    """One take at one caller-supplied bearing."""
-    return MeasurementProgram(
-        "spot", "express", (ProgramPose(azimuth_deg, elevation_deg),)
-    )
 
 
 def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:

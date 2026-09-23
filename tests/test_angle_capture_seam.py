@@ -808,12 +808,19 @@ def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth(
 # --------------------------------------------------------------------------- #
 
 
+def _spot_program(azimuth_deg: int, elevation_deg: int) -> mp.MeasurementProgram:
+    """One take at one caller-supplied bearing."""
+    return mp.MeasurementProgram(
+        "spot", "express", (mp.ProgramPose(azimuth_deg, elevation_deg),)
+    )
+
+
 @pytest.mark.parametrize(
     "program",
     [
         mp.program("baseline", "express"),
         mp.program("baseline", "full"),
-        mp.spot_program(22, 10),
+        _spot_program(22, 10),
     ],
     ids=["baseline/express", "baseline/full", "spot"],
 )

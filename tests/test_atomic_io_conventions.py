@@ -39,8 +39,6 @@ _JASPER = _REPO / "jasper"
 # endorsement — migrate entries to atomic_write_text when touching them
 # (preserving each writer's published mode), EXCEPT where noted.
 _ALLOWLIST = {
-    # Plain burn-down candidate (Path.replace hand-rolls).
-    "jasper/audio_measurement/playback.py",
     # Deliberately different — KEEP. Neither site RENDERS the bytes it
     # publishes, which is all atomic_write_text can do: the outputd.env
     # candidate is filled over a whole pass (and each of those writes DOES go

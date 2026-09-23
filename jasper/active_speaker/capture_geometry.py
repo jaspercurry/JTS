@@ -48,7 +48,7 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 #
 # **2 stays even though the Pi no longer EMITS it.** This reads a version
 # stamped into PERSISTED evidence by whatever page wrote the proof --
-# `normalized_placement_proof` records the PAGE's `capture_protocol_version`,
+# the proof records the PAGE's `capture_protocol_version`,
 # and the published build 20260712.3 advertised 2. Dropping 2 here would
 # retroactively invalidate every proof captured against that page (repeat
 # admission, crossover readiness, replay), so a persisted proof IS a deployed
@@ -65,152 +65,12 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 # tests/test_active_speaker_capture_geometry.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
-# Capture geometry is speaker policy, never browser input. The host verifies
-# one of these policy ids before playback and persists it in placement_proof;
-# analysis derives the DSP geometry from that server-owned proof. Lane B's
-# fixed-axis driver capture can therefore enter the same repeat/ambient/
-# excitation/persistence path as today's near-field capture.
+# Capture geometry is speaker policy, never browser input.
 DRIVER_CAPTURE_GEOMETRY_BY_POLICY = {
     DRIVER_PLACEMENT_POLICY_ID: "near_field",
     REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID: "reference_axis",
 }
 DRIVER_CAPTURE_GEOMETRIES = frozenset(DRIVER_CAPTURE_GEOMETRY_BY_POLICY.values())
-
-
-def _active_crossover_driver_roles() -> frozenset[str]:
-    """Return the canonical 2/3-way role vocabulary without an import cycle."""
-
-    from .profile import DRIVER_ROLES_BY_WAY
-
-    return frozenset(
-        role
-        for way_count in (2, 3)
-        for role in DRIVER_ROLES_BY_WAY[way_count]
-    )
-
-
-def driver_level_geometry(
-    speaker_group_id: str,
-    role: str,
-    capture_geometry: str,
-) -> str:
-    """Stable level-lock key for one physical driver and mic geometry."""
-
-    group_id = str(speaker_group_id or "").strip()
-    role_id = str(role or "").strip().lower()
-    geometry = str(capture_geometry or "").strip().lower()
-    if not group_id or not role_id:
-        raise ValueError("driver level geometry requires a group and role")
-    if role_id not in _active_crossover_driver_roles():
-        raise ValueError("driver level geometry has unsupported driver role")
-    if geometry not in DRIVER_CAPTURE_GEOMETRIES:
-        raise ValueError("driver level geometry is unsupported")
-    return f"{geometry}_driver:{group_id}:{role_id}"
-
-
-def parse_driver_level_geometry(value: str) -> tuple[str, str, str]:
-    """Parse one canonical ``geometry_driver:group:role`` level-lock key.
-
-    Group ids may legally contain ``:``. Parse the role from the right only
-    after matching a known geometry prefix, then require the canonical writer
-    to reproduce the byte-exact input. This rejects whitespace/mixed-case
-    aliases and prevents a malformed string from selecting a larger level cap.
-    """
-
-    if not isinstance(value, str) or not value:
-        raise ValueError("driver level geometry is empty")
-    capture_geometry = next(
-        (
-            geometry
-            for geometry in DRIVER_CAPTURE_GEOMETRIES
-            if value.startswith(f"{geometry}_driver:")
-        ),
-        None,
-    )
-    if capture_geometry is None:
-        raise ValueError("driver level geometry has unsupported geometry")
-    remainder = value.removeprefix(f"{capture_geometry}_driver:")
-    speaker_group_id, separator, role = remainder.rpartition(":")
-    if not separator or not speaker_group_id or not role:
-        raise ValueError("driver level geometry requires a group and role")
-    if role not in _active_crossover_driver_roles():
-        raise ValueError("driver level geometry has unsupported driver role")
-    if (
-        driver_level_geometry(
-            speaker_group_id,
-            role,
-            capture_geometry,
-        )
-        != value
-    ):
-        raise ValueError("driver level geometry is not canonical")
-    return capture_geometry, speaker_group_id, role
-
-
-def _capture_geometry_from_proof(
-    placement_proof: Mapping[str, Any],
-    active_comparison_set: Mapping[str, Any] | None,
-    *,
-    geometry_by_policy: Mapping[str, str],
-    speaker_group_id: str,
-    role: str,
-    target_fingerprint: str,
-    capture_kind: str,
-) -> str:
-    """Resolve geometry only after re-proving the authoritative context."""
-
-    policy_id = placement_proof.get("policy_id")
-    try:
-        geometry = geometry_by_policy[str(policy_id)]
-    except KeyError as exc:
-        raise ValueError(
-            f"{capture_kind} capture placement policy is unsupported"
-        ) from exc
-    record = {
-        "placement_proof": placement_proof,
-        "target_fingerprint": target_fingerprint,
-    }
-    if not capture_proof_valid(
-        record,
-        active_comparison_set,
-        policy_id=str(policy_id),
-        role=role,
-        speaker_group_id=speaker_group_id,
-        target_fingerprint=target_fingerprint,
-    ):
-        raise ValueError(
-            f"{capture_kind} capture placement proof is invalid or stale"
-        )
-    return geometry
-
-
-def driver_capture_geometry(
-    placement_proof: Mapping[str, Any] | None,
-    active_comparison_set: Mapping[str, Any] | None = None,
-    *,
-    speaker_group_id: str = "",
-    role: str = "",
-    target_fingerprint: str = "",
-) -> str:
-    """Resolve driver analysis geometry from server-owned placement proof.
-
-    Missing/legacy proof remains near-field so operator-only historical paths
-    preserve their behavior. A fixed-reference-axis capture must carry the
-    explicit reference-axis policy; no request field can opt into gating.
-    Unknown policies fail closed rather than silently selecting a geometry.
-    """
-
-    if not isinstance(placement_proof, Mapping):
-        return "near_field"
-    return _capture_geometry_from_proof(
-        placement_proof,
-        active_comparison_set,
-        geometry_by_policy=DRIVER_CAPTURE_GEOMETRY_BY_POLICY,
-        speaker_group_id=speaker_group_id,
-        role=role,
-        target_fingerprint=target_fingerprint,
-        capture_kind="driver",
-    )
 
 
 def driver_target_description(role: str) -> str:
@@ -435,53 +295,6 @@ def comparison_set_valid(value: Any) -> bool:
         and all(_driver_level_lock_valid(key, lock) for key, lock in locks.items())
         and value.get("fingerprint") == comparison_set_fingerprint(value)
     )
-
-
-def driver_level_lock(
-    comparison_set: Mapping[str, Any], speaker_group_id: str, role: str
-) -> Mapping[str, Any] | None:
-    """Return one verified driver lock from an intact comparison set."""
-
-    if not comparison_set_valid(comparison_set):
-        return None
-    target_id = f"{speaker_group_id}:{str(role).strip().lower()}"
-    value = comparison_set.get("driver_level_locks", {}).get(target_id)
-    return value if _driver_level_lock_valid(target_id, value) else None
-
-
-def normalized_placement_proof(
-    *,
-    policy_id: str,
-    acknowledgement_binding: str,
-    capture_session_id: str,
-    capture_page: Mapping[str, Any] | None,
-    speaker_group_id: str,
-    role: str,
-    target_fingerprint: str,
-    comparison_set: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Create the server-owned proof persisted after a verified capture arm."""
-
-    if not comparison_set_valid(comparison_set):
-        raise ValueError("active crossover comparison set is invalid")
-    page = capture_page if isinstance(capture_page, Mapping) else {}
-    return {
-        "schema_version": PLACEMENT_PROOF_SCHEMA_VERSION,
-        "policy_id": policy_id,
-        "accepted": True,
-        "confirmation_source": "capture_begin",
-        "acknowledgement_binding_sha256": hashlib.sha256(
-            acknowledgement_binding.encode("utf-8")
-        ).hexdigest(),
-        "capture_session_id": capture_session_id,
-        "capture_protocol_version": page.get("capture_protocol_version"),
-        "capture_page_build": page.get("capture_page_build"),
-        "speaker_group_id": speaker_group_id,
-        "role": role,
-        "target_fingerprint": target_fingerprint,
-        "comparison_set_id": comparison_set["comparison_set_id"],
-        "comparison_set_fingerprint": comparison_set["fingerprint"],
-    }
 
 
 def capture_proof_valid(

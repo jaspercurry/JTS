@@ -1,37 +1,9 @@
-"""Driver excitation and applied-profile contracts."""
+"""Driver excitation contracts."""
 
 from __future__ import annotations
 
 
-from jasper.active_speaker.crossover_contract import (
-    preset_matches_applied_profile,
-    verified_driver_excitation,
-)
-from jasper.active_speaker.profile import ActiveSpeakerPreset
-
-from tests.test_active_speaker_profile import _two_way_preset
-
-def _two_way() -> ActiveSpeakerPreset:
-    # Mono 2-way: woofer=lower, tweeter=upper, crossover at 1600 Hz.
-    return ActiveSpeakerPreset.from_mapping(_two_way_preset())
-
-
-def _applied_profile() -> dict:
-    preset = _two_way()
-    corrections = {
-        role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
-        for role in ("woofer", "tweeter")
-    }
-    return {
-        "status": "applied",
-        "candidate_fingerprint": "protected-profile",
-        "source": {"fingerprint": "protected-profile"},
-        "recomposition_snapshot": {
-            "topology_id": "test-topology",
-            "preset": preset.to_dict(),
-            "corrections": corrections,
-        },
-    }
+from jasper.active_speaker.crossover_contract import verified_driver_excitation
 
 
 def _driver_excitation(*, locked: bool) -> dict:
@@ -128,33 +100,3 @@ def test_driver_excitation_verifier_fails_closed_without_throwing() -> None:
     )
     for value in invalid:
         assert verified_driver_excitation(value) is None
-
-
-def test_applied_profile_context_rejects_same_fc_setting_change() -> None:
-    preset = _two_way()
-    corrections = {
-        role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
-        for role in ("woofer", "tweeter")
-    }
-    applied = {
-        "recomposition_snapshot": {
-            "preset": preset.to_dict(),
-            "corrections": corrections,
-        }
-    }
-    changed = preset.to_dict()
-    changed["crossover_regions"][0]["order"] = 2
-
-    assert preset_matches_applied_profile(preset, applied) is True
-    assert preset_matches_applied_profile(
-        preset, applied, candidate_corrections=corrections
-    ) is True
-    changed_corrections = {role: dict(values) for role, values in corrections.items()}
-    changed_corrections["tweeter"]["gain_db"] = -1.0
-    assert preset_matches_applied_profile(
-        preset, applied, candidate_corrections=changed_corrections
-    ) is False
-    assert preset_matches_applied_profile(
-        ActiveSpeakerPreset.from_mapping(changed), applied
-    ) is False
-    assert preset_matches_applied_profile(preset, {}) is False

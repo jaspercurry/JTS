@@ -658,7 +658,7 @@ def read_segment_distortion(
             f"starts too close to this sweep."
         )
     pre_guard_got_s = pre_effective / float(sample_rate)
-    # The direct arrival, located the same way `deconv.deconvolve` locates it.
+    # The direct arrival, located as `deconv.direct_arrival_window` locates it.
     # Searching the whole IR keeps the acoustic delay out of the caller's hands.
     direct_peak_idx = int(np.argmax(np.abs(full_ir)))
     return harmonic_reading_from_ir(

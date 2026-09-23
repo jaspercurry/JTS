@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import peq
+from jasper.camilla_config_contract import total_positive_boost_db
 
 
 def _flat_target(freqs: np.ndarray) -> np.ndarray:
@@ -25,8 +26,7 @@ def _flat_target(freqs: np.ndarray) -> np.ndarray:
 
 
 def _log_freqs(n: int = 480) -> np.ndarray:
-    """480 log-spaced points 20 Hz – 20 kHz, matching what the
-    session.py pipeline produces from analysis.resample_log."""
+    """480 log-spaced points 20 Hz – 20 kHz."""
     return np.geomspace(20.0, 20000.0, n)
 
 
@@ -400,7 +400,7 @@ def test_total_max_boost_zero_when_cuts_only():
     freqs = _log_freqs()
     measured = _bell(freqs, fc=80, q=4, gain_db=6) - _bell(freqs, fc=200, q=4, gain_db=4)
     peqs = peq.design_peq(measured, _flat_target(freqs), freqs)
-    assert peq.total_max_boost_db(peqs) == 0.0
+    assert total_positive_boost_db(peqs) == 0.0
 
 
 def test_design_peq_validates_lengths():
