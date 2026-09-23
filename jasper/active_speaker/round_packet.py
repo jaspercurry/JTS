@@ -134,7 +134,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                              "resolved_trim_db": trims,
                              **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db", "handover_level_shift_db")},
                              **{key: fit.get(key) for key in ("mic_tier", "budget", "filters", "residual_rms_db",
-                                                            "residual_max_db", "reason_summary", "position_spread_db", "class_prior_hz")}})
+                                                            "residual_max_db", "fit_band_hz", "reason_summary", "position_spread_db", "class_prior_hz")}})
     return fits
 
 
@@ -246,7 +246,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
-        packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, clouds=clouds, sources=sources)
+        packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
     (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))
     return packet

@@ -6,23 +6,30 @@
 from __future__ import annotations
 
 import json
+from itertools import combinations
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
-from jasper.audio_measurement.evidence_reasons import REASON_REPEAT_FLOOR_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_FIT_BAND_UNAVAILABLE,
+    REASON_MARK_FIT_BAND_UNAVAILABLE,
+    REASON_MARK_RESPONSE_UNAVAILABLE,
+    REASON_NO_MARK_PAIRS,
+)
 from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
 )
 from jasper.json_fields import finite_float
+from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .crossover_v2.commanded import profile_crossover_regions
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import parse_curve_magnitude
-from .crossover_v2.round_inputs import RoundInputs, capture_identity, latest_measure_takes
-from .repeat_floor import load_repeat_floor, stopping_thresholds
+from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes
+from .linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from .profile import CrossoverRegion
 from .speaker_fit import fit_feature_curves
 
@@ -97,29 +104,52 @@ def _null_ceilings(
     return rows
 
 
+def _mark_repeat_spread(fit: Mapping[str, Any], group: Mapping[str, Any]) -> dict[str, Any]:
+    placements: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
+    for take in SetTakes.from_row(group).on_axis:
+        if take.get("phase") == "measure" and take.get("role") == fit["role"]:
+            key = (take.get("run_id"), take.get("pose_index"), json.dumps(take["pose"], sort_keys=True))
+            placements.setdefault(key, []).append(take)
+    pairs = [pair for takes in placements.values() for pair in combinations(takes, 2)]
+    result: dict[str, Any] = {"repeat_spread_db": None, "n_pairs": len(pairs),
+                              "repeat_basis": "mark_pairs_max_rms" if pairs else REASON_NO_MARK_PAIRS}
+    if not pairs:
+        return {**result, "reason": REASON_NO_MARK_PAIRS}
+    lo, hi = fit.get("fit_band_hz") or (0, 0)
+    grid = DEFAULT_ENVELOPE_GRID_HZ[(DEFAULT_ENVELOPE_GRID_HZ >= lo) & (DEFAULT_ENVELOPE_GRID_HZ <= hi)]
+    if not grid.size:
+        return {**result, "reason": REASON_FIT_BAND_UNAVAILABLE}
+    curves = {}
+    for take in {take["take_id"]: take for pair in pairs for take in pair}.values():
+        curve = take.get("curve") or {}
+        parsed = parse_curve_magnitude(curve)
+        if parsed is None:
+            return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
+        freqs, magnitude, band = parsed
+        floor = curve.get("trusted_floor_hz") or curve.get("validity_floor_hz") or 0
+        if grid[0] < max(freqs[0], band[0], floor) or grid[-1] > min(freqs[-1], band[1]):
+            return {**result, "reason": REASON_MARK_FIT_BAND_UNAVAILABLE}
+        curves[take["take_id"]] = np.interp(grid, freqs, magnitude)
+    # The fit includes its upper edge; seat_figures uses half-open bands.
+    spreads = [finite_float(spread_rms_db(curves[a["take_id"]] - curves[b["take_id"]], grid,
+                                        band_hz=(lo, np.nextafter(hi, np.inf)))) for a, b in pairs]
+    if any(spread is None for spread in spreads):
+        return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
+    return {**result, "repeat_spread_db": max(spread for spread in spreads if spread is not None), "reason": None}
+
+
 def round_verdicts(
     packet: Mapping[str, Any],
-    inputs: RoundInputs,
     *,
     manifest: Mapping[str, Any],
     clouds: Mapping[str, CloudFitTerms],
     sources: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    record = (
-        load_repeat_floor(state_path=inputs.repeat_floor_path)
-        if inputs.repeat_floor_path
-        else None
-    )
-    metrics = (record or {}).get("metrics")
-    metric = metrics.get(record.get("aggregate_metric")) if isinstance(metrics, Mapping) and record else None
-    unit = metric.get("unit", "db") if isinstance(metric, Mapping) else "db"
-    spread = (stopping_thresholds(record) or {}).get(f"plateau_{unit}") if record else None
-    floor_reason = (REASON_REPEAT_FLOOR_NOT_BANKED if record is None else "repeat_floor_unit_mismatch" if unit != "db"
-                    else "repeat_floor_unavailable" if spread is None else None)
-    if unit != "db":
-        spread = None
+    groups = {group["set_id"]: group for group in manifest.get("sets", ())}
     regions = profile_crossover_regions(sources.get("applied_profile"))
     for fit in packet["fits"]:
+        repeat = _mark_repeat_spread(fit, groups[fit["set_id"]])
+        spread = repeat["repeat_spread_db"]
         cloud = clouds.get(fit["set_id"], CloudFitTerms())
         curves = fit_feature_curves(cloud)
         residual = fit.get("residual_rms_db")
@@ -130,9 +160,9 @@ def round_verdicts(
             if band["f_lo"] <= region.fc_hz < band["f_hi"]
         } if regions else None
         fit["crossover_band_spread_reason"] = None if regions else "no_applied_crossover"
-        fit["verdict"] = {"repeat_spread_db": spread,
+        fit["verdict"] = {**repeat,
                           "residual_within_repeat_spread": residual <= spread if residual is not None and spread is not None else None,
-                          "reason": floor_reason or ("fit_residual_unavailable" if residual is None else None)}
+                          "reason": repeat["reason"] or ("fit_residual_unavailable" if residual is None else None)}
         for feature in fit.get("filters") or []:
             feature["position_variance"] = feature_position_variance(
                 curves, freq_hz=feature["freq"], q=feature["q"], gain_db=feature["gain"], positions_total=cloud.n_positions,

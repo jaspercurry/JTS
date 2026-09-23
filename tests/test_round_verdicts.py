@@ -8,14 +8,12 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
 from jasper.active_speaker.round_verdicts import round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
-from jasper.audio_measurement.evidence_reasons import (
-    REASON_TOO_FEW_POSITIONS,
-    REASON_REPEAT_FLOOR_NOT_BANKED,
-)
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.interference_nulls import feature_position_variance
 from jasper.audio_measurement.series_stats import series_stats
 from tests.crossover_v2_fixtures import _one_way_preset
@@ -52,14 +50,13 @@ def test_feature_variance_direction(cv, count, total, gain, classification):
                        "classification": classification, "frequencies_hz": pytest.approx(centers, abs=0.05)}
 
 
-@pytest.mark.parametrize("unit,residual,gap", [
-    ("db", 0.5, 10), ("db", 1.5, 0), ("db", 1.0, -10), (None, 0.5, 10),
-    ("db", None, 10), ("us", 0.5, None),
+@pytest.mark.parametrize("unit,residual,gap,marks", [
+    ("db", 0.5, 10, 2), ("db", 1.5, 0, 2), ("db", 1.0, -10, 4), (None, 0.5, 10, 2),
+    ("db", None, 10, 2), ("us", 0.5, None, 1),
 ])
-def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
-    (tmp_path / "bundle" / "session").mkdir(parents=True)
+def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks):
     if unit:
-        floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 1]}, units={"residual": unit})
+        floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 99]}, units={"residual": unit})
         write_repeat_floor({**floor, "aggregate_metric": "residual"}, state_path=tmp_path / "repeat-floor.json")
     pose = {"kind": "bearing", "deg": 0, "elevation_deg": 0}
     groups = []
@@ -90,7 +87,9 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
                 "takes": [
                     take,
                     {**take, "take_id": "rejected", "selected": False},
-                    {**take, "take_id": "older", "timing": {"ended_s": -1}},
+                    *[{**take, "take_id": f"older-{i}", "timing": {"ended_s": -i},
+                       "curve": {**curve, "magnitude_db": [100, level + i, level + i, level + i, -100]}}
+                      for i in range(1, marks) if level is not None],
                 ],
             }
         )
@@ -125,6 +124,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
             {
                 **identity,
                 "residual_rms_db": residual,
+                "fit_band_hz": [1600, 4000],
                 "residual_max_db": 2,
                 "reason_summary": {},
                 "filters": [],
@@ -145,22 +145,21 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
     }
     packet["verdicts"] = round_verdicts(
         packet,
-        round_inputs(tmp_path),
         manifest=manifest,
         clouds={},
         sources=sources,
     )
     fit, = packet["fits"]
     verdict = fit["verdict"]
-    assert verdict["repeat_spread_db"] == (1 if unit == "db" else None)
+    spread = marks - 1 if marks >= 2 else None
+    assert verdict["repeat_spread_db"] == spread
+    assert verdict["n_pairs"] == marks * (marks - 1) // 2
+    assert verdict["repeat_basis"] == ("mark_pairs_max_rms" if spread is not None else "no_mark_pairs")
     assert verdict["residual_within_repeat_spread"] is (
-        residual <= 1 if unit == "db" and residual is not None else None
+        residual <= spread if spread is not None and residual is not None else None
     )
     assert verdict["reason"] == (
-        REASON_REPEAT_FLOOR_NOT_BANKED
-        if not unit
-        else "repeat_floor_unit_mismatch" if unit != "db"
-        else "fit_residual_unavailable"
+        "no_mark_pairs" if spread is None else "fit_residual_unavailable"
         if residual is None
         else None
     )
@@ -181,6 +180,52 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
         assert sum(line.startswith(prefix) for line in index.splitlines()) == 1
 
 
+@pytest.mark.parametrize("change", [
+    {"selected": False}, {"phase": "verify"}, {"role": "tweeter"},
+    {"pose": {"kind": "seat", "deg": 0, "elevation_deg": 0}},
+    {"pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
+    {"pose": {"kind": "bearing", "deg": 0, "elevation_deg": 10}},
+    {"pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 2}},
+    {"pose_index": 2}, {"run_id": "returned"}, {"set_id": "other"},
+])
+def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
+    grid = DEFAULT_ENVELOPE_GRID_HZ[49:54]
+    curve = {"freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
+    take = {"take_id": "a", "phase": "measure", "selected": True, "role": "woofer",
+            "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curve": curve}
+    other = {**take, "take_id": "unrelated", "curve": {**curve, "magnitude_db": [100] * 5}, **change}
+    group = {"set_id": "woofer", "capture_basis": {}, "takes": [take,
+             {**take, "take_id": "b", "curve": {**curve, "magnitude_db": [100, 3, -4, 0, 100]}}]}
+    manifest = {"sets": [group]}
+    if "set_id" in change:
+        manifest["sets"].append({**group, "set_id": "other", "takes": [other]})
+    else:
+        group["takes"].append(other)
+    fit = {"set_id": "woofer", "role": "woofer", "fit_band_hz": [grid[1], grid[-2]], "residual_rms_db": 3}
+    round_verdicts({"fits": [fit]}, manifest=manifest, clouds={}, sources={})
+    assert fit["verdict"] == {"repeat_spread_db": pytest.approx((25 / 3) ** 0.5), "n_pairs": 1,
+                              "repeat_basis": "mark_pairs_max_rms", "residual_within_repeat_spread": False, "reason": None}
+
+
+@pytest.mark.parametrize("marks,curve_change,band,reason", [
+    (0, {}, [500, 2000], "no_mark_pairs"), (1, {}, [500, 2000], "no_mark_pairs"),
+    (3, {"magnitude_db": None}, [500, 2000], "mark_response_unavailable"),
+    (3, {"trusted_floor_hz": None, "validity_floor_hz": 800}, [500, 2000], "mark_fit_band_unavailable"),
+    (3, {}, None, "fit_band_unavailable"),
+])
+def test_missing_mark_evidence_is_disclosed(marks, curve_change, band, reason):
+    takes = [{"take_id": str(i), "selected": True, "phase": "measure", "role": "woofer",
+              "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0,
+              "curve": {"freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
+                        **(curve_change if i == marks - 1 else {})}} for i in range(marks)]
+    fit = {"set_id": "woofer", "role": "woofer", "fit_band_hz": band, "residual_rms_db": 1}
+    round_verdicts({"fits": [fit]}, manifest={"sets": [{"set_id": "woofer", "capture_basis": {}, "takes": takes}]},
+                   clouds={}, sources={})
+    assert fit["verdict"] == {"repeat_spread_db": None, "n_pairs": marks * (marks - 1) // 2,
+                              "repeat_basis": "no_mark_pairs" if marks < 2 else "mark_pairs_max_rms",
+                              "residual_within_repeat_spread": None, "reason": reason}
+
+
 @pytest.mark.parametrize("band_lo,contains_crossover", [(1615.118381017347, True), (2500.01, False)])
 def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     fixture = live_round
@@ -199,7 +244,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
               "artifacts": {"frequency_view": None}, "limits": {}, "packet_fingerprint": None,
               "sets": [{**group, "takes": [{**take, "fault": None} for take in group["takes"]]}
                        for group in manifest["sets"]], "series": [], "fits": fixture["fits"]}
-    packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, sources=sources, clouds=clouds)
+    packet["verdicts"] = round_verdicts(packet, manifest=manifest, sources=sources, clouds=clouds)
     assert len(packet["verdicts"]) == 3
     ceiling = packet["verdicts"][0]
     assert ceiling["pose"]["deg"] == 0
@@ -243,12 +288,11 @@ def test_no_applied_crossover_is_disclosed(tmp_path, live_round, profile):
     if profile == "passive":
         profile = {"recomposition_snapshot": {"preset": _one_way_preset().to_dict()}}
     sources = {"applied_profile": profile, "candidate": {"source_preset": live_round["sources"]["applied_profile"]["recomposition_snapshot"]["preset"]}}
-    (tmp_path / "bundle/session").mkdir(parents=True)
     fits = [{**fit, "residual_rms_db": None, "residual_max_db": None, "reason_summary": {}} for fit in live_round["fits"]]
     packet = {"round_id": "passive", "program": "speaker", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}}, "artifacts": {"frequency_view": None},
               "limits": {}, "packet_fingerprint": None, "sets": [], "series": [], "fits": fits}
-    assert round_verdicts(packet, round_inputs(tmp_path), manifest=live_round["manifest"], sources=sources, clouds={}) == []
+    assert round_verdicts(packet, manifest=live_round["manifest"], sources=sources, clouds={}) == []
     assert all(fit["crossover_band_spread"] is None and fit["crossover_band_spread_reason"] == "no_applied_crossover" for fit in fits)
     index = packet_index(packet, tmp_path, [], {})
     assert index.splitlines().count("crossover_band_spread=null; reason=no_applied_crossover") == 1

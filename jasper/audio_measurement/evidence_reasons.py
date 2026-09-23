@@ -40,8 +40,11 @@ PROGRAM_MISSING = "classification_program_missing"
 REASON_COVERAGE_SHORT = "coverage_short"
 REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
 REASON_EXCLUSION_CAP = "exclusion_cap_exceeded"
+REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
 REASON_LADDER_ARRIVAL_MISMATCH = "ladder_arrival_mismatch"
+REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
+REASON_MARK_RESPONSE_UNAVAILABLE = "mark_response_unavailable"
 REASON_NON_BEARING = "non_bearing_pose"
 REASON_NO_CANDIDATE_NULLS = "no_candidate_nulls"
 REASON_NO_COMPARISON = "no_candidate_comparison"
@@ -49,12 +52,12 @@ REASON_NO_CORROBORATING_ARRIVALS = "no_corroborating_arrivals"
 REASON_NO_CURVE_GRID = "no_curve_grid"
 REASON_NO_IMPULSE = "no_impulse"
 REASON_NO_LADDER = "no_ladder"
+REASON_NO_MARK_PAIRS = "no_mark_pairs"
 REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
 REASON_NO_REPEATS = "too_few_repeats"
 REASON_NO_ROW = "no_row"
 REASON_REFUSED = "round_views_refused"
-REASON_REPEAT_FLOOR_NOT_BANKED = "repeat_floor_not_banked"
 REASON_R_DISAGREEMENT = "r_disagreement"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
 REASON_TOO_FEW_POSITIONS = "too_few_positions"
@@ -128,8 +131,11 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
     REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_EXCLUSION_CAP: "The identified nulls would exclude more than the allowed fraction of the band.",
+    REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
     REASON_LADDER_ARRIVAL_MISMATCH: "The fitted ladder delay disagrees with the independently measured arrival.",
+    REASON_MARK_FIT_BAND_UNAVAILABLE: "A mark take does not cover the fit band above its trusted floor.",
+    REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
     REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
     REASON_NO_CANDIDATE_NULLS: "No measured minima qualify as candidate interference nulls.",
     REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat spread for it.",
@@ -137,12 +143,12 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_NO_CURVE_GRID: "The positions block carries no curve grid, so there are no bins to take a spread over.",
     REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
     REASON_NO_LADDER: "The candidate nulls do not form a sufficient consecutive ladder.",
+    REASON_NO_MARK_PAIRS: "The round has fewer than two takes of this driver at one placement, so no mark pair exists for a repeat spread.",
     REASON_NO_PER_POSITION_CURVES: "No per-position curves are available for the analysis.",
     REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
     REASON_NO_REPEATS: "Fewer than two usable repeats are available to measure repeat spread.",
     REASON_NO_ROW: "This position has no measured row.",
     REASON_REFUSED: "The requested round view refused the available evidence.",
-    REASON_REPEAT_FLOOR_NOT_BANKED: "No repeat floor was banked; bank one before judging a fit against repeat spread.",
     REASON_R_DISAGREEMENT: "The reflection strength inferred from null depths disagrees with the arrival envelope.",
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
     REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
