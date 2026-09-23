@@ -37,6 +37,7 @@ from .model import (
     DECONV_PRE_GUARD_S,
     DRIVER_SNR_ALIGNMENT_KEY,
     DriverResponse,
+    RecordedImpulse,
     _FLAT_SUM_POLARITY_OBJECTIVES,
     IR_POST_MS,
     IR_PRE_MS,
@@ -98,6 +99,33 @@ def _deconvolve_window(
         window, np.asarray(stim, dtype=np.float64), sample_rate
     )
     return full_ir, pre_effective
+
+
+def recorded_impulse(
+    full_ir: np.ndarray,
+    origin_index: int,
+    segment: ProgramSegment,
+    sample_rate: int,
+    *,
+    clock_shift_samples: float = 0.0,
+) -> RecordedImpulse:
+    """The part of one deconvolved sweep a later reader can use.
+
+    Kept through :data:`DEFAULT_VERIFY_TAIL_S` past the direct peak: the
+    recording ends that long after the sweep, so the highest frequencies hold
+    no decay beyond it. Everything before the peak is kept, the deconvolution
+    pre-guard included, as the noise a reader measures the peak against.
+    """
+    peak = int(np.argmax(np.abs(full_ir)))
+    end = min(full_ir.size, peak + int(round(DEFAULT_VERIFY_TAIL_S * sample_rate)) + 1)
+    return RecordedImpulse(
+        samples=np.asarray(full_ir[:end], dtype=np.float32),
+        sample_rate_hz=int(sample_rate),
+        origin_index=int(origin_index),
+        peak_index=peak,
+        segment_id=segment.segment_id,
+        clock_shift_samples=float(clock_shift_samples),
+    )
 
 
 def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:

@@ -326,3 +326,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | accepted |
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | accepted |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
+| [0354](0354-every-take-keeps-its-measured-impulses.md) | Every take keeps its measured impulses: one `.npz` per take beside its recording, read before any rebuild | accepted |

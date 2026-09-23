@@ -13,7 +13,7 @@ import numpy as np
 from .check import _pilot_verdicts
 from .drift import _estimate_drift
 from .model import ProgramAnalysis
-from .response import _deconvolve_window, _driver_response, _n_fft_for, _radiated_band_hz
+from .response import _deconvolve_window, _driver_response, _n_fft_for, _radiated_band_hz, recorded_impulse
 
 
 def analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
@@ -38,7 +38,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
         # Remove accumulated clock drift, retaining physical branch delay.
         response = replace(response, complex_tf=response.complex_tf * np.exp(
             2j * np.pi * response.freqs_hz * shift / sample_rate
-        ))
+        ), impulse=recorded_impulse(ir, pre, seg, sample_rate, clock_shift_samples=shift))
         responses.append(response)
         records.append({
             "role": role, "segment_id": seg.segment_id,

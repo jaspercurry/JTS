@@ -133,13 +133,21 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
             assert left == right
 
     # Provenance MUST differ: §4.2 says the arms' sources do, and fingerprint
-    # equality is not a compatibility criterion.
+    # equality is not a compatibility criterion. The recorded impulses are the
+    # raw captures, which differ by construction between the two graphs.
     assert neutral.configured_path_composed is True
     assert legacy.configured_path_composed is False
-    assert_same(
-        dataclasses.asdict(dataclasses.replace(neutral, configured_path_composed=False)),
-        dataclasses.asdict(legacy),
-    )
+
+    def analysis_only(analysis):
+        def bare(response):
+            return dataclasses.replace(response, impulse=None, repeat_responses=tuple(
+                dataclasses.replace(repeat, impulse=None) for repeat in response.repeat_responses))
+        return dataclasses.asdict(dataclasses.replace(
+            analysis, configured_path_composed=False,
+            driver_responses=tuple(bare(response) for response in analysis.driver_responses),
+        ))
+
+    assert_same(analysis_only(neutral), analysis_only(legacy))
     bands = {
         role: (program.segment(segment).f1_hz, program.segment(segment).f2_hz)
         for role, segment in (("woofer", "sweep_w"), ("tweeter", "sweep_t"))

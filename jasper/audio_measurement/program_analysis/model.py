@@ -591,6 +591,26 @@ class DriftEstimate:
 
 
 @dataclass(frozen=True)
+class RecordedImpulse:
+    """The measured impulse one response was read from.
+
+    ``samples[origin_index]`` is the scheduled start of the sweep's segment.
+    Every impulse of one recording shares that schedule, so
+    ``(index - origin_index - clock_shift_samples) / sample_rate_hz`` is one
+    time axis across a take's roles and repeats; across recordings the origin
+    is each take's own anchor, so only a relative time compares. Raw
+    deconvolution: no microphone correction and no configured-path composition.
+    """
+
+    samples: np.ndarray
+    sample_rate_hz: int
+    origin_index: int
+    peak_index: int
+    segment_id: str
+    clock_shift_samples: float = 0.0
+
+
+@dataclass(frozen=True)
 class DriverResponse:
     """One driver's gated complex response, calibrated if a cal was supplied.
 
@@ -610,6 +630,7 @@ class DriverResponse:
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
     late_energy: Mapping[str, float] | None = None
+    impulse: RecordedImpulse | None = None
 
     @property
     def fit_floor_hz(self) -> float | None:

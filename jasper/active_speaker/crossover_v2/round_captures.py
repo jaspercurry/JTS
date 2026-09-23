@@ -32,6 +32,7 @@ from .record_index import measurement_documents, played_graph_fingerprint
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
 )
+from .take_impulses import IMPULSES_KEY, impulse_for, take_impulses
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -43,6 +44,8 @@ REFUSE_CAPTURE_UNREADABLE = "round_capture_unreadable"
 #: A branch role was asked of a take whose record kept no branch diagnostic;
 #: only a take played in the ``branches`` regime keeps one (#5632 F8).
 REFUSE_BRANCH_DIAGNOSTIC_MISSING = "round_branch_diagnostic_missing"
+#: A role was asked of a take that kept impulses, none of them for that role.
+REFUSE_ROLE_NOT_RECORDED = "round_role_not_recorded"
 
 
 class RoundCapturesRefused(Exception):
@@ -78,6 +81,9 @@ class PoseCapture:
     preprocessing: Mapping[str, Any] = field(default_factory=dict)
     record_path: Path | None = None
     record_document: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    #: This role's banked curve (its gate window, floors and band); empty on a
+    #: record banked without one.
+    curve: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def pose_key(self) -> str:
@@ -296,11 +302,6 @@ def _discover_captures(
     programs: dict[str, Path] = {}
     for candidate in sorted(round_dir.glob("**/*program*.wav")):
         programs.setdefault(sha256_file(candidate), candidate)
-    if not programs:
-        raise RoundCapturesRefused(
-            REFUSE_NO_PROGRAMS,
-            {"round_dir": str(round_dir), "looked_for": "**/*program*.wav"},
-        )
 
     captures: list[PoseCapture] = []
     skipped: list[_Omission] = []
@@ -344,7 +345,12 @@ def _bind_record(
         )
     sha = _declared_program_sha(doc, root)
     program = programs.get(sha) if sha is not None else None
-    if program is None:
+    # A take that kept its impulses needs no program: nothing is deconvolved again.
+    if program is None and not isinstance(doc.get(IMPULSES_KEY), Mapping):
+        if not programs:
+            raise RoundCapturesRefused(
+                REFUSE_NO_PROGRAMS, {"round_dir": str(root), "looked_for": "**/*program*.wav"},
+            )
         raise RoundCapturesRefused(
             REFUSE_PROGRAM_UNMATCHED,
             {
@@ -371,7 +377,8 @@ def _bind_record(
                 ),
             },
         )
-    responses = [_capture_response(doc, role, wav, program, program_audio) for role in roles]
+    responses = [_capture_response(doc, role, wav, program, program_audio, root=root, manifest=manifest)
+                 for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
     return [
         PoseCapture(
@@ -379,7 +386,7 @@ def _bind_record(
             phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
             wav=wav,
             program=program,
-            program_sha256=str(sha),
+            program_sha256=str(sha or ""),
             azimuth_deg=finite_float(doc.get("position_deg")),
             vertical_deg=finite_float(doc.get("vertical_deg")),
             mark_distance_m=finite_float(doc.get("mark_distance_m")),
@@ -395,16 +402,46 @@ def _bind_record(
             preprocessing=preprocessing,
             record_path=sidecar,
             record_document=doc,
+            curve=_role_curve(doc, manifest, role),
         )
-        for ir, rate, retained_band, preprocessing in responses
+        for role, (ir, rate, retained_band, preprocessing) in zip(roles, responses, strict=True)
     ]
 
 
+def _role_curve(
+    doc: Mapping[str, Any], manifest: Mapping[str, Any] | None, role: str,
+) -> Mapping[str, Any]:
+    """This take's banked curve for ``role``, or empty."""
+    return next((curve for curve in curves_for_take(doc, manifest)
+                 if isinstance(curve, Mapping) and curve.get("role") == role), {})
+
+
+def _role_band(curve: Mapping[str, Any]) -> tuple[float, float] | None:
+    band = curve.get("band_hz")
+    return (float(band[0]), float(band[1])) if isinstance(band, Sequence) and len(band) == 2 else None
+
+
 def _capture_response(
-    doc: Mapping[str, Any], role: str, wav: Path, program: Path,
-    program_audio: dict[str, tuple[np.ndarray, int]],
+    doc: Mapping[str, Any], role: str, wav: Path, program: Path | None,
+    program_audio: dict[str, tuple[np.ndarray, int]], *, root: Path,
+    manifest: Mapping[str, Any] | None,
 ) -> tuple[np.ndarray, int, tuple[float, float] | None, dict[str, Any]]:
+    """One role's impulse: the one the take kept, else rebuilt from the recording."""
     try:
+        if isinstance(doc.get(IMPULSES_KEY), Mapping):
+            kept = take_impulses(root, doc)
+            stored = impulse_for(kept, role)
+            if stored is None:
+                raise RoundCapturesRefused(REFUSE_ROLE_NOT_RECORDED, {
+                    "role": role, "capture": str(wav),
+                    "roles": sorted({one.role for one in kept}),
+                })
+            return stored.samples, stored.sample_rate_hz, _role_band(_role_curve(doc, manifest, role)), {
+                "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
+                "pre_guard_samples": stored.origin_index,
+                "clock_shift_samples": stored.clock_shift_samples,
+                "microphone_correction": False,
+            }
         band = None
         diagnostic = doc.get("branch_diagnostic")
         retained = None
