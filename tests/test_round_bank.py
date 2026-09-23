@@ -47,8 +47,8 @@ from jasper.active_speaker.round_packet import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
-from jasper.active_speaker import measurement_programs
-from jasper.active_speaker.measurement_programs import bookkeeping_views
+from jasper.active_speaker import measurement_programs, round_view_artifacts
+from jasper.active_speaker.round_view_artifacts import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
     CAPTURE_RING_DIR,
@@ -396,7 +396,7 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
     (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
-    monkeypatch.setattr(measurement_programs, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
+    monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
     assert Path(banked.provenance["manifest"]).is_file()

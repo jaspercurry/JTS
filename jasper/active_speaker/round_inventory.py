@@ -7,7 +7,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 from typing import Any
-from .measurement_programs import bookkeeping_views, run_purposes
+from .measurement_programs import run_purposes
+from .round_view_artifacts import bookkeeping_views
 from .run_manifest import room_sets
 from .crossover_v2.evidence_packet.offline_reads import derived_view_path
 from .crossover_v2.round_inputs import (RoundInputs, read_run_manifest, resolve_set, set_artifact_name,

@@ -148,3 +148,13 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
 
 
 PROG = "jasper-round-views"
+
+
+def bookkeeping_views(purpose: str, *, has_room: bool = False,
+                      co_purposes: tuple[str, ...] = ()) -> tuple[tuple[str, bool, bool], ...]:
+    """View name, per-set scope, and whether it grades against the base."""
+    wanted = {purpose, *co_purposes} | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
+    rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
+    # A speaker round takes its frequency view from the packet writer, not here.
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
+                 if wanted.intersection(row.bookkeeping) and (purpose != PURPOSE_SPEAKER or name != "frequency"))

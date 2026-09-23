@@ -290,7 +290,8 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from .measurement_programs import PURPOSE_SPEAKER, bookkeeping_views, run_purposes  # lazy: bank-only program registry
+    from .measurement_programs import PURPOSE_SPEAKER, run_purposes  # lazy: bank-only program registry
+    from .round_view_artifacts import bookkeeping_views  # lazy: the view table imports NumPy
     from .run_manifest import RUN_MANIFEST_FILENAME, room_sets, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
