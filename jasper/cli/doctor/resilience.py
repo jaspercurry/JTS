@@ -14,7 +14,6 @@ from typing import Any
 from ...accessories import status as accessory_status
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
-from ...control.heal_supervisor import TICK_INTERVAL_SEC as _HEAL_TICK_SEC
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import (
     JASPER_VOICE_SERVICE,
@@ -63,12 +62,6 @@ REASON_VOICE_UNIT_NO_PROVIDER = "voice_unit_no_provider_configured"
 REASON_SIGNAL_PATH_UNOBSERVED = "signal_path_unobserved"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
-REASON_HEAL_UNOBSERVED = "heal_unobserved"
-REASON_HEAL_STALE = "heal_stale"
-REASON_HEAL_RECENT = "heal_recent"
-
-# Ticks the heal supervisor may miss before its row warns.
-_HEAL_STALE_TICKS = 3
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
 REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
 
@@ -580,46 +573,6 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
         name, "ok",
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
         reason=REASON_REBOOT_STATE_ARMED,
-    )
-
-
-@doctor_check()
-def check_heal_recency() -> CheckResult:
-    """The heal supervisor is still ticking (ADR-0271).
-
-    It stamps `/state.resilience.heal.last_tick` on every tick, found or not,
-    so a stale value means the supervisor's coroutine is gone while
-    jasper-control still answers."""
-    label = "heal recency"
-    resilience = _read_resilience_state()
-    if resilience is None:
-        return CheckResult(
-            label, "skipped", "jasper-control /state unavailable",
-            reason=REASON_CONTROL_UNAVAILABLE,
-        )
-    heal = _nested_dict(resilience, "heal") or {}
-    last_tick = heal.get("last_tick")
-    if not isinstance(last_tick, (int, float)) or isinstance(last_tick, bool):
-        return CheckResult(
-            label, "skipped",
-            "jasper-control publishes no heal supervisor tick yet",
-            reason=REASON_HEAL_UNOBSERVED,
-        )
-    age = max(0.0, time.time() - float(last_tick))
-    if age > _HEAL_STALE_TICKS * _HEAL_TICK_SEC:
-        return CheckResult(
-            label, "warn",
-            f"last heal tick {age / 60:.0f} min ago, over {_HEAL_STALE_TICKS} "
-            "ticks. `journalctl -u jasper-control | grep event=heal.`",
-            reason=REASON_HEAL_STALE,
-        )
-    would_act = heal.get("would_act")
-    case = str((would_act or {}).get("case") or "")
-    return CheckResult(
-        label, "ok",
-        f"last heal tick {age / 60:.0f} min ago"
-        + (f", case={case}" if case else ", nothing to act on"),
-        reason=REASON_HEAL_RECENT,
     )
 
 

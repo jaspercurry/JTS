@@ -51,7 +51,6 @@ from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
     debug_control,
     grouping_supervisor,
-    heal_supervisor,
     measurement_hold,
     shairport_supervisor,
     system_supervisor,
@@ -1051,13 +1050,6 @@ def main(argv: list[str] | None = None) -> int:
     # Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
-    # The two silences every unit state calls healthy: a dead audio path with
-    # every unit active, and a reachable voice daemon that has heard no wake
-    # word in a day. It observes only — it logs `event=heal.would_act` and
-    # calls nothing (ADR-0271).
-    heal_supervisor.start_supervisor(
-        audio_health_sampler, voice_socket_path=args.voice_socket,
-    )
     # Runtime debug toggle: clear an expired session left on disk, or re-arm
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.
