@@ -94,6 +94,7 @@ REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
 REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
 REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
 REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
+REASON_OUTPUTD_PREVIOUSLY_PARKED = "outputd_previously_parked"
 
 REASON_USB_HCD_DEAD = "usb_host_controller_dead"
 REASON_USB_HCD_UNOBSERVED = "usb_host_controllers_unobserved"
@@ -732,6 +733,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
     detail = f"{reader.UNIT} is running and carries no park record"
     if isinstance(last_park, dict):
         detail += f" (last park {_parked_ago(last_park.get('parked_at'))})"
+        return CheckResult(label, "ok", detail, reason=REASON_OUTPUTD_PREVIOUSLY_PARKED)
     return CheckResult(label, "ok", detail)
 
 

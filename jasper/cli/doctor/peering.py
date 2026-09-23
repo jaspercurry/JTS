@@ -19,6 +19,8 @@ REASON_PEERING_MODE_UNKNOWN = "peering_mode_unknown"
 
 REASON_DISCOVERY_TOOL_MISSING = "discovery_tool_missing"
 REASON_DISCOVERY_BROWSE_FAILED = "discovery_browse_failed"
+REASON_DISCOVERY_NO_SIBLINGS = "discovery_no_siblings"
+REASON_DISCOVERY_SIBLINGS_VISIBLE = "discovery_siblings_visible"
 
 @doctor_check()
 def check_peering_mode() -> CheckResult:
@@ -100,11 +102,13 @@ def check_peering_discovery() -> CheckResult:
         return CheckResult(
             label, "ok",
             "0 sibling peers visible (single-device mode)",
+            reason=REASON_DISCOVERY_NO_SIBLINGS,
         )
     sample = ", ".join(sorted(peer_ids)[:3])
     return CheckResult(
         label, "ok",
         f"{len(peer_ids)} sibling peer(s) visible: {sample}",
+        reason=REASON_DISCOVERY_SIBLINGS_VISIBLE,
     )
 
 def _local_peer_id() -> str:

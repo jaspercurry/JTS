@@ -220,27 +220,26 @@ def test_check_usbsink_state_verdicts(
     assert r.reason == reason
 
 
+@pytest.mark.parametrize("state, reason", [
+    ("configured", usbsink.REASON_STATE_HOST_CONNECTED),
+    ("not attached", usbsink.REASON_STATE_HOST_DISCONNECTED),
+])
 def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, state, reason
 ):
-    """This is the plain healthy-active branch (no distinguishing reason); the
-    UDC-derived boolean it discloses is dynamic runtime data the reason
-    vocabulary doesn't carry, so this keeps the pure-formatting-helper
-    `.detail` exception."""
     _state_env(
         monkeypatch, tmp_path, active=True, libcomposite=True,
         functions=("uac2.usb0",),
     )
     controller = tmp_path / "udc" / "controller"
     controller.mkdir(parents=True)
-    (controller / "state").write_text("configured\n")
+    (controller / "state").write_text(state + "\n")
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(tmp_path / "udc"))
 
     result = usbsink.check_usbsink_state()
 
     assert result.status == "ok"
-    assert result.reason == ""
-    assert "host_connected=True" in result.detail
+    assert result.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -888,39 +887,33 @@ def test_check_usbgadget_composition_verdicts(
 
 
 @pytest.mark.parametrize(
-    "network_env, expected, reason",
+    "network_env, ncm, reason",
     [
-        ("DISABLED", "network=False", usbsink.REASON_COMPOSITION_ZERO_RAM),
-        ("off", "network=True", ""),
+        ("DISABLED", False, usbsink.REASON_COMPOSITION_ZERO_RAM),
+        ("off", True, ""),
         # A whitespace-decorated ' disabled ' stays WANTED, matching
         # jasper-usbgadget-up's raw (untrimmed) comparison. The bash side is
         # pinned by test_usbgadget_script.py's literal matrix.
-        (" disabled ", "network=True", ""),
+        (" disabled ", True, ""),
     ],
     ids=["uppercase", "other-word", "whitespace"],
 )
 def test_composition_kill_switch_matches_only_the_exact_literal(
-    monkeypatch, tmp_path, network_env, expected, reason
+    monkeypatch, tmp_path, network_env, ncm, reason
 ):
-    """The literal-vs-whitespace kill-switch parity with the bash side is the
-    behavior under test here, not a category the reason vocabulary carries on
-    its own (both "network=True" cells land in the same "matches intent"
-    no-reason branch, discriminated only by which function got composed) —
-    kept as the pure-formatting-helper `.detail` exception."""
     _patch_composition_env(
         monkeypatch,
         tmp_path,
         udc_present=True,
         network_env=network_env,
         usbsink_enabled=False,
-        ncm=expected == "network=True",
+        ncm=ncm,
     )
 
     r = usbsink.check_usbgadget_composition()
 
     assert r.status == "ok"
     assert r.reason == reason
-    assert expected in r.detail
 
 
 def test_composition_gadget_dir_with_no_functions_is_still_drift(

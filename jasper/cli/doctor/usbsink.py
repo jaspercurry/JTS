@@ -87,6 +87,8 @@ REASON_STATE_PARKED = "state_parked"
 REASON_STATE_SPLIT_BRAIN = "state_split_brain"
 REASON_STATE_RAM_DRIFT = "state_ram_drift"
 REASON_STATE_DISABLED = "state_disabled"
+REASON_STATE_HOST_CONNECTED = "state_host_connected"
+REASON_STATE_HOST_DISCONNECTED = "state_host_disconnected"
 REASON_STATE_MARKER_ACTIVE_NO_FUNCTION = "state_marker_active_no_function"
 
 # The readiness marker is not active, so the card, its device name and the
@@ -436,6 +438,7 @@ def check_usbsink_state() -> CheckResult:
         "usbsink state", "ok",
         "readiness marker active; uac2.usb0 composed; "
         f"host_connected={connected} (activity/level owned by fan-in STATUS)",
+        reason=REASON_STATE_HOST_CONNECTED if connected else REASON_STATE_HOST_DISCONNECTED,
     )
 
 def _usbsink_host_stream_finding() -> tuple[str, str]:
