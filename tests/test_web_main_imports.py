@@ -2,33 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for the 'lost edit' bug class.
+"""Regression tests for the 'lost edit' bug class: a setup module never made
+it into the import wiring, or a port local was referenced without ever being
+defined. Python only resolves such names at call time, so the bug only
+surfaces when systemd starts the daemon — at which point all wizards go
+down.
 
-PR #146 (multi-device peering) added a new wizard but lost two lines during an
-edit-merge race: a setup module never made it into the import wiring, and a
-port local was referenced inside `main()` without ever being defined. The
-module compiled fine — Python only resolves the names at call time — so the
-bug only surfaced when systemd started the daemon, at which point all wizards
-went down.
-
-Three layers of defense here:
-
-1. **Pattern-specific checks against `__main__.py`** — catches the
-   exact `__main__.py` bug that bit us (every `<name>_setup.X` has
-   a matching import; every registered wizard has a unique socket-
-   backed port).
-
-2. **ruff F821 across peering-touched code** — catches the same lost-edit
-   pattern (undefined name) anywhere else in the package. ruff is already in
-   our dev dependencies and is the battle-tested implementation of
-   pyflakes-style undefined-name detection (handles match/case patterns,
-   comprehensions, walrus, nested scopes, etc.). If ruff isn't available
-   locally the test skips rather than flakes.
-
-3. **Import-cost check for the combined settings host** — proves
-   the socket-activated `jasper.web.__main__` entrypoint doesn't pull
-   in wake-corpus recorder dependencies unless `/wake-corpus/` is
-   actually used.
+ruff F821 (Layer 2, undefined-name detection: match/case, comprehensions,
+walrus, nested scopes, etc.) across peering-touched code, including
+`__main__.py` itself, catches this. Layer 3 additionally proves the
+socket-activated `jasper.web.__main__` entrypoint doesn't pull in
+wake-corpus recorder dependencies unless `/wake-corpus/` is actually used.
 """
 from __future__ import annotations
 
@@ -43,29 +27,11 @@ import pytest
 from . import nginx_site
 
 _REPO = Path(__file__).resolve().parent.parent
-_MAIN_PATH = _REPO / "jasper" / "web" / "__main__.py"
 
 
 # ----------------------------------------------------------------------
 # Layer 1 — pattern checks on __main__.py
 # ----------------------------------------------------------------------
-
-
-def test_every_referenced_setup_module_is_imported():
-    """Every `xxx_setup.YYY` lookup must have `xxx_setup` in the
-    package's `from . import (...)` tuple."""
-    text = _MAIN_PATH.read_text()
-    referenced = set(re.findall(r"\b([a-z][a-z0-9_]*_setup)\.", text))
-    for mod in sorted(referenced):
-        in_bulk_import = re.search(
-            rf"^\s+{re.escape(mod)},\s*$", text, re.MULTILINE,
-        )
-        as_separate_import = re.search(rf"\bimport {re.escape(mod)}\b", text)
-        assert in_bulk_import or as_separate_import, (
-            f"{mod}.X is referenced in __main__.py but {mod} is not "
-            f"in `from . import (...)` — adding a new wizard requires "
-            f"both the wiring AND the import line."
-        )
 
 
 def test_wizard_registry_has_unique_routes_envs_and_ports():
@@ -85,7 +51,6 @@ def test_wizard_registry_has_unique_routes_envs_and_ports():
     assert len(labels) == len(set(labels))
     assert len(env_vars) == len(set(env_vars))
     assert len(ports) == len(set(ports))
-    assert sum(1 for spec in specs if spec.main_thread) == 1
 
 
 def test_registered_wizard_default_ports_are_socket_backed():

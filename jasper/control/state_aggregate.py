@@ -144,18 +144,6 @@ def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
     return bool(usbsink_direct_audible(fanin_status))
 
 
-def _active_speaker_level_match_provisional(
-    setup: dict[str, Any] | None,
-) -> bool | None:
-    """Report the saved profile's legacy trim provenance."""
-    if not isinstance(setup, dict):
-        return None
-    profile = setup.get("protected_profile")
-    if not isinstance(profile, dict) or profile.get("status") != "ready":
-        return None
-    return bool(profile.get("provisional"))
-
-
 def active_speaker_output_safety_snapshot(
     airplay_health: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -167,13 +155,11 @@ def active_speaker_output_safety_snapshot(
     config_path = str(raw_path or "")
     setup = read_active_speaker_setup_status(
         active_config_path=config_path or None,
+        include_diagnostics=False,
     )
     return {
         **setup,
-        # Back-compat alias for the landing page's field name.
         "safety_muted": not bool(setup.get("volume_allowed")),
-        "level_match_provisional": _active_speaker_level_match_provisional(setup),
-        "source": "active_speaker.setup_status",
     }
 
 
