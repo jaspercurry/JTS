@@ -125,7 +125,7 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
         CrossoverEvidencePacketError,
         build_crossover_evidence_packet,
     )
-    from .crossover_v2.frequency_view import frequency_run as packet_frequency_run
+    from .crossover_v2.round_frequency_view import frequency_run as packet_frequency_run
 
     try:
         retained = packet_frequency_run(build_crossover_evidence_packet(run.bundle_dir))

@@ -20,7 +20,7 @@ import math
 import pytest
 
 from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
-from jasper.active_speaker.crossover_v2.fc_sweep import (
+from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
     _fc_rejection,
@@ -150,12 +150,12 @@ def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
     A constant left defined is a constant something can start returning again,
     and the ruling deleted the CONCEPT rather than one call site.
     """
-    from jasper.active_speaker.crossover_v2 import fc_sweep
+    from jasper.active_speaker.crossover_v2 import corner_admissibility
 
-    assert not hasattr(fc_sweep, "FC_REJECT_OUTSIDE_SEARCH_BAND")
-    assert not hasattr(fc_sweep, "resolve_fc_search_band")
-    assert not hasattr(fc_sweep, "FcSearchBand")
-    assert set(fc_sweep.__all__) == {
+    assert not hasattr(corner_admissibility, "FC_REJECT_OUTSIDE_SEARCH_BAND")
+    assert not hasattr(corner_admissibility, "resolve_fc_search_band")
+    assert not hasattr(corner_admissibility, "FcSearchBand")
+    assert set(corner_admissibility.__all__) == {
         "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
         "FC_REJECT_BELOW_DECLARED_FLOOR",
         "fc_rejection_scenarios",

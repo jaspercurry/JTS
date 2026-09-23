@@ -64,7 +64,7 @@ from tests.test_arm_walk import (
 from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
 from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
-from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
+from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64

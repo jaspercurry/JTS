@@ -23,7 +23,7 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
 from jasper.cli.round_views import main as round_views_main
 from jasper.cli.round_views._bass_inputs import fit_run
-from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs, bass_run as bass_run
+from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs, bass_run as bass_run
 
 
 DESCRIPTOR = {"low_boost_db": 8, "reference_level_db": 0,

@@ -33,7 +33,7 @@ from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecordin
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.frequency_view import FrequencyViewError, frequency_run
+from jasper.active_speaker.crossover_v2.round_frequency_view import FrequencyViewError, frequency_run
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view

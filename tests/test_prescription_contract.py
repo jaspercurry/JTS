@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
-from jasper.active_speaker.crossover_v2.fc_sweep import (
+from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
 )

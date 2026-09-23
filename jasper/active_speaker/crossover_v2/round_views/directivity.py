@@ -22,7 +22,7 @@ from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
 from jasper.audio_measurement.band_ladders import SPEC_BAND_EDGES_HZ, band_ladder_name
 from jasper.audio_measurement.evidence_reasons import REASON_NO_REFERENCE_TAKE, REASON_TOO_FEW_POSITIONS
 
-from ..frequency_view import position_label
+from ..round_frequency_view import position_label
 from ..position_cycle import measured_curve_band
 from ..round_inputs import RoundSetRefused, SetTakes
 

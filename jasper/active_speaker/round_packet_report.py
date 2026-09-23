@@ -14,7 +14,7 @@ from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.json_fields import finite_float
 
 from .bass_table_report import bass_table_markdown, bass_table_rows
-from .crossover_v2.frequency_view import position_label
+from .crossover_v2.round_frequency_view import position_label
 from .crossover_v2.round_inputs import SetTakes
 from .measurement_programs import POSE_KIND_BEARING
 

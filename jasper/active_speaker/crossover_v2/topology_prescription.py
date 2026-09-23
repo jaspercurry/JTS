@@ -11,7 +11,7 @@ downstream models a corner the graph does not carry.
 Every bound here is an ADMISSIBILITY bound (a declaration already made about
 this hardware), not an excursion from a basis, and each is asked of the module
 that owns it: ``order`` of ``SUPPORTED_LR_ORDERS``, ``fc_hz`` of
-:func:`.fc_sweep._fc_rejection`, and ``order * 6`` dB/octave of the protected
+:func:`.corner_admissibility._fc_rejection`, and ``order * 6`` dB/octave of the protected
 role's PUBLISHED slope condition. That slope check lives here because nothing
 downstream enforces a crossover slope above 12 dB/octave, so a published
 condition not checked here is not checked anywhere. Polarity is refused
@@ -29,7 +29,7 @@ from jasper.json_fields import finite_float
 from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS
 from ._prescription_common import BlendPrescriptionRefused, _finite_number, _read_artifacts
-from .fc_sweep import (
+from .corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
     _fc_rejection,
@@ -302,7 +302,7 @@ def read_topology_prescription(
     it and means that bound was not declared, never a guessed default.
 
     ``declared_floor_hz`` and ``lower_driver_ceiling_hz`` are
-    :func:`~.fc_sweep._fc_rejection`'s ``hf_hard_floor_hz`` /
+    :func:`~.corner_admissibility._fc_rejection`'s ``hf_hard_floor_hz`` /
     ``lower_driver_hard_ceiling_hz``, and they are the WHOLE frequency gate
     (#2870 deleted the narrower search band).
     ``minimum_slope_db_per_octave`` is the PROTECTED (upper) role's PUBLISHED
@@ -334,7 +334,7 @@ def read_topology_prescription(
     # Frequency before slope: the two send a prescriber to different places
     # (re-declare the band vs re-choose the order).
     #
-    # ``fc_sweep._fc_rejection`` is the single owner of "is this corner
+    # ``corner_admissibility._fc_rejection`` is the single owner of "is this corner
     # admissible for this speaker", imported by its private name deliberately —
     # a pinned corner and a declared one must be admissible on identical terms.
     # It carries no beaming term, which is #1675's ruling rather than an
@@ -395,7 +395,7 @@ def apply_topology_pin(
     """What a pin DOES to a session's topology: ``(preset, fc_hz)``.
 
     Unchanged when there is no pin. Otherwise the same preset re-cornered at
-    the pinned corner and order (:func:`~.fc_sweep.recornered_preset`). BOTH
+    the pinned corner and order (:func:`~.corner_admissibility.recornered_preset`). BOTH
     stages call this — stage 1 measures at the pin, stage 2 grades at it — so
     a round cannot be measured at one corner and graded at another.
     """

@@ -42,7 +42,7 @@ from . import driver_prescription as driver
 from . import room_prescription as room
 from . import topology_prescription as topology
 from .feature_classification import UNCERTAINTY_RANDOM
-from .fc_sweep import fc_rejection_scenarios
+from .corner_admissibility import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
 SECTIONS = tuple(row.purpose for row in PROGRAM_DOCUMENT_ORDER)
@@ -177,6 +177,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     topology_bounds: dict[str, Any] = {
         "supported_orders": sorted(topology.SUPPORTED_LR_ORDERS),
         "fc_hz": None, "minimum_slope_db_per_octave": None,
+        # A stable rule id, not a module path: it is hashed into the contract
+        # digests every round packet carries, so it keeps its name across renames.
         "fc_rejection_rule": "fc_sweep._fc_rejection",
         "beaming_is_a_refusal": False,
         "beaming_ceiling_hz": beaming_onset_hz(diameter) if diameter is not None else None,
