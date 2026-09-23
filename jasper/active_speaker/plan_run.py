@@ -121,7 +121,7 @@ def measurement_spl_watch(
                    else resolved_household_sensitivity(device))
     monitor, note = spl_watch(topology=topology, preset=preset, sensitivity=sensitivity, device=device)
     try:
-        level = resolve_anchor_level(facts=AnchorFacts(load_seat_level_reference() or {}, sensitivity))
+        level, _rebase = resolve_anchor_level(facts=AnchorFacts(load_seat_level_reference() or {}, sensitivity))
     except LevelUnresolved as exc:
         raise LateralWalkRefused(exc.reason, exc.detail) from exc
     return monitor, note, level

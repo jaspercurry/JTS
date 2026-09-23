@@ -33,8 +33,8 @@ from .movers import MOVER_ARM
 from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
-    AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
-    measured_rung_admission, rung_lift_bound_db, stimulus_mismatch, validate_commissioning_spl,
+    AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, check_target_capture_dbfs, resolve_anchor_level,
+    measured_rung_admission, predicted_rung_admission, stimulus_mismatch,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -74,7 +74,7 @@ class PreflightFacts:
     mover_available: bool = True
     issues: tuple[PreflightIssue, ...] = ()
     summed_pilot_band_hz: tuple[float, float] | None = None
-    applied_bass_extension: Mapping[str, Any] | None = None
+    applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
@@ -183,8 +183,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         candidate = facts.candidates.get(name)
         if name == BASE_CANDIDATE and candidate is None:
-            if facts.applied_bass_extension is not None:
-                bass_extensions[name] = facts.applied_bass_extension
+            bass_extensions[name] = facts.applied_bass_extension
             continue
         if isinstance(candidate, PreflightIssue):
             issues.append(candidate)
@@ -215,40 +214,48 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         ceiling = stop
         if facts.anchor.sensitivity is not None:
             try:
-                anchor = resolve_anchor_level(facts=facts.anchor)
+                anchor, rebase = resolve_anchor_level(facts=facts.anchor)
                 level = replace(plan.level, resolved=anchor)
                 if plan.level.resolved is not None and plan.level != level:
-                    raise LevelUnresolved("seat_anchor_unusable", "The carried anchor differs from the banked anchor")
+                    admission["carried_anchor_replaced"] = True
+                    if plan.level.volume_db is not None and level.volume_db is not None and level.volume_db > plan.level.volume_db:
+                        level = replace(level, level_db=plan.level.volume_db)
                 plan = replace(plan, level=level)
                 fader = level.level_db if level.level_db is not None else anchor.reference_volume_db
                 predicted = anchor.db_spl_at(fader)
                 admission.update(requested_level_db=fader, requested_db_spl=predicted,
-                                 admitted_db_spl=None if defer_rung else predicted)
+                                 admitted_db_spl=None if defer_rung else predicted, **rebase)
                 target = facts.anchor.record.get("target")
                 tolerance = finite_float(target.get("tolerance_db")) if isinstance(target, Mapping) else None
-                unavailable = ("applied_bass_extension" if facts.applied_bass_extension is None else
-                               "anchor_tolerance_db" if tolerance is None or tolerance <= 0 else None)
-                if unavailable:
-                    issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID,
-                                          f"Cannot derive the rung margin: {unavailable}"),
-                                          evidence={"unavailable": unavailable, "level_db": fader}))
-                elif previous_rung is not None and tolerance is not None:
+                if tolerance is None or tolerance <= 0:
+                    tolerance = SPL_RAISE_MARGIN_DB
+                    admission["margin_basis"] = "default"
+                held: float | None = None
+                if previous_rung is not None:
                     try:
-                        admission = {"basis": "measured_window", **measured_rung_admission(
-                            fader, previous_rung, ceiling_db_spl=stop, tolerance_db=tolerance)}
-                        plan = replace(plan, level=replace(level, level_db=admission["level_db"]))
-                        predicted = anchor.db_spl_at(admission["level_db"])
-                        admission.update(requested_db_spl=anchor.db_spl_at(fader), admitted_db_spl=predicted)
-                        fader = admission["level_db"]
+                        admission.update(basis="measured_window", **measured_rung_admission(
+                            fader, previous_rung, ceiling_db_spl=stop, tolerance_db=tolerance))
                     except RungMeasurementUnavailable as exc:
-                        admission.update(basis="measured_window", status="blocked", admitted_db_spl=None, **exc.evidence)
-                        issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
-                                              evidence=dict(admission)))
-                elif defer_rung and tolerance is not None:
+                        admission.update(basis="measured_window", **exc.evidence)
+                        held = exc.evidence["previous_level_db"]
+                        if held is None:
+                            admission.update(status="blocked", admitted_db_spl=None)
+                            issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
+                                                  evidence=dict(admission)))
+                        else:
+                            admission["level_db"] = min(fader, held)
+                            if held < fader:
+                                admission["bound_by"] = "previous_rung_unmeasured"
+                    if "level_db" in admission:
+                        fader = admission["level_db"]
+                        plan = replace(plan, level=replace(level, level_db=fader))
+                        predicted = anchor.db_spl_at(fader)
+                        admission["admitted_db_spl"] = predicted
+                elif defer_rung:
                     margin = max(tolerance, SPL_RAISE_MARGIN_DB)
                     admission.update(bound_db_spl=spl_raise_bound_db_spl(stop, margin_db=margin),
                                      margin_db=margin, quantity="max_window_db_spl", ceiling_db_spl=stop)
-                elif facts.applied_bass_extension is not None and tolerance is not None:
+                else:
                     try:
                         program_ids = facts.program_ids_for(plan) if facts.program_ids_for else ()
                     except (ValueError, KeyError):
@@ -263,22 +270,17 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                             fader, predicted = anchor.reference_volume_db, anchor.anchor_db_spl
                             plan = replace(plan, level=replace(level, level_db=fader))
                             admission.update(bound_by="unmeasured_stimulus_opener", admitted_db_spl=predicted)
-                    for name, descriptor in bass_extensions.items():
-                        try:
-                            lift = rung_lift_bound_db(descriptor, facts.applied_bass_extension, fader)
-                        except (TypeError, ValueError) as exc:
-                            add(WALK_LEVEL_POLICY_INVALID, f"Cannot derive the bass lift for {name}: {exc}")
-                            continue
-                        margin = tolerance + lift
-                        try:
-                            validate_commissioning_spl(predicted, ceiling_db_spl=stop, margin_db=margin)
-                        except SeatLevelTargetError as exc:
-                            detail = f"{exc}; margin = anchor tolerance {tolerance:g} + bass lift bound {lift:g} dB"
-                            issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, detail), evidence={
-                                "level_db": fader, "predicted_db_spl": predicted, "ceiling_db_spl": stop,
-                                "candidate_id": name, "anchor_tolerance_db": tolerance, "lift_bound_db": lift,
-                                "margin_db": margin, "bound_db_spl": stop - margin,
-                            }))
+                if bass_extensions and not defer_rung and (previous_rung is None or held is not None):
+                    try:
+                        admission.update(predicted_rung_admission(fader, anchor, bass_extensions,
+                            applied=facts.applied_bass_extension, ceiling_db_spl=stop, tolerance_db=tolerance))
+                    except (TypeError, ValueError) as exc:
+                        admission.update(status="blocked", admitted_db_spl=None)
+                        add(WALK_LEVEL_POLICY_INVALID, str(exc))
+                    else:
+                        if admission["level_db"] < fader:
+                            plan = replace(plan, level=replace(level, level_db=admission["level_db"]))
+                        fader, predicted = admission["level_db"], admission["admitted_db_spl"]
                 ambient, band = facts.anchor.record.get("ambient_report"), facts.summed_pilot_band_hz
                 if (isinstance(ambient, Mapping) and band is not None
                         and any(pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops)):
@@ -293,6 +295,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                             "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
                         }))
             except (LevelUnresolved, LateralWalkRefused) as exc:
+                admission.update(status="blocked", admitted_db_spl=None)
                 add(exc.reason, exc.detail)
 
     schedule = tuple(

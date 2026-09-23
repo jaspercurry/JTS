@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -45,7 +45,7 @@ def read_preflight_facts(
         except WiredCaptureError:
             pass
     stop = None
-    applied_bass_extension = None
+    applied_bass_extension: Mapping[str, Any] = {}
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)

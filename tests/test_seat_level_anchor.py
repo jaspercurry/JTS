@@ -11,6 +11,7 @@ that looks absolute and was guessed is worse than no number.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from functools import partial
@@ -23,14 +24,13 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     write_seat_level_reference,
 )
+from jasper.active_speaker.session_volume_plan import measurement_reference_volume_db
 from jasper.audio_measurement import calibration
 
 ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
 CEILING_DB_SPL = 85.0
 CAL_WITH_SENS = '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
-# The same mic, recalibrated (3 dB away) and re-quoted (0.04 dB away, inside
-# :data:`slr.SENS_FACTOR_TOLERANCE_DB`) since the anchor banked -12.07.
 CAL_RECALIBRATED = '"Sens Factor =-9.0dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_REQUOTED = '"Sens Factor =-12.03dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
@@ -57,14 +57,17 @@ def anchor(tmp_path, monkeypatch):
     return path
 
 
-@pytest.mark.parametrize("banked,cal_text,reason", [
-    (True, CAL_WITH_SENS, None), (False, CAL_WITH_SENS, slr.ANCHOR_UNUSABLE),
-    (True, CAL_CURVE_ONLY, slr.ANCHOR_UNUSABLE),
-    (True, CAL_RECALIBRATED, slr.ANCHOR_UNUSABLE), (True, CAL_REQUOTED, None),
+@pytest.mark.parametrize("banked,cal_text,delta,reason", [
+    (True, CAL_WITH_SENS, 0, None), (False, CAL_WITH_SENS, 0, slr.ANCHOR_UNUSABLE),
+    (True, CAL_CURVE_ONLY, 0, slr.ANCHOR_UNUSABLE),
+    (True, CAL_RECALIBRATED, -3.07, None), (True, CAL_REQUOTED, -0.04, None),
+    (True, CAL_WITH_SENS.replace("-12.07", "-15.07"), 3, None),
+    (True, CAL_RECALIBRATED.replace("8108494", "8108495"), 0, None),
 ])
 def test_a_level_resolves_or_names_the_input_it_is_missing(
-    tmp_path, monkeypatch, anchor, banked, cal_text, reason
+    tmp_path, monkeypatch, anchor, banked, cal_text, delta, reason
 ):
+    banked_bytes = anchor.read_bytes()
     if not banked:
         monkeypatch.setenv(
             "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE",
@@ -82,17 +85,18 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         with pytest.raises(slr.LevelUnresolved) as excinfo:
             _resolve()
         assert excinfo.value.reason == reason
-        # The three ways an anchor goes unusable share one slug, so the
-        # sentence is what separates them.
         assert excinfo.value.detail
         return
 
-    assert _resolve() == slr.ResolvedLevel(
-        anchor_db_spl=ANCHOR_DB_SPL,
+    assert _resolve()[0] == slr.ResolvedLevel(
+        anchor_db_spl=pytest.approx(ANCHOR_DB_SPL + delta),
         reference_volume_db=REFERENCE_VOLUME_DB,
-        mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
+        mic_serial=calibration.parse_calibration_sensitivity(cal_text).serial,
+        session_id=slr.load_seat_level_reference()["session_id"],
         leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
     )
+
+    assert anchor.read_bytes() == banked_bytes
 
 
 def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeypatch):
@@ -136,7 +140,7 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
             slr.resolve_anchor_level()
         assert excinfo.value.reason == slr.ANCHOR_UNUSABLE
     else:
-        assert slr.resolve_anchor_level() == slr.ResolvedLevel(
+        assert slr.resolve_anchor_level()[0] == slr.ResolvedLevel(
             anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB,
             mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
             leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
@@ -175,8 +179,6 @@ def test_the_seat_reference_imports_without_numpy() -> None:
 
 @pytest.mark.parametrize("version", [1, 2])
 def test_session_schema_requires_leveling_after_upgrade(anchor, version):
-    import json
-    from jasper.active_speaker.session_volume_plan import measurement_reference_volume_db
     raw = json.loads(anchor.read_text())
     raw["artifact_schema_version"] = version
     anchor.write_text(json.dumps(raw))
