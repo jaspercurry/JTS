@@ -93,23 +93,3 @@ def servers(conf: str) -> list[tuple[frozenset[int], dict]]:
             locations[(m.group("mod") or "", m.group("path"))] = body[start + 1 : end]
         out.append((ports, locations))
     return out
-
-
-def canonical_routes(conf: str) -> dict[str, list[str]]:
-    """The route table a conf resolves to: "<listeners> [<mod> ]<path>" ->
-    the block's directives, with comments, blank lines and layout dropped.
-
-    Everything nginx acts on, nothing an edit to the prose can move.
-    """
-    routes: dict[str, list[str]] = {}
-    for ports, locations in servers(conf):
-        listeners = ",".join(str(port) for port in sorted(ports))
-        for (modifier, path), body in locations.items():
-            key = " ".join(part for part in (listeners, modifier, path) if part)
-            assert key not in routes, f"duplicate location block: {key}"
-            routes[key] = [
-                line.strip()
-                for line in body.splitlines()
-                if line.strip() and not line.strip().startswith("#")
-            ]
-    return routes
