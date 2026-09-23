@@ -29,7 +29,12 @@ import numpy as np
 
 from jasper.control import restart_broker
 from jasper.log_event import log_event
-from jasper.service_units import OUTPUTD_SERVICE, read_unit_property, systemd_int
+from jasper.service_units import (
+    AEC_RECONCILE_SERVICE,
+    OUTPUTD_SERVICE,
+    read_unit_property,
+    systemd_int,
+)
 from jasper.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
@@ -108,7 +113,7 @@ AEC_INIT_UNIT = "jasper-aec-init.service"
 # exit that lands the box in a state only this reconciler can resolve hands off
 # here rather than deciding locally — same shape as
 # jasper/accessories/reconcile.py's VOICE_INPUT_GATE_UNIT.
-AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
+AEC_RECONCILE_UNIT = AEC_RECONCILE_SERVICE
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"

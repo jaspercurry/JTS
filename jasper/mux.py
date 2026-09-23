@@ -103,7 +103,11 @@ from .music_sources import (
     Source,
 )
 from .platform import wire
-from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
+from .platform.status_socket import (
+    FANIN_STATUS_SOCKET,
+    MUX_CONTROL_SOCKET_PATH,
+    VOICE_CONTROL_SOCKET_PATH,
+)
 from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
@@ -1095,7 +1099,7 @@ class Mux:
             spotify_router=self._ensure_spotify_router(),
             duck_active_probe=_make_duck_active_probe(
                 os.environ.get(
-                    "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+                    "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
                 ),
             ),
         )

@@ -554,9 +554,9 @@ def _unit_active(unit: str) -> bool | None:
     as unproven and take the safe branch.
     """
     result = unit_state("is-active", unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
-    if state_is_live(
-        result.word or "", activating_is_live=True, deactivating_is_live=True,
-    ):
+    word = result.word or ""
+    # A unit still stopping is not settled, so it counts as active here.
+    if state_is_live(word, activating_is_live=True) or word == "deactivating":
         return True
     return unit_query(result)
 

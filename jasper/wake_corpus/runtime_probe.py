@@ -59,6 +59,7 @@ from jasper.mics.xvf3800 import (
 from jasper.env_file import read_env_file
 from jasper.env_load import parse_bool_value
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.service_units import AEC_BRIDGE_SERVICE
 from jasper.systemd_probe import unit_query, unit_state
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -169,7 +170,7 @@ AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
     str(artifacts.DEFAULT_ARTIFACT_DIR),
 ))
-BRIDGE_UNIT = "jasper-aec-bridge.service"
+BRIDGE_UNIT = AEC_BRIDGE_SERVICE
 UNIT_STATE_TIMEOUT_SEC = 1.5
 BRIDGE_CORPUS_OUTPUT_VARS = (
     *PLAN_ENV_VARS,
