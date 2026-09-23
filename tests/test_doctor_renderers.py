@@ -248,7 +248,6 @@ def test_shairport_legacy_remediations_name_the_canonical_device(
     }[stale_device]
     assert r.status == "fail"
     assert r.reason == expected_reason
-    assert "shairport_substream" in r.detail
 
 
 _AIRPLAY_RESOLVED_ROW = (

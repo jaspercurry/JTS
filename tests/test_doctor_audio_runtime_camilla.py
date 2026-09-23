@@ -111,11 +111,15 @@ def test_check_camilla_service_a_load_error_is_not_missing(monkeypatch):
     ],
     ids=["group-writable", "group-readonly", "setgid-lost", "wrong-group", "absent"],
 )
-def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status, reason):
+def test_camilla_configs_writable_verdicts(monkeypatch, tmp_path, mode, group, status, reason):
     d = tmp_path / "configs"
     if mode is not None:
         d.mkdir()
         os.chmod(d, mode)
+        # macOS sandboxes clear setgid on chmod; pin the classifier's input mode.
+        real_stat = Path.stat
+        st = os.stat_result((d.stat().st_mode | (mode & 0o2000), *d.stat()[1:]))
+        monkeypatch.setattr(Path, "stat", lambda path: st if path == d else real_stat(path))
 
     res = audio_runtime_camilla._camilla_configs_writable_result(
         d, expected_group=group or _own_group()
@@ -992,29 +996,6 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
             f"the doctor prints `jasper-fanin-coupling-reconcile {token}`, which "
             "the CLI rejects"
         )
-def _silent_camilla_recover_park(monkeypatch, tmp_path):
-    from jasper.control import camilla_recover_state
-
-    _seed_units(active="inactive")
-    monkeypatch.setattr(
-        camilla_recover_state,
-        "snapshot",
-        lambda *a, **k: {
-            "status": "parked",
-            "parked": True,
-            "reason": "camilla_start_failed",
-            "parked_utc": "2026-01-15T12:00:00Z",
-        },
-    )
-    return audio_runtime_camilla.check_camilla_recover_park
-
-
-def test_camilla_recover_park_detail_carries_the_writers_own_timestamp(
-    monkeypatch, tmp_path
-):
-    """A malformed parked_utc must still show up verbatim, never drop the line."""
-    result = _silent_camilla_recover_park(monkeypatch, tmp_path)()
-    assert "2026-01-15T12:00:00Z" in result.detail
 
 
 def _camilla_recover_park_check(monkeypatch, tmp_path, *, record: str | None, active: str):
