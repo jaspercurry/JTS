@@ -62,15 +62,6 @@ CUSHION_DECAY_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY"
 CUSHION_DECAY_FLOOR_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"
 USB_COMBO_ENABLED_VALUE = "enabled"
 USB_COMBO_DISABLED_VALUE = "disabled"
-# The ordered combo keys (deterministic write order for idempotence + readable
-# logs). Order is not load-bearing to the Rust reader; it is fixed only so the
-# emitted actions are stable across runs.
-USB_COMBO_ENV_VARS = (
-    USB_DIRECT_ENV_VAR,
-    HOST_CLOCK_ENV_VAR,
-    CUSHION_DECAY_ENV_VAR,
-    CUSHION_DECAY_FLOOR_ENV_VAR,
-)
 
 
 def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
