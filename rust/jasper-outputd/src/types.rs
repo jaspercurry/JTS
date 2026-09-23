@@ -6,8 +6,9 @@
 
 use anyhow::Result;
 
-pub use jasper_tts_protocol::{AssistantProfile, SegmentKind, SAMPLE_RATE};
+pub use jasper_tts_protocol::{AssistantProfile, SegmentKind};
 
+pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u16 = 2;
 
 /// One sample of outputd's INTERNAL program — the spine every stage between
