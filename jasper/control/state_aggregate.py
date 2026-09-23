@@ -31,10 +31,7 @@ from ..platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
 )
-from ..volume_diagnostics import (
-    build_volume_policy_snapshot,
-    read_diagnostics as _read_volume_diagnostics,
-)
+from ..volume_diagnostics import build_volume_policy_snapshot
 from . import (
     debug_control,
     grouping_supervisor,
@@ -631,7 +628,6 @@ async def _get_state(
         main_volume_db=camilla["main_volume_db"],
         persisted_main_volume_db=persisted_main_volume_db,
         mux_status=mux,
-        diagnostics=_read_volume_diagnostics(),
     )
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control

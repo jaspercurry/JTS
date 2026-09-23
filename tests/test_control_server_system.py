@@ -1271,7 +1271,6 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
 async def test_state_audio_volume_policy_surfaces_push_guard(
     monkeypatch, tmp_path,
 ):
-    from jasper import volume_diagnostics
     from jasper.control import server as srv_mod
 
     spotify_state = write_librespot_state(
@@ -1283,25 +1282,8 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         "listening_level": 100,
         "main_volume_db": -12.5,
     }))
-    diag_path = tmp_path / "volume_policy.json"
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(volume_state))
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
-    volume_diagnostics.record_source_push(
-        "spotify",
-        level=100,
-        ok=False,
-        reason=volume_diagnostics.PUSH_WRITE_FAILED,
-    )
-    volume_diagnostics.record_push_guard(
-        "spotify",
-        level=100,
-        guard_db=-12.5,
-        previous_db=0.0,
-        reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
-        context="dispatch_spotify_degraded",
-    )
-
     body = await srv_mod._get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
@@ -1315,9 +1297,11 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     assert policy["carrier"] == "camilla_guard"
     assert policy["push_guard_active"] is True
     assert policy["guard_db"] == -12.5
-    assert policy["guard_reason"] == "push_write_failed"
-    assert policy["previous_db"] == 0.0
-    assert policy["last_source_push_result"]["reason"] == "write_failed"
+    assert set(policy) == {
+        "active_source", "source", "volume_mode", "carrier", "listening_level_percent",
+        "main_volume_db", "persisted_main_volume_db", "push_guard_active", "guard_db",
+        "last_handoff",
+    }
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(

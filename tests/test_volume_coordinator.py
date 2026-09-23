@@ -44,12 +44,6 @@ from jasper.volume_scales import (
     listening_level_to_spotify_percent,
     spotify_percent_to_listening_level,
 )
-from jasper.volume_diagnostics import (
-    PUSH_NO_ACTIVE_DEVICE,
-    PUSH_OK,
-    PUSH_WRITE_FAILED,
-    read_diagnostics,
-)
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused
 from jasper.volume_persistence import VolumePersistence
@@ -532,22 +526,17 @@ def _spotify_account(*, devices_fn, volume_fn=None) -> AccountClient:
 
 
 @pytest.mark.parametrize(
-    ("case", "expect_ok", "expect_reason"),
+    ("case", "expect_ok"),
     [
-        ("hung", False, PUSH_NO_ACTIVE_DEVICE),
-        ("no_match", False, PUSH_NO_ACTIVE_DEVICE),
-        ("write_raises", False, PUSH_WRITE_FAILED),
-        ("ok", True, PUSH_OK),
+        ("hung", False),
+        ("no_match", False),
+        ("write_raises", False),
+        ("ok", True),
     ],
 )
-async def test_set_spotify_pins_diagnostic_by_scenario(
-    tmp_path, monkeypatch, case, expect_ok, expect_reason,
+async def test_set_spotify_push_result_and_echo_stamp(
+    tmp_path, monkeypatch, case, expect_ok,
 ):
-    """`_set_spotify` walks Router.devices_named itself (unlike every other
-    test in this file, which stubs `_set_spotify` outright) — so this is the
-    only place its own diagnostic/stamp outcomes get pinned."""
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     monkeypatch.setattr(spotify_router_mod, "DEVICES_TIMEOUT_SEC", 0.05)
     release = threading.Event()
     volume_calls: list[int] = []
@@ -587,9 +576,6 @@ async def test_set_spotify_pins_diagnostic_by_scenario(
         release.set()
 
     assert result is expect_ok
-    push_result = read_diagnostics(str(diag_path))["last_source_push_result"]
-    assert push_result["ok"] is expect_ok
-    assert push_result["reason"] == expect_reason
     if case == "ok":
         assert Source.SPOTIFY in coord._last_outbound
         assert volume_calls == [listening_level_to_spotify_percent(55)]
@@ -598,9 +584,7 @@ async def test_set_spotify_pins_diagnostic_by_scenario(
 
 
 @pytest.mark.parametrize("ok", [True, False], ids=["ok", "failure"])
-async def test_set_bluetooth_pins_diagnostic_by_scenario(tmp_path, monkeypatch, ok):
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+async def test_set_bluetooth_push_result_and_echo_stamp(tmp_path, monkeypatch, ok):
     monkeypatch.setattr(
         vps_mod,
         "_bluez_alsa_active_transport_path",
@@ -621,43 +605,16 @@ async def test_set_bluetooth_pins_diagnostic_by_scenario(tmp_path, monkeypatch, 
         str(listening_level_to_bt_volume(55)),
         bus="--system",
     )
-    push_result = read_diagnostics(str(diag_path))["last_source_push_result"]
-    assert push_result["ok"] is ok
-    assert push_result["reason"] == (PUSH_OK if ok else PUSH_WRITE_FAILED)
     assert (Source.BLUETOOTH in coord._last_outbound) is ok
 
 
-def _assert_push_failure_outcome(
-    caplog,
-    diag_path,
-    *,
-    source: Source,
-    level: int,
-    reason: str,
-    context: str,
-    guard_confirmed: bool,
-    unconfirmed_warning: str,
+def _assert_push_failure_warning(
+    caplog, *, guard_confirmed: bool, unconfirmed_warning: str,
 ) -> None:
-    """Both halves of the guard contract, shared by both entry points."""
-    diagnostics = read_diagnostics(str(diag_path))
     if not guard_confirmed:
-        # An unconfirmed guard reaches diagnostics not at all, so the operator
-        # wording is the only surface there is to pin.
         assert _warnings(caplog) == [unconfirmed_warning]
-        assert "push_guard" not in diagnostics
         return
     assert len(_warnings(caplog)) == 1
-    push_guard = dict(diagnostics["push_guard"])
-    assert isinstance(push_guard.pop("updated_at"), str)
-    assert push_guard == {
-        "active": True,
-        "source": source.value,
-        "level": level,
-        "guard_db": pytest.approx(round(percent_to_db(level), 2)),
-        "previous_db": -7.5,
-        "reason": reason,
-        "context": context,
-    }
 
 
 def _stub_failed_push(monkeypatch, coord, setter_name: str, guard_confirmed: bool):
@@ -694,7 +651,7 @@ def _stub_failed_push(monkeypatch, coord, setter_name: str, guard_confirmed: boo
     ],
 )
 @pytest.mark.parametrize("guard_confirmed", [True, False])
-async def test_push_dispatch_failure_guard_preserves_diagnostics_and_warning(
+async def test_push_dispatch_failure_guard_preserves_guard_and_warning(
     tmp_path,
     monkeypatch,
     caplog,
@@ -704,8 +661,6 @@ async def test_push_dispatch_failure_guard_preserves_diagnostics_and_warning(
     context: str,
     guard_confirmed: bool,
 ):
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     coord, _, persistence = _coord(tmp_path, active={active_key: True}, level=70)
     persistence.save_now(-7.5)
     guard_calls = _stub_failed_push(
@@ -718,13 +673,8 @@ async def test_push_dispatch_failure_guard_preserves_diagnostics_and_warning(
         await coord.set_listening_level(level)
 
     assert guard_calls == [(pytest.approx(guard_db), context, True)]
-    _assert_push_failure_outcome(
+    _assert_push_failure_warning(
         caplog,
-        diag_path,
-        source=source,
-        level=level,
-        reason="push_write_failed",
-        context=context,
         guard_confirmed=guard_confirmed,
         unconfirmed_warning=(
             f"{source.value} volume dispatch failed and camilla guard could "
@@ -1122,13 +1072,9 @@ async def test_equal_spotify_observation_publishes_only_when_guard_changes(tmp_p
     assert published == []
 
 
-async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
-    tmp_path, monkeypatch,
-):
+async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(tmp_path):
     """A push confirmation during an active duck is not a real carrier
     clear. Keep the guard persisted so the observer can retry later."""
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     coord, cam, persistence = _coord(
         tmp_path, active={"spotactive": True}, db=-13.0, level=90,
     )
@@ -1143,10 +1089,6 @@ async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
 
     assert cam.set_calls == []
     _assert_persisted(persistence, level=90, db=-13.0)
-    diag = read_diagnostics(str(diag_path))
-    assert diag["last_clear_event"]["ok"] is False
-    assert diag["last_clear_event"]["reason"] == "clear_deferred_duck_active"
-    assert diag.get("push_guard", {}).get("active") is not False
 
 
 async def test_observe_spotify_repairs_live_guard_after_false_clear(tmp_path):
@@ -1168,13 +1110,9 @@ async def test_observe_spotify_repairs_live_guard_after_false_clear(tmp_path):
     _assert_persisted(persistence, level=90, db=0.0)
 
 
-async def test_successful_push_dispatch_clears_degraded_guard(
-    tmp_path, monkeypatch,
-):
+async def test_successful_push_dispatch_clears_degraded_guard(tmp_path):
     """If a later outbound push succeeds, Camilla should stop carrying
     the degraded fallback attenuation."""
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     coord, cam, persistence = _coord(
         tmp_path, active={"spotactive": True}, db=-25.0, level=50,
     )
@@ -1187,11 +1125,6 @@ async def test_successful_push_dispatch_clears_degraded_guard(
     assert coord.spotify_writes == [50]
     assert cam.set_calls[-1] == pytest.approx(0.0)
     _assert_persisted(persistence, level=50, db=0.0)
-    diag = read_diagnostics(str(diag_path))
-    assert diag["push_guard"]["active"] is False
-    assert diag["last_clear_event"]["source"] == "spotify"
-    assert diag["last_clear_event"]["previous_db"] == pytest.approx(-25.0)
-    assert diag["last_clear_event"]["reason"] == "push_confirmed"
 
 
 async def test_observe_respects_recent_cross_process_write(tmp_path):
@@ -1406,7 +1339,7 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path):
     ],
 )
 @pytest.mark.parametrize("guard_confirmed", [True, False])
-async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
+async def test_transition_push_failure_guard_preserves_guard_and_warning(
     tmp_path,
     monkeypatch,
     caplog,
@@ -1417,8 +1350,6 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
     pair: str,
     guard_confirmed: bool,
 ):
-    diag_path = tmp_path / "volume_policy.json"
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
     level = 42
     coord, _, persistence = _coord(
         tmp_path, active={}, level=level, selected=current_source.value,
@@ -1433,13 +1364,8 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
         await coord.apply_active_source_transition(prev_source, current_source)
 
     assert guard_calls == [(pytest.approx(guard_db), context, True)]
-    _assert_push_failure_outcome(
+    _assert_push_failure_warning(
         caplog,
-        diag_path,
-        source=current_source,
-        level=level,
-        reason="active_source_push_failed",
-        context=context,
         guard_confirmed=guard_confirmed,
         unconfirmed_warning=(
             f"active source: {pair}; source volume push failed and camilla "

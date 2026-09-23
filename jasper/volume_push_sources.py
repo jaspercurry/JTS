@@ -15,9 +15,8 @@ import logging
 from functools import partial
 from typing import TYPE_CHECKING
 
-from . import busctl, volume_diagnostics
+from . import busctl
 from .bluealsa_probe import active_transport_path
-from .music_sources import Source
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from .volume_scales import (
     listening_level_to_bt_volume,
@@ -49,12 +48,6 @@ async def push_spotify_volume(
     log and no-op."""
     pct = listening_level_to_spotify_percent(level)
     if router is None or not getattr(router, "clients", {}):
-        volume_diagnostics.record_source_push(
-            Source.SPOTIFY,
-            level=level,
-            ok=False,
-            reason=volume_diagnostics.PUSH_MISSING_ROUTER,
-        )
         logger.warning(
             "spotify volume set: no Web API router configured; "
             "voice/remote volume can't propagate to Spotify (set "
@@ -63,8 +56,6 @@ async def push_spotify_volume(
         )
         return False
     matches = await router.devices_named(device_name)
-    saw_device = bool(matches)
-    write_failed = False
     for ac, d in matches:
         try:
             await asyncio.wait_for(
@@ -73,37 +64,17 @@ async def push_spotify_volume(
                 ),
                 timeout=DEVICES_TIMEOUT_SEC,
             )
-            volume_diagnostics.record_source_push(
-                Source.SPOTIFY,
-                level=level,
-                ok=True,
-                reason=volume_diagnostics.PUSH_OK,
-                detail="device_visible",
-            )
             logger.info(
                 "spotify volume set: %d%% (account=%s)",
                 pct, ac.account.name,
             )
             return True
         except Exception as e:  # noqa: BLE001
-            write_failed = True
             logger.debug(
                 "spotify volume() failed for %s: %s",
                 ac.account.name, e,
             )
             continue
-    reason = (
-        volume_diagnostics.PUSH_WRITE_FAILED
-        if write_failed
-        else volume_diagnostics.PUSH_NO_ACTIVE_DEVICE
-    )
-    volume_diagnostics.record_source_push(
-        Source.SPOTIFY,
-        level=level,
-        ok=False,
-        reason=reason,
-        detail="device_visible" if saw_device else "device_not_visible",
-    )
     logger.warning(
         "spotify volume set FAILED: %d%% — no account could write "
         "to device '%s' (is JTS still selected in Spotify?)",
@@ -120,12 +91,6 @@ async def push_bluetooth_volume(level: int) -> bool:
     # invoked us during a brief BT-active window that closed).
     path = await _bluez_alsa_active_transport_path()
     if path is None:
-        volume_diagnostics.record_source_push(
-            Source.BLUETOOTH,
-            level=level,
-            ok=False,
-            reason=volume_diagnostics.PUSH_NO_ACTIVE_TRANSPORT,
-        )
         logger.debug(
             "bluetooth volume set: no active transport, skipping",
         )
@@ -139,23 +104,9 @@ async def push_bluetooth_volume(level: int) -> bool:
         bus="--system",
     )
     if ok:
-        volume_diagnostics.record_source_push(
-            Source.BLUETOOTH,
-            level=level,
-            ok=True,
-            reason=volume_diagnostics.PUSH_OK,
-            detail="transport_present",
-        )
         logger.info("bluetooth volume set: %d%% (uint16=%d)", level, vol)
         return True
     else:
-        volume_diagnostics.record_source_push(
-            Source.BLUETOOTH,
-            level=level,
-            ok=False,
-            reason=volume_diagnostics.PUSH_WRITE_FAILED,
-            detail="transport_present",
-        )
         logger.warning(
             "bluetooth volume set FAILED: %d%% (uint16=%d)", level, vol,
         )
