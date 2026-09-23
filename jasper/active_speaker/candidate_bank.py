@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
+from jasper.active_speaker import state_paths
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -95,15 +96,15 @@ def _bank_root(root: Path | None) -> Path:
 
 def _candidate_roots(root: Path) -> tuple[Path, ...]:
     from jasper.active_speaker.bundles import DEFAULT_SESSIONS_DIR  # lazy: keep discovery imports cheap
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: commissioning import cost
 
+    campaigns = state_paths.DEFAULT_CAMPAIGN_ROOT.name
     root = Path(root)
     paired = {
-        DEFAULT_SESSIONS_DIR.name: DEFAULT_CAMPAIGN_ROOT.name,
-        DEFAULT_CAMPAIGN_ROOT.name: DEFAULT_SESSIONS_DIR.name,
+        DEFAULT_SESSIONS_DIR.name: campaigns,
+        campaigns: DEFAULT_SESSIONS_DIR.name,
     }.get(root.name)
     if root == _bank_root(None):
-        paired = DEFAULT_CAMPAIGN_ROOT.name
+        paired = campaigns
     return (root, root.parent / paired) if paired else (root,)
 
 
@@ -163,14 +164,13 @@ def publish_authored_candidate(candidate: Any, *, root: Path | None = None) -> B
     from jasper.active_speaker.bundles import (  # lazy: candidate bank is used by status before NumPy loads
         BUNDLE_FILE_MODE, BUNDLE_SCHEMA_VERSION,
     )
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: authoring-only writer
     from jasper.audio_measurement.bundles import write_json_artifact  # lazy: authoring-only writer
 
     if candidate.analysis.get("measurement_status") != "unmeasured":
         raise CandidateBankRefusal("authored_status_required", "an authored candidate must be unmeasured")
     bundle_id = f"authored-{candidate.fingerprint}"
     stores = _candidate_roots(_bank_root(root))
-    destination = next((store for store in stores if store.name == DEFAULT_CAMPAIGN_ROOT.name), stores[0])
+    destination = next((store for store in stores if store.name == state_paths.DEFAULT_CAMPAIGN_ROOT.name), stores[0])
     path = destination / CANDIDATE_ARTIFACT_GLOB.replace("*", bundle_id, 1).replace("*", "authored", 1)
     bundle = path.parents[5]
     if path.exists():
@@ -254,11 +254,9 @@ def find_banked_candidate(
         raise CandidateBankRefusal(
             "fingerprint_required", "a candidate fingerprint is required"
         )
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: commissioning import cost
-
     bank_root = _bank_root(root)
     campaign_root = next(
-        (store for store in _candidate_roots(bank_root) if store.name == DEFAULT_CAMPAIGN_ROOT.name),
+        (store for store in _candidate_roots(bank_root) if store.name == state_paths.DEFAULT_CAMPAIGN_ROOT.name),
         None,
     )
 

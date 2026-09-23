@@ -33,6 +33,10 @@ DEFAULT_COMMISSION_LOAD_STATE_PATH = Path(
 )
 BASELINE_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 DEFAULT_BASELINE_CONFIG_PATH = CANONICAL_CAMILLA_CONFIG_DIR / "active_speaker_baseline.yml"
+#: The on-box campaign home: banked rounds, one directory each. A sibling of
+#: ``bundles.DEFAULT_SESSIONS_DIR`` rather than a child of it, so session
+#: retention (``bundles.enforce_retention``) never walks over a banked round.
+DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 
 
 def _resolved(path: str | Path | None, env: str, default: Path) -> Path:

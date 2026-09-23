@@ -5797,14 +5797,14 @@ def test_cardioid_compare_passes_only_the_louder_states_trim(tmp_path, monkeypat
     ("applied", "level_error")])
 def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monkeypatch, failure, reason):
     from unittest.mock import AsyncMock
-    from jasper.active_speaker import rear_compare, round_bank
+    from jasper.active_speaker import rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
     from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
     if failure == "rear":
         compare_evidence[1]["recomposition_snapshot"].clear()
     elif failure == "round":
-        monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "empty")
+        monkeypatch.setattr(state_paths, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "empty")
     elif failure == "range":
         monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
     elif failure == "preview":

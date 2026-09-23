@@ -432,7 +432,7 @@ def _get_measurements(handler: _Handler) -> None:
 
 def _get_measurements_data(handler: _Handler) -> None:
     from jasper.active_speaker import bundles as active_bundles
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
+    from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
     from . import correction_measurements
 
     query = parse_qs(urlparse(handler.path).query)

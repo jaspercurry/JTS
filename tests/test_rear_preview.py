@@ -354,7 +354,7 @@ def test_compare_delta_is_broadband_with_retained_headroom(pose, key):
 
 @pytest.fixture
 def compare_evidence(tmp_path, monkeypatch):
-    from jasper.active_speaker import audition, baseline_profile, rear_compare, round_bank
+    from jasper.active_speaker import audition, baseline_profile, rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
 
     root = pair_round(tmp_path)
@@ -371,7 +371,7 @@ def compare_evidence(tmp_path, monkeypatch):
                "recomposition_snapshot": {"rear_calibration": section}}
     load = baseline_profile.load_applied_baseline_profile_state
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda path=None: applied if path is None else load(path))
-    monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", root.parent)
+    monkeypatch.setattr(state_paths, "DEFAULT_CAMPAIGN_ROOT", root.parent)
     monkeypatch.setattr(rear_compare, "_levels", {})
     rear_compare._build_sha.cache_clear()
     readers._front_pair_round.cache_clear()
