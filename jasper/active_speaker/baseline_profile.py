@@ -1246,7 +1246,7 @@ def prepare_applied_baseline_profile(
               **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),
               "measured_candidate_fingerprint": candidate.fingerprint}
     source["fingerprint"] = _fingerprint({key: value for key, value in source.items() if key != "fingerprint"})
-    from .crossover_v2.planning import alignment_to_candidate_fields  # lazy: planning loads NumPy
+    from .crossover_v2.alignment_prescription import alignment_to_candidate_fields  # lazy: alignment_prescription loads NumPy
 
     at = applied_at or _utc_now()
     timing = _candidate_timing(candidate, at, provenance, saved_timing)

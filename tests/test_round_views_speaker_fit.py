@@ -17,7 +17,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim, fit_branches
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, fit_branches
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -37,7 +37,7 @@ from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
-    AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis, RealizedLevelMatch,
+    AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis,
 )
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
@@ -114,9 +114,6 @@ def speaker_round(tmp_path):
                                      alignment_objective="flat_sum_estimate", flatness_improvement_db=2.25,
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
-    match = RealizedLevelMatch(0, 0.5, 0.5, 3, True, (800, 1600), (1600, 3200))
-    trim = decide_trim(anchored_db={"woofer": 0, "tweeter": -3}, resolved_db={"woofer": 0, "tweeter": -13},
-                       tweeter_role="tweeter", anchored_match=match, resolved_match=match, ripple_db=1.25)
     record.update(program=program.to_dict(), program_id=program.program_id,
                   curves=analysis_curve_records(analysis, program),
                   capture_setup={"calibration": {"model": "minidsp_umik2", "calibration_id": "mic-1"}},
@@ -129,12 +126,12 @@ def speaker_round(tmp_path):
     }}))
     region = {"id": "pair", "lower_driver": "woofer", "upper_driver": "tweeter", "fc_hz": 2400, "order": 4}
     (directory / "candidate.json").write_text(json.dumps({
-        "analysis": analysis_json(analysis, trim), "source_preset": {"crossover_regions": [region]},
+        "analysis": analysis_json(analysis), "source_preset": {"crossover_regions": [region]},
     }))
     group = manifest_set([(row.path, record)], set_id="speaker-set")
     group["capture_basis"].update(role="woofer")
     write_manifest(root, groups=[group])
-    return root, record, program, classes, region, trim
+    return root, record, program, classes, region
 
 
 @pytest.mark.parametrize("cloud_planned,cloud_present,post_apply_verifies", [
@@ -143,7 +140,7 @@ def speaker_round(tmp_path):
 def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     speaker_round, cloud_planned, cloud_present, post_apply_verifies, capsys,
 ):
-    root, record, program, classes, region, trim = speaker_round
+    root, record, program, classes, region = speaker_round
     inputs = round_inputs(root)
     state = json.loads(inputs.state_path.read_text())
     if not post_apply_verifies:
@@ -201,7 +198,7 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
 
 @pytest.mark.parametrize("fc_hz", [2400, 200])
 def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, fc_hz):
-    root, _, _, _, _, _ = speaker_round
+    root, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     manifest = json.loads((directory / "run_manifest.json").read_text())
@@ -241,7 +238,6 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     banked_trim = {"woofer": min(0, 10 - cut_db), "tweeter": min(0, -10 + cut_db)}
     candidate_path = directory / "candidate.json"
     candidate = json.loads(candidate_path.read_text())
-    candidate["analysis"]["trim_decision"]["committed_db"] = banked_trim
     candidate["analysis"]["trim_db"] = banked_trim
     candidate_path.write_text(json.dumps(candidate))
     manifest["sets"][0]["capture_basis"]["gating_applied"] = True
@@ -403,7 +399,7 @@ def test_current_round_packet_uses_mark_pairs(speaker_round, program, marks, pai
 
 @pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
 def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, trusted_floor_hz):
-    root, record, program, _, _, _ = speaker_round
+    root, record, program, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     grid = np.geomspace(60, 4000, 1024)
@@ -1014,7 +1010,7 @@ def test_first_experiment_unavailable_codes(speaker_round, tmp_path, missing, re
 
 @pytest.mark.parametrize("incumbent_role,remaining", [("tweeter", 40.0), ("woofer", 3.0)])
 def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_round, incumbent_role, remaining):
-    *_, region, _ = speaker_round
+    *_, region = speaker_round
     vocabularies = _fit_vocabularies({
         "source_preset": {"crossover_regions": [region]},
         "linearization": {incumbent_role: {"filters": [

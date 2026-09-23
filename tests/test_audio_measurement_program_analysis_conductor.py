@@ -2,14 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The one crossover-v2 conductor/session round-trip split out of
-``test_audio_measurement_program_analysis.py`` (Wave 0, PR 0b).
-
-Quarantined here — not merged back into that file — because it is the only
-test there that builds a ``CrossoverV2Session`` (via
-``tests/crossover_v2_fixtures.py``'s ``_conductor``/``FakeSeams``), so the
-census's largest class-A file can stay session-free.
-"""
+"""The configured-path round trip, through the analyzer and the fitter, split
+out of ``test_audio_measurement_program_analysis.py`` (Wave 0, PR 0b)."""
 
 from __future__ import annotations
 
@@ -19,6 +13,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
+from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.audio_measurement import program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
@@ -144,32 +140,16 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         dataclasses.asdict(dataclasses.replace(neutral, configured_path_composed=False)),
         dataclasses.asdict(legacy),
     )
-    from tests.crossover_v2_fixtures import FakeSeams, _conductor
-    from jasper.active_speaker.crossover_v2 import planning
-    from jasper.active_speaker.crossover_v2.intervention import plan_linearization
-
-    fitted = []
-    for analysis in (neutral, legacy):
-        conductor = _conductor(FakeSeams())
-        # The planner since #2291 Phase 2b, which returns what the fitter used
-        # to leave on the conductor. The three values compared are the same
-        # three: the committed trims, the emitted filters, and the linearized
-        # VERIFY prediction.
-        plan = planning.plan_for_candidate(
-            analysis,
-            analysis.candidate,
-            None,
-            preset=conductor.source_preset,
-            program_for_phase=lambda _: program,
-            roles=tuple(role.role for role in conductor.roles_bands),
-            driver_class_by_role={},
-            fit_budget_by_role={},
-            plan_linearization=plan_linearization,
-            journal=lambda _: None,
-        )
-        fitted.append((
-            dict(plan.role_attenuations_db),
-            dict(plan.linearization),
-            plan.linearized_predicted_sum,
-        ))
+    bands = {
+        role: (program.segment(segment).f1_hz, program.segment(segment).f2_hz)
+        for role, segment in (("woofer", "sweep_w"), ("tweeter", "sweep_t"))
+    }
+    fitted = [
+        {role: fit.to_dict() for role, fit in fit_branches(
+            [DriverEvidence(r.role, r, bands[r.role]) for r in analysis.driver_responses],
+            mic_tiers=dict.fromkeys(bands, "reference"),
+            vocabulary=FitVocabulary(allow_boost=True), sections=configured,
+        ).fits.items()}
+        for analysis in (neutral, legacy)
+    ]
     assert_same(fitted[0], fitted[1])

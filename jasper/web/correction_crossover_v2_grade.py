@@ -155,7 +155,6 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
-    from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT
 
     # **This grade reads no ``fc_selection``, on any round.** It once gated its
     # success verdicts on a corner selector's verdict and completeness — "the Fc
@@ -240,10 +239,10 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
         and str(verify.get("code") or "") != REASON_VERIFY_CROSSOVER_REGION
         if isinstance(verify, Mapping) else False
     )
-    # ``accountability``'s "the forecast said worse" ledger value. Item 2 dropping
-    # its refusal is what makes this reachable; it GRADES here, it does not gate.
+    # The retired accountability ledger's "the forecast said worse" value; it
+    # GRADES here, it does not gate.
     no_material_improvement = (
-        str(comparison.get("reason") or "") == LEDGER_NOT_AN_IMPROVEMENT
+        str(comparison.get("reason") or "") == "not_an_improvement"
         or improvement_db is not None
         and improvement_db < PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
     )

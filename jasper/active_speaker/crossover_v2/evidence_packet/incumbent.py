@@ -89,8 +89,7 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
     ``candidate.json``, so ``polarity`` stays the candidate's own action word,
     a flip RELATIVE to the declared ``upper_polarity``. The applied profile's
     ABSOLUTE per-role ``inverted`` flags would put two rows in two frames on
-    any speaker whose draft declares an inverted branch; that conversion's one
-    owner is ``commanded.profile_graph_summation``.
+    any speaker whose draft declares an inverted branch.
     """
     linearization = _mapping(candidate.get("linearization"))
     alignment = _mapping(candidate.get("alignment"))

@@ -71,7 +71,6 @@ from jasper.audio_measurement.program_analysis import (
     RoleGainSolve,
     SegmentLocation,
     _verify_capture_integrity,
-    predicted_branch_sum,
     solve_branch_trims,
 )
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
@@ -660,68 +659,6 @@ def _solve_fixture_raw_trim(
 _FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
 
 
-def _fixture_raw_predicted_sum(
-    *, woofer_db=None, tweeter_db=None, trim_db=None,
-) -> tuple[np.ndarray, np.ndarray]:
-    if woofer_db is None or tweeter_db is None:
-        default_woofer_db, default_tweeter_db = _fixture_branch_db()
-        woofer_db = default_woofer_db if woofer_db is None else woofer_db
-        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
-    if trim_db is None:
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    summed = predicted_branch_sum(
-        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
-        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
-        float(trim_db.get("woofer", 0.0)), float(trim_db.get("tweeter", 0.0)), 1,
-    )
-    return (
-        _LINEARIZABLE_FREQS_HZ,
-        20.0 * np.log10(np.maximum(np.abs(summed), 1e-12)),
-    )
-
-
-def _eligible_measure_analysis(
-    program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
-    woofer_db=None, tweeter_db=None, trim_db=None, trim_band_average_db=None,
-) -> ProgramAnalysis:
-    default_woofer_db, default_tweeter_db = _fixture_branch_db()
-    if woofer_db is None:
-        woofer_db = default_woofer_db
-    if tweeter_db is None:
-        tweeter_db = default_tweeter_db
-    if trim_db is None:
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    if trim_band_average_db is None:
-        trim_band_average_db = dict(trim_db)
-    return ProgramAnalysis(
-        phase="measure",
-        program_id=program.program_id,
-        locations=(
-            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"), _loc("sweep_t_rep"),
-        ),
-        drift=DriftEstimate(
-            epsilon_ppm=5.0,
-            max_residual_samples=0.1, glitch_detected=False,
-        ),
-        mic_tier=mic_tier,
-        driver_responses=(
-            _linearizable_response("woofer", woofer_db, n_repeats=woofer_repeats),
-            _linearizable_response("tweeter", tweeter_db, n_repeats=tweeter_repeats),
-        ),
-        alignment=_alignment(),
-        candidate=CrossoverCandidate(
-            trim_db=trim_db, polarity="normal", delay_us=150.0,
-            predicted_ripple_db=0.8, confidence=0.8,
-            trim_band_average_db=trim_band_average_db,
-        ),
-        linearity_ok=True,
-        predicted_sum=_fixture_raw_predicted_sum(
-            woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
-        ),
-        glitch_detected=False,
-    )
-
-
 def _way1_measure_analysis(program) -> ProgramAnalysis:
     freqs = _LINEARIZABLE_FREQS_HZ
     magnitude_db = (
@@ -920,10 +857,6 @@ class FakeCam:
     async def set_volume_db(self, db: float, *, best_effort: bool = False) -> bool:
         self.volume_db = float(db)
         return True
-
-
-def _flow_seams(conductor: Any) -> Any:
-    return conductor._seams
 
 
 _TWO_WAY_GROUP = [{

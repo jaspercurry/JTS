@@ -6,18 +6,13 @@
 
 from __future__ import annotations
 
-import dataclasses
 import pytest
 from jasper.active_speaker.crossover_v2 import contracts
-from jasper.active_speaker.crossover_v2 import (
-    intervention as iv,
-)
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
 )
 
-from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_TRIM_SANITY_MARGIN_DB
 from jasper.active_speaker.crossover_v2.contracts import CLAIM_NOT_EVALUATED
 from jasper.active_speaker.crossover_v2.verification import (
     verify_absolute_tolerance_db,
@@ -170,123 +165,3 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
     assert verify_absolute_tolerance_db([1000.0]) is None
 
 
-@dataclasses.dataclass(frozen=True)
-class _MarginMatch:
-    """The one field ``decide_trim`` reads off a realized-level match."""
-
-    difference_db: float
-
-
-#: The two ULPs of one nominal anchor. Both print as "-2.691" on every surface
-#: that rounds — including the guard's own journal line, which is why the CI
-#: log showed ``drift_db=6.0 margin_db=6.0`` beside a rejection — and they
-#: re-derive ``abs((anchor - 6.0) - anchor)`` on OPPOSITE sides of the margin:
-#: 5.999999999999999 and 6.000000000000001. Measured, not chosen.
-_MARGIN_ANCHOR_UNDER_ULP = -2.691
-_MARGIN_ANCHOR_OVER_ULP = -2.6910000000003
-
-
-def _trim_at_exactly_the_margin(anchor_db: float):
-    """``decide_trim`` on a scan that drifted EXACTLY the sanity margin.
-
-    Driven through production rather than recomputed here. An earlier version
-    of this pin evaluated the comparison inline in the test body with the
-    tolerance hardcoded, which made it a tautology about ``math.isclose`` and a
-    second source of truth for the rule it claimed to pin — the adversarial
-    gate killed it by rebinding the module's ``math`` to an always-False shim
-    and watching every arm stay green.
-    """
-    margin = LINEARIZATION_TRIM_SANITY_MARGIN_DB
-    anchored = {"woofer": 0.0, "tweeter": anchor_db}
-    resolved = {"woofer": 0.0, "tweeter": anchor_db - margin}
-    return iv.decide_trim(
-        anchored_db=anchored,
-        resolved_db=resolved,
-        tweeter_role="tweeter",
-        # EQUAL realized level on both pairs, so nothing but the sanity bound
-        # can decide this call. With unequal levels the ``anchor_levels_better``
-        # arm would commit the anchored pair too, and a test that could not
-        # tell those two apart would pass for the wrong reason.
-        anchored_match=_MarginMatch(1.0),
-        resolved_match=_MarginMatch(1.0),
-        ripple_db=0.4,
-    )
-
-
-@pytest.mark.parametrize(
-    ("case", "anchor_db"),
-    [
-        ("re-derives just under the margin", _MARGIN_ANCHOR_UNDER_ULP),
-        ("re-derives just over it", _MARGIN_ANCHOR_OVER_ULP),
-    ],
-    ids=["under_ulp", "over_ulp"],
-)
-def test_a_drift_that_is_the_margin_is_trusted_whichever_ulp_it_lands_on(
-    case, anchor_db,
-):
-    """The boundary must be a rule, not a coin flip across interpreters.
-
-    ``drift_db`` is a difference of two doubles neither of which is exactly
-    representable, so a scan that drifted EXACTLY the margin re-derives a ULP
-    either side of it depending on the anchor's last bits — and those come out
-    of numpy reductions whose SIMD path varies by build. A bare ``>`` therefore
-    answered differently on py3.11 (trusted) and py3.12/3.13 (rejected) for the
-    same input, on a test that had been green for months.
-
-    Asserted on the RETURNED DECISION, so the pin binds production: the scan is
-    not beyond the margin, it was not rejected, and the record does not carry
-    the sanity-drift strategy.
-    """
-    decision = _trim_at_exactly_the_margin(anchor_db)
-
-    assert decision.beyond_sanity_margin is False, case
-    assert decision.outcome == "fitted", case
-    assert (
-        decision.strategy
-        is not iv.TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT
-    ), case
-    assert decision.anchor_drift_db == pytest.approx(
-        LINEARIZATION_TRIM_SANITY_MARGIN_DB
-    ), case
-
-
-def test_the_over_ulp_anchor_really_does_reproduce_the_naive_failure(monkeypatch):
-    """The fixture's own self-check, and it runs through production too.
-
-    Without it, ``_MARGIN_ANCHOR_OVER_ULP`` could drift to a value landing on
-    the same side as its twin, and the parametrization above would pass while
-    pinning one case twice. Rather than recomputing the comparison here, this
-    removes the TOLERANCE from the shipped code — exactly the mutation the gate
-    used to kill the previous version of this pin — and requires the two arms
-    to diverge:
-
-    * the over-ULP anchor is rejected (the CI failure, reproduced), and
-    * the under-ULP anchor is still trusted, which is what makes this a ULP
-      question rather than the fixture being beyond the margin outright.
-    """
-    monkeypatch.setattr(iv.math, "isclose", lambda *a, **k: False, raising=True)
-
-    assert _trim_at_exactly_the_margin(
-        _MARGIN_ANCHOR_OVER_ULP
-    ).beyond_sanity_margin is True, (
-        "this arm must reproduce the CI failure once the tolerance is gone, "
-        "or the test above pins nothing"
-    )
-    assert _trim_at_exactly_the_margin(
-        _MARGIN_ANCHOR_UNDER_ULP
-    ).beyond_sanity_margin is False, (
-        "and its twin must not, or the two arms are not two ULPs of one number"
-    )
-
-
-def test_the_sanity_bound_reads_its_tolerance_from_one_comparison():
-    """One comparison, not two that can disagree.
-
-    A second `>` added anywhere for the same bound would reintroduce the coin
-    flip on whichever path skipped the tolerance.
-    """
-    import inspect
-
-    source = inspect.getsource(iv.decide_trim)
-    assert source.count("> float(sanity_margin_db)") == 1
-    assert "math.isclose(" in source

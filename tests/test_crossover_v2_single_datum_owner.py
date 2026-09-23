@@ -8,9 +8,8 @@ Replaces ``test_crossover_v2_level_frame_dispute.py``, whose subject was
 deleted with the mechanism it pinned. That file pinned a three-case rule in
 :func:`jasper.active_speaker.crossover_v2.intervention.anchor_trims` under which
 two per-driver estimators voted and a 3.0 dB cliff decided whether their
-reconciliation was admitted. This file pins that there is no vote left, that
-the surviving check cannot move a number, and that the safety normalize the
-migration ran past is intact.
+reconciliation was admitted. This file pins that there is no vote left and
+that the safety normalize the migration ran past is intact.
 
 **What went wrong, in one paragraph.** The anchor was
 ``base + giveback + level_frame_offset``, and the offset carried a
@@ -28,25 +27,10 @@ rolled the round back.
 from __future__ import annotations
 
 import inspect
-from dataclasses import replace
 
 import pytest
 
 from jasper.active_speaker.crossover_v2 import intervention as iv
-from jasper.active_speaker.crossover_v2 import plan_assembly as pa
-from jasper.audio_measurement.program_analysis import (
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-)
-# The planner harness, borrowed rather than forked: that module already owns
-# the two stubs a `plan_linearization` run needs (the un-replayable fit and
-# ripple seams) and the banked request they run against. A second copy here
-# would be a second answer to "how do you drive the planner".
-from tests.test_crossover_v2_intervention_dual_run import (
-    _install_stubs,
-    _planner_request,
-    _sections_at,
-)
-from tests.test_crossover_v2_incident_replay import SELECTED_FC_HZ
 
 # --------------------------------------------------------------------------- #
 # the 2026-08-16 jts3 terms
@@ -200,88 +184,6 @@ def test_the_move_the_migration_removes_is_the_owners_stated_plus_3_79_db():
     assert old_tweeter - new_tweeter["tweeter"] == pytest.approx(3.79, abs=0.01)
 
 
-def test_no_definition_gap_can_change_the_committed_pair():
-    """A capture whose two definitions part company ships the same trims.
-
-    The behavioural half of "the comparison cannot move a number". Two
-    verdicts as far apart as the tolerance allows, one committed pair.
-    """
-    baseline, baseline_shift = _anchor()
-    agreeing = iv.compare_level_definitions(
-        trim_band_average_db=_RAW_TRIM_DB,
-        core_proposal_db=_RAW_TRIM_DB,
-    )
-    wild = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -30.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": 12.0},
-    )
-    assert agreeing is not None and not agreeing.differs
-    assert wild is not None and wild.differs
-    # Same inputs to the anchor, same answer, whatever the check said.
-    again, again_shift = _anchor()
-    assert again == baseline and again_shift == baseline_shift
-
-
-# --------------------------------------------------------------------------- #
-# (a2) the WIRING — which of the request's two estimates reaches the anchor
-# --------------------------------------------------------------------------- #
-
-
-def _anchored_through_the_planner(monkeypatch, **request_overrides):
-    """One full ``plan_linearization`` run's anchored pair.
-
-    Through the whole planner rather than :func:`anchor_trims` directly,
-    because the wiring is the fact under test: everything above pins what the
-    anchor DOES with a base, and none of it can see which base the planner
-    picks up.
-    """
-
-    _install_stubs(monkeypatch, scan_delta_db=0.0)
-    request = _planner_request(_sections_at(SELECTED_FC_HZ))
-    plan = iv.plan_linearization(replace(request, **request_overrides))
-    return dict(plan.trim.anchored_db)
-
-
-def test_the_planner_anchors_on_the_raw_trim_and_not_the_band_average(monkeypatch):
-    """#2662 G4: the level datum's owner, pinned at the seam that chooses it.
-
-    ``plan_linearization`` is handed BOTH per-driver level estimates on one
-    request — ``raw_trim_db`` and the subordinate ``trim_band_average_db`` —
-    and passes exactly one of them to the anchor. Which one is the fact this
-    repo's prose got backwards at three sites in a single commit
-    (``9b27f2716``, whose subject asserted the wrong half too), so an argument
-    about it is worth nothing and a test is worth having.
-
-    Stated as two runs rather than as arithmetic, so it cannot pass by
-    re-deriving ``base + giveback`` the way production does: moving the
-    SUBORDINATE estimate must change nothing, and moving the OWNER by the same
-    amount must change the answer. A planner wired to the band average fails
-    both halves at once.
-    """
-
-    on_owner = _anchored_through_the_planner(
-        monkeypatch,
-        raw_trim_db=_RAW_TRIM_DB,
-        trim_band_average_db=_TRIM_BAND_AVERAGE_DB,
-    )
-
-    # (i) the subordinate estimate moves the full 3.942 dB; the datum does not.
-    subordinate_moved = _anchored_through_the_planner(
-        monkeypatch,
-        raw_trim_db=_RAW_TRIM_DB,
-        trim_band_average_db=_RAW_TRIM_DB,
-    )
-    assert subordinate_moved == pytest.approx(on_owner)
-
-    # (ii) the owner moves by that same amount, and the anchor follows it.
-    owner_moved = _anchored_through_the_planner(
-        monkeypatch,
-        raw_trim_db=_TRIM_BAND_AVERAGE_DB,
-        trim_band_average_db=_TRIM_BAND_AVERAGE_DB,
-    )
-    assert owner_moved["tweeter"] != pytest.approx(on_owner["tweeter"])
-
-
 # --------------------------------------------------------------------------- #
 # the safety invariant the migration ran past
 # --------------------------------------------------------------------------- #
@@ -324,17 +226,8 @@ def test_the_normalize_preserves_relative_placement_exactly():
 
 
 # --------------------------------------------------------------------------- #
-# the consistency check: symmetric, advisory, three-state
+# what the migration deleted stays deleted
 # --------------------------------------------------------------------------- #
-
-
-def test_the_tolerance_is_the_realized_level_one_and_is_owned_once():
-    """One DISCLOSURE TRIGGER, one owner — and it is the number it always was."""
-    assert iv.LEVEL_ESTIMATOR_TOLERANCE_DB == REALIZED_LEVEL_MATCH_TOLERANCE_DB
-    default = inspect.signature(
-        iv.compare_level_definitions
-    ).parameters["tolerance_db"].default
-    assert default == iv.LEVEL_ESTIMATOR_TOLERANCE_DB
 
 
 @pytest.mark.parametrize(
@@ -355,168 +248,14 @@ def test_the_frame_solver_is_gone(name):
     assert not hasattr(linearization_fit, name)
 
 
-# --------------------------------------------------------------------------- #
-# the consistency check: estimator-vs-estimator, advisory, three-state
-# --------------------------------------------------------------------------- #
-
-
-def test_an_empty_estimate_means_no_verdict_not_an_agreement():
-    """``None`` is a third state, not a quiet synonym for "they agreed"."""
-    assert iv.compare_level_definitions(
-        trim_band_average_db={}, core_proposal_db=_RAW_TRIM_DB,
-    ) is None
-    assert iv.compare_level_definitions(
-        trim_band_average_db=_RAW_TRIM_DB, core_proposal_db={},
-    ) is None
-
-
-def test_neither_definition_is_preferred():
-    """The ruling, as a test: the comparison reports a DISTANCE, not a winner.
-
-    #2609 carries two owner comments pointing opposite ways on the same numeric
-    pair, and ruling S8 explains why: each was right about a DIFFERENT quantity.
-    The handover level is the level fact and the passband estimate is the
-    starting estimate; neither places the pair, and swapping which one carries
-    the offset must not change what is reported.
-    """
-    a = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
-    )
-    b = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": -2.0},
-    )
-    assert a is not None and b is not None
-    assert a.differs is b.differs is True
-    assert a.worst_delta_db == pytest.approx(b.worst_delta_db)
-    assert a.estimator_delta_db == pytest.approx(b.estimator_delta_db)
-
-
-def test_the_comparison_is_relative_not_absolute():
-    """A common-mode offset between the two is not a difference worth reporting.
-
-    The two definitions carry different references — a power-band average over
-    the mirrored halves about Fc, and a median over the driver's own core band
-    — so only their PLACEMENT of the pair is comparable, which is also the only
-    thing the anchor commits.
-    """
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
-        core_proposal_db={"woofer": -25.0, "tweeter": -35.0},
-    )
-    assert verdict is not None
-    assert verdict.worst_delta_db == pytest.approx(0.0)
-    assert not verdict.differs
-
-
-def test_a_role_only_one_definition_covered_is_not_a_difference():
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -40.0},
-        core_proposal_db={"woofer": 0.0},
-    )
-    assert verdict is not None
-    assert not verdict.differs
-    assert set(verdict.estimator_delta_db) == {"woofer"}
-
-
-def test_a_verdict_exactly_at_the_bar_is_not_disclosed():
-    """The boundary is `>`, so exactly-at-tolerance is not a finding."""
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -10.0},
-        core_proposal_db={
-            "woofer": 0.0,
-            "tweeter": -10.0 + iv.LEVEL_ESTIMATOR_TOLERANCE_DB,
-        },
-    )
-    assert verdict is not None
-    assert not verdict.differs
-    assert verdict.reason == ""
-
-
-def test_the_incident_gap_discloses_and_ships_anyway():
-    """3.326 dB against a 3.0 dB bar: disclosed, and the pair ships unchanged.
-
-    The same magnitude that took the deleted third branch. The verdict still
-    fires — S8 did not widen the bar, it corrected what the number MEANS — and
-    what it produces is a disclosure. The anchor is the raw measured trim
-    either way.
-    """
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -10.835},
-        core_proposal_db={"woofer": 0.0, "tweeter": -10.835 + 3.326},
-    )
-    assert verdict is not None
-    assert verdict.differs
-    assert verdict.reason == iv.LEVEL_DEFINITIONS_DIFFER_REASON
-    assert verdict.worst_delta_db == pytest.approx(3.326, abs=1e-6)
-    anchored, _ = _anchor()
-    assert anchored["tweeter"] == pytest.approx(
-        _MEASURED_TWEETER_DB, abs=_INCIDENT_TOLERANCE_DB
-    )
-
-
-def test_the_verdict_states_which_axis_the_levels_were_read_on():
-    """Toole's constraint, as a pin: a level without its axis is unplaceable.
-
-    Where woofer beaming and horn directivity mismatch, the on-axis,
-    listening-window and power-response ratios differ and there is NO single
-    correct level — so a tool that matched one and did not say which published
-    a number whose meaning the reader cannot recover.
-
-    The value is derived from where the capture was taken, not chosen: the
-    level fact is computed from the MEASURE capture, and MEASURE is a capture
-    with no prompted move of its own, which ``spatial._DESIGN_AXIS_GEOMETRY``
-    names a design-axis capture at ``degrees=0``. This asserts the axis the
-    verdict reports IS that geometry's bearing, so a future regime that moves
-    the capture off axis cannot leave this label behind saying otherwise.
-    """
-    from jasper.active_speaker.crossover_v2 import spatial
-
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
-    )
-    assert verdict is not None
-    assert verdict.matched_axis == iv.LEVEL_MATCH_AXIS
-    assert verdict.to_dict()["matched_axis"] == iv.LEVEL_MATCH_AXIS
-    assert str(spatial._DESIGN_AXIS_GEOMETRY.degrees) in iv.LEVEL_MATCH_AXIS
-
-
-def test_the_two_tolerances_answer_different_questions_and_both_stay():
-    """The disclosure trigger is not the setting precision, and cannot become it.
-
-    Two numbers, two jobs, and someone will try to collapse them. **3.0 dB is
-    when to TELL someone** the two level definitions parted company.
-    **<=0.5 dB is how precisely the trim must LAND** once the level fact is
-    known — and it is already met by construction, because the trim search
-    steps five times finer than that.
-
-    Pinned as an inequality rather than two equalities so it says the RELATION
-    that matters: the disclosure trigger must stay well above the setting
-    precision. A future edit that narrows 3.0 toward 0.5 turns this red, which
-    is exactly the collapse the plan warns about.
+def test_the_trim_search_step_meets_the_setting_precision():
+    """**<=0.5 dB is how precisely the trim must LAND** once the level fact is
+    known — met by construction, because the trim search steps finer than that.
     """
     from jasper.audio_measurement.program_analysis import RIPPLE_TRIM_SEARCH_STEP_DB
 
     setting_precision_db = 0.5
     assert RIPPLE_TRIM_SEARCH_STEP_DB <= setting_precision_db
-    assert iv.LEVEL_ESTIMATOR_TOLERANCE_DB > setting_precision_db
-
-
-def test_the_verdict_serializes_flat_for_the_journal():
-    verdict = iv.compare_level_definitions(
-        trim_band_average_db={"woofer": 0.0, "tweeter": -2.0},
-        core_proposal_db={"woofer": 0.0, "tweeter": -10.0},
-    )
-    assert verdict is not None
-    payload = verdict.to_dict()
-    assert set(payload) == {
-        "differs", "reason", "matched_axis", "tolerance_db", "worst_delta_db",
-        "estimator_delta_db",
-    }
-    assert payload["differs"] is True
-    assert payload["worst_delta_db"] == pytest.approx(8.0)
 
 
 def test_the_summed_owner_plumbing_is_gone_not_dormant():
@@ -531,14 +270,6 @@ def test_the_summed_owner_plumbing_is_gone_not_dormant():
     rides the applied incumbent, so combining them double-counts the
     incumbent's trims. Fixture-only code is not kept as aspiration.
     """
-    from dataclasses import fields
-
     from jasper.audio_measurement import program_analysis
 
     assert not hasattr(program_analysis, "summed_level_reference_db")
-    names = {f.name for f in fields(iv.LinearizationRequest)}
-    assert "summed_level_reference_db" not in names
-    assert "level_frame_tolerance_db" not in names
-    assert "summed_level_reference_db" not in {
-        f.name for f in fields(pa.LinearizationPlan)
-    }

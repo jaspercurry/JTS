@@ -76,9 +76,8 @@ CANDIDATE_KIND = "jts_measured_crossover_candidate_v2"
 
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
-# The exact set ``planning.build_candidate`` stamps onto this field;
-# "" means linearization was never evaluated this attempt. Validated here so a
-# typo in the single writer fails at construction rather than persisting.
+# The exact set the retired planner stamped onto this field; "" means
+# linearization was never evaluated this attempt.
 _LINEARIZATION_OUTCOME_VALUES = frozenset({
     "",
     "fitted",
@@ -411,10 +410,8 @@ class MeasuredCrossoverCandidate:
     so every reader must treat a fit-quality key as OPTIONAL rather than a shape
     guarantee. Only the compact fit result is persisted, never the underlying
     ``EnvelopeCurve``. ``linearization_outcome`` is the WHY behind the FITTED
-    half only, stamped verbatim by
-    ``crossover_v2.candidates.LinearizationState.outcome``: a candidate may read
-    ``fit_failed`` while carrying prescribed filters, and the entry's own
-    ``prescribed_by`` is what distinguishes them.
+    half only: a candidate may read ``fit_failed`` while carrying prescribed
+    filters, and the entry's own ``prescribed_by`` is what distinguishes them.
 
     ``trim_decision`` is WHICH trim pair ``role_attenuations_db`` came from,
     never those dB: ``{"strategy", "committed_side", "anchor_drift_db"}``. It

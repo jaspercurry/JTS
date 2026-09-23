@@ -147,7 +147,6 @@ from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
     predicted_branch_sum,
-    realized_branch_level_match,
     solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
@@ -6273,131 +6272,6 @@ def test_build_candidate_refuses_a_tweeter_swept_above_fc():
         )
 
 
-# PR-L4 item 1 — the inter-driver realized-level assertion
-#
-# The archived 2026-07-27 JTS3 session `d5b171fa81a5` (the profile the owner
-# heard as ~10 dB dark), as its own evidence store recorded it. The candidate
-# JSON is laptop-durable at captures/iloud-comparison-20260727/trim-replay/
-# data/candidate.json and quoted in FORENSICS-SYNTHESIS.md; these three numbers
-# are all the assertion needs, so they live here rather than behind a corpus
-# env gate.
-#
-#   linearization.tweeter.target_level_db   -7.2433   (the fit's own plateau)
-#   linearization.woofer.target_level_db   -21.1250
-#   analysis.trim_db.tweeter               -22.6392   (the trim that shipped)
-#
-# The fit drives each branch to its own target, so the realized inter-driver
-# level is (target_t + trim_t) - (target_w + trim_w) = -8.7575 dB: the tweeter
-# nearly 9 dB below the woofer, across its whole passband, which is what the
-# owner heard. NOTHING in the pipeline computed that subtraction.
-JTS3_20260727_TARGET_LEVEL_DB = {"woofer": -21.1250, "tweeter": -7.2433}
-JTS3_20260727_SHIPPED_TRIM_DB = {"woofer": 0.0, "tweeter": -22.6392}
-JTS3_20260727_REALIZED_GAP_DB = -8.7575
-
-
-def _flat_branch_pair(freqs: np.ndarray, fc_hz: float, levels_db):
-    """A branch pair already fitted flat at ``levels_db``, with LR4 skirts.
-
-    The state ``realized_branch_level_match`` grades: each branch linearized to
-    a constant over its own passband, still carrying its own side of the
-    crossover. Reproduces a fitted candidate without needing its capture.
-    """
-    ratio4 = (freqs / fc_hz) ** 4
-    lp, hp = 1.0 / (1.0 + ratio4), ratio4 / (1.0 + ratio4)
-    return (
-        (lp * 10.0 ** (levels_db["woofer"] / 20.0)).astype(complex),
-        (hp * 10.0 ** (levels_db["tweeter"] / 20.0)).astype(complex),
-    )
-
-
-def test_realized_level_match_refuses_the_archived_jts3_dark_profile():
-    """PR-L4 item 1 against the profile that shipped dark.
-
-    Rebuilt from the archived candidate's own recorded numbers (above): the fit
-    put the tweeter at -7.24 dB and the woofer at -21.13 dB in one frame, then
-    the trim took another 22.64 dB off the tweeter. The pair the speaker ran
-    was therefore ~8.8 dB apart, and the assertion this test pins is the one
-    stage that would have said so — every other comparator in the chain either
-    compared the speaker to itself or was disconnected.
-    """
-    fc_hz = 2000.0
-    freqs = np.linspace(1.0, 24000.0, 262_144)
-    W, T = _flat_branch_pair(freqs, fc_hz, JTS3_20260727_TARGET_LEVEL_DB)
-
-    match = realized_branch_level_match(
-        freqs, W, T, fc_hz,
-        trim_w_db=JTS3_20260727_SHIPPED_TRIM_DB["woofer"],
-        trim_t_db=JTS3_20260727_SHIPPED_TRIM_DB["tweeter"],
-    )
-    assert match.matched is False
-    # The archived arithmetic, recovered by the estimator to within its own
-    # known linear-bin systematic (MIRRORED_HALVES_BIAS_DB).
-    assert match.difference_db == pytest.approx(
-        JTS3_20260727_REALIZED_GAP_DB, abs=MIRRORED_HALVES_BIAS_DB + 0.1
-    )
-    assert abs(match.difference_db) > REALIZED_LEVEL_MATCH_TOLERANCE_DB
-    # Signed, because "the tweeter is 9 dB down" and "9 dB up" are opposite
-    # defects and only one of them is what the household heard.
-    assert match.difference_db < 0.0
-
-
-def test_realized_level_match_accepts_the_pair_the_fixed_trim_produces():
-    """The same drivers with a trim that actually levels them: the assertion
-    passes, and it passes with real margin rather than by a hair.
-
-    The frame this trim comes from is PR-L3's: the fit frame put the two
-    branches 13.88 dB apart on that session, so trimming the tweeter by that
-    much is the level match. The shipped trim was 22.64 dB — 8.8 dB of frame
-    error, the gap the test above catches."""
-    fc_hz = 2000.0
-    freqs = np.linspace(1.0, 24000.0, 262_144)
-    W, T = _flat_branch_pair(freqs, fc_hz, JTS3_20260727_TARGET_LEVEL_DB)
-    fit_frame_gap_db = (
-        JTS3_20260727_TARGET_LEVEL_DB["tweeter"]
-        - JTS3_20260727_TARGET_LEVEL_DB["woofer"]
-    )
-
-    match = realized_branch_level_match(
-        freqs, W, T, fc_hz, trim_w_db=0.0, trim_t_db=-fit_frame_gap_db,
-    )
-    assert match.matched is True
-    assert abs(match.difference_db) <= MIRRORED_HALVES_BIAS_DB + 0.1
-
-
-def test_realized_level_match_reads_each_branch_on_its_own_side_of_fc():
-    """The bands are :func:`branch_level_bands_hz`', not a second derivation —
-    the SSOT property that keeps this check from becoming a rival estimator
-    with a rival answer (PR-L3's whole lesson, applied to its own successor)."""
-    fc_hz = 2000.0
-    freqs = np.linspace(1.0, 24000.0, 65_536)
-    W, T = _lr4_branch_magnitudes(fc_hz, freqs)
-    spans = {"woofer_span_hz": (300.0, 3000.0), "tweeter_span_hz": (1500.0, 12000.0)}
-
-    match = realized_branch_level_match(
-        freqs, W.astype(complex), T.astype(complex), fc_hz,
-        trim_w_db=0.0, trim_t_db=0.0, **spans,
-    )
-    assert (match.woofer_band_hz, match.tweeter_band_hz) == branch_level_bands_hz(
-        fc_hz, **spans
-    )
-    # Mirrored about Fc, and neither half crosses it.
-    assert match.woofer_band_hz[1] == fc_hz == match.tweeter_band_hz[0]
-
-
-def test_realized_level_match_refuses_a_span_that_does_not_reach_fc():
-    """Same raise surface as the trim solve it wraps — never a guessed verdict
-    on a geometry that has no level match in it."""
-    fc_hz = 2000.0
-    freqs = np.linspace(1.0, 24000.0, 8192)
-    W, T = _lr4_branch_magnitudes(fc_hz, freqs)
-    with pytest.raises(ValueError, match="does not reach Fc"):
-        realized_branch_level_match(
-            freqs, W.astype(complex), T.astype(complex), fc_hz,
-            trim_w_db=0.0, trim_t_db=0.0,
-            woofer_span_hz=(300.0, 3000.0), tweeter_span_hz=(2500.0, 12000.0),
-        )
-
-
 def test_realized_level_match_tolerance_clears_the_measured_frame_noise():
     """The tolerance's own floor argument, pinned rather than asserted in prose.
 
@@ -6824,8 +6698,8 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
 # looked like a drive delta was a sensitivity delta, precisely because the
 # drive divides out. (docs/historical/linearization-campaign-2026-07.md:95-96 states the
 # same thing for the trim-vs-fit frame comparison.) Its consumer —
-# ``linearization_fit.driver_core_level_db`` (reads ``DriverResponse``'s own
-# magnitude curve) — assumes it silently. Build the
+# ``linearization_fit.fit_driver_linearization`` (reads ``DriverResponse``'s
+# own magnitude curve) — assumes it silently. Build the
 # reference at unit amplitude instead, or normalize the stimulus before
 # inversion, and every one of them inherits an inter-driver level error of
 # exactly the woofer/tweeter gain difference: the same failure SHAPE as the
@@ -6884,8 +6758,7 @@ def test_measure_analysis_is_invariant_to_the_programmed_drive_gain():
     between the two analyses is attributable to the gain plan alone. What the
     assertions cover is exactly what the shared level frame reads: the
     candidate's ``trim_band_average_db`` seed and the applied ``trim_db``, plus
-    each ``DriverResponse.magnitude_db`` curve that ``driver_core_level_db``
-    takes its core-passband median from.
+    each ``DriverResponse.magnitude_db`` curve the fit reads.
     """
     woofer_ir = _band_impulse(200, 150.0, 6000.0, 1.0)
     tweeter_ir = _band_impulse(225, 300.0, 20000.0, 0.7)
@@ -7149,92 +7022,6 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     best = min(summed_spread_db(t) for t in np.arange(-40.0, 0.01, 0.5))
     assert summed_spread_db(candidate.trim_db["tweeter"]) <= best + 1.0
     assert summed_spread_db(L3_RUN5_BROKEN_TRIM_DB) > best + 10.0
-
-
-# What the two level estimators read on run 5 once the fit's median is taken
-# off the declared CAPTURE span and put on the driver's radiating band
-# (#1929). Both measured on the archived bytes by this test; the woofer's
-# +2.09 dB is the real-hardware size of the effect #1809's comment measured
-# at 1.66 dB on a synthetic and #1870's field session was refused over.
-L1929_RUN5_CORE_SHIFT_DB = {"woofer": 2.0931, "tweeter": 0.5066}
-L1929_RUN5_DISAGREEMENT_DB = {"declared_span": 1.0761, "radiating_band": 0.5104}
-
-
-@requires_cdhorn
-def test_the_radiating_band_core_level_converges_on_the_trim_frame(monkeypatch):
-    """**#1929 hardware regression.** The frame gate exists to ask whether two
-    INDEPENDENT measured estimates of one physical quantity — where these two
-    drivers sit relative to each other — agree. On real bytes, taking the
-    fit's median off the declared capture span and putting it on the driver's
-    radiating band makes them agree **better**: 1.076 dB to 0.510 dB.
-
-    That is the whole argument for the change, and it cannot be made on a
-    synthetic. The declared spans here are the ones #1870's field session ran
-    (woofer to 4000 Hz, tweeter from 2000, Fc 2000 LR4), so the woofer's own
-    LR4 stopband occupies ~28% of its core-mask bins and drags its median
-    2.09 dB below where the driver sits. The tweeter, declared FROM Fc, is
-    contaminated only by the knee and moves 0.51 dB — the asymmetry is why
-    the error does not cancel between the roles and lands on the gate.
-
-    Direction is asserted before magnitude: whatever the corpus era, the
-    radiating-band frame must not agree WORSE than the declared-span one.
-    """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, radiating_band_hz,
-    )
-    from jasper.active_speaker.linearization_fit import driver_core_level_db
-
-    analysis, _program, _capture, _offset, _cal = _cdhorn_run5_analysis(monkeypatch)
-    responses = {r.role: r for r in analysis.driver_responses}
-    envelopes = {
-        role: _cdhorn_run5_envelope(role, responses[role])
-        for role in CDHORN_RUN5_BANDS_HZ
-    }
-    bands = {
-        role: radiating_band_hz((
-            CrossoverSection(
-                fc_hz=CDHORN_RUN5_FC_HZ, order=4, highpass=(role == "tweeter"),
-            ),
-        ))
-        for role in CDHORN_RUN5_BANDS_HZ
-    }
-    # The premise: the woofer really was swept an octave past where it
-    # radiates, which is what a `measurement_band_hz` declaration is for.
-    assert bands["woofer"][1] < CDHORN_RUN5_BANDS_HZ["woofer"][1]
-
-    declared = {r: driver_core_level_db(responses[r], envelopes[r]) for r in envelopes}
-    radiating = {
-        r: driver_core_level_db(responses[r], envelopes[r], radiating_band_hz=bands[r])
-        for r in envelopes
-    }
-    for role in envelopes:
-        # Each driver reads HIGHER once its own stopband stops voting: the
-        # sign is structural, the size is this speaker's.
-        assert radiating[role] > declared[role], role
-        assert radiating[role] - declared[role] == pytest.approx(
-            L1929_RUN5_CORE_SHIFT_DB[role], abs=0.05
-        ), role
-
-    # ...and the two estimators converge. `trim_band_average_db` is the trim
-    # solve's mirrored ±1-octave power average — the other instrument, on the
-    # same bytes, which #1929 does not touch.
-    trims = analysis.candidate.trim_band_average_db
-    trim_gap_db = trims["tweeter"] - trims["woofer"]
-    disagreement = {
-        "declared_span": abs(
-            (declared["tweeter"] - declared["woofer"]) + trim_gap_db
-        ),
-        "radiating_band": abs(
-            (radiating["tweeter"] - radiating["woofer"]) + trim_gap_db
-        ),
-    }
-    assert disagreement["radiating_band"] < disagreement["declared_span"]
-    for frame, expected in L1929_RUN5_DISAGREEMENT_DB.items():
-        assert disagreement[frame] == pytest.approx(expected, abs=0.05), frame
-    # Both clear the gate on THIS session — it is a healthy capture, and the
-    # point is the margin, not a flipped verdict (the flip is pinned end to
-    # end on a synthetic in tests/test_crossover_v2_conductor.py).
-    assert disagreement["declared_span"] < REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 
 # R18 — honest post-apply verification (issues #1868 / #1654)

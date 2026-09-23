@@ -60,17 +60,13 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
-from jasper.active_speaker.crossover_v2 import (
-    planning,
-    position_cycle,
-)
+from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.audio_measurement.evidence_reasons import (
     REASON_TOO_FEW_SEATS,
     REASON_CROSS_SEAT_SPREAD_OVERFLOW,
     REASON_NO_CURVE_GRID,
 )
 from jasper.sound.profile import EVALUABLE_Q_MAX
-from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
 from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,
@@ -1499,9 +1495,8 @@ def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
 
     ``spatial_combine`` owns ``sigma_db`` (cross-position spread of a band's
     POWER LEVEL) and ``max_sigma_db`` (worst single bin in a band). Neither is
-    this. Both are banked — in ``candidate.json``'s ``exclusion_evidence``, for
-    the ``cloud_measure`` group — so the words are live elsewhere in the tree
-    and pinned here as NOT reused, rather than as merely absent today.
+    this. Both are ``BandSpread`` fields, so the words are live elsewhere in the
+    tree and pinned here as NOT reused, rather than as merely absent today.
     """
     block = _sigma_block(tmp_path)
 
@@ -1513,22 +1508,6 @@ def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
     assert {"sigma_db", "max_sigma_db"} <= set(
         BandSpread.__dataclass_fields__
     )
-    # …and the shape that actually banks them, so "they live elsewhere in the
-    # tree" is asserted against the writer rather than believed.
-    banked = planning.exclusion_evidence_json(
-        CloudFitEvidence(
-            excluded_bands_hz=(),
-            band_spread=(
-                BandSpread(
-                    center_hz=1000.0, f_lo=707.0, f_hi=1414.0,
-                    sigma_db=0.5, max_sigma_db=2.0, n_bins=40,
-                ),
-            ),
-            n_positions=4,
-        ),
-        cloud_result={},
-    )
-    assert {"sigma_db", "max_sigma_db"} <= set(banked["band_spread"][0])
 
 
 # --------------------------------------------------------------------------- #

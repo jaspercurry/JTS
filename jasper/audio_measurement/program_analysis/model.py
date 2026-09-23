@@ -189,9 +189,8 @@ RIPPLE_TRIM_MAX_DB = 0.0
 RIPPLE_TRIM_MIN_DB = -60.0
 
 # How far the two branches' realized levels (mirrored +/-1-octave
-# half-bands about Fc) may sit apart after the committed trim before being
-# REPORTED as mislevelled — a DISCLOSURE, not a gate
-# (crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB). Floor: five
+# half-bands about Fc) may sit apart after the committed trim and still count
+# as level matched. Floor: five
 # archived JTS3 cdhorn captures agree to 0.51-1.30 dB. Ceiling: an
 # inter-branch error reaches flat_spec.SPEC_BANDS[1]'s 2.0 dB tolerance at
 # ~2.0 dB, so 2-3 dB errors are spec failures this does not flag.

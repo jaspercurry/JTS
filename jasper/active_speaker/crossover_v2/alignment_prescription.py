@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-from jasper.audio_measurement.program_analysis import half_period_us
+from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, ProgramAnalysis, half_period_us
+from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
 from jasper.json_fields import finite_float
 
 from ._prescription_common import (
@@ -33,6 +34,7 @@ __all__ = [
     "AlignmentPrescriptionRefused",
     "alignment_delay_search_bounds_us",
     "alignment_prescription_response_format",
+    "alignment_to_candidate_fields",
     "read_alignment_prescription",
 ]
 
@@ -289,6 +291,38 @@ def read_alignment_prescription(
             )
     return replace(prescription, checked_at_fc_hz=corner,
                    lobe_us=half_period_us(corner) if corner is not None else None)
+
+
+def alignment_to_candidate_fields(
+    analysis: ProgramAnalysis | Mapping[str, Any] | AlignmentPrescription, *, roles: Sequence[str],
+) -> tuple[float | None, str | None, str | None]:
+    """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
+
+    Sign contract (design §5.6.5): ``analysis.delay_us`` is
+    ``(D_woofer − D_tweeter)``, so positive ⇒ the TWEETER branch is delayed,
+    negative ⇒ the woofer is. ``MeasuredCrossoverAlignment`` wants a
+    non-negative magnitude plus the delayed role, so the sign folds into the
+    role choice. ``(None, None, None)`` when no alignment is trustworthy or
+    there is a lone branch — the candidate falls back to a trims-only apply.
+    """
+    if isinstance(analysis, Mapping):
+        if analysis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT:
+            return None, None, None
+        status, delay, measured_polarity = (analysis.get(key) for key in ("alignment_status", "delay_us", "polarity"))
+    elif isinstance(analysis, AlignmentPrescription):
+        status, delay = ALIGNMENT_OK, analysis.delay_us
+        polarity = analysis.polarity
+    else:
+        if getattr(getattr(analysis, "candidate", None), "timing_verdict", None) == TIMING_NEEDS_MEASUREMENT:
+            return None, None, None
+        est = analysis.alignment
+        status, delay, measured_polarity = (est.status, est.delay_us, est.polarity) if est else (None, None, None)
+    if not isinstance(analysis, AlignmentPrescription):
+        polarity = POLARITY_INVERT if measured_polarity == "inverted" else POLARITY_KEEP
+    if status != ALIGNMENT_OK or delay is None or len(roles) < 2:
+        return None, None, None
+    delay_us = float(delay)
+    return abs(delay_us), roles[1] if delay_us >= 0 else roles[0], polarity
 
 
 def alignment_prescription_response_format() -> dict[str, Any]:

@@ -40,9 +40,9 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     AlignmentPrescription,
     AlignmentPrescriptionRefused,
     alignment_prescription_response_format,
+    alignment_to_candidate_fields,
     read_alignment_prescription,
 )
-from jasper.active_speaker.crossover_v2.planning import alignment_to_candidate_fields
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -713,7 +713,7 @@ def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
     whose branches are inverted relative to each other, so the automatic answer
     is a real result rather than a default — and the pin has to survive every
     hop from the prior to
-    :func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`,
+    :func:`~jasper.active_speaker.crossover_v2.alignment_prescription.alignment_to_candidate_fields`,
     which is where the measurement frame's word becomes the candidate's action.
 
     The prescribed delay rides through unchanged in both cases, which is what

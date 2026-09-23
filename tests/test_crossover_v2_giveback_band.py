@@ -16,7 +16,7 @@ leg that was guarded.
 **The incident these tests are built from** (jts3, 2026-08-19; full evidence
 chain in ``captures/wired-night-2026-08-19/run-log.md`` §10.9). The anchor took
 ``LinearizationFit.correction_giveback_db``, a power mean over each driver's own
-CORE band, while ``realized_level_match`` grades the crossover halves. On a
+CORE band, while the verdict grades the crossover halves. On a
 compression-horn tweeter those barely overlap — core 2077-7949 Hz against a
 graded 1649-3297 Hz — so the horn's 3-8 kHz correction bought back level where
 the verdict is not taken. The committed pair then carried
@@ -34,14 +34,10 @@ only stops the bad case is half a fix:
 * a correction lying INSIDE it must still be given back (the purpose).
 
 **Scope: this file pins the PHYSICS, not the WIRING.** Every test here drives
-``anchor_trims`` / ``solve_branch_trims`` / ``realized_branch_level_match``
-directly on synthetic branches, so it answers "is the arithmetic right?" and
-cannot notice a planner that stopped calling any of it. The wiring — that
-``plan_linearization`` actually measures its give-back this way and that the
-committed candidate carries the result — is guarded by
-``test_crossover_v2_conductor.py``, ``test_crossover_v2_incident_replay.py`` and
-``test_crossover_v2_intervention_dual_run.py``, which run the real planner. Both
-halves are needed; neither substitutes for the other.
+``anchor_trims`` / ``solve_branch_trims`` directly on synthetic branches, so it
+answers "is the arithmetic right?" and cannot notice a caller that stopped
+using any of it. The wiring — that ``resolve_trims_after_fit`` measures its
+give-back this way — is guarded by ``test_round_views_speaker_fit.py``.
 """
 
 from __future__ import annotations
@@ -52,7 +48,6 @@ import pytest
 from jasper.active_speaker.crossover_v2.intervention import anchor_trims
 from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    realized_branch_level_match,
     solve_branch_trims,
 )
 
@@ -179,16 +174,16 @@ def _realized_error_db(
     t_lin: np.ndarray,
     committed: dict[str, float],
 ) -> float:
-    """The verdict: how far apart the two branches actually land."""
-    return float(
-        realized_branch_level_match(
-            freqs, w_lin, t_lin, FC_HZ,
-            trim_w_db=committed[WOOFER],
-            trim_t_db=committed[TWEETER],
-            woofer_span_hz=WOOFER_SPAN_HZ,
-            tweeter_span_hz=TWEETER_SPAN_HZ,
-        ).difference_db
+    """The verdict: how far apart the two branches actually land, each read
+    by the trim solve's own estimator after its committed trim."""
+    _rw, _rt, level_w, level_t = solve_branch_trims(
+        freqs,
+        w_lin * 10.0 ** (committed[WOOFER] / 20.0),
+        t_lin * 10.0 ** (committed[TWEETER] / 20.0),
+        FC_HZ,
+        woofer_span_hz=WOOFER_SPAN_HZ, tweeter_span_hz=TWEETER_SPAN_HZ,
     )
+    return float(level_t - level_w)
 
 
 def _horn_case() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

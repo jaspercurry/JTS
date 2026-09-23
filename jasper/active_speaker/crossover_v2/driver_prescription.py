@@ -370,7 +370,7 @@ class DriverPrescription:
     #: Roles whose trim this document NAMES, as ``((role, db), ...)`` sorted by
     #: role. Empty is the ordinary case and leaves every trim to the solver.
     #:
-    #: A named trim is CARRIED, not re-solved: :func:`~.planning.build_candidate`
+    #: A named trim is CARRIED, not re-solved: ``candidate_parts.compose_candidate``
     #: folds it over the round's own solved value, so a transplanted filter
     #: chain keeps the ABSOLUTE per-driver level it was shaped against. An
     #: absolute pin does NOT promise to preserve the inter-driver delta — the
@@ -1146,7 +1146,7 @@ def driver_prescription_to_candidate_fields(
     ``headroom_cost_db`` is omitted but NOT owned here: a charge is a property
     of the emitted chain (filters, crossover sections, committed trim) and this
     is a pure function over a document and a fitted map.
-    :func:`~.planning.build_candidate` stamps it (#2759), so a caller that
+    ``candidate_parts.compose_candidate`` stamps it (#2759), so a caller that
     folds these entries on without charging them discloses 0.0 for a branch
     that genuinely spends maximum SPL.
 
@@ -1183,7 +1183,7 @@ def driver_prescription_to_candidate_fields(
             },
         }
         # The BIT, never the number: the pinned value is the candidate's own
-        # ``role_attenuations_db`` entry once ``build_candidate`` folds it, and
+        # ``role_attenuations_db`` entry once ``compose_candidate`` folds it, and
         # two copies is how they come to disagree.
         if role in pinned_roles:
             entry["trim_pinned"] = True

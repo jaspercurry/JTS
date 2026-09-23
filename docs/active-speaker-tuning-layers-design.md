@@ -118,8 +118,8 @@ a flatness claim.
 
 A trim adjustment must use the same level frame as the trim it changes. Each
 branch starts from its committed raw trim and adds its measured before/after
-level change over `branch_level_bands_hz`, using the estimator that
-`solve_branch_trims` and `realized_level_match` share. A common shift then
+level change over `branch_level_bands_hz`, using `solve_branch_trims`'
+estimator. A common shift then
 normalizes the pair to non-positive trims.
 
 A correction's own core-band delta is not interchangeable with this crossover

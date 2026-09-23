@@ -17,9 +17,9 @@ from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
 from .crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KIND, ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
-    PRESCRIPTION_OUT_OF_LOBE, AlignmentPrescription, AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
+    PRESCRIPTION_OUT_OF_LOBE, AlignmentPrescription, AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, alignment_to_candidate_fields,
+    read_alignment_prescription,
 )
-from .crossover_v2.planning import alignment_to_candidate_fields
 from .alignment_evidence import commissioning_alignment
 from .measured_crossover_candidate import MeasuredCrossoverAlignment, MeasuredCrossoverCandidate
 from .profile import required_driver_roles
