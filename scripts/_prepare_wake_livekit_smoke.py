@@ -130,13 +130,14 @@ def _load_features(path: Path, *, label: str) -> np.ndarray:
 
 def _copy_or_load_external(
     path: Path | None,
-    *,
-    fallback: np.ndarray,
-    label: str,
+    *, positives: np.ndarray, count: int, seed: int, label: str,
 ) -> tuple[np.ndarray, str]:
-    if path is None:
-        return fallback.astype(np.float32, copy=False), "synthetic_embedding_placeholder"
-    return _load_features(path.expanduser().resolve(), label=label), "operator_supplied"
+    if path is not None:
+        return _load_features(path.expanduser().resolve(), label=label), "operator_supplied"
+    return (
+        _synthetic_negatives(positives, count=count, seed=seed),
+        "synthetic_embedding_placeholder",
+    )
 
 
 def _synthetic_negatives(
@@ -398,20 +399,16 @@ def prepare_livekit_smoke(
     negative_test_count = negative_test_count or max(positive_test.shape[0] * 4, 16)
     negative_train, negative_train_source = _copy_or_load_external(
         negative_train_features,
-        fallback=_synthetic_negatives(
-            positive_train,
-            count=negative_train_count,
-            seed=seed,
-        ),
+        positives=positive_train,
+        count=negative_train_count,
+        seed=seed,
         label="negative_train",
     )
     negative_test, negative_test_source = _copy_or_load_external(
         negative_test_features,
-        fallback=_synthetic_negatives(
-            positive_test,
-            count=negative_test_count,
-            seed=seed + 1,
-        ),
+        positives=positive_test,
+        count=negative_test_count,
+        seed=seed + 1,
         label="negative_test",
     )
 

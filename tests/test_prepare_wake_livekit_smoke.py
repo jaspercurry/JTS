@@ -94,22 +94,29 @@ def test_accepts_operator_supplied_negative_features(tmp_path: Path) -> None:
     _write_training_workdir(training)
     neg_train = tmp_path / "neg_train.npy"
     neg_test = tmp_path / "neg_test.npy"
-    np.save(neg_train, np.ones((5, 16, 96), dtype=np.float32))
-    np.save(neg_test, np.ones((6, 16, 96), dtype=np.float32))
+    train_features = np.ones((5, 16, 96), dtype=np.float32)
+    test_features = np.ones((6, 16, 96), dtype=np.float32)
+    np.save(neg_train, train_features)
+    np.save(neg_test, test_features)
 
     summary = smoke.prepare_livekit_smoke(
         training,
         tmp_path / "smoke",
         negative_train_features=neg_train,
         negative_test_features=neg_test,
+        seed=-1,
     )
 
     assert summary["negative_features"]["train_source"] == "operator_supplied"
     assert summary["negative_features"]["test_source"] == "operator_supplied"
     assert summary["negative_features"]["quality_evidence"] is True
     model_dir = Path(summary["livekit"]["model_dir"])
-    assert np.load(model_dir / "negative_features_train.npy").shape == (5, 16, 96)
-    assert np.load(model_dir / "negative_features_test.npy").shape == (6, 16, 96)
+    np.testing.assert_array_equal(
+        np.load(model_dir / "negative_features_train.npy"), train_features
+    )
+    np.testing.assert_array_equal(
+        np.load(model_dir / "negative_features_test.npy"), test_features
+    )
 
 
 def test_rejects_bad_negative_feature_shape(tmp_path: Path) -> None:

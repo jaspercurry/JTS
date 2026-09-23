@@ -4,15 +4,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Offline harness for the live-VAD speech-arming gate.
+"""Offline harness for duration-only and peak-filtered VAD comparisons.
 
-Replays every captured wake-event WAV through silero with the same
-COLD-reset semantics production uses (``vad.reset()`` at turn start),
-then computes:
+Replays every captured wake-event WAV through silero with cold-reset scoring,
+then computes two offline models. ``jasper.voice.speech_activity`` owns the
+runtime rule and measures sustained speech with the capture clock.
 
-  - When the *current* live-VAD gate would arm
+  - When the *duration-only baseline* would arm
     (3 consecutive frames at silero >= 0.15)
-  - When a *candidate* peak-confidence gate would arm
+  - When the configured *peak-filtered comparison* would arm
     (same, but also requires max silero in the run >= --peak-min)
   - Peak silero in the wake-tail window (0–400 ms post-wake)
   - Peak silero in the user-speech window (400–2000 ms post-wake)
@@ -23,7 +23,7 @@ Use this to:
      cases — high tail peak, low user-speech peak).
   2. Sweep --peak-min to find a threshold that separates wake-tail
      residual from real speech across the corpus.
-  3. Verify a proposed gate change before deploying it.
+  3. Compare the two offline models before a runtime timing review.
 
 The frame-alignment offset between the live mic stream and the
 captured WAV is a few tens of ms of jitter that we can't reproduce.
@@ -71,17 +71,16 @@ def _replay(
     max_window_ms: int = 2000,
 ) -> dict:
     """Feed frames from start_sample to a fresh silero VAD with the
-    production gate logic. Returns a dict describing the arming
-    behavior: when (if ever) the current gate fires, when (if ever)
-    the peak-min-augmented gate fires, and the max silero in the run."""
-    vad = SpeechVAD()  # cold — matches production reset
+    duration-only baseline and peak-filtered comparison. Returns when
+    each model arms, if ever."""
+    vad = SpeechVAD()
     wake_sample = int(CAPTURE_PRE_SEC * 16000)
 
     consec = 0
     run_start_ms = None
     run_max = 0.0
-    current_arm_at = None      # current gate (duration only)
-    peakgate_arm_at = None     # current + peak-min requirement
+    current_arm_at = None      # duration-only baseline
+    peakgate_arm_at = None     # configured peak-filtered comparison
 
     for i in range(start_sample, len(data) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
         rel_ms = (i - wake_sample) / 16
@@ -146,8 +145,8 @@ def analyze_event(
     wake_sample = int(CAPTURE_PRE_SEC * rate)
 
     # Sweep drain-done offsets; report the WORST-case (earliest arm)
-    # for the current gate, and the BEST-case (earliest non-arm or
-    # latest arm) for the peakgate.
+    # for the duration baseline, and the BEST-case (earliest non-arm or
+    # latest arm) for the peak-filtered comparison.
     current_arms = []
     peakgate_arms = []
     for off_ms in DRAIN_OFFSETS_MS:
@@ -178,11 +177,11 @@ def analyze_event(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--threshold", type=float, default=0.15,
-                   help="silero speech threshold (current: 0.15)")
+                   help="silero threshold for both offline models (default: 0.15)")
     p.add_argument("--sustained-ms", type=int, default=200,
-                   help="min sustained-speech duration to arm (current: 200)")
+                   help="duration-only baseline threshold (default: 200 ms)")
     p.add_argument("--peak-min", type=float, default=0.40,
-                   help="candidate: min PEAK silero in arming run")
+                   help="configured comparison's minimum peak silero")
     p.add_argument("--corpus-dir", type=str,
                    default=str(ROOT / "wake-events" / "latest"),
                    help="directory of captured wake events")
@@ -230,8 +229,8 @@ def main() -> int:
           f"threshold={args.threshold}, sustained_ms={args.sustained_ms}, "
           f"peak_min={args.peak_min}")
     print(f"\n{'event_id':<28} {'tail':>6} {'speech':>7} "
-          f"{'cur_arm':>9} {'peak_arm':>9} {'live_arm':>9} "
-          f"{'cur?tail':>10} {'peak?tail':>10}")
+          f"{'base_arm':>9} {'peak_arm':>9} {'live_arm':>9} "
+          f"{'base?tail':>10} {'peak?tail':>10}")
     print("-" * 105)
 
     for w in wavs:
@@ -258,15 +257,15 @@ def main() -> int:
     n_cur_any = sum(1 for r in rows if r["current_arm_at_ms"] is not None)
     n_peak_any = sum(1 for r in rows if r["peakgate_arm_at_ms"] is not None)
     print(f"\nSummary across {n} events:")
-    print(f"  Current gate arms in wake-tail window:  {n_cur_tail}/{n} "
+    print(f"  Duration baseline arms in wake-tail:    {n_cur_tail}/{n} "
           f"({100*n_cur_tail/n:.0f}%) — these are likely false arms")
-    print(f"  Peak-min gate arms in wake-tail window: {n_peak_tail}/{n} "
+    print(f"  Peak-filtered comparison arms in tail:  {n_peak_tail}/{n} "
           f"({100*n_peak_tail/n:.0f}%)")
-    print(f"  Current gate arms at all (within 2s):   {n_cur_any}/{n}")
-    print(f"  Peak-min gate arms at all (within 2s):  {n_peak_any}/{n}")
+    print(f"  Duration baseline arms within 2s:       {n_cur_any}/{n}")
+    print(f"  Peak-filtered comparison arms within 2s:{n_peak_any:>4}/{n}")
     delta = n_cur_any - n_peak_any
-    print(f"  Events the peak-min gate would REJECT: {delta} "
-          f"(current arms but peak-min doesn't)")
+    print(f"  Events the peak comparison rejects:     {delta} "
+          f"(baseline arms but comparison does not)")
 
     if args.csv:
         with open(args.csv, "w", newline="") as f:
