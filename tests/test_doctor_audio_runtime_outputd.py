@@ -538,10 +538,10 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
 # _outputd_xrun_rate_warning — the outputd xrun-rate WARN tier
 # ===========================================================================
 
-def _xrun_section(rate_per_hour, last_xrun_age_ms):
+def _xrun_section(rate_per_hour, last_xrun_age_ms, xrun_count=2):
     """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
     return {
-        "xrun_count": 0,
+        "xrun_count": xrun_count,
         "xrun_rate_per_hour": rate_per_hour,
         "last_xrun_age_ms": last_xrun_age_ms,
     }
@@ -563,13 +563,15 @@ def test_outputd_xrun_warning_suppressed_for_stale_burst():
     assert audio_runtime_outputd._outputd_xrun_rate_warning(stale, stale) is None
 
 
-def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
-    """A recent xrun with a LOW sustained rate (one transient blip) must not
-    warn — only a rate at/above the threshold qualifies."""
-    blip = _xrun_section(
-        rate_per_hour=audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
-        last_xrun_age_ms=1000,
-    )
+@pytest.mark.parametrize("rate_per_hour,xrun_count", [
+    (audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1, 2),
+    # One xrun 3 s after a restart reads as 142/h while uptime is short.
+    (142.1, 1),
+])
+def test_outputd_xrun_warning_suppressed_for_recent_blip(rate_per_hour, xrun_count):
+    """A recent xrun below the sustained rate, or a single xrun at any rate,
+    is a transient and must not warn."""
+    blip = _xrun_section(rate_per_hour, last_xrun_age_ms=1000, xrun_count=xrun_count)
     assert audio_runtime_outputd._outputd_xrun_rate_warning(blip, blip) is None
 
 

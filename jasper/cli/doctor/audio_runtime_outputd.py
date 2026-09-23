@@ -118,7 +118,8 @@ def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
 # outputd STATUS publishes xrun_rate_per_hour (count / uptime-hours) and
 # last_xrun_age_ms (ms since the most recent xrun, null when none). The WARN
 # keys on BOTH: a high rate alone can be a long-ago burst diluting as uptime
-# grows, and a recent single xrun alone is a normal transient.
+# grows, and a recent single xrun alone is a normal transient (just after a
+# restart, one xrun alone reads as a high rate, so the count must be >= 2).
 _OUTPUTD_XRUN_RATE_WARN_PER_HOUR = 6.0
 _OUTPUTD_XRUN_RECENT_AGE_MS = 300_000  # 5 minutes
 
@@ -140,7 +141,8 @@ def _outputd_xrun_rate_warning(
         rate = finite_float(section.get("xrun_rate_per_hour"))
         # last_xrun_age_ms: null → None → no recent xrun
         age = finite_float(section.get("last_xrun_age_ms"))
-        if rate is None or age is None:
+        count = finite_float(section.get("xrun_count"))
+        if rate is None or age is None or count is None or count < 2:
             continue
         if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:
             reason = (
