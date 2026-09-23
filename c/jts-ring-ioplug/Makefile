@@ -8,12 +8,11 @@
 #   make test    — build + run the host core unit test (NO ALSA; any host).
 #   make bench   — build the SHM ring writer bench (NO ALSA; any host).
 #   make plugin  — build the ALSA ioplug .so (Pi/Linux ONLY; needs alsa-lib).
-#   make install — install the .so into the ALSA plugin dir (Pi ONLY, needs root).
 #   make clean
 #
 # The host-safe targets (test, bench) never link libasound, so they build on
-# macOS + Linux. `plugin`/`install` are gated to Linux with alsa-lib headers;
-# deploy/lib/install/ring-platform.sh drives them on the Pi.
+# macOS + Linux. `plugin` needs alsa-lib; deploy/lib/install/ring-platform.sh
+# runs `make plugin` on the Pi and installs the .so itself.
 
 CC ?= cc
 # -std=c11 keeps the language strict (no silent GNU language extensions), but
@@ -32,8 +31,6 @@ LDFLAGS ?=
 # product and bench/plugin builds compile out that override entirely.
 TEST_CPPFLAGS ?= -DJTS_RING_TESTING
 
-# ALSA plugin install dir (aarch64 Trixie). Override for other multiarch dirs.
-ALSA_PLUGIN_DIR ?= /usr/lib/aarch64-linux-gnu/alsa-lib
 PLUGIN_SO := libasound_module_pcm_jts_ring.so
 # Release packaging overrides this with a path inside its freshly-created,
 # release-owned output root. Ordinary Pi/source builds keep the local default.
@@ -41,7 +38,7 @@ PLUGIN_OUTPUT ?= $(PLUGIN_SO)
 
 CORE := jts_ring_shm.c
 
-.PHONY: all test bench plugin install clean
+.PHONY: all test bench plugin clean
 
 # Default: the host-safe targets only (so `make` on a dev laptop just works).
 all: test bench
@@ -74,10 +71,6 @@ bench: ring_writer_bench ring_reader_bench
 # -DPIC implicitly; hand-rolled Makefiles must do it themselves.
 plugin: pcm_jts_ring.c $(CORE) jts_ring_shm.h
 	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_OUTPUT) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
-
-install: plugin
-	install -d $(ALSA_PLUGIN_DIR)
-	install -m 0644 $(PLUGIN_OUTPUT) $(ALSA_PLUGIN_DIR)/$(PLUGIN_SO)
 
 clean:
 	rm -f test_ring_core ring_writer_bench ring_reader_bench $(PLUGIN_OUTPUT)

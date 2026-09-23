@@ -41,15 +41,6 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
   .deflist--parks dd + dt { margin-top: 6px; }
 }
 
-/* Live indicator */
-.live-pill { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
-.live-pill__dot {
-  width: 6px; height: 6px; border-radius: 9999px;
-  background: var(--primary);
-  animation: jts-pulse 1.6s ease-in-out infinite;
-}
-@keyframes jts-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-
 /* Vital stats grid */
 .stat-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 560px) { .stat-grid { grid-template-columns: 1fr 1fr; } }
@@ -517,7 +508,6 @@ article.incident-row .incident-row__summary {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-pill__dot { animation: none; }
   .cpu-bars__fill, .collapsible__toggle svg,
   .incident-row__chevron { transition: none; }
 }

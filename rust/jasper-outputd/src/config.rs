@@ -307,7 +307,7 @@ impl Config {
         // READ AHEAD OF THE BRIDGE because it SELECTS the content source: an
         // armed marker means the bond's return lane is where this box's program
         // comes from, so there is no central hop left for a bridge to name.
-        let dac_content_ring = env_bool("JASPER_OUTPUTD_DAC_CONTENT_LANE", false)
+        let dac_content_ring = env_bool("JASPER_OUTPUTD_DAC_CONTENT_LANE", false)?
             .then(|| DEFAULT_DAC_CONTENT_RING_PATH.to_string());
         // Blank == undeclared, matching the reconciler's disable-clears-stale
         // idiom (it CLEARS a key by writing an empty value). Only the refusal
@@ -555,13 +555,13 @@ impl Config {
             );
         }
 
-        let active_lane = env_bool("JASPER_OUTPUTD_ACTIVE_LANE", false);
+        let active_lane = env_bool("JASPER_OUTPUTD_ACTIVE_LANE", false)?;
 
         // ACTIVE_LANE and RING_ACTIVE_ENDPOINT are written by the SAME helper
         // from the SAME decision, so the pair is coherent or it is a writer bug.
         // The bail is mode-INDEPENDENT: there is no content bridge under which
         // "active endpoint, no active lane" is a state a healthy box can be in.
-        let ring_active_endpoint = env_bool("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", false);
+        let ring_active_endpoint = env_bool("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", false)?;
         if ring_active_endpoint && !active_lane {
             anyhow::bail!(
                 "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT is set without \
@@ -771,7 +771,7 @@ impl Config {
             chip_ref_sample_rate,
             chip_ref_period_frames,
             chip_ref_buffer_frames,
-            chip_ref_observe: env_bool("JASPER_OUTPUTD_CHIP_REF_OBSERVE", false),
+            chip_ref_observe: env_bool("JASPER_OUTPUTD_CHIP_REF_OBSERVE", false)?,
             chip_ref_tee_path: env_optional("JASPER_OUTPUTD_CHIP_REF_TEE_PATH"),
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
@@ -836,13 +836,18 @@ fn env_optional_u16(name: &str, lo: u16, hi: u16) -> Result<Option<u16>> {
     }
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
+fn env_bool(name: &str, default: bool) -> Result<bool> {
     match std::env::var(name) {
-        Ok(s) => matches!(
-            s.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
+        Ok(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" | "" => Ok(false),
+            other => anyhow::bail!(
+                "{} must be one of 1, true, yes, on, 0, false, no, off (or empty); got {:?}",
+                name,
+                other
+            ),
+        },
+        Err(_) => Ok(default),
     }
 }
 
@@ -1418,6 +1423,41 @@ mod tests {
             let err = Config::from_env().unwrap_err();
             assert!(err.to_string().contains("JASPER_OUTPUTD_BACKEND"));
         });
+    }
+
+    #[test]
+    fn boolean_markers_take_one_vocabulary_and_park_on_anything_else() {
+        // Each marker picks a lane, so an unknown value parks the unit instead
+        // of reading as "off" and silently running the other lane.
+        for (raw, want) in [
+            ("1", true),
+            (" TRUE ", true),
+            ("yes", true),
+            ("On", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+            ("OFF", false),
+            ("", false),
+        ] {
+            with_env(&[("JASPER_OUTPUTD_CHIP_REF_OBSERVE", Some(raw))], || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.chip_ref_observe, want, "{raw:?}");
+            });
+        }
+        for key in [
+            "JASPER_OUTPUTD_DAC_CONTENT_LANE",
+            "JASPER_OUTPUTD_ACTIVE_LANE",
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT",
+            "JASPER_OUTPUTD_CHIP_REF_OBSERVE",
+        ] {
+            for bad in ["enabled", "2"] {
+                with_env(&[(key, Some(bad))], || {
+                    let err = Config::from_env().unwrap_err().to_string();
+                    assert!(err.contains(key) && err.contains(bad), "{err}");
+                });
+            }
+        }
     }
 
     #[test]

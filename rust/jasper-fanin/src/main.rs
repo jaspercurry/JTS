@@ -24,6 +24,7 @@ mod config;
 mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
+mod log_writer;
 mod mixer;
 mod output_clock;
 mod playout;
@@ -470,6 +471,8 @@ fn install_signal_handlers(shutdown: &Arc<AtomicBool>) -> Result<()> {
 mod tests {
     use super::*;
 
+    use crate::mixer::ring_output::ring_open_error;
+
     /// The park decision must survive the `.context(...)` layers the real call
     /// sites stack ABOVE the marker. `Mixer::new`'s ring error is wrapped twice
     /// on the way out ("opening fan-in→camilla SHM ring …" then "opening ALSA
@@ -517,8 +520,6 @@ mod tests {
     /// (`PermissionDenied`, restarts).
     #[test]
     fn only_config_class_ring_open_errors_park_the_unit() {
-        use crate::mixer::ring_open_error;
-
         // PARK: no restart can repair either of these.
         for (kind, detail) in [
             // A ring file created against a different geometry (stale wide ring

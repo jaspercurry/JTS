@@ -955,13 +955,13 @@ def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
                 },
                 "camilla": {"capture_rate": 48000},
             },
-            "mux_status": {"sources": {"usbsink": {"playing": True}}},
         },
         outputd={"backend": "alsa", "dac": {"sample_rate": 48000}},
         route={"fixed_sample_rate": 48000},
         issues=tracker.snapshot(),
         sampled_at=_HEALTH_SAMPLED_AT,
         session=rollup.snapshot(_HEALTH_SAMPLED_AT),
+        mux_status={"sources": {"usbsink": {"playing": True}}},
     )
     missing = sorted(DASHBOARD_AUDIO_HEALTH_KEYS - _payload_key_names(health))
     assert not missing, (

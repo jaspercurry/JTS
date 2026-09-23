@@ -17,7 +17,7 @@ import pytest
 from jasper.control.audio_health_sampler import AudioHealthSampler
 from jasper.control.audio_incidents import IncidentStore
 
-from .audio_health_fixtures import _FakeAirPlay, _airplay, _outputd, _route
+from .audio_health_fixtures import _FakeAirPlay, _airplay, _mux, _outputd, _route
 
 
 def test_inactive_airplay_xrun_is_not_household_history() -> None:
@@ -35,7 +35,7 @@ def test_inactive_airplay_xrun_is_not_household_history() -> None:
     idle_sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([idle]),
         outputd_probe=_outputd,
-        mux_probe=lambda: idle["mux_status"],
+        mux_probe=lambda: _mux("spotify"),
         route_probe=_route,
         time_fn=lambda: 1000.0,
     )
@@ -48,7 +48,7 @@ def test_inactive_airplay_xrun_is_not_household_history() -> None:
     active_sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([active]),
         outputd_probe=_outputd,
-        mux_probe=lambda: active["mux_status"],
+        mux_probe=lambda: _mux("airplay"),
         route_probe=_route,
         time_fn=lambda: 1000.0,
     )
@@ -88,6 +88,7 @@ def test_sampler_persists_multiple_incidents_once_per_tick() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([airplay]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         incident_store=store,  # type: ignore[arg-type]
         time_fn=lambda: 1000.0,
@@ -128,6 +129,7 @@ def test_delayed_raw_event_is_not_attributed_to_new_playback_session() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([delayed, current]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux("usbsink"),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -155,6 +157,7 @@ def test_idle_source_xrun_delta_is_not_troubleshooting_history() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([first, second]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux("spotify"),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -177,6 +180,7 @@ def test_sampler_records_outputd_xrun_delta_as_a_recovered_blip() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
         outputd_probe=lambda: outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -208,6 +212,7 @@ def test_sampler_records_output_clipping_delta_and_ignores_counter_reset() -> No
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay()] * len(outputd)),
         outputd_probe=lambda: outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -264,6 +269,7 @@ def test_clipping_episode_survives_output_gap_rebaseline_and_counter_reset() -> 
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay()] * len(outputd)),
         outputd_probe=lambda: outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -310,6 +316,7 @@ def test_clipping_episode_survives_sampler_restart_until_clean_interval(
     first = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
         outputd_probe=lambda: first_outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         incident_store=store,
         time_fn=lambda: now[0],
@@ -329,6 +336,7 @@ def test_clipping_episode_survives_sampler_restart_until_clean_interval(
     restored = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
         outputd_probe=lambda: second_outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         incident_store=store,
         time_fn=lambda: now[0],
@@ -359,6 +367,7 @@ def test_cumulative_watchdog_skip_is_a_recovered_blip_not_current_failure() -> N
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([first, second]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -400,7 +409,7 @@ def test_usb_underfill_is_recorded_but_normal_stream_stop_is_suppressed(
             snapshot(2, stream_stops),
         ]),
         outputd_probe=_outputd,
-        mux_probe=lambda: None,
+        mux_probe=lambda: _mux("usbsink"),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -440,7 +449,7 @@ def test_shared_path_restarts_are_recorded_as_incidents(
             _airplay(selected="usbsink", ladder="l0_locked"),
         ]),
         outputd_probe=_outputd,
-        mux_probe=lambda: None,
+        mux_probe=lambda: _mux("usbsink"),
         route_probe=_route,
         service_probe=service_states,
         time_fn=lambda: now[0],

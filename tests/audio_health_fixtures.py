@@ -45,6 +45,17 @@ _RING = {
 }
 
 
+def _mux(selected: str | None = None) -> dict:
+    """Mux's own STATUS shape: the canonical per-source ``playing`` truth,
+    read over its control socket -- never carried on an AirPlay snapshot."""
+    return {
+        "sources": {
+            spec.id.value: {"playing": spec.id.value == selected}
+            for spec in MUSIC_SOURCE_SPECS
+        },
+    }
+
+
 def _airplay(
     *,
     selected: str | None = None,
@@ -59,12 +70,6 @@ def _airplay(
         "suppressed_reason": "warmup" if warmup else None,
         "status": "ok",
         "reason": "clean",
-        "mux_status": {
-            "sources": {
-                spec.id.value: {"playing": spec.id.value == selected}
-                for spec in MUSIC_SOURCE_SPECS
-            },
-        },
         "current": {
             "fanin": {
                 "available": True,
@@ -182,6 +187,7 @@ def _compose(
         sampled_at=1000.0,
         service_states=service_states,
         source_intents=source_intents,
+        mux_status=_mux(selected),
         session=session or {
             "summary": "No interruptions observed",
             "detail": "Since JTS observed this source become active.",
@@ -319,6 +325,7 @@ def _compose_camilla(
             None if camilla_state is None
             else {"jasper-camilla.service": camilla_state}
         ),
+        mux_status=_mux(selected),
     )
 
 

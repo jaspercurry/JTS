@@ -14,6 +14,7 @@ from jasper.active_speaker.angle_capture import (
 )
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
 from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED
 from jasper.active_speaker.measurement_programs import (
     PURPOSE_REAR, REGIME_BRANCHES, run_program,
 )
@@ -27,6 +28,9 @@ from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import household_mic_path
 from jasper.output_topology_store import topology_path
 from ._refusal import read_json_source
+
+#: The facts only this CLI can see; the session door re-reads every other one and owns admission.
+ARM_FACT_CODES = (REASON_WALK_RIG_CLEAR_NOT_ATTESTED, REASON_WALK_MOVER_UNAVAILABLE)
 
 
 def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightFacts:

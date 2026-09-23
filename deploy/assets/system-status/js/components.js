@@ -9,7 +9,7 @@
 import { h, svg } from "/assets/shared/js/dom.js";
 import { appHeader } from "/assets/shared/js/chrome.js";
 
-export { badge, actionButton, titledCard } from "/assets/shared/js/ui.js";
+export { badge, actionButton, titledCard, livePill } from "/assets/shared/js/ui.js";
 
 // Vital-stat card: status dot + headline value + optional sub + optional
 // chart (or pill) slot. Tone colours the dot via the inline --tone prop.
@@ -119,17 +119,6 @@ export function header({
       if (announce) announcement.textContent = `${view === "audio" ? "Audio" : "System"} view selected`;
     },
   };
-}
-
-// Pulsing "Live · …" indicator. Returns the element plus its label node so
-// the staleness text can be updated in place each poll.
-export function livePill(initial = "Loading…") {
-  const label = h("p.eyebrow", null, initial);
-  const el = h("div.live-pill", null,
-    h("span.live-pill__dot", { "attr:aria-hidden": "true" }),
-    label,
-  );
-  return { el, label };
 }
 
 // Refresh one poll-driven section without letting a malformed optional block

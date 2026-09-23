@@ -63,7 +63,8 @@ use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 
 use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
-use crate::mixer::{event_stamp_ms, DirectObservability, LaneSource, Mixer, RingObservability};
+use crate::mixer::ring_output::RingObservability;
+use crate::mixer::{event_stamp_ms, DirectObservability, LaneSource, Mixer};
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
@@ -855,7 +856,7 @@ impl StateServer {
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
         // episode. `clockless_paces` is the mixer's own — see
-        // `mixer::RingCounters`. `stall_log_dropped` counts a stall event that
+        // `mixer::ring_output::RingCounters`. `stall_log_dropped` counts a stall event that
         // never reached `fanin-ring-log` (issue #4787/#4809 R-023): the mixer
         // thread never blocks or formats to log one, so a lost line shows up
         // only here.

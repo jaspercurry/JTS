@@ -344,7 +344,7 @@ def test_refuses_when_the_layout_has_no_resolvable_playback_route(monkeypatch):
     with pytest.raises(CrossoverV2Refused) as excinfo:
         v2ctx.resolve_conductor_context(_status())
 
-    assert "active output device is not declared" in str(excinfo.value)
+    assert excinfo.value.code == "measure_box_not_ready"
 
 
 def test_explicit_env_playback_device_is_honored(monkeypatch):

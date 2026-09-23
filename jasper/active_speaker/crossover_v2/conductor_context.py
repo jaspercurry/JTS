@@ -39,6 +39,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 _Level = TypeVar("_Level", bound=float | None)
+_BOX_NOT_READY = "measure_box_not_ready"
 
 
 def driver_spacing_source(draft: Mapping[str, Any]) -> str:
@@ -153,7 +154,8 @@ def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None
         raise CrossoverV2Refused(
             "the crossover preview is not ready for measurement; finish "
             "speaker setup at /sound/ first"
-            + (": " + "; ".join(messages[:2]) if messages else "")
+            + (": " + "; ".join(messages[:2]) if messages else ""),
+            code=_BOX_NOT_READY,
         )
     return preview
 
@@ -278,7 +280,7 @@ def resolve_conductor_context(
     if not passive_mains:
         if not status.get("active"):
             raise CrossoverV2Refused(
-                "this speaker has no active crossover to measure"
+                "this speaker has no active crossover to measure", code=_BOX_NOT_READY,
             )
         setup = status.get("setup") or {}
         if any(
@@ -367,7 +369,7 @@ def resolve_conductor_context(
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
             raise CrossoverV2Refused(
-                f"the {target_id}'s safe excitation limits could not be resolved"
+                f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
             ) from exc
     sweep_duration_limits_s: dict[str, float] = {}
     measurement_bands: dict[str, tuple[float, float]] = {}
@@ -378,7 +380,7 @@ def resolve_conductor_context(
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
             raise CrossoverV2Refused(
-                f"the {role}'s safe excitation limits could not be resolved"
+                f"the {role}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
             ) from exc
         # Flat-linearization plan PR-4: this role's confirmed measurement band.
         # Its OWN except arm: a declared-metadata gap on this optional surface
@@ -411,7 +413,7 @@ def resolve_conductor_context(
     playback_device = str(playback_device or "")
     if not playback_device:
         raise CrossoverV2Refused(
-            "the active output device is not declared; finish speaker setup"
+            "the active output device is not declared; finish speaker setup", code=_BOX_NOT_READY,
         )
     driver_spacing_m = declared_driver_spacing_m(draft)
     return V2ConductorContext(
@@ -431,11 +433,6 @@ def resolve_conductor_context(
         # 15 cm spacing measured at 1 m). The correction only ever claims the
         # on-axis-tweeter §5.2 aim assumption -- it is not a toe-in or
         # vertical-offset model.
-        # A deliberate household volume
-        # action mid-session (remote / voice "louder" / :8780 HTTP) still moves
-        # the CamillaDSP main volume — the session measurement pause holds off
-        # the idle reconciler, not VolumeCoordinator writes. Validation
-        # runs hands-off; a session-long volume guard is a follow-up.
         driver_spacing_m=driver_spacing_m,
         driver_spacing_source=driver_spacing_source(draft),
         topology=topology,

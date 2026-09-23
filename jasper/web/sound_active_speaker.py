@@ -79,7 +79,7 @@ from jasper.active_speaker.commission_wiring import (
     commission_seams,
 )
 
-from ._common import refusal_envelope
+from .correction_runtime import refusal_envelope
 from .sound_profile_apply import _sound_state_write_lock
 
 logger = logging.getLogger(__name__)

@@ -32,8 +32,8 @@ scripts/test-fast
 `uv.lock` is the canonical lockfile for contributor development
 environments. The `--extra full --extra streambox` flags pull in the
 runtime packages the hardware-free suite imports (`numpy`, `httpx`,
-`scipy`, `spotipy`, …) alongside the default `dev` group
-(`pytest`/`pytest-asyncio`/`pytest-xdist`/`ruff`/`mypy`). A bare `uv sync`
+`scipy`, `spotipy`, …) alongside the default `dev` group (test and lint
+tools; see `pyproject.toml`). A bare `uv sync`
 installs only the `dev` group, so pytest would fail collection with
 missing-module errors — the extras carry the code under test. (uv 0.11 has
 no `default-extras` setting to fold these into a bare sync, so the flags
@@ -190,9 +190,7 @@ Two operational notes:
   Rust-relevant surfaces change and on every `main` push. The linked Rust
   unit tests still require Linux or CI.
 - **Static JavaScript gate** (`scripts/check-js-syntax.sh`) — CI runs
-  `node --check` over the browser ES modules and Node harnesses, then
-  runs the small JS harnesses for the sound-profile and shared-dialog
-  surfaces.
+  `node --check` plus the JS harnesses listed in the `js` job.
 - **Shell entry-point gate** (`bash -n` plus `shellcheck
   --severity=warning`) — CI parses and lints the installer, deploy
   helpers, shell operator scripts that can mutate a live speaker, and
@@ -207,8 +205,8 @@ Two operational notes:
   opens **paid** real-time LLM sessions; see
   [`tests/voice_eval/README.md`](../tests/voice_eval/README.md) for the
   per-scenario cost table by provider. Don't run on every PR; nightly
-  at most with an explicit budget. See AGENTS.md "Voice-eval cost
-  discipline."
+  at most with an explicit budget. See AGENTS.md non-negotiable 7
+  (paid tests).
 - **Hardware tests** — `sudo /opt/jasper/.venv/bin/jasper-doctor` on
   the Pi after a deploy.
 

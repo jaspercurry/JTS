@@ -91,19 +91,7 @@ def test_render_carries_csrf_meta_and_form_field():
 def test_render_loads_es_module_not_inline_script():
     html = _render()
     assert '<script type="module" src="/assets/wake/js/main.js">' in html
-    # No legacy inline behaviour should survive on the migrated page: the old
-    # page baked the detection-card JS and the submit handler into the
-    # document. Both now live in the ES module.
-    assert "pollDetection" not in html
     assert "addEventListener" not in html
-
-
-def test_render_has_no_legacy_chrome():
-    html = _render()
-    # Old max-width body styling and the clickable-div switch must be gone;
-    # the toggle is the shared checkbox markup.
-    assert "max-width: 620px" not in html
-    assert 'class="switch"' not in html
 
 
 def test_render_uses_canonical_toggle_for_each_layer():

@@ -56,7 +56,6 @@ from ._common import (
     bonded_follower_leader_web_url,
     dispatch_get,
     dispatch_post,
-    refusal_envelope,
     route_path,
     send_html_response,
     send_json_response,
@@ -66,6 +65,7 @@ from .correction_runtime import (
     BadRequest,
     MAX_SYNC_WAV_BODY_BYTES,
     logger,
+    refusal_envelope,
 )
 
 
@@ -208,10 +208,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 refusal_envelope(e),
                 status=500,
             )
-        return
-
-    if path == "/crossover/v2/republish":
-        handler._send_json({"ok": False, "code": "route_retired"}, status=HTTPStatus.GONE)
         return
 
     if path == "/crossover/v2/position-ready":
@@ -591,7 +587,6 @@ _POST_ROUTES = {
     # v2 session flow — the only crossover-measurement flow. There is no
     # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
     "/crossover/v2/session": _dispatch_crossover,
-    "/crossover/v2/republish": _dispatch_crossover,
     "/crossover/v2/apply": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has
     # reached the angle the envelope named, from an EXTERNAL driver on the

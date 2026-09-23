@@ -139,39 +139,6 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 _CTX_ATTR = "_jts_request_ctx"
 
 
-def refusal_envelope(
-    exc: BaseException | None = None, *, code: str | None = None, message: str | None = None,
-) -> dict[str, Any]:
-    """Carry an exception or an explicit code and message through one envelope."""
-    from jasper.active_speaker.crossover_v2.refusal_copy import (  # lazy: numpy import cost
-        CrossoverV2Refused, REASON_INTERNAL_ERROR, refusal_copy_for,
-    )
-    from jasper.active_speaker.program_failure import classify_program_failure  # lazy: numpy import cost
-    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError  # lazy: measurement service import cost
-
-    if exc is not None:
-        code = getattr(exc, "code", None) or getattr(exc, "reason", None)
-        if isinstance(exc, CrossoverV2LocalSeamError):
-            code = REASON_INTERNAL_ERROR
-        elif not code:
-            classified = classify_program_failure(exc)
-            code = classified[0] if classified else None
-        if isinstance(exc, CrossoverV2Refused) or not code:
-            message = str(exc)
-    copy, action = refusal_copy_for(code)
-    envelope: dict[str, Any] = {
-        "ok": False, "code": code, "next_action": getattr(exc, "next_action", None) or action,
-        "error": message if message is not None else copy,
-    }
-    # The blockers a fail-closed proof named: a bare code cannot say WHICH
-    # door refused, and the operator reads the codes, not the prose. Other
-    # raisers carry plain strings under the same attribute name.
-    issues = [dict(issue) for issue in getattr(exc, "issues", ()) if isinstance(issue, Mapping)]
-    if issues:
-        envelope["issues"] = issues
-    return envelope
-
-
 def value_for_env(
     state: dict[str, str],
     env_var: str,

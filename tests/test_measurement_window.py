@@ -518,11 +518,6 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
     async def release(**_kwargs) -> None:
         return None
 
-    class _RecordingTarget(coordinator.MeasurementAbortTarget):
-        def abort(self, fallback):
-            aborted.append(clock["t"])
-            super().abort(fallback)
-
     async def hold_unavailable(path: str, body: dict) -> tuple[int, dict]:
         # This simulation is about the MUX ladder; the volume hold is not part
         # of it. Its task still exists and still sleeps (see the docstring) —
@@ -540,10 +535,12 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
 
     async def drive() -> None:
         never = asyncio.Event()  # only the abort ends the body
-        async with measurement_window(
-            skip_voice_pause=True, abort_target=_RecordingTarget(),
-        ):
-            await never.wait()
+        async with measurement_window(skip_voice_pause=True):
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                aborted.append(clock["t"])  # the abort cancels this entering task
+                raise
 
     with pytest.raises((MeasurementWindowError, asyncio.CancelledError)):
         asyncio.run(drive())
@@ -1062,78 +1059,6 @@ async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
     release.set()
     await task_a
     assert coordinator._window_active is False
-
-
-async def test_sustained_renewal_failure_aborts_via_registered_target(monkeypatch):
-    """W6.1 gate should-fix: with an abort_target (a held session window), the
-    isolation-loss abort cancels the REGISTERED play task — not the task that
-    entered the window (the long-lived session runner, whose cancel would not
-    stop an in-flight sweep) — and latches ``failed`` for the holder."""
-    acquire_calls = 0
-
-    async def acquire() -> None:
-        nonlocal acquire_calls
-        acquire_calls += 1
-        if acquire_calls > 1:
-            raise MeasurementWindowError("mux unavailable")
-
-    async def release(**_kwargs) -> None:
-        return None
-
-    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
-    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.005)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_ABORT_SEC", 0.02)
-
-    target = coordinator.MeasurementAbortTarget()
-    play_cancelled: list[bool] = []
-
-    with pytest.raises(MeasurementWindowError, match="could not be renewed"):
-        async with measurement_window(skip_voice_pause=True, abort_target=target):
-            play = asyncio.create_task(asyncio.sleep(30.0))
-            target.register(play)
-            try:
-                await play
-            except asyncio.CancelledError:
-                play_cancelled.append(True)
-            finally:
-                target.clear()
-
-    # The PLAY task was cancelled (the session/entering task kept running to a
-    # clean window exit — this test body IS that task and reached here), and
-    # the latch tells the holder to refuse the next play.
-    assert play_cancelled == [True]
-    assert target.failed is True
-
-
-async def test_abort_target_falls_back_to_entering_task_when_none_registered(monkeypatch,
-):
-    """Between plays (nothing registered) the abort still cancels the entering
-    task — the pre-existing behavior — in addition to latching ``failed``."""
-    acquire_calls = 0
-
-    async def acquire() -> None:
-        nonlocal acquire_calls
-        acquire_calls += 1
-        if acquire_calls > 1:
-            raise MeasurementWindowError("mux unavailable")
-
-    async def release(**_kwargs) -> None:
-        return None
-
-    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
-    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.005)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_ABORT_SEC", 0.02)
-
-    target = coordinator.MeasurementAbortTarget()
-    with pytest.raises(MeasurementWindowError, match="could not be renewed"):
-        async with measurement_window(skip_voice_pause=True, abort_target=target):
-            await asyncio.sleep(30.0)  # entering task parked; nothing registered
-
-    assert target.failed is True
 
 
 class _PendingVoiceReader:
