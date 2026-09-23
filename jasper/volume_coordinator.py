@@ -1632,24 +1632,19 @@ class VolumeCoordinator:
         Manual source selection is an audible fan-in policy override:
         if mux reports one, prefer it even when raw renderer probes
         say a different source is active. Fail soft to raw probes when
-        mux is unavailable or an older RendererClient lacks the method.
+        mux is unavailable.
         """
-        selected_source = getattr(self._backend, "selected_source", None)
-        if selected_source is not None:
-            try:
-                selected = await selected_source()
-                # Mux answers with a music source, "idle", or — during a
-                # measurement lease — a fan-in lane label. It holds its last
-                # committed answer while a handoff is in flight, so "idle" is
-                # true idle and takes the attenuating camilla-master carrier.
-                # Only the lane label is not a source; it falls through to the
-                # raw probes.
-                if selected in MUSIC_SOURCE_VALUES:
-                    return Source(selected)
-                if selected == Source.IDLE.value:
-                    return Source.IDLE
-            except Exception as e:  # noqa: BLE001
-                logger.debug("selected_source() failed (%s); using probes", e)
+        try:
+            selected = await self._backend.selected_source()
+            # A measurement lease returns a fan-in lane label, not a source;
+            # only that case falls through to raw probes. During a handoff,
+            # mux retains its last committed source, including true idle.
+            if selected in MUSIC_SOURCE_VALUES:
+                return Source(selected)
+            if selected == Source.IDLE.value:
+                return Source.IDLE
+        except Exception as e:  # noqa: BLE001
+            logger.debug("selected_source() failed (%s); using probes", e)
         try:
             active = await self._backend.active_renderers()
         except Exception as e:  # noqa: BLE001
@@ -1725,32 +1720,17 @@ class VolumeCoordinator:
     async def _read_camilla_volume_and_mute(
         self,
     ) -> tuple[float | None, bool | None]:
-        reader = getattr(self._camilla, "get_volume_and_mute", None)
-        if reader is not None:
-            result = await reader(best_effort=True)
-            if result is not None:
-                db, muted = result
-                return float(db), bool(muted)
-            return None, None
-        return await self._camilla.get_volume_db(best_effort=True), None
+        result = await self._camilla.get_volume_and_mute(best_effort=True)
+        if result is not None:
+            db, muted = result
+            return float(db), bool(muted)
+        return None, None
 
     async def _set_camilla_main_mute(
         self, muted: bool, *, context: str,
     ) -> bool:
         target = bool(muted)
-        setter = getattr(self._camilla, "set_main_mute", None)
-        if setter is None:
-            if target:
-                log_event(
-                    logger,
-                    "volume.main_mute_unsupported",
-                    muted=True,
-                    context=context,
-                    level=logging.WARNING,
-                )
-                return False
-            return True
-        ok = await setter(target, best_effort=True)
+        ok = await self._camilla.set_main_mute(target, best_effort=True)
         if ok:
             log_event(
                 logger,
