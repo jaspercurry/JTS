@@ -60,20 +60,19 @@ from . import volume_diagnostics
 from . import volume_push_sources
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_echo import (
-    ECHO_WINDOW_SEC as ECHO_WINDOW_SEC,  # re-exported: tests import it from here
-    PERSISTENCE_ECHO_WINDOW_SEC as PERSISTENCE_ECHO_WINDOW_SEC,
     is_own_echo,
     is_recent_cross_process_write,
     stamp_outbound,
 )
 from .volume_owner import VolumeClaimRefused, VolumeOwner
 from .volume_scales import native_to_listening_level
-from .volume_handoff import RECONCILE_DRIFT_DB, VolumeHandoff, main_mute_for_level
+from .volume_curve import percent_to_db
+from .volume_floor import RECONCILE_DRIFT_DB
+from .volume_handoff import VolumeHandoff, main_mute_for_level
 from .volume_state import VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
-    percent_to_db,
     regress_listening_level_if_stale,
 )
 
@@ -84,9 +83,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Test seam for the measurement-flag expiry below. Local, so a test never has
-# to patch time.monotonic process-wide (which would corrupt asyncio clocks) —
-# the same seam jasper/voice/measurement_hold.py keeps.
+# Keep the measurement clock independent of asyncio clocks.
 _measurement_monotonic = time.monotonic
 
 
@@ -155,9 +152,7 @@ class VolumeCoordinator:
         # coordinator holds the HOUSEHOLD claim — the standing level the
         # speaker plays at when nothing outranks it — and hands the same owner
         # to the transient-duck holders, so a duck and a volume twist are
-        # arbitrated rather than racing. Bound through methods rather than
-        # captured bound methods so a test that replaces ``camilla``'s
-        # attributes is still seen.
+        # arbitrated rather than racing.
         self._volume_owner = VolumeOwner(
             set_fader_db=self._write_fader_db,
             get_fader_db=self._read_fader_db,
@@ -230,7 +225,6 @@ class VolumeCoordinator:
         # uses `_camilla_volume_locked` in-process.
         self._duck_active_probe: CamillaLockProbe | None = duck_active_probe
         self._volume_context_publisher = volume_context_publisher
-        # Late binding preserves replacements of the existing I/O test seams.
         self._handoff = VolumeHandoff(
             effective_level=lambda: self.get_volume_state().effective_percent,
             read_carrier=lambda: self._read_camilla_volume_and_mute(),
@@ -529,8 +523,7 @@ class VolumeCoordinator:
             self._pre_mute_level = self._level
             self._mute_token = uuid4().hex
         elif self._pre_mute_level is not None and self._mute_token is None:
-            # Rolling-upgrade migration for a latch written by code that
-            # predates transition identities.
+            # Repair a latch whose token was missing or rejected on load.
             self._mute_token = uuid4().hex
         saved = self._pre_mute_level or 0
         self._persistence.save_mute_state(
@@ -727,8 +720,7 @@ class VolumeCoordinator:
             if persisted_pre_mute is None:
                 self._confirmed_push_mute_tokens.pop(source, None)
             elif push_mode and persisted_mute_token is None:
-                # A rolling-upgrade latch may predate transition identities.
-                # Migrate it before interpreting any renderer observation.
+                # Repair a latch whose token was missing or rejected on load.
                 persisted_mute_token = uuid4().hex
                 self._persistence.save_mute_state(
                     persisted_pre_mute,
@@ -1783,9 +1775,8 @@ class VolumeCoordinator:
     def volume_owner(self) -> VolumeOwner:
         """This process's fader owner, for the claim holders that share it.
 
-        Handed to a transient-duck holder rather than reached for globally:
-        the owner is instance state, so a test never inherits one and a
-        second coordinator never silently arbitrates against the first's.
+        Transient-duck holders share this instance's owner; separate
+        coordinators have separate claim ledgers.
         """
         return self._volume_owner
 

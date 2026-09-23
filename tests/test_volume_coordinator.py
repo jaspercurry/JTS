@@ -35,7 +35,8 @@ from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import ECHO_WINDOW_SEC, VolumeCoordinator
+from jasper.volume_coordinator import VolumeCoordinator
+from jasper.volume_echo import ECHO_WINDOW_SEC
 from jasper.volume_scales import (
     BT_VOLUME_MAX,
     bt_volume_to_listening_level,
@@ -51,22 +52,18 @@ from jasper.volume_diagnostics import (
 )
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused
-from jasper.volume_persistence import VolumePersistence, percent_to_db
+from jasper.volume_persistence import VolumePersistence
+from jasper.volume_curve import percent_to_db
 
 
 @pytest.fixture(autouse=True)
 def _reset_bluealsa_probe_state():
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
     yield
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
 
 
 # ---------- mapping helpers -------------------------------------------------
-
-
-# AirPlay has no mapping helper here: shairport's volume hook owns that
-# scale and reaches the coordinator in percent (ADR-0206). Its endpoints are
-# pinned against AIRPLAY_DB_MIN/MAX in tests/test_airplay_volume_hook.py.
 
 
 @pytest.mark.parametrize("level", [0, 50, 100])

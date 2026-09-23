@@ -10,9 +10,7 @@ volume message, and `--session-start` before the connect-time volume push
 against a stub jasper-control — so the pins cover the real sh/awk arithmetic
 and the real delivery loop, not a Python restatement of them.
 
-The map is pinned through the state file the hook publishes, which is written
-before it serialises, so those pins run everywhere. The delivery pins need
-`flock(1)` and run on Linux only; CI is the authority.
+The delivery tests need `flock(1)` and run on Linux only.
 """
 from __future__ import annotations
 
@@ -28,7 +26,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.volume_scales import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
     template_string_value,
@@ -38,6 +35,8 @@ REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "deploy" / "bin" / "jasper-airplay-volume"
 INSTALLED_HOOK_PATH = "/usr/local/sbin/jasper-airplay-volume"
 STATE_NAME = "airplay-volume.pct"
+_AIRPLAY_DB_MIN = -30.0
+_AIRPLAY_DB_MAX = 0.0
 
 # The exact PATH the hook subprocess gets (see _hook_env below) — resolving
 # the skip marker against the AMBIENT pytest PATH instead would find flock
@@ -114,8 +113,8 @@ def losing_invocation(tmp_path):
     ("db", "expected_percent"),
     [
         # Endpoints of AirPlay's own range.
-        (f"{AIRPLAY_DB_MAX:.6f}", 100),
-        (f"{AIRPLAY_DB_MIN:.6f}", 0),
+        (f"{_AIRPLAY_DB_MAX:.6f}", 100),
+        (f"{_AIRPLAY_DB_MIN:.6f}", 0),
         # shairport formats the float, so real values arrive with decimals.
         ("-15.000000", 50),
         ("-7.500000", 75),
@@ -287,7 +286,7 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
     hears."""
     _run_hook("-30.000000", runtime_dir=tmp_path, port=control_stub.server_port)
     _run_hook(
-        f"{AIRPLAY_DB_MAX:.6f}",
+        f"{_AIRPLAY_DB_MAX:.6f}",
         runtime_dir=tmp_path,
         port=control_stub.server_port,
     )
@@ -297,7 +296,7 @@ def test_hook_releases_its_lock_so_the_next_message_is_not_dropped(
 
 def _db_for(percent: float) -> str:
     """The dB shairport hands the hook for a sender slider at `percent`."""
-    db = AIRPLAY_DB_MIN + (AIRPLAY_DB_MAX - AIRPLAY_DB_MIN) * percent / 100
+    db = _AIRPLAY_DB_MIN + (_AIRPLAY_DB_MAX - _AIRPLAY_DB_MIN) * percent / 100
     return f"{db:.6f}"
 
 

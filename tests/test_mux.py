@@ -4,11 +4,7 @@
 
 """Tests for jasper.mux — the renderer source-arbiter.
 
-Tests focus on the transition-detection state machine, which is the
-hard logic. The probe-implementation tests live in test_source_state.py
-since the probes were factored out into jasper.source_state; here we
-just patch their bound names in jasper.mux's namespace and mutate the
-return values per tick.
+Probes are stubbed at the source-arbiter boundary.
 """
 from __future__ import annotations
 
@@ -29,6 +25,9 @@ import jasper.airplay_session as airplay_session
 from jasper.busctl import BusctlResult
 from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
+from jasper.volume_coordinator import VolumeCoordinator
+from jasper.volume_curve import percent_to_db
+from jasper.volume_persistence import VolumePersistence
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records
@@ -1778,9 +1777,6 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     tmp_path, patched_probes,
 ):
     """Context snapshotting runs after the coordinator's handoff lease exits."""
-    from jasper.volume_coordinator import VolumeCoordinator
-    from jasper.volume_persistence import VolumePersistence, percent_to_db
-
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     persistence.save_listening_level(50)
     camilla = SimpleNamespace(

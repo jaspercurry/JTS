@@ -16,8 +16,7 @@ Core fields tracked:
   drive. Spotify and Bluetooth push the level to their own sliders.
   AirPlay and idle map the level to CamillaDSP main_volume.
 
-- `main_volume_db`: the underlying CamillaDSP setting. Still tracked
-  because we need it captured for boot restore and legacy readers. With
+- `main_volume_db`: the CamillaDSP setting captured for boot restore. With
   the coordinator running, main_volume is pinned at 0 dB during
   Spotify/BT push-mode playback (so we don't double-attenuate) and
   tracks listening_level during idle and AirPlay.
@@ -66,19 +65,14 @@ from .atomic_io import (
     advisory_file_lock_async,
     atomic_write_text,
 )
-from .volume_curve import (
+from .volume_curve import db_to_percent, percent_to_db
+from .volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
     VOLUME_FLOOR_MIN_DB,
-    db_to_percent,
-    percent_to_db,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Back-compat name for callers/tests that import the old fixed range.
-VOLUME_MAX_DB = VOLUME_CEILING_DB
 
 
 @dataclass(frozen=True)
@@ -189,7 +183,7 @@ class VolumePersistence:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning("volume persistence: parse failed (%s)", e)
             return None
-        if not (VOLUME_FLOOR_MIN_DB - 1.0 <= db <= VOLUME_MAX_DB + 1.0):
+        if not (VOLUME_FLOOR_MIN_DB - 1.0 <= db <= VOLUME_CEILING_DB + 1.0):
             # Out of plausible range — refuse rather than restore a
             # bogus value that could cause loud / silent surprise.
             logger.warning(

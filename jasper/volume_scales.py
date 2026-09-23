@@ -5,9 +5,7 @@
 """Native-units <-> canonical listening_level maps for each push source.
 
 `jasper.volume_coordinator` owns which attenuator carries the canonical
-0-100 `listening_level`; the per-source unit conversions live here so the
-coordinator, its observer ladder, and the AirPlay volume hook's tests share
-one map.
+0-100 `listening_level`; observers and push writers share these conversions.
 """
 from __future__ import annotations
 
@@ -15,13 +13,6 @@ from .music_sources import Source
 
 # AirPlay's native map lives in shairport's volume hook,
 # deploy/bin/jasper-airplay-volume (ADR-0206), not here.
-
-# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". The
-# hook owns the dB→percent map, maps the mute sentinel onto 0% (this
-# module's content mute), and reaches the coordinator in percent. Tests pin
-# the hook's endpoints against these bounds.
-AIRPLAY_DB_MIN = -30.0
-AIRPLAY_DB_MAX = 0.0
 
 
 def listening_level_to_spotify_percent(level: int) -> int:

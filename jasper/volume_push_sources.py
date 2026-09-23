@@ -6,8 +6,7 @@
 
 Spotify and Bluetooth carry `listening_level` on their own protocol
 sliders rather than CamillaDSP (see `volume_coordinator`'s module
-docstring). The coordinator retains `_set_spotify`/`_set_bluetooth` because
-`tests/test_volume_coordinator.py` overrides them, and owns echo stamps.
+docstring). The coordinator owns echo stamps for successful writes.
 """
 from __future__ import annotations
 

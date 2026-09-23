@@ -18,11 +18,9 @@ from . import volume_diagnostics
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
 from .volume_curve import percent_to_db
+from .volume_floor import RECONCILE_DRIFT_DB
 
 logger = logging.getLogger(__name__)
-
-# Below human-noticeable drift, above Camilla's normal <0.1 dB jitter.
-RECONCILE_DRIFT_DB = 1.0
 
 
 def main_mute_for_level(level: int) -> bool:
