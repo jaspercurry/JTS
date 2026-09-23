@@ -17,7 +17,8 @@ from .round_captures import capture_row, select_capture
 
 
 def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], role: str = "summed") -> dict:
-    capture = select_capture(round_dir, capture_id=capture_id, role=role)
+    omitted: list[dict[str, str]] = []
+    capture = select_capture(round_dir, capture_id=capture_id, role=role, omitted=omitted)
     rungs, _ = gate_sweep._validated(rungs_ms, ())
     longest = max(*rungs, gate_sweep.REFERENCE_RUNG_MS)
     span = round(longest * capture.sample_rate / 1000)
@@ -45,7 +46,8 @@ def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], 
         id=capture.capture_id, label="Same recording · alternative windows",
         measurement_family="window_diagnostic", series=series,
         metadata={
-            **capture_row(capture), "frame": gate_sweep.frame_descriptor(rungs, grid),
+            **capture_row(capture), "omitted": omitted,
+            "frame": gate_sweep.frame_descriptor(rungs, grid),
             "sample_rate_hz": capture.sample_rate, "direct_peak_sample": capture.peak_idx,
             "impulse": {
                 "start_sample": start, "samples": capture.ir[start:end].tolist(),

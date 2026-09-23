@@ -52,12 +52,13 @@ class DiagnosticBasis:
 
 
 def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
-                    *, branch_roles: tuple[str, str] = DEFAULT_BRANCHES) -> DiagnosticBasis:
+                    *, branch_roles: tuple[str, str] = DEFAULT_BRANCHES,
+                    omitted: list[dict[str, str]] | None = None) -> DiagnosticBasis:
     if not np.isfinite(window_ms) or window_ms <= 0:
         raise ForwardModelError("window_ms must be positive and finite", detail={"field": "window_ms", "capture_id": capture_id})
     if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
         raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
-    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"))
+    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"), omitted=omitted)
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())
@@ -189,7 +190,8 @@ def capture_prediction(
     candidate: MeasuredCrossoverCandidate | None = None,
     basis_candidate: MeasuredCrossoverCandidate | None = None,
 ) -> dict[str, Any]:
-    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS)
+    omitted: list[dict[str, str]] = []
+    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS, omitted=omitted)
     reconstruction_tf = predict_transfer(basis, {})
     reconstruction = compare_transfer(basis, reconstruction_tf)
     changes = None
@@ -229,7 +231,8 @@ def capture_prediction(
         transfer = reconstruction_tf
     predicted = prediction_record(basis, transfer)
     summary = {
-        "basis": basis.source, "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
+        "basis": basis.source, "omitted": omitted,
+        "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
         "window": dict(basis.window),
         "branches": list(basis.branches),
         "reconstruction": _metric_summary(reconstruction),

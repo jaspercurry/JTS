@@ -48,7 +48,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     )
     return answer(
         args.command, out=written, scope=args.scope, poses=len(report["poses"]),
-        rungs_ms=report["frame"]["rungs_ms"],
+        omitted=report["omitted"], rungs_ms=report["frame"]["rungs_ms"],
         ladder=report["ladder"], bands=[
             {"band_hz": band["band_hz"], "verdict": band["window_verdict"]}
             for band in report["bands"]

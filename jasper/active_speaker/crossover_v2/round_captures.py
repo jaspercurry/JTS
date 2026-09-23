@@ -11,6 +11,7 @@ coordinates, never a seat index. Analysis remains outside this reader.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,7 +191,12 @@ def _capture_document(path: Path) -> Mapping[str, Any]:
         ) from exc
 
 
-def _capture_documents(round_dir: Path) -> tuple[Path, list[tuple[Path, Path, Mapping[str, Any]]]]:
+#: A record, the WAV it names, its document (empty when unreadable) and the
+#: fault that keeps it out of every view, if any.
+_Record = tuple[Path, Path, Mapping[str, Any], RoundCapturesRefused | None]
+
+
+def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
     try:
         root = round_inputs(round_dir).session_dir
     except RoundViewsError as exc:
@@ -204,29 +210,33 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[tuple[Path, Path, Ma
         raise RoundCapturesRefused(
             REFUSE_CAPTURE_UNREADABLE, {"round_dir": str(round_dir), "detail": reason},
         )
-    documents: dict[Path, tuple[Path, Mapping[str, Any]]] = {}
+    canonical: list[tuple[Path, Path, Mapping[str, Any]]] = []
     for row, doc in measurement_documents(root):
-        path = root / EVIDENCE_ROOT / "artifacts" / row.path
         named = doc.get("wav_path")
         if not isinstance(named, str) or not named:
             continue
         wav = (root / named).resolve()
-        if wav.parent != (root / "summed").resolve():
-            continue
-        if not doc.get("wav_sha256") or wav in documents:
-            raise RoundCapturesRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": path.name, "wav": str(wav), "detail": (
-                    "multiple canonical records name this WAV" if wav in documents
-                    else "canonical capture hash is missing"
-                )},
-            )
-        documents[wav] = (path, doc)
+        if wav.parent == (root / "summed").resolve():
+            canonical.append((root / EVIDENCE_ROOT / "artifacts" / row.path, wav, doc))
+    claims = Counter(wav for _, wav, _ in canonical)
+    records: list[_Record] = []
+    for path, wav, doc in canonical:
+        problem = (
+            "multiple canonical records name this WAV" if claims[wav] > 1
+            else None if doc.get("wav_sha256") else "canonical capture hash is missing"
+        )
+        records.append((path, wav, doc, None if problem is None else RoundCapturesRefused(
+            REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "wav": str(wav), "detail": problem},
+        )))
     for path in sorted(root.glob("summed/summed_*.json")):
         wav = path.with_suffix(".wav").resolve()
-        if wav not in documents:
-            documents[wav] = (path, _capture_document(path))
-    return root, [(path, wav, doc) for wav, (path, doc) in documents.items()]
+        if wav in claims:
+            continue
+        try:
+            records.append((path, wav, _capture_document(path), None))
+        except RoundCapturesRefused as exc:
+            records.append((path, wav, {}, exc))
+    return root, records
 
 
 def document_capture_id(doc: Mapping[str, Any]) -> str | None:
@@ -239,19 +249,24 @@ def discover_captures(
     *,
     select: Callable[[Mapping[str, Any]], bool] | None = None,
     role: str = "summed",
+    omitted: list[dict[str, str]] | None = None,
 ) -> tuple[PoseCapture, ...]:
     """Read a round or bundle through canonical records, then legacy sidecars.
 
-    Each record binds its exact summed WAV and program. ``select`` runs before
-    decoding, after those bindings are checked; an empty filtered result is
-    valid. Raises :class:`RoundCapturesRefused` for missing or conflicting input.
+    ``select`` runs first, on the record alone, so a capture no reader asked
+    for is never checked or decoded; an empty filtered result is valid. Each
+    selected record binds its exact summed WAV and program. One that fails is
+    never analyzed: it is appended to ``omitted`` as ``capture_id``,
+    ``sidecar`` and ``reason``, and the rest answer. Raises
+    :class:`RoundCapturesRefused` for missing or conflicting round input, and
+    under the first failure's reason when every selected capture failed.
     """
-    return _discover_captures(round_dir, select=select, roles=(role,))
+    return _discover_captures(round_dir, select=select, roles=(role,), omitted=omitted)
 
 
 def _discover_captures(
     round_dir: Path, *, select: Callable[[Mapping[str, Any]], bool] | None,
-    roles: tuple[str, ...],
+    roles: tuple[str, ...], omitted: list[dict[str, str]] | None,
 ) -> tuple[PoseCapture, ...]:
     round_dir, documents = _capture_documents(Path(round_dir))
     manifest: Mapping[str, Any] | None = None
@@ -270,84 +285,105 @@ def _discover_captures(
         )
 
     captures: list[PoseCapture] = []
+    skipped: list[dict[str, str]] = []
+    first: RoundCapturesRefused | None = None
     program_audio: dict[str, tuple[np.ndarray, int]] = {}
-    for sidecar, wav, doc in documents:
-        if not wav.is_file():
-            raise RoundCapturesRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "wav": str(wav), "detail": "capture WAV is missing"},
-            )
-        capture_sha = sha256_file(wav)
-        if doc.get("wav_sha256") and capture_sha != doc["wav_sha256"]:
-            raise RoundCapturesRefused(
-                REFUSE_CAPTURE_UNREADABLE,
-                {"sidecar": sidecar.name, "declared_capture_sha256": doc["wav_sha256"]},
-            )
-        sha = _declared_program_sha(doc, round_dir)
-        program = programs.get(sha) if sha is not None else None
-        if program is None:
-            raise RoundCapturesRefused(
-                REFUSE_PROGRAM_UNMATCHED,
-                {
-                    "sidecar": sidecar.name,
-                    "declared_stimulus_sha256": sha,
-                    "programs_present": sorted(
-                        {path.name for path in programs.values()}
-                    ),
-                    "note": (
-                        "capture-to-program binding is by content hash; the "
-                        "sidecar's declared stimulus phase is not consulted"
-                    ),
-                },
-            )
-        if select is not None and not select(doc):
+    for sidecar, wav, doc, fault in documents:
+        # A record with nothing readable in it cannot be deselected.
+        if doc and select is not None and not select(doc):
             continue
-        if not doc.get("curves") and manifest is None:
-            artifact_dir, _ = round_artifact_dir(round_dir)
-            manifest_path = artifact_dir / RUN_MANIFEST_FILENAME if artifact_dir else None
-            manifest = _capture_document(manifest_path) if manifest_path and manifest_path.is_file() else {}
-        band = radiated_band_of(doc, manifest)
-        if band is None:
-            raise RoundCapturesRefused(
-                REFUSE_RADIATED_BAND_MISSING,
-                {
-                    "sidecar": sidecar.name,
-                    "note": (
-                        "a graded band is intersected with the band this "
-                        "capture's DUT radiates; without it none is honest"
-                    ),
-                },
-            )
-        for role in roles:
-            ir, rate, retained_band, preprocessing = _capture_response(
-                doc, role, wav, program, program_audio,
-            )
-            pose_kind, seat_offset_m = _doc_pose_category(doc)
-            captures.append(
-                PoseCapture(
-                    capture_id=document_capture_id(doc) or sidecar.stem,
-                    phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
-                    wav=wav,
-                    program=program,
-                    program_sha256=str(sha),
-                    azimuth_deg=_number(doc.get("position_deg")),
-                    vertical_deg=_number(doc.get("vertical_deg")),
-                    mark_distance_m=_number(doc.get("mark_distance_m")),
-                    radiated_band_hz=retained_band or band,
-                    sample_rate=int(rate),
-                    ir=ir,
-                    peak_idx=int(np.argmax(np.abs(ir))),
-                    pose_kind=pose_kind,
-                    seat_offset_m=seat_offset_m,
-                    candidate_id=str(doc.get("candidate_id") or ""),
-                    graph_fingerprint=played_graph_fingerprint(doc),
-                    capture_sha256=capture_sha,
-                    preprocessing=preprocessing,
-                    record_path=sidecar,
-                    record_document=doc,
-                )
-            )
+        if fault is None:
+            if not doc.get("curves") and manifest is None:
+                artifact_dir, _ = round_artifact_dir(round_dir)
+                manifest_path = artifact_dir / RUN_MANIFEST_FILENAME if artifact_dir else None
+                manifest = _capture_document(manifest_path) if manifest_path and manifest_path.is_file() else {}
+            try:
+                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, manifest, program_audio)
+                continue
+            except RoundCapturesRefused as exc:
+                fault = exc
+        first = first or fault
+        skipped.append({"capture_id": document_capture_id(doc) or sidecar.stem,
+                        "sidecar": sidecar.name, "reason": fault.reason})
+    if first is not None and not captures:
+        raise RoundCapturesRefused(first.reason, {**first.detail, "omitted": skipped})
+    if omitted is not None:
+        omitted += skipped
     return tuple(sorted(captures, key=lambda cap: cap.capture_id))
+
+
+def _bind_record(
+    sidecar: Path, wav: Path, doc: Mapping[str, Any], roles: tuple[str, ...], root: Path,
+    programs: Mapping[str, Path], manifest: Mapping[str, Any] | None, program_audio: dict[str, tuple[np.ndarray, int]],
+) -> list[PoseCapture]:
+    """One record's capture per role, or the refusal that keeps it out."""
+    if not wav.is_file():
+        raise RoundCapturesRefused(
+            REFUSE_CAPTURE_UNREADABLE,
+            {"sidecar": sidecar.name, "wav": str(wav), "detail": "capture WAV is missing"},
+        )
+    capture_sha = sha256_file(wav)
+    if doc.get("wav_sha256") and capture_sha != doc["wav_sha256"]:
+        raise RoundCapturesRefused(
+            REFUSE_CAPTURE_UNREADABLE,
+            {"sidecar": sidecar.name, "declared_capture_sha256": doc["wav_sha256"]},
+        )
+    sha = _declared_program_sha(doc, root)
+    program = programs.get(sha) if sha is not None else None
+    if program is None:
+        raise RoundCapturesRefused(
+            REFUSE_PROGRAM_UNMATCHED,
+            {
+                "sidecar": sidecar.name,
+                "declared_stimulus_sha256": sha,
+                "programs_present": sorted(
+                    {path.name for path in programs.values()}
+                ),
+                "note": (
+                    "capture-to-program binding is by content hash; the "
+                    "sidecar's declared stimulus phase is not consulted"
+                ),
+            },
+        )
+    band = radiated_band_of(doc, manifest)
+    if band is None:
+        raise RoundCapturesRefused(
+            REFUSE_RADIATED_BAND_MISSING,
+            {
+                "sidecar": sidecar.name,
+                "note": (
+                    "a graded band is intersected with the band this "
+                    "capture's DUT radiates; without it none is honest"
+                ),
+            },
+        )
+    responses = [_capture_response(doc, role, wav, program, program_audio) for role in roles]
+    pose_kind, seat_offset_m = _doc_pose_category(doc)
+    return [
+        PoseCapture(
+            capture_id=document_capture_id(doc) or sidecar.stem,
+            phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
+            wav=wav,
+            program=program,
+            program_sha256=str(sha),
+            azimuth_deg=_number(doc.get("position_deg")),
+            vertical_deg=_number(doc.get("vertical_deg")),
+            mark_distance_m=_number(doc.get("mark_distance_m")),
+            radiated_band_hz=retained_band or band,
+            sample_rate=int(rate),
+            ir=ir,
+            peak_idx=int(np.argmax(np.abs(ir))),
+            pose_kind=pose_kind,
+            seat_offset_m=seat_offset_m,
+            candidate_id=str(doc.get("candidate_id") or ""),
+            graph_fingerprint=played_graph_fingerprint(doc),
+            capture_sha256=capture_sha,
+            preprocessing=preprocessing,
+            record_path=sidecar,
+            record_document=doc,
+        )
+        for ir, rate, retained_band, preprocessing in responses
+    ]
 
 
 def _capture_response(
@@ -413,7 +449,8 @@ REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
 
 def select_capture(
-    round_dir: Path, *, capture_id: str | None = None, role: str = "summed"
+    round_dir: Path, *, capture_id: str | None = None, role: str = "summed",
+    omitted: list[dict[str, str]] | None = None,
 ) -> PoseCapture:
     """The one capture a single-capture reader takes out of ``round_dir``.
 
@@ -421,13 +458,15 @@ def select_capture(
     the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
     Raises :class:`RoundCapturesRefused` rather than guessing. The choice is
     made on each sidecar DOC, so the poses the reader discards are never
-    deconvolved.
+    checked or deconvolved; a chosen one that fails lands in ``omitted`` as
+    :func:`discover_captures` says.
     """
-    return select_capture_roles(round_dir, capture_id=capture_id, roles=(role,))[role]
+    return select_capture_roles(round_dir, capture_id=capture_id, roles=(role,), omitted=omitted)[role]
 
 
 def select_capture_roles(
     round_dir: Path, *, capture_id: str | None, roles: tuple[str, ...],
+    omitted: list[dict[str, str]] | None = None,
 ) -> dict[str, PoseCapture]:
     """Read selected roles from one record and one set of verified audio bytes."""
     root = Path(round_dir)
@@ -448,7 +487,7 @@ def select_capture_roles(
 
         named = [
             capture
-            for capture in _discover_captures(root, select=wanted, roles=roles)
+            for capture in _discover_captures(root, select=wanted, roles=roles, omitted=omitted)
             if capture_id
             in (capture.capture_id, capture.wav.stem if capture.wav else None)
         ]
@@ -470,7 +509,7 @@ def select_capture_roles(
         # same answer the decoded ``None`` gave.
         return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
 
-    on_axis = _discover_captures(root, select=on_axis_doc, roles=roles)
+    on_axis = _discover_captures(root, select=on_axis_doc, roles=roles, omitted=omitted)
     if not on_axis:
         raise RoundCapturesRefused(
             REFUSE_CLOSE_REFERENCE_NO_CAPTURE,

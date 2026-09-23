@@ -56,8 +56,10 @@ def _ir(distance_m: float) -> np.ndarray:
     return ir
 
 
-def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> Path:
-    """A banked round holding one on-axis summed capture and its program.
+def _round(
+    root: Path, distance_m: float, *, take_ids: tuple[str, ...] = ("verify_01_a01",),
+) -> Path:
+    """A banked round holding one on-axis summed capture per take and its program.
 
     A narrow, short program: the comparison this suite drives is graded over
     the band the sidecar declares, and 0.4 s keeps the door's tests quick. It
@@ -70,11 +72,11 @@ def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> 
     program = np.asarray(sweep, dtype=np.float64)
     return bank_capture_round(
         root,
-        [_ir(distance_m)],
+        [_ir(distance_m)] * len(take_ids),
         program=0.9 * program / float(np.max(np.abs(program))),
         phase="verify",
-        capture_ids=[take_id],
-        positions_deg=[0.0],
+        capture_ids=take_ids,
+        positions_deg=[0.0] * len(take_ids),
         radiated_band_hz=(100.0, 8000.0),
     )
 
@@ -83,7 +85,7 @@ def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> 
 def rounds(tmp_path: Path) -> tuple[Path, Path]:
     return (
         _round(tmp_path / "far", 1.0),
-        _round(tmp_path / "close", 0.30, take_id="verify_02_a01"),
+        _round(tmp_path / "close", 0.30, take_ids=("verify_02_a01",)),
     )
 
 
@@ -214,6 +216,26 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
     assert payload["reason"] == reason
+
+
+def test_a_bad_repeat_is_omitted_and_its_good_twin_compared(tmp_path, capsys):
+    """One unbindable on-axis take does not refuse the comparison: its healthy
+    repeat is read, and the answer and the artifact name the take left out."""
+    far = _round(tmp_path / "far", 1.0, take_ids=("verify_01_a01", "verify_01_a02"))
+    close = _round(tmp_path / "close", 0.30, take_ids=("verify_02_a01",))
+    sidecar = far / "bundle" / "b0" / "summed" / "summed_verify_01_a01.json"
+    doc = json.loads(sidecar.read_text())
+    doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
+    sidecar.write_text(json.dumps(doc))
+    out = tmp_path / "report.json"
+
+    assert main(_compare_argv((far, close), out)) == EXIT_OK
+    omitted = {"far": [{"capture_id": "verify_01_a01", "sidecar": sidecar.name,
+                        "reason": REFUSE_PROGRAM_UNMATCHED}], "close": []}
+    assert json.loads(capsys.readouterr().out)["omitted"] == omitted
+    report = json.loads(out.read_text())["close_reference"]
+    assert report["omitted"] == omitted
+    assert report["captures"]["far"]["capture_id"] == "verify_01_a02"
 
 
 @pytest.mark.parametrize(

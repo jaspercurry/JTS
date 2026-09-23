@@ -28,7 +28,8 @@ from jasper.active_speaker.crossover_v2.round_views import (
     entry_state_grade,
     load_banked_round,
 )
-from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
+from jasper.active_speaker.crossover_v2.gate_sweep import REFUSE_SINGLE_POSE
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
@@ -1064,6 +1065,35 @@ def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
     assert payload["reason"] == REFUSE_NO_CAPTURES
+
+
+@pytest.mark.parametrize("bad", [1, 2])
+def test_cli_gate_sweep_names_the_captures_it_left_out(gate_sweep_round, capsys, bad):
+    """A capture whose WAV is gone is never read and never costs the round its
+    other poses: the sweep answers while two remain, and names what it left
+    out either way."""
+    from jasper.cli import round_views as cli
+
+    sidecars = sorted((gate_sweep_round / "bundle/b0/summed").glob("*.json"))[:bad]
+    for sidecar in sidecars:
+        sidecar.with_suffix(".wav").unlink()
+    omitted = [
+        {"capture_id": sidecar.stem.removeprefix("summed_"), "sidecar": sidecar.name,
+         "reason": REFUSE_CAPTURE_UNREADABLE}
+        for sidecar in sidecars
+    ]
+    rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20"])
+
+    payload = json.loads(capsys.readouterr().out)
+    if bad == 1:
+        assert rc == cli.EXIT_OK
+        assert (payload["poses"], payload["omitted"]) == (2, omitted)
+        artifact = gate_sweep_round / cli.ARTIFACT_BY_VIEW["sweep --scope round"].artifact
+        assert json.loads(artifact.read_text())["omitted"] == omitted
+    else:
+        assert rc == cli.EXIT_REFUSED
+        assert payload["reason"] == REFUSE_SINGLE_POSE
+        assert json.loads(payload["detail"])["omitted"] == omitted
 
 
 @pytest.mark.parametrize(

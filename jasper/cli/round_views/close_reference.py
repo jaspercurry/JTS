@@ -138,7 +138,7 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
     # the numbers behind both, are in the artifact.
     far_window = next(w for w in report["windows"] if w["name"] == WINDOW_FAR)
     return answer(
-        args.command, out=written,
+        args.command, out=written, omitted=report["omitted"],
         comparison_band_hz=report["validity"]["comparison_band_hz"],
         residual_lag_us=alignment["residual_lag_us"],
         alignment_confidence=alignment["confidence"],
