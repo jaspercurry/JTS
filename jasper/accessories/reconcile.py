@@ -50,8 +50,10 @@ from jasper.service_units import (
     JASPER_VOICE_SERVICE,
     SYSTEMCTL_TIMEOUT_SEC,
     run_systemctl as _systemctl,
+    show_blocks,
 )
 from jasper.source_intent import source_intent_enabled
+from jasper.systemd_probe import unit_state
 
 from ._dbus import variant_value
 from .mic_env import (
@@ -73,13 +75,13 @@ VOICE_UNIT = JASPER_VOICE_SERVICE
 VOICE_INPUT_GATE_UNIT = AEC_RECONCILE_SERVICE
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
 # Per adapter host, and only when the published set changed: one try-restart,
-# then one show probe of the result.
+# then one active-state probe of the result.
 _ADAPTER_SYSTEMCTL_CALLS = 2
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
-# One show probe, then exactly one verb — for the handoff (show the gate owner,
-# then start it or try-restart voice) and for direct ownership (show voice, then
+# One state probe, then exactly one verb — for the handoff (show the gate owner,
+# then start it or try-restart voice) and for direct ownership (probe voice, then
 # start/restart/stop it) alike. See refresh_voice_input, converge_voice_unit.
 _VOICE_REFRESH_SYSTEMCTL_CALLS = 2
 _VOICE_REFRESH_TIMEOUT_BUDGET_SEC = (
@@ -306,17 +308,6 @@ def _result_detail(result: subprocess.CompletedProcess) -> str:
     ).strip()
 
 
-def _show_properties(result: subprocess.CompletedProcess) -> dict[str, str]:
-    """Parse ``systemctl show`` ``Key=value`` output, values lowercased."""
-
-    properties: dict[str, str] = {}
-    for line in str(getattr(result, "stdout", "") or "").splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            properties[key.strip()] = value.strip().lower()
-    return properties
-
-
 def _unit_command_failure(
     unit: str,
     command: Sequence[str],
@@ -377,7 +368,7 @@ def refresh_adapter_hosts(
             if failure is not None:
                 failures.append(failure)
                 continue
-        if require_active and not _unit_active(host, systemctl=systemctl):
+        if require_active and not _unit_active(host):
             failures.append(f"{host}: expected is-active=active")
     return tuple(failures)
 
@@ -418,7 +409,11 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
         return "absent"
     if result.returncode != 0:
         return "absent"
-    properties = _show_properties(result)
+    properties = {
+        key.strip(): value.strip().lower()
+        for block in show_blocks(result.stdout or "")
+        for key, value in block.items()
+    }
     load_state = properties.get("LoadState")
     if load_state == "masked":
         return "masked"
@@ -516,14 +511,12 @@ def voice_follows_accessory_mic() -> bool:
     )
 
 
-def _unit_active(unit: str, *, systemctl: Systemctl) -> bool:
+def _unit_active(unit: str) -> bool:
     try:
-        result = systemctl(("show", unit, "--property=ActiveState"))
+        result = unit_state("is-active", unit, timeout=SYSTEMCTL_TIMEOUT_SEC)
     except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
         return False
-    if result.returncode != 0:
-        return False
-    return _show_properties(result).get("ActiveState") == "active"
+    return result.rc == 0 and result.word == "active"
 
 
 def converge_voice_unit(
@@ -551,7 +544,7 @@ def converge_voice_unit(
     command: tuple[str, ...]
     if not wanted:
         action, command = "stop", ("stop", VOICE_UNIT)
-    elif env_changed and _unit_active(VOICE_UNIT, systemctl=systemctl):
+    elif env_changed and _unit_active(VOICE_UNIT):
         action, command = "restart", ("--no-block", "restart", VOICE_UNIT)
     else:
         action, command = "start", ("--no-block", "start", VOICE_UNIT)
