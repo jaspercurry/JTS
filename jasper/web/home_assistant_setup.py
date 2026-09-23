@@ -353,8 +353,8 @@ def verify_sync(
     try:
         return asyncio.run(_verify_async(url, token, verify_ssl=verify_ssl))
     except Exception as e:  # noqa: BLE001
-        logger.exception("ha verify: unexpected error")
-        return {"ok": False, "error": f"Internal error during validation: {e}"}
+        log_event(logger, "ha.verify", outcome="error", error_type=type(e).__name__, level=logging.ERROR)
+        return {"ok": False, "error": "Internal error during validation."}
 
 
 def ready_sync(
@@ -367,8 +367,7 @@ def ready_sync(
     which makes 3 calls per invocation, this drops the worst-case HA
     request rate during the restart-poll from ~45 calls to ~15.
 
-    Returns {ok: bool} — no rich data. The caller does one /verify
-    at the end to populate the agent picker + instance name."""
+    The caller uses /verify to populate the agent picker and instance name."""
     if not url or not token.strip():
         return {"ok": False}
 
@@ -381,8 +380,8 @@ def ready_sync(
 
     try:
         return {"ok": asyncio.run(_probe())}
-    except Exception:  # noqa: BLE001
-        logger.debug("ha ready: probe failed", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        log_event(logger, "ha.ready", outcome="error", error_type=type(e).__name__, level=logging.DEBUG)
         return {"ok": False}
 
 

@@ -304,8 +304,8 @@ class HAClient:
 
         body = self._build_body(query)
         started = self._clock()
-        client = await self._client()
         try:
+            client = await self._client()
             resp = await client.post(
                 self._url + CONVERSATION_PATH,
                 json=body,
@@ -313,25 +313,20 @@ class HAClient:
             )
         except httpx.TimeoutException as e:
             log_event(
-                logger,
-                "ha.call",
-                outcome="timeout",
+                logger, "ha.call", outcome=OUTCOME_TIMEOUT,
                 query_len=len(query),
-                detail=repr(str(e)),
+                error_type=type(e).__name__,
                 level=logging.WARNING,
             )
             return self._error(OUTCOME_TIMEOUT, "HA did not respond in time", started)
-        except httpx.HTTPError as e:
-            # ConnectError, NetworkError, ConnectTimeout-as-network, etc.
+        except (httpx.HTTPError, ValueError) as e:
             log_event(
-                logger,
-                "ha.call",
-                outcome="network",
+                logger, "ha.call", outcome=OUTCOME_NETWORK,
                 query_len=len(query),
-                detail=repr(str(e)),
+                error_type=type(e).__name__,
                 level=logging.WARNING,
             )
-            return self._error(OUTCOME_NETWORK, str(e)[:200], started)
+            return self._error(OUTCOME_NETWORK, "Could not reach Home Assistant", started)
 
         latency_ms = int((self._clock() - started) * 1000)
 
@@ -350,14 +345,12 @@ class HAClient:
                 started, latency_ms,
             )
         if resp.status_code >= 500:
-            text = (resp.text or "")[:200]
             log_event(
                 logger,
                 "ha.call",
                 outcome="agent_error",
                 status=resp.status_code,
                 latency_ms=latency_ms,
-                body=text,
                 level=logging.WARNING,
             )
             return self._error(
@@ -366,14 +359,12 @@ class HAClient:
                 started, latency_ms,
             )
         if resp.status_code != 200:
-            text = (resp.text or "")[:200]
             log_event(
                 logger,
                 "ha.call",
                 outcome="parse_error",
                 status=resp.status_code,
                 latency_ms=latency_ms,
-                body=text,
                 level=logging.WARNING,
             )
             return self._error(
@@ -390,7 +381,7 @@ class HAClient:
                 "ha.call",
                 outcome="parse_error",
                 detail="json_decode",
-                err=repr(str(e)),
+                error_type=type(e).__name__,
                 level=logging.WARNING,
             )
             return self._error(OUTCOME_PARSE_ERROR, "could not decode HA response", started, latency_ms)
@@ -516,17 +507,18 @@ class HAClient:
         touches the conversation endpoint — costly on LLM-backed HA agents."""
         import httpx  # lazy — see module-level comment
 
-        client = await self._client()
         try:
+            client = await self._client()
             resp = await client.get(
                 self._url + HEALTH_PATH,
                 headers=self._headers(),
                 timeout=_health_timeout(),
             )
-        except httpx.HTTPError as e:
-            logger.debug("ha probe_health: %r", e)
-            timed_out = isinstance(e, httpx.TimeoutException)
-            return HealthProbe(OUTCOME_TIMEOUT if timed_out else OUTCOME_NETWORK)
+        except (httpx.HTTPError, ValueError) as e:
+            outcome = OUTCOME_TIMEOUT if isinstance(e, httpx.TimeoutException) else OUTCOME_NETWORK
+            log_event(logger, "ha.probe_health", outcome=outcome,
+                      error_type=type(e).__name__, level=logging.DEBUG)
+            return HealthProbe(outcome)
         status = resp.status_code
         if status in (401, 403):
             return HealthProbe(OUTCOME_AUTH, status)
@@ -536,7 +528,9 @@ class HAClient:
             return HealthProbe(OUTCOME_NOT_HA, status)
         try:
             body = resp.json()
-        except ValueError:
+        except ValueError as e:
+            log_event(logger, "ha.probe_health", outcome=OUTCOME_PARSE_ERROR,
+                      error_type=type(e).__name__, level=logging.DEBUG)
             body = None
         if not isinstance(body, dict):
             return HealthProbe(OUTCOME_PARSE_ERROR, status)
@@ -565,8 +559,8 @@ class HAClient:
         version after a successful connect. Returns None on any error."""
         import httpx  # lazy — see module-level comment
 
-        client = await self._client()
         try:
+            client = await self._client()
             resp = await client.get(
                 self._url + CONFIG_PATH,
                 headers=self._headers(),
@@ -576,7 +570,8 @@ class HAClient:
                 return None
             return resp.json()
         except (httpx.HTTPError, ValueError) as e:
-            logger.debug("ha config: %r", e)
+            log_event(logger, "ha.config", outcome="error",
+                      error_type=type(e).__name__, level=logging.DEBUG)
             return None
 
     async def list_agents(self) -> list[dict[str, str]]:
@@ -586,8 +581,8 @@ class HAClient:
         require). Returns a list of {"entity_id", "name"} dicts."""
         import httpx  # lazy — see module-level comment
 
-        client = await self._client()
         try:
+            client = await self._client()
             resp = await client.get(
                 self._url + STATES_PATH,
                 headers=self._headers(),
@@ -597,7 +592,8 @@ class HAClient:
                 return []
             states = resp.json()
         except (httpx.HTTPError, ValueError) as e:
-            logger.debug("ha list_agents: %r", e)
+            log_event(logger, "ha.list_agents", outcome="error",
+                      error_type=type(e).__name__, level=logging.DEBUG)
             return []
 
         agents: list[dict[str, str]] = []
