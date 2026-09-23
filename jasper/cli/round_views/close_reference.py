@@ -134,7 +134,7 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
         print(line, file=sys.stderr)
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(
-        {"status": "compared", "close_reference": report}, args.out,
+        {"outcome": "compared", "close_reference": report}, args.out,
         resolved_out(far_dir, spec.artifact), schema=spec.schema,
     )
     alignment = report["alignment"]

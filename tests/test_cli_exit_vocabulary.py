@@ -389,11 +389,10 @@ def view_answer(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPat
 
 
 def test_a_view_that_succeeds_prints_one_bounded_answer(view_answer: _Answered) -> None:
-    """A success is an ANSWER: one document, no failure word in it, and the
-    artifact named rather than poured onto the operator's terminal."""
+    """A success is an ANSWER: one document, and the artifact named rather
+    than poured onto the operator's terminal."""
 
     assert view_answer.code == _refusal.EXIT_OK
-    assert "status" not in view_answer.answer
     assert max((len(a) for a in _numeric_arrays(view_answer.answer)), default=0) <= MAX_ANSWER_ARRAY
     assert Path(view_answer.answer["out"]).stat().st_size == view_answer.answer["bytes"]
 
@@ -410,3 +409,9 @@ def test_every_view_answers_under_one_envelope(view_answer: _Answered) -> None:
     assert all("round_id" in one for one in subject.get("rounds", [subject]))
     assert set(view_answer.answer["parameters"]) == run.parameters
 
+
+def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _Answered) -> None:
+    """``status`` is how a failure is recognised (ADR-0237)."""
+
+    assert "status" not in view_answer.answer
+    assert "status" not in view_answer.artifact

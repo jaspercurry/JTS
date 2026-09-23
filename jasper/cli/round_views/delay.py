@@ -83,7 +83,7 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.refusal_reason, exc.detail or str(exc))
 
     payload = {
-        "status": "proposed",
+        "outcome": "proposed",
         "take_path": take_path,
         "phase": pair.take.phase,
         "phase_composition": composition,
