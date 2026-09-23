@@ -10,9 +10,6 @@ venv/
 .env
 .env.*
 !.env.example
-# .env.local for laptop-side voice-eval — gitignored to keep
-# API keys out of the repo. See tests/voice_eval/README.md.
-.env.local
 .pytest_cache/
 .ruff_cache/
 # scripts/test-merge runs mypy, which writes this cache into the repo root —
@@ -75,7 +72,3 @@ CLAUDE.local.md
 # the stable A/B baseline for AEC engine + wake-word model swaps.
 # User-specific audio; never ship to the repo.
 reference-conditions/
-
-# AEC3 v2.1 deep-tune spike — locally-built pybind11 extension
-experiments/aec3-v2-deep-tune-spike/*.so
-experiments/aec3-v2-deep-tune-spike/*.dylib

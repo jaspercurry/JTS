@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared ALSA hint parser for install-time and hotplug-time hardware detection.
+# ALSA hint parser for install-time hardware detection. install.sh only.
 
 jasper_find_alsa_card() {
     # jasper_find_alsa_card <aplay-or-arecord-command> <descriptor-regex>

@@ -251,11 +251,9 @@ _apply_jts_zram_dropin() {
 # Step 4 — live-write /proc/PID/oom_score_adj for each running
 # critical daemon plus the sshd listener. The OOMScoreAdjust=
 # directive in each .service file only takes effect on next process
-# start; install.sh doesn't
-# restart jasper-camilla (Rust binary, intentionally never auto-
-# restarted per AGENTS.md) or jasper-mux (not in install.sh's
-# restart list), so their running processes would sit at adj=0
-# until reboot. Live-writing sets the kernel-visible value
+# start; install.sh doesn't restart jasper-camilla or jasper-mux (not
+# in install.sh's restart list), so their running processes would sit
+# at adj=0 until reboot. Live-writing sets the kernel-visible value
 # immediately — zero audio glitch, fully reversible.
 #
 # Reads the canonical target values from jasper._oom_adj.INSTALL_LIVE_WRITE
