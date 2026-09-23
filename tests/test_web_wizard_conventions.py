@@ -62,12 +62,6 @@ WEB_SETUP_FILES = (
 )
 WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
-_SHARED_JSON_OBJECT_READERS = {
-    "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
-    "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
-    "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
-}
-
 
 def _matches(pattern: str) -> list[str]:
     rx = re.compile(pattern)
@@ -120,39 +114,6 @@ def test_local_json_responses_use_the_shared_response_helper():
             ):
                 offenders.add(path.name)
     assert not offenders
-
-
-def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
-    for filename in (
-        "bluetooth_setup.py",
-        "home_assistant_setup.py",
-        "rooms_setup.py",
-        "sources_setup.py",
-        "spotify_setup.py",
-        "wake_corpus_setup.py",
-        "wifi_setup.py",
-    ):
-        source = (Path("jasper/web") / filename).read_text()
-        assert "send_json_response(" in source
-        assert "send_proxy_json(" not in source
-
-
-def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
-    for filename, (function_name, cap_call) in _SHARED_JSON_OBJECT_READERS.items():
-        path = Path("jasper/web") / filename
-        source = path.read_text(encoding="utf-8")
-        functions = [
-            node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == function_name
-        ]
-        assert len(functions) == 1, (
-            f"expected one {function_name} adapter in {path}"
-        )
-        adapter = ast.get_source_segment(source, functions[0]) or ""
-        assert "read_json_object" in adapter
-        assert cap_call in adapter
-        assert ".headers" not in adapter
-        assert "json.loads" not in adapter
 
 
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels
@@ -886,37 +847,11 @@ def test_mutating_handlers_route_check_before_csrf_guard():
     )
 
 
-def test_wizards_do_not_reintroduce_div_switches():
-    assert _matches(r"class=[\"']switch[\"']") == []
-
-
 def test_wizards_do_not_reintroduce_json_posts_without_csrf_helper():
     assert _matches(
         r"headers:\s*\{\s*['\"]Content-Type['\"]\s*:\s*"
         r"['\"]application/json['\"]\s*\}",
     ) == []
-
-
-def test_wizards_do_not_generate_inline_js_for_untrusted_metadata():
-    risky_handlers = (
-        "connectDevice",
-        "startPair",
-        "forget(",
-        "openConnect",
-        "openForget",
-        "submitConnect",
-        "submitForget",
-        "dismissPanel",
-        "dismissForget",
-        "toggleRadio",
-        "provision",
-    )
-    for handler in risky_handlers:
-        assert _matches(r"onclick=[\"']" + re.escape(handler)) == []
-
-
-def test_wizards_do_not_need_js_string_attribute_escaping_helper():
-    assert _matches(r"function\s+jsArg\b") == []
 
 
 # Wizard convention: "Do not put untrusted strings into

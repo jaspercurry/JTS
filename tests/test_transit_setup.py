@@ -151,8 +151,9 @@ def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
 def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
     """The weather->transit seed's check-then-act must be atomic: when transit
     already has coords, the seed neither overwrites them nor drops a foreign
-    key. Symmetric with the transit->weather seed (DA-0036); the seed reads
-    transit INSIDE the shared flock."""
+    key. Symmetric with test_seed_weather_skips_atomically_when_coords_present
+    in test_web_weather_setup.py; the seed reads transit INSIDE the shared
+    flock."""
     from jasper.web import weather_setup
 
     tp = str(tmp_path / "transit.env")
@@ -181,7 +182,9 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     """Two concurrent writers of transit.env — a transit save routed through
     _locked_apply and the weather->transit seed — must not clobber each other
     under the shared flock. The foreign key and one consistent coord set both
-    survive. Symmetric with the weather.env concurrency test (DA-0036)."""
+    survive. Symmetric with
+    test_concurrent_weather_save_and_transit_seed_dont_lose_keys in
+    test_web_weather_setup.py."""
     tp = str(tmp_path / "transit.env")
     # Start with only a foreign key: no coords, so the seed is eligible.
     atomic_io.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
