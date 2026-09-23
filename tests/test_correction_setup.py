@@ -385,13 +385,11 @@ def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery
         assert calls == ["recover", "prepare"]
         assert plan.needs_recovery
 
-_RUN = {"kind": "crossover_v2:session", "session_id": "wired-live"}
-
-
-def _capture(monkeypatch, status):
-    """Put a crossover run in the slot at ``status``; return the flow's view of it."""
+def _capture(monkeypatch, status, run="wired-live"):
+    """Put crossover run ``run`` in the slot at ``status``; return the flow's view of it."""
+    slot = None if status is None else {"kind": "crossover_v2:session", "session_id": run, "status": status}
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
-    monkeypatch.setattr(correction_capture, "_capture_slot", None if status is None else {**_RUN, "status": status})
+    monkeypatch.setattr(correction_capture, "_capture_slot", slot)
     return correction_capture._get_capture_slot_for("crossover_v2:")
 
 
@@ -422,7 +420,9 @@ def _spy_slow_reads(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("status", ["starting", "awaiting_capture", "stopping"])
-def test_a_live_capture_reuses_its_first_status_answer_until_an_apply(monkeypatch, tmp_path, status):
+def test_a_live_capture_reuses_its_first_status_answer_until_an_apply_or_another_run(
+    monkeypatch, tmp_path, status,
+):
     """#5632 F1: the microphone reader shares this process, so a live run's
     polls must not recompile graphs or rescan the banks."""
     from jasper.web import correction_crossover_flow as flow
@@ -439,10 +439,30 @@ def test_a_live_capture_reuses_its_first_status_answer_until_an_apply(monkeypatc
     assert (idle["snapshot_at"], first["snapshot_at"], again["snapshot_at"]) == (None, None, first["generated_at"])
     assert [again[key] for key in ("setup", "timing")] == [first[key] for key in ("setup", "timing")]
     assert again["crossover_v2"]["controllability"] == first["crossover_v2"]["controllability"]
-    assert envelope["capture"]["session_id"] == _RUN["session_id"]
+    assert (envelope["capture"]["session_id"], envelope["snapshot_at"]) == ("wired-live", first["generated_at"])
     applied["config"] = {"sha256": "b" * 64}
     assert flow.handle_status(capture=capture)[0]["snapshot_at"] is None
     assert calls == ["setup", "rounds", "ledger"]
+    calls.clear()
+    assert flow.handle_status(capture=_capture(monkeypatch, status, run="wired-next"))[0]["snapshot_at"] is None
+    assert calls == ["setup", "rounds", "ledger"]
+
+
+def test_a_live_capture_reuses_an_unreadable_ledger_without_rescanning(monkeypatch, tmp_path):
+    from jasper.active_speaker import controllability_ledger
+    from jasper.web import correction_crossover_flow as flow
+
+    calls, _ = _spy_slow_reads(monkeypatch, tmp_path)
+
+    def unreadable():
+        calls.append("ledger")
+        raise OSError("bundle root unreadable")
+
+    monkeypatch.setattr(controllability_ledger, "read_controllability_ledger", unreadable)
+    capture = _capture(monkeypatch, "awaiting_capture")
+    answers = [flow.handle_status(capture=capture)[0] for _ in range(2)]
+    assert calls == ["setup", "rounds", "ledger"]
+    assert [answer["crossover_v2"]["controllability"] for answer in answers] == [None, None]
 
 
 @pytest.mark.parametrize("status", [None, "complete", "stopped", "failed"])

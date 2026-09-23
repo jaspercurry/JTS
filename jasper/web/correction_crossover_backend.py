@@ -100,7 +100,8 @@ def status_payload() -> dict[str, Any]:
     applied = load_applied_baseline_profile_state()
     identity = applied_identity(applied)
     run = correction_capture.live_run_id()
-    snapshot = _run_snapshot if _run_snapshot and _run_snapshot["key"] == (run, identity) else None
+    held = _run_snapshot
+    snapshot = held if held is not None and held["key"] == (run, identity) else None
     payload = conductor_status(setup=snapshot["setup"] if snapshot else None)
     payload["commission"] = {
         "commission_load": load_commission_load_state(),
@@ -133,7 +134,7 @@ def status_payload() -> dict[str, Any]:
     try:
         from .correction_crossover_v2_status import crossover_v2_status_block
 
-        v2_block = crossover_v2_status_block(controllability=snapshot["controllability"] if snapshot else None)
+        v2_block = crossover_v2_status_block(controllability=snapshot["controllability"] if snapshot else False)
     except (OSError, RuntimeError, TypeError, ValueError):
         logger.warning("crossover v2 status block unavailable", exc_info=True)
         v2_block = None
