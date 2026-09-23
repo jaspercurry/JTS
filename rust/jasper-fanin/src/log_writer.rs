@@ -11,7 +11,7 @@ use std::sync::Arc;
 use jasper_tts_protocol::loudness::{AssistantGainDecision, SegmentKind};
 use log::{info, warn};
 
-use crate::mixer::{format_ring_stall_event, RingStallEvent};
+use crate::mixer::ring_output::{format_ring_stall_event, RingStallEvent};
 use crate::tts::log_assistant_loudness_decision;
 
 /// Bounded capacity of the `fanin-ring-log` channel (`RingOutput::stall_log`
