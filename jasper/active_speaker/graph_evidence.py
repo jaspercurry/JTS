@@ -46,6 +46,7 @@ from jasper.output_topology import canonical_fingerprint
 from . import graph_safety as gs
 
 from .camilla_names import (
+    STARTUP_MUTE_GAIN_DB,
     driver_limiter_name,
     output_commission_mute_name,
     protective_tweeter_hp_name,
@@ -55,7 +56,6 @@ from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
     audible_outputs_for_role,
     crossover_highpass_for_role,
 )

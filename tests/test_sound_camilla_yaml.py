@@ -719,7 +719,7 @@ def _pipeline_names(yaml_text: str, channel: int) -> str:
 
 
 def test_mono_on_output_0_renders_channel_1_hard_muted():
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
@@ -1088,7 +1088,7 @@ def test_a_wide_graph_carries_the_program_and_mutes_every_other_output(
     """
     import yaml as yaml_lib
 
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.camilla_emit import MONO_SUM_GAIN_DB
     from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH

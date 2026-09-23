@@ -12,7 +12,7 @@ from jasper.output_topology import cardioid_cabinet_channels, measurement_target
 
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
-from .filters import STARTUP_MUTE_GAIN_DB
+from ..camilla_names import STARTUP_MUTE_GAIN_DB
 from .topology import _output_count
 
 

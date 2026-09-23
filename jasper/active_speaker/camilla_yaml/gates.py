@@ -13,7 +13,12 @@ from jasper.camilla_config_contract import ensure_volume_limit_db
 from jasper.log_event import log_event
 from jasper.output_topology import measurement_target_id
 
-from ..camilla_names import driver_delay_name, driver_limiter_name, output_commission_mute_name
+from ..camilla_names import (
+    STARTUP_MUTE_GAIN_DB,
+    driver_delay_name,
+    driver_limiter_name,
+    output_commission_mute_name,
+)
 from ..driver_protection import format_protection_hz, protection_highpass_floor_satisfied
 from ..graph_safety import (
     GraphView,
@@ -28,11 +33,7 @@ from ..graph_safety import (
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from ..test_signal_plan import declared_protection_floor_hz, strictest_crossover_highpass_hz
 from .document import logger
-from .filters import (
-    STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
-    crossover_highpass_for_role,
-)
+from .filters import STARTUP_LIMITER_CLIP_LIMIT_DB, crossover_highpass_for_role
 from .topology import _channels_for_role
 
 #: ``result=`` slug of the L0 emit gate's below-declared-floor refusal

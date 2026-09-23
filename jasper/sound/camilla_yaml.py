@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jasper.active_speaker.camilla_names import output_commission_mute_name
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -269,7 +269,6 @@ def _master_gain_mixer_yaml(
         )
 
     def surplus_source() -> str:
-        from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: circular emitter dependency
 
         return source(0, fmt(STARTUP_MUTE_GAIN_DB), False)
 
@@ -556,7 +555,6 @@ def emit_sound_config(
         # module scope (emit_sound_config); a top-level edge back would be
         # circular. Same lazy-import idiom runtime_contract uses for its own
         # reverse edges.
-        from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: circular emitter dependency
 
         # Append each mute LAST in its channel's chain. CamillaDSP applies a
         # step's filters in order and these per-channel steps are the pipeline's

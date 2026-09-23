@@ -26,11 +26,8 @@ from jasper.output_topology import OutputTopology
 
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from ._common import gate as _gate, issue as _issue
-from .camilla_yaml import (
-    COMMISSIONING_FILTER_MODE,
-    COMMISSIONING_HEADROOM_DB,
-    STARTUP_MUTE_GAIN_DB,
-)
+from .camilla_yaml import COMMISSIONING_FILTER_MODE, COMMISSIONING_HEADROOM_DB
+from .camilla_names import STARTUP_MUTE_GAIN_DB
 from .environment import read_camilla_statefile_config_path
 from .graph_evidence import (
     running_commission_evidence,

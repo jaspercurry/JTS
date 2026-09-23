@@ -39,12 +39,12 @@ from .camilla_yaml import (
     COMMISSIONING_HEADROOM_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
     active_emit_devices,
     audible_outputs_for_role,
     capture_device_for_playback,
     emit_active_speaker_commissioning_config,
 )
+from .camilla_names import STARTUP_MUTE_GAIN_DB
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .environment import classify_camilla_config_text
 from .graph_evidence import (

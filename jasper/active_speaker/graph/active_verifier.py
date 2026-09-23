@@ -26,13 +26,9 @@ from jasper.output_topology import (
 )
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
 from .._common import issue as _issue
-from ..camilla_yaml import (
-    BASELINE_HEADROOM_DB,
-    BASELINE_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
-)
+from ..camilla_yaml import BASELINE_HEADROOM_DB, BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
 from ..camilla_names import (
+    STARTUP_MUTE_GAIN_DB,
     baseline_protection_name,
     bass_management_hp_name as _bass_management_hp_name,
     driver_baseline_gain_name as _baseline_gain_name,

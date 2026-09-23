@@ -75,7 +75,6 @@ from .filters import (
     MAX_LINEARIZATION_FILTERS_PER_DRIVER as MAX_LINEARIZATION_FILTERS_PER_DRIVER,
     STARTUP_HEADROOM_DB as STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB as STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB as STARTUP_MUTE_GAIN_DB,
     _blend_correction_name as _blend_correction_name,
     _crossover_filter_name as _crossover_filter_name,
     _driver_linearization_chain_names as _driver_linearization_chain_names,

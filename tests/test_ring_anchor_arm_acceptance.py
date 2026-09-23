@@ -90,7 +90,7 @@ def _graph_yaml(
     attack); ``bypassed`` marks the mute step skipped, which leaves the channel
     live while the filter definition still reads as muted.
     """
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.camilla_names import output_commission_mute_name
 
     gains = dict(mute_gains_db or {})
@@ -614,7 +614,7 @@ def test_the_real_emitted_anchor_passes_terminality(tmp_path):
     """
     import yaml as yaml_lib
 
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.active_speaker.graph_safety import (
         output_terminally_muted,
