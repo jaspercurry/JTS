@@ -43,6 +43,7 @@ from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
+from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
@@ -151,8 +152,9 @@ def test_status_and_inventory_find_notes_and_current_evidence(
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
-    assert [shlex.split(command)[1] for command in status["next_commands"][:3]] == [
-        "inventory", "classify-features", "contract",
+    # No view run is a next step: a view changes no evidence.
+    assert [shlex.split(command)[1] for command in status["next_commands"][:2]] == [
+        "inventory", "contract",
     ]
     assert round_views.main(["inventory", str(current)]) == 0
     inventory = json.loads(capsys.readouterr().out)
@@ -160,11 +162,12 @@ def test_status_and_inventory_find_notes_and_current_evidence(
     assert "frozen_packet" not in inventory
     assert "frozen_packet" not in status
 
-    (artifacts / "feature_classification.json").write_text(json.dumps(_classification()))
+    beside = round_views.default_out(round_inputs_mod.round_inputs(current), current, CLASSIFICATION_ARTIFACT)
+    beside.write_text(json.dumps(_classification()))
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     enriched = json.loads(capsys.readouterr().out)
     assert enriched["banked"]["classification"]["available"] is True
-    assert enriched["packet_fingerprint"] != status["packet_fingerprint"]
+    assert enriched["packet_fingerprint"] == status["packet_fingerprint"]
 
 
 # --------------------------------------------------------------------------- #
@@ -788,20 +791,6 @@ def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
     assert payload["applied"]["from_applied_profile"] == {
         "available": True, "n_filters": 1
     }
-
-
-def test_a_missing_classification_names_the_instrument_that_banks_it(
-    tmp_path, capsys
-):
-    """A declared band alone answers half the per-driver question."""
-    session, draft = _speaker_dirs(tmp_path, draft=_draft())
-
-    _, payload = _status([str(session), "--drivers", str(draft)], capsys)
-
-    # The BUNDLE that verb takes, resolved through the reader the packet used,
-    # not the round tree this one was pointed at.
-    bundle = round_inputs_mod.round_inputs(session).session_dir
-    assert f"jasper-round-views classify-features {bundle}" in payload["next_commands"]
 
 
 def test_both_prescription_classes_are_offered_when_both_have_a_bound(

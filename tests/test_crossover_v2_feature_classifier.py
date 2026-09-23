@@ -33,6 +33,8 @@ from jasper.audio_measurement.quality_model import TrustLevel
 from jasper.active_speaker.crossover_v2 import feature_classifier as fx
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
+    build_crossover_evidence_packet,
+    packet_feature_classifications,
     round_artifact_dir,
     round_program_dir,
 )
@@ -194,6 +196,18 @@ def _classify(root: Path, ir: np.ndarray, **kwargs) -> dict:
     assert round_dir is not None
     captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
     return fx.classify_round(captures)
+
+
+@pytest.fixture(autouse=True)
+def _caller_in_tmp(tmp_path, monkeypatch):
+    """A view of a LIVE bundle lands beside the caller, so the caller stands
+    in the temporary directory."""
+    monkeypatch.chdir(tmp_path)
+
+
+def _filed(out: str) -> dict:
+    """The artifact a command's answer names."""
+    return json.loads(Path(json.loads(out)["out"]).read_text())
 
 
 @pytest.fixture(scope="module")
@@ -484,9 +498,7 @@ def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
         "--gates-ms", "3", "--gates-ms", "9", "--gates-ms", "11",
     ])
     assert code == cli.EXIT_OK
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    banked = _filed(capsys.readouterr().out)
     assert banked["measurement"]["gate_ladder_ms"] == [3.0, 9.0, 11.0]
     assert set(banked["rows"][0]["gate_rungs"]) == {"3", "9", "11"}
 
@@ -507,9 +519,7 @@ def test_a_single_rung_ladder_refuses_the_ladder_by_name_and_still_classifies(
         "--at", str(RESONANCE_HZ), "--gates-ms", "7",
     ])
     assert code == cli.EXIT_OK
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    banked = _filed(capsys.readouterr().out)
 
     refusal = banked["measurement"]["gate_ladder_refused"]
     assert refusal["reason"] == fx.GATE_LADDER_NEEDS_TWO_RUNGS
@@ -1494,9 +1504,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
         ["classify-features", str(bundle), "--at", str(RESONANCE_HZ)]
     )
     assert code == cli.EXIT_OK
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    banked = _filed(capsys.readouterr().out)
     assert banked["pose_bank"] == {"available": True, "n_poses": 1}
     persistence = banked["rows"][0]["pose_persistence"]
     assert persistence["n_poses"] == 1
@@ -1689,10 +1697,12 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     answer = json.loads(capsys.readouterr().out)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    banked = json.loads(Path(answer["out"]).read_text())
     assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+    # Beside the round, never inside its evidence: the packet cites it as a view.
+    assert not list(bundle.rglob(CLASSIFICATION_ARTIFACT))
+    verdicts = packet_feature_classifications(build_crossover_evidence_packet(bundle))
+    assert verdicts and verdicts[0].classification == DEFECT_CUTTABLE
     # The floor the REFUSAL already names, on success too, so what this
     # instrument can be asked about is known before a run rather than after
     # one declines. Read off the artifact, never re-derived here.
@@ -1712,13 +1722,7 @@ def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys, ordinal_names):
             path.rename(path.with_name(path.name.replace("_program.wav", "_00_program.wav")))
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    # Filed where the receipts shape always filed it -- the ONE location the
-    # evidence packet reads -- even though the programs it was computed from
-    # live in the sibling crossover_v2/ directory instead.
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
-    assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+    assert read_feature_verdicts(_filed(capsys.readouterr().out))[0].classification == DEFECT_CUTTABLE
 
 
 def test_bank_and_receipts_shapes_resolve_to_the_same_captures(tmp_path):
@@ -1823,9 +1827,7 @@ def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_REFUSED
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    assert not (round_dir / CLASSIFICATION_ARTIFACT).exists()
+    assert not list(tmp_path.rglob(f"*{CLASSIFICATION_ARTIFACT}"))
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == fx.NO_FEATURES_DETECTED
     assert payload["reason"] in fx.CLASSIFICATION_REFUSAL_REASONS
@@ -1845,15 +1847,14 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    captured = capsys.readouterr()
+    banked = _filed(captured.out)
     assert banked["controls_ok"] is False
     assert banked["controls_disclosure"] == fx.CONTROLS_FAILED_DISCLOSURE
     assert all(row["egd_verdict"] == EGD_AMBIGUOUS for row in banked["rows"])
     # Not silent: an exit-0 round whose controls failed relays the module's
     # own disclosure on stderr rather than reading as a clean run.
-    assert fx.CONTROLS_FAILED_DISCLOSURE in capsys.readouterr().err
+    assert fx.CONTROLS_FAILED_DISCLOSURE in captured.err
 
 
 def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):

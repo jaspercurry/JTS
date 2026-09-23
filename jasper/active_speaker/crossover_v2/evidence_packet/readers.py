@@ -22,11 +22,17 @@ PACKET_SCHEMA_VERSION = 2
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
 
+#: The block citing optional views' outputs. The fingerprint skips it: a view
+#: is a function of the round's takes and its own parameters, so running one
+#: never moves the evidence a prescription answers.
+DERIVED_VIEWS = "derived_views"
+
 
 def _fingerprint(packet: dict[str, Any]) -> str:
+    # See ADR-0346
     try:
         return json_fingerprint(
-            {key: value for key, value in packet.items() if key != "packet_fingerprint"},
+            {key: value for key, value in packet.items() if key not in ("packet_fingerprint", DERIVED_VIEWS)},
             field_name="evidence_packet",
         )
     except EvidenceIdentityError as exc:
@@ -81,10 +87,11 @@ def packet_driver_passbands_hz(packet: Any) -> dict[str, tuple[float, float]]:
 
 
 def packet_feature_classifications(packet: Any) -> tuple[FeatureVerdict, ...] | None:
-    """The banked verdicts, or ``None`` when this round has none."""
+    """The classification view's verdicts, or ``None`` when this round has none."""
     if not isinstance(packet, dict):
         return None
-    block = packet.get("feature_classification")
+    views = packet.get(DERIVED_VIEWS)
+    block = views.get("feature_classification") if isinstance(views, dict) else None
     if not isinstance(block, dict) or not block.get("available"):
         return None
     return read_feature_verdicts(block.get("verdicts"))

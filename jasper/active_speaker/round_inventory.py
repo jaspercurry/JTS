@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from .measurement_programs import bookkeeping_views, run_purposes
 from .run_manifest import room_sets
+from .crossover_v2.evidence_packet.offline_reads import derived_view_path
 from .crossover_v2.round_inputs import (RoundInputs, read_run_manifest, resolve_set, set_artifact_name,
                                         round_artifact_dir, default_out)
 from .round_view_artifacts import PROG, ARTIFACT_BY_VIEW, TAKES_THIS_ROUND, TAKES_THIS_BUNDLE, ViewArtifact, context_artifacts
@@ -65,10 +66,10 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
             named = set_id if requested_set or len(sets) > 1 else None
             if set_id and default_out(inputs, round_dir, spec.artifact, set_id).is_file():
                 named = set_id
-            path = (
-                artifact_dir / spec.artifact
+            path, legacy = (
+                (artifact_dir / spec.artifact, False)
                 if spec.in_artifact_dir and artifact_dir is not None
-                else default_out(inputs, round_dir, spec.artifact, named)
+                else derived_view_path(default_out(inputs, round_dir, spec.artifact, named), artifact_dir, spec.artifact)
             )
             stat = path.stat() if path.is_file() else None
             produced_by, required_inputs = _runnable(
@@ -82,6 +83,7 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
                 "program": program, "view": view, "set_id": set_id,
                 "artifact": set_artifact_name(spec.artifact, named), "path": str(path),
                 "present": stat is not None, "bytes": None if stat is None else stat.st_size,
+                "legacy_view_file_in_evidence": legacy,
                 "produced_by": produced_by,
                 "producer_needs_more_than_this_round": bool(required_inputs),
                 "required_inputs": required_inputs,

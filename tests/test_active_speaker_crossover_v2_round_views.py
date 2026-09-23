@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, LEGACY_EVIDENCE_VIEWS
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
@@ -33,6 +34,7 @@ from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNR
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_measure_round
@@ -300,12 +302,46 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
         "jasper-round wait --run '<run-id>'"
     )
 
-    # A view the evidence packet reads is read back where THAT reader looks —
-    # inside the round's own artifact directory, never beside the round.
-    assert rows["harmonic_distortion.json"]["path"] == str(
-        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
-        / "harmonic_distortion.json"
+    # Every view files beside the round, the ones the evidence packet cites
+    # too; only the executor's run manifest sits inside the round's evidence.
+    assert rows["harmonic_distortion.json"]["path"] == str(round_dir / "harmonic_distortion.json")
+    assert rows[RUN_MANIFEST_FILENAME]["path"] == str(
+        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1" / RUN_MANIFEST_FILENAME
     )
+
+
+def test_inventory_finds_a_legacy_rounds_view_outputs_where_the_packet_does(tmp_path):
+    """A round banked before views filed beside it (ADR-0346) holds their
+    outputs in its evidence. Inventory finds them where the packet does —
+    present, and marked legacy — so no one re-runs a view to replace a file
+    the gate still reads; a copy filed beside the round then wins in both."""
+    from jasper.cli import round_views as cli
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    evidence = round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
+    for name in LEGACY_EVIDENCE_VIEWS:
+        (evidence / name).write_text("{}")
+
+    def rows() -> dict[str, dict[str, Any]]:
+        assert cli.main(["inventory", str(round_dir)]) == 0
+        return {row["artifact"]: row for row in json.loads((round_dir / "inventory.json").read_text())["artifacts"]}
+
+    legacy = rows()
+    for name in LEGACY_EVIDENCE_VIEWS:
+        assert (legacy[name]["present"], legacy[name]["legacy_view_file_in_evidence"], legacy[name]["path"]) == (
+            True, True, str(evidence / name))
+    assert legacy[FREQUENCY_VIEW_FILENAME]["legacy_view_file_in_evidence"] is False
+    assert load_banked_round(round_dir).packet[DERIVED_VIEWS]["legacy_view_files_in_evidence"] is True
+
+    for name in LEGACY_EVIDENCE_VIEWS:
+        (round_dir / name).write_text("{}")
+    beside = rows()
+    for name in LEGACY_EVIDENCE_VIEWS:
+        assert (beside[name]["present"], beside[name]["legacy_view_file_in_evidence"], beside[name]["path"]) == (
+            True, False, str(round_dir / name))
+    assert load_banked_round(round_dir).packet[DERIVED_VIEWS]["legacy_view_files_in_evidence"] is False
 
 
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
