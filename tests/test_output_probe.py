@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_hardware import output_probe
+from jasper.audio_hardware import dac, output_probe
 from jasper.audio_hardware.hat_eeprom import HatEeprom
 from jasper.audio_hardware.output_probe import (
     parse_aplay_listing,
@@ -20,8 +20,6 @@ from jasper.audio_hardware.output_probe import (
 import jasper.cli.output_hardware as output_hardware_cli
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
-    HIFIBERRY_DAC8X_DEVICE_ID,
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OutputHardwareState,
     classify_output_cards,
 )
@@ -37,7 +35,7 @@ hw:CARD=DAC8XStudio,DEV=0
 
     assert [card.card_id for card in cards] == ["A", "DAC8XStudio"]
     assert cards[0].device_id == APPLE_USB_C_DONGLE_DEVICE_ID
-    assert cards[1].device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+    assert cards[1].device_id == dac.HIFIBERRY_DAC8X_STUDIO_ID
 
 
 def test_probe_aplay_listing_bounds_a_hung_aplay(
@@ -125,8 +123,8 @@ def test_probe_system_cards_classifies_non_usb_hifiberry_from_proc_cards(
     )
     state = classify_output_cards([card])
 
-    assert card.device_id == HIFIBERRY_DAC8X_DEVICE_ID
-    assert state.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert card.device_id == dac.HIFIBERRY_DAC8X_ID
+    assert state.profile_id == dac.HIFIBERRY_DAC8X_ID
     assert state.status == "ready"
     assert state.physical_output_count == 8
 
@@ -195,7 +193,7 @@ def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
 
     capsys.readouterr()
     published = json.loads(state_file.read_text(encoding="utf-8"))
-    assert published["profile_id"] == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+    assert published["profile_id"] == dac.HIFIBERRY_DAC8X_STUDIO_ID
     assert published["hat_eeprom"] == {
         "vendor": "HiFiBerry",
         "product": "StudioDAC8x",

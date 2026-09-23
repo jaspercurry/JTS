@@ -25,7 +25,6 @@ from jasper.output_hardware import (
 )
 from jasper.output_topology import (
     DEFAULT_PAIRING_INTENT,
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
     SUB_CROSSOVER_HZ_HI,
@@ -374,7 +373,7 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
     single_child_hardware["child_devices"] = [
         {
             "child_id": "only_dac",
-            "device_id": HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
+            "device_id": dac.HIFIBERRY_DAC8X_STUDIO_ID,
             "device_label": "HiFiBerry DAC8x",
             "physical_output_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
         }
