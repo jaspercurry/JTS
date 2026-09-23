@@ -27,11 +27,9 @@ DEFAULT_SPEC_FRACTION = 3
 MIN_BAND_BINS = 4
 
 # Upper bound on the analysis grid; a finer canonical grid is block-averaged in linear power
-# onto a coarser one first. smooth_fractional_octave's cost is effectively quadratic in bin
-# count (0.12 s at 16k bins, 0.88 s at 65k, 2.3 s at 131k on a laptop; this must run on a Pi 5).
-# No resolution lost: 16385 bins over 24 kHz is ~1.46 Hz spacing against a ~29 Hz narrowest
-# window (1/6-octave at 250 Hz). Averaging, never subsampling — subsampling a combed curve
-# aliases onto whichever bins land on peaks or nulls.
+# onto a coarser one first. No resolution lost: 16385 bins over 24 kHz is ~1.46 Hz spacing
+# against a ~29 Hz narrowest window (1/6-octave at 250 Hz). Averaging, never subsampling —
+# subsampling a combed curve aliases onto whichever bins land on peaks or nulls.
 MAX_ANALYSIS_BINS = 16385
 
 
