@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 
 def test_effective_excitation_includes_driver_main_lock():
