@@ -13,7 +13,7 @@ import yaml
 
 from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology_store import load_output_topology_strict
-from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.branch_chain import confirmed_protection_sections, rear_branch_sum_headroom_db
 from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.active_speaker import camilla_yaml, candidate_bank
 from jasper.active_speaker.crossover_v2.measure_spec import (
@@ -120,8 +120,9 @@ def measurement_graph_evidence(
         raise MeasurementGraphRefused("measurement_candidate_required", scope)
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
-    return {name: {} if scope == "timing" and name == "bass_extension" else dict(getattr(candidate, name))
-            for name in GRAPH_LAYERS}
+    if scope == "timing":
+        candidate = _front_drivers(candidate)
+    return {name: dict(getattr(candidate, name)) for name in GRAPH_LAYERS}
 
 
 def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
@@ -129,15 +130,25 @@ def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, pr
         raise MeasurementGraphRefused("measurement_candidate_speaker_mismatch", candidate.fingerprint)
 
 
+def _front_drivers(candidate: MeasuredCrossoverCandidate) -> MeasuredCrossoverCandidate:
+    """The timing take plays the front drivers its prediction models: no bass, the rear muted (#5632 F3)."""
+    rear = candidate.rear_calibration
+    return replace(candidate, bass_extension={}, rear_calibration={**rear, "rear_muted": True} if rear else {})
+
+
 def timing_candidate(candidate: MeasuredCrossoverCandidate, *, output_trim_db: float = 0.0) -> MeasuredCrossoverCandidate:
     from .linearization_fit import linearization_filters_by_role  # lazy: NumPy cost belongs to graph compilation
 
+    front = _front_drivers(candidate)
+    # Headroom this graph no longer charges, the muted rear's included, moves into the trims. The dropped
+    # layers' cuts do not, so at a cut the take plays louder than the candidate. See ADR-0345.
     headroom = camilla_yaml.program_headroom_db(
         linearization_filters_by_role(candidate.linearization),
         branch_context=camilla_yaml._branch_context(effective_preset(candidate), driver_corrections(candidate)),
         room_peqs=candidate_room_peqs(candidate), output_trim_db=output_trim_db,
-    )
-    return replace(candidate, linearization={}, room_correction={}, blend_correction=(), bass_extension={},
+        rear_calibration=candidate.rear_calibration,
+    ) - rear_branch_sum_headroom_db(front.rear_calibration)
+    return replace(front, linearization={}, room_correction={}, blend_correction=(),
                    role_attenuations_db={role: gain - headroom for role, gain in candidate.role_attenuations_db.items()})
 
 

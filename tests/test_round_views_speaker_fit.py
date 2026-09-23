@@ -13,6 +13,7 @@ import pytest
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_envelope_v2 import _envelope
+from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
@@ -34,7 +35,7 @@ from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
-from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
+from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis,
@@ -1023,21 +1024,26 @@ def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_ro
     assert vocabulary.max_gain_db == 2.0
 
 
-@pytest.mark.parametrize("verdict,residual,noise,action", [
-    ("saved", .15, .01, None),
-    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, .01, "reset_timing"),
-    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, TIMING_RESIDUAL_FLOOR_DB, None),
-    ("saved", 2, None, None),
-    ("measured", None, None, "apply_timing"), ("needs_measurement", None, None, "measure_timing"),
+@pytest.mark.parametrize("verdict,residual,noise,reasons,action", [
+    ("saved", .15, .01, {}, None),
+    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, .01, {}, "reset_timing"),
+    ("saved", 10.6, .43, {"snr_short": ("tweeter", "woofer")}, "measure_timing"),
+    ("saved", 10.6, .43, {"graph_mismatch": ("woofer:rear",)}, "remeasure_timing"),
+    ("saved", 10.6, .43, None, "measure_timing"),
+    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, TIMING_RESIDUAL_FLOOR_DB, {}, None),
+    ("saved", 2, None, {}, None),
+    ("measured", None, None, {}, "apply_timing"), ("needs_measurement", None, None, {}, "measure_timing"),
 ])
-def test_packet_timing_verification_and_next_action(speaker_round, verdict, residual, noise, action):
+def test_packet_timing_verification_and_next_action(speaker_round, verdict, residual, noise, reasons, action):
+    """#5632 F3: a reading that is not comparable never asks for a reset; the page and envelope say what the packet says."""
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     timing = {"delay_us": 22.0, "polarity": "normal", "provenance": "measured", "measured": {"take_id": "original"}} if residual is not None else None
-    verification = {"residual_rms_db": residual, "repeat_noise_db": noise,
-                    "residual_floor_db": TIMING_RESIDUAL_FLOOR_DB} if timing else None
+    verification = timing_verification(residual, noise, **(reasons or {})) if timing else None
+    if reasons is None:  # stored before ADR-0345: no status, so comparability is unknown
+        verification = {key: verification[key] for key in ("residual_rms_db", "repeat_noise_db", "residual_floor_db")}
     profile_path = root / "applied-profile.json"
     profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
     profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))
@@ -1052,9 +1058,13 @@ def test_packet_timing_verification_and_next_action(speaker_round, verdict, resi
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     assert packet["alignment_verdict"] == {"saved": timing, "verification": verification}
     assert (packet["next_action"] or {}).get("id") == action
+    lines = timing_status_lines(json.loads(profile_path.read_text()), {key: packet[key] for key in ("alignment_verdict", "next_action")})
+    assert lines["next_action"] == packet["next_action"]
     previous = {"id": "continue"}
-    envelope = _envelope(screen="finished", active_step="measure", verdict="", next_action=previous, alternate_actions=[{"id": "stop"}], status={"crossover_v2": {
-        "candidate": {"timing_saved": timing, "timing_verification": verification, "timing_verdict": verdict}}})
+    envelope = _envelope(screen="finished", active_step="measure", verdict="", next_action=previous, alternate_actions=[{"id": "stop"}],
+                         status={"timing": lines, "crossover_v2": {"candidate": {"timing_saved": timing, "timing_verification": {
+                             "residual_rms_db": 10.6, "repeat_noise_db": .43}, "timing_verdict": verdict}}})
+    assert envelope["timing"] == lines
     assert envelope["next_action"]["id"] == ("reset_timing" if action == "reset_timing" else "continue")
     assert envelope["alternate_actions"] == ([previous, {"id": "stop"}] if action == "reset_timing" else [{"id": "stop"}])
     assert json.loads(profile_path.read_text()).get("timing") == timing

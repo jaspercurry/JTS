@@ -294,7 +294,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0316](0316-rear-woofer-outputs-have-a-physical-variant-identity.md) | Rear woofer outputs have a physical variant identity | accepted |
 | [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
-| [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | accepted |
+| [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | reset rule amended by 0345 |
 | [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | amended by 0321 |
 | [0321](0321-live-first-answer-wait-is-separate-from-followup.md) | Live first-answer wait is separate from follow-up | accepted |
 | [0322](0322-rear-calibration-is-a-candidate-section.md) | Rear calibration is a candidate section, spliced ahead of the role chain | headroom amended by 0324 |
@@ -318,3 +318,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
 | [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | accepted |
+| [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | accepted |

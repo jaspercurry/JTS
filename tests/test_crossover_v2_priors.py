@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_bas
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 
 from tests.crossover_v2_fixtures import FC_HZ, _preset
+from tests.test_rear_output_foundation import _rear_pair
 
 PRESET = _preset()
 PROTECTION = sections_by_role(PRESET.crossover_regions)
@@ -419,7 +420,7 @@ class C:
 
 
 @pytest.mark.parametrize("position_deg, shape, reason", [
-    (0, "valid", None), (-20, "valid", None), (20, "valid", None),
+    (0, "valid", None), (-20, "valid", None), (20, "valid", None), (0, "cardioid", None),
     (0, "missing_gain", "missing_alignment_filter"), (0, "renamed_delay", "missing_alignment_filter"),
     (0, "mixer_polarity", "mixer_polarity"), (0, "full_range", "missing_crossover_region"),
     (0, "no_filters", "unsupported_graph"), (0, "Volume", "unsupported_graph"),
@@ -430,16 +431,19 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     monkeypatch, tmp_path, position_deg, shape, reason, repeats
 ):
     baseline = SimpleNamespace(artifact_ref="sum", reference_mark=REFERENCE_MARK_DESIGN_AXIS)
-    filters = {"common": {"type": "Gain", "parameters": {"gain": -3.0}}}
+    # The cardioid preset lists its rear woofer last; its chain must never stand in for the front woofer's.
+    preset = _rear_pair("mono")[0] if shape == "cardioid" else PRESET
+    filters = {"common": {"type": "Gain", "parameters": {"gain": -3.0}},
+               "rear_only": {"type": "Gain", "parameters": {"gain": -20.0}}}
     pipeline = []
-    for output in PRESET.channel_map.outputs:
+    for output in preset.channel_map.outputs:
         role = output.driver_role
         filters[driver_baseline_gain_name(role)] = {"type": "Gain", "parameters": {"gain": -6.0, "inverted": True}}
         filters[driver_delay_name(role)] = {"type": "Delay", "parameters": {"delay": .1916}}
         pipeline.append({"type": "Filter", "channels": [output.index],
-                         "names": ["common", driver_delay_name(role), driver_baseline_gain_name(role)]})
+                         "names": ["common", driver_delay_name(role), driver_baseline_gain_name(role),
+                                   *(["rear_only"] if output.output_variant == "rear" else [])]})
     graph = {"filters": filters, "pipeline": pipeline}
-    preset = PRESET
     if shape == "missing_gain":
         del filters[driver_baseline_gain_name("tweeter")]
     elif shape == "renamed_delay":
@@ -453,6 +457,12 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         pipeline[-1]["names"].append("unsupported")
     elif shape == "full_range":
         preset = replace(PRESET, crossover_regions=())
+    elif shape == "cardioid":
+        graph.update(devices={"samplerate": 48000, "capture": {"channels": 2}}, mixers={"split": {
+            "channels": {"in": 2, "out": 3},
+            "mapping": [{"dest": output.index, "sources": [{"channel": 0, "gain": 0}]}
+                        for output in preset.channel_map.outputs]}})
+        pipeline.insert(0, {"type": "Mixer", "name": "split"})
     elif shape == "mixer_polarity":
         graph["mixers"] = {"split": {"channels": {"in": 2, "out": 2}, "mapping": [
             {"dest": 1, "sources": [{"channel": 0, "gain": 0, "inverted": True}]},
@@ -481,7 +491,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     conductor = _wired_conductor(measure_entry_baseline=baseline)
     conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, preset))
     reference = conductor.measure_priors().summed_alignment
-    assert (reference is not None) is (position_deg == 0 and shape == "valid")
+    assert (reference is not None) is (position_deg == 0 and shape in ("valid", "cardioid"))
     assert events == ([] if reason is None else [{"code": "summed_reference_unreadable", "reason": reason}] * repeats)
     if reference is not None:
         assert len(reference.repeat_responses) == repeats - 1
@@ -493,6 +503,8 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         for role, transfer in reference.response_by_role.items():
             assert transfer(hz) * configured[role](hz) == pytest.approx(np.full(hz.size, 10 ** (-9 / 20)))
         assert reference.band_hz == (1200, 5000)
+        # The rear still plays in this graph, so today's sum carries a driver the prediction leaves out.
+        assert reference.unmodelled_targets == (("woofer:rear",) if shape == "cardioid" else ())
 
 
 @pytest.mark.parametrize("available", [True, False])

@@ -21,6 +21,7 @@ REASON_COVERAGE_SHORT = "coverage_short"
 REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
 REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
+REASON_GRAPH_MISMATCH = "graph_mismatch"
 REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
 REASON_MARK_RESPONSE_UNAVAILABLE = "mark_response_unavailable"
 REASON_NON_BEARING = "non_bearing_pose"
@@ -34,6 +35,7 @@ REASON_NO_ROW = "no_row"
 REASON_NO_SHARED_MARK_TAKES = "no_shared_mark_takes"
 REASON_REFUSED = "round_views_refused"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
+REASON_SNR_SHORT = "snr_short"
 REASON_TOO_FEW_POSITIONS = "too_few_positions"
 REASON_TOO_FEW_SEATS = "too_few_seats"
 REASON_UNREADABLE = "round_views_unreadable_round"
@@ -70,6 +72,7 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
+    REASON_GRAPH_MISMATCH: "The summed take played an output the driver-take prediction does not model, so the two sums are not comparable.",
     REASON_MARK_FIT_BAND_UNAVAILABLE: "A mark take does not cover the fit band above its trusted floor.",
     REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
     REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
@@ -83,6 +86,7 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing compares between rounds.",
     REASON_REFUSED: "The requested round view refused the available evidence.",
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
+    REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum is not comparable with the measured sum.",
     REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
     REASON_TOO_FEW_SEATS: "Too few usable seats support the requested comparison; a sample spread needs at least two member curves.",
     REASON_UNREADABLE: "The round view could not read its input round.",

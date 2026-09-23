@@ -408,6 +408,8 @@ class SummedAlignmentReference:
     vertical_deg: float = 0.0
     repeat_responses: tuple["SummedAlignmentReference", ...] = ()
     graph_fingerprint: str = ""
+    #: Measurement targets the played graph left audible that ``response_by_role`` does not model.
+    unmodelled_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -731,7 +733,8 @@ class CrossoverCandidate:
     repeat_count: int | None = None
     timing_verdict: str = TIMING_ESTIMATE
     timing_saved: AppliedAlignment | None = None
-    timing_verification: Mapping[str, float | None] | None = None
+    #: :func:`~jasper.audio_measurement.timing_verification.timing_verification`'s verdict.
+    timing_verification: Mapping[str, Any] | None = None
     timing_graph_fingerprint: str | None = None
 
 

@@ -22,6 +22,7 @@ from tests.test_seat_figures import COVERAGE_HZ, FREQS_HZ
     ('jasper.audio_measurement.rear_evidence', 'REASON_'),
     ('jasper.audio_measurement.interference_nulls', 'REASON_'),
     ('jasper.audio_measurement.room_limits', 'REASON_'),
+    ('jasper.audio_measurement.timing_verification', 'REASON_'),
     ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),

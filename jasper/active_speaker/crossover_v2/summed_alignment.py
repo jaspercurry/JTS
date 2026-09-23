@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, cast
 
 import numpy as np
 
-from jasper.active_speaker.graph_transfer import GraphTransferError, filter_transfer, mixer_mapping
+from jasper.active_speaker.graph_transfer import GraphTransferError, complex_channel_transfer, filter_transfer, mixer_mapping
 from jasper.active_speaker.camilla_names import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.graph_safety import view_from_camilla_dict
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
@@ -23,6 +23,7 @@ from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.log_event import log_event
+from jasper.output_topology import measurement_target_id
 
 from .contracts import REFERENCE_MARK_DESIGN_AXIS
 from .measurement_context import capture_basis
@@ -48,6 +49,7 @@ def reference_from_graph(
     freqs_hz: np.ndarray, magnitude_db: np.ndarray, graph: Mapping[str, Any], *,
     output_channels: Mapping[str, int], configured_response_by_role: Mapping[str, Any],
     configured_polarity_by_role: Mapping[str, int], band_hz: tuple[float, float],
+    unmodelled_channels: Mapping[str, int] | None = None,
 ) -> SummedAlignmentReference | None:
     try:
         filters = deepcopy(graph["filters"])
@@ -74,7 +76,12 @@ def reference_from_graph(
             configured = configured_response_by_role[role](freqs_hz) * configured_polarity_by_role[role]
             correction = np.divide(transfer, configured, out=np.zeros_like(transfer), where=abs(configured) > 1e-12)
             transfers[role] = cast(Callable[[np.ndarray], np.ndarray], partial(np.interp, xp=freqs_hz, fp=correction))
-        return SummedAlignmentReference(freqs_hz, magnitude_db, transfers, band_hz)
+        audible = complex_channel_transfer(
+            graph, freqs_hz, input_weights=dict.fromkeys(range(graph["devices"]["capture"]["channels"]), 1.0),
+            output_channels=unmodelled_channels, allow_limiter_passthrough=True, dynamic_bass_at_rest=True,
+        ) if unmodelled_channels else {}
+        return SummedAlignmentReference(freqs_hz, magnitude_db, transfers, band_hz, unmodelled_targets=tuple(
+            sorted(target for target, response in audible.items() if np.any(response))))
     except (KeyError, TypeError, ValueError, GraphTransferError):
         return _unreadable("unsupported_graph")
 
@@ -119,9 +126,12 @@ def _capture_reference(bundle_dir: Path, row: Measurement, preset: Any) -> Summe
     if summed is None:
         return None
     configured, polarity = configured_crossover_transfers(preset)
+    outputs = preset.channel_map.outputs
     reference = reference_from_graph(
         summed.freqs_hz, summed.magnitude_db, graph,
-        output_channels={output.driver_role: output.index for output in preset.channel_map.outputs},
+        output_channels={output.driver_role: output.index for output in outputs if output.output_variant == "primary"},
+        unmodelled_channels={measurement_target_id(output.driver_role, output.output_variant): output.index
+                             for output in outputs if output.output_variant != "primary"},
         configured_response_by_role=configured or {}, configured_polarity_by_role=polarity,
         band_hz=(max(1200.0, summed.validity_floor_hz or 0), 5000.0),
     )

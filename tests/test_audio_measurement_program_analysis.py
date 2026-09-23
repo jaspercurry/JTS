@@ -7414,3 +7414,29 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
         assert candidate.timing_verification["residual_floor_db"] == .5
     else:
         assert candidate.timing_verification is None
+
+
+@pytest.mark.parametrize("snr_short, unmodelled, reasons", [
+    ((), (), {}),
+    (("woofer", "tweeter"), (), {"snr_short": ["tweeter", "woofer"]}),
+    ((), ("woofer:rear",), {"graph_mismatch": ["woofer:rear"]}),
+])
+def test_saved_timing_verification_names_why_it_is_not_comparable(monkeypatch, snr_short, unmodelled, reasons):
+    """#5632 F3: a short branch SNR or an output the prediction leaves out makes the reading not comparable."""
+    freqs = np.linspace(0, SR / 2, 1025)
+    W = np.ones(freqs.size, dtype=complex)
+    T = .45 * np.exp(.2j * (freqs / FC_HZ) ** 2)
+    branches = iter((W, T))
+    monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
+    measured = predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=40)
+    reference = SummedAlignmentReference(freqs, 20 * np.log10(abs(measured)),
+        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000))
+    reference = dataclasses.replace(reference, repeat_responses=(dataclasses.replace(reference, unmodelled_targets=unmodelled),))
+    candidate, _ = _build_candidate(np.zeros(1), np.zeros(1), SR, 2048, FC_HZ, "woofer", "tweeter",
+        AlignmentEstimate(0, 0, 0, "normal", 1, .9, anchor_delay_us=0), None,
+        alignment_delay_bounds_us=(0, 500), summed_alignment=reference, branch_snr_insufficient=snr_short,
+        geometry=MeasurementGeometry(position_deg=0, vertical_deg=0),
+        applied_alignment=AppliedAlignment(22, "normal", "measured", {"take_id": "original"}))
+    verification = candidate.timing_verification
+    assert verification["residual_rms_db"] > verification["residual_floor_db"]
+    assert (verification["status"], verification["reasons"]) == ("not_comparable" if reasons else "comparable", reasons)

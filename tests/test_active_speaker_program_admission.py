@@ -23,13 +23,16 @@ from scipy.io import wavfile
 from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, effective_preset
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
+from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
+from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
 from jasper.active_speaker.measurement_level import scope_gains_db
@@ -892,7 +895,8 @@ def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_cha
     if evidence_change == "missing":
         evidence.pop("rear_calibration")
     elif evidence_change == "wrong_candidate":
-        evidence["rear_calibration"] = _rear_document(rear_muted=True)
+        rear = evidence["rear_calibration"]
+        evidence["rear_calibration"] = {**rear, "rear_muted": not rear["rear_muted"]}
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=1600,
@@ -965,6 +969,40 @@ def test_cardioid_timing_admits_full_band_without_rear_lowpass(tmp_path, monkeyp
     assert {segment.role for segment in admission.segments} == {"woofer", "woofer:rear", "tweeter"}
     assert all(segment.band == (20, 20000) for segment in admission.segments
                if segment.segment_id == "sweep_verify")
+
+
+def test_cardioid_timing_graph_plays_only_the_front_drivers_at_the_candidate_level():
+    """#5632 F3: the summed timing take plays what its front-driver prediction models, never louder."""
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4,
+    )
+    profile = MeasurementGraphProfile(
+        _rear_pair("mono")[0], topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = replace(_trial_candidate(profile), linearization={}, blend_correction=(),
+                        rear_calibration=_rear_document())
+    outputs = {measurement_target_id(target["role"], target.get("output_variant") or "primary"): target["output_index"]
+               for target in active_driver_targets(topology)}
+    hz = np.geomspace(20, 20000, 256)
+    graphs = {scope: yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)) for scope in ("timing", "candidate")}
+    timing, household = (complex_channel_transfer(
+        graphs[scope], hz, input_weights={0: 1.0, 1: 1.0}, output_channels=outputs,
+        allow_limiter_passthrough=True, dynamic_bass_at_rest=True,
+    ) for scope in ("timing", "candidate"))
+    assert not np.any(timing["woofer:rear"]) and np.any(household["woofer:rear"])
+    for target in ("woofer", "tweeter"):
+        assert timing[target] == pytest.approx(household[target], rel=1e-4)
+    # The same graphs through the prediction's own reader: only a live rear is a graph mismatch.
+    configured, signs = configured_crossover_transfers(effective_preset(candidate))
+    for scope, unmodelled in (("timing", ()), ("candidate", ("woofer:rear",))):
+        reference = reference_from_graph(
+            hz, np.zeros(hz.size), graphs[scope],
+            output_channels={role: outputs[role] for role in ("woofer", "tweeter")},
+            unmodelled_channels={"woofer:rear": outputs["woofer:rear"]},
+            configured_response_by_role=configured, configured_polarity_by_role=signs, band_hz=(1200, 5000),
+        )
+        assert reference is not None and reference.unmodelled_targets == unmodelled
 
 
 def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
@@ -1289,7 +1327,7 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
                     "timing": {"woofer": 0.542875, "tweeter": 0.081768},
                     "candidate": {"woofer": 0.0, "tweeter": 0.0}}[scope]
         if rear and scope != "candidate":
-            expected["woofer:rear"] = expected["woofer"] if scope == "timing" else 0.0
+            expected["woofer:rear"] = 0.0
         assert gain == pytest.approx(expected, abs=0.00001)
         compose = bind_program_composer(
             program_for_spec=lambda spec, level: programs(spec, stimulus_dbfs=level),
