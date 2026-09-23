@@ -2479,29 +2479,26 @@ async def test_reconcile_no_loop_when_already_converged(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("active", "level", "expected"),
+    ("active", "level", "persisted_db", "expected"),
     [
-        pytest.param({}, 70, percent_to_db(70), id="idle"),
-        pytest.param({"aplactive": True}, 40, percent_to_db(40), id="airplay"),
-        pytest.param({"spotactive": True}, 70, 0.0, id="push_mode"),
-        pytest.param(
-            {"spotactive": True}, 0, percent_to_db(0), id="push_mode_at_zero",
-        ),
+        pytest.param({}, 70, 0.0, percent_to_db(70), id="idle"),
+        pytest.param({"aplactive": True}, 40, 0.0, percent_to_db(40), id="airplay"),
+        pytest.param({"spotactive": True}, 70, 0.0, 0.0, id="push_mode"),
+        pytest.param({"spotactive": True}, 0, 0.0, percent_to_db(0), id="push_mode_at_zero"),
+        pytest.param({"spotactive": True}, 70, -1.0, 0.0, id="guard_boundary"),
+        pytest.param({"spotactive": True}, 70, -1.01, -1.01, id="guard_active"),
+        pytest.param({"spotactive": True}, 0, -25.0, percent_to_db(0), id="mute_before_guard"),
     ],
 )
 async def test_the_duck_restore_target_follows_the_active_carrier(
-    tmp_path, active, level, expected,
+    tmp_path, active, level, persisted_db, expected,
 ):
-    """Camilla-master sources restore to the household level; push-mode
-    restores to camilla's 0 dB carrier because the source's own slider holds
-    the level — except at 0%, where restore must not unmask a content mute."""
-    coord, _, persistence = _real_coord(tmp_path, active=active, level=level)
-    # A persisted attenuation would mean a degraded handoff guard, which is a
-    # deliberate exception pinned by
-    # test_get_camilla_target_db_preserves_degraded_push_guard.
-    persistence.save_now(0.0)
+    coord, cam, persistence = _real_coord(tmp_path, active=active, level=level)
+    persistence.save_now(persisted_db)
+    cam.unavailable = True
 
     assert await coord.get_camilla_target_db() == pytest.approx(expected)
+    assert (await coord.effective_volume_context()).downstream_db == pytest.approx(expected)
 
 
 async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
