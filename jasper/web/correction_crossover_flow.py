@@ -133,6 +133,7 @@ def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     envelope = build_crossover_envelope_v2(status)
+    envelope["snapshot_at"] = status.get("snapshot_at")
     log_event(
         logger,
         "correction.crossover_envelope_serve",

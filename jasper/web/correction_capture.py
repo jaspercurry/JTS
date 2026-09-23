@@ -86,6 +86,14 @@ def _get_capture_slot() -> dict[str, Any] | None:
         return dict(_capture_slot) if _capture_slot else None
 
 
+def live_run_id() -> str | None:
+    """The run whose capture holds the microphone and speaker now, or ``None``."""
+    capture = _get_capture_slot()
+    if capture is None or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+        return None
+    return capture.get("session_id") or None
+
+
 def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     """Return capture state only to the flow that owns it."""
     capture = _get_capture_slot()
