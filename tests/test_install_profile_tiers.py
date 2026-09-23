@@ -463,6 +463,9 @@ _REQUIRED_ORDER = (
     # and must land before the unit install restarts jasper-control and runs
     # the reconcilers, which read /var/lib/jasper as group `jasper`.
     ("service_users", "state_modes"),
+    # alsa, camilladsp, avahi_control and web_writable_dirs create their
+    # directories with `install -g jasper`, so the group must exist first.
+    ("service_users", "alsa"),
     ("state_modes", "systemd_units"),
     # `systemctl disable --now` is never part of a unit-staging transaction, and
     # the retired /sources/ socket holds the port the jasper-web bundle enable

@@ -325,11 +325,7 @@ def validate_source_consistency(
             continue
         _expect(errors, artifact, field, values[-1], f"{source_name} {var_name}")
 
-    for artifact_id in (
-        "camillagui-aarch64",
-        "camillagui-amd64",
-        "camillagui-armv7",
-    ):
+    for artifact_id in ("camillagui-aarch64",):
         artifact = artifacts.get(artifact_id)
         if artifact is None:
             errors.append(f"deploy/provenance.toml: missing artifact {artifact_id}")

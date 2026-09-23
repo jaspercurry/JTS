@@ -61,8 +61,8 @@ cargo() {{
     chmod +x "target/release/$3"
 }}
 export -f cargo
-build_install_rust_daemon jasper-fanin 0 {shlex.quote(str(cache))}
-build_install_rust_daemon jasper-outputd 1 {shlex.quote(str(cache))}
+build_install_rust_daemon jasper-fanin {shlex.quote(str(cache))}
+build_install_rust_daemon jasper-outputd {shlex.quote(str(cache))}
 """
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     calls = [line.split("|") for line in (tmp_path / "cargo.log").read_text().splitlines()]
