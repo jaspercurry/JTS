@@ -10,13 +10,9 @@ them without sourcing `/etc/jasper/jasper.env` into their shell first.
 persistent ``EnvironmentFile=`` directives — NOT just one daemon's. A
 ``Config.from_env()`` built by a *cross-cutting* CLI (chiefly
 ``jasper-doctor``, which checks subsystems owned by many daemons) has to see
-the union, or that CLI silently sees *less* config than the running system:
-``jasper-doctor`` reported transit / Home Assistant / weather — and, before
-this list became the union, peering / grouping / usbsink — as "not configured"
-even when set, because those wizard files were sourced by some daemon's unit
-but missing here. ``tests/test_env_load_mirrors_unit.py`` asserts every unit's
-persistent ``EnvironmentFile=`` path is in this list, so a new wizard env file
-(a future DAC/mic registry's, say) can't silently reintroduce the bug.
+the union, or it can see less config than the running system.
+``tests/test_env_load_mirrors_unit.py`` asserts every unit's persistent
+``EnvironmentFile=`` path is in this list.
 
 Ordering: ``jasper.env`` first (operator base), then the wizard-owned
 ``/var/lib/jasper/*.env`` files (later wins on conflict — a wizard file
@@ -120,8 +116,8 @@ EnvFileReadStatus = Literal["loaded", "missing", "unreadable"]
 class EnvFileState:
     """Status-bearing read of a shell-style env file.
 
-    ``parse_env_file`` stays fail-soft for legacy callers that only need
-    the values. Consumers that render diagnostics should use this shape
+    ``parse_env_file`` is fail-soft for consumers that only need values.
+    Consumers that render diagnostics should use this shape
     so missing and unreadable files do not collapse into the same empty
     mapping.
     """
@@ -303,4 +299,3 @@ def load_env_files(paths: "tuple[str, ...] | None" = None) -> None:
     merged = merged_env_files(paths)
     for key, value in merged.items():
         os.environ.setdefault(key, value)
-

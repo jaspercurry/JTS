@@ -8,12 +8,13 @@ Raspberry Pi OS Lite Trixie, with
 [CamillaDSP](https://github.com/HEnquist/camilladsp) for audio. It is a
 music streamer that is also a voice assistant, built from open hardware
 and open audio software. The voice loop is provider-agnostic: any of
-three real-time speech-to-speech APIs can drive it via a single env-var
+four real-time speech-to-speech APIs can drive it via a single env-var
 switch —
 [Gemini Flash Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview),
 [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime),
+[OpenAI Live](https://developers.openai.com/api/docs/guides/realtime),
 or [xAI Grok Voice Agent](https://docs.x.ai/docs/guides/voice/agent)
-(`jasper/voice/{gemini,openai,grok}_session.py`). This is a personal
+(`jasper/voice/{gemini,openai,openai_live,grok}_session.py`). This is a personal
 hobby project; not a product.
 
 Privacy: [docs/privacy.md](docs/privacy.md) covers cloud egress, local retention,
@@ -113,7 +114,7 @@ Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
         │                            jasper-voice
         │                            - openWakeWord + Silero VAD
         │                            - real-time LLM session
-        │                              (Gemini | OpenAI | Grok)
+        │                              (Gemini | OpenAI Realtime | OpenAI Live | Grok)
         │                            - tool registry
         │                                     │
         │                                     ▼

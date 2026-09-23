@@ -329,7 +329,7 @@ def read_settings(
 ) -> ConversationSettings:
     """Read conversation-history settings fresh from the wizard-owned file.
 
-    The future privacy/retention controls own
+    The ``/assistant/chat/`` privacy and retention controls own
     ``/var/lib/jasper/conversation_history.env``. Read-side surfaces such as
     ``/state`` and ``jasper-doctor`` must not rely on their process
     environment, because those daemons are not restarted by a wizard save.
