@@ -13,6 +13,7 @@ the-files claim is now structural — the files are the only thing read.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -187,12 +188,13 @@ async def test_a_read_writes_nothing_into_the_bundle(store):
         # The cloud position, which emits a Unix epoch float for that same
         # instant instead — the disagreement is the type, not the moment.
         (1787916153.0, "2026-08-28T11:22:33Z"),
-        # The engine's own ``_record()``, which banks no clock at all.
+        # The engine's own ``_record()`` banks no clock; the store stamps one.
         (None, None),
     ],
 )
 async def test_the_read_clock_is_the_records_own(store, captured_at, expected):
-    """Two builder types normalize to one spelling; an absent one stays absent.
+    """Two builder types normalize to one spelling; a take banked with none
+    carries the store's own stamp in that spelling.
 
     The types genuinely disagree upstream, and normalizing at the read rather
     than at the builders is what keeps the store from rewriting records it
@@ -204,7 +206,11 @@ async def test_the_read_clock_is_the_records_own(store, captured_at, expected):
 
     await store.bank(take)
 
-    assert [row.captured_at for row in _found(store)] == [expected]
+    read, = [row.captured_at for row in _found(store)]
+    if expected is None:
+        assert time.strptime(read, "%Y-%m-%dT%H:%M:%SZ")
+    else:
+        assert read == expected
 
 
 async def test_an_artifact_that_is_not_a_measurement_is_not_selected(store):

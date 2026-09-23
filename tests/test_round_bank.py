@@ -63,7 +63,7 @@ from jasper.active_speaker.round_bank import (
     bank_round,
 )
 
-from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
+from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round, bank_seat_round
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
@@ -312,6 +312,16 @@ def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -
             "provenance": {"stimulus": {"wav_sha256": hashlib.sha256(program.read_bytes()).hexdigest()}},
         }))
     return bundle
+
+
+def test_a_take_the_capture_host_banked_reaches_the_ring(tmp_path, monkeypatch):
+    bank_executor_take(tmp_path, monkeypatch)
+    session, = (tmp_path / "sessions").iterdir()
+    mark_state(session, "closed")
+
+    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
+
+    assert bank.provenance["capture_ring"] == {"written": 1, "skipped": []}
 
 
 @pytest.mark.parametrize("fallback", [None, errno.EXDEV, errno.EPERM, errno.EACCES])
