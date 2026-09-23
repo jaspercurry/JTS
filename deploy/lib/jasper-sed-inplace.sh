@@ -6,7 +6,7 @@
 
 # This fragment is sourced, never executed. The `#!/bin/sh` shebang, where its
 # deploy/lib siblings declare bash, holds the body to POSIX under the static
-# linter.
+# linter. Real caller: deploy/configure-bluez.sh, which sources and calls it.
 
 # sed_inplace FILE EXPRESSION...
 #

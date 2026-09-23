@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -95,6 +97,16 @@ def test_analyzer_labels_tone_metrics_with_actual_frequency() -> None:
     assert "median_1khz_rms_dbfs" not in source
     assert "max_1khz_rms_dbfs" not in source
     assert source.count("usable_pairs =") == 1
+
+
+def test_capture_requires_speaker_argument(monkeypatch) -> None:
+    capture = _load_script("capture-correction-diagnostic.py")
+    monkeypatch.setattr(sys, "argv", ["capture-correction-diagnostic.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        capture.main()
+
+    assert exc_info.value.code == 2
 
 
 def test_remote_gain_archive_shell_quotes_active_config_path() -> None:

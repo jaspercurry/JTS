@@ -74,16 +74,14 @@ jobs:
   docs:
     name: docs
     # Documentation-only changes: inert prose under docs/, the root
-    # operational docs, the PR template, and the doc routing map. Roughly a
-    # fifth of merged PRs are this shape, and they were paying the full
-    # ~8m24s farm for it.
+    # operational docs, the PR template, and the doc routing map.
     #
     # "Inert" is load-bearing. Markdown shipped inside the package tree is
     # product data, not a document, so no change this lane can carry reaches it.
     #
     # The bundle is the registered set of tests that READ documentation --
-    # the "pin promises with tests" contracts (AGENTS.md), which assert that
-    # a doc still says what the code does. Those are exactly the tests a
+    # the tests AGENTS.md's Defaults -> Tests section calls for, which assert
+    # that a doc still says what the code does. Those are exactly the tests a
     # prose edit can break, and they are pure text assertions. Counts are
     # deliberately not quoted here; the bundle is expected to grow, and
     # `scripts/ci-classify.py --docs-pytest-targets` is the one source of
@@ -93,11 +91,6 @@ jobs:
     # re-validates the lane's own registration guard -- but that file is a
     # bundle member, NOT an allowed companion, so a docs PR cannot edit the
     # guard while only the edited guard runs.
-    #
-    # docs-linkcheck runs here as REQUIRED work. docs-links.yml already goes
-    # red on a broken link (it exits non-zero), but it is not a required
-    # check -- branch protection requires only `ci` -- so before this lane a
-    # docs PR could merge over a red link check. Now it cannot.
     needs: classify
     if: ${{ needs.classify.outputs.lane == 'docs' }}
     runs-on: ubuntu-latest
@@ -155,7 +148,7 @@ jobs:
 
       - name: bash -n + shellcheck (warning severity)
         # Select tracked shell files across the whole deploy tree (plus
-        # scripts and firmware) by shebang/extension. The
+        # scripts) by shebang/extension. The
         # shebang/extension filter is the discriminator: install.sh copies
         # deploy content onto production speakers, so any shell file added
         # anywhere under deploy/ should auto-gate — enumerating deploy
@@ -183,9 +176,9 @@ jobs:
             esac
             shell_files+=("$f")
             bash -n "$f"
-          done < <(git ls-files deploy scripts firmware)
-          # Floor 95: losing a whole pathspec (scripts ~66 files,
-          # deploy ~37) lands well under it; small-path losses are
+          done < <(git ls-files deploy scripts)
+          # Floor 95: losing a whole pathspec (scripts ~48 files,
+          # deploy ~54) lands well under it; small-path losses are
           # what the required pins below catch.
           if (( ${#shell_files[@]} < 95 )); then
             echo "expected at least 95 tracked shell files, found ${#shell_files[@]}" >&2
@@ -282,16 +275,6 @@ jobs:
         run: .venv/bin/ruff check .
 
       - name: Test (hardware-free; voice_eval explicitly excluded)
-        # voice_eval is the paid LLM suite — never CI material, purely on
-        # cost discipline. The test_doctor OPENAI_API_KEY=wiz-key env-leak
-        # (via load_env_files) is now contained by conftest.py's autouse
-        # _isolate_environ fixture (landed in #256), which snapshots and
-        # restores os.environ around every test. --ignore is justified
-        # solely by paid-LLM cost — not by the leak, which is fixed.
-        # pytest-xdist keeps the merge gate broad without making every PR wait
-        # for a serial 6k-test run. Keep the worker count explicit; `-n auto`
-        # can over-fan-out on larger machines and make socket/subprocess-heavy
-        # tests noisier than the fixed 4-worker gate we validated locally.
         run: scripts/test-merge
 
   pytest:
@@ -391,12 +374,12 @@ jobs:
         # gates and the ATOMIC_LLONG_LOCK_FREE==2 assert) and runs test_ring_core;
         # `make bench` also compiles both host-safe benchmark entry points.
         # Without this the Rust golden-layout test alone runs in CI, so a C-side
-        # offset drift would only fail on-Pi at build-on-pi.sh time. `make plugin`
-        # links pcm_jts_ring.c against libasound (installed above as "System deps
+        # offset drift would only fail on the Pi. `make plugin` links
+        # pcm_jts_ring.c against libasound (installed above as "System deps
         # for the ALSA crate"), giving the ioplug's ALSA-facing staging/stride
         # code an off-Pi compile check too — it only builds the .so here, never
-        # installs it; `make install` (writing into the system ALSA plugin dir)
-        # stays Pi-only, driven by build-on-pi.sh.
+        # installs it; deploy/lib/install/ring-platform.sh runs `make plugin`
+        # again and installs the .so on the Pi.
         working-directory: c/jts-ring-ioplug
         run: make test bench plugin
 
