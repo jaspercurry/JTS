@@ -22,7 +22,7 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.dsp_apply import DspApplyError, dsp_writer_lock
+from jasper.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
 from jasper.log_event import log_event
 from jasper.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
@@ -80,7 +80,7 @@ async def apply_candidate(
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
             if from_saved_draft or on_candidate_verified is not None:
                 atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
-                if not baseline_profile.validate_camilla_config(target).ok_to_apply:
+                if not validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
             offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
             summary = v2durable.candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)

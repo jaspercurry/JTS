@@ -26,7 +26,6 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     dsp_writer_lock,
     same_config_file,
-    validate_camilla_config,
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -91,29 +90,16 @@ REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
 # inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
 REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
 
-# Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
-# is reserved for future profile prefills; no code path in this module emits
-# it directly (it only appears via the gain-source migration map below).
+# Canonical per-parameter provenance vocabulary (SC-3).
 PROVENANCE_MANUAL = "manual"
 PROVENANCE_MEASURED = "measured"
 PROVENANCE_AUTHORED_BY_MODEL = "authored_by_model"
 PROVENANCE_SET_BY_USER = "set_by_user"
-PROVENANCE_RECOMMENDED_START = "recommended_start"
 
-# Reporting-layer migration from the legacy per-role gain-trim vocabulary
-# (this module's own ``sources[role]`` values, plus ``"explicit"`` kept as a
-# legacy alias for completeness) to the canonical provenance strings above.
-# The legacy ``corrections_source`` / ``gain_provenance`` payload keys are NOT
-# renamed or removed by this map — it only feeds the additional
-# ``corrections_provenance`` block. A source with no entry here (``"none"``)
-# makes no provenance claim, mirroring an untouched role.
-_GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
-    "measured": PROVENANCE_MEASURED,
-    "operator_pinned": PROVENANCE_MANUAL,
-    "explicit": PROVENANCE_MANUAL,
-    "estimate": PROVENANCE_RECOMMENDED_START,
-    "sensitivity": PROVENANCE_RECOMMENDED_START,
-}
+#: ``corrections_source`` values an operator set by hand. Every other source
+#: that is not ``measured`` fell back to weaker evidence (the datasheet, an
+#: estimate, a preserved manual crossover).
+_PINNED_GAIN_SOURCES = frozenset({"operator_pinned", "explicit"})
 
 
 def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -290,11 +276,14 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
 
 def compile_commissioning_profile(
     *, applied_profile: Mapping[str, Any] | None, topology: OutputTopology | None = None,
-    design_draft: Mapping[str, Any] | None = None, write: bool = False,
+    design_draft: Mapping[str, Any] | None = None,
     crossover_preview: Mapping[str, Any] | None = None,
     find_candidate: Callable[[str], BankedCandidate] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Review the applied candidate, or bootstrap from the declared crossover."""
+) -> dict[str, Any]:
+    """Review the applied candidate, or bootstrap from the declared crossover.
+
+    Read-only: the review compiles and proves the graph an apply would load,
+    and writes nothing."""
     from .commissioning_experiment import commissioning_candidate  # lazy: candidate parts consumes baseline readers
     from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
@@ -303,7 +292,6 @@ def compile_commissioning_profile(
 
     profile: dict[str, Any] = {"artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
                               "status": "blocked", "permissions": {"may_apply": False}, "issues": []}
-    text = ""
     try:
         topology = topology if topology is not None else load_output_topology()
         draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
@@ -331,17 +319,10 @@ def compile_commissioning_profile(
         proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)
         if not proof.allowed or proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
             raise MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
-        if write:
-            atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
-            profile["config"]["exists"] = True
-            validation = validate_camilla_config(target)
-            if not validation.ok_to_apply:
-                raise MeasurementGraphRefused("baseline_config_validation_failed", validation.to_dict())
-        profile.update(status="ready_to_apply" if write else "ready_to_compile",
-                       permissions={"may_apply": write, "may_compile": True})
+        profile.update(status="ready_to_compile", permissions={"may_apply": False, "may_compile": True})
     except (CandidateBankRefusal, ValueError) as exc:
         _commissioning_refusal(profile, exc)
-    return text, profile
+    return profile
 
 
 def _canonicalize_camilla_defaults(value: Any) -> Any:
@@ -878,12 +859,12 @@ def _baseline_apply_started(topology: OutputTopology, candidate: Mapping[str, An
 
 async def _baseline_apply_result(
     topology: OutputTopology, profile: Mapping[str, Any],
-    *, apply_state: DspApplyState, error: DspApplyError | None = None, state_path: str | Path | None = None,
+    *, apply_state: DspApplyState, error: DspApplyError | None = None,
 ) -> dict[str, Any]:
     state = apply_state.to_dict()
     graph_fingerprint = (profile.get("source") or {}).get("fingerprint")
     if error is not None:
-        target = baseline_profile_state_path(state_path)
+        target = baseline_profile_state_path()
         previous = _applied_profile_anchor(_load_saved_state(target))
         profile = {**profile, "status": "apply_failed", "apply": state, "updated_at": _utc_now(),
                    "permissions": {"may_apply": False},
@@ -938,10 +919,9 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
       manual crossover. That is weaker evidence, not a pin, and a banked trim
       the box is not playing is the same lie pointing the other way.
 
-    The pin/fallback line is drawn by this module's own
-    ``_GAIN_SOURCE_TO_PROVENANCE`` map rather than by the ANY predicate alone,
-    because ``level_match.applied`` is ITSELF only "some role was measured" —
-    see the ANY-arm comment below.
+    The pin/fallback line is drawn by :data:`_PINNED_GAIN_SOURCES` rather than
+    by the ANY predicate alone, because ``level_match.applied`` is ITSELF only
+    "some role was measured" — see the ANY-arm comment below.
 
     Fail-soft by contract, exactly as :func:`promote_applied_baseline_candidate`
     is: the graph is applied and read back by the time this runs, so a
@@ -1010,17 +990,11 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
         # from a measurement that was REFUSED and fell back to the datasheet.
         # Those are opposites: a pin leaves the speaker measured, while a
         # `sensitivity`/`estimate` fallback IS the weaker evidence the clear
-        # exists for. The existing `_GAIN_SOURCE_TO_PROVENANCE` vocabulary
-        # already draws that line, so it is consumed here rather than a third
-        # classifier being minted for it.
-        unmeasured_provenance = {
-            _GAIN_SOURCE_TO_PROVENANCE.get(str(sources.get(role) or ""))
-            for role in corrections
-            if sources.get(role) != "measured"
-        }
+        # exists for.
         if (
             measured_level_match_applied(candidate)
-            and unmeasured_provenance <= {PROVENANCE_MANUAL}
+            and all(str(sources.get(role) or "") in _PINNED_GAIN_SOURCES
+                    for role in corrections if sources.get(role) != "measured")
         ):
             left_standing(
                 BANK_PARTLY_MEASURED,
@@ -1318,11 +1292,7 @@ def persist_applied_baseline_profile(
 _MAX_BASELINE_CANDIDATE_FILES = 20
 
 
-def promote_applied_baseline_candidate(
-    applied: Mapping[str, Any],
-    *,
-    config_path: str | Path | None = None,
-) -> None:
+def promote_applied_baseline_candidate(applied: Mapping[str, Any]) -> None:
     """Publish a just-applied candidate's bytes as the canonical config file.
 
     Reviewed candidates use content-addressed siblings of ``baseline_config_path()``.
@@ -1350,7 +1320,7 @@ def promote_applied_baseline_candidate(
     if not applied_path_raw:
         return
     applied_path = Path(str(applied_path_raw))
-    canonical = baseline_config_path(config_path)
+    canonical = baseline_config_path()
     if applied_path == canonical:
         return
     try:

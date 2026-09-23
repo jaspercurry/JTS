@@ -349,7 +349,7 @@ def read_active_speaker_setup_status(
         from .design_draft import load_design_draft  # lazy: import cost — setup diagnostics
 
         try:
-            _, profile = compile_commissioning_profile(
+            profile = compile_commissioning_profile(
                 applied_profile=applied_profile, topology=topology,
                 design_draft=load_design_draft(),
                 find_candidate=lambda fingerprint: load_applied_candidate(

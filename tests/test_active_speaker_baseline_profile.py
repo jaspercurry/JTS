@@ -23,13 +23,9 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
 from jasper.active_speaker.baseline_profile import (
-    PROVENANCE_MANUAL,
-    PROVENANCE_MEASURED,
-    PROVENANCE_RECOMMENDED_START,
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
     REAR_CALIBRATION_ROOM_BAND_OVERLAP,
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
-    _GAIN_SOURCE_TO_PROVENANCE,
     active_layer_a_fingerprint,
     baseline_candidate_fingerprint,
 )
@@ -333,18 +329,6 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
 # [preserved_applied_profile carryover] > [schema defaults]. Manual tuning
 # never consults measured alignment evidence for these two sub-parameters —
 # mirrors the shipped gain rule that a manual pin is never silently replaced.
-
-
-def test_gain_source_to_provenance_migration_mapping_pinned():
-    # SC-3's migration table, verbatim: explicit/operator_pinned -> manual,
-    # measured -> measured, sensitivity/estimate -> recommended_start,
-    # none -> no entry (an untouched role makes no provenance claim).
-    assert _GAIN_SOURCE_TO_PROVENANCE["measured"] == PROVENANCE_MEASURED
-    assert _GAIN_SOURCE_TO_PROVENANCE["operator_pinned"] == PROVENANCE_MANUAL
-    assert _GAIN_SOURCE_TO_PROVENANCE["explicit"] == PROVENANCE_MANUAL
-    assert _GAIN_SOURCE_TO_PROVENANCE["sensitivity"] == PROVENANCE_RECOMMENDED_START
-    assert _GAIN_SOURCE_TO_PROVENANCE["estimate"] == PROVENANCE_RECOMMENDED_START
-    assert "none" not in _GAIN_SOURCE_TO_PROVENANCE
 
 
 def test_baseline_config_emits_single_net_inversion_not_double():

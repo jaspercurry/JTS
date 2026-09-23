@@ -174,7 +174,7 @@ def load_commissioning_view(
     preview = build_crossover_preview(design_draft)
     calibration_level = load_calibration_level_state()
     applied = load_applied_baseline_profile_state()
-    _, baseline = compile_commissioning_profile(
+    baseline = compile_commissioning_profile(
         applied_profile=applied, topology=topology, design_draft=design_draft, crossover_preview=preview,
     )
     experiment = {}

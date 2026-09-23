@@ -162,7 +162,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: view)
     monkeypatch.setattr(tuning_handoff, "build_tuning_handoff_binding", lambda *args: {})
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: (None, {}))
+    monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: {})
 
     choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices}

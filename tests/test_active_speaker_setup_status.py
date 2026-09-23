@@ -346,7 +346,7 @@ def _applied_automatic_room_status(
     monkeypatch.setattr(
         baseline_mod,
         "compile_commissioning_profile",
-        lambda **k: ("", _candidate(status="ready_to_compile", config_path=config_path)),
+        lambda **k: _candidate(status="ready_to_compile", config_path=config_path),
     )
     monkeypatch.setattr(
         baseline_mod,
@@ -644,7 +644,7 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
     def compile_review(**kwargs):
         if review_ready is None:
             raise OSError("diagnostics unavailable")
-        return "", review
+        return review
 
     monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", compile_review)
     monkeypatch.setattr(baseline_mod, "load_applied_baseline_profile_state", lambda path=None: saved)

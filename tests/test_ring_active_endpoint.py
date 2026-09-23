@@ -1919,12 +1919,12 @@ def _commissioning_apply_site(cam):
     from jasper.active_speaker import baseline_profile
 
     def call_site():
-        text, reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
+        reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
         assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
         result = asyncio.run(apply_candidate(camilla_factory=lambda: cam))
         assert result["status"] == "applied", result["issues"]
         assert cam.path == result["profile"]["config"]["path"]
-        assert Path(cam.path).read_text() == text
+        assert baseline_profile.config_text_sha256(Path(cam.path).read_text()) == reviewed["config"]["sha256"]
         return result["profile"]
 
     return call_site
@@ -2089,7 +2089,7 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     draft = load_design_draft(topology=topology)
     declaration = load_tuning_declaration(topology, design_draft=draft)
     candidate = candidate_from_design_draft(topology, draft)
-    _, reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
+    reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
     assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")

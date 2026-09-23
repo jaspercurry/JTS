@@ -922,19 +922,15 @@ async def _active_speaker_commissioning_view_payload(
     return view
 
 
-def _active_speaker_baseline_profile_payload(
-    *,
-    write: bool = False,
-    design_draft: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def _active_speaker_baseline_profile_payload() -> dict[str, Any]:
     from jasper.active_speaker.baseline_profile import compile_commissioning_profile, load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
 
     topology = load_output_topology()
-    _, payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology, design_draft=design_draft, write=write)
+    payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology)
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",
-        action="compile" if write else "status",
+        action="status",
         status=str(payload.get("status")),
         may_apply=str(bool((payload.get("permissions") or {}).get("may_apply"))),
         issue_count=len(payload.get("issues") or []),
