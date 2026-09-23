@@ -47,6 +47,7 @@ _FANIN_MIXER_MODULE_RS = (
     _FANIN_MIXER_RS,
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "dsp.rs",
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "pcm_open.rs",
+    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_output.rs",
 )
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
 _FANIN_DIRECT_CAPTURE_RS = (
