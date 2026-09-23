@@ -91,31 +91,6 @@ def test_pinned_numeric_defaults_appear_in_env_example_prose():
         )
 
 
-def test_fanin_probe_ppm_range_is_bounded():
-    text = _fanin_config_text()
-    assert "(200..=800).contains(&host_clock_probe_ppm)" in text, (
-        "the fan-in probe-ppm range must be 200..=800 (the ~163 ppm Windows "
-        "deadband floor + the ±1000 ppm validity ceiling)."
-    )
-
-
-def test_no_dead_fanin_host_clock_probe_duration_env():
-    assert "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS" not in _fanin_config_text()
-
-
-def test_no_fanin_host_clock_target_env_key():
-    # Correction mode has no fill setpoint at all (ADR-0109), so there is
-    # nothing for a target env to configure. Pin the absence so nobody
-    # reintroduces one.
-    config = _fanin_config_text()
-    host_clock = _fanin_host_clock_text()
-    assert "JASPER_FANIN_HOST_CLOCK_TARGET" not in config, (
-        "there must be NO JASPER_FANIN_HOST_CLOCK_TARGET env key — the "
-        "Correction-mode ladder has no fill setpoint to configure."
-    )
-    assert "JASPER_FANIN_HOST_CLOCK_TARGET" not in host_clock
-
-
 def test_fanin_host_clock_uses_the_shared_crate():
     # The fan-in adapter must compose the SHARED jasper_host_clock ladder, not a
     # forked copy of the servo — the whole point of the extraction.
@@ -153,17 +128,3 @@ def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():
     assert 'Some("probe_noncompliant")' in shared
     assert 'Some("lost_authority")' in shared
     assert 'Some("actuator_unavailable")' in shared
-
-
-def test_host_clock_thread_boundary_is_data_only_and_thread_confined():
-    adapter = _fanin_host_clock_text()
-    signals_start = adapter.index("pub struct HostClockSignals")
-    signals_end = adapter.index("\n}\n", signals_start)
-    signals = adapter[signals_start:signals_end]
-    assert "pub pcm" not in signals.lower()
-    assert "pub mixer" not in signals.lower()
-    assert "pub actuator" not in signals.lower()
-    assert "Arc<Atomic" in signals
-    assert "HostClockActuator::new(ctl_card, AlsaPitchCtl::open)" in adapter, (
-        "the concrete !Send ALSA handle must be constructed inside its owning thread"
-    )

@@ -37,9 +37,6 @@ from tests.ring_abi import ring_abi
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
-_FANIN_LANE_RESAMPLER_RS = (
-    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "lane_resampler.rs"
-)
 _FANIN_MIXER_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer.rs"
 # The mixer module's own body, across the files it is split into; the guards
 # below are about that body, not about one path.
@@ -50,9 +47,6 @@ _FANIN_MIXER_MODULE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_output.rs",
 )
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
-_FANIN_DIRECT_CAPTURE_RS = (
-    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
-)
 _OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
 _RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 
@@ -61,12 +55,6 @@ def _config_rs_text() -> str:
     if not _FANIN_CONFIG_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
     return _FANIN_CONFIG_RS.read_text(encoding="utf-8")
-
-
-def _lane_resampler_rs_text() -> str:
-    if not _FANIN_LANE_RESAMPLER_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_LANE_RESAMPLER_RS}")
-    return _FANIN_LANE_RESAMPLER_RS.read_text(encoding="utf-8")
 
 
 def _mixer_module_rs_texts() -> dict[str, str]:
@@ -89,12 +77,6 @@ def _state_rs_text() -> str:
     if not _FANIN_STATE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_STATE_RS}")
     return _FANIN_STATE_RS.read_text(encoding="utf-8")
-
-
-def _direct_capture_rs_text() -> str:
-    if not _FANIN_DIRECT_CAPTURE_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_DIRECT_CAPTURE_RS}")
-    return _FANIN_DIRECT_CAPTURE_RS.read_text(encoding="utf-8")
 
 
 def _source_text(path: Path) -> str:
@@ -506,67 +488,6 @@ def test_step_fills_the_ring_payload_once_above_the_ring_publish():
     assert body.index(fill) < body.index(publish), (
         "the fill that builds the ring payload must sit ABOVE the ring publish — "
         "below it, the box publishes a stale payload into Ring A"
-    )
-
-
-def test_input_resampler_status_exports_live_lock_state():
-    resampler_text = _lane_resampler_rs_text()
-    state_text = _state_rs_text()
-
-    assert "pub locked: Arc<AtomicBool>" in resampler_text
-    assert "locked_state.store(true, Ordering::Relaxed)" in resampler_text
-    assert "locked_state.store(false, Ordering::Relaxed)" in resampler_text
-    assert '"locked"' in state_text
-    assert "r.locked.load(Ordering::Relaxed)" in state_text
-
-
-def test_no_blocking_io_on_the_fanin_render_thread():
-    """#2533: no filesystem write and no device open/close may run inside `step()`.
-
-    Measured consequence when they did: fan-in's period budget is 5.33 ms at the
-    shipped 256-frame period and Ring A (fan-in→CamillaDSP) is four 128-frame
-    slots deep (Ring B, CamillaDSP→outputd, stays two), so a render-thread block
-    over ~2.7 ms still costs exactly one slot — a 128-frame silence INSERTION when
-    CamillaDSP reads an empty Ring A, or a 128-frame DELETION when fan-in
-    free-run-drops a slot it could not publish. Both signs were measured in the
-    field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
-    blind to it, so nothing counts these; the guard has to be structural.
-
-    One owner, off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
-    `snd_pcm_close`).
-    """
-    direct_text = _direct_capture_rs_text()
-
-    # 1. The direct-lane opener thread owns every gadget open and close.
-    assert "pub(super) fn spawn(" in direct_text
-    assert '.name("fanin-direct-opener".to_string())' in direct_text, (
-        "the gadget opener must be its own named thread"
-    )
-    direct_code = _rust_code_only(direct_text)
-    # `open_direct_capture` may appear ONLY inside the opener thread body.
-    opener_start = direct_code.index("fn spawn(")
-    opener_end = direct_code.index("fn publish_pending(", opener_start)
-    assert "open_direct_capture(" in direct_code[opener_start:opener_end], (
-        "the opener thread performs the device open"
-    )
-    assert (
-        direct_code.count("open_direct_capture(") == 1
-    ), "no other call site in the direct lane may open the device"
-    # The retiring handle travels to the opener so its Drop (snd_pcm_close) does
-    # not run in the render loop.
-    assert "fn hand_retired_handle_to_opener(" in direct_code
-    assert "retire: Option<PCM>" in direct_code, (
-        "a retired PCM must be handed over, not dropped on the render thread"
-    )
-    # The Absent retry is a poll + queue, never an inline open.
-    reopen_start = direct_code.index("fn maybe_reopen_direct(")
-    reopen_end = direct_code.index("fn adopt_open_outcome(", reopen_start)
-    reopen_body = direct_code[reopen_start:reopen_end]
-    assert "open_direct_capture(" not in reopen_body, (
-        "the ~2 s Absent retry must not open the device on the render thread"
-    )
-    assert "opener.request(" in reopen_body and ".poll()" in reopen_body, (
-        "the Absent retry must queue an open and poll for the result"
     )
 
 

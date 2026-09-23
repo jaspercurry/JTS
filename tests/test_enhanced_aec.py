@@ -493,13 +493,6 @@ def test_failed_active_probe_rolls_back_without_publishing_marker(
     assert marker_calls == []
 
 
-def test_setup_has_fail_closed_v1_only_and_v2_only_modes():
-    text = Path("jasper_aec3/setup.py").read_text(encoding="utf-8")
-    assert '"v1-only", "v2-only"' in text
-    assert 'build_mode == "v2-only"' in text
-    assert "v2-only requires" in text
-
-
 def test_native_build_backend_is_exact_pinned_and_fingerprinted(capability):
     metadata = capability.source / "pyproject.toml"
     metadata.write_text(

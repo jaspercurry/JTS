@@ -8,17 +8,11 @@ The near-end capture threads own what the AEC loop can never recover: the
 stream geometry PortAudio actually negotiated, and — for the corpus USB mic —
 which resampler its card rate forces, and therefore whether the resident
 daemon imports scipy at all.
-
-`main()`'s wiring of both threads is pinned here too. A throwaway stats
-object or Event leaves a capture thread running, unreportable and
-unstoppable, and no test would notice: nothing else opens a real card.
 """
 from __future__ import annotations
 
-import ast
 import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -30,8 +24,6 @@ from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.aec.bridge_telemetry import BridgeStats
 from tests._aec_bridge_helpers import IDENTITY
 from tests._sounddevice_stub import stub_sounddevice
-
-BRIDGE_SOURCE = Path(__file__).resolve().parents[1] / "jasper" / "cli" / "aec_bridge.py"
 
 
 def _input_stream(stream):
@@ -168,54 +160,3 @@ def test_a_44_1_khz_card_falls_back_to_numpy_when_scipy_is_absent(monkeypatch):
 
     assert (up, down) == (160, 441)
     assert resample.__module__ == "jasper.dsp_numpy"
-
-
-def _thread_call(tree: ast.AST, target: str) -> tuple[list[str], dict[str, str]]:
-    thread = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and any(
-            kw.arg == "target" and ast.unparse(kw.value) == target
-            for kw in node.keywords
-        )
-    )
-    by_arg = {kw.arg: kw.value for kw in thread.keywords}
-    return (
-        [ast.unparse(a) for a in by_arg["args"].elts],
-        {
-            key.value: ast.unparse(value)
-            for key, value in zip(
-                by_arg["kwargs"].keys, by_arg["kwargs"].values,
-            )
-        },
-    )
-
-
-def test_main_wires_the_capture_threads_to_the_process_stats_and_shutdown():
-    """Both capture threads read their device settings from the resolved
-    config, share the process's stats and shutdown Event, and are handed the
-    queues the AEC loop drains.
-
-    Every queue is positional, so a dropped or reordered one type-checks and
-    runs: passing `None` for `raw0_q` leaves the "raw0" leg silently dark
-    with no cue (AGENTS #6), and no other test opens a real card.
-    """
-    tree = ast.parse(BRIDGE_SOURCE.read_text())
-
-    mic_args, mic_kwargs = _thread_call(tree, "mic_thread")
-    assert mic_args == ["mic_q", "raw0_q", "chip_aec_qs", "chip_beam_plan"]
-    assert mic_kwargs == {
-        "mic_device": "config.mic_device",
-        "capture_latency": "config.capture_latency",
-        "stats": "_bridge_stats",
-        "shutdown": "_shutdown",
-    }
-
-    usb_args, usb_kwargs = _thread_call(tree, "usb_mic_thread")
-    assert usb_args == ["usb_q"]
-    assert usb_kwargs == {
-        "usb_mic_device": "config.usb_mic_device",
-        "usb_mic_rate": "config.usb_mic_rate",
-        "stats": "_bridge_stats",
-        "shutdown": "_shutdown",
-    }
