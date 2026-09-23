@@ -47,6 +47,7 @@ from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..music_sources import Source
 from ..platform.control_client import CONTROL_PORT
+from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
     debug_control,
     grouping_supervisor,
@@ -893,7 +894,7 @@ def build_server(
     port: int,
     camilla_host: str,
     camilla_port: int,
-    voice_socket_path: str = "/run/jasper/voice.sock",
+    voice_socket_path: str = VOICE_CONTROL_SOCKET_PATH,
     sampler: Any = None,
     audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
@@ -956,7 +957,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--voice-socket",
         default=os.environ.get(
-            "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+            "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
         ),
         help="path to voice_daemon's control UDS",
     )

@@ -110,6 +110,7 @@ def test_canonical_socket_paths_match_daemon_conventions():
     assert status_socket.FANIN_STATUS_SOCKET == "/run/jasper-fanin/control.sock"
     assert status_socket.MUX_CONTROL_SOCKET_PATH == "/run/jasper-mux/control.sock"
     assert status_socket.OUTPUTD_STATUS_SOCKET == "/run/jasper-outputd/control.sock"
+    assert status_socket.VOICE_CONTROL_SOCKET_PATH == "/run/jasper/voice.sock"
 
 
 # ---- socket lifecycle: fragmentation, the byte cap, and the total deadline ---

@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
 from .platform import wire
+from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command
 from .platform.uds import mux_socket_command as _mux_socket_command
 from .log_event import log_event
@@ -29,7 +30,6 @@ from .log_event import log_event
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # Renew the voice-side crash-recovery timer while a window is open; a capture
 # may wait up to eight minutes for a human. Must stay under the daemon's
 # auto-clear with room for a retry, and is also the volume hold's cadence.
@@ -404,7 +404,7 @@ async def _check_no_active_voice_session(
 @asynccontextmanager
 async def measurement_window(
     *,
-    voice_socket_path: str = DEFAULT_VOICE_SOCKET_PATH,
+    voice_socket_path: str = VOICE_CONTROL_SOCKET_PATH,
     skip_voice_pause: bool = False,
     skip_music_isolation: bool = False,
     gate_owner: str = MEASUREMENT_GATE_OWNER,
