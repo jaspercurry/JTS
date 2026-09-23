@@ -37,6 +37,7 @@ from typing import Any, Optional
 
 from jasper.platform.control_client import CONTROL_PORT, AsyncControlClient, ControlError
 from jasper.log_event import log_event
+from jasper.usbgadget import UAC2_CARD_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ class VolumeBridge:
 
     def __init__(
         self,
-        card_name: str = "UAC2Gadget",
+        card_name: str = UAC2_CARD_NAME,
         control_url: str | None = None,
         *,
         discovery_retry_interval_sec: float = 5.0,

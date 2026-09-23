@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Mapping
 
 from ..audio_hardware.usb_port_role import gadget_unavailable_detail
@@ -44,6 +43,7 @@ from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
 from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
 from ..source_intent import read_source_intents
+from ..usbgadget import uac2_card_present
 from .markers import local_sources_allowed
 from .registry import local_source_lifecycle
 
@@ -102,11 +102,6 @@ UNIT_STATE_UNAVAILABLE_REASON = (
     "systemd unit state is unavailable right now; retry shortly."
 )
 
-# The ALSA card the composite gadget's uac2 function registers. Its presence
-# is the host-visible "USB audio device is advertised" signal now that the
-# gadget unit can outlive audio (it also carries the USB management network),
-# so gadget-active is no longer a proxy for audio-advertised.
-UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 BLUETOOTH_RUNTIME_UNITS = local_source_lifecycle(Source.BLUETOOTH).runtime_units
 _BLUETOOTH_LIFECYCLE = local_source_lifecycle(Source.BLUETOOTH)
 _STATE_UNITS = tuple(dict.fromkeys((
@@ -117,15 +112,6 @@ _STATE_UNITS = tuple(dict.fromkeys((
     BLUETOOTH_CONTROL_PLANE_UNIT,
     *_BLUETOOTH_LIFECYCLE.runtime_units,
 )))
-
-
-def _uac2_card_present() -> bool:
-    """True iff the composite gadget's uac2 (audio) function is composed —
-    the host currently sees JTS as a USB audio device. Fail-soft to False."""
-    try:
-        return os.path.isdir(UAC2_CARD_PATH)
-    except OSError:
-        return False
 
 
 def _usbsink_capability() -> tuple[bool, str]:
@@ -362,7 +348,7 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
     # activity: the composite gadget can outlive audio (it also carries the USB
     # management network), so its being active no longer implies audio is
     # advertised. The card exists iff the uac2 function is composed.
-    usbsink_card_present = _uac2_card_present()
+    usbsink_card_present = uac2_card_present()
     usbsink_starting = unit_activating(records_map.get(USBSINK_UNIT))
     fanin_status = read_fanin_status()
     usbsink_direct_sample = extract_direct_sample(fanin_status)

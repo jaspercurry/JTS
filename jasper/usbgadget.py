@@ -18,6 +18,12 @@ from pathlib import Path
 
 DEFAULT_UDC_CLASS_DIR = "/sys/class/udc"
 
+# The gadget's ConfigFS composition point and the ALSA card its uac2 function
+# registers once composed. Both were previously respelled at every call site.
+GADGET_CONFIGFS_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
+UAC2_CARD_NAME = "UAC2Gadget"
+UAC2_CARD_PATH = f"/proc/asound/{UAC2_CARD_NAME}"
+
 
 def udc_host_connected(
     udc_class_dir: str | os.PathLike[str] = DEFAULT_UDC_CLASS_DIR,
@@ -60,4 +66,21 @@ def network_wanted() -> bool:
     return os.environ.get("JASPER_USB_NETWORK", "enabled").lower() != "disabled"
 
 
-__all__ = ["DEFAULT_UDC_CLASS_DIR", "network_wanted", "udc_host_connected"]
+def uac2_card_present() -> bool:
+    """True iff the composite gadget's uac2 (audio) function is composed —
+    the host currently sees JTS as a USB audio device. Fail-soft to False."""
+    try:
+        return os.path.isdir(UAC2_CARD_PATH)
+    except OSError:
+        return False
+
+
+__all__ = [
+    "DEFAULT_UDC_CLASS_DIR",
+    "GADGET_CONFIGFS_PATH",
+    "UAC2_CARD_NAME",
+    "UAC2_CARD_PATH",
+    "network_wanted",
+    "uac2_card_present",
+    "udc_host_connected",
+]
