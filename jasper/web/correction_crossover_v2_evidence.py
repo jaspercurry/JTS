@@ -1000,7 +1000,7 @@ def bind_production_play(
     from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
     from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, measurement_graph_evidence
-    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
+    from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
     session_graph = bind_measurement_graph(

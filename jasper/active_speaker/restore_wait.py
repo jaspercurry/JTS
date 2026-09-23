@@ -2,23 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wait for a graph restore to FINISH before a caller's cancellation propagates.
+"""Attempt a graph restore, and wait for one to FINISH before a caller's
+cancellation propagates.
 
-The house idiom, factored out of :mod:`jasper.active_speaker.web_commissioning`
-so a caller does not have to import that module's whole commissioning stack to
-put a graph back. Start the restore as a TASK, so a cancel aimed at the awaiter
-lands on the shield rather than on the restore, and keep waiting through a
-repeat cancel. A bare ``await asyncio.shield(coro)`` is a different and weaker
-thing — it detaches the restore and lets the cancellation past it, which is how
-a fader ends up stranded at measurement level (ADR-0179).
+The house idiom for putting a graph back: :func:`attempt_graph_restore` runs
+the restore and never raises, and :func:`resilient_restore` /
+:func:`await_restore_task_resilient` start it as a TASK, so a cancel aimed at
+the awaiter lands on the shield rather than on the restore, and keep waiting
+through a repeat cancel. A bare ``await asyncio.shield(coro)`` is a different
+and weaker thing — it detaches the restore and lets the cancellation past it,
+which is how a fader ends up stranded at measurement level (ADR-0179).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar
 
-__all__ = ["await_restore_task_resilient", "resilient_restore"]
+from jasper.camilla import CamillaUnavailable
+
+__all__ = [
+    "attempt_graph_restore",
+    "await_restore_task_resilient",
+    "resilient_restore",
+]
 
 #: What the shielded operation answers with. Generic because the idiom is about
 #: CANCELLATION, not a payload: pinning it to one type forces the next caller to
@@ -54,3 +61,32 @@ async def resilient_restore(
     it had a shield.
     """
     return await await_restore_task_resilient(asyncio.create_task(operation))
+
+
+_COMMISSION_OPERATION_ERRORS = (
+    CamillaUnavailable,
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+)
+
+
+async def attempt_graph_restore(
+    restore: Callable[[], Awaitable[Any]],
+) -> tuple[bool, str | None]:
+    """Run one graph restore and never raise: ``(took_effect, raise_message)``.
+
+    The one verdict the swap transaction reaches, here and on
+    ``program_playback``'s measurement path: it TOOK, it RAISED (message
+    present), or CamillaDSP REJECTED it (``False``, no message). Both failures
+    are returned rather than collapsed to a bool because they are different
+    failures at the same call site — #2198 is what an absent distinction costs.
+    Callers own the consequence, which is the half that legitimately differs:
+    a restore inside a ``finally`` reports, one inside an ``except`` raises.
+    """
+    try:
+        restored = await restore()
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        return False, str(exc)
+    return restored is True, None

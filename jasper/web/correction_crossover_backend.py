@@ -9,11 +9,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jasper.active_speaker import web_commissioning
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from jasper.active_speaker.commission_load import load_commission_load_state
+from jasper.active_speaker.commission_ramp import load_ramp_state
 from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
+from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.log_event import log_event
 from jasper.output_topology_store import load_output_topology
@@ -81,7 +83,11 @@ def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
     payload = conductor_status()
-    payload["commission"] = web_commissioning.commission_status_payload()
+    payload["commission"] = {
+        "commission_load": load_commission_load_state(),
+        "ramp": load_ramp_state(),
+        "safe_playback": load_safe_playback_state(),
+    }
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])

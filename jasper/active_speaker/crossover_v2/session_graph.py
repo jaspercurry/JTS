@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Mapping
 import yaml
 
 from jasper.active_speaker.commissioning_admission import parse_running_graph
+from jasper.active_speaker.restore_wait import attempt_graph_restore
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
@@ -347,8 +348,6 @@ class MeasurementSessionGraph:
         # The one restore verdict, shared with the commissioning swap paths.
         # Its catch set is what keeps ``CamillaUnavailable`` — a bare
         # ``Exception`` subclass — from escaping as an unlogged raise.
-        from jasper.active_speaker.web_commissioning import attempt_graph_restore
-
         entry = self._entry_config_path
         if entry is None:
             return

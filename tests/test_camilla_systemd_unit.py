@@ -229,7 +229,7 @@ def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons(
     assert "-exec chmod 0640 {} +" in body
 
 
-def test_install_sh_repairs_dsp_apply_lock_for_web_commissioning():
+def test_install_sh_repairs_dsp_apply_lock_for_web_dsp_apply():
     """A stale root-created lock must not block jasper-web DSP apply paths."""
 
     body = INSTALL_SH.read_text()

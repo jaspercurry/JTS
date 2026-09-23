@@ -28,7 +28,7 @@ from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
-from jasper.active_speaker.restore_wait import resilient_restore
+from jasper.active_speaker.restore_wait import attempt_graph_restore, resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
@@ -322,7 +322,7 @@ async def _put_back(cam: Any, anchor: str) -> None:
 async def _restore_verdict(cam: Any, anchor: str) -> tuple[bool, str | None]:
     """``(took_effect, message)`` for one put-back, through the shared verdict.
 
-    :func:`~jasper.active_speaker.web_commissioning.attempt_graph_restore` is
+    :func:`~jasper.active_speaker.restore_wait.attempt_graph_restore` is
     the repo's one verdict a swap transaction reaches, and it decides success
     on ``is True`` — so the bridge from :func:`_put_back`, which returns
     ``None`` and raises instead, lives HERE rather than at each site. Two sites
@@ -331,8 +331,6 @@ async def _restore_verdict(cam: Any, anchor: str) -> tuple[bool, str | None]:
 
     The put-back uses the same structural routing and live read-back.
     """
-
-    from jasper.active_speaker.web_commissioning import attempt_graph_restore
 
     async def _restore() -> bool:
         await _put_back(cam, anchor)

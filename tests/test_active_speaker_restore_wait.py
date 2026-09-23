@@ -29,9 +29,8 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
 
 
 def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
-    # The wait now lives in restore_wait, so a caller that only needs to put a
-    # graph back does not import this module's commissioning stack; this module
-    # still consumes it as `_resilient`.
+    # A cancel that lands on the shield rather than the restore task must not
+    # retry the already-cancelled task on a repeat cancellation.
     from jasper.active_speaker import restore_wait
 
     shield_calls = 0
