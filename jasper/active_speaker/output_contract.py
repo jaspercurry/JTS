@@ -276,9 +276,6 @@ def topology_sink_is_composite(topology: OutputTopology) -> bool:
     both populate ``child_devices=(card,)`` for stable serial identity, so that
     entry must NOT read as composite (a bare truthiness check here once
     misclassified every shipped-default box).
-
-    Named once because two callers need the distinction for different reasons:
-    ``ring_channels_for_topology`` and ``flat_graph_program_dest_map``.
     """
 
     return len(topology.hardware.child_devices) >= 2
