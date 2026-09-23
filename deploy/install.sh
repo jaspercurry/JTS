@@ -586,12 +586,6 @@ PY
 }
 
 install_camilladsp() {
-    # Belt-and-suspenders: any pre-existing camilladsp.service from a
-    # different install lineage shouldn't fight our copy over
-    # /etc/asoundrc or the dmix lock.
-    systemctl stop camilladsp.service 2>/dev/null || true
-    systemctl disable camilladsp.service 2>/dev/null || true
-
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
     # State + emitted-correction-config dirs. outputd uses
     # outputd-statefile.yml so corrections survive Pi restarts. The
