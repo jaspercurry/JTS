@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Sequence
 
 from jasper.active_speaker import arm_walk
-from ._logging import CLI_LOG_FORMAT
+from ..logging_setup import configure_logging
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 MOVER_TURNTABLE = "turntable"
@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    configure_logging(level=logging.INFO)
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 
