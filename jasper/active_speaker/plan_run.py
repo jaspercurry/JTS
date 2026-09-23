@@ -26,11 +26,11 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
-    BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED,
+    REGIME_PER_DRIVER, REGIME_SUMMED,
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
-    candidate_identity, design_axis_spec, resolve_request, stop_specs,
+    design_axis_spec, resolve_request, stop_specs,
 )
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
@@ -50,7 +50,9 @@ from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
-from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER
+from .measurement_programs import (
+    BASE_CANDIDATE, BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER, candidate_identity,
+)
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
 from .round_copy import PLACE_MICROPHONE, take_counts

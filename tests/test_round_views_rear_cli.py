@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker.angle_capture import BASE_CANDIDATE
+from jasper.active_speaker.measurement_programs import BASE_CANDIDATE
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, PACKET_FILENAME
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, REASON_NO_REPEATS
 from jasper.cli import round_views

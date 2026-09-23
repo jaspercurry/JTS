@@ -25,7 +25,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jasper.active_speaker.angle_capture import BASE_CANDIDATE
+from jasper.active_speaker.measurement_programs import BASE_CANDIDATE
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal

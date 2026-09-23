@@ -13,7 +13,7 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 
-from .angle_capture import BASE_CANDIDATE, AngleCaptureRequest, candidate_identity
+from .angle_capture import AngleCaptureRequest
 from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
@@ -23,6 +23,7 @@ from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
+from .measurement_programs import BASE_CANDIDATE, candidate_identity
 from .preflight import PreflightFacts, PreflightIssue
 from .program_failure import read_output_volume
 from .run_levels import prepare_level_captures

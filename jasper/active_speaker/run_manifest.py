@@ -17,7 +17,7 @@ from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
-from .measurement_programs import resolved_measurement_purpose
+from .measurement_programs import BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
 
 RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -189,8 +189,6 @@ class RunManifest:
         self, record: Mapping[str, Any], record_id: str, verdict: TakeVerdict, *,
         complete: bool, started_s: float, ended_s: float, level_observation: Mapping[str, Any], ordinal: int = 0,
     ) -> None:
-        from .angle_capture import BASE_CANDIDATE, candidate_identity  # lazy: capture planning import cost
-
         record = {"candidate_id": self._context.get("candidate_id"), **record}
         curves = {curve["role"]: curve for curve in record.get("curves", [])}
         sweeps = [segment for segment in (record.get("program") or {}).get("segments", [])

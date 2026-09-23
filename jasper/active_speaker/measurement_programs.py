@@ -549,3 +549,14 @@ def trial_program(sections: Collection[str], mover: str | None = None) -> Measur
         return None
     trials = [run_program(row.purpose, layout) for layout in row.trial]
     return next((trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
+
+
+BASE_CANDIDATE = "base"
+
+
+def candidate_identity(value: str, *, for_spec: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ValueError("candidate_id must be text")
+    if value not in ("", BASE_CANDIDATE):
+        return value
+    return "" if for_spec else BASE_CANDIDATE

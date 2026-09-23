@@ -16,8 +16,8 @@ from jasper.json_fields import finite_float
 
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
-    BASE_CANDIDATE, AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
-    REGIME_BRANCHES, candidate_identity, walk_price,
+    AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
+    REGIME_BRANCHES, walk_price,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
@@ -30,7 +30,9 @@ from .measured_crossover_candidate import (
     compile_candidate_config, prove_candidate_config,
 )
 from .movers import MOVER_ARM
-from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD
+from .measurement_programs import (
+    BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD, candidate_identity,
+)
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, check_target_capture_dbfs, resolve_anchor_level,
