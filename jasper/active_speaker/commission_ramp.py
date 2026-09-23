@@ -20,7 +20,6 @@ re-asserted against the RUNNING graph, not just the file. Level bounds are
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import Any, Awaitable, Callable, Iterable
 
 import yaml
 
+from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
 
 from ._common import issue as _issue
@@ -179,13 +179,10 @@ def _record_ramp_state(
     payload = dict(payload)
     payload["state_path"] = str(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    # Match the sibling active_speaker state writers (calibration_level,
-    # staging, startup_load, path_safety): root-owned writer, non-root
-    # jasper-web reads these, so the file needs group-read.
-    os.chmod(tmp, 0o640)
-    os.replace(tmp, path)
+    # Group-read mode matches the sibling active_speaker state writers
+    # (calibration_level, staging, startup_load, path_safety): root-owned
+    # writer, non-root jasper-web reads these.
+    atomic_write_json(path, payload, mode=0o640)
     return payload
 
 

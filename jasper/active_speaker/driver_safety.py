@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from .design_inputs import resolve_design_inputs
-
 import json
 import math
 from functools import partial
@@ -23,6 +21,7 @@ from ._common import (
     blocker_issue,
     issue,
 )
+from .design_inputs import resolve_design_inputs
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,

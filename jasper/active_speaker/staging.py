@@ -1017,21 +1017,15 @@ def prepare_driver_commissioning_config(
     audible_evidence: dict[str, Any] = {}
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
-    # THIS EMIT'S DEVICE BLOCK IS DERIVED, NOT DEFAULTED (#2412). The emitter
-    # takes seven device fields beyond the sink NAME, and forwarding only the
-    # name leaves all seven at its snd-aloop defaults: the `plug:jasper_capture`
-    # tap, the program-lane formats, and the loopback chunk/target/queue
-    # geometry. That is the subset-forwarding shape #2364 closed at the boot
-    # anchor above, on the SAME emitter with the SAME contract, so this reads
-    # the same one derivation — `active_emit_devices` owns "what does an emit
-    # against THIS device have to declare" for every device, ring or not.
+    # This emit's device block is derived via `active_emit_devices`, not
+    # defaulted from the sink name: the emitter takes seven device fields
+    # beyond the name, and forwarding only the name would leave the capture
+    # tap, program-lane formats, and loopback geometry at incorrect defaults.
     #
-    # OFF THE RING THE BYTES DO NOT MOVE. `active_emit_devices` hands back the
-    # emitter's own defaults for every non-ring device, so every box that is not
-    # armed emits what it emitted before. On a ring device it answers the ring
-    # capture lane, the resolved wire format and the certified ring geometry —
-    # which is the whole of what makes a ring emit carryable, and what the
-    # transport gate below then proves over the artifact.
+    # Off the ring the bytes do not move: `active_emit_devices` returns the
+    # emitter's own defaults for a non-ring device (a no-op). On a ring
+    # device it resolves the capture lane, wire format, and certified ring
+    # geometry the transport gate below proves over the artifact. See #2412.
     devices = None
     emitted_config: str | None = None
     if blocker_count == 0 and bound_preset is not None and resolved_playback_device:
@@ -1128,43 +1122,17 @@ def prepare_driver_commissioning_config(
                 f"could not generate commissioning config: {type(exc).__name__}",
             ))
 
-    # BOTH ENDS OF THIS GRAPH NAME ONE TRANSPORT (#2412). The gate id and its
-    # label are unchanged, and so is the invariant they state; the predicate
-    # that was supposed to test it is what changes. It used to be
-    # `resolved_playback_device not in RING_PCM_DEVICES` — a refusal of the ring
-    # outright, shipped by #2344 as a permanent contract on the owner's
-    # 2026-08-12 #2254 ruling, and superseded by the owner's re-opening in
-    # #2412. That predicate never tested the property its label names, and the
-    # property is the one whose absence is the hazard: a graph whose SINK is the
-    # ring while its SOURCE is still the snd-aloop tap. Under `shm_ring` fan-in
-    # stops feeding that tap, so such a graph sweeps a device nobody writes and
-    # the measurement records silence with every daemon healthy — "everything
-    # green" being exactly what an operator cannot tell from success, which is
-    # why this is a blocker and not a warning.
+    # A graph whose SINK is the ring while its SOURCE is still the snd-aloop
+    # tap sweeps a device nobody writes once `shm_ring` fan-in stops feeding
+    # that tap: the measurement records silence with every daemon healthy,
+    # and "everything green" is exactly what an operator cannot tell from
+    # success. That is why this is a blocker, not a warning.
     #
-    # A RE-READ PROOF, not a restatement. Both device fields came from ONE
-    # `active_emit_devices` call above, so agreement is true by construction and
-    # re-deriving it here would be a tautology. Reading the FILE back is what
-    # makes it a proof about the artifact the loader will open, and it
-    # complements — never replaces — `tests/test_ring_active_endpoint.py`'s
-    # `dataclasses.fields(ActiveEmitDevices)` walk: the walk catches a call site
-    # that DROPS a field, this catches one that forwards six of seven. Neither
-    # implies the other, so both are required.
-    #
-    # THIS PROVES COHERENCE, NOT LIVENESS, and the gap is owned one altitude up.
-    # A ring/ring graph on a loopback-coupled or unarmed box is self-consistent
-    # and passes here. This function is a PURE BUILDER — it reads no daemon env,
-    # and teaching it to would put a reconciler read inside a builder — while
-    # `commission_load.build_driver_commission_load_preflight`'s
-    # `commissioning_transport_armed` gate reads the live coupling and marker.
-    # A config prepared on an unarmed box is harmless; a LOAD on one is the
-    # silent sweep, so the live half stands where the load does.
-    #
-    # NO GRAPH, NO ENDS TO DISAGREE. When an earlier blocker stopped the emit
-    # this passes rather than inventing a transport failure for a box no owner
-    # refused — the same rule the preflight's mirror follows for an absent gate.
-    # It cannot make an unproven graph loadable: that earlier blocker already
-    # fails `status`, which fails the preflight's own `prepared` gate.
+    # This re-reads the emitted FILE rather than re-deriving from the one
+    # `active_emit_devices` call above: both device fields come from that
+    # single call, so re-deriving would be a tautology (true by
+    # construction). Reading the file back is what makes this a proof about
+    # the artifact the loader will actually open. See #2412.
     if emitted_config is None:
         transport_ends_agree = True
         transport_message = "No commissioning graph was generated"
@@ -1252,21 +1220,16 @@ def prepare_driver_commissioning_config(
         "required_gates": gates,
         "issues": issues,
     }
-    # THE TRANSPORT, ON THE LINE THAT NAMES THE ROLE (#2412). This line
-    # already carried the role and the outputs and never the transport, so
-    # Finding (C) — a commissioning graph whose sink was the ring while its
-    # source was still the snd-aloop tap — was invisible in the journal even
-    # though every fact needed to see it was in scope here. Four fields make it
-    # one grep. No new event name: the commissioning vocabulary is stable and
-    # fragmenting it would cost a line per transition.
+    # `transport=` is on this line (not a new event) so the fields already
+    # here — role, outputs — cover a ring-sink/snd-aloop-source mismatch with
+    # one grep, and the commissioning vocabulary stays stable. See #2412.
     #
-    # `wire` is read off the emitted block rather than re-deriving it from
-    # `resolve_ring_wire(topology)`. Identical by construction — `active_emit_devices`
-    # sets BOTH ring formats from that one call — but re-deriving would be a
-    # second call that can raise `ValueError` on a bad wire token, which is the
-    # blocker path this line has to stay readable on. The literal `-` (never an
-    # empty value, which reads as "unknown") covers a non-ring emit, which has
-    # no ring wire, and a blocked prepare, which has no emitted block at all.
+    # `wire` is read off the emitted block rather than re-derived via
+    # `resolve_ring_wire(topology)`: identical by construction (both come
+    # from the same `active_emit_devices` call), but re-deriving could raise
+    # `ValueError` on a bad wire token, which this logging line must not do.
+    # The literal `-` (never empty, which would read as "unknown") covers a
+    # non-ring emit (no ring wire) and a blocked prepare (no emitted block).
     transport_is_ring = resolved_playback_device in RING_PCM_DEVICES
     logger.info(
         "event=active_speaker.driver_commission_prepared status=%s group=%s role=%s "
