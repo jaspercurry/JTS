@@ -692,10 +692,6 @@ class V2PlanShape:
     externally_positioned: bool = False
 
     @property
-    def verify_capture_target(self) -> int:
-        return self.cloud_verify_positions
-
-    @property
     def positions_gated(self) -> bool:
         return self.externally_positioned or self.hand_released_positions
 

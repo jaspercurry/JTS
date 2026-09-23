@@ -27,16 +27,6 @@ DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
 # alignment evidence.
 SUMMED_PLACEMENT_POLICY_ID = "summed_reference_axis_v1"
 REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
-# A THIRD summed policy, and deliberately its own id rather than a reworded
-# ``summed_reference_axis_v1``: the guided spatial cloud
-# (docs/historical/linearization-campaign-2026-07.md fundamental 1) asks the household for the
-# OPPOSITE whole-session promise. The stationary policy promises the mic does
-# not move between captures; this one promises the mic starts on the reference
-# axis, moves only when prompted, and holds still for the duration of each
-# sweep. Consenting to one is not consenting to the other, so they cannot share
-# an id — and the stationary id must stay reachable, because the 1-entry
-# re-verify re-arm still makes exactly the stationary promise.
-CLOUD_WALK_PLACEMENT_POLICY_ID = "summed_guided_cloud_v1"
 COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
@@ -59,9 +49,9 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 # equivalent -- never a silent pass-through.
 #
 # The literals are duplicated rather than imported on purpose:
-# crossover_v2.sweep_spec imports THIS module (lazily, for placement copy), so
-# importing it back at module scope would invert that dependency. Containment
-# of its CAPTURE_PROTOCOL_VERSION is pinned by
+# crossover_v2.sweep_spec imports THIS module for its policy ids and
+# acknowledgement labels, so importing it back would invert that dependency.
+# Containment of its CAPTURE_PROTOCOL_VERSION is pinned by
 # tests/test_active_speaker_capture_geometry.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
@@ -82,108 +72,6 @@ def driver_target_description(role: str) -> str:
         "mid": "centre of the midrange cone",
         "tweeter": "centre of the tweeter or horn mouth",
     }.get(role, f"centre of the {role}")
-
-
-def driver_placement_instruction(role: str) -> str:
-    """One canonical household instruction for a comparable capture."""
-
-    target = driver_target_description(role)
-    return (
-        f"Move the microphone capsule to {DRIVER_PLACEMENT_TARGET_CM:g} cm "
-        f"(about 1¼ in) from the {target}, "
-        "pointed straight at it. Use this same distance for every driver."
-    )
-
-
-# --- Aiming the microphone ---------------------------------------------------
-# The three fixed-axis instructions below used to end "Aim it according to its
-# calibration file." — an instruction a phone cannot follow, because a phone mic
-# has no calibration file and a phone is the mic most
-# households bring. So the copy names the physical aim direction the way this
-# module's own near-field instruction already does ("pointed straight at it"),
-# and demotes the calibration file to the conditional it always was: a UMIK-2
-# owner who loaded the 90° curve really is told to aim elsewhere.
-#
-# Device-agnostic rather than conditional-on-tier BY NECESSITY, not preference:
-# calibration presence is not knowable where this copy is rendered. Both call
-# sites — `crossover_v2.sweep_spec.build_crossover_sweep_spec` and
-# `web.correction_setup`'s fixed-axis level target — build the string before the
-# household has chosen a mic, and the one calibration-shaped argument in reach
-# (`default_setup_calibration`) is an optional prefill HINT that callers omit
-# even when a calibration exists. Plumbing real calibration state through two
-# layers to vary one clause would buy a worse sentence than one honest one.
-_AIM_CLAUSE = "pointed at the speaker unless its calibration file says otherwise"
-
-
-def reference_axis_driver_placement_instruction(role: str) -> str:
-    """Canonical stationary axis shared by each isolated-driver capture."""
-
-    role = str(role or "driver").strip().lower()
-    return (
-        "Place the microphone capsule on the tweeter axis, exactly level with "
-        "the centre of the tweeter or horn mouth, about 1 metre away when the "
-        f"room permits, {_AIM_CLAUSE}. Keep the "
-        f"microphone and speaker completely still while measuring the {role} "
-        "and every other driver in this set."
-    )
-
-
-def summed_placement_instruction() -> str:
-    """Canonical fixed-axis placement for combined-driver alignment evidence."""
-
-    return (
-        "Place the microphone capsule on the tweeter axis, exactly level with "
-        "the centre of the tweeter or horn mouth, about 1 metre away when the "
-        f"room permits, {_AIM_CLAUSE}. Then keep the "
-        "microphone and speaker completely still for every normal- and "
-        "reverse-polarity combined-driver capture in this measurement set."
-    )
-
-
-def cloud_walk_placement_instruction() -> str:
-    """Placement copy for the guided spatial cloud (``CLOUD_WALK_...`` policy).
-
-    Answers exactly ONE of the orientation screen's questions — *where do I
-    stand?* — and stops (issue #1941 R1). Same starting point as
-    :func:`summed_placement_instruction` (the mark, on the tweeter axis), but
-    it must NOT repeat the stationary copy's whole-session stillness promise:
-    this session prompts the household to move the mic between captures, so
-    promising otherwise on the consent screen would be asking them to agree to
-    something the flow immediately contradicts. Per-sweep stillness — the
-    promise an individual capture really does depend on — is its own step, and
-    is unchanged.
-
-    **It takes no capture count on purpose.** It used to open with "Across
-    about ``{captures}`` measurements…", one line under a derived tier line
-    that had just said "…10 measurements, about 7 minutes" — the same number,
-    twice, in the densest block on the screen. The tier line
-    (``sweep_spec._guided_tier_step``) owns that number; this owns the mark. The
-    other two facts it used to carry moved to where they earn their keep:
-    *every position is measured from the mark, named with a distance* now
-    motivates the tape measure in the what-to-bring step, and *how far the
-    walk reaches* is the shape note
-    (:func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`).
-    """
-    return (
-        "Start with the microphone capsule on the tweeter axis, exactly level "
-        "with the centre of the tweeter or horn mouth, about 1 metre away when "
-        f"the room permits, {_AIM_CLAUSE} — that spot is your mark."
-    )
-
-
-def cloud_walk_acknowledgement_label(captures: int) -> str:
-    """The promise the operator makes before a guided-cloud session.
-
-    Deliberately promises only what the cloud actually needs — the starting
-    axis, per-sweep stillness, and following the prompts — instead of the
-    stationary policy's "I will not move it", which this flow asks them to
-    break by design.
-    """
-    return (
-        "The microphone starts on the tweeter axis, level with the centre of "
-        "the tweeter or horn mouth, and I will move it only when I am asked "
-        f"to, holding it still while each of the {int(captures)} sweeps plays."
-    )
 
 
 def placement_acknowledgement_label(role: str) -> str:

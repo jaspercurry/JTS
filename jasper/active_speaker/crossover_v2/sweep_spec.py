@@ -21,12 +21,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jasper.active_speaker.capture_geometry import (
-    CLOUD_WALK_PLACEMENT_POLICY_ID,
     DRIVER_CAPTURE_GEOMETRIES,
     DRIVER_PLACEMENT_POLICY_ID,
     REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
     SUMMED_PLACEMENT_POLICY_ID,
-    cloud_walk_acknowledgement_label,
     placement_acknowledgement_label,
     reference_axis_driver_acknowledgement_label,
     summed_acknowledgement_label,
@@ -500,7 +498,6 @@ def build_crossover_sweep_spec(
     hard_timeout_ms: int = 30000,
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
-    guided_captures: int = 0,
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
@@ -522,13 +519,6 @@ def build_crossover_sweep_spec(
 
     ``capture_plan`` opts the spec into a session-spanning walk. It requires an
     ``acknowledgement_binding``, because placement gates run per capture.
-
-    ``guided_captures`` (> 0) declares a GUIDED SPATIAL CLOUD of that many
-    prompted CAPTURES — the count the household counts down, NOT the smaller
-    number of distinct mic positions the session thinks in. It, not plan
-    presence, selects the walk acknowledgement, because the stationary one
-    promises "I will not move it", which a cloud asks the household to break.
-    ``0`` keeps the stationary acknowledgement.
 
     ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint. A
     ``crossover_sweep`` capture has no calibration-picker screen of its own, so
@@ -552,11 +542,6 @@ def build_crossover_sweep_spec(
     geometry = str(driver_capture_geometry or "").strip().lower()
     if is_driver and geometry not in DRIVER_CAPTURE_GEOMETRIES:
         raise CaptureSpecError("driver capture geometry is unsupported")
-    walk = int(guided_captures or 0)
-    if walk < 0:
-        raise CaptureSpecError("guided_captures must not be negative")
-    if walk and is_driver:
-        raise CaptureSpecError("guided_captures is a summed-capture shape")
     acknowledgement = (
         CaptureAcknowledgement(
             id=(
@@ -566,7 +551,6 @@ def build_crossover_sweep_spec(
                     else DRIVER_PLACEMENT_POLICY_ID
                 )
                 if is_driver
-                else CLOUD_WALK_PLACEMENT_POLICY_ID if walk
                 else SUMMED_PLACEMENT_POLICY_ID
             ),
             binding_id=acknowledgement_binding,
@@ -577,7 +561,6 @@ def build_crossover_sweep_spec(
                     else placement_acknowledgement_label(driver_role)
                 )
                 if is_driver
-                else cloud_walk_acknowledgement_label(walk) if walk
                 else summed_acknowledgement_label()
             ),
         )
