@@ -108,8 +108,7 @@ async def set_property(
     """Run `busctl set-property` for one property. Returns True on
     success, False on any error (logged at debug)."""
     # `--` before the typed value keeps a leading-`-` value out of busctl's
-    # option parser. The shared runner uses asyncio.timeout (not wait_for),
-    # preserving this directly-awaited transition chain's cancellation rule.
+    # option parser.
     result = await run_busctl(
         "set-property",
         bus_name, object_path, interface, prop, signature, "--", value,

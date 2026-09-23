@@ -356,10 +356,6 @@ class Mux:
 
                     timeout = max(0.0, next_patrol - loop.time())
                     woke = False
-                    # asyncio.timeout(), never wait_for() — see the rule in
-                    # jasper/platform/uds.py. This wait sits right on that seam
-                    # (an alert resolves the event constantly), and a swallowed
-                    # cancel made run() immortal (#1935).
                     try:
                         async with asyncio.timeout(timeout):
                             await self._reconcile_wake.wait()

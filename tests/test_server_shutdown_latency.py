@@ -24,8 +24,8 @@ on `while not self.__shutdown_request` having never consulted
 `poll_interval`, and the measured elapsed time collapses to ~0.1 ms.
 Measured at 2/60 whole-file runs on an idle 10-core box — and it fires
 *more* when unloaded, so it is a GIL/scheduler race, not a load artifact.
-Across the three-version matrix that is roughly a 1-in-10 chance of a
-spurious red `ci`, which is unacceptable on the sole required check.
+That is roughly a 1-in-30 chance of a spurious red `ci`, which is
+unacceptable on the sole required check.
 """
 
 from __future__ import annotations

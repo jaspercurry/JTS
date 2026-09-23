@@ -103,11 +103,6 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 # one already passing poll_interval) were together ~23% of LOCAL suite
 # runtime, and a local full-suite A/B moved 483 s -> 346 s at -n 4.
 #
-# The CI gain is smaller, and the reason matters. Measured on the merge
-# commit: py3.11 350 s, py3.13 358 s, py3.12 375 s, against a 428-431 s
-# baseline. `ci` waits on ALL THREE matrix legs, so the gate improves by the
-# SLOWEST leg: 375 s, i.e. about -12%, not the -28% the local A/B suggests.
-#
 # Fewer cores recover LESS of this, not more. On a 10-core box with -n 4
 # there are idle cores, so a worker parked in select() is pure added wall
 # time and removing it returns ~1:1. On a 4-vCPU runner with -n 4 a parked
