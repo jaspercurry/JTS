@@ -28,6 +28,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_CAPTURE_UNREADABLE,
     REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
     REFUSE_PROGRAM_UNMATCHED,
 )
@@ -218,24 +219,53 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     assert payload["reason"] == reason
 
 
-def test_a_bad_repeat_is_omitted_and_its_good_twin_compared(tmp_path, capsys):
-    """One unbindable on-axis take does not refuse the comparison: its healthy
-    repeat is read, and the answer and the artifact name the take left out."""
+@pytest.mark.parametrize(
+    "front, twin, refuses",
+    [
+        ("sha", {}, False),
+        ("sha", {"pose_kind": "behind", "mark_distance_m": 0.1}, True),
+        ("sha", {"graph_fingerprint": "another-graph"}, True),
+        ("unreadable", {}, True),
+    ],
+    ids=["same-pose-repeat", "behind-pose", "other-graph", "front-record-unreadable"],
+)
+def test_a_bad_on_axis_take_is_replaced_only_by_its_same_pose_repeat(
+    tmp_path, capsys, front, twin, refuses
+):
+    """With no capture named, a failed front take is never swapped for another
+    pose on its 0/0 bearing: only its repeat at the same pose under the same
+    played graph stands in, and the answer names the take read and the take
+    left out. A record nothing can read has no pose to match."""
     far = _round(tmp_path / "far", 1.0, take_ids=("verify_01_a01", "verify_01_a02"))
     close = _round(tmp_path / "close", 0.30, take_ids=("verify_02_a01",))
-    sidecar = far / "bundle" / "b0" / "summed" / "summed_verify_01_a01.json"
-    doc = json.loads(sidecar.read_text())
-    doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
-    sidecar.write_text(json.dumps(doc))
+    summed = far / "bundle" / "b0" / "summed"
+    sidecar = summed / "summed_verify_01_a01.json"
+    if front == "sha":
+        doc = json.loads(sidecar.read_text())
+        doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
+        sidecar.write_text(json.dumps(doc))
+    else:
+        sidecar.write_text("{")
+    repeat = summed / "summed_verify_01_a02.json"
+    repeat.write_text(json.dumps({**json.loads(repeat.read_text()), **twin}))
     out = tmp_path / "report.json"
 
-    assert main(_compare_argv((far, close), out)) == EXIT_OK
-    omitted = {"far": [{"capture_id": "verify_01_a01", "sidecar": sidecar.name,
-                        "reason": REFUSE_PROGRAM_UNMATCHED}], "close": []}
-    assert json.loads(capsys.readouterr().out)["omitted"] == omitted
-    report = json.loads(out.read_text())["close_reference"]
-    assert report["omitted"] == omitted
-    assert report["captures"]["far"]["capture_id"] == "verify_01_a02"
+    code = main(_compare_argv((far, close), out))
+
+    payload = json.loads(capsys.readouterr().out)
+    reason = REFUSE_PROGRAM_UNMATCHED if front == "sha" else REFUSE_CAPTURE_UNREADABLE
+    omitted = [{"capture_id": "verify_01_a01" if front == "sha" else sidecar.stem,
+                "sidecar": sidecar.name, "reason": reason}]
+    if refuses:
+        assert (code, payload["reason"]) == (EXIT_REFUSED, reason)
+        assert json.loads(payload["detail"])["omitted"] == omitted
+        return
+    assert code == EXIT_OK
+    assert payload["omitted"] == {"far": omitted, "close": []}
+    assert payload["captures"] == {
+        "far": {"capture_id": "verify_01_a02"}, "close": {"capture_id": "verify_02_a01"},
+    }
+    assert json.loads(out.read_text())["close_reference"]["omitted"] == payload["omitted"]
 
 
 @pytest.mark.parametrize(

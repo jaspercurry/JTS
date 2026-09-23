@@ -24,6 +24,7 @@ from ._common import (
     _write,
     add_rungs_ms_argument,
     add_set_argument, answer,
+    omitted_note,
     refused_by_name,
     resolved_out,
 )
@@ -61,6 +62,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
             "gate-sweep [evidence only, no grade moves]: "
             + "; ".join(summary_lines(report))
             + (f" -> {written}" if written else "")
+            + omitted_note(report["omitted"])
         ),
     )
 

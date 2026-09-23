@@ -21,6 +21,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.record_index import played_graph_fingerprint
 from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     discover_captures,
@@ -108,6 +109,7 @@ def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path, metadata:
     ("capture_hash_mismatch", round_captures.REFUSE_CAPTURE_UNREADABLE),
     ("capture_hash_missing", round_captures.REFUSE_CAPTURE_UNREADABLE),
     ("program_unmatched", round_captures.REFUSE_PROGRAM_UNMATCHED),
+    ("provenance_not_a_mapping", round_captures.REFUSE_PROGRAM_UNMATCHED),
     ("band_missing", round_captures.REFUSE_RADIATED_BAND_MISSING),
 ])
 def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
@@ -117,6 +119,8 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
 
     A view that did not ask for it never checks it; one that asked for it
     alone has nothing usable left and refuses under the take's own reason.
+    The first view selects on the played graph, as ``sweep --graph`` does,
+    so a record's malformed provenance is an omission, never a traceback.
     """
     root = _write_round(tmp_path)
     record, doc = _bank_canonical(root)
@@ -128,15 +132,19 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
         del doc["wav_sha256"]
     elif fault == "program_unmatched":
         doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
+    elif fault == "provenance_not_a_mapping":
+        doc["provenance"] = "not-a-mapping"
     else:
         del doc["curves"]
     record.write_text(json.dumps(doc))
     omission = {"capture_id": "cloud_verify_00_a02", "sidecar": record.name, "reason": reason}
 
     omitted: list[dict[str, str]] = []
-    assert [capture.capture_id for capture in discover_captures(root, omitted=omitted)] == [
-        "cloud_verify_01"
-    ]
+    assert [
+        capture.capture_id for capture in discover_captures(
+            root, select=lambda doc: played_graph_fingerprint(doc) == "", omitted=omitted,
+        )
+    ] == ["cloud_verify_01"]
     assert omitted == [omission]
     unasked: list[dict[str, str]] = []
     assert select_capture(root, capture_id="cloud_verify_01", omitted=unasked).capture_id == "cloud_verify_01"
@@ -149,7 +157,7 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
 
 def test_an_unreadable_sidecar_is_named_to_every_view(tmp_path: Path) -> None:
     """A record nothing can read cannot be deselected, so no view is silent
-    about it — and none is refused for it while a good capture remains."""
+    about it, and a view that names its capture still reads it."""
     root = _write_round(tmp_path)
     sidecar = root / "bundle" / "b0" / "summed" / "summed_cloud_verify_01.json"
     sidecar.write_text("{")

@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -196,6 +196,14 @@ def _capture_document(path: Path) -> Mapping[str, Any]:
 _Record = tuple[Path, Path, Mapping[str, Any], RoundCapturesRefused | None]
 
 
+class _Omission(NamedTuple):
+    """A selected capture left out: what is published, its record, and why."""
+
+    entry: dict[str, str]
+    doc: Mapping[str, Any]
+    fault: RoundCapturesRefused
+
+
 def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
     try:
         root = round_inputs(round_dir).session_dir
@@ -261,13 +269,20 @@ def discover_captures(
     :class:`RoundCapturesRefused` for missing or conflicting round input, and
     under the first failure's reason when every selected capture failed.
     """
-    return _discover_captures(round_dir, select=select, roles=(role,), omitted=omitted)
+    captures, skipped = _discover_captures(round_dir, select=select, roles=(role,))
+    if omitted is not None:
+        omitted += [omission.entry for omission in skipped]
+    return captures
+
+
+def _refused(fault: RoundCapturesRefused, skipped: list[_Omission]) -> RoundCapturesRefused:
+    """``fault`` under its own reason, naming every capture left out beside it."""
+    return RoundCapturesRefused(fault.reason, {**fault.detail, "omitted": [omission.entry for omission in skipped]})
 
 
 def _discover_captures(
-    round_dir: Path, *, select: Callable[[Mapping[str, Any]], bool] | None,
-    roles: tuple[str, ...], omitted: list[dict[str, str]] | None,
-) -> tuple[PoseCapture, ...]:
+    round_dir: Path, *, select: Callable[[Mapping[str, Any]], bool] | None, roles: tuple[str, ...],
+) -> tuple[tuple[PoseCapture, ...], list[_Omission]]:
     round_dir, documents = _capture_documents(Path(round_dir))
     manifest: Mapping[str, Any] | None = None
     if not documents:
@@ -285,8 +300,7 @@ def _discover_captures(
         )
 
     captures: list[PoseCapture] = []
-    skipped: list[dict[str, str]] = []
-    first: RoundCapturesRefused | None = None
+    skipped: list[_Omission] = []
     program_audio: dict[str, tuple[np.ndarray, int]] = {}
     for sidecar, wav, doc, fault in documents:
         # A record with nothing readable in it cannot be deselected.
@@ -302,14 +316,11 @@ def _discover_captures(
                 continue
             except RoundCapturesRefused as exc:
                 fault = exc
-        first = first or fault
-        skipped.append({"capture_id": document_capture_id(doc) or sidecar.stem,
-                        "sidecar": sidecar.name, "reason": fault.reason})
-    if first is not None and not captures:
-        raise RoundCapturesRefused(first.reason, {**first.detail, "omitted": skipped})
-    if omitted is not None:
-        omitted += skipped
-    return tuple(sorted(captures, key=lambda cap: cap.capture_id))
+        skipped.append(_Omission({"capture_id": document_capture_id(doc) or sidecar.stem,
+                                  "sidecar": sidecar.name, "reason": fault.reason}, doc, fault))
+    if skipped and not captures:
+        raise _refused(skipped[0].fault, skipped)
+    return tuple(sorted(captures, key=lambda cap: cap.capture_id)), skipped
 
 
 def _bind_record(
@@ -455,11 +466,12 @@ def select_capture(
     """The one capture a single-capture reader takes out of ``round_dir``.
 
     ``capture_id`` selects by the capture's own id or its WAV stem. With none,
-    the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
-    Raises :class:`RoundCapturesRefused` rather than guessing. The choice is
-    made on each sidecar DOC, so the poses the reader discards are never
-    checked or deconvolved; a chosen one that fails lands in ``omitted`` as
-    :func:`discover_captures` says.
+    the on-axis capture wins: azimuth 0, elevation 0, first by capture id; if
+    that take failed, only its repeat at the same pose under the same played
+    graph stands in. Raises :class:`RoundCapturesRefused` rather than
+    guessing. The choice is made on each sidecar DOC, so the poses the reader
+    discards are never checked or deconvolved; a chosen one that fails lands
+    in ``omitted`` as :func:`discover_captures` says.
     """
     return select_capture_roles(round_dir, capture_id=capture_id, roles=(role,), omitted=omitted)[role]
 
@@ -485,41 +497,68 @@ def select_capture_roles(
                 or Path(str(doc.get("wav_path") or "")).stem == capture_id
             )
 
-        named = [
+        found, skipped = _discover_captures(root, select=wanted, roles=roles)
+        chosen = tuple(
             capture
-            for capture in _discover_captures(root, select=wanted, roles=roles, omitted=omitted)
+            for capture in found
             if capture_id
             in (capture.capture_id, capture.wav.stem if capture.wav else None)
-        ]
-        if len(named) != len(roles):
+        )
+        if len(chosen) != len(roles):
             raise RoundCapturesRefused(
                 REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
                 {
                     "round_dir": str(root),
                     "capture_id": capture_id,
                     "captures": seen,
-                    "matches": len(named) // len(roles),
+                    "matches": len(chosen) // len(roles),
                 },
             )
-        return dict(zip(roles, named, strict=True))
+    else:
+        def on_axis_doc(doc: Mapping[str, Any]) -> bool:
+            seen.append(doc_pose_key(doc))
+            # A pose declared as anything but a number compares False here, the
+            # same answer the decoded ``None`` gave.
+            return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
 
-    def on_axis_doc(doc: Mapping[str, Any]) -> bool:
-        seen.append(doc_pose_key(doc))
-        # A pose declared as anything but a number compares False here, the
-        # same answer the decoded ``None`` gave.
-        return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
+        found, skipped = _discover_captures(root, select=on_axis_doc, roles=roles)
+        if not found:
+            raise RoundCapturesRefused(
+                REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
+                {
+                    "round_dir": str(root),
+                    "note": "no capture declares azimuth 0 / elevation 0",
+                    "poses": seen,
+                },
+            )
+        chosen = _on_axis_take(found, skipped, len(roles))
+    if omitted is not None:
+        omitted += [omission.entry for omission in skipped]
+    return dict(zip(roles, chosen, strict=True))
 
-    on_axis = _discover_captures(root, select=on_axis_doc, roles=roles, omitted=omitted)
-    if not on_axis:
-        raise RoundCapturesRefused(
-            REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
-            {
-                "round_dir": str(root),
-                "note": "no capture declares azimuth 0 / elevation 0",
-                "poses": seen,
-            },
-        )
-    return dict(zip(roles, on_axis[:len(roles)], strict=True))
+
+def _on_axis_take(
+    found: tuple[PoseCapture, ...], skipped: list[_Omission], n_roles: int,
+) -> tuple[PoseCapture, ...]:
+    """The first on-axis take by capture id, or its repeat when it was left out.
+
+    Only a repeat at the same pose under the same played graph stands in: a
+    behind pose shares the front's 0/0 bearing, so any other fallback reads a
+    different take than the one asked for. A record nothing can read has no
+    known pose, so nothing is provably its repeat.
+    """
+    takes = [found[index:index + n_roles] for index in range(0, len(found), n_roles)]
+    unreadable = [omission for omission in skipped if not omission.doc]
+    if unreadable:
+        raise _refused(unreadable[0].fault, skipped)
+    missed = min(skipped, key=lambda omission: omission.entry["capture_id"], default=None)
+    if missed is None or takes[0][0].capture_id < missed.entry["capture_id"]:
+        return takes[0]
+    same = (doc_pose_key(missed.doc), played_graph_fingerprint(missed.doc))
+    for take in takes:
+        if (take[0].pose_key, take[0].graph_fingerprint) == same:
+            return take
+    raise _refused(missed.fault, skipped)
 
 
 def capture_row(capture: PoseCapture) -> dict[str, Any]:
