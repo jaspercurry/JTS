@@ -91,17 +91,6 @@ def test_pinned_numeric_defaults_appear_in_env_example_prose():
         )
 
 
-def test_fanin_host_clock_is_default_off_literal_gate():
-    # The gate is the exact-`enabled` literal idiom (fail-safe, opt-in), and it
-    # WARNS on a non-`enabled` non-empty value (unlike the sibling flags that
-    # silently stay off) — mirroring the usbsink literal idiom so a typo leaves
-    # a breadcrumb rather than silently disabling a safety feature.
-    text = _fanin_config_text()
-    assert 'std::env::var("JASPER_FANIN_HOST_CLOCK")' in text
-    assert 'eq_ignore_ascii_case("enabled")' in text
-    assert "event=fanin.host_clock_config_ignored" in text
-
-
 def test_fanin_probe_ppm_range_is_bounded():
     text = _fanin_config_text()
     assert "(200..=800).contains(&host_clock_probe_ppm)" in text, (

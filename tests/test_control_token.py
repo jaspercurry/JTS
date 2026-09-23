@@ -8,18 +8,29 @@ The token gates jasper-control's high-impact mutations behind an X-JTS-Token
 header. The primitive still fails open when no non-empty token file exists, while
 production startup ensures one automatically. These tests pin: enforced detection
 (absent / empty / present), constant-time verify semantics, and the
-enable/show/disable CLI (including the 0640 group-jasper mode and the
-refuse-to-clobber guard). The route-level HTTP behaviour is covered separately
-in test_control_server.py against the real ThreadingHTTPServer.
+enable/show/disable CLI (including the 0640 group-jasper mode, the
+refuse-to-clobber guard, and the installed landing page following a change).
+The route-level HTTP behaviour is covered separately in test_control_server.py
+against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
 import os
 import stat
 
+import pytest
+
 from jasper.cli import control_token as cli
 from jasper.control import control_token
 from tests._web_test_helpers import assert_verify_uses_constant_time_compare
+
+# An installed landing page around its token meta, carrying bytes a text round
+# trip or a loose match would alter: CRLF, non-ASCII, a second content=.
+INSTALLED_LANDING = (
+    '<meta name="viewport" content="width=device-width">\r\n'
+    '  <meta name="jts-control-token" content="{}">\n'
+    "  <title>JTS — home</title>\n"
+)
 
 
 # --- core: token_enforced / verify ----------------------------------------
@@ -82,6 +93,7 @@ def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
 
 def _point_cli_at(monkeypatch, path):
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    monkeypatch.setattr(cli, "LANDING_PAGE", path.parent / "index.html")
 
 
 def test_cli_enable_writes_0640_token(monkeypatch, tmp_path, capsys):
@@ -150,6 +162,44 @@ def test_cli_disable_when_already_off_is_noop(monkeypatch, tmp_path, capsys):
     _point_cli_at(monkeypatch, tmp_path / "nope")
     assert cli.main(["--disable"]) == 0
     assert "already disabled" in capsys.readouterr().out.lower()
+
+
+@pytest.mark.parametrize("installed", [True, False], ids=["landing", "no-landing"])
+@pytest.mark.parametrize(
+    "argv",
+    [["--enable"], ["--enable", "--force"], ["--disable"]],
+    ids=["enable", "enable-force", "disable"],
+)
+def test_cli_token_change_reaches_the_installed_landing_page(
+    monkeypatch, tmp_path, capsys, argv, installed
+):
+    """nginx serves the landing page from disk with the token baked in, so a
+    change must land there too or its Pause button is refused until the next
+    deploy; with no landing page the token change itself is unaffected."""
+    token_file = tmp_path / "control_token"
+    page = tmp_path / "index.html"
+    _point_cli_at(monkeypatch, token_file)
+    if argv != ["--enable"]:
+        token_file.write_text("old-token\n")
+    if installed:
+        page.write_bytes(INSTALLED_LANDING.format("old-token").encode())
+        page.chmod(0o640)  # not the writer's 0644 default, so a kept mode shows
+
+    assert cli.main(argv) == 0
+
+    if argv == ["--disable"]:
+        assert not token_file.exists()
+        token = ""
+    else:
+        token = token_file.read_text().strip()
+        assert token not in ("", "old-token")
+    if installed:
+        assert page.read_bytes() == INSTALLED_LANDING.format(token).encode()
+        assert stat.S_IMODE(page.stat().st_mode) == 0o640
+    else:
+        assert not page.exists()
+    err = capsys.readouterr().err
+    assert not any(t in err for t in ("old-token", token) if t)
 
 
 # --- ensure_token() makes the gate mandatory + invisible. -----------------

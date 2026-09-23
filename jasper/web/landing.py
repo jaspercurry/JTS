@@ -16,7 +16,8 @@ per request is substituted once, here, by install.sh:
     landing module gates on (every gated section ships ``hidden``, so gating
     only ever reveals — the page is right with every backend daemon down);
   * the control token the assistant-pause button rides on POST /mic/mute
-    (kept inside this process — never a shell argument or a log line);
+    (kept inside this process — never a shell argument or a log line;
+    ``jasper-control-token`` rewrites it in place on --enable/--disable);
   * the shared icon sprite, so the landing and the Python-rendered pages draw
     from one set (``chrome.CANONICAL_ICON_SPRITE``);
   * the settings groups, rendered from the site-map manifest (``nav.NAV``)

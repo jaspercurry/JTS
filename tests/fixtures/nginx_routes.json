@@ -121,19 +121,10 @@
       "proxy_buffering off;",
       "proxy_redirect off;"
     ],
-    "80 /chat/": [
-      "return 301 /assistant$request_uri;"
-    ],
     "80 /debug": [
       "proxy_pass http://127.0.0.1:8780;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
       "proxy_redirect off;"
-    ],
-    "80 /google/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /ha/": [
-      "return 301 /assistant$request_uri;"
     ],
     "80 /mic": [
       "proxy_pass http://127.0.0.1:8780;",
@@ -191,14 +182,6 @@
       "proxy_buffering off;",
       "proxy_read_timeout 600s;"
     ],
-    "80 /sound/setup/": [
-      "proxy_pass http://127.0.0.1:8784/;",
-      "proxy_read_timeout 65s;",
-      "proxy_set_header X-JTS-Sound-Page speaker;",
-      "include /etc/nginx/snippets/jts-proxy-headers.conf;",
-      "proxy_buffering off;",
-      "proxy_redirect off;"
-    ],
     "80 /sound/speaker/": [
       "proxy_pass http://127.0.0.1:8784/;",
       "proxy_read_timeout 65s;",
@@ -247,15 +230,6 @@
       "proxy_read_timeout 60s;",
       "proxy_redirect off;"
     ],
-    "80 /tools/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /transit/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /voice/": [
-      "return 301 /assistant$request_uri;"
-    ],
     "80 /volume": [
       "proxy_pass http://127.0.0.1:8780;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
@@ -267,12 +241,6 @@
       "proxy_buffering off;",
       "proxy_redirect off;",
       "proxy_read_timeout 3600s;"
-    ],
-    "80 /wake/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /weather/": [
-      "return 301 /assistant$request_uri;"
     ],
     "80 /wifi/": [
       "proxy_pass http://127.0.0.1:8775/;",
@@ -301,15 +269,12 @@
     "80 = /assistant/chat": [
       "return 308 /assistant/chat/;"
     ],
-    "80 = /chat": [
-      "return 301 /assistant/chat/;"
-    ],
     "80 = /google/callback": [
       "access_log off;",
       "proxy_pass http://127.0.0.1:8768/callback;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
       "proxy_buffering off;",
-      "proxy_redirect off;"
+      "proxy_redirect ./ /assistant/google/;"
     ],
     "80 = /grouping": [
       "proxy_pass http://127.0.0.1:8780;",
@@ -339,12 +304,6 @@
     ],
     "80 = /sound/pair/sync": [
       "return 308 /sound/pair/sync/;"
-    ],
-    "80 = /sound/setup": [
-      "return 301 /sound/speaker/;"
-    ],
-    "80 = /sound/setup/": [
-      "return 301 /sound/speaker/;"
     ],
     "80 = /sound/speaker": [
       "return 308 /sound/speaker/;"
@@ -482,19 +441,10 @@
       "proxy_buffering off;",
       "proxy_redirect off;"
     ],
-    "80 /chat/": [
-      "return 301 /assistant$request_uri;"
-    ],
     "80 /debug": [
       "proxy_pass http://127.0.0.1:8780;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
       "proxy_redirect off;"
-    ],
-    "80 /google/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /ha/": [
-      "return 301 /assistant$request_uri;"
     ],
     "80 /sound/": [
       "proxy_pass http://127.0.0.1:8784/;",
@@ -547,14 +497,6 @@
       "proxy_buffering off;",
       "proxy_read_timeout 600s;"
     ],
-    "80 /sound/setup/": [
-      "proxy_pass http://127.0.0.1:8784/;",
-      "proxy_read_timeout 65s;",
-      "proxy_set_header X-JTS-Sound-Page speaker;",
-      "include /etc/nginx/snippets/jts-proxy-headers.conf;",
-      "proxy_buffering off;",
-      "proxy_redirect off;"
-    ],
     "80 /sound/speaker/": [
       "proxy_pass http://127.0.0.1:8784/;",
       "proxy_read_timeout 65s;",
@@ -603,22 +545,10 @@
       "proxy_read_timeout 60s;",
       "proxy_redirect off;"
     ],
-    "80 /tools/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /transit/": [
-      "return 301 /assistant$request_uri;"
-    ],
-    "80 /voice/": [
-      "return 301 /assistant$request_uri;"
-    ],
     "80 /volume": [
       "proxy_pass http://127.0.0.1:8780;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
       "proxy_redirect off;"
-    ],
-    "80 /weather/": [
-      "return 301 /assistant$request_uri;"
     ],
     "80 /wifi/": [
       "proxy_pass http://127.0.0.1:8775/;",
@@ -647,15 +577,12 @@
     "80 = /assistant/chat": [
       "return 308 /assistant/chat/;"
     ],
-    "80 = /chat": [
-      "return 301 /assistant/chat/;"
-    ],
     "80 = /google/callback": [
       "access_log off;",
       "proxy_pass http://127.0.0.1:8768/callback;",
       "include /etc/nginx/snippets/jts-proxy-headers.conf;",
       "proxy_buffering off;",
-      "proxy_redirect off;"
+      "proxy_redirect ./ /assistant/google/;"
     ],
     "80 = /grouping": [
       "proxy_pass http://127.0.0.1:8780;",
@@ -685,12 +612,6 @@
     ],
     "80 = /sound/pair/sync": [
       "return 308 /sound/pair/sync/;"
-    ],
-    "80 = /sound/setup": [
-      "return 301 /sound/speaker/;"
-    ],
-    "80 = /sound/setup/": [
-      "return 301 /sound/speaker/;"
     ],
     "80 = /sound/speaker": [
       "return 308 /sound/speaker/;"

@@ -1,7 +1,8 @@
 # ADR-0283: CamillaDSP starts only on a graph proved against its own topology
 
 - **Date:** 2026-09-10
-- **Status:** Accepted
+- **Status:** Accepted. §2 (the heal `stopped` case) is superseded by
+  [ADR-0349](0349-jasper-heal-is-deleted.md).
 
 ## Context
 

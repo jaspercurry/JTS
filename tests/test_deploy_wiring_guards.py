@@ -288,7 +288,7 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 # into deploy/nginx/ snippets. Regenerate on a deliberate route change:
 #   python -c "import json;from tests import nginx_site as n;\
 #   print(json.dumps({p: n.canonical_routes(n.conf_text(p)) \
-#   for p in n.PROFILE_CONFS}, indent=2, ensure_ascii=False))" \
+#   for p in n.PROFILE_CONFS}, indent=2, ensure_ascii=False, sort_keys=True))" \
 #   > tests/fixtures/nginx_routes.json
 _NGINX_ROUTES_FIXTURE = _REPO / "tests" / "fixtures" / "nginx_routes.json"
 

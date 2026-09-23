@@ -6,17 +6,15 @@
 response contract.
 
 http.js is the cross-page CSRF/JSON fetch layer; the control-token gate
-lives here too. These assertions pin the WS1 Phase-2 invisible delivery:
-csrfHeaders/jsonHeaders attach X-JTS-Token from the page's
-<meta name=jts-control-token> tag first (auto, no household action), fall
-back to localStorage, and add nothing when neither is present (the gate-off
-path). isControlTokenRequired classifies control's 403 verdict. The full
-prompt-and-retry fallback needs a real <dialog> + fetch, exercised
-on-device; this is the static-logic guard.
+lives here too. csrfHeaders/jsonHeaders attach X-JTS-Token from the page's
+<meta name=jts-control-token> tag and add nothing without it (the gate-off
+path). isControlTokenRequired classifies control's 403 verdict, which the
+POST helpers report once and never retry.
 
 The header assertions mirror tests/test_local_web_host_js.py and evaluate the
-module under a minimal browser-global stub. The GET assertions import the real
-ES module and probe the fetch request plus success/error response shape.
+module under a minimal browser-global stub. The GET and POST assertions import
+the real ES module and probe the fetch request plus success/error response
+shape.
 """
 from __future__ import annotations
 
@@ -30,19 +28,29 @@ import pytest
 _NODE = shutil.which("node")
 _REPO = Path(__file__).resolve().parent.parent
 _MODULE_PATH = _REPO / "deploy" / "assets" / "shared" / "js" / "http.js"
+_IMPORT_HTTP = f"""
+import {{ readFileSync }} from "node:fs";
+const src = readFileSync({json.dumps(str(_MODULE_PATH))}, "utf8");
+const http = await import(
+  "data:text/javascript;base64," + Buffer.from(src).toString("base64"));
+"""
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
 
 
-def _run(stored_token: str | None, meta_token: str | None = None) -> dict:
-    # localStorage stub returns `stored_token` for the control-token key;
-    # the page may also embed the token in <meta name=jts-control-token>
-    # (WS1 Phase 2 invisible delivery) — `meta_token` simulates that.
-    storage = (
-        "null" if stored_token is None else json.dumps(stored_token)
+def _node(script: str) -> dict:
+    proc = subprocess.run(
+        [_NODE, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=30,
     )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _run(meta_token: str | None = None) -> dict:
+    # `meta_token` simulates the page's <meta name=jts-control-token>.
     meta = "null" if meta_token is None else json.dumps(meta_token)
-    script = f"""
+    return _node(f"""
 import {{ readFileSync }} from "node:fs";
 // Minimal browser globals the module touches at call time. querySelector is
 // selector-aware: the control-token meta is distinct from the CSRF meta.
@@ -55,13 +63,8 @@ globalThis.document = {{
     return {{ content: "csrf-xyz" }};  // meta[name=jts-csrf]
   }},
 }};
-globalThis.localStorage = {{
-  getItem: (k) => (k === "jts-control-token" ? {storage} : null),
-  setItem: () => {{}},
-}};
-// Strip ESM `export ` and the dynamic import() (only used in the prompt path,
-// which these static assertions don't exercise) so the body evals as a plain
-// function returning the symbols we test.
+// Strip ESM `export ` so the body evals as a plain function returning the
+// symbols we test.
 let src = readFileSync({json.dumps(str(_MODULE_PATH))}, "utf8")
   .replace(/\\bexport\\s+/g, "");
 const {{ csrfHeaders, jsonHeaders, isControlTokenRequired }} =
@@ -78,13 +81,7 @@ const out = {{
   required_null: isControlTokenRequired(null),
 }};
 console.log(JSON.stringify(out));
-"""
-    proc = subprocess.run(
-        [_NODE, "--input-type=module", "-e", script],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout)
+""")
 
 
 def _run_get_json(*, ok: bool, status: int, payload: dict | None) -> dict:
@@ -94,11 +91,7 @@ def _run_get_json(*, ok: bool, status: int, payload: dict | None) -> dict:
         if payload is None
         else f"async () => ({payload_js})"
     )
-    script = f"""
-import {{ readFileSync }} from "node:fs";
-const src = readFileSync({json.dumps(str(_MODULE_PATH))}, "utf8");
-const url = "data:text/javascript;base64," + Buffer.from(src).toString("base64");
-const http = await import(url);
+    return _node(_IMPORT_HTTP + f"""
 let request = null;
 globalThis.fetch = async (path, options) => {{
   request = {{ path, options }};
@@ -120,43 +113,22 @@ try {{
     request,
   }}));
 }}
-"""
-    proc = subprocess.run(
-        [_NODE, "--input-type=module", "-e", script],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout)
+""")
 
 
 def test_attaches_token_from_meta_invisible_delivery():
-    """WS1 Phase 2: the token embedded in the page meta tag rides along with no
-    stored value — the invisible path (the household never pasted anything)."""
-    out = _run(None, meta_token="embedded-secret")
+    """WS1 Phase 2: the token embedded in the page meta tag rides along — the
+    invisible path."""
+    out = _run(meta_token="embedded-secret")
     assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
     assert out["csrf"]["X-JTS-Token"] == "embedded-secret"
     assert out["json"]["X-JTS-Token"] == "embedded-secret"
 
 
-def test_meta_token_wins_over_storage():
-    """The server-embedded meta token is authoritative over a stale stored one."""
-    out = _run("stale-stored", meta_token="fresh-embedded")
-    assert out["csrf"]["X-JTS-Token"] == "fresh-embedded"
-
-
-def test_attaches_token_from_storage_when_no_meta():
-    """Fallback: no meta tag (older page / cross-page) -> the stored value."""
-    out = _run("household-secret", meta_token=None)
-    assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
-    assert out["csrf"]["X-JTS-Token"] == "household-secret"
-    assert out["json"]["Content-Type"] == "application/json"
-    assert out["json"]["X-JTS-Token"] == "household-secret"
-
-
-def test_no_token_header_when_neither_present():
-    """Gate-off path: no meta, empty storage -> no X-JTS-Token added, so a
-    speaker without a token file sees zero behaviour change."""
-    out = _run(None, None)
+def test_no_token_header_without_meta():
+    """Gate-off path: no meta -> no X-JTS-Token added, so a speaker without a
+    token file sees zero behaviour change."""
+    out = _run()
     assert out["csrf"]["X-CSRF-Token"] == "csrf-xyz"
     assert "X-JTS-Token" not in out["csrf"]
     assert "X-JTS-Token" not in out["json"]
@@ -168,6 +140,33 @@ def test_is_control_token_required_classifier():
     assert out["required_other_403"] is False   # different 403 error
     assert out["required_500"] is False          # wrong status
     assert out["required_null"] is False         # no error object
+
+
+def test_control_token_refusal_is_reported_once_not_retried():
+    """One request per call; the code stays on body.error, and postJSON's
+    message is the reload copy postControlAction adds as body.message."""
+    out = _node(_IMPORT_HTTP + """
+globalThis.document = { querySelector: () => null };
+let requests = 0;
+globalThis.fetch = async () => {
+  requests += 1;
+  return { ok: false, status: 403,
+    json: async () => ({ error: "control_token_required" }) };
+};
+const err = await http.postJSON("/system/audio-quality", {}).catch((e) => e);
+const postRequests = requests;
+const action = await http.postControlAction("/system/reboot");
+console.log(JSON.stringify({
+  postRequests, actionRequests: requests - postRequests,
+  status: err.status, code: err.body.error, message: err.message, action,
+}));
+""")
+    assert (out["postRequests"], out["actionRequests"]) == (1, 1)
+    assert (out["status"], out["code"]) == (403, "control_token_required")
+    assert out["action"]["status"] == 403
+    assert out["action"]["body"]["error"] == "control_token_required"
+    assert out["message"] == out["action"]["body"]["message"]
+    assert out["message"] not in ("", "control_token_required")
 
 
 def test_get_json_returns_success_body():

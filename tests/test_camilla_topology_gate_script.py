@@ -239,9 +239,9 @@ def test_no_refusal_and_no_proof_stamp_is_a_blind_gate_not_a_healthy_one(
 def test_a_record_the_gate_could_not_write_still_refuses_and_says_so(
     tmp_path: Path,
 ) -> None:
-    """The refusal is the verdict; the record is only one of its three surfaces.
+    """The refusal is the verdict; the record is only one of its two surfaces.
     A record that cannot be written must not soften the exit code, and must not
-    vanish silently — the doctor row and heal go blind on it."""
+    vanish silently — the doctor row goes blind on it."""
     gate = _Gate(tmp_path)
     gate.stamp("b" * 64, "a" * 64)
     unwritable = tmp_path / "readonly"

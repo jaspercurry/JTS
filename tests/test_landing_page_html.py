@@ -925,14 +925,13 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
 
 # The streambox profile ships no wake stack, so its conf mounts none of the
 # wake surfaces; every other `location` must exist in both, on the same
-# listener. Keyed by listener ports: all four are plain-HTTP mounts.
+# listener. Keyed by listener ports: all three are plain-HTTP mounts.
 # Removal condition and the rest of the rule: ADR-0253 §7, ADR-0268.
 _CONF_LOCATION_DIFF_ALLOWLIST = {
     frozenset({80}): frozenset({
         "/assistant/wake/",
         "/mic",
         "/wake-corpus/",
-        "/wake/",
     }),
 }
 
@@ -983,10 +982,9 @@ def test_every_proxying_block_includes_the_shared_proxy_headers() -> None:
         )
 
 
-# Every Assistant page whose URL moved under the hub prefix (C.A1), and the
-# upstream it must still reach. `/wake/` is full-profile only: the streambox
-# never gets WAKE_DETECTION.
-_ASSISTANT_MOVES = {
+# Every Assistant page under the hub prefix, and the upstream it reaches.
+# `/wake/` is full-profile only: the streambox never gets WAKE_DETECTION.
+_ASSISTANT_PAGES = {
     "/voice/": "127.0.0.1:8767",
     "/google/": "127.0.0.1:8768",
     "/wake/": "127.0.0.1:8774",
@@ -1001,35 +999,25 @@ _ASSISTANT_MOVES = {
 @pytest.mark.parametrize(
     "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
 )
-def test_assistant_pages_proxy_at_their_hub_path_and_redirect_from_the_old_one(
-    conf_path: Path,
-) -> None:
-    """The Assistant hub's children take its prefix, and old links follow.
-
-    A page is served at `/assistant/<name>/` on the same upstream as before,
-    and the bare `/<name>/` prefix returns a prefix-preserving 301 so a
-    bookmark or a deep link with a query string still lands.
-    """
+def test_assistant_pages_proxy_at_their_hub_path(conf_path: Path) -> None:
+    """Each Assistant page is proxied at `/assistant/<name>/` to its upstream."""
     conf = _nginx_conf(conf_path)
     served = set()
     for ports, locations in _nginx_servers(conf):
         if 80 not in ports:
             continue
-        for old, upstream in _ASSISTANT_MOVES.items():
-            moved = locations.get(("", f"/assistant{old}"))
-            if moved is None:
+        for name, upstream in _ASSISTANT_PAGES.items():
+            page = locations.get(("", f"/assistant{name}"))
+            if page is None:
                 continue
-            assert _proxy_upstream(moved) == upstream
-            compat = locations[("", old)]
-            assert compat.strip() == "return 301 /assistant$request_uri;"
-            served.add(old)
+            assert _proxy_upstream(page) == upstream
+            served.add(name)
 
-    assert served == set(_ASSISTANT_MOVES) - (
+    assert served == set(_ASSISTANT_PAGES) - (
         set() if conf_path == _NGINX_PATH else {"/wake/"}
     )
-    # A redirect block and a proxy block under one path is a duplicate
-    # location: nginx refuses the conf outright, and `_nginx_servers` would
-    # quietly keep only the last one.
+    # nginx refuses a conf with a duplicate location outright, and
+    # `_nginx_servers` would quietly keep only the last one.
     for chunk in conf.split("\nserver {")[1:]:
         body = chunk[: chunk.index("\n}")] if "\n}" in chunk else chunk
         headers = [
@@ -1182,38 +1170,6 @@ def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> Non
             assert locations[("=", bare)].strip() == f"return 308 {page};"
 
     assert listeners == {80, 443}
-
-
-@pytest.mark.parametrize(
-    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
-)
-def test_the_old_sound_setup_page_redirects_but_its_subtree_still_proxies(
-    conf_path: Path,
-) -> None:
-    """`/sound/setup/` was printed and bookmarked, so the PAGE 301s instead of
-    being cut outright (ADR-0253 §3).
-
-    Its subtree does not: a tab opened before the move can POST
-    `./volume-floor/stop` at its own origin on pagehide, and a 301 turns a
-    keepalive POST into a GET that never stops the tone. So the prefix stays
-    proxied, with the page header the speaker page is served under.
-    """
-    blocks = {
-        (mod, path): body
-        for _ports, locations in _nginx_servers(_nginx_conf(conf_path))
-        for (mod, path), body in locations.items()
-        if path == "/sound/setup" or path.startswith("/sound/setup/")
-    }
-
-    assert set(blocks) == {
-        ("=", "/sound/setup"), ("=", "/sound/setup/"), ("", "/sound/setup/"),
-    }
-    for exact in (("=", "/sound/setup"), ("=", "/sound/setup/")):
-        assert blocks[exact].strip() == "return 301 /sound/speaker/;"
-    stale = blocks[("", "/sound/setup/")]
-    assert _proxy_upstream(stale) == "127.0.0.1:8784"
-    assert "proxy_set_header X-JTS-Sound-Page speaker;" in stale
-    assert "return 30" not in stale
 
 
 @pytest.mark.parametrize(

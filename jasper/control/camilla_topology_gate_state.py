@@ -12,8 +12,7 @@ convergence was working on, it writes a record to
 gate clears the record on every start it allows, so a present record always
 describes the CURRENT refusal.
 
-Readers: ``jasper-doctor``'s ``check_camilla_topology_gate`` and the heal
-supervisor. The shared read half, and its fail-soft posture, live in
+The shared read half, and its fail-soft posture, live in
 :mod:`jasper.control.park_record`.
 """
 from __future__ import annotations

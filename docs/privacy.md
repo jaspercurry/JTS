@@ -74,8 +74,7 @@ account or a text-chat input. Turning capture off does not delete saved rows.
 
 The wizard writes `JASPER_CONVERSATION_CAPTURE` in
 `/var/lib/jasper/conversation_history.env`. The capture writer reads this file
-fresh for each write; the file overrides the process setting. The legacy
-`JASPER_CONVERSATION_HISTORY_ENABLED` name is also accepted. Capture is skipped
+fresh for each write; the file overrides the process setting. Capture is skipped
 when the turn is marked voice-assistant-paused. This control does not stop the
 cloud voice service from receiving audio during an otherwise active turn.
 

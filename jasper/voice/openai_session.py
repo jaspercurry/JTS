@@ -45,16 +45,11 @@ import base64
 import contextlib
 import json
 import logging
-import os
 import time as _time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from jasper.env_load import parse_bool_value
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
-
-if TYPE_CHECKING:
-    import wave
 
 from ._base import (
     OPENAI_AUDIO_RATE_HZ,
@@ -158,13 +153,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
         self._resample_state: tuple | None = None
-        # Debug: tee the exact 24 kHz bytes being sent to OpenAI into
-        # a per-turn WAV file. Gated on JASPER_DEBUG_RECORD_OPENAI_AUDIO=1
-        # so it stays off in production. Lets us answer "did the user's
-        # full sentence reach OpenAI" without guessing — the WAV here
-        # is exactly what OpenAI's STT model received.
-        self._debug_wav: wave.Wave_write | None = None
-        self._debug_wav_path: str | None = None
         self._received_ms_by_item: dict[str, float] = {}
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -213,23 +201,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._cancel_tools()
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
-        # Close debug WAV if open. Always log the path so the user
-        # can find which file goes with which turn.
-        if self._debug_wav is not None:
-            try:
-                self._debug_wav.close()
-                log_event(
-                    self._conn._logger, "provider.debug_audio_record", provider=self._conn.PROVIDER_NAME,
-                    action="closed", path=self._debug_wav_path, level=logging.INFO,
-                )
-            except Exception as e:  # noqa: BLE001
-                log_event(
-                    self._conn._logger, "provider.debug_audio_record", provider=self._conn.PROVIDER_NAME,
-                    action="close_failed", path=self._debug_wav_path,
-                    exc_type=type(e).__name__, detail=self._conn._redacted(e),
-                    level=logging.WARNING,
-                )
-            self._debug_wav = None
         self._log_release()
         await self._conn._on_turn_released(self)
 
@@ -526,37 +497,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
         if not pcm_24khz:
             return False
-        # Debug tee — see OpenAIRealtimeTurn._debug_wav docstring.
-        if parse_bool_value(os.environ.get("JASPER_DEBUG_RECORD_OPENAI_AUDIO")):
-            try:
-                if turn._debug_wav is None:
-                    import wave as _wave
-                    debug_dir = os.environ.get(
-                        "JASPER_DEBUG_OPENAI_AUDIO_DIR",
-                        "/tmp/jasper-openai-debug",
-                    )
-                    os.makedirs(debug_dir, exist_ok=True)
-                    ts = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
-                    path = f"{debug_dir}/{ts}-{id(turn):x}.wav"
-                    w = _wave.open(path, "wb")
-                    w.setnchannels(1)
-                    w.setsampwidth(2)
-                    w.setframerate(OPENAI_AUDIO_RATE_HZ)
-                    turn._debug_wav = w
-                    turn._debug_wav_path = path
-                    log_event(
-                        self._logger, "provider.debug_audio_record", provider=self.PROVIDER_NAME,
-                        action="started", path=path, level=logging.INFO,
-                    )
-                assert turn._debug_wav is not None
-                turn._debug_wav.writeframes(pcm_24khz)
-            except Exception as e:  # noqa: BLE001
-                log_event(
-                    self._logger, "provider.debug_audio_record", provider=self.PROVIDER_NAME,
-                    action="failed", path=turn._debug_wav_path,
-                    exc_type=type(e).__name__, detail=self._redacted(e), level=logging.WARNING,
-                )
-                turn._debug_wav = None
         b64 = base64.b64encode(pcm_24khz).decode("ascii")
         return await self._send_event({
             "type": "input_audio_buffer.append",

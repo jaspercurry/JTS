@@ -15,7 +15,7 @@
 // 403/500 error payload still surfaces the route's own message untouched
 // (regression guard: JSON error payloads must keep surfacing their own
 // copy), and the JSON control-token-required 403 shape is never classified
-// as a stale session (it has its own prompt-and-retry flow).
+// as a stale session.
 //
 // Run via tests/test_web_http_helper.py against the canonical module
 // (deploy/assets/shared/js/http.js). http.js has no internal imports, so a
