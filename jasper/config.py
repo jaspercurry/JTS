@@ -428,7 +428,7 @@ class Config:
         from .peering import config as peering_config  # lazy: keep config imports light
 
         # No default — the user MUST pick a provider via the wizard at
-        # http://${JASPER_HOSTNAME}/voice. Empty value here is a clear
+        # http://${JASPER_HOSTNAME}/assistant/voice/. Empty value here is a clear
         # signal that first-time setup hasn't happened yet, not a
         # silent "use gemini" fallback. The wizard writes
         # /var/lib/jasper/voice_provider.env which the systemd unit

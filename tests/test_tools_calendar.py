@@ -88,7 +88,7 @@ async def test_today_summary_no_accounts_message_points_to_wizard(monkeypatch):
         client_id="x", client_secret="y",
         service_factory=lambda *a: pytest.fail("should not be called"),
     )
-    setup_url = "http://jts3.local/google"
+    setup_url = "http://jts3.local/assistant/google/"
     [today, _upcoming] = make_calendar_tools(clients, setup_url)
     out = await today()
     assert out["ok"] is False
