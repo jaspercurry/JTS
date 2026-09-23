@@ -115,6 +115,70 @@ def test_lane_decision_table(
 
 
 @pytest.mark.parametrize(
+    ("event", "paths", "expected"),
+    [
+        ("pull_request", (), False),
+        ("pull_request", ("docs/noop.md",), False),
+        ("pull_request", ("jasper/mux.py",), False),
+        ("pull_request", (_PAGE,), False),
+        ("pull_request", ("rust/jasper-outputd/src/main.rs",), True),
+        ("pull_request", ("c/jts-ring-ioplug/pcm_jts_ring.c",), True),
+        ("pull_request", ("deploy/install.sh",), True),
+        ("pull_request", ("deploy/systemd/jasper-fanin.service",), True),
+        ("pull_request", ("deploy/systemd/jasper-outputd.service",), True),
+        ("pull_request", (".github/workflows/tests.yml",), True),
+        ("pull_request", ("scripts/check-rust.sh",), True),
+        ("pull_request", ("scripts/rust-ci-needed",), True),
+        ("pull_request", ("rusty/main.rs", "c/jts-ring-ioplug-other/a.c"), False),
+        ("pull_request", ("deploy/install.sh.bak", "scripts/check-rust.sh.bak"), False),
+        ("pull_request", (_DOC, "rust/Cargo.toml"), True),
+        ("push", ("docs/noop.md",), True),
+        ("workflow_dispatch", (), True),
+        ("", (), True),
+    ],
+)
+def test_rust_decision_table(event: str, paths: tuple[str, ...], expected: bool) -> None:
+    assert ci_classifier.classify(event, _changes(*paths)).rust is expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"M\0docs/noop.md\0", "false"),
+        (b"D\0rust/old.rs\0", "true"),
+        (b"R100\0rust/old.rs\0archive/old.rs\0", "true"),
+        (b"R100\0archive/old.rs\0rust/new.rs\0", "true"),
+        (b"M\0rust/invalid\npath\0", "true"),
+    ],
+)
+def test_rust_output_uses_the_classifier_comparison(
+    payload: bytes, expected: str, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=payload)
+
+    monkeypatch.setattr(ci_classifier, "decision_from_git", functools.partial(
+        ci_classifier.decision_from_git, runner=runner,
+    ))
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert ci_classifier.main(["--event", "pull_request", "--base", "base",
+                               "--head", "head"]) == 0
+    assert calls == [["git", "diff", "--name-status", "-z", "--find-renames",
+                      "base...head", "--"]]
+    emitted = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert emitted["rust"] == expected
+    assert emitted.items() <= dict(
+        line.split("=", 1) for line in capsys.readouterr().out.splitlines()
+    ).items()
+
+
+@pytest.mark.parametrize(
     ("status", "paths", "expected_lane"),
     [
         ("D", ("deploy/index.html",), "full"),
@@ -160,6 +224,7 @@ def test_an_unusable_diff_comparison_falls_back_to_full(
 
     decision = ci_classifier.decision_from_git(event_name, base, head, runner=runner)
     assert decision.lane == "full"
+    assert decision.rust is True
 
 
 def test_name_status_parser_keeps_rename_sources() -> None:
@@ -405,6 +470,20 @@ def test_cli_target_flags_print_their_registry(
 
 
 # ------------------------------------------------------------------- workflow
+
+
+def test_rust_workflow_steps_use_the_classify_output() -> None:
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    assert jobs["classify"]["outputs"]["rust"] == "${{ steps.classifier.outputs.rust }}"
+    rust = jobs["rust"]
+    assert rust["needs"] == "classify"
+    assert rust["if"] == "${{ needs.classify.outputs.lane == 'full' }}"
+    assert any(step.get("run") == "scripts/check-rust.sh" for step in rust["steps"])
+    for step in rust["steps"]:
+        if step.get("uses", "").startswith("actions/checkout@"):
+            continue
+        expected = "!=" if step.get("name") == "Skip Rust gate when unrelated" else "=="
+        assert step["if"] == f"needs.classify.outputs.rust {expected} 'true'"
 
 
 def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
