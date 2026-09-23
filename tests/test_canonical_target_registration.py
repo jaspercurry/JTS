@@ -122,7 +122,6 @@ _GRAPH_SWAP_MODULES = {
     # requirement — one module swapped for another, not a new host.
     "jasper/active_speaker/crossover_v2/session_graph.py",
     "jasper/active_speaker/runtime_convergence.py",
-    "jasper/active_speaker/web_commissioning.py",
     "jasper/camilla.py",
     "jasper/multiroom/active_leader_config.py",
     "jasper/multiroom/follower_config.py",

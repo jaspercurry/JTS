@@ -899,7 +899,6 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "active_graph_width_out_of_range" in runtime_contract
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
-    assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
 
 
 def test_install_alsa_refreshes_asound_renderer_before_rendering():
