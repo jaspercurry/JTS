@@ -121,8 +121,11 @@ one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>
 the mark (`speaker/mark`); with a room, bass or rear section it trials that
 program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
 Read `jasper-round-views candidates <round-dir>` and
-its `candidates.json`: each pose has pairwise deltas per role. `window` is present
-only when reading the frequency view. `level_offset_db` is median A minus median B on A's grid;
+its `candidates.json`: each pose, keyed as the rear views key it, has pairwise
+deltas per role. `window` is present only when reading the frequency view; an
+`ungated` table carries `trusted: false` and never sets the `max_abs_delta_*`
+headline. `omitted`, `superseded_take_ids` and `takes_naming_no_candidate`
+name every take no table compares. `level_offset_db` is median A minus median B on A's grid;
 `mean_abs_db`, `max_abs_db`, `max_abs_hz`, and `rms_db` describe the remaining
 shape difference over `band_hz`, with `bins` giving the count. Base keeps its
 fingerprint. These numbers do not rank candidates or establish a repeat floor.

@@ -23,11 +23,13 @@ from jasper.active_speaker.crossover_v2.candidate_ladder import (
     candidate_ladder,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key
 from jasper.active_speaker.frequency_view import (
     FREQUENCY_VIEW_FILENAME, FrequencyRun, FrequencySeries, build_frequency_view,
 )
+from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.measurement_programs import program
+from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
 
 from tests.crossover_v2_banked_round import bank_measure_round
 # The banked-take writer the round-views suite already owns, consumed rather
@@ -48,11 +50,14 @@ def _ladder(round_dir: Path) -> dict:
 @pytest.mark.parametrize("source", ["records", "frequency"])
 @pytest.mark.parametrize("layout", ["seat", "bearing"])
 def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
+    """Three seats at one bearing are three poses, keyed as the rear views key
+    them, whichever reader supplies the curves; the view is the one the bank
+    builds from the records, so no take is compared against another seat."""
     round_dir = tmp_path / "r1"
     session_dir = round_dir / "bundle" / "sess1"
     poses = program("seat", "express").poses if layout == "seat" else program("room", "arm").poses
     grid = np.array([500.0, 1000.0, 4000.0])
-    series, expected = [], {}
+    records, expected = [], {}
     for index, pose in enumerate(poses):
         metadata = {
             "position_deg": pose.azimuth_deg, "vertical_deg": pose.elevation_deg,
@@ -73,19 +78,16 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
                 vertical_deg=pose.elevation_deg, candidate_id=candidate, curves=[curve],
             )
             path, = session_dir.glob(f"evidence/v1/artifacts/crossover_v2/*/positions/{take_id}.json")
-            path.write_text(json.dumps({**json.loads(path.read_text()), **metadata}))
-            series.append(FrequencySeries(
-                take_id, candidate, "measurement", tuple(grid), tuple(curve["magnitude_db"]),
-                details={**curve, "phase": "lateral", "take_id": take_id,
-                         "candidate_id": candidate, "position": position, "window": "full"},
-            ))
+            path.write_text(json.dumps({**json.loads(path.read_text()), **metadata, "take_id": take_id}))
+            records.append(json.loads(path.read_text()))
     if source == "frequency":
-        view = build_frequency_view(FrequencyRun("speaker", "speaker", tuple(series)))
+        view = build_frequency_view(frequency_run_from_documents(run_id="speaker", documents=records))
         (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
 
     document = json.loads(json.dumps(_ladder(round_dir), allow_nan=False))
 
     assert (document["summary"]["poses"], document["summary"]["pairs"]) == (3, 3)
+    assert (document["summary"]["omitted"], document["summary"]["superseded_take_ids"]) == ([], [])
     assert {row["pose_key"] for row in document["tables"]} == set(expected)
     assert [row["deg"] for row in document["tables"]] == sorted(p.azimuth_deg for p in poses)
     for row in document["tables"]:
@@ -93,8 +95,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
         assert {key: row[key] for key in position} == position
         assert row["played"] == ["cfg-a", "cfg-b"]
         role, = row["roles"]
-        assert role["role"] == "summed"
-        assert role.get("window") == ("full" if source == "frequency" else None)
+        assert (role["role"], role.get("window"), role["trusted"]) == ("summed", None, True)
         assert [candidate["candidate_id"] for candidate in role["candidates"]] == ["cfg-a", "cfg-b"]
         delta, = role["deltas"]
         assert (delta["a"], delta["b"], delta["bins"]) == ("cfg-a", "cfg-b", 3)
@@ -144,6 +145,65 @@ def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_pa
     assert delta["level_offset_db"] == pytest.approx(0.0)
     assert delta["mean_abs_db"] == pytest.approx(2.0 / grid.size)
     assert [row["candidate_id"] for row in role["candidates"]] == ["cfg-a", "cfg-b"]
+
+
+def test_every_take_no_table_compares_is_listed_under_why(tmp_path):
+    """A retake supersedes its earlier attempt, a pose that played one
+    candidate compares nothing, and a take with no readable curve cannot be
+    read: each is named, so no take leaves the comparison silently."""
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    grid = np.array([500.0, 1000.0, 4000.0])
+    for take_id, position_deg, candidate, curves in (
+        ("lateral_00_a01", 7, "cfg-a", [_summed_curve(grid, np.zeros(3))]),
+        ("lateral_01_a01", 7, "cfg-b", [_summed_curve(grid, np.full(3, 40.0))]),
+        ("lateral_01_a02", 7, "cfg-b", [_summed_curve(grid, np.zeros(3))]),
+        ("lateral_02_a01", 30, "cfg-a", [_summed_curve(grid, np.zeros(3))]),
+        ("lateral_03_a01", 7, "cfg-c", []),
+    ):
+        _bank_lateral_pose(session_dir, take_id=take_id, position_deg=position_deg,
+                           candidate_id=candidate, curves=curves)
+
+    summary = _ladder(round_dir)["summary"]
+
+    assert (summary["poses"], summary["candidates"]) == (1, ["cfg-a", "cfg-b"])
+    assert summary["superseded_take_ids"] == ["lateral_01_a01"]
+    assert summary["omitted"] == [
+        {"capture_id": "lateral_02_a01", "reason": REASON_NO_COMPARISON},
+        {"capture_id": "lateral_03_a01", "reason": REFUSE_CAPTURE_UNREADABLE},
+    ]
+
+
+def test_the_headline_is_the_widest_trusted_gap_and_the_ungated_table_stays_labelled(tmp_path):
+    """A seat take is banked gated and ungated. The ungated pair keeps the room
+    and the sweep's low edge, where two candidates can differ by tens of dB in
+    noise: it stays in the tables, marked untrusted, and never headlines."""
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    full, gated = np.array([22.0, 200.0, 1000.0, 4000.0, 19700.0]), np.array([200.0, 1000.0, 4000.0, 19700.0])
+    series = []
+    for index, (candidate, edge_db, gap_db) in enumerate((("cfg-a", 0.0, 0.0), ("cfg-b", 54.0, 2.0))):
+        take_id = f"lateral_{index:02d}_a01"
+        _bank_lateral_pose(session_dir, take_id=take_id, position_deg=0, candidate_id=candidate, curves=[])
+        for window, freqs, magnitude in (("ungated", full, [edge_db, 0.0, 0.0, 0.0, 0.0]),
+                                         ("gated", gated, [0.0, gap_db, 0.0, 0.0])):
+            series.append(FrequencySeries(
+                f"{take_id}:{window}", candidate, "measurement", tuple(freqs), tuple(magnitude),
+                details={"role": "summed", "phase": "lateral", "take_id": take_id,
+                         "candidate_id": candidate, "window": window},
+            ))
+    view = build_frequency_view(FrequencyRun("room", "room", tuple(series)))
+    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
+
+    document = _ladder(round_dir)
+
+    summary = document["summary"]
+    assert summary["pairs"] == 2
+    assert (summary["max_abs_delta_db"], summary["max_abs_delta_hz"]) == (pytest.approx(2.0), 1000.0)
+    assert (summary["max_abs_delta_window"], summary["max_abs_delta_band_hz"]) == ("gated", [200.0, 19700.0])
+    roles = {role["window"]: role for role in document["tables"][0]["roles"]}
+    assert (roles["gated"]["trusted"], roles["ungated"]["trusted"]) == (True, False)
+    assert roles["ungated"]["deltas"][0]["max_abs_db"] == pytest.approx(54.0)
 
 
 @pytest.mark.parametrize("fields", [
@@ -257,7 +317,7 @@ def test_the_ladder_refuses_a_round_no_pose_of_which_played_two_configs(tmp_path
     assert refusal.value.reason == REFUSE_NO_LADDER
     assert refusal.value.detail["candidates_named"] == []
     assert refusal.value.detail["poses_walked"] == 1
-    assert refusal.value.detail["takes_naming_no_candidate"] == 1
+    assert refusal.value.detail["takes_naming_no_candidate"] == ["lateral_03_a01"]
     # The message a bare ``str()`` would show carries the same evidence, so a
     # caller that publishes neither field still says what was seen.
     assert json.loads(str(refusal.value).split(": ", 1)[1]) == refusal.value.detail

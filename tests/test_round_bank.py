@@ -775,7 +775,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
         assert {row["window"] for row in table["roles"]} == {
             curve["window"] for curve in view["runs"][0]["series"]} == {"gated", "ungated"}
         for row in table["roles"]:
-            assert row["role"] == "summed"
+            assert (row["role"], row["trusted"]) == ("summed", row["window"] == "gated")
             assert [c["candidate_id"] for c in row["candidates"]] == list(candidates)
             assert [(d["a"], d["b"]) for d in row["deltas"]] == list(combinations(candidates, 2))
             for delta in row["deltas"]:
