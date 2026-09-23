@@ -23,12 +23,14 @@ from scipy.io import wavfile
 from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, effective_preset
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
+from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
@@ -982,14 +984,25 @@ def test_cardioid_timing_graph_plays_only_the_front_drivers_at_the_candidate_lev
                         rear_calibration=_rear_document())
     outputs = {measurement_target_id(target["role"], target.get("output_variant") or "primary"): target["output_index"]
                for target in active_driver_targets(topology)}
+    hz = np.geomspace(20, 20000, 256)
+    graphs = {scope: yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)) for scope in ("timing", "candidate")}
     timing, household = (complex_channel_transfer(
-        yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)), np.geomspace(20, 20000, 256),
-        input_weights={0: 1.0, 1: 1.0}, output_channels=outputs,
+        graphs[scope], hz, input_weights={0: 1.0, 1: 1.0}, output_channels=outputs,
         allow_limiter_passthrough=True, dynamic_bass_at_rest=True,
     ) for scope in ("timing", "candidate"))
     assert not np.any(timing["woofer:rear"]) and np.any(household["woofer:rear"])
     for target in ("woofer", "tweeter"):
         assert timing[target] == pytest.approx(household[target], rel=1e-4)
+    # The same graphs through the prediction's own reader: only a live rear is a graph mismatch.
+    configured, signs = configured_crossover_transfers(effective_preset(candidate))
+    for scope, unmodelled in (("timing", ()), ("candidate", ("woofer:rear",))):
+        reference = reference_from_graph(
+            hz, np.zeros(hz.size), graphs[scope],
+            output_channels={role: outputs[role] for role in ("woofer", "tweeter")},
+            unmodelled_channels={"woofer:rear": outputs["woofer:rear"]},
+            configured_response_by_role=configured, configured_polarity_by_role=signs, band_hz=(1200, 5000),
+        )
+        assert reference is not None and reference.unmodelled_targets == unmodelled
 
 
 def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):

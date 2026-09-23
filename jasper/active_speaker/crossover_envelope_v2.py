@@ -11,8 +11,6 @@ from typing import Any, Mapping
 from .driver_safety import driver_floor_issues
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
-from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
-from jasper.audio_measurement.timing_verification import timing_next_action
 from .measurement_view import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
 from .frequency_display import prepare_frequency_curve
@@ -479,12 +477,9 @@ def _envelope(
     round_ordinal: int | None = None,
 ) -> dict[str, Any]:
     resting = screen in {"awaiting_plan", "finished"}
-    candidate = _mapping(_v2(status).get("candidate"))
-    timing_action = timing_next_action(
-        {"saved": candidate.get("timing_saved"), "verification": candidate.get("timing_verification")},
-        needs_measurement=candidate.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT,
-    )
-    if timing_action and timing_action["id"] == "reset_timing":
+    # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632 F3).
+    timing_action = dict(_mapping(_mapping(status.get("timing")).get("next_action"))) or None
+    if timing_action and timing_action.get("id") == "reset_timing":
         alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
         next_action = timing_action
     next_action = next_action or timing_action

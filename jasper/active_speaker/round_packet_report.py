@@ -168,7 +168,9 @@ def packet_index(
     if timing := packet.get("alignment_verdict"):
         saved, verification = timing.get("saved") or {}, timing.get("verification") or {}
         lines.append("saved timing: " + "; ".join(f"{key} {saved.get(key)}" for key in ("delay_us", "polarity", "provenance")))
-        lines.append("timing verification: " + "; ".join(f"{key} {verification.get(key)}" for key in ("residual_rms_db", "repeat_noise_db", "residual_floor_db")))
+        lines.append("timing verification: " + "; ".join(
+            [*(f"{key} {verification.get(key)}" for key in ("status", "residual_rms_db", "repeat_noise_db", "residual_floor_db")),
+             *(f"{code} {', '.join(values)}" for code, values in (verification.get("reasons") or {}).items())]))
     if packet.get("next_action"):
         lines.append("next_action: " + packet["next_action"]["label"])
     lines += list(dict.fromkeys(f"retakes: {take['take_id']} {fault}"

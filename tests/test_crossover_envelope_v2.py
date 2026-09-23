@@ -22,6 +22,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
 )
 from jasper.active_speaker.timing_status import timing_status_lines
+from jasper.audio_measurement.timing_verification import timing_verification
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
@@ -185,20 +186,27 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
 
 
 @pytest.mark.parametrize("profile,round_,expected", [
-    (None, None, {"saved": "", "verification": ""}),
+    (None, None, {"saved": "", "verification": "", "next_action": None}),
     ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "measured",
                  "measured": {"margin_db": 1.2, "repeat_spread_db": .3, "repeat_spread_us": 2}}}, None,
      {"saved": "Saved timing: delay 22 µs; polarity normal; provenance measured; margin 1.2 dB; repeat spread 0.3 dB / 2 µs.",
-      "verification": ""}),
+      "verification": "", "next_action": None}),
     ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}},
      {"alignment_verdict": {"verification": {"residual_rms_db": .61, "repeat_noise_db": .2}}},
      {"saved": "Saved timing: delay 22 µs; polarity normal; provenance set_by_user.",
-      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB."}),
+      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB.", "next_action": None}),
     ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}},
      {"alignment_verdict": {"verification": {"residual_rms_db": .61, "repeat_noise_db": .2}},
       "next_action": {"label": "Reset timing"}},
      {"saved": "Saved timing: delay 22 µs; polarity normal; provenance set_by_user.",
-      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB; Reset timing."}),
+      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB; Reset timing.",
+      "next_action": {"label": "Reset timing"}}),
+    ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}},
+     {"alignment_verdict": {"verification": timing_verification(10.6, .43, snr_short=("woofer", "tweeter"))},
+      "next_action": {"label": "measure timing again"}},
+     {"saved": "Saved timing: delay 22 µs; polarity normal; provenance set_by_user.",
+      "verification": "Saved timing is not comparable with today's sum (snr short: tweeter, woofer); measure timing again.",
+      "next_action": {"label": "measure timing again"}}),
 ])
 def test_timing_status_lines(profile, round_, expected):
     assert timing_status_lines(profile, round_) == expected

@@ -457,6 +457,12 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         pipeline[-1]["names"].append("unsupported")
     elif shape == "full_range":
         preset = replace(PRESET, crossover_regions=())
+    elif shape == "cardioid":
+        graph.update(devices={"samplerate": 48000, "capture": {"channels": 2}}, mixers={"split": {
+            "channels": {"in": 2, "out": 3},
+            "mapping": [{"dest": output.index, "sources": [{"channel": 0, "gain": 0}]}
+                        for output in preset.channel_map.outputs]}})
+        pipeline.insert(0, {"type": "Mixer", "name": "split"})
     elif shape == "mixer_polarity":
         graph["mixers"] = {"split": {"channels": {"in": 2, "out": 2}, "mapping": [
             {"dest": 1, "sources": [{"channel": 0, "gain": 0, "inverted": True}]},
@@ -497,6 +503,8 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         for role, transfer in reference.response_by_role.items():
             assert transfer(hz) * configured[role](hz) == pytest.approx(np.full(hz.size, 10 ** (-9 / 20)))
         assert reference.band_hz == (1200, 5000)
+        # The rear still plays in this graph, so today's sum carries a driver the prediction leaves out.
+        assert reference.unmodelled_targets == (("woofer:rear",) if shape == "cardioid" else ())
 
 
 @pytest.mark.parametrize("available", [True, False])
