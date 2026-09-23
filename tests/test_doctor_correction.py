@@ -316,8 +316,7 @@ def _cloud_group(*, passed, locked=False, excluded=(), flatness=None):
 
 
 def _cloud_group_unavailable(*, reason, locked=True):
-    """A group that CLOSED but whose pipeline failed to combine/analyze —
-    ``assemble_cloud_group_result``'s own ``combined is None`` shape."""
+    """A group that CLOSED but whose pipeline failed to combine/analyze."""
     return {
         "geometry": {"locked": locked},
         "pipeline": {"available": False, "reason": reason},

@@ -22,7 +22,6 @@ import types
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.diagnostics import assemble_cloud_group_result
 from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
     _crossover_region_null_registry,
@@ -172,39 +171,3 @@ def test_the_hf_regime_floor_did_not_move():
     unclamp adds a read; it does not relitigate the floor.
     """
     assert ECHO_BAND_HF_REGIME_FLOOR_HZ == 4000.0
-
-
-def test_the_extension_is_unioned_into_no_mask():
-    """**The load-bearing test.** The extension excludes every bin it was
-    handed, and neither the merged honesty mask nor the spec mask may change
-    because of it.
-
-    Run through the real ``assemble_cloud_group_result`` twice on one
-    ``combined`` — once with a committed crossover and once without — and
-    require the gating outputs to be identical. A future edit that quietly
-    unions the extension in fails here.
-    """
-    from tests.test_attribution_persistence import _combined
-
-    combined = _combined()
-    kw = dict(
-        echo_band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, 18000.0),
-        validity_floor_hz=None,
-    )
-    without = assemble_cloud_group_result(combined, **kw)
-    with_region = assemble_cloud_group_result(
-        combined, crossover_region_hz=(1000.0, 4000.0), **kw,
-    )
-
-    assert without["available"] and with_region["available"]
-    # The extension appeared…
-    assert without["null_registry_crossover_region"] is None
-    assert with_region["null_registry_crossover_region"] is not None
-    assert with_region["null_registry_crossover_region"]["gating"] is False
-    # …and changed nothing that decides anything.
-    for key in (
-        "null_registry", "spec", "flatness", "carve_outs",
-        "merged_excluded_bands_hz", "screen_excluded_bands_hz",
-        "echo_band_hz", "geometry",
-    ):
-        assert with_region[key] == without[key], key

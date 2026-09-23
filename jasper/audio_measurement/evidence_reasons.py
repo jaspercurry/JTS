@@ -5,11 +5,6 @@
 
 from types import MappingProxyType
 
-CANDIDATE_BELOW_MIN_DEPTH = "below_min_depth"
-CANDIDATE_DEPTH_EXCEEDS_CEILING = "depth_exceeds_arrival_ceiling"
-CANDIDATE_NOT_MEASURABLE = "no_flanking_maxima"
-CANDIDATE_NO_MATCHING_RUNG = "no_matching_rung"
-CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
 CAPTURES_UNREADABLE = "classification_captures_unreadable"
 CAPTURE_ADMISSIBLE = "admissible"
 CAPTURE_OTHER_SESSION = "other_session"
@@ -19,56 +14,30 @@ CAPTURE_PROGRAM_UNIDENTIFIED = "program_unidentified"
 CAPTURE_UNREADABLE_SIDECAR = "unreadable_sidecar"
 CAPTURE_UNSTAMPED_NAME = "unstamped_name"
 CAPTURE_WAV_MISSING = "wav_missing"
-CLASSIFICATION_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
-CLASSIFICATION_POSITION_DEPENDENT = "position_dependent"
-CLASSIFICATION_POSITION_INVARIANT = "position_invariant"
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 PROGRAM_MISSING = "classification_program_missing"
 REASON_COVERAGE_SHORT = "coverage_short"
 REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
-REASON_EXCLUSION_CAP = "exclusion_cap_exceeded"
 REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
-REASON_LADDER_ARRIVAL_MISMATCH = "ladder_arrival_mismatch"
 REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
 REASON_MARK_RESPONSE_UNAVAILABLE = "mark_response_unavailable"
 REASON_NON_BEARING = "non_bearing_pose"
-REASON_NO_CANDIDATE_NULLS = "no_candidate_nulls"
 REASON_NO_COMPARISON = "no_candidate_comparison"
-REASON_NO_CORROBORATING_ARRIVALS = "no_corroborating_arrivals"
 REASON_NO_CURVE_GRID = "no_curve_grid"
 REASON_NO_IMPULSE = "no_impulse"
-REASON_NO_LADDER = "no_ladder"
 REASON_NO_MARK_PAIRS = "no_mark_pairs"
-REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
 REASON_NO_REPEATS = "too_few_repeats"
 REASON_NO_ROW = "no_row"
 REASON_NO_SHARED_MARK_TAKES = "no_shared_mark_takes"
 REASON_REFUSED = "round_views_refused"
-REASON_R_DISAGREEMENT = "r_disagreement"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
 REASON_TOO_FEW_POSITIONS = "too_few_positions"
 REASON_TOO_FEW_SEATS = "too_few_seats"
 REASON_UNREADABLE = "round_views_unreadable_round"
 REASON_UNWRITABLE = "round_views_unwritable_out"
-REFUSAL_ALL_ZERO_IR = "all_zero_ir"
-REFUSAL_BAD_BAND_HZ = "bad_band_hz"
-REFUSAL_BAD_SAMPLE_RATE = "bad_sample_rate"
-REFUSAL_BAD_SEARCH_US = "bad_search_us"
-REFUSAL_BAD_SIGNAL_BAND_HZ = "bad_signal_band_hz"
-REFUSAL_BAND_BELOW_PASSBAND = "band_below_passband"
-REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
-REFUSAL_DETECTOR_ERROR = "detector_error"
-REFUSAL_EARLIER_DOMINANT_ARRIVAL = "earlier_dominant_arrival"
-REFUSAL_LOW_ARRIVAL_CREST = "low_arrival_crest"
-REFUSAL_MALFORMED_IR = "malformed_ir"
-REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
-REFUSAL_RAHMONIC_OF_LOWER_DELAY = "rahmonic_of_lower_delay"
-REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
-REFUSAL_TAU_AT_WINDOW_LOWER_EDGE = "tau_at_window_lower_edge"
-REFUSAL_WINDOW_TOO_SHORT = "analysis_window_too_short"
 REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
 REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
@@ -85,11 +54,6 @@ VERDICT_ROOM_DOMINATED = "room_dominated"
 VERDICT_UNRESOLVED = "unresolved"
 
 EVIDENCE_REASONS = MappingProxyType({
-    CANDIDATE_BELOW_MIN_DEPTH: "The candidate minimum is shallower than the required depth.",
-    CANDIDATE_DEPTH_EXCEEDS_CEILING: "The candidate depth exceeds what the measured arrival strength can produce.",
-    CANDIDATE_NOT_MEASURABLE: "The candidate minimum has no usable flanking maxima.",
-    CANDIDATE_NO_MATCHING_RUNG: "The candidate minimum matches no rung of the fitted ladder.",
-    CANDIDATE_OUTSIDE_CONTIGUOUS_RUN: "The candidate is not assigned to a rung in the selected consecutive run.",
     CAPTURES_UNREADABLE: "The round has an admissible capture shape but its stamped audio cannot be read.",
     CAPTURE_ADMISSIBLE: "The capture has an admissible shape, matching session and program, and readable stamped audio.",
     CAPTURE_OTHER_SESSION: "The capture belongs to a different session.",
@@ -99,56 +63,30 @@ EVIDENCE_REASONS = MappingProxyType({
     CAPTURE_UNREADABLE_SIDECAR: "The sidecar is not a readable object with a phase string.",
     CAPTURE_UNSTAMPED_NAME: "The capture filename lacks the timestamp required for timing analysis.",
     CAPTURE_WAV_MISSING: "The capture WAV is missing from the ring.",
-    CLASSIFICATION_INSUFFICIENT_EVIDENCE: "The measured evidence does not support an interference classification.",
-    CLASSIFICATION_POSITION_DEPENDENT: "An identified ladder rung does not meet the required position-presence fraction.",
-    CLASSIFICATION_POSITION_INVARIANT: "Every identified ladder rung meets the required position-presence fraction.",
     NO_ADMISSIBLE_CAPTURES: "No readable capture in the ring can be attributed to this round.",
     NO_FEATURES_DETECTED: "No pooled-response feature exceeds the measured capture-to-capture scatter.",
     PROGRAM_MISSING: "No banked program matches the stimulus bytes recorded by the round captures.",
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
     REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
-    REASON_EXCLUSION_CAP: "The identified nulls would exclude more than the allowed fraction of the band.",
     REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
-    REASON_LADDER_ARRIVAL_MISMATCH: "The fitted ladder delay disagrees with the independently measured arrival.",
     REASON_MARK_FIT_BAND_UNAVAILABLE: "A mark take does not cover the fit band above its trusted floor.",
     REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
     REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
-    REASON_NO_CANDIDATE_NULLS: "No measured minima qualify as candidate interference nulls.",
     REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat spread for it.",
-    REASON_NO_CORROBORATING_ARRIVALS: "No credible time-domain arrivals corroborate an interference ladder.",
     REASON_NO_CURVE_GRID: "The positions block carries no curve grid, so there are no bins to take a spread over.",
     REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
-    REASON_NO_LADDER: "The candidate nulls do not form a sufficient consecutive ladder.",
     REASON_NO_MARK_PAIRS: "The round has fewer than two takes of this driver at one placement, so no mark pair exists for a repeat spread.",
-    REASON_NO_PER_POSITION_CURVES: "No per-position curves are available for the analysis.",
     REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
     REASON_NO_REPEATS: "Fewer than two usable repeats are available to measure repeat spread.",
     REASON_NO_ROW: "This position has no measured row.",
     REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing compares between rounds.",
     REASON_REFUSED: "The requested round view refused the available evidence.",
-    REASON_R_DISAGREEMENT: "The reflection strength inferred from null depths disagrees with the arrival envelope.",
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
     REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
     REASON_TOO_FEW_SEATS: "Too few usable seats support the requested comparison; a sample spread needs at least two member curves.",
     REASON_UNREADABLE: "The round view could not read its input round.",
     REASON_UNWRITABLE: "The round view could not write its output artifact.",
-    REFUSAL_ALL_ZERO_IR: "The impulse response contains only zeros.",
-    REFUSAL_BAD_BAND_HZ: "The analysis frequency band is invalid.",
-    REFUSAL_BAD_SAMPLE_RATE: "The sample rate is not finite and positive.",
-    REFUSAL_BAD_SEARCH_US: "The delay search bounds are invalid.",
-    REFUSAL_BAD_SIGNAL_BAND_HZ: "The declared signal frequency band is invalid.",
-    REFUSAL_BAND_BELOW_PASSBAND: "The analysis band is too far below the declared passband level.",
-    REFUSAL_BAND_TOO_NARROW: "The analysis band contains too few frequency bins.",
-    REFUSAL_DETECTOR_ERROR: "The echo detector failed without a more specific refusal code.",
-    REFUSAL_EARLIER_DOMINANT_ARRIVAL: "A dominant earlier arrival prevents attribution to the in-window echo.",
-    REFUSAL_LOW_ARRIVAL_CREST: "The direct arrival does not stand far enough above the impulse noise floor.",
-    REFUSAL_MALFORMED_IR: "The impulse response is not a usable finite one-dimensional array.",
-    REFUSAL_NO_IN_WINDOW_ECHO: "No credible echo was found inside the delay search window.",
-    REFUSAL_RAHMONIC_OF_LOWER_DELAY: "A stronger lower-delay cepstral peak makes this estimate a possible rahmonic.",
-    REFUSAL_SEARCH_OUTSIDE_CEPSTRUM: "The delay search window falls outside the usable cepstrum.",
-    REFUSAL_TAU_AT_WINDOW_LOWER_EDGE: "The estimated delay is too close to the lower search edge to resolve.",
-    REFUSAL_WINDOW_TOO_SHORT: "The impulse provides too few samples for the analysis window.",
     REFUSE_AT_HZ_OFF_SPEC_TABLE: "The requested close-reference frequency has no specification tolerance.",
     REFUSE_GATE_NOT_POSITIVE: "The requested close-reference gate is not finite and positive.",
     REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",

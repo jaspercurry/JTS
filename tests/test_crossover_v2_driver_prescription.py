@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
-from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
+from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES, boost_headroom_by_role
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.baseline_profile import (
@@ -54,8 +54,8 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
-    packet_incumbent_linearization,
 )
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import _mapping
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
@@ -239,6 +239,79 @@ def _speaker(
 @pytest.fixture
 def packet(tmp_path: Path) -> dict[str, Any]:
     return _speaker(tmp_path)
+
+
+def packet_incumbent_linearization(
+    packet: Any,
+) -> dict[str, tuple[dict[str, Any], ...]] | None:
+    """The per-driver correction the graph is already carrying, or ``None``.
+
+    A reader rather than an attribute access: the packet owns its own layout.
+
+    ``None`` ("this packet does not say") and ``{}`` ("it says the graph
+    carries none") are DIFFERENT and both callers must keep them apart — a
+    document that replaces a role it cannot see is the defect this reader
+    exists to expose.
+
+    Strict, and it fails the WHOLE map rather than a filter: a partial read
+    would understate the displacement, the one direction this number must never
+    err in. Permitted biquad types are the emitter's own
+    ``camilla_yaml.LINEARIZATION_BIQUAD_TYPES``, consumed rather than restated.
+
+    Entries come back in the reduced ``{biquad_type, freq, q, gain}`` shape
+    :func:`~jasper.active_speaker.branch_chain.chain_response` takes.
+    """
+
+    if not isinstance(packet, dict):
+        return None
+    block = _mapping(packet.get("incumbent")).get("linearization")
+    if not isinstance(block, dict):
+        return None
+    roles = block.get("from_applied_profile")
+    if not isinstance(roles, dict):
+        return None
+    # The builder writes an ``_absence`` here when no profile reached it, and
+    # that shape is checked by name rather than inferred from its contents —
+    # ``_incumbent_record``'s rule, for the same reason: an absence and a role
+    # map are both dicts, and telling them apart by duck-typing would make a
+    # banked role called ``status`` change the answer.
+    if roles.get("status") == "not_evaluated":
+        return None
+    out: dict[str, tuple[dict[str, Any], ...]] = {}
+    for role, filters in roles.items():
+        if not isinstance(role, str) or not role.strip():
+            return None
+        if isinstance(filters, (str, bytes)) or not isinstance(filters, list):
+            return None
+        entries: list[dict[str, Any]] = []
+        for entry in filters:
+            if not isinstance(entry, dict):
+                return None
+            if entry.get("biquad_type") not in LINEARIZATION_BIQUAD_TYPES:
+                return None
+            # Real numbers, NOT anything ``float()`` will coerce, and ``bool``
+            # excluded because it is an ``int`` subclass — the same test
+            # ``blend_filters_from_mapping`` applies, for the same reason: this
+            # system writes floats, so a string here is by definition a record
+            # something else wrote.
+            numbers: list[float] = []
+            for value in (entry.get("freq"), entry.get("q"), entry.get("gain")):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return None
+                numbers.append(float(value))
+            freq, q, gain = numbers
+            if not all(map(math.isfinite, numbers)):
+                return None
+            if freq <= 0.0 or q <= 0.0:
+                return None
+            entries.append({
+                "biquad_type": str(entry["biquad_type"]),
+                "freq": freq,
+                "q": q,
+                "gain": gain,
+            })
+        out[role.strip()] = tuple(entries)
+    return out
 
 
 BRANCH_CONTEXT = {"woofer": ((), 0.0), "tweeter": ((), -9.52)}

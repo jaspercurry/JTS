@@ -1392,9 +1392,8 @@ def _boost_exclusion_verdicts(
     """Split ``boosts`` into the ones AIMED at an excluded band and the rest.
 
     Per filter, intrinsic, relative — read once against its OWN transfer
-    function, no ordering, no "drop until it fits" (the arbitrary-ordering
-    hazard ``interference_nulls.EXCLUSION_CAP_FRACTION`` warns about). The
-    criterion is the filter's own half-gain bandwidth (scale-free: a +1 dB
+    function, no ordering, no "drop until it fits" (that would be an arbitrary
+    ordering presented as a measurement). The criterion is the filter's own half-gain bandwidth (scale-free: a +1 dB
     bell centred in the band goes, an +11.67 dB bell 0.7 octaves away is
     spill and stays). Not an absolute dB threshold — one calibrated for the
     stopband guard refused 94.4% of randomized multi-dip fits when tried

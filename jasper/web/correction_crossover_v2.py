@@ -39,7 +39,6 @@ from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprin
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.journey import (
-    CAPABILITY_FINDINGS,
     STAGE_MEASURE_CAPABILITIES,
     StageOpening,
     open_stage,
@@ -294,20 +293,6 @@ def bind_v2_stage_seams(
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
 
-    The unconditional seams are unconditional on purpose. ``apply_failed`` is
-    never consulted by stage 2 (its conductor is constructed ``applied=True``,
-    so ``authorize_begin``'s apply-observed short-circuit runs first), and
-    ``records.cloud`` does nothing for a single-entry recovery re-verify.
-    ``bank_take`` is no longer in that company: a recovery re-verify IS an
-    accepted VERIFY capture, so it banks a take like any other, and that is
-    the wanted behaviour rather than an accident of binding — the round whose
-    evidence a household is recovering is exactly the one whose capture should
-    survive it. Full's stage 2 is also a post-apply position group whose combined
-    curve the after-chart, the post-apply spec verdict, and the delta probe all
-    read, and ``V2FlowSeams`` requires the two apply gates outright. Binding a
-    seam a plan never exercises costs nothing; omitting one a plan does
-    exercise is a silently missing publication.
-
     ``provenance`` is threaded here only to reach the analyze seam: the SAME
     recorder the caller handed ``bind_production_play``, which is the pairing.
 
@@ -358,29 +343,7 @@ def bind_v2_stage_seams(
             meta=refs, provenance=provenance, carry=banked_provenance,
             evidence=banked_evidence,
         ),
-        # ADR-0227 §12 FOLD: one seam, discriminated by kind, over the same
-        # four binders this always called — only the V2FlowSeams shape they
-        # land in changed.
-        records=V2RecordPublishers(
-            check=publish_check,
-            candidate=publish_candidate,
-            cloud=v2evidence.bind_cloud_publisher(
-                evidence_store, capture_session_id, refs, run_async
-            ),
-            # #2291's round receipt. Bound on both stages rather than gated on a
-            # capability: only the stage that GRADES a round ever calls it, and a
-            # binding that exists everywhere cannot be the reason a receipt went
-            # unwritten on the stage that needed it.
-            round_receipt=v2evidence.bind_round_receipt(
-                evidence_store, capture_session_id, refs, run_async
-            ),
-            findings=(
-                v2evidence.bind_findings_publisher(
-                    evidence_store, capture_session_id, refs, run_async
-                )
-                if CAPABILITY_FINDINGS in capabilities.provides else None
-            ),
-        ),
+        records=V2RecordPublishers(check=publish_check, candidate=publish_candidate),
         apply_complete=v2state._applied_gate,
         apply_failed=v2state._apply_failure_gate,
         bank_take=v2evidence.bind_position_retention(

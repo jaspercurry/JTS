@@ -11,7 +11,6 @@ from tests.crossover_v2_fixtures import (
     _MINTED_CAPTURE_SESSION_ID,
     _PERSISTED_TOP_LEVEL_KEYS,
     _RecordingCheckStore,
-    _flow_seams,
     _inline_body,
     _open_prepared,
     _regradable_fixture,
@@ -33,7 +32,6 @@ from typing import Mapping
 
 import pytest
 
-from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import (
     AdoptionOutcome,
@@ -57,30 +55,6 @@ from tests.crossover_v2_fixtures import (
 
 
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
-
-
-@pytest.fixture
-def real_bundle(monkeypatch, tmp_path):
-    from jasper.active_speaker.bundles import open_bundle
-    from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStore,
-    )
-    from tests.active_speaker_fixtures import mono_output_topology
-
-    info = open_bundle(
-        mono_output_topology(mode="active_2_way"),
-        calibration_id="calibration-test",
-        sessions_dir=tmp_path / "sessions",
-    )
-    assert info is not None
-    store = CommissioningEvidenceStore.open(
-        info["bundle_dir"], expected_session_id=info["session_id"],
-    )
-    monkeypatch.setattr(
-        v2evidence, "open_v2_evidence_store",
-        lambda topology: (store, store.session_id),
-    )
-    return store
 
 
 def _recorded_write_calls(monkeypatch) -> list[str]:
@@ -716,42 +690,6 @@ def test_a_receipt_from_before_the_floor_shipped_reads_back_as_unknown():
     assert position.previous_trusted_floor_hz is None
 
 
-def test_the_position_role_reaches_the_combiners_own_input_struct():
-    import numpy as np
-
-    complex_tf = np.ones(9, dtype=complex)
-    position = SimpleNamespace(
-        position_id="p_onax",
-        role="onax",
-        sample_rate_hz=48_000,
-        response=SimpleNamespace(
-            freqs_hz=np.linspace(20.0, 20_000.0, 9),
-            magnitude_db=np.zeros(9),
-            complex_tf=complex_tf,
-        ),
-    )
-
-    capture = spatial.cloud_position_capture(position)
-
-    assert capture.position_id == "p_onax"
-    assert capture.role == "onax"
-
-
-def test_a_position_that_declares_no_role_carries_an_empty_one():
-    import numpy as np
-
-    position = SimpleNamespace(
-        position_id="p0", role=None, sample_rate_hz=48_000,
-        response=SimpleNamespace(
-            freqs_hz=np.linspace(20.0, 20_000.0, 9),
-            magnitude_db=np.zeros(9),
-            complex_tf=np.ones(9, dtype=complex),
-        ),
-    )
-
-    assert spatial.cloud_position_capture(position).role == ""
-
-
 @pytest.mark.parametrize(
     "restore, failure, write_failed, expected_state",
     [
@@ -866,12 +804,6 @@ def test_a_truncated_measured_record_reads_as_absent_not_as_a_curve(monkeypatch)
     assert v2durable.verify_measured_curve_from_state(state) is None
 
 
-def test_only_stage_1_binds_the_findings_publisher(monkeypatch):
-    stage_1_conductor, _state = _stage_1(monkeypatch)
-
-    assert callable(_flow_seams(stage_1_conductor).records.findings)
-
-
 def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     conductor, stage_1_state = _stage_1(monkeypatch)
 
@@ -895,8 +827,7 @@ def test_stage_1_declares_itself_too(monkeypatch, caplog):
     ]
     assert len(declared) == 1
     assert "stage=measure" in declared[0]
-    assert "provides=findings requires=" in declared[0]
-    assert 'requires="" missing=""' in declared[0]
+    assert 'provides="" requires="" missing=""' in declared[0]
 
 
 def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):

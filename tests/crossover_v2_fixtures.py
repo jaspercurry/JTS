@@ -54,7 +54,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
@@ -351,7 +350,6 @@ class FakeSeams:
     apply_done: bool = False
     apply_failed_code: str = ""
     rollback_available: Any = None
-    banked_findings: list = field(default_factory=list)
     applied_boosts: bool = False
     applied_profile_state: Any = None
 
@@ -375,7 +373,6 @@ class FakeSeams:
             records=V2RecordPublishers(
                 check=lambda plan, ambient: self.published_checks.append(plan),
                 candidate=self.published_candidates.append,
-                findings=self.banked_findings.append,
             ),
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
@@ -543,12 +540,6 @@ def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
     )
 
 
-def _snr_analysis(*pilots: PilotObservation) -> ProgramAnalysis:
-    return ProgramAnalysis(
-        phase="measure", program_id="p", locations=(), pilots=pilots,
-    )
-
-
 def _dummy_program():
     from jasper.audio_measurement.program import build_check_program
 
@@ -578,53 +569,6 @@ def _pilot_obs(
         channel_map_cross_rise_db=cross_rise_db,
         delta_implausible=delta_implausible, mic_meter_status=mic_meter_status,
     )
-
-
-def _driver_response_diag(
-    role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
-    snr_db: float | None = None, snr_verdict: str | None = None,
-    snr_band: str | None = "mid",
-    floor_source: str = gating.FLOOR_MEASURED,
-) -> DriverResponse:
-    freqs = np.linspace(100.0, 20000.0, 64)
-    snr = (
-        {
-            "worst_relevant": {
-                "band_id": snr_band,
-                "estimated_snr_db": snr_db,
-                "verdict": snr_verdict,
-            }
-        }
-        if snr_db is not None else None
-    )
-    return DriverResponse(
-        role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
-        complex_tf=np.ones(64, dtype=complex),
-        gating={
-            "applied": True, "window_ms": window_ms, "floor_source": floor_source,
-        },
-        snr=snr, validity_floor_hz=floor_hz,
-    )
-
-
-def _gate_block(
-    *,
-    direct_peak_ms: float = 10.40,
-    first_reflection_ms: float = 15.73,
-    rms_db: float | None = 2.59,
-    floor_source: str = gating.FLOOR_MEASURED,
-) -> dict:
-    delta = None if rms_db is None else {
-        "rms_db": rms_db, "max_db": 6.1, "eval_band_hz": [357.0, 20000.0],
-    }
-    return {
-        "applied": True,
-        "window_ms": 5.33,
-        "floor_source": floor_source,
-        "direct_peak_ms": direct_peak_ms,
-        "first_reflection_ms": first_reflection_ms,
-        "pre_post_gate_delta": delta,
-    }
 
 
 def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):

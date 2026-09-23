@@ -6,11 +6,9 @@
 
 from __future__ import annotations
 
-import math
 import types
 import pytest
 from dataclasses import replace
-from jasper.active_speaker.crossover_v2.diagnostics import PILOT_SNR_UNUSABLE_DB, _worst_pilot_snr_db
 from jasper.active_speaker.crossover_v2.planning import alignment_to_candidate_fields
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
@@ -25,8 +23,6 @@ from tests.crossover_v2_fixtures import (
     _check_analysis,
     _conductor,
     _run_phase,
-    _snr_analysis,
-    _snr_pilot,
 )
 
 
@@ -170,36 +166,6 @@ def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
     verdict = _run_phase(c, 1, 1)
     assert verdict.fault == "noisy_room_linearity"
     assert REASON_REGISTRY[verdict.fault].template == "fix_and_retry"
-
-
-@pytest.mark.parametrize("snrs,expected", [
-    # The row the review caught: one pilot buried (-inf, "never exceeded the
-    # ambient"), one clean. Dropping -inf as non-finite logged the CLEAN
-    # pilot's 20.0 dB beside pilot_snr_ok=False — a diag row contradicting
-    # itself, and the same "verdict beside absent evidence" shape #1810 is
-    # about. The buried pilot must win the min().
-    (( -math.inf, 20.0), PILOT_SNR_UNUSABLE_DB),
-    # +inf is NOT a measurement ("no ambient window to validate against"), so
-    # it is excluded rather than floored — the real number is reported.
-    ((math.inf, 20.0), 20.0),
-    # Every pilot +inf (a legacy program with no window at all): no number to
-    # report, and None must not be confused with a measured floor.
-    ((math.inf, math.inf), None),
-    # Both buried.
-    ((-math.inf, -math.inf), PILOT_SNR_UNUSABLE_DB),
-    # Ordinary case: the worst real number.
-    ((30.0, 11.5), 11.5),
-])
-def test_worst_pilot_snr_db_handles_both_infinities(snrs, expected):
-    """The diag field must never contradict the verdict logged beside it."""
-    analysis = _snr_analysis(
-        *(_snr_pilot(f"r{i}", snr) for i, snr in enumerate(snrs))
-    )
-    assert _worst_pilot_snr_db(analysis) == expected
-
-
-def test_worst_pilot_snr_db_is_none_without_pilots():
-    assert _worst_pilot_snr_db(_snr_analysis()) is None
 
 
 def test_alignment_to_candidate_fields_sign_contract():

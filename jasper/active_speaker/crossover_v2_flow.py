@@ -46,9 +46,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.active_speaker.crossover_v2.contracts import (
     CrossoverV2FlowError,
 )
-from jasper.active_speaker.crossover_v2.diagnostics import (
-    logger,
-)
 from jasper.active_speaker.crossover_v2.durable_state import (
     MAX_ATTEMPT_HISTORY,
     AttemptRecord,
@@ -84,7 +81,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_OFFAX,
     LateralPose,
-    _CloudPosition,
 )
 from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -110,6 +106,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
     )
+
+logger = logging.getLogger(__name__)
 
 # dB of pooled spec residual; the model's measured tracking error (ADR-0227).
 PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
@@ -175,9 +173,6 @@ class V2RecordPublishers:
 
     check: PublishCheck
     candidate: PublishCandidate
-    cloud: Callable[[str, Mapping[str, Any]], None] | None = None
-    findings: Callable[[Mapping[str, Any]], None] | None = None
-    round_receipt: Callable[[Mapping[str, Any]], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -291,10 +286,6 @@ class CrossoverV2Session:
         # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
         self._lateral_poses: list[LateralPose] = []
-        # Retained per-position evidence in capture order, keyed by group phase.
-        self._group_positions: dict[str, list[_CloudPosition]] = {
-            phase: [] for phase in self._journey.plan.group_indexes
-        }
         try:
             validated_lateral_consumer(
                 lateral_consumer,
@@ -476,23 +467,6 @@ class CrossoverV2Session:
             fc_hz=self._fc_hz,
             ambient_report=self._check_ambient_report,
         )
-
-    def _measure_sweep_bounds(self) -> tuple[float, float] | None:
-        return _priors.measure_sweep_bounds(self._measure_program)
-
-    def _verify_priors(self) -> MeasurementPriors:
-        return _priors.verify_priors(
-            fc_hz=self._fc_hz,
-            source_preset=self._preset,
-            predicted_sum=self._measure_predicted_sum,
-            sweep_bounds=self._measure_sweep_bounds(),
-        )
-
-    def _cloud_priors(self) -> MeasurementPriors:
-        return _priors.cloud_priors(fc_hz=self._fc_hz)
-
-    def _entry_baseline_priors(self) -> MeasurementPriors:
-        return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
 
     @property
     def post_apply_verifies(self) -> bool:
@@ -910,12 +884,10 @@ class CrossoverV2Session:
         return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
 
     def _retained_group_indexes(self, phase: str) -> set[int]:
-        """Which indexes of one group already hold evidence — one accessor over the
-        two retentions, so the settle bookkeeping never branches on which list.
-        """
+        """Which indexes of one group already hold evidence."""
         if phase == PHASE_LATERAL:
             return {pose.index for pose in self._lateral_poses}
-        return {p.index for p in self._group_positions.get(phase, ())}
+        return set()
 
     def rearm_measure_after_transient(
         self, verdict: PhaseVerdict | TakeVerdict

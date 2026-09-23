@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from jasper.json_fields import finite_float
 
-from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_provenance, enrich_capture_record
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -17,12 +16,11 @@ from jasper.web import correction_crossover_v2_volume as v2volume
 import dataclasses
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 
-from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE, PHASE_CLOUD_MEASURE
+from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
@@ -535,32 +533,6 @@ def bind_evidence_publishers(
     return publish_check, publish_candidate, refs
 
 
-def bind_round_receipt(
-    store: Any, capture_session_id: str, refs: dict[str, Any], run_async: Any
-) -> Callable[[Mapping[str, Any]], str]:
-    """The conductor's ``publish_round_receipt`` seam (#2291).
-
-    Banks ONE immutable receipt per round, which puts it beside ``check.json``,
-    ``candidate.json`` and the retained positions — the artifacts its own
-    ``evidence_identities`` name, which is what makes them resolvable at all.
-    The store runs the R21 accept-receipt reopen-and-compare at the write
-    (``record_store._verify_receipt``).
-
-    Raises rather than swallowing: the fail-soft boundary is the round
-    coordinator's own receipt writer
-    (:func:`jasper.active_speaker.crossover_v2.coordinator.run_round` catches
-    it), the same shape :func:`bind_cloud_publisher` takes.
-    """
-    records = _record_store(store, capture_session_id)
-
-    def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
-        _, artifact = _bank(records, run_async, dict(receipt))
-        refs["round_receipt_artifact"] = artifact.fingerprint
-        return str(artifact.fingerprint)
-
-    return publish_round_receipt
-
-
 @dataclass
 class _TakeRetention:
     store: Any
@@ -689,15 +661,6 @@ def _publish_findings(
         return
     artifact, findings_banked = published
     refs.setdefault("finding_artifacts", {})[phase] = artifact.fingerprint
-    # No household projection here, deliberately — see
-    # :func:`_bank_household_findings`. A carve-out finding's ``household_copy``
-    # is COPIED from the carve-out record (``promote_carve_outs`` rule 3) rather
-    # than minted, so the copy has an owner already: ``carve_outs_by_band``,
-    # whose ``disclosure`` register is the chart callout's plain-language
-    # headline (``cloud.js``'s ``buildCallout``) and whose ``expert`` register is
-    # the τ/r line ``_carve_out_expert_lines`` folds into ``expert_details``.
-    # Both render on both screens this would reach. The store keeps the full
-    # record either way.
     log_event(
         logger,
         "correction.crossover_v2_findings_published",
@@ -705,221 +668,6 @@ def _publish_findings(
         phase=phase,
         findings=findings_banked,
     )
-
-
-def _bank_household_findings(
-    store: Any, *, capture_session_id: str, phase: str, refs: dict[str, Any],
-) -> None:
-    """Reopen the finding set just published and project what a household reads.
-
-    WO-1's **read** half (first-principles panel lens C, CC1): the flow banks a
-    finding with validated household copy and, until this, nothing ever read one
-    back — ``read_finding_set`` had zero non-test callers, so #1949's "bank a
-    finding and proceed" was, in the household's experience, "proceed".
-
-    **The read happens HERE, at publish, not at render, and that is a
-    saturation decision.** The screens that show a finding are polled every
-    1.5 s (``crossover/main.js``'s ``POLL_MS``), and a render-time read would
-    re-open and re-hash the finding artifact AND its cited ``candidate.json``
-    on every one of those polls, forever, on a Pi. It would also fail to reach
-    the DONE screen at all: stage 2 opens a **new** bundle under a **new**
-    capture session id (a verify-only prepare → ``open_v2_evidence_store``), so
-    by the time the household sees the result screen, "this session's bundle"
-    no longer holds the set the measuring session banked. Reading once and
-    projecting the compact result into the durable state is the same shape
-    ``compact_cloud_status`` already uses for the cloud's numbers: the bundle
-    artifact stays the record; the state carries what a screen renders.
-
-    **The read-back is itself the honesty check.** Going out through
-    the record store and straight back in through ``read_finding_set``
-    means only a set that survives the strict reopen — schema, session binding,
-    and (``verify_evidence`` defaults True) a re-hash of every bundle citation
-    — reaches a household. A finding whose support could not be confirmed
-    raises ``FindingEvidenceMissing`` and is logged rather than rendered.
-
-    **Order is the producer's, and nothing is de-duplicated.** The set's own
-    order is preserved as persisted (``promote_carve_outs`` sorts by band;
-    the level-frame path yields one), because re-ordering here would make this
-    a second owner of a decision the producer already made. Two findings whose
-    copy happens to read identically both render: dropping one would be this
-    function silently deciding a banked finding does not exist, and "must not
-    drop a finding" outranks a repeated sentence — a producer emitting the same
-    sentence twice is a bug to fix at the producer.
-
-    **Called from the level-frame path only.** ``_publish_findings``' carve-out
-    sets are not projected: their ``household_copy`` is the carve-out record's
-    own ``reason`` (``promote_carve_outs`` rule 3 copies it rather than minting
-    it), so ``carve_outs_by_band`` is already that copy's owner and already
-    renders the fact on both these screens — its ``disclosure`` register as the
-    chart callout's plain-language headline (``cloud.js``'s ``buildCallout``),
-    its ``expert`` register as the τ/r line ``_carve_out_expert_lines`` folds
-    into ``expert_details``. Projecting it again would put one fact on one
-    screen twice from two owners. When a producer mints copy that no other
-    surface owns — as the level-frame path does, and as WO-4's detectors will —
-    it calls this.
-
-    Fail-soft, like every other findings path (plan §3.4: "a session with no
-    findings behaves exactly as it does today"). A lost projection is a lost
-    disclosure, never a lost tune.
-    """
-
-    from jasper.attribution.storage import read_finding_set
-
-    try:
-        finding_set = read_finding_set(
-            store, capture_session_id=capture_session_id, phase=phase,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        log_event(
-            logger,
-            "correction.crossover_v2_findings_readback_failed",
-            level=logging.WARNING,
-            capture_session_id=capture_session_id,
-            phase=phase,
-            exc_info=True,
-        )
-        return
-    if finding_set is None:
-        return
-    # ONE stamp for the whole set: every finding in it was banked by the same
-    # publish, and the household-facing rendering of it is a date (see
-    # ``crossover_envelope_v2._record_when_phrase``), so a per-finding clock
-    # would be a precision the copy never spends and a second number to keep
-    # honest. The store carries no timestamp of its own — this is the
-    # finding's own clock, on the same epoch-float footing as
-    # ``failure["at"]`` one level up.
-    banked_at = time.time()
-    projected = refs.setdefault(v2durable.FINDING_HOUSEHOLD_REFS_KEY, [])
-    for finding in finding_set.findings:
-        projected.append({
-            # ``household_copy`` and nothing else. The mechanism id, the
-            # evidence scalars, the confidence tier, and the probe lists are
-            # INTERNAL taxonomy by ``findings.py``'s own two-vocabularies rule;
-            # they stay in the bundle artifact and the journal, where an
-            # operator reads them, and never cross onto a household wire.
-            "household_copy": finding.household_copy,
-            "at": banked_at,
-        })
-    log_event(
-        logger,
-        "correction.crossover_v2_findings_readback",
-        capture_session_id=capture_session_id,
-        phase=phase,
-        findings=len(finding_set.findings),
-    )
-
-
-def bind_findings_publisher(
-    store: Any, capture_session_id: str, refs: dict[str, Any], run_async: Any
-) -> Callable[[Mapping[str, Any]], None]:
-    """The real ``publish_findings`` seam — the #1866 frame-gate finding.
-
-    The owner's 2026-07-30 ruling: a level-frame disagreement is BANKED as an
-    M7 finding, and the session proceeds, when the realized-level check passes
-    on the pair about to ship — a closed-loop read of the OUTCOME, not a
-    referee between the two frames (see the flow's gate comment for why the
-    distinction matters). The conductor decides and hands over an evidence
-    record; this binder is the only thing that knows there is a store.
-
-    **Its own phase, and that is forced rather than chosen.** The finding set
-    lands at ``findings_measure.json``, beside the cloud groups'
-    ``findings_cloud_measure.json`` / ``findings_cloud_verify.json``. The store
-    is write-once and the cloud group's set is published at group CLOSE —
-    several seconds and one household tap before the fit this finding comes out
-    of even runs — so reusing that phase would be a PATH_CONFLICT, not a merge.
-    The per-phase path already exists for exactly this reason (see
-    :func:`~jasper.attribution.storage.findings_relative_path`), and the phase
-    it takes is the flow phase the finding belongs to.
-
-    **It cites ``candidate.json``**, the artifact
-    :func:`bind_evidence_publishers`' ``publish_candidate`` wrote moments
-    earlier, for three reasons: it is the thing the finding is ABOUT (the
-    trims committed under a frame whose estimators disagreed), it carries the
-    candidate's own per-role ``correction_giveback_db`` inside its ``linearization``
-    block, and it is guaranteed to exist and to be durable at this point in the
-    session — which a citation must be, since
-    :func:`~jasper.attribution.storage.read_finding_set` re-hashes it on every
-    read and raises when it cannot be confirmed.
-
-    Fail-soft, like :func:`_publish_findings` and for the same §3.4 reason: the
-    candidate is already published and the gate has already ruled that this
-    session may proceed. A findings failure is a lost diagnosis, never a lost
-    tune.
-    """
-
-    records = _record_store(store, capture_session_id)
-
-    def publish_findings(record: Mapping[str, Any]) -> None:
-        from jasper.active_speaker.commissioning_evidence_store import (
-            EVIDENCE_ROOT,
-        )
-        from jasper.attribution.findings import FindingSet
-        from jasper.attribution.promotion import (
-            PRODUCED_BY_LEVEL_FRAME,
-            promote_level_frame_disagreement,
-        )
-        from jasper.attribution.storage import bundle_evidence_ref
-
-        def _publish() -> Any:
-            identity = v2_session_identity(store, capture_session_id)
-            finding = promote_level_frame_disagreement(
-                record,
-                session=identity,
-                cites=(
-                    bundle_evidence_ref(
-                        store.identify_artifact(
-                            f"{EVIDENCE_ROOT}/artifacts/crossover_v2/"
-                            f"{capture_session_id}/candidate.json"
-                        ),
-                        identity,
-                    ),
-                ),
-            )
-            # A record the promoter refused is already logged by it, with the
-            # reason. Banking an EMPTY set here would be a lie of a different
-            # shape — "attribution ran and found nothing" — about a session
-            # whose gate found something and said so in the journal.
-            if finding is None:
-                return None
-            return _bank_findings(
-                records, run_async, phase=PHASE_MEASURE,
-                finding_set=FindingSet(
-                    session=identity,
-                    produced_by=PRODUCED_BY_LEVEL_FRAME,
-                    findings=(finding,),
-                ),
-            )
-
-        artifact = _fail_soft(
-            _publish,
-            event="correction.crossover_v2_findings_publish_failed",
-            capture_session_id=capture_session_id,
-            phase=PHASE_MEASURE,
-        )
-        if artifact is None:
-            return
-        refs.setdefault("finding_artifacts", {})[PHASE_MEASURE] = (
-            artifact.fingerprint
-        )
-        log_event(
-            logger,
-            "correction.crossover_v2_findings_published",
-            capture_session_id=capture_session_id,
-            phase=PHASE_MEASURE,
-            findings=1,
-        )
-        # The read half (CC1). Deliberately AFTER the publish log and outside
-        # the try above: the set is durable at this point, so a read-back
-        # failure must be reported as its own event rather than making a
-        # successful publish look like a failed one.
-        _bank_household_findings(
-            store,
-            capture_session_id=capture_session_id,
-            phase=PHASE_MEASURE,
-            refs=refs,
-        )
-
-    return publish_findings
 
 
 def bind_cloud_publisher(

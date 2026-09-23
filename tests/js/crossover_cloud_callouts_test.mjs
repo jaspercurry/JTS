@@ -109,11 +109,9 @@ check(els.cloudPending.hidden === false, "measure-only: the 'still coming' capti
 
 check(els.cloudCallouts.children.length === 0, "measure-only: no callouts (verify has no carve_outs yet)");
 
-// --- a real carve-outs fixture, matching the shipped schema ----------------
-// (jasper.active_speaker.crossover_v2_flow.carve_outs_by_band's exact shape:
-// one entry per spec band, always, each carrying band_hz/intervals/
-// disclosure/expert — see _carve_out_disclosure_copy/_carve_out_expert_copy/
-// _null_classification_copy for the copy this pins verbatim).
+// --- a real carve-outs fixture, matching the persisted schema --------------
+// (one entry per spec band, always, each carrying band_hz/intervals/
+// disclosure/expert).
 const positionInvariantDisclosure =
   "Interference nulls at 8.7 kHz, 11.6 kHz and 15.0 kHz — a delayed copy of " +
   "the sound arrives 0.30 ms later. EQ cannot fill these, so they are left " +

@@ -335,11 +335,9 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
 def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     """The carve-out τ/r lines (PR-6b, owner decision 1). The expert layer:
     the line above says HOW MANY spec-band bins left grading, these say
-    WHICH ranges and WHY. Strings are copied, not composed here —
-    ``carve_outs_by_band`` in ``crossover_v2_flow`` owns the copy, so this
-    and the chart callouts render the same words; this only prefixes the
-    band. Takes a compact cloud-phase BLOCK, not ``status``, so the caller
-    picks which cloud.
+    WHICH ranges and WHY. Strings are copied from the persisted record, not
+    composed here; this only prefixes the band. Takes a compact cloud-phase
+    BLOCK, not ``status``, so the caller picks which cloud.
     """
     lines: list[str] = []
     carve_outs = block.get("carve_outs")
@@ -1000,9 +998,8 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
     1. *Both present* — the ordinary closed session. Draw the curve, state the
        verdict.
     2. *Curve, no report* — a state written before D4, or a prediction the
-       evaluator refused (:func:`~jasper.active_speaker.crossover_v2.diagnostics
-       .spec_report_for_predicted_sum` returned ``None``). Draw the curve, say
-       the verdict is unknown; **do not** infer one from the picture.
+       evaluator refused. Draw the curve, say the verdict is unknown; **do
+       not** infer one from the picture.
     3. *Neither* — no session has closed a candidate. This function returns
        ``None`` outright rather than an empty shell.
     4. *Report, no curve* — **the least obvious of the four.** The verdict
@@ -1072,11 +1069,8 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
 def household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """The banked findings a household may read, from the durable projection.
 
-    Reads what :func:`~jasper.web.correction_crossover_v2._bank_household_findings`
-    wrote — never the bundle, and
-    never ``os``-anything: this runs on every wizard poll, and the read that
-    costs (reopen + re-hash the artifact and its citation) already happened
-    once, at publish.
+    Reads the durable state's rows — never the bundle, and never
+    ``os``-anything: this runs on every wizard poll.
 
     **Validated, not trusted.** The state file is JSON written by some build,
     possibly an older or newer one, so every row is checked rather than passed

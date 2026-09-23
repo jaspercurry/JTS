@@ -518,11 +518,6 @@ def test_phase_verdict_publishes_take_fields(ok):
         assert getattr(result, field) == getattr(take, field)
 
 
-@pytest.mark.parametrize(("ripple", "alignment", "due"), [(15.1, True, True), (15.0, True, False), (99, False, False)])
-def test_ripple_is_a_disclosure(ripple, alignment, due):
-    assert cd.ripple_reservation_due(predicted_ripple_db=ripple, has_alignment=alignment, disclosure_threshold_db=15.0) is due
-
-
 def test_no_household_vocabulary_reaches_this_module():
     """The assessor emits codes; refusal_copy owns household rendering."""
     assert cd.__file__

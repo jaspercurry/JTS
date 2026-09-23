@@ -958,9 +958,6 @@ class ProgramAnalysis:
     # MEASURE-predicted summed magnitude at the candidate's COMMITTED trim
     # and delay, handed to VERIFY as `MeasurementPriors.predicted_sum` so
     # VERIFY's pass is |measured - predicted| <= +/-1.5 dB (design §5.2).
-    # Quality is graded separately:
-    # `crossover_v2.diagnostics.spec_report_for_predicted_sum` and
-    # `CrossoverCandidate.predicted_ripple_db`.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     # Set by MEASURE from `drift.glitch_detected`, by VERIFY from
     # `capture_integrity.glitched` — a one-bit projection of the record that owns the fact.

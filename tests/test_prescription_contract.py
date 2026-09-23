@@ -20,10 +20,7 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import (
-    PACKET_SCHEMA_VERSION, PacketSchemaUnsupported,
-    build_crossover_evidence_packet, validate_packet,
-)
+from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
@@ -275,15 +272,6 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
     assert cli.main(["status", str(bank)]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["contracts"] == packet["contracts"]
-
-
-def test_packet_reader_refuses_the_previous_schema_by_name(round_bank):
-    packet = build_crossover_evidence_packet(round_bank[1])
-    assert PACKET_SCHEMA_VERSION == 2
-    packet["artifact_schema_version"] = 1
-    with pytest.raises(PacketSchemaUnsupported) as caught:
-        validate_packet(packet)
-    assert caught.value.reason == "packet_schema_unsupported"
 
 
 def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(capsys):

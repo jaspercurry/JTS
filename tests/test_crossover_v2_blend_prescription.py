@@ -407,8 +407,7 @@ def test_the_ladders_tau_is_converted_and_the_arrivals_is_not(tmp_path):
     ``arrival_tau_us`` still carries whatever a sub-minimum cluster held on a
     ``no_corroborating_arrivals`` refusal, so a distance built from it could be
     published out of evidence the gate itself declined. The ladder's tau exists
-    only after a frequency-domain fit and a time-domain arrival agreed within
-    ``LADDER_ARRIVAL_TOLERANCE``.
+    only after a frequency-domain fit and a time-domain arrival agreed.
 
     The two differ by the measured ~7 % here, so this discriminates rather than
     restating the field name.
@@ -540,8 +539,7 @@ def test_a_round_whose_gate_survives_as_prose_says_so_about_itself(packet):
 def test_the_verify_gates_own_numbers_close_the_row_too(tmp_path):
     """Either carrier answers, because they are one fact about two captures.
 
-    ``verify.gate`` is ``_gate_record``'s dict and always spells both keys once
-    the writer shipped; a position row is filtered by an allowlist that drops a
+    ``verify.gate`` always spells both keys once the writer shipped; a position row is filtered by an allowlist that drops a
     null. So a round with a verify capture and no usable position numbers still
     banks them, and the honesty entry must not fire.
     """

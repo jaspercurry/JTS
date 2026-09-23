@@ -53,7 +53,7 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2 import capture_plan
-from jasper.active_speaker.crossover_v2 import journey, priors
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     PHASE_ENTRY_BASELINE,
@@ -66,7 +66,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 
 from tests.crossover_v2_fixtures import (
-    FC_HZ,
     FakeSeams,
     _conductor,
     _run_phase,
@@ -155,36 +154,6 @@ def test_the_entry_baseline_replays_the_verify_program_object_itself():
     assert entry_program is not None
     assert entry_program.program_id == verify_program.program_id
     assert entry_program.program_id
-
-
-def test_the_entry_baseline_gets_no_tracking_prior():
-    """Nothing is applied yet, so there is no prediction to track.
-
-    ``entry_baseline_priors`` withholds ``predicted_sum`` (and the candidate's
-    crossover transfers) for the reason ``cloud_priors`` withholds them: a
-    capture that cannot support a claim must not be handed the prior that
-    invites one. Handing it MEASURE's prediction would grade the ENTRY graph
-    against the CANDIDATE's model and report the whole intended correction as a
-    realization error.
-
-    Asserted against the priors module that OWNS the rule rather than through
-    the flow's one-line delegation to it: the withholding is analysis-layer
-    behaviour and survives the flow whole, so a pin reaching through a private
-    conductor method would be pinning the delegation instead of the rule.
-    """
-    entry = priors.entry_baseline_priors(fc_hz=FC_HZ)
-
-    assert entry.predicted_sum is None
-    assert entry.configured_crossover_response_by_role is None
-    assert entry.configured_polarity_sign_by_role is None
-    # …and the one prior it DOES carry, so this is not passing on an
-    # all-empty MeasurementPriors.
-    assert entry.crossover_fc_hz == FC_HZ
-    # The conductor reaches it and adds nothing of its own — which is what
-    # makes the assertion above a statement about the shipped path.
-    fakes = FakeSeams()
-    conductor = _conductor(fakes, index_phase_map=_stage_1_map())
-    assert conductor._entry_baseline_priors() == entry
 
 
 # 3. the accept rule

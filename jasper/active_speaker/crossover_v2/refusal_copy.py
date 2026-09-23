@@ -13,7 +13,6 @@ from typing import Any, Iterable, Literal, Mapping
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 
-from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
 logger = logging.getLogger(__name__)
@@ -1135,20 +1134,6 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
 
-#: The capture-consuming ladders' refusal KINDS, mapped to the codes whose
-#: copy the household reads. A mapping rather than an identity because two
-#: kinds do NOT share their code's name: a glitched timeline renders as
-#: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
-#: Completeness is checked — see
-#: ``test_every_screen_kind_has_a_household_sentence``.
-SCREEN_KIND_REASONS: dict[str, str] = {
-    _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
-    _spatial.SCREEN_PILOT_LEVEL_COLLAPSE: REASON_PILOT_LEVEL_COLLAPSE,
-    _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
-    _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
-    _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-}
-
 
 def reason_message(
     code: str,
@@ -1211,12 +1196,7 @@ def reason_diagnosis(
     return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
 
 
-# Conditions no extra attempt can clear. A rejection carrying one rides out as
-# a TERMINAL capture verdict at the settle
-# (:data:`~.admission.SETTLE_CONDITION_NOT_RETRIABLE`), so the phone renders
-# its terminal screen instead of a "Try again" the next begin would refuse.
-# ``assess_begin``'s ``REFUSE_NON_RETRIABLE`` is the BACKSTOP for a begin that
-# reaches a settled slot anyway, not the ordinary path.
+# Conditions no extra attempt can clear.
 NON_RETRIABLE_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
 )

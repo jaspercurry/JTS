@@ -330,12 +330,10 @@ def cloud_position_record(
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
-    """One retained cloud position, as the record two consumers read.
+    """One retained cloud position, as a banked record.
 
-    Built whether or not a retention seam is bound: the group close reads these
-    records to serialize the per-position members, and that happens on every
-    session including the ones that bind no seam. ``take_id`` is minted here so
-    the session's evidence and the bundle's sidecar path name the same take.
+    ``take_id`` is minted here so the session's evidence and the bundle's
+    sidecar path name the same take.
 
     ``gate_floor_source`` records WHY the gate window is what it is (#1966);
     ``gating_applied`` alone cannot distinguish a window that stops at a found
@@ -354,10 +352,9 @@ def cloud_position_record(
     ``gate_entanglement_floor_source`` says which of
     :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` timed it —
     never one without the other (#3502). Banked per SEAT because it is derived
-    at the seat's own ``mark_distance_m``, which is why
-    :func:`cloud_entanglement_floor_hz` pools the seats. ``unknown`` with a null
-    floor is ordinary on a rig whose first bounce lands while the direct sound
-    is still decaying.
+    at the seat's own ``mark_distance_m``. ``unknown`` with a null floor is
+    ordinary on a rig whose first bounce lands while the direct sound is still
+    decaying.
 
     ``regime`` is WHAT PLAYED, in the walk seam's vocabulary
     (:data:`LATERAL_POSE_REGIME` is the other word in it), ``""`` until a caller

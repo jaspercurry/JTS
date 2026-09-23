@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import replace
-from jasper.active_speaker.crossover_v2.diagnostics import spec_report_for_predicted_sum
 from jasper.active_speaker.crossover_v2_flow import PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
 from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -85,38 +84,6 @@ def test_analysis_json_round_trips_trim_band_average_db():
 
 
 # PR-L4 item 2 — spec-grade the prediction before auto-apply
-
-
-def test_predicted_spec_report_is_graded_on_the_shared_analysis_grid():
-    """``spec_report_for_predicted_sum`` decimates before it smooths.
-
-    Not cosmetic. ``smooth_fractional_octave`` is an O(bins x window) Python
-    loop — ~11 s on a laptop at a raw 512k-point prediction grid, worse on a
-    Pi 5 — and this runs at the confirm seam with a household waiting on the
-    apply. It block-averages onto ``MAX_ANALYSIS_BINS`` first, the bound the
-    combiner already adopted for the same reason, which is also what puts the
-    predicted curve at the same grid density as the measured one it is compared
-    against."""
-    from jasper.audio_measurement.spatial_combine import MAX_ANALYSIS_BINS
-
-    freqs = np.fft.rfftfreq(1 << 16, 1.0 / 48000.0)
-    assert freqs.size > MAX_ANALYSIS_BINS  # the fixture must exercise the bound
-    report = spec_report_for_predicted_sum((freqs, np.zeros(freqs.size)))
-
-    assert report is not None
-    graded_bins = sum(band.n_bins for band in report.bands)
-    assert 0 < graded_bins <= MAX_ANALYSIS_BINS
-    # A flat curve is flat at any grid density.
-    assert report.overall_within_target is True
-
-
-def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
-    """``None`` in, ``None`` out — and a malformed pair degrades the same way
-    rather than raising into the confirm seam. The caller must read that as
-    "no evidence", which the gate test below pins."""
-    assert spec_report_for_predicted_sum(None) is None
-    assert spec_report_for_predicted_sum((np.array([]), np.array([]))) is None
-    assert spec_report_for_predicted_sum(("not", "arrays")) is None
 
 
 def test_prediction_gate_tolerance_is_the_models_own_tracking_error():

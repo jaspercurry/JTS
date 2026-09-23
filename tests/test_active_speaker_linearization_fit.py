@@ -2020,6 +2020,58 @@ def test_the_drop_criterion_is_relative_to_each_filter_s_own_peak():
     assert float(np.max(spill_db[in_band])) < large_nearby.gain / 2.0
 
 
+# The 2026-07-30 JTS3 session's own tweeter boost and the two registered nulls
+# that bracket it, read from the persisted candidate
+# (`cap_J2OLTNvzmApF0cEAgxrIZw`). Literals here because the case IS these
+# numbers: the filter sits ~0.1 octave from both neighbours, which is the
+# closest a real session has come to the criterion's boundary.
+PAIR3_BOOST = dict(freq=13148.989835978216, gain=5.82161058125954,
+                   q=7.248090600565387)
+PAIR3_BRACKETING_NULLS = [
+    (10727.760314941406, 12189.674377441406),
+    (14039.772033691406, 15388.893127441406),
+]
+
+
+@pytest.mark.parametrize(
+    ("q", "expect_dropped"),
+    [(PAIR3_BOOST["q"], False), (1.0, True)],
+    ids=["session_q_7.25_kept", "counterfactual_q_1_dropped"],
+)
+def test_the_pair_3_boost_is_decided_by_its_own_reach_not_its_centre(q, expect_dropped):
+    """A real filter that sits between two registered nulls, and the reason it
+    survives.
+
+    At the Q the session actually chose the bell's half-gain region spans
+    about a tenth of an octave, which is narrower than the gap to either
+    neighbour, so its action region overlaps neither and it is kept. At Q=1 —
+    the same centre and the same gain — the region is ~0.8 octave and swallows
+    the upper null, and it goes. Centre frequency and gain are identical in
+    both rows: the criterion is reading REACH, which is the property it
+    claims to read.
+    """
+    grid = np.geomspace(20.0, 24_000.0, 4096)
+    boost = LinearizationFilter(
+        freq=PAIR3_BOOST["freq"], gain=PAIR3_BOOST["gain"], q=q,
+        biquad_type="Peaking",
+    )
+
+    kept, dropped, residual = _boost_exclusion_verdicts(
+        [boost], grid, PAIR3_BRACKETING_NULLS,
+    )
+
+    assert bool(dropped) is expect_dropped
+    assert bool(kept) is not expect_dropped
+    if not expect_dropped:
+        # Kept, but the spill is still measured and disclosed for both bands.
+        assert {r.band_hz for r in residual} == {
+            tuple(b) for b in PAIR3_BRACKETING_NULLS
+        }
+        assert all(
+            0.0 < r.realized_max_db < PAIR3_BOOST["gain"] / 2.0 for r in residual
+        )
+
+
 def _multi_dip_response(specs, *, excited_band_hz=(150.0, 4000.0)):
     """A driver carrying SEVERAL dips — the shape the monotonicity pathology
     needs, and the reason a single-dip fixture cannot find it.

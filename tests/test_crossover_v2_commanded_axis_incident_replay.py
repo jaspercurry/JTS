@@ -61,7 +61,6 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_MODEL_ERROR,
     classify_delta_probe,
 )
-from tests._log_events import event_fields, event_records
 
 # the incident's own numbers
 
@@ -1004,29 +1003,3 @@ def test_a_malformed_state_axis_is_an_absence_not_a_grid_error():
 # series-2 D1 what it grades there is the MODEL's departure, not the speaker's
 # delivered energy: the two directional rules still do not run, but now the
 # verdict, ``safety_anchored`` and the axis's own reason all say so.
-
-
-def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(caplog):
-    """The swallow path says so (#2614). It used to disappear silently.
-
-    A MISSING curve is already named by whoever failed to build it. Two curves
-    that both arrived and still would not subtract is a defect in one of them,
-    and the wrapper's own docstring claimed "the caller names the reason" while
-    the named WARNING that used to carry it had been deleted.
-    """
-    import logging
-
-    from jasper.active_speaker.crossover_v2.diagnostics import _commanded_delta
-
-    good = _summed(APPLIED_GRAPH)
-    with caplog.at_level(logging.WARNING):
-        assert _commanded_delta((np.zeros(4), "not a curve"), good) is None
-    fields = event_fields(caplog, "correction.crossover_v2_commanded_delta_failed")
-    assert fields["applied_points"] == "2048"
-
-    # ...and a MISSING curve stays silent here, because it is not this
-    # function's fact to report.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        assert _commanded_delta(None, good) is None
-    assert not event_records(caplog, "correction.crossover_v2_commanded_delta_failed")

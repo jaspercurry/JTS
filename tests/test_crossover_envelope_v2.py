@@ -354,6 +354,17 @@ def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block(
     assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
 
 
+def test_state_projection_does_not_inherit_the_per_position_block() -> None:
+    """``compact_cloud_status`` is a shape-scoped projection: a consumer that
+    reads ``cloud`` alone (the doctor) must never have to parse or skip
+    curve-shaped data. Members on the pipeline result must not leak into it."""
+    pipeline = {"available": True, "spec": {}, "positions": [{"curve": {"freqs_hz": [1.0]}}]}
+    compact = compact_cloud_status({PHASE_CLOUD_VERIFY: {"pipeline": pipeline, "geometry": {}}})
+
+    assert compact is not None
+    assert "positions" not in (compact.get(PHASE_CLOUD_VERIFY) or {})
+
+
 @pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_CLOUD_VERIFY])
 def test_compact_cloud_status_never_fabricates_a_required_count(phase):
     result = compact_cloud_status({phase: {"geometry": {}, "pipeline": {}}})
