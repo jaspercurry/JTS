@@ -288,14 +288,25 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 @pytest.mark.parametrize("profile", tuple(nginx_site.PROFILE_CONFS))
 def test_oauth_callbacks_are_never_access_logged(profile, callback):
     """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's access log."""
-    blocks = [
-        locations[("=", callback)]
-        for _, locations in nginx_site.servers(nginx_site.conf_text(profile))
-        if ("=", callback) in locations
-    ]
-    assert blocks
-    for body in blocks:
-        assert "access_log off;" in {line.strip() for line in body.splitlines()}
+    servers = nginx_site.servers(nginx_site.conf_text(profile))
+    assert {frozenset({80}), frozenset({443})} <= {ports for ports, _ in servers}
+    for ports, locations in servers:
+        # An exact match wins outright; otherwise nginx picks one of the
+        # matching prefix or regex locations, so each must be unlogged.
+        if ("=", callback) in locations:
+            candidates = [("=", callback)]
+        else:
+            candidates = [
+                (mod, path)
+                for mod, path in locations
+                if (mod in ("", "^~") and callback.startswith(path))
+                or (mod == "~" and re.search(path, callback))
+                or (mod == "~*" and re.search(path, callback, re.IGNORECASE))
+            ]
+        assert candidates, ports
+        for key in candidates:
+            lines = {line.strip() for line in locations[key].splitlines()}
+            assert "access_log off;" in lines, (ports, key)
 
 
 # ----------------------------------------------------------------------
