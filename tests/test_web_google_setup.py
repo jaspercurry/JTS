@@ -41,6 +41,7 @@ from unittest import mock
 
 import pytest
 from tests._log_events import leaked_lines
+from jasper.web.oauth_pending import PendingFlows
 
 web_common = importlib.import_module("jasper.web._common")
 google_setup = importlib.import_module("jasper.web.google_setup")
@@ -51,14 +52,9 @@ GOOD_CLIENT_ID = "123456789012-abcdefg.apps.googleusercontent.com"
 REDIRECT = "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
 
 
-# ---------------------------------------------------------------------------
-# Public surface
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Canonical render — shared assertions
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def pending_flows(monkeypatch):
+    monkeypatch.setattr(google_setup, "_PENDING_FLOWS", PendingFlows())
 
 
 def _assert_canonical(page: bytes) -> str:
@@ -500,18 +496,16 @@ def test_start_redirects_to_google_authorize(patched_common, tmp_path):
         authorization_url=lambda **k: ("https://accounts.google.com/o/oauth2/auth?x=1", "jasper"),
         code_verifier="verifier123",
     )
-    google_setup._PENDING_FLOWS.clear()
     with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=fake_registry), \
          mock.patch.object(google_setup, "default_token_path_for", return_value="/tok"), \
-         mock.patch.object(google_setup, "_build_flow", return_value=fake_flow):
+         mock.patch.object(google_setup, "_build_flow", return_value=fake_flow) as bf:
         fake.do_POST()
     # Redirected to the Google authorize URL; the PKCE verifier + account
     # name are stashed under an unguessable CSRF nonce (not the account name).
     loc = patched_common.send_see_other.call_args.args[1]
     assert loc.startswith("https://accounts.google.com/o/oauth2/auth")
-    pending = list(google_setup._PENDING_FLOWS.items())
-    assert len(pending) == 1
-    nonce, (name, verifier, _created) = pending[0]
+    nonce = bf.call_args.kwargs["state"]
+    name, verifier = google_setup._PENDING_FLOWS.consume(nonce)
     assert nonce != "jasper"  # not the predictable account name
     assert len(nonce) >= 16  # token_urlsafe(16) → unguessable
     assert (name, verifier) == ("jasper", "verifier123")
@@ -535,7 +529,6 @@ def test_start_uses_creds_rewritten_under_a_running_server(patched_common, tmp_p
         server.RequestHandlerClass, "/start",
         body=_form_body({"name": "jasper"}), cookie=CSRF,
     )
-    google_setup._PENDING_FLOWS.clear()
     with mock.patch.object(google_setup.GoogleRegistry, "load",
                            return_value=mock.Mock()), \
          mock.patch.object(google_setup, "default_token_path_for",
@@ -580,9 +573,7 @@ def test_remove_deletes_account_and_token(patched_common, tmp_path):
 
 def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    # Seed a pending flow as /start would: nonce → (account, verifier, ts).
-    google_setup._PENDING_FLOWS.clear()
-    google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
+    google_setup._PENDING_FLOWS.add("nonce123", ("jasper", "verifier123"))
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
     flow = SimpleNamespace(
         code_verifier=None,
@@ -596,8 +587,7 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg), \
          mock.patch.object(google_setup, "_build_flow", return_value=flow) as bf, \
          mock.patch.object(google_setup, "save_token") as st, \
-         mock.patch.object(google_setup, "_fetch_userinfo", return_value={}), \
-         mock.patch.object(google_setup, "_gc_pending"):  # don't expire our 0.0 ts
+         mock.patch.object(google_setup, "_fetch_userinfo", return_value={}):
         fake.do_GET()
     # Nonce resolved to the account name + stashed PKCE verifier, and the
     # creds read for this request ride along (the file is read once).
@@ -607,7 +597,7 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     assert flow.fetch_token.call_args.kwargs == {"code": "abc"}
     assert st.call_args.args == (str(tmp_path / "tok.json"),)
     # Nonce consumed (single-use).
-    assert "nonce123" not in google_setup._PENDING_FLOWS
+    assert google_setup._PENDING_FLOWS.consume("nonce123") is None
     assert patched_common.restart_voice_daemon.called
     # Redirected back to / with a success flash: "Linked …" lands in the
     # flash kwarg, and the URL is the plain "./".
@@ -620,8 +610,7 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path, c
     # journal line beside the flash gets the same scrubbing — nothing
     # upgrades the raw provider rejection to a traceback dump.
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    google_setup._PENDING_FLOWS.clear()
-    google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
+    google_setup._PENDING_FLOWS.add("nonce123", ("jasper", "verifier123"))
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=nonce123")
     leaked = "GOCSPX-fakefake1234"
     with mock.patch.object(google_setup.GoogleRegistry, "load",
@@ -629,7 +618,7 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path, c
         mock.patch.object(
             google_setup, "_build_flow",
             side_effect=RuntimeError(f"400 invalid_client: client_secret={leaked}"),
-    ), mock.patch.object(google_setup, "_gc_pending"), caplog.at_level(
+    ), caplog.at_level(
         logging.WARNING, logger="jasper.web.google_setup"
     ):
         fake.do_GET()
@@ -644,7 +633,6 @@ def test_callback_rejects_unknown_state_without_exchange(patched_common, tmp_pat
     # CSRF guard: a forged callback with a state that was never issued
     # (or already consumed / expired) must not run the token exchange.
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
-    google_setup._PENDING_FLOWS.clear()
     fake = _make_bound_handler(cfg, "/callback?code=abc&state=forged")
     with mock.patch.object(google_setup, "_build_flow") as bf:
         fake.do_GET()
