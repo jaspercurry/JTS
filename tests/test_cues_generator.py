@@ -23,6 +23,7 @@ from jasper.cues.generator import (
     write_cue,
 )
 from jasper.cues.registry import find
+from tests.download_response_fixtures import FakeResponse
 
 
 # --- Registry ---
@@ -330,16 +331,6 @@ def test_grok_tts_5xx_retries_4xx_does_not(monkeypatch):
             {}, io.BytesIO(b"error body"),
         )
 
-    class _OkResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return b"\x00\x00" * 240
-
     monkeypatch.setattr(
         "jasper.cues.generator.time.sleep", lambda *_: None,
     )
@@ -352,7 +343,7 @@ def test_grok_tts_5xx_retries_4xx_does_not(monkeypatch):
         calls["n"] += 1
         if pending:
             raise pending.pop()
-        return _OkResponse()
+        return FakeResponse(b"\x00\x00" * 240)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_5xx)
     g = GrokTTSGenerator(api_key="x", voice="eve", max_attempts=2)

@@ -35,6 +35,7 @@ from jasper.voice._supervisor import (
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from jasper.voice.turn_playback import PlaybackReport, play_responses
+from tests._live_turn_fake import RecordingMeter
 from tests._async_wait import wait_signalled, wait_until
 from tests._log_events import event_field_maps, event_fields, event_records, leaked_lines
 from tests._playout import FakeTts
@@ -776,17 +777,10 @@ async def test_stop_releases_the_active_turn_and_closes_the_session_once():
 
 
 async def test_the_billable_meter_spans_the_conversation_and_takes_its_final_seconds():
-    marks = []
-
-    class Meter:
-        def mark_started(self):
-            marks.append("started")
-
-        def mark_ended(self, *, seconds=None):
-            marks.append(("ended", seconds))
-
+    meter = RecordingMeter()
+    marks = meter.marks
     conn = OpenAILiveConnection(api_key="test", connect=LiveSocket)
-    conn.set_billable_activity_meter(Meter())
+    conn.set_billable_activity_meter(meter)
     await conn.start(ToolRegistry(), "Be brief.")
     try:
         assert marks == []

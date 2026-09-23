@@ -411,7 +411,7 @@ class GrokTTSGenerator(_ProviderTTS):
             # text — don't burn retries on it.
             if 400 <= e.code < 500:
                 raise RuntimeError(
-                    f"Grok TTS HTTP {e.code} (text={text!r}): "
+                    f"{self._label} TTS HTTP {e.code} (text={text!r}): "
                     f"{e.read()[:200]!r}"
                 ) from e
             raise _RetryableTTSError(str(e)) from e
