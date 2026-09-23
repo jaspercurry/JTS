@@ -607,7 +607,7 @@ def status_document(
         "seat_level_reference_volume_db": seat_level_db,
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
-        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "banked_at", "status", "stale")}
+        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "round_dir", "banked_at", "status", "stale")}
                         if name in banked else None for name in programs},
         "next": {"program": None if action["reason_code"] == "complete" else action["program"],
                  "reason_code": action["reason_code"]},

@@ -689,7 +689,8 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
     assert payload["applied"]["reference_volume_db"] == payload["seat_level_reference_volume_db"] == -9.0
     assert payload["applied"]["leveled_db_spl"] == 77.4
-    assert payload["last_banked"] == {name: {"round_id": name, "banked_at": recent[name]["started_at"],
+    assert payload["last_banked"] == {name: {"round_id": name, "round_dir": recent[name]["round_dir"],
+                                            "banked_at": recent[name]["started_at"],
                                             "status": "partial", "stale": bool(stale_kind)}
                                       if name in rounds else None for name in programs}
     assert payload["next"] == dict(zip(("program", "reason_code"), expected))

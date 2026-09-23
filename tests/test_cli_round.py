@@ -26,7 +26,7 @@ import pytest
 import yaml
 
 from jasper import output_topology, output_topology_store
-from jasper.active_speaker import arm_walk as aw, candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
@@ -1414,3 +1414,38 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
     for worker in arm_runtime.threads:
         worker.join(2)
         assert not worker.is_alive()
+
+
+_CATALOG_ROW = {"round_id", "round_dir", "program", "purposes", "banked_at", "status", "sets", "applied_identity"}
+
+
+@pytest.mark.parametrize("argv,code,reason", [
+    (["list", "--limit", "1"], cli.EXIT_OK, None),
+    (["show", "r1"], cli.EXIT_OK, None),
+    (["show", "absent"], cli.EXIT_UNREADABLE, "round_not_found"),
+    (["show", "no-manifest"], cli.EXIT_REFUSED, "round_manifest_missing"),
+])
+def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch, capsys, argv, code, reason):
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    source = bank_measure_round(tmp_path / "live")
+    session_dir = round_inputs(source).session_dir
+    mark_state(session_dir, "applied")
+    round_bank.bank_round(session_dir, campaign_root=tmp_path / "campaigns", state_path=source / "state.json")
+    next(bank_measure_round(tmp_path / "campaigns", name="no-manifest").rglob("run_manifest.json")).unlink()
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+
+    assert cli.main(argv) == code
+    printed = capsys.readouterr()
+    answer = json.loads(printed.out)
+    assert printed.err.count("\n") == 1
+    if reason is not None:
+        assert (answer["status"], answer["reason"]) == (STATUS_BY_CODE[code], reason)
+        assert printed.err.startswith(f"{answer['status']} ({reason}): ")
+    elif argv[0] == "list":
+        assert (set(answer), answer["truncated"]) == ({"verb", "rounds", "truncated"}, True)
+        assert [set(row) for row in answer["rounds"]] == [_CATALOG_ROW]
+    else:
+        selected = resolve_set(round_inputs(tmp_path / "campaigns" / "r1"))
+        assert set(answer) == {"verb", *_CATALOG_ROW}
+        assert [take["take_id"] for group in answer["sets"] for take in group["takes"]] == list(selected.selected_ids)
