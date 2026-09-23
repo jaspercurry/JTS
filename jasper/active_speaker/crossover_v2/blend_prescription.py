@@ -13,12 +13,7 @@ prose. Refusals raise and are never clamped to the boundary.
 
 Cuts and boosts are different classes and the receipt says which. A boost's
 physics is why: a minimum-phase shortfall can be filled, an interference null
-swallows whatever you feed it. :func:`positional_support` is this class's
-deterministic stand-in for that distinction — an interference null moves with
-the microphone, a radiating shortfall does not — and it is a SPATIAL test, so
-its power is bounded by the angular spread of the cloud it reads. A tightly
-clustered walk can support a boost :mod:`.feature_classifier` would call
-interference, which is one reason :func:`prescription_route` refuses the boost
+swallows whatever you feed it. :func:`prescription_route` refuses the boost
 class outright today.
 """
 
@@ -41,14 +36,12 @@ import numpy as np
 # imported from the ONE biquad evaluator and from the deterministic solver
 # rather than restated, so a door's ceiling and the arithmetic it protects
 # cannot drift apart.
-from jasper.json_fields import finite_float
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.sound.profile import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 
 from .blend_correction import (
     BLEND_FILTER_Q,
     BLEND_MAX_FILTERS,
-    BLEND_MIN_CUT_DB,
     blend_filters_from_mapping,
 )
 
@@ -61,8 +54,6 @@ __all__ = [
     "BLEND_CANDIDATE_FIELD",
     "BLEND_PRESCRIPTION_MALFORMED",
     "BLEND_PRESCRIPTION_REFUSAL_REASONS",
-    "BOOST_MIN_DIP_DB",
-    "BOOST_MIN_TESTIFYING_POSITIONS",
     "BOOST_ROUTE_UNAVAILABLE",
     "PRESCRIPTION_KIND",
     "PRESCRIPTION_MAX_BOOST_Q",
@@ -74,12 +65,10 @@ __all__ = [
     "BlendPrescription",
     "BlendPrescriptionRefused",
     "PositionalEvidence",
-    "PositionalSupport",
     "blend_prescription_to_candidate_fields",
     "composed_grid",
     "find_prohibited_keys",
     "max_q_for_gain",
-    "positional_support",
     "prescription_response_format",
     "prescription_route",
     "prescription_sha256",
@@ -157,22 +146,6 @@ PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 #: ceiling as an inequality.
 PRESCRIPTION_MAX_TOTAL_BOOST_DB = 4.0
 
-#: How deep a per-position deviation must be to count as "the dip is present
-#: here", dB. :data:`BLEND_MIN_CUT_DB` under a reading: it is this program's own
-#: measured model-tracking error, so a shallower dip is indistinguishable from
-#: the instrument.
-BOOST_MIN_DIP_DB = BLEND_MIN_CUT_DB
-
-#: The fewest positions that must testify before the all-but-one rule means
-#: anything. Three: "present at every position but at most one" is VACUOUS at
-#: two — it admits a dip seen at exactly one — and undefined at one. Below it
-#: the receipt carries no positional finding at all rather than a verdict.
-BOOST_MIN_TESTIFYING_POSITIONS = 3
-
-#: How many positions may miss the dip and still leave it supported. Read
-#: together with the count above.
-BOOST_MAX_DISSENTING_POSITIONS = 1
-
 
 # --------------------------------------------------------------------------- #
 # refusal vocabulary — closed, by slug, never by prose
@@ -238,8 +211,9 @@ _PRESCRIPTION_FIELDS = frozenset({
     # harmless: the gate re-derives every one of them.
     "prescription_class",
     "band_hz",
-    "positional_support",
     "rationale_dropped_chars",
+    # Banked receipts carry it; accepted and never read.
+    "positional_support",
 })
 
 #: Fields ONE filter may carry — the reduced record ``chain_response``, the
@@ -276,53 +250,6 @@ PROHIBITED_PRESCRIPTION_KEYS = frozenset({
 
 
 @dataclass(frozen=True)
-class PositionalSupport:
-    """Whether one frequency's dip is a property of the speaker or the seat.
-
-    A fraction, plus the disclosure of how its denominator was arrived at.
-    """
-
-    #: The proposed centre frequency, and the grid bin actually read. They
-    #: differ by up to half a bin; both are stated so a reader can tell a real
-    #: answer from one snapped to a distant bin.
-    freq_hz: float
-    evaluated_at_hz: float
-    #: Every position in the packet's cloud.
-    n_positions: int
-    #: Those whose own validity floor admits :attr:`evaluated_at_hz` — the
-    #: denominator. A position that cannot testify is REMOVED, never counted as
-    #: one that failed to see the dip.
-    n_testifying: int
-    #: Those testifying positions whose deviation at that bin is at least
-    #: :data:`BOOST_MIN_DIP_DB` below the flat reference.
-    n_with_dip: int
-    #: Why testifying positions were removed, when any were. Empty otherwise.
-    excluded_reason: str
-
-    @property
-    def supported(self) -> bool:
-        """The all-but-one rule, over a denominator large enough to mean it."""
-        if self.n_testifying < BOOST_MIN_TESTIFYING_POSITIONS:
-            return False
-        dissenting = self.n_testifying - self.n_with_dip
-        return dissenting <= BOOST_MAX_DISSENTING_POSITIONS
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "freq_hz": self.freq_hz,
-            "evaluated_at_hz": self.evaluated_at_hz,
-            "n_positions": self.n_positions,
-            "n_testifying": self.n_testifying,
-            "n_with_dip": self.n_with_dip,
-            "excluded_reason": self.excluded_reason,
-            "min_testifying_positions": BOOST_MIN_TESTIFYING_POSITIONS,
-            "max_dissenting_positions": BOOST_MAX_DISSENTING_POSITIONS,
-            "min_dip_db": BOOST_MIN_DIP_DB,
-            "supported": self.supported,
-        }
-
-
-@dataclass(frozen=True)
 class BlendPrescription:
     """A validated blend-region correction and the evidence that justifies it.
 
@@ -342,10 +269,6 @@ class BlendPrescription:
     prescriber_operator: str
     #: The region the proposal was checked against, echoed from the packet.
     band_hz: tuple[float, float]
-    #: The positional-support finding for each boost, in filter order. Empty on
-    #: a cut-class prescription: cutting a null flattens the region at every
-    #: position rather than feeding one.
-    positional_support: tuple[PositionalSupport, ...] = ()
     #: The prescriber's own words. NEVER parsed for behaviour — no branch here
     #: or in any caller reads it.
     rationale: str = ""
@@ -374,7 +297,6 @@ class BlendPrescription:
                 "model": self.prescriber_model,
                 "operator": self.prescriber_operator,
             },
-            "positional_support": [s.to_dict() for s in self.positional_support],
             "rationale": self.rationale,
             "rationale_dropped_chars": self.rationale_dropped_chars,
         }
@@ -447,29 +369,6 @@ def prescription_response_format() -> dict[str, Any]:
                 "whose skirts overlap deliver more than either alone"
             ),
         },
-        "boost_positional_finding": {
-            "note": (
-                "a positive gain is a distinct prescription class and carries "
-                "a positional finding on the receipt. It REFUSES NOTHING: a "
-                "dip appearing at only one seat is evidence it may be an "
-                "interference null, which swallows added energy instead of "
-                "being filled by it — weigh it, and let the next measurement "
-                "settle it. The delta probe rolls a boost back if it proves "
-                "spatially costly."
-            ),
-            "min_testifying_positions": BOOST_MIN_TESTIFYING_POSITIONS,
-            "max_dissenting_positions": BOOST_MAX_DISSENTING_POSITIONS,
-            "min_dip_db": BOOST_MIN_DIP_DB,
-            "denominator": (
-                "positions whose own validity floor sits above the proposed "
-                "frequency cannot testify and are removed from the "
-                "denominator; the finding reports both counts"
-            ),
-            "if_evidence_is_missing": (
-                "no positional finding is recorded at all — measure more "
-                "positions to get one; the prescription is not refused for it"
-            ),
-        },
         "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
         "execution_boundary": {
@@ -485,112 +384,6 @@ def prescription_response_format() -> dict[str, Any]:
             ),
         },
     }
-
-
-# --------------------------------------------------------------------------- #
-# the positional bar
-# --------------------------------------------------------------------------- #
-
-
-def positional_support(
-    freq_hz: float,
-    *,
-    positions: Sequence[Mapping[str, Any]],
-    freqs_hz: Sequence[float],
-    reference_db: float,
-) -> PositionalSupport:
-    """Is the dip at ``freq_hz`` a property of the speaker or of one seat?
-
-    Reads the system's OWN persisted per-position curves against its OWN flat
-    reference, with no re-smoothing and no re-derivation. Every argument comes
-    from one packet, so the curves and the reference cannot come from
-    different evaluations. ``positions`` entries are the packet's position
-    records: ``magnitude_db`` on the shared ``freqs_hz`` grid, plus
-    ``validity_floor_hz`` where the capture's own gate established one.
-    """
-    # Every numeric input is coerced ONCE, here. This function is public and
-    # reachable with values that never passed `_finite_number` — a hand-edited
-    # banked artifact can hand it anything JSON admits — so an unusable input
-    # is reported as "nothing could testify" rather than raising.
-    target_hz = finite_float(freq_hz)
-    reference = finite_float(reference_db)
-    try:
-        grid = np.asarray(freqs_hz, dtype=np.float64)
-    except (TypeError, ValueError, OverflowError):
-        grid = np.asarray([], dtype=np.float64)
-    if (
-        target_hz is None
-        or reference is None
-        or grid.ndim != 1
-        or grid.size == 0
-        or not np.all(np.isfinite(grid))
-    ):
-        return PositionalSupport(
-            freq_hz=target_hz if target_hz is not None else float("nan"),
-            evaluated_at_hz=float("nan"),
-            n_positions=len(positions), n_testifying=0, n_with_dip=0,
-            excluded_reason=(
-                "the packet carries no usable frequency grid, centre "
-                "frequency, or flat reference"
-            ),
-        )
-    index = int(np.argmin(np.abs(grid - target_hz)))
-    evaluated_at = float(grid[index])
-
-    testifying = 0
-    with_dip = 0
-    below_floor = 0
-    unreadable = 0
-    for entry in positions:
-        if not isinstance(entry, Mapping):
-            unreadable += 1
-            continue
-        magnitude = entry.get("magnitude_db")
-        if not isinstance(magnitude, Sequence) or isinstance(magnitude, (str, bytes)):
-            unreadable += 1
-            continue
-        if len(magnitude) != grid.size:
-            unreadable += 1
-            continue
-        # A position's own gate may have established a floor below which its
-        # curve is not evidence. ABSENT and UNREADABLE resolve OPPOSITE ways:
-        # absent means no floor was established and the position may testify
-        # about any frequency, while unreadable means a floor was recorded and
-        # cannot be read — treating that as "no floor" would let a position
-        # vouch for a frequency its own gate may have excluded.
-        raw_floor = entry.get("validity_floor_hz")
-        if raw_floor is not None:
-            floor = finite_float(raw_floor)
-            if floor is None:
-                unreadable += 1
-                continue
-            if evaluated_at < floor:
-                below_floor += 1
-                continue
-        value = finite_float(magnitude[index])
-        if value is None:
-            unreadable += 1
-            continue
-        testifying += 1
-        if value - reference <= -BOOST_MIN_DIP_DB:
-            with_dip += 1
-
-    reasons = []
-    if below_floor:
-        reasons.append(
-            f"{below_floor} position(s) have a validity floor above "
-            f"{evaluated_at:.1f} Hz"
-        )
-    if unreadable:
-        reasons.append(f"{unreadable} position curve(s) were unreadable")
-    return PositionalSupport(
-        freq_hz=target_hz,
-        evaluated_at_hz=evaluated_at,
-        n_positions=len(positions),
-        n_testifying=testifying,
-        n_with_dip=with_dip,
-        excluded_reason="; ".join(reasons),
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -787,42 +580,6 @@ def _check_composed(
         )
 
 
-def _check_boost_evidence(
-    filters: tuple[dict[str, Any], ...],
-    evidence: PositionalEvidence | None,
-) -> tuple[PositionalSupport, ...]:
-    """The positional finding, per boosting filter. **It refuses nothing.**
-
-    The numbers ride the receipt as provenance for the prescriber and the
-    household to weigh; a prediction about whether a filter would help may not
-    veto the measurement that settles it
-    (``docs/measurement-loop-doctrine.md`` §2 and §5), and the delta probe
-    rolls a boost back on ``spatially_costly`` downstream. An empty return on a
-    boost-class prescription means the packet could not answer at all — such a
-    prescription carries at least one boosting filter by construction, so
-    ``[]`` cannot mean "nothing to evaluate". What bounds the COST of an
-    admitted boost is ``_check_bounds``.
-    """
-    if evidence is None:
-        return ()
-    positions, freqs_hz, reference_db = evidence
-    if len(positions) < BOOST_MIN_TESTIFYING_POSITIONS:
-        return ()
-    findings: list[PositionalSupport] = []
-    for entry in filters:
-        if float(entry["gain"]) <= 0.0:
-            continue
-        findings.append(
-            positional_support(
-                float(entry["freq"]),
-                positions=positions,
-                freqs_hz=freqs_hz,
-                reference_db=reference_db,
-            )
-        )
-    return tuple(findings)
-
-
 def _parse_prescription(
     raw: Mapping[str, Any],
 ) -> tuple[tuple[dict[str, Any], ...], str, str, str, str, int]:
@@ -903,7 +660,7 @@ def read_blend_prescription(
     forgot one would lose the evidence's opinion and never know.
 
     Order is deliberate — shape, identity, region, per-filter bounds, composed
-    cascade, the positional bar for a boost, and last the route — because each
+    cascade, the route, and last the shipped strict reader — because each
     stage sends a prescriber somewhere different. The bounds are INCLUSIVE, so
     a round's legality does not turn on float noise.
     """
@@ -926,23 +683,6 @@ def read_blend_prescription(
         filters, band, positional_evidence[1] if positional_evidence else None
     )
 
-    support: tuple[PositionalSupport, ...] = ()
-    if prescription_class == "boost":
-        support = _check_boost_evidence(filters, positional_evidence)
-
-    # The authority on whether a cut list is acceptable stays
-    # `blend_filters_from_mapping`; everything above is the diagnostic layer
-    # that says WHY. Asked LAST, so this module can never accept a cut the
-    # shipped reader would refuse, however its own bounds drift.
-    if prescription_class == "cut":
-        vouched = blend_filters_from_mapping([dict(f) for f in filters])
-        if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
-            _refuse(
-                STRICT_READER_DISAGREEMENT,
-                "the shipped persisted-correction reader would not vouch for "
-                "this filter list, so it is not one this system can persist",
-            )
-
     prescription = BlendPrescription(
         filters=filters,
         prescription_class=prescription_class,
@@ -951,11 +691,24 @@ def read_blend_prescription(
         prescriber_model=model,
         prescriber_operator=operator,
         band_hz=band,
-        positional_support=support,
         rationale=rationale,
         rationale_dropped_chars=rationale_dropped,
     )
     prescription_route(prescription)
+
+    # The authority on whether a cut list is acceptable stays
+    # `blend_filters_from_mapping`; everything above is the diagnostic layer
+    # that says WHY. Asked LAST, so this module can never accept a cut the
+    # shipped reader would refuse, however its own bounds drift. `prescription`
+    # is a cut by construction here: the route above has already refused
+    # every boost.
+    vouched = blend_filters_from_mapping([dict(f) for f in filters])
+    if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
+        _refuse(
+            STRICT_READER_DISAGREEMENT,
+            "the shipped persisted-correction reader would not vouch for "
+            "this filter list, so it is not one this system can persist",
+        )
     return prescription
 
 
@@ -976,8 +729,9 @@ def prescription_route(prescription: BlendPrescription) -> str:
        into a fingerprinted field would persist an attribution nothing
        measured.
 
-    The bars above still run first, so a prescriber learns whether its boost
-    would have qualified.
+    The per-filter and composed-cascade bars still run first, so a boost that
+    also fails one of those is refused with THAT more specific reason instead
+    of this one.
     """
     if not prescription.is_boost:
         return BLEND_CANDIDATE_FIELD

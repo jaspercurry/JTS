@@ -286,10 +286,9 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
     """Per-position curves and capture integrity, copied rather than derived.
 
     The grid, the curves and the flat reference all come from ONE artifact, so
-    a reader (and :func:`~.blend_prescription.positional_support`) cannot
-    compare a curve from one evaluation against a reference from another. The
-    one DERIVED field is ``cross_seat_sigma``, which sits here so a spread and
-    the grid it was taken over are not separable.
+    a reader cannot compare a curve from one evaluation against a reference
+    from another. The one DERIVED field is ``cross_seat_sigma``, which sits
+    here so a spread and the grid it was taken over are not separable.
     """
     positions = _mapping(cloud.get("positions"))
     grid = _mapping(positions.get("curve_grid"))
