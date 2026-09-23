@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from ..volume_state import VolumeState
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..music_sources import Source
 from ..platform.control_client import CONTROL_PORT
@@ -196,22 +198,9 @@ def _control_route_allowed_for_install_profile(
     )
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
-        return default
-    if value <= 0:
-        logger.warning("%s=%r is not positive; using %d", name, raw, default)
-        return default
-    return value
-
-
-CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
+CONTROL_MAX_POST_BYTES = bounded_env_int(
+    "JASPER_CONTROL_MAX_POST_BYTES", 4096, lo=1, hi=sys.maxsize,
+)
 # Listen socket refused (address in use, unreachable bind host, privileged
 # port). Listed in jasper-control.service's SuccessExitStatus +
 # RestartPreventExitStatus so the daemon parks instead of climbing
