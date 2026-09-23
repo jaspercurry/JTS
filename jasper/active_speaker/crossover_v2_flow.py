@@ -238,10 +238,13 @@ class CrossoverV2Session:
         self.sound_design_revision = sound_design_revision
         self._preset = source_preset
         self._roles = roles
+        # Lowest role first. ``_tweeter`` is ``None`` on a 1-way main, never aliased.
         self._tweeter: RoleBand | None = roles[1] if len(roles) == 2 else None
         self._tweeter_role = None if self._tweeter is None else self._tweeter.role
         self._fc_hz = None if fc_hz is None else float(fc_hz)
         self._caps = dict(driver_caps_dbfs)
+        # Per-role longest admissible ONE sweep; an absent role composes at its
+        # nominal duration.
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
@@ -252,7 +255,11 @@ class CrossoverV2Session:
                 str(role): tuple(sections)
                 for role, sections in measurement_protection_sections_by_role.items()
             }
+        # Attempts belong to the commissioning journey, not to this capture session.
         self._attempt_history = list(attempt_history)[-MAX_ATTEMPT_HISTORY:]
+        # ``None`` is undeclared spacing, never a default: disclose it rather than
+        # silently folding it into the same 0.0 ``MeasurementGeometry.parallax_us``
+        # already treats as "no correction".
         if driver_spacing_m is None:
             log_event(
                 logger,
@@ -266,6 +273,8 @@ class CrossoverV2Session:
             else float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
         )
+        # Where this round is, and the walk it is in. ONE aggregate: six correlated
+        # fields here could disagree.
         self._journey = CommissionJourney(
             JourneyPlan.from_index_map(
                 index_phase_map
@@ -278,8 +287,11 @@ class CrossoverV2Session:
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
+        # CHECK's measured room floor, held for the MEASURE and lateral priors.
+        # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
         self._lateral_poses: list[LateralPose] = []
+        # Retained per-position evidence in capture order, keyed by group phase.
         self._group_positions: dict[str, list[_CloudPosition]] = {
             phase: [] for phase in self._journey.plan.group_indexes
         }
@@ -298,12 +310,16 @@ class CrossoverV2Session:
         self._measure_specs_by_index = (
             measure_specs_by_index if measure_specs_by_index is not None else {}
         )
+        # Resolved through the resolver the plan builder uses, so the session and the
+        # plan cannot read different pose tables.
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
             verify_prompts
         )
+        # Geometry-locked retakes already spent, per group.
         self._geometry_retries_used: dict[str, int] = {
             phase: 0 for phase in self._journey.plan.group_indexes
         }
+        # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
             caps_dbfs=self._caps,
@@ -314,6 +330,8 @@ class CrossoverV2Session:
                 self._roles, self._lateral_prompts
             ),
         )
+        # Composed ONCE and held: ``program_for_phase`` answers by object identity;
+        # before→after comparability depends on it.
         self._check_program = self._excitation.check_program()
         self._measure_program: ExcitationProgram | None = (
             self._excitation.measure_program(self._gain_plan_db)
@@ -321,6 +339,7 @@ class CrossoverV2Session:
             else None
         )
         self._verify_program = self._excitation.verify_program()
+        # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
         branch_spec = next(
             (
@@ -335,9 +354,15 @@ class CrossoverV2Session:
             if branch_spec is not None
             else None
         )
+        # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
+        # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
         self._last_reason: dict[str, str] = {}
+        # The capture evidence paired with each slot's last rejection; exhaustion reads
+        # this rather than the global pair, which can belong to a different position.
         self._last_pilot_evidence: dict[str, tuple[str, bool | None, bool | None]] = {}
+        # Positions the flow GAVE UP on, so the group closes with what it has instead
+        # of the session dying at the mic.
         self._group_unresolved: dict[str, dict[int, str]] = {
             phase: {} for phase in self._journey.plan.group_indexes
         }
@@ -345,6 +370,8 @@ class CrossoverV2Session:
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
         self._last_failure_code: str | None = None
+        # The pilot evidence belonging to ``_last_failure_code``, ALWAYS written with
+        # it. ``None`` is "no pilot evidence for this failure".
         self._last_failure_pilot_heard: bool | None = None
 
     @property
@@ -873,6 +900,8 @@ class CrossoverV2Session:
                 for role, solve in gain_plan.role_solves.items()
             }
         )
+        # HOLD the ambient report, don't just publish it: without it MEASURE's
+        # per-driver SNR verdict has no noise floor to grade against.
         self._check_ambient_report = (
             dict(analysis.ambient_report) if analysis.ambient_report else None
         )
