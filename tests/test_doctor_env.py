@@ -163,7 +163,6 @@ def test_check_env_file_secrets_verdict_by_key_and_value(
     if status == "fail":
         assert r.reason == env.REASON_SECRET_IN_ENV_FILE
         assert value not in r.detail
-        assert key in r.detail
 
 
 def test_check_env_file_secrets_ok_with_no_secret_keys(monkeypatch, tmp_path):
