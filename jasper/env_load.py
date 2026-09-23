@@ -56,6 +56,7 @@ BASE_ENV_PATH = "/etc/jasper/jasper.env"
 #: PERSISTENT (never /run) so a bonded leader boots with the offset derived.
 AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
 AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
+ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
@@ -64,6 +65,7 @@ OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
 SPEAKER_NAME_ENV_PATH = "/var/lib/jasper/speaker_name.env"
+USB_MIC_ENV_FILE = "/var/lib/jasper/usb_mic.env"
 #: CLIENT_ID + OAUTH_MODE. Separate from ``jasper.env`` so jasper-web can
 #: write it without /etc being RW (systemd ``ProtectSystem=full``).
 SPOTIFY_CREDENTIALS_ENV_PATH = "/var/lib/jasper-intsecrets/spotify_credentials.env"
@@ -108,8 +110,8 @@ ENV_FILES = (
     VOICE_GROUPING_ENV_FILE,
     OUTPUTD_ENV_PATH,
     "/var/lib/jasper/peering.env",
-    "/var/lib/jasper/accessory-mics.env",
-    "/var/lib/jasper/usb_mic.env",
+    ACCESSORY_MIC_ENV_FILE,
+    USB_MIC_ENV_FILE,
     "/var/lib/jasper/wake_corpus_bridge.env",
 )
 
@@ -303,4 +305,3 @@ def load_env_files(paths: "tuple[str, ...] | None" = None) -> None:
     merged = merged_env_files(paths)
     for key, value in merged.items():
         os.environ.setdefault(key, value)
-

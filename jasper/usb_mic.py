@@ -6,10 +6,9 @@
 
 The first shipped slice deliberately reuses the existing UAC2 function: USB
 Audio Input must already be enabled, then this feature adds the reverse
-(Pi-to-host) mono direction.  ``jasper-usbgadget`` owns descriptor composition;
-``jasper-usbmic`` owns the audio relay; this module owns only durable intent and
-the backend-facing view of desired versus observed state. Source selection is
-strictly downstream of JTS voice/wake routing.
+(Pi-to-host) mono direction. ``jasper-usbgadget`` owns descriptor composition;
+``jasper-usbmic`` owns the relay; this module owns durable intent and its
+backend-facing state. Source selection stays downstream of JTS voice/wake routing.
 """
 from __future__ import annotations
 
@@ -27,7 +26,7 @@ from .atomic_io import (
 )
 from .json_fields import as_mapping as _mapping
 from .env_file import read_value
-from .env_load import SOURCE_INTENT_ENV
+from .env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
 from .music_sources import Source
 from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
@@ -35,7 +34,6 @@ from .service_units import USBGADGET_SERVICE
 from .systemd_probe import unit_active
 from .usbgadget import GADGET_CONFIGFS_PATH
 
-INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
 INTENT_KEY = "JASPER_USB_MIC"
 USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
