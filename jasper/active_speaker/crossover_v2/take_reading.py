@@ -246,8 +246,8 @@ def compare_report(
         raise RoundCapturesRefused(REFUSE_COMPARE_RATES_DIFFER, {"a": rate, "b": b.capture.sample_rate})
     (a_window, a_source), (b_window, b_source) = a.window(window_ms), b.window(window_ms)
     window = min(a_window, b_window)
-    bands = [trusted_band_hz(window, side.capture.radiated_band_hz, rate) for side in (a, b)]
-    band = None if None in bands else (max(bands[0][0], bands[1][0]), min(bands[0][1], bands[1][1]))
+    a_band, b_band = (trusted_band_hz(window, side.capture.radiated_band_hz, rate) for side in (a, b))
+    band = None if a_band is None or b_band is None else (max(a_band[0], b_band[0]), min(a_band[1], b_band[1]))
     if band is None or band[1] <= band[0] * 1.5:
         raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {
             "window_ms": window, "a_band_hz": list(a.capture.radiated_band_hz),
@@ -259,7 +259,7 @@ def compare_report(
                   for side in (a, b))
     summary, curves = _difference_report(grid, a_db, b_db, band, remove_level=remove_level)
     same_recording = a.capture.capture_id == b.capture.capture_id
-    arrivals = (a.arrival_ms, b.arrival_ms)
+    a_arrival, b_arrival = a.arrival_ms, b.arrival_ms
     a_basis = a.capture.record_document
     return {
         "parameters": {
@@ -272,8 +272,8 @@ def compare_report(
         "a": capture_row(a.capture), "b": capture_row(b.capture),
         "summary": {
             **summary, "same_recording": same_recording,
-            "relative_arrival_ms": (_number(arrivals[1] - arrivals[0], 3)
-                                    if same_recording and None not in arrivals else None),
+            "relative_arrival_ms": (_number(b_arrival - a_arrival, 3)
+                                    if same_recording and a_arrival is not None and b_arrival is not None else None),
             "calibration_ids": [_calibration_id(a.capture), _calibration_id(b.capture)],
             "differs": sorted(key for key in ("candidate_id", "graph_fingerprint", "position_deg", "vertical_deg",
                                               "mark_distance_m", "level_db", "phase")

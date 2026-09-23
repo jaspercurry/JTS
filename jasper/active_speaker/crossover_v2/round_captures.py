@@ -468,6 +468,8 @@ def _capture_response(
                 raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
             signal, rate = read_wav_mono(wav)
         if retained is None:
+            if program is None:
+                raise RoundCapturesRefused(REFUSE_PROGRAM_UNMATCHED, {"capture": str(wav)})
             program_key = str(program)
             if program_key not in program_audio:
                 program_audio[program_key] = read_wav_mono(program)

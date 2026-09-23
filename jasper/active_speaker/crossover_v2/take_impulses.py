@@ -71,9 +71,10 @@ def write_take_impulses(
     impulses = analysis_impulses(analysis)
     if not impulses:
         return None
+    arrays: dict[str, Any] = {f"r{index}": one.impulse.samples.astype(np.float32)
+                              for index, one in enumerate(impulses)}
     buffer = io.BytesIO()
-    np.savez(buffer, **{f"r{index}": one.impulse.samples.astype(np.float32)
-                        for index, one in enumerate(impulses)})
+    np.savez(buffer, **arrays)
     relative = f"{IMPULSES_DIR}/{take_id}.npz"
     atomic_write_bytes(bundle_dir / relative, buffer.getvalue(), mode=BUNDLE_FILE_MODE)
     entry = record_artifact(
