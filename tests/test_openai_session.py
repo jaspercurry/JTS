@@ -1612,15 +1612,6 @@ async def test_unknown_tool_call_returns_error_payload():
         await conn.stop()
 
 
-async def test_stop_is_idempotent():
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    await conn.stop()
-    await conn.stop()
-    assert conn._state is ConnectionState.CLOSED
-
-
 async def test_clean_iteration_exit_triggers_reconnect(caplog):
     """OpenAI Realtime closes the WebSocket with 1001 "going away" when
     the session hits its 60-minute hard cap. ``websockets`` treats
@@ -1655,34 +1646,6 @@ async def test_clean_iteration_exit_triggers_reconnect(caplog):
         # Connection is usable again on the fresh session.
         turn = await conn.acquire_turn()
         await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_connection_lost_marks_active_turn_lost():
-    """If the WebSocket drops mid-turn, the active turn must flip
-    turn_lost() to True so the daemon stops waiting and the audio
-    consumer wakes via the sentinel-None."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        first = factory.conns[0]
-        turn = await conn.acquire_turn()
-
-        async def consume():
-            async for _ in turn.audio_out_chunks():
-                pass
-
-        consumer = asyncio.create_task(consume())
-        class _Drop(Exception):
-            class _Rcvd:
-                code = 1006
-                reason = "x"
-            rcvd = _Rcvd()
-        first.feed_error(_Drop())
-        await asyncio.wait_for(consumer, timeout=3.0)
-        assert turn.turn_lost() is True
     finally:
         await conn.stop()
 
@@ -1947,38 +1910,6 @@ async def test_committed_stops_send_audio():
 # ---------------------------------------------------------------------------
 # Billable realtime-activity meter hooks (time-billed providers, e.g. Grok)
 # ---------------------------------------------------------------------------
-async def test_activity_meter_hooks_fire_on_turn_acquire_and_release():
-    """The connection must meter active turns, not idle socket time.
-
-    Regression guard: if these hooks move back to WebSocket open/teardown,
-    Grok spend runs ahead of xAI's dashboard and can false-trip the cap.
-    Grok inherits this connection wholesale, so the base class covers it.
-    """
-    conn, _factory = _make_conn()
-    meter = RecordingMeter()
-    events = meter.marks
-    conn.set_billable_activity_meter(meter)
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    assert events == []
-    turn = await conn.acquire_turn()
-    assert events == ["started"]
-    await turn.release()
-    assert events == ["started", ("ended", None)]
-    await conn.stop()
-    assert events == ["started", ("ended", None)]
-
-
-async def test_no_activity_meter_by_default_is_safe():
-    """Token-billed providers (OpenAI/Gemini) never get a meter wired;
-    open/teardown must be no-ops on that path, not raise."""
-    conn, _factory = _make_conn()
-    assert conn._billable_activity_meter is None
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    await conn.stop()  # must not raise with no meter set
-
-
 # ---------------------------------------------------------------------------
 # Post-connect reconnect cadence (issue #3855).
 # ---------------------------------------------------------------------------

@@ -230,7 +230,13 @@ class LiveSocket:
         return self
 
     async def __anext__(self):
-        return await self.events.get()
+        event = await self.events.get()
+        if isinstance(event, BaseException):
+            raise event
+        return event
+
+    def feed_error(self, exc):
+        self.events.put_nowait(exc)
 
 
 

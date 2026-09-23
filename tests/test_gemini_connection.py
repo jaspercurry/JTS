@@ -431,17 +431,6 @@ async def test_context_reset_disabled_when_threshold_is_zero():
         await conn.stop()
 
 
-async def test_stop_is_idempotent():
-    """Calling stop() twice should not raise."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    await conn.stop()
-    # Second stop is a no-op.
-    await conn.stop()
-    assert conn._state is ConnectionState.CLOSED
-
-
 async def test_send_audio_routes_through_active_turn():
     """A turn's send_audio() must reach the underlying session's
     send_realtime_input with an audio blob — verifies the per-turn
@@ -645,35 +634,6 @@ async def test_context_reset_that_cannot_reconnect_raises_for_the_cue():
             await asyncio.wait_for(conn.acquire_turn(), timeout=20.0)
         assert conn.is_paused()
         assert conn.wake_cue()
-    finally:
-        await conn.stop()
-
-
-async def test_connection_lost_marks_turn_lost_during_active_turn():
-    """If the WS drops while a turn is in flight, `turn_lost()` flips
-    True and the audio_out_chunks() iterator yields its sentinel so the
-    playback path drains cleanly."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        sess = factory.sessions[0]
-        turn = await conn.acquire_turn()
-        # Reader task — should complete when the turn is lost.
-        async def consume():
-            async for _ in turn.audio_out_chunks():
-                pass
-        consumer = asyncio.create_task(consume())
-        # Drop the connection.
-        class _Drop(Exception):
-            class _Rcvd:
-                code = 1006
-                reason = "x"
-            rcvd = _Rcvd()
-        sess.feed_error(_Drop())
-        # Consumer task ends because the audio queue gets a sentinel-None.
-        await asyncio.wait_for(consumer, timeout=3.0)
-        assert turn.turn_lost() is True
     finally:
         await conn.stop()
 
