@@ -156,20 +156,6 @@ def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
     return store_snapshot()
 
 
-def _record_live_model_error(**observation: Any) -> bool:
-    """Claim one durable identity for the conductor's persistence seam."""
-    from jasper.active_speaker.model_error_store import (
-        ModelErrorConflictError,
-        record_model_error,
-    )
-
-    try:
-        record_model_error(**observation)
-    except ModelErrorConflictError:
-        return False
-    return True
-
-
 def reset_v2_journey_state() -> None:
     """Clear the journey; keep the playing graph's proof and reset disclosure."""
     from jasper.active_speaker.crossover_v2.coordinator import (
@@ -290,65 +276,6 @@ def review_declined(state: Mapping[str, Any] | None) -> bool:
         if isinstance(candidate, Mapping) else ""
     )
     return str(decision.get("candidate_fingerprint") or "") == current
-
-
-def _applied_gate() -> bool:
-    """The conductor's ``apply_complete`` seam: reads the durable applied flag."""
-    state = load_v2_state()
-    return bool(state and state.get("applied") is True)
-
-
-def _applied_offset_gate() -> float:
-    """The conductor's ``applied_offset_db`` seam: the whole-band level move
-    the apply declared (#1811), read fresh off durable state.
-
-    Written by :func:`observe_apply_success` on the apply's own request
-    thread (the auto-apply worker's, before the two-stage split removed it);
-    read by the delta probe on a LATER session's runner thread. Durable state
-    is the only thing the two share — since the split they are not even the
-    same session — which is why this is a seam rather than a constructor
-    argument, the same reason ``apply_complete`` and ``apply_failed`` are.
-
-    ``0.0`` for an absent, malformed, or non-finite value: "nothing known".
-    The probe treats that honestly (the whole shift stays visible in
-    ``residual_offset_db``), so a missing value degrades to today's behaviour
-    rather than to a false claim that the level was accounted for.
-    """
-    state = load_v2_state()
-    raw = (state or {}).get("expected_post_apply_offset_db")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return 0.0
-    value = float(raw)
-    return value if math.isfinite(value) else 0.0
-
-
-def _apply_failure_gate() -> str:
-    """The conductor's ``apply_failed`` seam: reads a durable apply failure
-    code (empty when none), persisted through the SAME
-    ``persist_conductor_state`` path every other capture failure uses — see
-    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.authorize_begin``,
-    which refuses the deferred VERIFY hold outright once this names a code
-    rather than holding it toward a dishonest capture_timeout. Retained with
-    that hold and, like it, unreached by any shipped session since the
-    two-stage split (D10) — the writer it was built for was the auto-apply
-    worker thread, which is gone.
-
-    N1 (adversarial review, 2026-07-20): the contract is LITERAL — this seam
-    answers "did the apply itself fail?", never "is SOME failure code sitting
-    in durable state for any reason." Any other code that happens to be
-    persisted (e.g. a stale value from an unrelated path) must not be misread
-    by authorize_begin as an apply failure; only ``REASON_APPLY_FAILED``
-    qualifies.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
-
-    state = load_v2_state()
-    failure = (state or {}).get("failure")
-    if isinstance(failure, Mapping):
-        code = str(failure.get("code") or "")
-        if code == REASON_APPLY_FAILED:
-            return code
-    return ""
 
 
 def _resolve_measurement_level_trims(

@@ -108,8 +108,7 @@ _SEED: tuple[MechanismSpec, ...] = (
         title="Boundary/SBIR interference",
         # Mechanism-conditional, and the split is a DETECTOR requirement (plan
         # §4 M5): a position-variant interference null routes `physical` and
-        # NEVER `eq`; boundary loading permits `eq`. The promotion path only
-        # ever sees identified interference nulls.
+        # NEVER `eq`; boundary loading permits `eq`.
         fix_classes=("physical", "eq"),
         discriminating_probes=(PROBE_POSITION_VARIANCE, PROBE_ROTATION),
         corpus_evidence_tier=EVIDENCE_TIER_CORROBORATING,

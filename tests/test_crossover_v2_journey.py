@@ -35,10 +35,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
-    STAGE_MEASURE_CAPABILITIES,
     CommissionJourney,
     JourneyPlan,
-    open_stage,
 )
 
 # A stage-1-shaped map: the anchor pair, a two-pose lateral group, a two-
@@ -146,27 +144,6 @@ def test_a_declaration_overrides_the_walk_in_both_directions():
     ).post_apply_verifies is False
 
 
-@pytest.mark.parametrize(
-    "target,expected", [(0, False), (1, True), (6, True)]
-)
-def test_open_stage_reads_the_tiers_post_apply_position_count(target, expected):
-    """``>= 1`` is the whole rule, and it lives here rather than in the host."""
-
-    opening = open_stage(
-        STAGE_MEASURE_CAPABILITIES,
-        index_phase_map=STAGE1_MAP,
-        verify_capture_target=target,
-    )
-    assert opening.plan.post_apply_verifies is expected
-
-
-def test_open_stage_without_a_target_leaves_the_walk_derived_reading():
-    opening = open_stage(
-        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
-    )
-    assert opening.plan.post_apply_verifies is True
-
-
 # transitions
 
 
@@ -181,14 +158,6 @@ def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
     assert journey.accepted_capture_phases() == (
         PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE
     )
-
-
-# stage capabilities
-
-
-def test_a_stage_requiring_nothing_is_missing_nothing_when_handed_nothing():
-    opening = open_stage(STAGE_MEASURE_CAPABILITIES, index_phase_map=STAGE1_MAP)
-    assert opening.missing == ()
 
 
 # the conductor over the journey — delegation, not a copy
@@ -632,11 +601,6 @@ def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():
     first = JourneyPlan.from_index_map(STAGE1_MAP)
     second = JourneyPlan.from_index_map(dict(STAGE1_MAP))
     assert first == second
-    assert open_stage(
-        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
-    ) == open_stage(
-        STAGE_MEASURE_CAPABILITIES, index_phase_map=VERIFY_ONLY_MAP
-    )
 
 
 def test_mark_restored_clears_constructed_applied_state():

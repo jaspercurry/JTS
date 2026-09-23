@@ -340,10 +340,10 @@ class ReasonSpec:
     # The fix/action copy the decision-screen template renders. One reason, one
     # action (the Language guide).
     message: str
-    # Optional per-reason override for the HARD-STOP screen's action button.
-    # Consulted by that template ONLY: it is the one screen whose default
-    # action is a generic destination (``/sound/``) rather than a load-bearing
-    # control. Shape is the ``next_action`` mapping the envelope emits:
+    # Optional per-reason action: the HARD-STOP screen's button (its default is
+    # a generic destination rather than a load-bearing control) and the
+    # ``next_action`` of a refusal body or preflight issue (``refusal_copy_for``,
+    # ``PreflightIssue.from_code``). Shape is the mapping the envelope emits:
     # ``{"id", "label", "href"}``.
     next_action: Mapping[str, Any] | None = None
     # Structured only for retryable rows. ``message``/``banner`` above is
@@ -625,6 +625,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
         "JTS could not confirm the listening volume was restored. Recover the "
         "safe volume before continuing.",
+        next_action={"id": "recover_volume", "label": "Recover safe listening volume",
+                     "href": "/sound/speaker/crossover/"},
+    ),
+    "driver_protection_invalid": ReasonSpec(
+        "driver_protection_invalid", TEMPLATE_HARD_STOP, 0, "",
+        "The driver protection confirmed in speaker setup cannot be used for "
+        "this measurement. Review the driver limits, then measure again.",
+        next_action={"id": "review_safety_limits", "label": "Review driver limits",
+                     "href": "/sound/speaker/#driver-safety-issues"},
     ),
     "program_admission_refused": ReasonSpec(
         "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",

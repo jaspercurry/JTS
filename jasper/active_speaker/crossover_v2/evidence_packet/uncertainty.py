@@ -62,10 +62,10 @@ def _capture_snr_block(
 ) -> dict[str, Any]:
     """Per-capture signal-to-noise, off the round's own banked takes.
 
-    Every accepted take carries the analysis's flat ``diagnostic`` block
+    A banked take may carry the analysis's flat ``diagnostic`` block
     (:func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`'s
-    output, written on by ``bind_position_retention``); this publishes the SNR
-    columns out of it, one row per take that carried one.
+    output); this publishes the SNR columns out of it, one row per take that
+    carried one.
 
     Read from the BUNDLE, so there is nothing to attribute: a take under this
     bundle's own artifacts root is this bundle's by construction. Each capture

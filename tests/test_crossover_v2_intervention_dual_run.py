@@ -5,12 +5,14 @@
 """What survives of the pure-planner suite, over the banked 2026-08-10 jts3 inputs.
 
 The planner itself is deleted; these pin the contract it was built on — one
-candidate corner, refused as a type when its sections disagree — and the σ
-composition's named refusal for an unregistered mic tier.
+candidate corner, refused as a type when its sections disagree — the σ
+composition's named refusal for an unregistered mic tier, and the refusal of a
+non-finite trim term.
 """
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,8 +25,10 @@ from tests.crossover_v2_fixtures import _candidate_sections
 from tests.test_crossover_v2_incident_replay import (
     CONFIGURED_FC_HZ,
     SELECTED_FC_HZ,
+    SESSION_CONTEXT,
     _conductor,
     _response,
+    _session_preset,
 )
 
 
@@ -79,3 +83,22 @@ def test_an_unregistered_mic_tier_is_a_named_refusal_not_a_bare_key_error():
         iv.compose_sigma_db(
             own, own, tier="studio", valid_band_hz=(150.0, 4000.0)
         )
+
+
+def test_a_non_finite_fit_never_becomes_a_trim():
+    """The anchor's non-positive normalize is a max(), which a NaN passes."""
+    from jasper.active_speaker.linearization_fit import LinearizationFilter
+
+    drivers = [
+        iv.DriverEvidence(role, _response(role), tuple(SESSION_CONTEXT["sweep_band_hz"][role]))
+        for role in ("woofer", "tweeter")
+    ]
+    fits = {
+        "woofer": SimpleNamespace(filters=()),
+        "tweeter": SimpleNamespace(filters=(
+            LinearizationFilter("Peaking", CONFIGURED_FC_HZ, 1.0, float("nan")),
+        )),
+    }
+    with pytest.raises(iv.NonFiniteTrimError) as caught:
+        iv.resolve_trims_after_fit(drivers, fits, _session_preset().crossover_regions)
+    assert caught.value.refusal_reason == "trim_not_finite"

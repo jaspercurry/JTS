@@ -22,10 +22,6 @@ from ..pose_curve import (
 from .carve_out_copy import (
     _geometry_guidance_copy as _geometry_guidance_copy,
 )
-from .cloud_group import (
-    CLOUD_CURVE_MAX_JSON_POINTS as CLOUD_CURVE_MAX_JSON_POINTS,
-    _decimate_curve_for_json as _decimate_curve_for_json,
-)
 from .group_floor import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
@@ -54,7 +50,6 @@ from .records import (
 )
 
 __all__ = [
-    "CLOUD_CURVE_MAX_JSON_POINTS",
     "GEOMETRY_RETRY_POSITIONS",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",

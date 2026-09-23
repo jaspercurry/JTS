@@ -7,14 +7,11 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import stat
-import threading
 
 import pytest
 
-from jasper.active_speaker import model_error_store as store
 from jasper.active_speaker.attempts_loop import (
     FLOOR_BASIS_MEASURED,
     FLOOR_BASIS_POLICY,
@@ -26,19 +23,16 @@ from jasper.active_speaker.model_error_store import (
     DEFAULT_STATE_PATH,
     MAX_MODEL_ERROR_RECORDS,
     MODEL_ERROR_STATE_KIND,
-    ModelErrorConflictError,
     SCHEMA_VERSION,
     STATE_PATH_ENV,
     adopt_floor,
     load_state,
     model_error_state_path,
-    record_model_error,
     store_snapshot,
 )
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_records
 
 METRIC = "max_db_notch_excluded"
-SPEAKER = "speaker-a"
 
 
 def _floor() -> FloorStats:
@@ -170,247 +164,30 @@ def test_adopting_a_floor_replaces_rather_than_merges(tmp_path):
     assert restored.p95_db is None
 
 
+def _seed_history(path, *attempt_ids):
+    path.write_text(json.dumps({
+        "kind": MODEL_ERROR_STATE_KIND,
+        "model_error": [{"attempt_id": attempt_id} for attempt_id in attempt_ids],
+    }), encoding="utf-8")
+
+
 def test_adopting_a_floor_preserves_existing_model_error_history(tmp_path):
     path = tmp_path / "store.json"
-    record_model_error(
-        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
-        predicted_db=1.0, realized_db=1.4,
-        path=path,
-    )
+    _seed_history(path, "a1")
     adopt_floor(_floor(), path=path)
     assert len(load_state(path)["model_error"]) == 1
 
 
-def test_model_error_sign_is_realized_minus_predicted(tmp_path, caplog):
-    path = tmp_path / "store.json"
-    with caplog.at_level(logging.INFO):
-        state = record_model_error(
-            speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
-            predicted_db=1.0, realized_db=1.4, path=path,
-        )
-    record = state["model_error"][0]
-    # Positive means the hardware came out WORSE than the model promised.
-    assert record["error_db"] == pytest.approx(0.4)
-    fields = event_fields(caplog, "active_speaker.model_error_recorded")
-    assert fields["speaker_id"] == SPEAKER
-    state = record_model_error(
-        speaker_id=SPEAKER, attempt_id="a2", metric=METRIC,
-        predicted_db=1.4, realized_db=1.0, path=path,
-    )
-    assert state["model_error"][0]["error_db"] == pytest.approx(-0.4)
-
-
-def test_model_error_write_is_idempotent_by_stable_observation_identity(
-    tmp_path, caplog,
-):
-    path = tmp_path / "store.json"
-    observation = {
-        "speaker_id": SPEAKER,
-        "attempt_id": "candidate-a",
-        "metric": METRIC,
-        "predicted_db": 0.0,
-        "realized_db": 0.9,
-        "path": path,
-    }
-
-    with caplog.at_level(logging.INFO):
-        first = record_model_error(**observation)
-        repeated = record_model_error(**observation)
-
-    assert len(first["model_error"]) == 1
-    assert len(repeated["model_error"]) == 1
-    assert repeated["model_error"][0]["speaker_id"] == SPEAKER
-    fields = event_fields(caplog, "active_speaker.model_error_duplicate_ignored")
-    assert fields["speaker_id"] == SPEAKER
-
-
-def test_model_error_identity_conflict_refuses_to_replace_the_first_observation(
-    tmp_path,
-):
-    path = tmp_path / "store.json"
-    record_model_error(
-        speaker_id=SPEAKER,
-        attempt_id="candidate-a",
-        metric=METRIC,
-        predicted_db=0.0,
-        realized_db=0.9,
-        path=path,
-    )
-
-    with pytest.raises(ModelErrorConflictError):
-        record_model_error(
-            speaker_id=SPEAKER,
-            attempt_id="candidate-a",
-            metric=METRIC,
-            predicted_db=0.0,
-            realized_db=0.7,
-            path=path,
-        )
-
-    records = load_state(path)["model_error"]
-    assert len(records) == 1
-    assert records[0]["realized_db"] == pytest.approx(0.9)
-
-
 def test_store_snapshot_reads_floor_and_count_as_one_owned_view(tmp_path):
     path = tmp_path / "store.json"
+    _seed_history(path, "candidate-a")
     adopt_floor(_floor(), path=path)
-    record_model_error(
-        speaker_id=SPEAKER,
-        attempt_id="candidate-a",
-        metric=METRIC,
-        predicted_db=0.0,
-        realized_db=0.9,
-        path=path,
-    )
 
     snapshot = store_snapshot(path)
 
     assert snapshot.floor is not None
     assert snapshot.floor.metric == METRIC
     assert snapshot.model_error_count == 1
-
-
-def test_floor_adoption_and_live_record_serialize_their_whole_update(
-    tmp_path, monkeypatch,
-):
-    """Atomic rename is not enough: both RMW paths share one store lock."""
-
-    path = tmp_path / "store.json"
-    floor_write_ready = threading.Event()
-    release_floor_write = threading.Event()
-    record_write_seen = threading.Event()
-    real_write = store._write_state
-
-    def staged_write(write_path, state):
-        if state["floor"] is not None and not state["model_error"]:
-            floor_write_ready.set()
-            assert release_floor_write.wait(2.0)
-        if state["model_error"]:
-            record_write_seen.set()
-        real_write(write_path, state)
-
-    monkeypatch.setattr(store, "_write_state", staged_write)
-    errors: list[Exception] = []
-
-    def capture_error(action):
-        try:
-            action()
-        except (AssertionError, OSError, RuntimeError, ValueError) as exc:
-            errors.append(exc)
-
-    floor_thread = threading.Thread(
-        target=capture_error,
-        args=(lambda: adopt_floor(_floor(), path=path),),
-        daemon=True,
-    )
-    floor_thread.start()
-    assert floor_write_ready.wait(2.0)
-
-    record_thread = threading.Thread(
-        target=capture_error,
-        args=(lambda: record_model_error(
-            speaker_id=SPEAKER,
-            attempt_id="candidate-a",
-            metric=METRIC,
-            predicted_db=0.0,
-            realized_db=0.9,
-            path=path,
-        ),),
-        daemon=True,
-    )
-    record_thread.start()
-    record_entered_while_floor_was_paused = record_write_seen.wait(0.2)
-    release_floor_write.set()
-    floor_thread.join(2.0)
-    record_thread.join(2.0)
-
-    assert not floor_thread.is_alive()
-    assert not record_thread.is_alive()
-    assert errors == []
-    assert record_entered_while_floor_was_paused is False
-    state = load_state(path)
-    assert state["floor"] is not None
-    assert [item["attempt_id"] for item in state["model_error"]] == [
-        "candidate-a",
-    ]
-
-
-def test_conflicting_record_writers_serialize_identity_check_and_write(
-    tmp_path, monkeypatch,
-):
-    path = tmp_path / "store.json"
-    first_write_ready = threading.Event()
-    release_first_write = threading.Event()
-    second_finished = threading.Event()
-    real_write = store._write_state
-
-    def staged_write(write_path, state):
-        record = state["model_error"][0]
-        if record["realized_db"] == 0.9:
-            first_write_ready.set()
-            assert release_first_write.wait(2.0)
-        real_write(write_path, state)
-
-    monkeypatch.setattr(store, "_write_state", staged_write)
-    first_errors: list[Exception] = []
-    second_errors: list[Exception] = []
-
-    def write(realized_db, errors, finished=None):
-        try:
-            record_model_error(
-                speaker_id=SPEAKER,
-                attempt_id="candidate-a",
-                metric=METRIC,
-                predicted_db=0.0,
-                realized_db=realized_db,
-                path=path,
-            )
-        except (AssertionError, OSError, RuntimeError, ValueError) as exc:
-            errors.append(exc)
-        finally:
-            if finished is not None:
-                finished.set()
-
-    first_thread = threading.Thread(
-        target=write, args=(0.9, first_errors), daemon=True,
-    )
-    first_thread.start()
-    assert first_write_ready.wait(2.0)
-    second_thread = threading.Thread(
-        target=write,
-        args=(0.7, second_errors, second_finished),
-        daemon=True,
-    )
-    second_thread.start()
-    second_completed_while_first_was_paused = second_finished.wait(0.2)
-    release_first_write.set()
-    first_thread.join(2.0)
-    second_thread.join(2.0)
-
-    assert not first_thread.is_alive()
-    assert not second_thread.is_alive()
-    assert first_errors == []
-    assert second_completed_while_first_was_paused is False
-    assert len(second_errors) == 1
-    assert isinstance(second_errors[0], ModelErrorConflictError)
-    records = load_state(path)["model_error"]
-    assert len(records) == 1
-    assert records[0]["realized_db"] == pytest.approx(0.9)
-
-
-def test_model_error_history_is_newest_first_and_bounded(tmp_path):
-    path = tmp_path / "store.json"
-    for index in range(MAX_MODEL_ERROR_RECORDS + 8):
-        record_model_error(
-            speaker_id=SPEAKER, attempt_id=f"a{index}", metric=METRIC,
-            predicted_db=0.0, realized_db=float(index), path=path,
-        )
-    records = load_state(path)["model_error"]
-    assert len(records) == MAX_MODEL_ERROR_RECORDS
-    newest = MAX_MODEL_ERROR_RECORDS + 7
-    assert records[0]["attempt_id"] == f"a{newest}"
-    assert records[-1]["attempt_id"] == f"a{newest - MAX_MODEL_ERROR_RECORDS + 1}"
 
 
 def test_over_long_history_on_disk_is_trimmed_on_read(tmp_path):
@@ -420,18 +197,6 @@ def test_over_long_history_on_disk_is_trimmed_on_read(tmp_path):
         "model_error": [{"attempt_id": f"a{i}"} for i in range(200)],
     }), encoding="utf-8")
     assert len(load_state(path)["model_error"]) == MAX_MODEL_ERROR_RECORDS
-
-
-def test_context_rides_along_verbatim(tmp_path):
-    path = tmp_path / "store.json"
-    state = record_model_error(
-        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
-        predicted_db=1.0, realized_db=1.0,
-        path=path, context={"build_sha": "abc123", "band_hz": [1000.0, 4000.0]},
-    )
-    assert state["model_error"][0]["context"] == {
-        "build_sha": "abc123", "band_hz": [1000.0, 4000.0],
-    }
 
 
 def test_a_corrupt_file_reads_as_empty_rather_than_half_trusted(tmp_path, caplog):
@@ -482,11 +247,6 @@ def test_an_unusable_stored_floor_is_dropped_not_half_trusted(
 def test_writes_are_atomic_and_leave_no_temp_files(tmp_path):
     path = tmp_path / "store.json"
     adopt_floor(_floor(), path=path)
-    record_model_error(
-        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
-        predicted_db=1.0, realized_db=1.1,
-        path=path,
-    )
     assert sorted(item.name for item in tmp_path.iterdir()) == [
         "store.json", "store.json.lock",
     ]

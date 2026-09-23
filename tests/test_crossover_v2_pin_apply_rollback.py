@@ -17,7 +17,7 @@ from jasper.sound.settings import saved_sound_layers
 
 import pytest
 
-from jasper.web import correction_crossover_v2 as v2host, correction_crossover_v2_status as v2status
+from jasper.web import correction_crossover_v2_status as v2status
 from tests.test_active_speaker_baseline_profile import (
     _v2_candidate,
 )
@@ -36,7 +36,7 @@ def _isolated_v2_state(tmp_path):
 @pytest.mark.parametrize("paired,offerable,applied_record", [
     (False, False, True), (False, True, True), (True, False, True), (True, True, True), (True, True, False),
 ])
-def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired, offerable, applied_record):
+def test_rollback_candidate_needs_a_paired_offerable_applied_record(monkeypatch, tmp_path, paired, offerable, applied_record):
     _seed_baseline_apply_environment(monkeypatch, tmp_path)
     monkeypatch.setattr(v2status, "load_applied_baseline_profile_state", lambda: (
         {"source": {"measured_candidate_fingerprint": CURRENT}} if applied_record else None
@@ -58,7 +58,6 @@ def test_rollback_candidate_agrees_across_surfaces(monkeypatch, tmp_path, paired
     assert state["candidate"] is None and state["applied"] is False
     expected = PREVIOUS if paired and offerable and applied_record else None
     assert v2status.rollback_candidate(state) == expected
-    assert v2host._previous_candidate_known() is (expected is not None)
 
 
 def test_apply_ignores_a_legacy_graph_finding(monkeypatch, tmp_path):

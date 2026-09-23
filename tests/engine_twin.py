@@ -206,11 +206,9 @@ class FakeRecords:
     """The record slot: an in-memory bank a test can read straight off.
 
     :meth:`bank` takes ONE record of any kind, not one capture record (the
-    2026-08-26 FOLD ruling): the five ``V2FlowSeams`` publishers land through
-    this seam too, so a check, a candidate, a cloud result, a finding set and a
-    round receipt are all banked records here. The twin keeps them in one list
-    because ids are opaque and nothing reads them by kind — the real store's
-    kind table is what decides where each one lands.
+    2026-08-26 FOLD ruling). The twin keeps them in one list because ids are
+    opaque and nothing reads them by kind — the real store's kind table is
+    what decides where each one lands.
 
     :attr:`banked` IS the read-back door. The seam is write-only since
     ADR-0198, so a test states its "after" over the list rather than through a
@@ -398,18 +396,15 @@ async def open_session(
         await session.close()
 
 
-def retained_take_writer(store, capture_session_id, refs, run_async, *, retention=None, **kwargs):
-    from jasper.web.correction_crossover_v2_evidence import bind_position_retention, _record_store
+def retained_take_writer(store, capture_session_id, run_async):
+    from jasper.web.correction_crossover_v2_evidence import _record_store
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         CapturedRecordStore, WiredCaptureAnswer, place_wired_answer,
     )
     from pathlib import Path
 
-    retention = retention or bind_position_retention(store, refs, **kwargs)
-    records = CapturedRecordStore(_record_store(store, capture_session_id), None,
-                                  enrich=retention.enrich, after_bank=retention.after_bank)
+    records = CapturedRecordStore(_record_store(store, capture_session_id), None)
     def bank(result, metadata):
-        retention(result, metadata)
         answer = place_wired_answer(
             Path(store.bundle_dir), WiredCaptureAnswer(wav=result.wav),
             phase=metadata.get("phase", ""), group=metadata.get("take_id", ""),

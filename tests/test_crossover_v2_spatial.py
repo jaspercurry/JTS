@@ -742,7 +742,7 @@ def test_the_storage_seam_names_the_take_the_record_names():
         def identify_artifact(self, path):
             return SimpleNamespace(fingerprint="fp")
 
-    seam = retained_take_writer(_Store(), "capture", {}, asyncio.run)
+    seam = retained_take_writer(_Store(), "capture", asyncio.run)
     take_id = spatial.take_id_for("cloud_measure_03", 7)
     seam(
         SimpleNamespace(wav=None),

@@ -7,9 +7,8 @@
 ``docs/historical/attribution-stage-plan.md`` §3.1 defines it: ``{mechanism, band,
 evidence, confidence, fix_class, household_copy, probes_run,
 probes_recommended}``. This module is that artifact, its validation, and its
-self-describing serialization. It computes nothing — detectors (WO-4) and the
-promotion path (:mod:`jasper.attribution.promotion`) produce findings; this
-module only decides whether a produced finding is well-formed.
+self-describing serialization. It computes nothing; it only decides whether a
+finding is well-formed.
 
 **Two vocabularies, one artifact** (§3.1). ``mechanism`` is *internal*
 taxonomy: it names physics, it may name hardware, and it appears on
@@ -23,7 +22,7 @@ that names one. Whether household copy may ever become more specific is
 structured attribution verdict existing; a session with no findings behaves
 exactly as it does today. That is why :class:`FindingSet` may legitimately be
 empty and why its *absence* is a first-class readable state rather than an
-error — see :mod:`jasper.attribution.storage`.
+error.
 
 **Two additions to §3.1's eight fields, both required by §7's acceptance.**
 ``cites`` carries the id-indexed, hash-verified pointers to the evidence a
@@ -469,8 +468,7 @@ class FindingSet:
 
     An **empty** set is meaningful and legal: attribution ran and found
     nothing. That is a different statement from the set being *absent*, which
-    means the bundle predates attribution entirely — see
-    :func:`jasper.attribution.storage.read_finding_set`.
+    means the bundle predates attribution entirely.
     """
 
     session: SessionIdentity

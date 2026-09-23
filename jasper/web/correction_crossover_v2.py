@@ -15,7 +15,6 @@ from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 
 
 import dataclasses
-import logging
 import secrets
 from dataclasses import dataclass
 from functools import partial
@@ -38,17 +37,10 @@ from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, pr
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
-from jasper.active_speaker.crossover_v2.journey import (
-    STAGE_MEASURE_CAPABILITIES,
-    StageOpening,
-    open_stage,
-)
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
 from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-from jasper.log_event import log_event
-
-logger = logging.getLogger(__name__)
+from jasper.active_speaker.crossover_v2.summed_alignment import session_reference
 
 V2_CAPTURE_KIND_SESSION = "crossover_v2:session"
 
@@ -86,178 +78,6 @@ class V2PreparedSession:
     session_id: str = ""
 
 
-def _active_graph_fingerprint() -> str:
-    """Identity of the Layer-A profile currently on the speaker, or ``""``.
-
-    The conductor's ``entry_graph_fingerprint`` seam (#2291): which DSP graph
-    the entry baseline was measured through, so a receipt can say what the
-    "before" was a before OF.
-
-    **Reuses the existing owner rather than hashing anything here.**
-    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
-    returns the frozen applied SSOT with its ``candidate_fingerprint``
-    *recomputed* from the immutable source + snapshot by
-    :func:`~jasper.active_speaker.baseline_profile.baseline_candidate_fingerprint`
-    — that repair is why this reads the stored field instead of re-deriving it:
-    the loader has already refused to trust a stale or absent stamp. One hash
-    function, one definition of "which graph".
-
-    ``""`` for a speaker with no applied profile — its first-ever round, where
-    the entry graph genuinely has no identity to name. The conductor turns that
-    into its own ``unknown`` word; this function does not invent one, because
-    "the loader found nothing" and "the conductor has no seam" are the same
-    answer to the round and should not become two vocabularies.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        APPLIED_PROFILE_DISPLACED,
-        applied_profile_displacement,
-        load_applied_baseline_profile_state,
-    )
-
-    applied = load_applied_baseline_profile_state()
-    if not isinstance(applied, Mapping):
-        return ""
-    # The record is only an answer to "which graph is on the speaker" while it
-    # is still the graph on the speaker (#2537). An out-of-band reconcile
-    # changes the RUNNING config without touching this record, and a receipt
-    # that then named the record's fingerprint would assert a graph the speaker
-    # had not played for hours — which is exactly the 2026-08-15 cycle-4 shape,
-    # one layer up from the restore it misdirected. A displaced record answers
-    # ``""``, which the coordinator turns into its own ``unknown`` word: the
-    # honest "we cannot name it", not a wrong name.
-    #
-    # ONLY on a positive displacement. The other two codes mean the comparison
-    # could not be made — no statefile to read, no path on the record — and
-    # this module's standing rule is that an absent measurement is not evidence
-    # of a defect. Dropping a fingerprint because a statefile was unreadable
-    # would make every box without one report ``unknown`` forever.
-    if applied_profile_displacement(applied) == APPLIED_PROFILE_DISPLACED:
-        log_event(
-            logger,
-            "correction.crossover_v2_applied_profile_displaced",
-            level=logging.WARNING,
-            surface="entry_graph_fingerprint",
-        )
-        return ""
-    return str(applied.get("candidate_fingerprint") or "")
-
-
-def _previous_candidate_known() -> bool:
-    from jasper.web.correction_crossover_v2_status import rollback_candidate  # lazy: status imports commissioning state
-
-    return rollback_candidate(v2state.load_v2_state()) is not None
-
-
-def _applied_graph_boosts() -> bool:
-    """Does the graph currently on the speaker put energy IN? (#2291)
-
-    #2318's fail-closed cell asks this of the APPLIED intervention, and the
-    grading conductor cannot answer it from its own state: stage 2 builds a
-    fresh conductor whose ``_candidate`` is never set (only stage 1's commit
-    assigns one), so the predicate read ``None`` on every shipped round and
-    the cell was unreachable — a boosted round with unprovable benefit ended
-    accepted, which is exactly the state that rule exists to prevent.
-
-    **One owner for "what did we apply": the applied profile SSOT.** Not the
-    durable ``state["candidate"]``, which is a display summary carrying
-    ``linearization_outcome`` and per-octave figures but not the filters; and
-    not a re-derivation, because
-    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`
-    already owns which copy of a profile's linearization is authoritative.
-    That mapping is ALREADY reduced, so it goes straight to the shipped
-    predicate with no ``linearization_filters_by_role`` in between — that
-    reducer returns ``{}`` for an already-reduced mapping, which would read as
-    "this graph boosts nothing" and quietly restore the bug.
-
-    **Fails closed.** An unreadable profile answers "boosted", so an
-    intervention nobody can inspect comes off rather than staying on evidence
-    nobody has — the same direction the conductor takes when this seam is
-    absent entirely.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-        profile_linearization,
-    )
-    from jasper.active_speaker.camilla_yaml import linearization_has_boost
-
-    try:
-        return linearization_has_boost(
-            profile_linearization(load_applied_baseline_profile_state())
-        )
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        log_event(
-            logger,
-            "correction.crossover_v2_applied_boost_unreadable",
-            level=logging.WARNING,
-            exc_info=True,
-        )
-        return True
-
-
-def _applied_profile_now() -> Mapping[str, Any] | None:
-    """The Layer-A profile the speaker is playing right now, or ``None`` (#2611).
-
-    The conductor's PREVIOUS-graph seam. Read at MEASURE time, when the apply
-    has not happened yet, so "currently applied" and "the graph this apply would
-    replace" are the same profile — and read through the same
-    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
-    record ``_applied_graph_boosts`` and :func:`_active_graph_fingerprint` read,
-    so the commanded axis, the boost predicate and the entry identity all
-    describe one graph.
-
-    **``_applied_offset_gate`` is a DIFFERENT source, and saying otherwise was
-    wrong.** That seam reads ``expected_post_apply_offset_db`` off the v2
-    durable state (``load_v2_state``), written at Apply time by
-    :func:`observe_apply_success` from the two profiles' program headrooms. It
-    is a number about an apply, banked once; this is a record about a graph,
-    re-read live. They are two accounts of one apply that are meant to be
-    disjoint (per-role gains on the commanded axis, the common pre-split gain in
-    the offset) and they are not one SSOT with two readers.
-
-    **The displaced-record guard, the same one
-    :func:`_active_graph_fingerprint` applies** (#2537's 2026-08-15 cycle-4
-    shape). An out-of-band reconcile changes the RUNNING config without
-    touching this record, so a displaced record no longer answers "which graph
-    is on the speaker" — and this PR makes that record rollback-DECIDING, which
-    is a stronger claim than the fingerprint it was first refused for. Only a
-    POSITIVE displacement refuses: the other two codes mean the comparison could
-    not be made, and an absent measurement is not evidence of a defect.
-
-    **Fails to ``None``, and that is not the fail-closed direction here — it is
-    the honest one.** ``None`` makes the commanded axis unavailable and the delta
-    probe ``unavailable``: no rollback, and no pass either. There is deliberately
-    no fabricated substitute, because grading against a graph nobody ran is the
-    defect #2611 records.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        APPLIED_PROFILE_DISPLACED,
-        applied_profile_displacement,
-        load_applied_baseline_profile_state,
-    )
-
-    try:
-        applied = load_applied_baseline_profile_state()
-        if applied is not None and (
-            applied_profile_displacement(applied) == APPLIED_PROFILE_DISPLACED
-        ):
-            log_event(
-                logger,
-                "correction.crossover_v2_applied_profile_displaced",
-                level=logging.WARNING,
-                surface="commanded_axis",
-            )
-            return None
-        return applied
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        log_event(
-            logger,
-            "correction.crossover_v2_applied_profile_unreadable",
-            level=logging.WARNING,
-            exc_info=True,
-        )
-        return None
-
-
 def bind_v2_engine_seams(
     *, session_graph: Any, compose_stimulus: Any, capture_stimulus: Any,
     records: Any, volume_claim: Any,
@@ -275,99 +95,20 @@ def bind_v2_engine_seams(
 
 
 def bind_v2_stage_seams(
-    opening: StageOpening,
     *,
     evidence_store: Any,
-    capture_session_id: str,
-    # ``dict``, not ``Mapping``: the four evidence binders below take the
-    # MUTABLE refs dict ``bind_evidence_publishers`` returns and write artifact
-    # fingerprints into it. Widening this to ``Mapping`` would type-check here
-    # and lie about that.
+    # ``dict``, not ``Mapping``: the analyze seam writes each phase's
+    # calibration and provenance into it.
     refs: dict[str, Any],
     publish_check: Any,
-    publish_candidate: Any,
-    run_async: Any,
-    camilla_factory: Any = None,
-    provenance: CaptureProvenanceRecorder | None = None,
-    layout: str | None = None,
 ) -> Any:
-    """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
-
-    ``provenance`` is threaded here only to reach the analyze seam: the SAME
-    recorder the caller handed ``bind_production_play``, which is the pairing.
-
-    The shortfall is :attr:`~...journey.StageOpening.missing`, derived where the
-    declaration lives so the two cannot disagree. Logging it lives HERE rather
-    than in the journey or at the call sites: the journey is a pure aggregate
-    with no journal of its own, and a third caller that bound seams without
-    declaring them would put the journal's account of stage shape back out of
-    one owner's hands.
-    """
-    from jasper.active_speaker.crossover_v2_flow import V2FlowSeams, V2RecordPublishers
-
-    capabilities = opening.capabilities
-    missing = opening.missing
-    log_event(
-        logger, "correction.crossover_v2_stage_capabilities",
-        stage=capabilities.stage, session_id=capture_session_id,
-        provides=",".join(sorted(capabilities.provides)),
-        requires=",".join(sorted(capabilities.requires)),
-        missing=",".join(missing),
-    )
-    if missing:
-        # WARNING, and its own event: a required prior that did not cross the
-        # bridge does not stop this stage, so nothing else would ever say the
-        # verdict it is about to produce was reached with an input absent.
-        log_event(
-            logger, "correction.crossover_v2_stage_capability_unavailable",
-            level=logging.WARNING, stage=capabilities.stage,
-            session_id=capture_session_id, missing=",".join(missing),
-        )
-    # The one-capture handoff from the analyze seam to the banking seam, in
-    # the same type the play seam already uses for its own hop. A second
-    # recorder rather than a shared slot because the single-shot ``take`` is
-    # exactly the semantics this hop needs too: a take banked with no analyze
-    # behind it must name no provenance, never the previous capture's.
-    banked_provenance = CaptureProvenanceRecorder()
-    # The analyze seam's own hop over the same gap, for the blocks only it
-    # holds. Bound unconditionally: with the capture-dump ring gone the banked
-    # record is the only file these numbers can land in.
-    banked_evidence = v2evidence.CaptureEvidenceCarry()
-    from jasper.web.correction_crossover_v2_restore import current_graph_fingerprint  # lazy: host binding cycle
-
-    from jasper.active_speaker.crossover_v2.summed_alignment import session_reference  # lazy: NumPy analysis boundary
+    """Build one stage's :class:`V2FlowSeams`."""
+    from jasper.active_speaker.crossover_v2_flow import V2FlowSeams, V2RecordPublishers  # lazy: avoid measurement-stack import cost on unused paths
 
     return V2FlowSeams(
         summed_alignment_reference=partial(session_reference, Path(evidence_store.bundle_dir)),
-        analyze=v2evidence.bind_production_analyze(
-            meta=refs, provenance=provenance, carry=banked_provenance,
-            evidence=banked_evidence,
-        ),
-        records=V2RecordPublishers(check=publish_check, candidate=publish_candidate),
-        apply_complete=v2state._applied_gate,
-        apply_failed=v2state._apply_failure_gate,
-        bank_take=v2evidence.bind_position_retention(
-            evidence_store, refs,
-            provenance=banked_provenance, evidence=banked_evidence, layout=layout,
-        ),
-        applied_offset_db=v2state._applied_offset_gate,
-        # #2611: the graph an apply replaces, for the commanded axis. Bound on
-        # both stages for ``entry_graph_fingerprint``'s reason — "what is live
-        # right now" is not a stage asymmetry — though only stage 1 commits a
-        # candidate and therefore only stage 1 reads it today.
-        applied_profile=_applied_profile_now,
-        record_model_error=v2state._record_live_model_error,
-        rollback_available=_previous_candidate_known,
-        tuning_graph_fingerprint=current_graph_fingerprint,
-        # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
-        # ``entry_graph_fingerprint``'s reason — what is live right now is not
-        # a stage asymmetry — and it is the only way the grading stage can
-        # answer at all, since its conductor never holds the candidate.
-        applied_boosts=_applied_graph_boosts,
-        # Unconditional on both stages: "which graph is live right now" is not
-        # a stage asymmetry, and #2291's receipt is what lets a LATER round
-        # bind the currently-active profile as its own entry graph.
-        entry_graph_fingerprint=_active_graph_fingerprint,
+        analyze=v2evidence.bind_production_analyze(meta=refs),
+        records=V2RecordPublishers(check=publish_check),
     )
 
 
@@ -528,7 +269,7 @@ def prepare_v2_session(
         rc = dataclasses.replace(rc, pi_session=dataclasses.replace(rc.pi_session, session_id=capture_session_id))
         session_id = rc.pi_session.session_id
         v2volume.session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
-        publish_check, publish_candidate, refs = v2evidence.bind_evidence_publishers(
+        publish_check, refs = v2evidence.bind_evidence_publishers(
             evidence_store, session_id, run_async
         )
         capture_provenance = CaptureProvenanceRecorder()
@@ -550,21 +291,8 @@ def prepare_v2_session(
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
             program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain, context=context),
         )
-        opening = open_stage(
-            STAGE_MEASURE_CAPABILITIES,
-            index_phase_map=stage1_index_phase,
-            verify_capture_target=0,
-        )
         seams = bind_v2_stage_seams(
-            opening,
-            evidence_store=evidence_store,
-            capture_session_id=session_id,
-            refs=refs,
-            publish_check=publish_check,
-            publish_candidate=publish_candidate,
-            run_async=run_async,
-            camilla_factory=camilla_factory,
-            provenance=capture_provenance, layout=context.preset.channel_map.layout,
+            evidence_store=evidence_store, refs=refs, publish_check=publish_check,
         )
         conductor = CrossoverV2Session.hydrate(
             prior_snapshot,
@@ -576,8 +304,8 @@ def prepare_v2_session(
             driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=seams,
-            index_phase_map=opening.plan.index_phase_map,
-            post_apply_verifies=opening.plan.post_apply_verifies,
+            index_phase_map=stage1_index_phase,
+            post_apply_verifies=False,
             driver_spacing_m=context.driver_spacing_m,
             lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
             lateral_prompts=lateral_prompts,

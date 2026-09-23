@@ -114,11 +114,9 @@ def _banked_file(store: BankedRecordStore, record_id: str) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-#: What the analyze seam carries onto a banked take, with a real value each.
-#: The blocks themselves are ``correction_crossover_v2._capture_evidence_blocks``'
-#: subject; here they are three nested mappings the store has to carry
-#: whole — a shape it had never been handed before, since every other field on
-#: a take record is a scalar.
+#: The analysis blocks a banked take may carry, with a real value each: three
+#: nested mappings the store has to carry whole, where every other field on a
+#: take record is a scalar.
 _EVIDENCE_BLOCKS = {
     "diagnostic": {
         "phase": "measure", "epsilon_ppm": 1.5, "frames_received": 48000,
