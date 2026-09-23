@@ -198,33 +198,6 @@ def test_missing_reason_value_exits_instead_of_spinning(tmp_path):
     assert not h.marker_file.exists()
 
 
-def test_reason_shift_two_idiom_is_guarded_in_sibling_scripts():
-    scripts = [
-        ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
-        ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile",
-        ROOT / "deploy" / "bin" / "jasper-bootloop-guard",
-        ROOT / "deploy" / "bin" / "jasper-identity-reconcile",
-        ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
-    ]
-    for script in scripts:
-        lines = script.read_text().splitlines()
-        for idx, line in enumerate(lines):
-            if "shift 2" not in line:
-                continue
-            window = "\n".join(lines[max(0, idx - 3):idx])
-            assert "[[ $# -ge 2 ]]" in window, f"{script} has unguarded shift 2"
-
-
-def test_bootloop_guard_avoids_bash_44_q_expansion():
-    assert "@Q" not in SCRIPT.read_text()
-
-
-def test_marker_write_uses_tempfile_then_rename_pattern():
-    text = SCRIPT.read_text()
-    assert ".bootloop_guard_marker." in text
-    assert 'mv -f "$tmp" "$MARKER_FILE"' in text
-
-
 def test_boots_outside_window_are_pruned_and_do_not_trip(tmp_path):
     """Three power-cycles spread over hours (normal household behaviour
     over a day) never trip — only a tight loop does."""

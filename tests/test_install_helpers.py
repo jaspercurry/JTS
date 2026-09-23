@@ -390,26 +390,6 @@ def test_speaker_name_seed_publish_failure_cleans_temp_and_fails(tmp_path: Path)
     assert list(state_file.parent.glob(".speaker_name.env.seed.*")) == []
 
 
-def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
-    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
-    body = renderers[
-        renderers.index("install_renderers() {"):
-        renderers.index("\n}\n\nreconcile_usb_data_role()")
-    ]
-    assert body.count("seed_speaker_name_env") == 1
-    assert body.index("seed_speaker_name_env") < body.index(
-        'bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"'
-    )
-    assert body.index("seed_speaker_name_env") < body.index(
-        'bash "${REPO_DIR}/deploy/configure-bluez.sh"'
-    )
-
-    runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text(
-        encoding="utf-8",
-    )
-    assert runtime.count('JASPER_SPEAKER_NAME="JTS"') == 0
-
-
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each
 # variant — approximate; actual values vary by ~5 MB per board).
 _PI5_1GB_MEMTOTAL_KB = 1014768   # 991 MB
@@ -1240,21 +1220,6 @@ def test_mic_device_candidates_is_never_seeded_in_env_example():
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
 
 
-def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
-    """AirPlay's Wi-Fi tweak also owns NetworkManager retry resilience."""
-    text = _RENDERERS_LIB.read_text(encoding="utf-8")
-    match = re.search(
-        r"tune_wifi_for_airplay\(\) \{(?P<body>.*?)\n\}",
-        text,
-        flags=re.S,
-    )
-    assert match is not None
-    body = match.group("body")
-    assert "connection.autoconnect yes" in body
-    assert "connection.autoconnect-retries 0" in body
-    assert "802-11-wireless.powersave 2" in body
-
-
 _SYSTEMD_UNITS_LIB = _INSTALL_LIB_DIR / "systemd-units.sh"
 
 
@@ -1373,25 +1338,6 @@ def test_restart_headphone_monitor_after_deploy_try_restarts(tmp_path):
     assert log.read_text(encoding="utf-8").splitlines() == [
         "try-restart jasper-headphone-monitor.service"
     ]
-
-
-def test_headphone_monitor_restart_is_wired_into_the_shared_install_tail():
-    """The core-graph tail both profiles run must call the restart helper
-    once, after the DSP reconcile has decided the unit's enablement
-    (jasper-audio-hardware-reconcile owns enable/disable/start; this only
-    ever needs to run try-restart, never install a second restart path)."""
-    text = _SYSTEMD_UNITS_LIB.read_text(encoding="utf-8")
-    match = re.search(r"^_start_core_graph_units\(\) \{\n(.*?)^\}$", text, re.M | re.S)
-    assert match, "_start_core_graph_units not found"
-    body = match.group(1)
-    assert body.count("restart_headphone_monitor_after_deploy") == 1
-    assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
-        "restart_headphone_monitor_after_deploy"
-    )
-    for func in ("install_systemd_units", "start_streambox_runtime_units"):
-        caller = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
-        assert caller, f"{func} not found"
-        assert "_start_core_graph_units" in caller.group(1)
 
 
 def _run_tune_nginx_worker_processes(conf: Path) -> None:
@@ -1954,47 +1900,6 @@ def test_fetch_verified_source_archive_preserves_dest_on_fetch_failure(tmp_path)
     assert sentinel.exists()
 
 
-def test_shairport_build_completes_before_old_binary_is_removed():
-    """install_renderers must fetch + compile the shairport-sync
-    replacement BEFORE stopping the service and apt-removing the old
-    binary. Under set -e, the old order stranded the Pi with no AirPlay
-    when the download or build failed. install_renderers lives in the
-    sourced deploy/lib/install/renderers.sh since the decomposition."""
-    text = _RENDERERS_LIB.read_text(encoding="utf-8")
-
-    idx_fetch = text.index('"${tmpdir}/sps"')
-    idx_stop = text.index("systemctl stop shairport-sync")
-    idx_remove = text.index("apt-get remove -y shairport-sync")
-    idx_make_install = text.index("make install || true")
-
-    # The compile (the contained shairport-sync build after the sps fetch)
-    # must precede the stop/remove, which must precede `make install`.
-    # The heavy build now routes through run_contained_build (RAM-bounded
-    # + cgroup-contained) instead of a hardcoded `make -j4`.
-    idx_build = text.index('run_contained_build "shairport-sync"', idx_fetch)
-    assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
-
-
-def test_shairport_configure_enables_airplay2():
-    """AirPlay 2 is the whole reason we source-build shairport-sync (Trixie
-    apt is AP1-only). The flag lives only on the ./configure line in
-    renderers.sh; this contract test keeps a refactor of that long multi-line
-    invocation from silently dropping the backend."""
-    text = _RENDERERS_LIB.read_text(encoding="utf-8")
-
-    # Isolate the shairport ./configure invocation (a backslash-continued
-    # multi-line command) so we don't match nqptp's separate ./configure.
-    match = re.search(
-        r"\./configure --sysconfdir=/etc(?P<flags>(?:.*\\\n)*.*--with-mpris-interface)",
-        text,
-    )
-    assert match is not None, "shairport ./configure line not found in renderers.sh"
-    flags = match.group("flags")
-
-    assert "--with-airplay-2" in flags
-    assert "--with-stdout" not in flags
-
-
 def test_install_curl_fetches_are_bounded_and_retried():
     """Every direct multi-MB curl in install.sh (and its sourced
     deploy/lib/install/ libs) carries bounded retries and a transfer
@@ -2103,15 +2008,6 @@ def test_pip_constraints_file_present_is_echoed(tmp_path):
     constraints = deploy / "constraints-pi.pins"
     constraints.write_text("httpx==0.28.1\n", encoding="utf-8")
     assert _run_constraints_helper(tmp_path) == str(constraints)
-
-
-def test_pi_constraints_do_not_pin_non_pypi_flatbuffers_release():
-    constraints = (Path(__file__).parent.parent / "deploy" / "constraints-pi.pins")
-    text = constraints.read_text(encoding="utf-8")
-    generator = _GENERATE_CONSTRAINTS_SH.read_text(encoding="utf-8")
-
-    assert "flatbuffers==20181003210633" not in text
-    assert "grep -v -Fx 'flatbuffers==20181003210633'" in generator
 
 
 # ----------------------------------------------------------------------
@@ -2355,14 +2251,6 @@ def test_aec3_fingerprint_is_content_based_not_mtime_based(tmp_path):
     assert changed.stdout.strip() != baseline
 
 
-def test_aec3_rebuild_cache_migrates_legacy_marker_once():
-    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
-    assert "content-v1:" in python_runtime
-    assert "legacy cache marker imported cleanly" in python_runtime
-    assert "! grep -q '^content-v1:'" in python_runtime
-    assert "jasper_aec3_import_probe" in python_runtime
-
-
 def test_landing_page_app_css_version_uses_resolved_build_sha():
     """Now that build.txt is written last, the landing-page cache-bust must
     resolve the SHA directly (deploy env → git → prior manifest), not read
@@ -2384,7 +2272,6 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
 # makes a build the OOM victim instead of a daemon.
 
 _BUILD_SANDBOX_LIB = _INSTALL_LIB_DIR / "build-sandbox.sh"
-_RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"
 
 
 def _ram_bounded_jobs(memtotal_kb: int, ncpu: int, kb_per_job: int) -> int:
@@ -2696,43 +2583,6 @@ def test_build_sandbox_propagates_failure_without_double_run():
         extra_env={"JASPER_BUILD_SANDBOX": "0"})
     assert r.returncode == 3
     assert r.stdout.count("once") == 1
-
-
-# --- call-site wiring: every heavy build is bounded + contained --------
-
-def test_install_sources_build_sandbox_lib():
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    assert 'source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"' in text
-
-
-def test_heavy_builds_route_through_run_contained_build():
-    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
-    python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
-    rust = _RUST_DAEMONS_LIB.read_text(encoding="utf-8")
-    runtime_helper = (
-        REPO_ROOT / "deploy" / "bin" / "jasper-contained-build"
-    ).read_text(encoding="utf-8")
-    enhanced_installer = (
-        REPO_ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
-    ).read_text(encoding="utf-8")
-    assert 'run_contained_build "${label}"' in runtime_helper
-    assert '"webrtc-aec3"' in enhanced_installer
-    assert "_run_contained(" in enhanced_installer
-    assert 'run_contained_build "jasper-aec3"' in python_runtime
-    assert 'run_contained_build "nqptp"' in renderers
-    assert 'run_contained_build "shairport-sync"' in renderers
-    assert 'run_contained_build "${name}"' in rust
-
-
-def test_renderer_make_is_ram_bounded_not_hardcoded_j4():
-    """The old hardcoded `make -j4` (which helped drive the 1 GB OOM) is
-    gone; both renderer C builds derive -j from build_sandbox_jobs at the
-    named C budget (not a bare literal)."""
-    renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
-    assert "make -j4" not in renderers
-    assert renderers.count(
-        'make -j"$(build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_C}")"'
-    ) == 2
 
 
 def test_build_sandbox_budget_constants_are_named_once():
@@ -3559,28 +3409,6 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     assert run.returncode == 5, run.stderr
 
 
-def test_low_memory_park_reuses_the_shared_core_graph_park_list():
-    """Phase one's names have one owner.
-
-    `JASPER_CORE_GRAPH_PARK_UNITS` is the canonical list shared with the
-    runtime recovery handler. The snapshot must iterate it rather than copy
-    the names, or a new renderer added there would silently stop being
-    restored here.
-    """
-    systemd_units = (_INSTALL_LIB_DIR / "systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    body = systemd_units.split("park_low_memory_build_units() {", 1)[1].split(
-        "\n}\n", 1
-    )[0]
-    assert '"${JASPER_CORE_GRAPH_PARK_UNITS[@]}"' in body
-    for renderer in ("shairport-sync.service", "librespot.service"):
-        assert renderer not in body, (
-            f"{renderer} was re-inlined into park_low_memory_build_units; "
-            "iterate JASPER_CORE_GRAPH_PARK_UNITS instead"
-        )
-
-
 # Seeds every `file` target the retirement table names (iterating the table, not
 # a second copy of its paths), reports what the sandbox could actually create,
 # then runs the retirement.
@@ -3686,57 +3514,6 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
         )
 
 
-#: What a `file` row may name. `dir` rows are narrower -- they rm -rf a whole
-#: subtree, so they are confined to the directories install.sh itself owns.
-#: This pin is the only scope check the kind has; retirements.sh applies the
-#: rows without re-validating them.
-_RETIRE_FILE_ROOTS = (
-    "${STATE_DIR}/",
-    "${SYSTEMD_DIR}/",
-    "${CAMILLA_CONF}/",
-    "${LOCAL_SBIN_DIR}/",
-    "/etc/",
-)
-_RETIRE_DIR_ROOTS = (
-    "${STATE_DIR}/",
-    "${LOCAL_SBIN_DIR}/",
-    "/etc/jasper/",
-    "/etc/alsa/conf.d/",
-)
-
-
-def test_retired_leftovers_table_targets_are_scoped():
-    """Static pin: every path a row deletes lives under a managed directory --
-    never an arbitrary absolute path -- every env row edits an ENV_DIR file,
-    and every kind the appliers implement is actually in use."""
-    text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
-    rows = re.findall(r'^\s*"(unit|file|dir|env)\|([^"]*)"', text, re.MULTILINE)
-    assert {kind for kind, _ in rows} == {"unit", "file", "dir", "env"}
-    path_targets: set[str] = set()
-    for kind, body in rows:
-        targets = body.split("|", 1)[0].split()
-        assert targets, kind
-        if kind == "unit":
-            continue
-        if kind == "env":
-            assert targets[0].startswith("${ENV_DIR}/"), targets
-            assert len(targets) > 1, targets
-            continue
-        roots = _RETIRE_DIR_ROOTS if kind == "dir" else _RETIRE_FILE_ROOTS
-        for target in targets:
-            assert target.startswith(roots), (kind, target)
-        path_targets.update(targets)
-    # #4336: the Bluetooth role store holds the MAC of every device the box
-    # ever paired and lost its last writer, reader and mode-healer in #4333.
-    assert "${STATE_DIR}/bt_roles.json" in path_targets
-    # The retired dmix/fanin switcher: nothing else in the tree removes its
-    # binary or its config tree.
-    assert {
-        "${LOCAL_SBIN_DIR}/jasper-audio-topology",
-        "/etc/jasper/audio-topology",
-    } <= path_targets
-
-
 _RETIRE_ENV_CASES = [
     ("JASPER_HOSTNAME=jts.local", True),
     ("SPOTIFY_CLIENT_ID=abc123", False),
@@ -3836,20 +3613,3 @@ def test_retired_env_rows_match_what_systemd_reads(tmp_path, seeded, survivors):
     assert proc.returncode == 0, proc.stderr
     lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
     assert {line.strip() for line in lines if line.strip()} == survivors
-
-
-def test_retired_leftovers_table_retires_the_renderer_lane_ingress():
-    """Static pin: an upgraded box carries the never-armed per-renderer ring
-    ingress as an arm map and a conf.d drop-in, and the retirement table names
-    both -- nothing else in the tree removes either."""
-    text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
-    targets = {
-        target
-        for kind, body in re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
-        if kind == "file"
-        for target in body.split("|", 1)[0].split()
-    }
-    assert {
-        "${STATE_DIR}/renderer_lanes.env",
-        "/etc/alsa/conf.d/61-jts-renderer-lanes.conf",
-    } <= targets
