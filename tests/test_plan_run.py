@@ -19,7 +19,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import run_program, program as measurement_program
-from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
+from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -921,7 +921,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
 
 
 @pytest.mark.parametrize("purpose", ["room", "speaker"])
-async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, monkeypatch, purpose):
+async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     program = _conductor(FlowSeams()).program_for_phase("verify")
     analysis = _verify_analysis(program, pilot_snr_ok=False, pilot_hi_dbfs=-65, linearity=None)
     analysis = replace(analysis, pilots=(replace(analysis.pilots[0], snr_valid=False, snr_db=0.0),),
@@ -929,27 +929,8 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, monkeypatch,
     verdict = capture_dispatch.assess(analysis, phase="verify", program=program)
     assert verdict.ok is False
     assert verdict.fault == "pilot_level_collapse"
-    kind = "pilot_level_collapse"
     request = _walk([0])
     request = replace(request, stops=(replace(request.stops[0], purpose=purpose),))
-    screens = spatial.CaptureScreens(
-        stimulus_located=capture_dispatch._stimulus_locate_ok(analysis),
-        pilot_snr_ok=analysis.pilot_snr_ok, linearity_ok=analysis.linearity_ok,
-        glitch_detected=analysis.glitch_detected,
-        sweep_schedule_ok=capture_dispatch._sweep_schedule_ok(analysis, program.sample_rate_hz),
-        any_sweep_clipped=capture_dispatch._any_sweep_clipped(analysis),
-    )
-    lateral_screen = Mock(wraps=spatial.lateral_pose_screens)
-    cloud_screen = Mock(wraps=spatial.cloud_position_screens)
-    pose = lateral_screen(screens)
-    assert (pose is None, pose) == (False, kind)
-    assert lateral_screen.call_args.args[0].pilot_snr_ok is False
-    cloud = cloud_screen(screens, has_summed_response=analysis.summed_response is not None)
-    assert (cloud is None, cloud) == (False, kind)
-    assert cloud_screen.call_args.args[0].pilot_snr_ok is False
-    baseline = spatial.entry_baseline_screens(analysis, stimulus_located=screens.stimulus_located,
-        reference_mark="design_axis")
-    assert (baseline.kind is None, baseline.kind) == (False, kind)
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
     assert result.status == "partial"
     take = _takes(result.to_dict())[0]

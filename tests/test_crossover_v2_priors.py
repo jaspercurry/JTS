@@ -353,7 +353,7 @@ def test_verify_is_handed_the_prediction_the_tracking_comparison_needs():
     sentinel = ("freqs", "db")
     conductor = _wired_conductor(measure_predicted_sum=sentinel)
 
-    assert conductor.verify_priors().predicted_sum is sentinel
+    assert conductor._verify_priors().predicted_sum is sentinel
 
 
 def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():

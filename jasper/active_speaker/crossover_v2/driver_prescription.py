@@ -1141,8 +1141,7 @@ def driver_prescription_to_candidate_fields(
     reason to report, and emitting those zeroed would bank a fit-quality claim
     nothing measured. The one exception is :data:`MIC_TIER_FIELD`, carried
     forward from the replaced entry — it names the MICROPHONE that measured the
-    round, not this correction, and ``_mic_trust_ceiling_hz`` reads it to
-    decide where the delta probe may grade at all (#2649).
+    round, not this correction (#2649).
 
     ``headroom_cost_db`` is omitted but NOT owned here: a charge is a property
     of the emitted chain (filters, crossover sections, committed trim) and this

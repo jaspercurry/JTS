@@ -532,7 +532,7 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     ABSOLUTE-level consumer, because ambient subtraction shifts it. This use is
     safe for two independent reasons. (1) It is a RELATIVE cross-ATTEMPT
     comparison, never a true absolute-level read. (2) The confound is bounded far
-    below the gate: ``_verify_verdict`` refuses any attempt whose ``pilot_snr_ok``
+    below the gate: ``_assess_recording`` refuses any attempt whose ``pilot_snr_ok``
     is False before reaching G3, so every attempt here cleared
     ``PILOT_MIN_SNR_DB`` (≈12.4 dB) on the QUIET pilot and the HI pilot sits a
     further ``PILOT_LEVEL_DELTA_DB`` (10 dB) above, i.e. ≥22.4 dB in-band SNR. At

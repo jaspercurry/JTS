@@ -453,7 +453,7 @@ class CrossoverV2Session:
     def _measure_sweep_bounds(self) -> tuple[float, float] | None:
         return _priors.measure_sweep_bounds(self._measure_program)
 
-    def verify_priors(self) -> MeasurementPriors:
+    def _verify_priors(self) -> MeasurementPriors:
         return _priors.verify_priors(
             fc_hz=self._fc_hz,
             source_preset=self._preset,
@@ -461,10 +461,10 @@ class CrossoverV2Session:
             sweep_bounds=self._measure_sweep_bounds(),
         )
 
-    def cloud_priors(self) -> MeasurementPriors:
+    def _cloud_priors(self) -> MeasurementPriors:
         return _priors.cloud_priors(fc_hz=self._fc_hz)
 
-    def entry_baseline_priors(self) -> MeasurementPriors:
+    def _entry_baseline_priors(self) -> MeasurementPriors:
         return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
 
     @property

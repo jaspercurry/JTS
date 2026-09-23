@@ -6,10 +6,6 @@
 
 from __future__ import annotations
 
-from jasper.json_fields import finite_float
-
-
-
 import math
 from typing import Any, Mapping
 
@@ -21,6 +17,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
+from jasper.json_fields import finite_float
 
 
 # The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
@@ -278,7 +275,6 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     # made the fail and inconclusive arms unreachable: a re-verify that failed
     # against a carried-forward passing group reached ``GRADE_GRADED`` with
     # ``graded=True``, and every surface keying on those read it as all clear.
-    #
     verify_failed = outcome == "fail" or CLAIM_FAIL in {
         tracking_status, absolute_status,
     }

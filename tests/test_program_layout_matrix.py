@@ -96,7 +96,8 @@ def speaker(request, tmp_path_factory):
     return SimpleNamespace(
         name=name, topology=topology, safety_profile=safety, role_targets=targets, profile=profile,
         candidate=candidate, roles_bands=tuple(bands), graphs={}, rendered={}, directory=tmp_path_factory.mktemp(name),
-        conductor=SimpleNamespace(_excitation=excitation, _gain_plan_db=dict.fromkeys(roles, BASE_STIMULUS_PEAK_DBFS)),
+        conductor=SimpleNamespace(excitation=excitation, gain_plan_db=dict.fromkeys(roles, BASE_STIMULUS_PEAK_DBFS),
+                                  set_program=lambda *args: None),
     )
 
 

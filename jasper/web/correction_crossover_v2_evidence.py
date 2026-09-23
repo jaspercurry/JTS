@@ -261,7 +261,8 @@ def bind_production_analyze(
     ``{"applied": False}`` annotation.
 
     ``phase`` (required, keyword-only) is the conductor's own flow phase —
-    The run host passes it. It is NOT the same
+    ``correction_run_host.bind_plan_analysis`` always passes it, and
+    ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
     value as ``program.phase``: every cloud position plays the verify-shaped
     summed sweep, so ``program.phase == "verify"`` even during
     PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. It keys the per-phase calibration
@@ -442,7 +443,7 @@ def _bank(
     reopen-and-compare, and answers with the id that finds the record again;
     the identity every ``refs`` column and every citation needs is re-read from
     it. Driven through ``run_async`` because the publishing seams are
-    synchronous all the way up from ``the capture handler``, on a worker thread.
+    synchronous and run on a worker thread.
     """
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 
@@ -936,9 +937,8 @@ def bind_cloud_publisher(
     silently matched — the per-group content (mask/registry/spec/geometry) is
     exactly what was asked for either way.
 
-    Fail-soft at the CALLER (``CrossoverV2Session.the cloud pipeline``): a
-    full disk or a write-once conflict must surface as an exception here so the
-    conductor's own boundary can log and continue.
+    Fail-soft at the CALLER: a full disk or a write-once conflict must surface
+    as an exception here so the caller's own boundary can log and continue.
     """
     from jasper.active_speaker.crossover_v2.record_store import CLOUD_EVIDENCE_KIND
 

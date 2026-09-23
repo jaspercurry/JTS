@@ -216,10 +216,10 @@ def test_measure_priors_carry_the_applied_alignment_and_no_other_phase_does(
     assert applied is not None and applied.delay_us == pytest.approx(59.6)
     for factory in (
         c.check_priors,
-        c.verify_priors,
-        c.cloud_priors,
+        c._verify_priors,
+        c._cloud_priors,
         c.lateral_priors,
-        c.entry_baseline_priors,
+        c._entry_baseline_priors,
     ):
         assert factory().applied_alignment is None, factory.__name__
 

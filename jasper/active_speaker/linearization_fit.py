@@ -398,8 +398,7 @@ class LinearizationFilter:
 #: The persisted key naming WHICH MICROPHONE measured the round this entry
 #: came from. A named constant because a second writer emits it too
 #: (``driver_prescription_to_candidate_fields``) and a spelling drift would
-#: silently remove ``CrossoverV2Session._mic_trust_ceiling_hz``'s grading
-#: ceiling rather than fail (#2649).
+#: silently drop the tier its readers grade against rather than fail (#2649).
 MIC_TIER_FIELD = "mic_tier"
 
 

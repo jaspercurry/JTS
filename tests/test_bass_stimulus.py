@@ -154,7 +154,8 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture, size):
     request = request_for_program(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
-    played = compose_plan_program(SimpleNamespace(_excitation=excitation), capture.spec, None, context=context)
+    played = compose_plan_program(SimpleNamespace(excitation=excitation, set_program=lambda *args: None),
+                                  capture.spec, None, context=context)
     assert round(played.total_samples / played.sample_rate_hz * 1000) == 20199
     plan = build_inline_session_spec(
         [(capture.spec, capture.resolved(request).prompt, "trial")],
@@ -359,7 +360,8 @@ def test_pass_alignment_peaks_and_edges(bass_fixture, edge):
 def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purpose):
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial",
                        program_phase="cloud_verify" if purpose == "room" else "verify")
-    stimulus = compose_plan_program(SimpleNamespace(_excitation=bass_fixture[3]), spec, None, context=plan_context())
+    stimulus = compose_plan_program(SimpleNamespace(excitation=bass_fixture[3], set_program=lambda *args: None),
+                                    spec, None, context=plan_context())
     raw = np.pad(render_program_pcm(stimulus)[:, 0].astype(np.float64) * 0.1, (800, 48000))
     raw += np.random.default_rng(19).normal(0, 0.001, raw.size)
     assert sum(s.kind == KIND_SUMMED_SWEEP for s in stimulus.segments) == 1

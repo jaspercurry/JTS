@@ -39,7 +39,7 @@ TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 # renders each through its template copy).
 REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
 # The same pilot mismatch ``REASON_AGC_BEHAVIORAL_FAIL`` names, caused by a
-# loud ambient burst rather than the phone's AGC. ``_consume_check``
+# loud ambient burst rather than the phone's AGC. ``capture_dispatch.assess``
 # distinguishes the two on the CHECK gain solve's own ``gain_plan.
 # snr_floor_ok``, computed against this capture's ambient bands independent of
 # the linearity outcome.
@@ -1089,10 +1089,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
         # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
-        # count is the session's own ceiling on wider-spot asks —
-        # ``_close_cloud_group`` stops at ``GEOMETRY_RETRY_POSITIONS`` — not
-        # what admits the retake: every rung spends one of the POSITION's
-        # pooled extras.
+        # count is the session's own ceiling on wider-spot asks, not what
+        # admits the retake: every rung spends one of the POSITION's pooled
+        # extras.
         GEOMETRY_RETRY_POSITIONS,
         # #2092 (owner-approved 2026-08-08): the old diagnosis ("too close
         # together") is factually false on a wide walk — the estimator reads
@@ -1140,6 +1139,7 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
 #: copy the household reads. A mapping rather than an identity because two
 #: kinds do NOT share their code's name: a glitched timeline renders as
 #: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
+#: Completeness is checked — see
 #: ``test_every_screen_kind_has_a_household_sentence``.
 SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
@@ -1242,10 +1242,9 @@ class TakeVerdict:
     screens: list[dict[str, Any]] = field(default_factory=list)
 
 
-
 @dataclass(frozen=True)
 class PhaseVerdict:
-    """A consume verdict: the capture dict + the internal reason (if any)."""
+    """A phase verdict: acceptance plus the internal reason (if any)."""
 
     accepted: bool
     code: str | None = None

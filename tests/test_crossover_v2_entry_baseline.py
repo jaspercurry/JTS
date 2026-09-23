@@ -184,7 +184,7 @@ def test_the_entry_baseline_gets_no_tracking_prior():
     # makes the assertion above a statement about the shipped path.
     fakes = FakeSeams()
     conductor = _conductor(fakes, index_phase_map=_stage_1_map())
-    assert conductor.entry_baseline_priors() == entry
+    assert conductor._entry_baseline_priors() == entry
 
 
 # 3. the accept rule

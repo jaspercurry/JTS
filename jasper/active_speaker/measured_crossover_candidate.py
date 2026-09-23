@@ -76,7 +76,7 @@ CANDIDATE_KIND = "jts_measured_crossover_candidate_v2"
 
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
-# The exact set crossover_v2_flow.CrossoverV2Session stamps onto this field;
+# The exact set ``planning.build_candidate`` stamps onto this field;
 # "" means linearization was never evaluated this attempt. Validated here so a
 # typo in the single writer fails at construction rather than persisting.
 _LINEARIZATION_OUTCOME_VALUES = frozenset({

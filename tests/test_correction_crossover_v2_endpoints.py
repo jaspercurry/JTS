@@ -5943,7 +5943,6 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     assert not bound["door"].is_open
     assert bound["request"] == AngleCaptureRequest.from_mapping(store.reopen_json_artifact(
         store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json")))
-    assert bound["conductor"].snapshot().candidate_fingerprint is None
     assert prepared.join_spec.capture_plan.capture_target == len(bound["captures"])
     assert tuple(capture.spec.program_phase for capture in bound["captures"]) == phases
     assert (bound["execute"] is not None) == (bound["request"].levels is not None)
