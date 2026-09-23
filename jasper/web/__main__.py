@@ -6,26 +6,11 @@
 
 Starts the setup wizards for this install profile in a single process —
 one ThreadingHTTPServer per nginx route. They share /var/lib/jasper as
-their persistence volume and shell out to systemctl together when
-something changes, so colocating them costs nothing extra and saves a
-separate systemd unit per wizard. Which wizards a tier hosts is derived
-from that tier's ``Capability`` grants, never from its name — see
-``WizardSpec.requires``. nginx routes:
-
-  /spotify/            →  127.0.0.1:8765  (jasper.web.spotify_setup)
-  /assistant/voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
-  /assistant/google/   →  127.0.0.1:8768  (jasper.web.google_setup)
-  /sources/            →  127.0.0.1:8773  (jasper.web.sources_setup)
-  /assistant/wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
-  /wifi/               →  127.0.0.1:8775  (jasper.web.wifi_setup)
-  /assistant/transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
-  /assistant/ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
-  /assistant/weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
-  /wake-corpus/        →  127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
-  /speaker/            →  127.0.0.1:8783  (jasper.web.speaker_setup)
-  /sound/              →  127.0.0.1:8784  (jasper.web.sound_setup)
-  /sound/pair/         →  127.0.0.1:8785  (jasper.web.rooms_setup)
-  /assistant/tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
+their persistence volume and route restarts through jasper-control's
+restart broker when something changes, so colocating them costs nothing
+extra and saves a separate systemd unit per wizard. Which wizards a tier
+hosts is derived from that tier's ``Capability`` grants, never from its
+name — see ``WizardSpec.requires``.
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -80,7 +65,6 @@ class WizardSpec:
     default_port: int
     make_server: Callable[[object], object]
     requires: Capability | None
-    main_thread: bool = False
 
     def port(self) -> int:
         return int(os.environ.get(self.env_var, str(self.default_port)))
@@ -314,18 +298,12 @@ def _make_wifi_server(target: object) -> object:
 def _make_rooms_server(target: object) -> object:
     from . import rooms_setup
 
-    # Speaker directory + wake-response/grouping controls. See
-    # jasper/web/rooms_setup.py.
     return rooms_setup.make_server(target)
 
 
 def _make_tools_server(target: object) -> object:
     from . import tools_setup
 
-    # Browse + enable/disable first-party voice tool packs and edit advanced
-    # prompt overrides. Reads the catalog jasper-voice writes to
-    # /run/jasper/tools.json; writes staged state under /var/lib/jasper/.
-    # See jasper/web/tools_setup.py.
     return tools_setup.make_server(
         target,
         catalog_path=os.environ.get(
@@ -435,7 +413,7 @@ def _make_wake_corpus_server(target: object) -> object:
 WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
-        _make_spotify_server, requires=None, main_thread=True,
+        _make_spotify_server, requires=None,
     ),
     WizardSpec(
         "/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server,
@@ -528,10 +506,10 @@ def main() -> int:
 
     install_env_canonical_target_provider()
 
-    # Port assignments mirror nginx-jasper.conf, jasper-web.socket, and
-    # each wizard's CLI default. The registry above is the local source
-    # of truth for this host: adding a wizard should add one WizardSpec,
-    # one factory, and one ListenStream in deploy/jasper-web.socket.
+    # Port assignments mirror deploy/nginx/*.conf and deploy/jasper-web*.socket
+    # (no per-wizard CLI). The registry above is the local source of truth
+    # for this host: adding a wizard should add one WizardSpec, one
+    # factory, and one ListenStream in deploy/jasper-web.socket.
     #
     # With socket activation, we still bind these *logically* via the
     # .socket unit's ListenStream= directives; the per-port match below
@@ -595,29 +573,13 @@ def main() -> int:
                 port,
             )
 
-    # Worker-thread wizards plus one foreground server. Full speakers keep
-    # Spotify in the foreground for parity with the older topology; profiles
-    # that do not host Spotify use the first role-available wizard instead.
-    # Signal handling stays in the main thread either way.
-    main_servers = [
-        (spec, server) for spec, _, server in servers if spec.main_thread
-    ]
-    if len(main_servers) > 1:
-        logger.error("jasper-web expected at most one main-thread wizard")
-        return 1
-    if main_servers:
-        main_spec, main_server = main_servers[0]
-    elif servers:
-        main_spec, _, main_server = servers[0]
-        log_event(
-            logger,
-            "jasper_web.main_thread_fallback",
-            role=role,
-            wizard=main_spec.label,
-        )
-    else:
+    # Worker-thread wizards plus one foreground server: the first
+    # role-available wizard. Signal handling stays in the main thread
+    # either way.
+    if not servers:
         logger.error("jasper-web no wizards available for role=%s", role)
         return 1
+    main_server = servers[0][2]
     for spec, _, server in servers:
         if server is main_server:
             continue
