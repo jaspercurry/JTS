@@ -33,8 +33,11 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         return replay_graph(args.graph, args.stimulus, args.out, main_db=args.main_db,
                             bass_reference_db=args.bass_reference_db)
     payload = stage(EXIT_UNREADABLE, (*_ROUND_TOOL_ERRORS, RenderError, wave.Error), replay)
-    written = _write(payload, str(args.out / ARTIFACT_BY_VIEW[args.command].artifact), args.out / "dsp_replay.json")
-    return answer(args.command, out=written, output=payload["output"], line=f"dsp-replay -> {written}")
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(payload, None, args.out / spec.artifact, schema=spec.schema)
+    return answer(args.command, schema=spec.schema, subject={},
+                  parameters={"main_db": args.main_db, "bass_reference_db": args.bass_reference_db},
+                  out=written, output=payload["output"], line=f"dsp-replay -> {written}")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -66,5 +69,7 @@ def _cmd_levels(args: argparse.Namespace) -> int:
             return bass_replay_levels(manifest, args.raw, tuple(args.window_s))
         return replay_levels(manifest, args.raw, tuple(args.window_s))
     payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, levels)
-    written = _write(payload, args.out, args.manifest.parent / ARTIFACT_BY_VIEW[args.command].artifact)
-    return answer(args.command, out=written, channels=payload["channels"], line=f"dsp-levels -> {written}")
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(payload, args.out, args.manifest.parent / spec.artifact, schema=spec.schema)
+    return answer(args.command, schema=spec.schema, subject={}, parameters={"window_s": payload["window_s"]},
+                  out=written, channels=payload["channels"], line=f"dsp-levels -> {written}")

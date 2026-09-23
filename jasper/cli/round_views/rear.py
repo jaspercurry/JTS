@@ -14,12 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.round_packet_report import PACKET_FILENAME
-from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
-    _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    answer, default_out, refused_by_name, round_inputs,
+    ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
+    answer, default_out, refused_by_name, round_inputs, subject,
 )
 
 REFUSE_NO_REAR = "rear_no_entries"
@@ -37,9 +36,10 @@ def _cmd_rear(args: argparse.Namespace) -> int:
     entries = packet.get("rear") or []
     if not entries:
         return refused_by_name(REFUSE_NO_REAR, {"round_dir": str(round_dir)})
-    out = default_out(inputs, round_dir, ARTIFACT_BY_VIEW["rear"].artifact)
+    spec = ARTIFACT_BY_VIEW[args.command]
+    out = default_out(inputs, round_dir, spec.artifact)
     return answer(
-        args.command, out=out, entries=entries,
+        args.command, schema=spec.schema, subject=subject(inputs), parameters={}, out=out, entries=entries,
         line=f"rear: {len(entries)} batch(es) -> {out}",
     )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
@@ -27,7 +28,14 @@ from ._common import (
     omitted_note,
     refused_by_name,
     resolved_out,
+    subject,
 )
+
+
+def _frame_parameters(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """The ladder and smoothing a sweep's own frame states it used."""
+    return {"rungs_ms": frame["rungs_ms"], "smoothing_fraction": frame["smoothing"]["magnitude_fraction"]}
+
 
 def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
@@ -43,12 +51,14 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
         return refused_by_name(exc.reason, exc.detail)
-    written = _write(
-        report, args.out,
-        resolved_out(round_dir, ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set),
-    )
+    spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
+    written = _write(report, args.out, resolved_out(round_dir, spec.artifact, args.set), schema=spec.schema)
     return answer(
-        args.command, out=written, scope=args.scope, poses=len(report["poses"]),
+        args.command, schema=spec.schema,
+        subject=subject(inputs, selected, take_ids=[pose["capture_id"] for pose in report["poses"]],
+                        candidate_id=args.candidate),
+        parameters={**_frame_parameters(report["frame"]), "at_hz": list(args.at_hz or ())},
+        out=written, scope=args.scope, poses=len(report["poses"]),
         omitted=report["omitted"], rungs_ms=report["frame"]["rungs_ms"],
         ladder=report["ladder"], bands=[
             {"band_hz": band["band_hz"], "verdict": band["window_verdict"]}
@@ -68,14 +78,19 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
 
 
 def _cmd_windows(args: argparse.Namespace) -> int:
-    selected = resolve_set(round_inputs(Path(args.round_dir)), args.set)
+    inputs = round_inputs(Path(args.round_dir))
+    selected = resolve_set(inputs, args.set)
     take_id = selected.take_id(args.take)
     try:
         report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=args.role)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
-    written = _write(report, args.out, resolved_out(Path(args.round_dir), ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"].artifact, args.set))
-    return answer(args.command, out=written, scope=args.scope, **render_image(args, report), capture_id=take_id,
+    spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
+    written = _write(report, args.out, resolved_out(Path(args.round_dir), spec.artifact, args.set), schema=spec.schema)
+    run, = report["runs"]
+    return answer(args.command, schema=spec.schema, subject=subject(inputs, selected, take_ids=[take_id]),
+                  parameters={**_frame_parameters(run["metadata"]["frame"]), "role": args.role},
+                  out=written, scope=args.scope, **render_image(args, report), capture_id=take_id,
                   line=f"sweep take: {take_id} -> {written}")
 
 

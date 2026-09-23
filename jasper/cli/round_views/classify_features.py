@@ -52,6 +52,7 @@ from ._common import (
     add_rungs_ms_argument,
     answer,
     refused_by_name,
+    subject,
 )
 
 #: Said on "no round artifacts at all" and on nothing else: a bundle stopped
@@ -117,9 +118,8 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
             refusal.reason, {**refusal.detail, "programs_dir": str(programs_dir)}
         )
 
-    written = _write(
-        artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
-    )
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
     measurement = artifact["measurement"]
     # The floor the refusal already carries, published on SUCCESS too: what
     # this instrument can be asked about is knowable before a run rather than
@@ -132,7 +132,10 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
         f"{f' -> {written}' if written else ''}"
     )
     return answer(
-        args.command, out=written, features=len(artifact["rows"]),
+        args.command, schema=spec.schema, subject=subject(inputs),
+        parameters={"window_ms": measurement["gate_ms_primary"], "rungs_ms": measurement["gate_ladder_ms"],
+                    "smoothing_fraction": measurement["magnitude_smooth_fraction"], "at_hz": args.at},
+        out=written, features=len(artifact["rows"]),
         captures=measurement["n_captures"], classifiable_band_hz=band_hz,
         line="\n".join([summary, *summary_lines(artifact)]),
     )

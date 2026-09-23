@@ -15,7 +15,10 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, 
 from jasper.active_speaker.round_view_builders import bass_payload
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
-from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer, default_out, read_run_manifest, resolve_set, round_inputs
+from ._common import (
+    ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer,
+    calibration_id, default_out, read_run_manifest, resolve_set, round_inputs, subject,
+)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -42,10 +45,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             parser.add_argument("--reference-band-hz", type=float, nargs=2)
 
 
-def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
+def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[str, Any]]]:
     from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take  # lazy: laptop array analysis
 
-    manifests, paths, takes = {}, [], []
+    manifests, paths, takes, read = {}, [], [], []
     for root, set_id, take_id in ((args.before, args.before_set, args.before_take),
                                   (args.after, args.after_set, args.after_take)):
         inputs = round_inputs(root)
@@ -57,15 +60,18 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
         takes.append(selected_take(json.loads(path.read_text()), selected_id))
         paths.append(str(path))
+        read.append(subject(inputs, selected, take_ids=[selected_id]))
     return ({**compare_bass_takes(*takes, change=args.change), "source_views": paths},
-            default_out(inputs, args.after, ARTIFACT_BY_VIEW[args.command].artifact, args.after_set))
+            default_out(inputs, args.after, ARTIFACT_BY_VIEW[args.command].artifact, args.after_set), read)
 
 
 def _cmd(args: argparse.Namespace) -> int:
+    read: dict[str, Any] | list[dict[str, Any]]
     try:
         if args.command == "bass-compare":
-            payload, destination = _compare(args)
+            payload, destination, read = _compare(args)
             summary: dict[str, Any] = {key: payload[key] for key in ("available", "context", "ladder", "bands")}
+            parameters: dict[str, Any] = {"change": args.change}
         else:
             root = args.round_dir if args.command == "bass" else args.round_dir[-1]
             inputs = round_inputs(root)
@@ -74,6 +80,8 @@ def _cmd(args: argparse.Namespace) -> int:
             if args.command == "bass":
                 payload = bass_payload(inputs, args.set, calibration_root=args.calibration_root)
                 summary = {"takes": len(payload["takes"])}
+                read = subject(inputs, set_id=payload["set_id"], candidate_id=payload["candidate_id"])
+                parameters = {"calibration_id": calibration_id(payload["takes"][0]["calibration"])}
             else:
                 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis
                 from ._bass_inputs import fit_run  # lazy: laptop array analysis
@@ -82,6 +90,8 @@ def _cmd(args: argparse.Namespace) -> int:
                 levels = [row for table in payload["tables"] for row in table["levels"]]
                 summary = {"run_ids": payload["run_ids"], "level_count": len(levels),
                            "levels": bass_table_rows(payload)}
+                read = [subject(round_inputs(path)) for path in args.round_dir]
+                parameters = {"reference_band_hz": list(args.reference_band_hz)}
     except CrossoverV2Refused as refusal:
         message, action = refusal_copy_for(refusal.code)
         return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else message,
@@ -92,6 +102,8 @@ def _cmd(args: argparse.Namespace) -> int:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, {"path": exc.filename, "errno": exc.errno})
     except _ROUND_TOOL_ERRORS as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
-    written = _write(payload, args.out, destination)
+    schema = ARTIFACT_BY_VIEW[args.command].schema
+    written = _write(payload, args.out, destination, schema=schema)
     table = bass_table_markdown(summary["levels"]) if args.command == "bass-fit-table" else ""
-    return answer(args.command, out=written, **summary, line=f"{args.command} -> {written}\n{table}".rstrip())
+    return answer(args.command, schema=schema, subject=read, parameters=parameters, out=written, **summary,
+                  line=f"{args.command} -> {written}\n{table}".rstrip())

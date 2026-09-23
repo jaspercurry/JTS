@@ -319,7 +319,8 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     source.assert_called_once_with(inputs.applied_profile_path)
     document = json.loads(Path(result["out"]).read_text())
     assert set(document) == {"ceiling", "median", "spread_rms_db", "persistence", "limits", "incumbent",
-                             "boundary", "boundary_reason", "incumbent_reason", "room_median_sha256", "admit_boost"}
+                             "boundary", "boundary_reason", "incumbent_reason", "room_median_sha256", "admit_boost",
+                             "schema"}
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
@@ -498,7 +499,7 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
     assert room["median"]["n_positions"] == room["persistence"]["spatial_support"]["n_positions"] == 3
     assert room["median"]["window"] == "ungated"
     assert set(room) == {"ceiling", "median", "spread_rms_db", "persistence", "incumbent", "boundary", "boundary_reason",
-                         "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id"}
+                         "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id", "schema"}
     assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
     limits = packet["limits"]["summed"]
     assert limits["evidence_status"] == "evaluated"

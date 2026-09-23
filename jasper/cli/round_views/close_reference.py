@@ -54,12 +54,15 @@ from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE
 from jasper.cli._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
 
 from ._common import (
+    ANSWER_SCHEMAS,
     ARTIFACT_BY_VIEW,
     _write,
     answer,
     omitted_note,
     refused_by_name,
     resolved_out,
+    round_inputs,
+    subject,
 )
 
 
@@ -87,7 +90,8 @@ def _recommend_distance(args: argparse.Namespace, diameter_m: float) -> int:
     answer — the derivation's own record, published whole."""
     record = recommended_distance(diameter_m, args.fc_hz)
     return answer(
-        args.command, **record,
+        args.command, schema=ANSWER_SCHEMAS["close-reference --distance"], subject={},
+        parameters={key: record[key] for key in ("driver_diameter_m", "fc_hz")}, **record,
         line=(
             f"stand the mic {record['distance_in']:.1f} in "
             f"({record['distance_m'] * 100:.1f} cm) from the woofer: "
@@ -110,8 +114,8 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
             Path(args.close_round),
             far_m=args.far_m,
             close_m=args.close_m,
-            far_capture_id=args.far_capture,
-            close_capture_id=args.close_capture,
+            far_capture_id=args.far_take,
+            close_capture_id=args.close_take,
             fc_hz=args.fc_hz,
             driver_diameter_m=diameter_m,
             far_gate_ms=args.far_gate_ms,
@@ -128,18 +132,27 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
     # destination that could not be written.
     for line in summary_lines(report):
         print(line, file=sys.stderr)
+    spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(
-        {"status": "compared", "close_reference": report},
-        args.out,
-        resolved_out(far_dir, ARTIFACT_BY_VIEW[args.command].artifact),
+        {"status": "compared", "close_reference": report}, args.out,
+        resolved_out(far_dir, spec.artifact), schema=spec.schema,
     )
     alignment = report["alignment"]
+    frame, geometry = report["frame"], report["geometry"]
     # The FAR window's answer at the named bin: the far read is the one whose
     # room share the whole report explains. Each window's own narrow row, and
     # the numbers behind both, are in the artifact.
     far_window = next(w for w in report["windows"] if w["name"] == WINDOW_FAR)
     return answer(
-        args.command, out=written, omitted=report["omitted"],
+        args.command, schema=spec.schema,
+        subject=[subject(round_inputs(Path(path)), take_ids=[report["captures"][name]["capture_id"]])
+                 for name, path in (("far", args.far_round), ("close", args.close_round))],
+        parameters={
+            "window_ms": {"far": frame["far_gate_ms"], "close": frame["close_gate_ms"]},
+            "smoothing_fraction": frame["smooth_fraction"], "far_m": geometry["far_m"],
+            "close_m": geometry["close_m"], "fc_hz": report["validity"]["fc_hz"], "at_hz": args.at_hz,
+        },
+        out=written, omitted=report["omitted"],
         captures={name: {"capture_id": row["capture_id"]} for name, row in report["captures"].items()},
         comparison_band_hz=report["validity"]["comparison_band_hz"],
         residual_lag_us=alignment["residual_lag_us"],
@@ -210,10 +223,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     close.add_argument("--far-round", default=None)
     close.add_argument("--close-round", default=None)
     close.add_argument(
-        "--far-capture", default=None,
+        "--far-take", default=None,
         help="take id of the far capture; default is the on-axis summed take",
     )
-    close.add_argument("--close-capture", default=None)
+    close.add_argument("--close-take", default=None, help="take id of the close capture; same default")
     close.add_argument(
         "--close-m", type=float, default=None,
         help="DECLARED close mic distance in metres — the sidecar's "

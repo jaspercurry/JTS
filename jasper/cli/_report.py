@@ -24,12 +24,6 @@ def render_report(payload: Any, *, sort_keys: bool = True) -> str:
     return json.dumps(payload, indent=2, sort_keys=sort_keys, default=_jsonable, allow_nan=False)
 
 
-def report_answer(view: str, out: Path | None, **fields: Any) -> dict[str, Any]:
-    if out is not None:
-        fields.update(out=str(out), bytes=out.stat().st_size)
-    return {"view": view, **fields}
-
-
 def output_path(value: str) -> Path:
     if value == "-":
         raise argparse.ArgumentTypeError("an artifact path is required")

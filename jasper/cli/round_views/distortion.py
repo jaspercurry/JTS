@@ -29,27 +29,31 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
+    round_inputs,
+    subject,
 )
 
 def _cmd_distortion(args: argparse.Namespace) -> int:
+    bands = {
+        "woofer": args.woofer_band,
+        "tweeter": args.tweeter_band,
+        "full_range": args.full_range_band,
+    }
     round_dir, artifact = stage(
         EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_bundle_harmonics,
-        args.bundle_dir,
-        {
-            "woofer": args.woofer_band,
-            "tweeter": args.tweeter_band,
-            "full_range": args.full_range_band,
-        },
-        calibration_path=args.calibration,
+        args.bundle_dir, bands, calibration_path=args.calibration,
     )
+    spec = ARTIFACT_BY_VIEW[args.command]
     # The bundle's own round directory, never `default_out`: this reading is
     # filed where the packet reader looks for it, and that is a banked tree.
-    written = _write(
-        artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
-    )
+    written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
     captures = artifact["captures"]
     return answer(
-        args.command, out=written, orders=artifact["orders"],
+        args.command, schema=spec.schema,
+        subject=subject(round_inputs(args.bundle_dir), take_ids=[take["take_id"] for take in captures["read"]]),
+        parameters={"band_hz": {role: list(band) for role, band in bands.items()},
+                    "calibration_id": artifact["calibration"].get("setup_calibration_id")},
+        out=written, orders=artifact["orders"],
         blocks=len(artifact["roles"]), captures_read=captures["n_read"],
         captures_refused=captures["n_refused"],
         line=(

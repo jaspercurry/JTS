@@ -15,6 +15,7 @@ from jasper.json_fields import finite_float
 
 from .crossover_v2.measurement_context import CAPTURE_FIELDS, GRAPH_FIELDS, capture_basis, compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
+from .round_view_artifacts import ARTIFACT_BY_VIEW
 
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
@@ -64,7 +65,7 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
     interventions = CHANGE_FIELDS[change]
     context = compare_capture_basis(bass_capture_context(after), bass_capture_context(before), interventions=interventions,
                                     required=tuple(key for key in COMPARISON_FIELDS if key not in interventions))
-    result: dict[str, Any] = {"schema": "jts_bass_comparison/1", "change": change, "context": context,
+    result: dict[str, Any] = {"schema": ARTIFACT_BY_VIEW["bass-compare"].schema, "change": change, "context": context,
         "before": before["record_path"], "after": after["record_path"], "ladder": "bass", "bands": []}
     if context["incompatible_fields"] and change != "diagnostic":
         return {**result, "available": False, "reason": "capture_context_changed"}
@@ -98,7 +99,7 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
 
 
 def selected_take(view: Mapping[str, Any], take_id: str) -> Mapping[str, Any]:
-    if view.get("schema") != "jts_bass_view/1":
+    if view.get("schema") != ARTIFACT_BY_VIEW["bass"].schema:
         raise ValueError("bass_view_schema_invalid")
     matches = [take for take in view["takes"] if take["record"].get("take_id") == take_id]
     if len(matches) != 1:

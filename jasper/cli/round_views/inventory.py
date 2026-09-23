@@ -14,6 +14,7 @@ from jasper.active_speaker.round_inventory import inventory_payload, inventory_s
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
+    ARTIFACT_BY_VIEW,
     INVENTORY_ARTIFACT,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
@@ -21,6 +22,7 @@ from ._common import (
     _write,
     add_set_argument, answer,
     default_out,
+    subject,
 )
 
 
@@ -29,12 +31,11 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     payload = inventory_payload(inputs, round_dir, args.set)
     summary = inventory_summary(payload)
-    written = _write(
-        payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT, args.set)
-    )
+    schema = ARTIFACT_BY_VIEW[args.command].schema
+    written = _write(payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT, args.set), schema=schema)
     missing = summary["missing"]
     return answer(
-        args.command, out=written, **summary,
+        args.command, schema=schema, subject=subject(inputs, set_id=args.set), parameters={}, out=written, **summary,
         line=(
             f"inventory: {summary['present']}/{summary['total']} "
             f"artifact(s) present"

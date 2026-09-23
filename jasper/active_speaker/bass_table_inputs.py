@@ -81,7 +81,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
         tables = [fit_bass_table([(take, take) for take in baseline_takes if take["record"]["candidate_id"] == candidate_id],
                                 candidate_id=candidate_id, descriptor=None, reference_band_hz=reference_band_hz)
                   for candidate_id in sorted(candidate_ids)]
-        return {"schema": "jts_bass_run_table/1", "run_ids": run_ids, "tables": tables}
+        return {"schema": ARTIFACT_BY_VIEW["bass-fit-table"].schema, "run_ids": run_ids, "tables": tables}
     if not candidate_takes:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
     tables = []
@@ -95,7 +95,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
                                     code="bass_fit_pairs_unavailable")
         tables.append(fit_bass_table([(baseline[key][0], rows[0]) for key, rows in takes.items()],
                                     candidate_id=candidate_id, descriptor=descriptors[candidate_id], reference_band_hz=reference_band_hz))
-    return {"schema": "jts_bass_run_table/1", "run_ids": run_ids, "tables": tables}
+    return {"schema": ARTIFACT_BY_VIEW["bass-fit-table"].schema, "run_ids": run_ids, "tables": tables}
 
 
 def join_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path]) -> Path:

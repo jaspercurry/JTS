@@ -24,7 +24,7 @@ from jasper.active_speaker.measurement_archive import (
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.round_view_builders import analyzed_frequency_run, frequency_payload, frequency_image
-from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of
+from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -33,6 +33,7 @@ from ._common import (
     _load_round,
     _write,
     answer,
+    subject,
 )
 
 def _frequency_default_out(source: Path) -> Path:
@@ -111,9 +112,15 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
         else None
     )
     payload, series = frequency_payload(run_a, run_b, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
-    written = _write(payload, args.out, _frequency_default_out(source_a))
+    schema = ARTIFACT_BY_VIEW[args.command].schema
+    written = _write(payload, args.out, _frequency_default_out(source_a), schema=schema)
     return answer(
-        args.command, out=written, **render_image(args, payload),
+        args.command, schema=schema,
+        subject=[subject(round_inputs(Path(source))) if Path(source).is_dir() else {}
+                 for source in (args.source_a, args.source_b) if source],
+        parameters={"ref_band_hz": list(args.ref_band_hz), "normalize": args.normalize,
+                    "analyze_wavs": args.analyze_wavs, "reference_db": args.reference_db},
+        out=written, **render_image(args, payload),
         runs=[run["id"] for run in payload["runs"]], series=series,
         line=(
             f"frequency: {len(payload['runs'])} run(s)"

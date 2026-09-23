@@ -38,6 +38,8 @@ def _label(pose: Mapping[str, Any]) -> str:
 
 
 REFERENCE_POSE = {"horizontal_deg": 0, "vertical_deg": 0}
+#: Banked curves are compared unsmoothed.
+SMOOTHING_FRACTION = 0
 REFERENCE_LABEL = _label(REFERENCE_POSE)
 
 
@@ -45,7 +47,7 @@ def set_directivity(selected: SetTakes) -> dict[str, Any]:
     """Every selected bearing take of ``selected`` against the power mean of its
     0°/0° takes, graded over the spec bands on the band every take measured.
 
-    Curves are compared as banked, unsmoothed, interpolated onto the fit's grid.
+    Curves are compared as banked, interpolated onto the fit's grid.
     """
     measured, omitted = [], []
     for take in selected.takes:
@@ -68,14 +70,14 @@ def set_directivity(selected: SetTakes) -> dict[str, Any]:
     positions = tuple(
         PositionCurve(
             position_id=take["take_id"], role=_label(pose), freqs_hz=grid,
-            magnitude_db=np.interp(grid, freqs, magnitude), smoothing_fraction=0,
+            magnitude_db=np.interp(grid, freqs, magnitude), smoothing_fraction=SMOOTHING_FRACTION,
             degrees=pose["horizontal_deg"], take_id=take["take_id"],
         )
         for take, pose, (freqs, magnitude, _) in measured
     )
     # The report supplies the frame only (bands, clamps); the table computes
     # its own power-mean reference from every 0°/0° take.
-    report = evaluate_flat_spec(grid, positions[0].magnitude_db, smoothing_fraction=0,
+    report = evaluate_flat_spec(grid, positions[0].magnitude_db, smoothing_fraction=SMOOTHING_FRACTION,
                                 trusted_floor_hz=lo, trusted_ceiling_hz=hi)
     table = directivity_table(report, positions, reference_role=REFERENCE_LABEL)
     return {
@@ -83,7 +85,7 @@ def set_directivity(selected: SetTakes) -> dict[str, Any]:
         "role": selected.capture_basis.get("role"),
         "parameters": {
             "reference_pose": REFERENCE_POSE, "ladder": band_ladder_name(SPEC_BAND_EDGES_HZ),
-            "smoothing": "none", "band_hz": [lo, hi],
+            "smoothing_fraction": SMOOTHING_FRACTION, "band_hz": [lo, hi],
             "grid": "linearization_envelope.DEFAULT_ENVELOPE_GRID_HZ",
         },
         "reference_take_ids": reference,

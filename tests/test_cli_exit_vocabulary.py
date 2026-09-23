@@ -22,11 +22,14 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import io
 import json
 from collections.abc import Iterator, Mapping
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.wizard_client import WizardClient
@@ -38,8 +41,10 @@ from tests.crossover_v2_banked_round import (
     bank_seat_round,
     bank_verify_round,
 )
+from tests.crossover_v2_fixtures import bank_capture_round
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import write_manifest
+from tests.test_cli_close_reference import _compare_argv as close_compare_argv, _round as capture_round
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -285,16 +290,39 @@ def _repeat_argv(round_: _FixtureRound) -> list[str]:
     return ["repeat", str(round_.measured), str(round_.verified)]
 
 
+def _sweep_argv(round_: _FixtureRound) -> list[str]:
+    impulse = np.zeros(1800)
+    impulse[100] = 1.0
+    return ["sweep", str(bank_capture_round(round_.measured.parent / "capture", [impulse] * 3)), "--scope", "round"]
+
+
+def _close_reference_argv(round_: _FixtureRound) -> list[str]:
+    root = round_.measured.parent
+    rounds = (capture_round(root / "far", 1.0), capture_round(root / "close", 0.30, take_ids=("verify_02_a01",)))
+    return close_compare_argv(rounds, root / "close_reference.json")
+
+
+class _ViewRun(NamedTuple):
+    """One view's invocation against that round, and the parameters its
+    answer declares it used."""
+
+    argv: Callable[[_FixtureRound], list[str]]
+    parameters: frozenset[str] = frozenset()
+
+
 #: How each view is run against that round -- or, for a view this fixture
 #: cannot feed, why not.
-_VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
-    "entry": lambda r: ["entry", str(r.measured)],
-    "repeat": _repeat_argv,
-    "candidates": lambda r: ["candidates", str(r.measured)],
-    "directivity": _directivity_argv,
+_VIEW_RUN: dict[str, str | _ViewRun] = {
+    "entry": _ViewRun(lambda r: ["entry", str(r.measured)],
+                      frozenset({"smoothing_fraction", "band_hz", "reference_band_hz"})),
+    "repeat": _ViewRun(_repeat_argv),
+    "candidates": _ViewRun(lambda r: ["candidates", str(r.measured)]),
+    "directivity": _ViewRun(_directivity_argv, frozenset({
+        "reference_pose", "ladder", "smoothing_fraction", "band_hz", "grid", "calibration_id"})),
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
-    "sweep": _NO_CAPTURES,
-    "frequency": lambda r: ["frequency", str(r.measured)],
+    "sweep": _ViewRun(_sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz"})),
+    "frequency": _ViewRun(lambda r: ["frequency", str(r.measured)],
+                          frozenset({"ref_band_hz", "normalize", "analyze_wavs", "reference_db"})),
     "distortion": _NO_CAPTURES,
     "bass": _NO_CAPTURES,
     "bass-compare": _NO_CAPTURES,
@@ -303,11 +331,13 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "dsp-replay": _NO_CAPTURES,
     "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
-    "room-grade": _room_grade_argv,
-    "close-reference": _NO_CAPTURES,
-    "room": lambda r: ["room", str(r.seat)],
-    "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
-    "inventory": lambda r: ["inventory", str(r.measured)],
+    "room-grade": _ViewRun(_room_grade_argv, frozenset({"calibration_id"})),
+    "close-reference": _ViewRun(_close_reference_argv, frozenset({
+        "window_ms", "smoothing_fraction", "far_m", "close_m", "fc_hz", "at_hz"})),
+    "room": _ViewRun(lambda r: ["room", str(r.seat)], frozenset({"calibration_id"})),
+    "delay-landscape": _ViewRun(lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
+                                frozenset({"fc_hz", "step_us", "path_difference_m", "inverted_role"})),
+    "inventory": _ViewRun(lambda r: ["inventory", str(r.measured)]),
 }
 
 
@@ -332,32 +362,51 @@ def _numeric_arrays(node: Any) -> Iterator[list[Any]]:
             yield from _numeric_arrays(item)
 
 
-@pytest.mark.parametrize(
-    "view", _menu._subcommand_names(round_views.build_parser())
-)
-def test_a_view_that_succeeds_prints_one_bounded_answer(
-    view: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+class _Answered(NamedTuple):
+    view: str
+    code: int
+    answer: dict[str, Any]
+    artifact: dict[str, Any]
+
+
+@pytest.fixture(scope="module", params=_menu._subcommand_names(round_views.build_parser()))
+def view_answer(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> _Answered:
+    """Each registered view run once against the fixture round, with the
+    artifact its answer names."""
+
+    run = _VIEW_RUN[request.param]
+    if isinstance(run, str):
+        pytest.skip(run)
+    root = tmp_path_factory.mktemp(request.param)
+    printed = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch, redirect_stdout(printed), redirect_stderr(io.StringIO()):
+        # A view of a LIVE session bundle lands beside the CALLER, so the
+        # caller stands in the temporary directory.
+        patch.chdir(root)
+        code = round_views.main(run.argv(_fixture_round(root)))
+    answer = json.loads(printed.getvalue())
+    return _Answered(request.param, code, answer, json.loads(Path(answer["out"]).read_text()))
+
+
+def test_a_view_that_succeeds_prints_one_bounded_answer(view_answer: _Answered) -> None:
     """A success is an ANSWER: one document, no failure word in it, and the
     artifact named rather than poured onto the operator's terminal."""
 
-    argv = _VIEW_RUN[view]
-    if isinstance(argv, str):
-        pytest.skip(argv)
-    # A view of a LIVE session bundle lands beside the CALLER, so the caller
-    # stands in the temporary directory.
-    monkeypatch.chdir(tmp_path)
+    assert view_answer.code == _refusal.EXIT_OK
+    assert "status" not in view_answer.answer
+    assert max((len(a) for a in _numeric_arrays(view_answer.answer)), default=0) <= MAX_ANSWER_ARRAY
+    assert Path(view_answer.answer["out"]).stat().st_size == view_answer.answer["bytes"]
 
-    code = round_views.main(argv(_fixture_round(tmp_path)))
 
-    printed = capsys.readouterr()
-    assert code == _refusal.EXIT_OK
-    answer = json.loads(printed.out)
-    assert "status" not in answer
-    assert max((len(a) for a in _numeric_arrays(answer)), default=0) <= MAX_ANSWER_ARRAY
-    written = Path(answer["out"])
-    assert written.is_file()
-    assert written.stat().st_size == answer["bytes"]
+def test_every_view_answers_under_one_envelope(view_answer: _Answered) -> None:
+    """The answer names its view, the schema its artifact carries too, the
+    banked round or rounds it read, and exactly the parameters it declares."""
+
+    run = _VIEW_RUN[view_answer.view]
+    assert isinstance(run, _ViewRun)
+    assert view_answer.answer["view"] == view_answer.view
+    assert view_answer.answer["schema"] == view_answer.artifact["schema"]
+    subject = view_answer.answer["subject"]
+    assert all("round_id" in one for one in subject.get("rounds", [subject]))
+    assert set(view_answer.answer["parameters"]) == run.parameters
+

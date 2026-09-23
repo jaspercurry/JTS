@@ -496,7 +496,7 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     incumbent, muted, variant = (by_candidate[name] for name in (BASE_CANDIDATE, _MUTED, _VARIANT))
 
     assert set(entry) == {"set_id", "comparison", "candidates", "stage", "geometry",
-                          "geometry_reason", "stack", "out"}
+                          "geometry_reason", "stack", "out", "schema"}
     assert entry["set_id"] == BASE_CANDIDATE
     assert [row["set_id"] for row in entry["candidates"]] == sorted(_SECTIONS)
     # One band, frozen from the reference take's measured dip and then held:
@@ -715,7 +715,7 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # The summed entry's shape plus the pair block, and NO candidate
     # comparison: one played candidate has nothing to be compared against.
     assert set(entry) == {"set_id", "comparison", "candidates", "pair", "stage",
-                          "geometry", "geometry_reason", "stack", "out"}
+                          "geometry", "geometry_reason", "stack", "out", "schema"}
     # Three role-scoped sets, one candidate: the document names the SUM's set
     # rather than whichever role a candidate-keyed dict iterated last.
     assert (entry["candidates"], entry["set_id"]) == ([], _PAIR_SET_ID)

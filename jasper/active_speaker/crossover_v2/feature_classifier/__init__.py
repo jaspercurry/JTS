@@ -143,7 +143,6 @@ __all__ = [
     "CAPTURES_UNREADABLE",
     "classifiable_band_hz",
     "CLASSIFICATION_REFUSAL_REASONS",
-    "CLASSIFICATION_SCHEMA_VERSION",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_FEATURES_DETECTED",
     "PROGRAM_MISSING",
@@ -157,10 +156,6 @@ __all__ = [
     "summary_lines",
 ]
 
-
-#: The artifact's own version. Deliberately not a new number: the row shape is
-#: the one the register already reads and the 2026-08-19 records already carry.
-CLASSIFICATION_SCHEMA_VERSION = 1
 
 GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 
@@ -390,7 +385,6 @@ def classify_round(
         rows.append(row)
 
     return {
-        "schema": CLASSIFICATION_SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
         "thresholds": {
             "frac_nmp_min_phase": FRAC_NMP_MIN_PHASE,

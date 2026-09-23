@@ -25,9 +25,11 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     add_set_argument, answer,
+    calibration_id,
     default_out,
     refused_by_name,
     round_inputs,
+    subject,
 )
 
 
@@ -63,9 +65,9 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     # A grade survives an artifact write failure.
     for band in artifact["bands"]:
         print(_band_line(band), file=sys.stderr)
-    written = _write(artifact, None, default_out(
-        inputs, directory, ARTIFACT_BY_VIEW[args.command].artifact, args.set,
-    ))
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(artifact, None, default_out(inputs, directory, spec.artifact, args.set), schema=spec.schema)
+    basis = (artifact["evidence"] or {}).get("basis") or {}
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]
     comparison_result = (
@@ -77,7 +79,10 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         )
     )
     return answer(
-        args.command, out=written, set_id=artifact["set_id"], incumbent_set_id=incumbent_id,
+        args.command, schema=spec.schema,
+        subject=subject(inputs, set_id=artifact["set_id"], candidate_id=basis.get("candidate_id")),
+        parameters={"calibration_id": calibration_id(basis.get("capture_calibration"))},
+        out=written, set_id=artifact["set_id"], incumbent_set_id=incumbent_id,
         incumbent_reason=artifact["incumbent_reason"], ceiling_hz=artifact["ceiling_hz"],
         ceiling_source=artifact["ceiling_source"], n_positions=artifact["n_positions"],
         spatial_support=artifact["spatial_support"],

@@ -144,8 +144,9 @@ def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
 def write_room_document(inputs: RoundInputs, directory: Path, set_id: str | None, *,
                         calibration_root: Path | None = None) -> tuple[dict, Path]:
     payload = room_payload(inputs, set_id, calibration_root=calibration_root)
-    path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
-    atomic_write_json(path, payload)
+    spec = ARTIFACT_BY_VIEW["room"]
+    path = default_out(inputs, directory, spec.artifact, set_id)
+    atomic_write_json(path, {**payload, "schema": spec.schema})
     return payload, path
 
 

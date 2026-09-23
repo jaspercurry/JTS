@@ -266,7 +266,7 @@ class PoseCurvePair(NamedTuple):
 
 def select_pose_curve_pair(
     bundle_dir: Path, *, phases: tuple[str, ...], position_deg: int | None,
-    roles: tuple[str, str], vertical_deg: int = 0, take_path: str | None = None,
+    roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
     """Newest matching take, with both curves and their recorded request facts.
@@ -283,7 +283,7 @@ def select_pose_curve_pair(
     for row, document in reversed(list(measurement_documents(bundle_dir))):
         if (row.phase not in phases or row.vertical_deg != vertical_deg
             or (position_deg is not None and row.position_deg != position_deg)
-            or (take_path is not None and row.path != take_path)):
+            or (take_id is not None and document.get("take_id") != take_id)):
             continue
         curves = _take_curves(document)
         if search_detail is not None:
@@ -303,12 +303,11 @@ def select_pose_curve_pair(
 
 def read_pose_curve_pair(
     bundle_dir: Path, *, phase: str, position_deg: int,
-    roles: tuple[str, str], vertical_deg: int = 0, take_path: str | None = None,
+    roles: tuple[str, str], vertical_deg: int = 0,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
     """The latest pair at this pose; see :func:`select_pose_curve_pair`."""
     found = select_pose_curve_pair(
-        bundle_dir, phases=(phase,), position_deg=position_deg, roles=roles,
-        vertical_deg=vertical_deg, take_path=take_path,
+        bundle_dir, phases=(phase,), position_deg=position_deg, roles=roles, vertical_deg=vertical_deg,
     )
     return (found.lower, found.upper, found.take.path) if found else None
 

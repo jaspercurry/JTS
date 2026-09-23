@@ -46,8 +46,8 @@ def test_directivity_grades_each_bearing_against_the_0_0_takes(tmp_path, capsys,
     assert answer["set_id"] == "woofer"
     assert answer["parameters"] == {
         "reference_pose": {"horizontal_deg": 0, "vertical_deg": 0}, "ladder": "speaker_spec",
-        "smoothing": "none", "band_hz": [300.0, 12000.0],
-        "grid": "linearization_envelope.DEFAULT_ENVELOPE_GRID_HZ",
+        "smoothing_fraction": 0, "band_hz": [300.0, 12000.0],
+        "grid": "linearization_envelope.DEFAULT_ENVELOPE_GRID_HZ", "calibration_id": None,
     }
     assert answer["reference_take_ids"] == ["take-0", "take-1", "take-2", "take-3"]
     assert answer["omitted_take_ids"] == []
