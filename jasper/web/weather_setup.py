@@ -147,27 +147,6 @@ def _seed_transit_from_weather_if_missing(
     return seeded
 
 
-def _location_from_manual(form: dict[str, str]) -> tuple[location_state.SavedLocation | None, str | None]:
-    manual_lat = (form.get("manual_lat") or "").strip()
-    manual_lon = (form.get("manual_lon") or "").strip()
-    if not (manual_lat or manual_lon):
-        return None, None
-    if not (manual_lat and manual_lon):
-        return None, "Enter both latitude and longitude, or use the location field."
-    try:
-        lat = geocode_mod.round_coord(float(manual_lat))
-        lon = geocode_mod.round_coord(float(manual_lon))
-    except ValueError:
-        return None, "Latitude and longitude must be numbers."
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return None, "Latitude must be -90..90 and longitude -180..180."
-    return location_state.SavedLocation(
-        lat=lat,
-        lon=lon,
-        display_name=f"Manual: {lat:.3f}, {lon:.3f}",
-    ), None
-
-
 def _location_from_address(address: str) -> tuple[location_state.SavedLocation | None, str | None]:
     if not address:
         return None, None
@@ -176,8 +155,8 @@ def _location_from_address(address: str) -> tuple[location_state.SavedLocation |
     except geocode_mod.GeocodeError as e:
         return None, f"Couldn't geocode that — {e}"
     return location_state.SavedLocation(
-        lat=geocode_mod.round_coord(result.lat),
-        lon=geocode_mod.round_coord(result.lon),
+        lat=location_state.round_coord(result.lat),
+        lon=location_state.round_coord(result.lon),
         display_name=result.display_name,
     ), None
 
@@ -192,10 +171,12 @@ def _apply_save(
     if units not in VALID_UNITS:
         return current, "Choose Celsius or Fahrenheit."
 
-    manual_loc, err = _location_from_manual(form)
-    if err is not None:
-        return current, err
-    loc = manual_loc
+    try:
+        loc = location_state.parse_manual_coordinates(
+            form.get("manual_lat") or "", form.get("manual_lon") or "",
+        )
+    except location_state.CoordinateError as exc:
+        return current, str(exc)
     if loc is None:
         loc, err = _location_from_address((form.get("location") or "").strip())
         if err is not None:

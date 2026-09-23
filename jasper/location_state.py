@@ -39,6 +39,33 @@ class SavedLocation:
     display_name: str = ""
 
 
+# Three decimals are ~110 m, so saved coordinates do not pinpoint a house.
+COORD_PRECISION_DECIMALS = 3
+
+
+def round_coord(value: float) -> float:
+    return round(value, COORD_PRECISION_DECIMALS)
+
+
+class CoordinateError(ValueError):
+    """Invalid manual coordinates; the message is suitable for a wizard."""
+
+
+def parse_manual_coordinates(lat_text: str, lon_text: str) -> SavedLocation | None:
+    lat_text, lon_text = lat_text.strip(), lon_text.strip()
+    if not (lat_text or lon_text):
+        return None
+    if not (lat_text and lon_text):
+        raise CoordinateError("Enter both latitude and longitude, or use the location field.")
+    try:
+        lat, lon = round_coord(float(lat_text)), round_coord(float(lon_text))
+    except ValueError as exc:
+        raise CoordinateError("Latitude and longitude must be numbers.") from exc
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise CoordinateError("Latitude must be -90..90 and longitude -180..180.")
+    return SavedLocation(lat, lon, f"Manual: {lat:.3f}, {lon:.3f}")
+
+
 def parse_location(
     state: dict[str, str],
     *,
