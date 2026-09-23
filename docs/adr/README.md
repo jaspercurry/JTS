@@ -194,7 +194,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
 | [0251](0251-jasper-control-parks-on-a-bind-failure.md) | jasper-control parks on a bind failure instead of rebooting the box | accepted |
 | [0270](0270-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
-| [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | accepted |
+| [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | superseded by 0349 |
+| [0349](0349-jasper-heal-is-deleted.md) | jasper-heal is deleted | accepted |
 
 ## Web & UI
 
@@ -268,7 +269,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
 | [0278](0278-measurement-purpose-is-independent-of-position.md) | Measurement purpose is independent of position | accepted |
 | [0272](0272-the-decay-snap-lever-is-removed-so-the-cushion-hold-is-not-hardware-provable.md) | The DECAY_SNAP lever is removed, so the cushion hold is not hardware-provable | accepted |
-| [0283](0283-camilladsp-starts-only-on-a-graph-proved-against-its-own-topology.md) | CamillaDSP starts only on a graph proved against its own topology | accepted |
+| [0283](0283-camilladsp-starts-only-on-a-graph-proved-against-its-own-topology.md) | CamillaDSP starts only on a graph proved against its own topology | amended by 0349 |
 | [0284](0284-audits-are-frozen-reports-and-issues-are-the-ledger.md) | Audits are frozen reports; issues are the ledger | accepted |
 | [0285](0285-wake-detection-is-off-for-the-whole-measurement-hold.md) | Wake detection is off for the whole measurement hold | amended by 0305 |
 | [0286](0286-installation-context-guides-bass-trials.md) | Installation context guides bass trials | accepted |
