@@ -21,7 +21,7 @@ from jasper.output_topology import (
     resolve_output_layout,
 )
 
-from ._common import issue as _issue
+from ._common import MeasurementGraphRefused, issue as _issue
 
 # Re-exported: constants moved to jasper.output_topology; kept importable here.
 __all__ = [
@@ -139,8 +139,6 @@ def resolve_active_playback_device(
     """Resolve the PCM and, for a compiled preset, require its outputd handoff."""
     layout = resolve_output_layout(topology, playback_device=playback_device)
     if required_output_count is not None:
-        from .measurement_emit import MeasurementGraphRefused  # lazy: graph declarations consume this resolver
-
         # Saved graphs name the same PCM explicitly; use its registered wire width.
         if layout.playback_device_source == EXPLICIT_SOURCE:
             registered = resolve_output_layout(topology, env={})

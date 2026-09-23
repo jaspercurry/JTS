@@ -7,6 +7,7 @@ import logging
 
 from jasper.log_event import log_event
 from jasper.platform import control_client
+from ._common import MeasurementGraphRefused
 from .crossover_v2.capture_plan import PlanShapeError
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.program_transaction import (
@@ -45,8 +46,6 @@ def read_output_volume() -> dict[str, float | bool]:
 
 def classify_program_failure(exc: BaseException) -> tuple[str, tuple[str, ...]] | None:
     """Return the reason and refusal codes, or None outside the measurement family."""
-    from .measurement_emit import MeasurementGraphRefused  # lazy: graph import cost
-
     if isinstance(exc, MeasurementGraphRefused):
         return exc.code, ()
     if isinstance(exc, SessionGraphError):

@@ -171,3 +171,14 @@ class DriverFields(JsonFields):
                 f"{field_name} has unknown fields: {', '.join(unknown)}",
                 code="unknown_driver_fields",
             )
+
+
+class MeasurementGraphRefused(ValueError):
+    def __init__(self, reason: str, detail: Any) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}")
+
+    @property
+    def code(self) -> str:
+        return self.reason

@@ -14,6 +14,7 @@ import yaml
 from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.branch_chain import confirmed_protection_sections, rear_branch_sum_headroom_db
+from jasper.active_speaker._common import MeasurementGraphRefused
 from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.active_speaker import camilla_yaml, candidate_bank
 from jasper.active_speaker.crossover_v2.measure_spec import (
@@ -57,17 +58,6 @@ class MeasurementGraphProfile:
     #: ``role_channels`` must be named here or the graph refuses to emit —
     #: silence is a decision, never an omission. No production plan sets this yet.
     parked_target_ids: tuple[str, ...] = ()
-
-
-class MeasurementGraphRefused(ValueError):
-    def __init__(self, reason: str, detail: Any) -> None:
-        self.reason = reason
-        self.detail = detail
-        super().__init__(f"{reason}: {detail}")
-
-    @property
-    def code(self) -> str:
-        return self.reason
 
 
 def load_tuning_declaration(

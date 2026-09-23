@@ -36,7 +36,7 @@ from .measured_crossover_candidate import (
 )
 
 from .level_trim import declared_driver_gains
-from .measurement_emit import MeasurementGraphRefused
+from ._common import MeasurementGraphRefused
 from .measurement_programs import PRESCRIPTION_SECTIONS
 from .profile import ActiveSpeakerPreset, required_driver_roles
 
