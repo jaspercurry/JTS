@@ -28,15 +28,15 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
-    parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
+    REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
+    preview_prescription_document, parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
 )
+from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, latest_banked_rounds, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
-from jasper.active_speaker.measurement_programs import prescription_sections
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
@@ -47,29 +47,8 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
-REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
-
-def reset_prescription_document(
-    *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
-) -> dict[str, Any]:
-    sections: dict[str, Any] = {
-        name: None if name == "rear_calibration" else {}
-        for name in prescription_sections(program) if not (keep_timing and name == "alignment")
-    }
-    if "driver" in sections:
-        sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
-    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
-            "sections": sections, "rationale": "Reset the applied tuning layers."}
-
-
-def compose_prescription_document(
-    document: Mapping[str, Any], *, base: BankedCandidate,
-    evidence: PrescriptionEvidence | None = None,
-    base_profile: Mapping[str, Any] | None = None,
-) -> MeasuredCrossoverCandidate:
-    return judge_prescription_document(document, base=base, evidence=evidence, base_profile=base_profile)
 
 def _cmd_rear_calibration(args: argparse.Namespace) -> int:
     try:
@@ -78,7 +57,7 @@ def _cmd_rear_calibration(args: argparse.Namespace) -> int:
                 raise ValueError("--sample-rate is required; use the installed DSP rate")
             return answered(read_rear_calibration(diagnostic_seed(args.sample_rate)))
         document = read_rear_calibration(json.loads(read_source_bytes(args.document)), sample_rate=args.sample_rate)
-        answer = {"ok": True, "calibration": document, "adopted": False,
+        answer = {"calibration": document, "adopted": False,
                   "requires_electrical_fitting": document["case"] == "acoustic_targets"}
         routing = (args.channels, args.front, args.rear, args.tweeter)
         if any(value is not None for value in routing):
@@ -146,7 +125,7 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
         try:
             result = _preview_document(args, variant)
         except PrescriptionDocumentRefused as exc:
-            rows.append({"out": None, "values": values, "ok": False, "code": exc.code, "error": exc.error})
+            rows.append({"out": None, "values": values, "reason": exc.code, "error": exc.error})
             continue
         path = directory / f"variant-{index:02d}.json"
         try:
@@ -159,9 +138,16 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
                      **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
                         else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
-    return answered({"ok": True, "section": kind,
+    return answered({"section": kind,
                      "axes": [{"paths": paths, "values": values} for paths, values in axes],
                      "variants": rows, "adopted": False, "banked": False})
+
+
+def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
+    if exit_code is None:
+        exit_code = {REASON_EVIDENCE_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
+    return failed(exit_code, refusal.code, refusal.failure_detail(), code=refusal.code,
+                  next_action=refusal_copy_for(refusal.code)[1])
 
 
 def _cmd_document(args: argparse.Namespace) -> int:
@@ -171,43 +157,31 @@ def _cmd_document(args: argparse.Namespace) -> int:
         except BlendPrescriptionRefused as exc:
             raise PrescriptionDocumentRefused(exc.reason, None, exc.detail, evidence=exc.evidence) from exc
         document = read_prescription_document(raw)
-        if args.base is not None and args.base != document["base"]:
-            raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
         if args.command == "judge" and args.preview:
             return _cmd_vary_document(args, document) if args.vary else answered(_preview_document(args, document))
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
-        candidate = compose_prescription_document(document, base=base, evidence=evidence,
-                                                  base_profile=base_profile)
+        candidate = judge_prescription_document(document, base=base, evidence=evidence,
+                                                 base_profile=base_profile)
+        answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
+                  "measurement_status": "unmeasured", "adopted": False}
+        if args.command == "judge":
+            answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
+        else:
+            try:
+                answer["out"] = str(publish_authored_candidate(candidate, root=root).path)
+            except (OSError, BundleError) as exc:
+                raise PrescriptionDocumentRefused(REASON_UNWRITABLE, None, str(exc)) from exc
     except PrescriptionDocumentRefused as exc:
-        print(json.dumps(exc.to_dict(), sort_keys=True))
-        return EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED
+        return _document_failure(exc)
     except RoundSetRefused as exc:
-        print(json.dumps(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail).to_dict(), sort_keys=True))
-        return EXIT_REFUSED
+        return _document_failure(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail))
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
-        return EXIT_REFUSED
+        return _document_failure(PrescriptionDocumentRefused(exc.code, None, exc.detail))
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", REASON_UNREADABLE)
-        print(json.dumps(PrescriptionDocumentRefused(code, None, str(exc)).to_dict(), sort_keys=True))
-        return EXIT_UNREADABLE
-    answer = {"ok": True, "code": None, "section": None, "next_action": None, "error": None,
-              "candidate_fingerprint": candidate.fingerprint,
-              "resolution": candidate.analysis["resolution"], "measurement_status": "unmeasured", "adopted": False}
-    if args.command == "judge":
-        answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
-    else:
-        try:
-            published = publish_authored_candidate(candidate, root=root)
-        except CandidateBankRefusal as exc:
-            print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
-            return EXIT_REFUSED
-        except (OSError, BundleError) as exc:
-            print(json.dumps(PrescriptionDocumentRefused(REASON_UNWRITABLE, None, str(exc)).to_dict(), sort_keys=True))
-            return EXIT_WRITE_FAILED
-        answer["out"] = str(published.path)
+        refusal = PrescriptionDocumentRefused(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE), None, str(exc))
+        return _document_failure(refusal, EXIT_UNREADABLE)
     return answered(answer)
 
 
@@ -257,7 +231,7 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except RoundSetRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", REASON_UNREADABLE)
+        code = getattr(exc, "code", REASON_EVIDENCE_UNREADABLE)
         return failed(EXIT_UNREADABLE, code, str(exc))
     if args.out:
         try:
@@ -538,8 +512,6 @@ def _next_commands(
     packet_error: str,
     seat_level_db: float | None,
     session_dir: str | None,
-    evidence: list[str],
-    state: str | None,
 ) -> list[str]:
     """What to RUN next, with the paths already resolved.
 
@@ -581,8 +553,6 @@ def status_document(
     packet_error: str,
     *,
     session_dir: str | None,
-    evidence: list[str],
-    state: str | None,
     applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read retained evidence and candidate status."""
@@ -643,7 +613,7 @@ def status_document(
                  "reason_code": action["reason_code"]},
         "next_commands": _next_commands(
             sections, packet_error=packet_error, seat_level_db=seat_level_db,
-            session_dir=session_dir, evidence=evidence, state=state,
+            session_dir=session_dir,
         ),
     }
 
@@ -669,7 +639,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return answered(status_document(
         packet, packet_error,
         session_dir=args.session_dir,
-        evidence=[args.session_dir] if args.session_dir else [], state=args.state,
         applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,
     ))
 
@@ -697,10 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("document", metavar="DOC")
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
-        if verb == "compose":
-            command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
-        else:
-            command.set_defaults(base=None)
+        if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")

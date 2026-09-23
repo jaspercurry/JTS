@@ -16,7 +16,7 @@ Examples: [`docs/examples/rear_calibration_handoff.json`](examples/rear_calibrat
 
 An authored `electrical_dsp` document enters as the `rear_calibration`
 section of a `jts_prescription` document. `jasper-crossover-prescriber
-compose --base saved|<fingerprint>` banks it onto a candidate; the existing
+compose` banks it onto the document's `base` (`saved` or a fingerprint); the existing
 baseline-profile apply (`jasper-round apply <fingerprint>`) is the only
 path that carries a banked candidate onto the box, and the wizard's
 editing panel calls that same judge/compose/apply path in-process rather

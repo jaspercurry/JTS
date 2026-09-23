@@ -593,9 +593,9 @@ def test_judge_previews_the_composed_emitted_graph(emitted_preview, capsys, sect
     Path(args.document).write_text(json.dumps(doc))
     assert crossover_prescriber.main(argv) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"ok", "section", "sections", "preview", "adopted", "banked"}
+    assert answer.keys() == {"section", "sections", "preview", "adopted", "banked"}
     assert answer["section"] == "emitted_graph" and answer["sections"] == sorted(sections)
-    assert answer["ok"] is True and answer["adopted"] is False and answer["banked"] is False
+    assert "status" not in answer and answer["adopted"] is False and answer["banked"] is False
     assert answer["preview"]["kind"] == "jts_capture_prediction"
     assert all(answer["preview"]["relative_graph"]["usable_bins_by_role"][role] > 0 for role in ("woofer", "tweeter"))
 
@@ -647,11 +647,11 @@ def test_preview_refuses_an_unanswerable_document(emitted_preview, capsys, fault
     Path(args.document).write_text(json.dumps(doc))
     assert crossover_prescriber.main(argv) == status
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["code"], answer["section"]) == (code, section)
+    assert (answer["code"], answer["detail"]["section"]) == (code, section)
     if fault == "wrong-base":
-        assert answer["evidence"]["actual_candidate_id"] == target.fingerprint
+        assert answer["detail"]["evidence"]["actual_candidate_id"] == target.fingerprint
     elif fault == "corrupt-graph":
-        assert answer["evidence"]["capture_id"] == "old"
+        assert answer["detail"]["evidence"]["capture_id"] == "old"
 
 
 def test_driver_grid_writes_full_previews_but_reports_only_summaries(emitted_preview, tmp_path, capsys):
@@ -698,5 +698,5 @@ def test_preview_resolves_an_exact_take_from_the_set(emitted_preview, capsys, ta
         assert answer["preview"]["summary"]["basis"]["capture_id"] == (take or "old")
     else:
         assert status == 1
-        assert (answer["code"], answer["section"]) == ("round_take_selection_required", "driver")
-        assert answer["evidence"]["set_id"] == "old"
+        assert (answer["code"], answer["detail"]["section"]) == ("round_take_selection_required", "driver")
+        assert answer["detail"]["evidence"]["set_id"] == "old"

@@ -23,7 +23,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
-from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
@@ -52,11 +52,18 @@ _SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
 
+REASON_EVIDENCE_UNREADABLE = "evidence_unreadable"
+
+
 class PrescriptionDocumentRefused(ValueError):
     def __init__(self, code: str, section: str | None, error: str, *, evidence: Mapping[str, Any] | None = None):
         super().__init__(error)
         self.code, self.section, self.error = code, section, error
         self.evidence = dict(evidence or {})
+
+    def failure_detail(self) -> dict[str, Any]:
+        """The CLI failure document's ``detail`` (ADR-0237)."""
+        return {"section": self.section, "error": self.error, "evidence": self.evidence}
 
     def to_dict(self) -> dict[str, Any]:
         _, action = refusal_copy_for(self.code)
@@ -274,14 +281,14 @@ def preview_prescription_document(
     try:
         if kind == "rear_calibration":
             if round_dir is None:
-                raise PrescriptionDocumentRefused("evidence_unreadable", kind, "a rear preview needs --round <pair round>")
+                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, "a rear preview needs --round <pair round>")
             preview_function = preview_rear_section
             inputs = round_inputs(round_dir)
             payload = sections[kind]
             kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
         else:
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
-                raise PrescriptionDocumentRefused("evidence_unreadable", "driver" if "driver" in sections else "blend",
+                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, "driver" if "driver" in sections else "blend",
                                                   "a driver/blend preview needs --round <diagnostic round>")
             assert base is not None and evidence is not None
             if kind == "room":
@@ -307,8 +314,8 @@ def preview_prescription_document(
     except PrescriptionDocumentRefused:
         raise
     except (KeyError, TypeError, ValueError) as exc:
-        raise PrescriptionDocumentRefused("evidence_unreadable", kind, str(exc)) from exc
-    return {"ok": True, "section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
+        raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, str(exc)) from exc
+    return {"section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
 
 
 def _refused_section(code: str) -> str | None:
@@ -327,8 +334,29 @@ def saved_base() -> tuple[BankedCandidate, Mapping[str, Any]]:
     return BankedCandidate(saved, "", "", baseline_profile_state_path()), state
 
 
+def reset_prescription_document(
+    *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
+) -> dict[str, Any]:
+    sections: dict[str, Any] = {
+        name: None if name == "rear_calibration" else {}
+        for name in prescription_sections(program) if not (keep_timing and name == "alignment")
+    }
+    if "driver" in sections:
+        sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
+    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
+            "sections": sections, "rationale": "Reset the applied tuning layers."}
+
+
+def rear_cleared_candidate() -> MeasuredCrossoverCandidate:
+    """The applied tune without its rear stage, for raw pair capture (issue #5330).
+
+    Composed, not banked: the caller publishes it.
+    """
+    return bank_section("rear_calibration", None, rationale="Measure both woofers with no rear stage.")
+
+
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
-    """Judge ONE authored section on the applied baseline, as ``--base saved`` does.
+    """Judge ONE authored section on the applied baseline, as a ``base: saved`` document does.
 
     The candidate is composed and returned, never banked and never applied.
     """
@@ -345,8 +373,6 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                                evidence: PrescriptionEvidence | None = None,
                                base_profile: Mapping[str, Any] | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
-    if document["base"] != "saved" and document["base"] != base.fingerprint:
-        raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
     evidence = evidence or PrescriptionEvidence()
     sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
     contracts = prescription_contracts(programs=contract_programs(sources), **sources)

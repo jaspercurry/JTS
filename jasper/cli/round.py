@@ -272,12 +272,11 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.candidate_bank import (  # lazy: reset-only bank
         CandidateBankRefusal, publish_authored_candidate,
     )
-    from jasper.cli.crossover_prescriber import (  # lazy: reset-only prescription stack imports NumPy
-        compose_prescription_document, reset_prescription_document,
+    from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: reset-only prescription stack imports NumPy
+        REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, judge_prescription_document,
+        reset_prescription_document, saved_base,
     )
-    from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: reset-only document
-        PrescriptionDocumentRefused, saved_base,
-    )
+    from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for  # lazy: refusal copy imports NumPy
     from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
 
     try:
@@ -287,11 +286,11 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         document = reset_prescription_document(
             keep_timing=args.keep_timing, trims_db=trims_db, program=args.program,
         )
-        candidate = compose_prescription_document(document, base=base, base_profile=applied)
+        candidate = judge_prescription_document(document, base=base, base_profile=applied)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
-        print(json.dumps(exc.to_dict(), sort_keys=True))
-        return EXIT_UNREADABLE if exc.code == "evidence_unreadable" else EXIT_REFUSED
+        return failed(EXIT_UNREADABLE if exc.code == REASON_EVIDENCE_UNREADABLE else EXIT_REFUSED, exc.code,
+                      exc.failure_detail(), code=exc.code, next_action=refusal_copy_for(exc.code)[1])
     except (CandidateBankRefusal, BundleError, OSError, TypeError, ValueError) as exc:
         return failed(EXIT_UNREADABLE, "reset_compose_failed", str(exc))
     result = apply_by_fingerprint(client, published.fingerprint)
@@ -350,8 +349,13 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
     trial.add_argument("--mover", choices=("arm", "human"))
     trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, dry_run=False)
-    for verb, function in (("placed", _cmd_placed), ("stop", _cmd_stop), ("status", _cmd_status), ("wait", _cmd_wait)):
-        command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=function.__name__.removeprefix("_cmd_"))
+    for verb, function, help_line in (
+        ("placed", _cmd_placed, "Confirm microphone placement at the pending pose."),
+        ("stop", _cmd_stop, "Stop the current run."),
+        ("status", _cmd_status, "Show run progress and the current microphone prompt."),
+        ("wait", _cmd_wait, "Wait for the run to finish and bank its round packet."),
+    ):
+        command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=help_line, description=help_line)
         _connection_args(command)
         command.add_argument("--run", required=True, help="run id returned by run")
         if verb == "placed":
@@ -372,8 +376,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in ("run", "trial") and args.mover == MOVER_ARM and not args.dry_run and not args.wait:
-        parser.error("--mover arm requires --wait")
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):

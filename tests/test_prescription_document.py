@@ -371,10 +371,9 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     path.write_text(json.dumps(raw))
     before = {p for p in tmp_path.rglob("*")}
     args = [verb, str(path), "--root", str(bank), "--round", str(bass_round)]
-    if verb == "compose":
-        args += ["--base", base.fingerprint]
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
+    assert not {"status", "ok", "code", "error"} & answer.keys()
     descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
     receipt = {**descriptor, "round_id": bass_packet["round_id"], "answers_round": True, "evidence_status": "evaluated",
                "unqualified_boost_bands_hz": []}
@@ -433,12 +432,10 @@ def test_cli_refusal_banks_nothing(base, bank, tmp_path, capsys, verb):
     path = tmp_path / "bad.json"
     path.write_text(json.dumps(document(base.fingerprint, {"room": {}, "bass": {**BASS_EXTENSION, "low_boost_db": 99}})))
     args = [verb, str(path), "--root", str(bank)]
-    if verb == "compose":
-        args += ["--base", base.fingerprint]
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert crossover_prescriber.main(args) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["ok"], answer["section"], answer["code"]) == (False, "bass", "bass_low_boost_db_invalid")
+    assert (answer["status"], answer["detail"]["section"], answer["code"]) == ("refused", "bass", "bass_low_boost_db_invalid")
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 @pytest.fixture
 def saved_tune(bank):
@@ -483,7 +480,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     ).fingerprint
     bass.write_text(json.dumps(document(base, {"bass": bass_document(bass_packet)})))
     assert crossover_prescriber.main([
-        "compose", str(bass), "--root", str(bank), "--base", base, "--round", str(bass_round),
+        "compose", str(bass), "--root", str(bank), "--round", str(bass_round),
     ]) == 0
     answer = json.loads(capsys.readouterr().out)
     child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
@@ -528,7 +525,7 @@ def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descr
     path = tmp_path / "bass.json"
     path.write_text(json.dumps(document(base.fingerprint, {"bass": descriptor})))
     assert crossover_prescriber.main([
-        "compose", str(path), "--root", str(bank), "--base", base.fingerprint,
+        "compose", str(path), "--root", str(bank),
     ]) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer["code"] == code
@@ -587,7 +584,7 @@ def test_whole_graph_proof_refusal_banks_nothing(base, bank, tmp_path, monkeypat
     monkeypatch.setattr(candidate_parts, "prove_candidate_config", refuse)
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(document(base.fingerprint)))
-    assert crossover_prescriber.main(["compose", str(path), "--base", base.fingerprint, "--root", str(bank)]) == 1
+    assert crossover_prescriber.main(["compose", str(path), "--root", str(bank)]) == 1
     assert json.loads(capsys.readouterr().out)["code"] == "composed_graph_invalid"
     assert len(banked_candidates(root=bank)) == 1
 
@@ -618,7 +615,7 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     ceiling = preview["sections"]["topology"]["beaming_ceiling_hz"]
     assert ceiling == (None if diameter is None else pytest.approx(beaming_onset_hz(diameter)))
     assert len(banked_candidates(root=bank)) == 1
-    assert crossover_prescriber.main(["compose", str(path), "--base", base.fingerprint, "--round", str(round_dir), "--root", str(bank)]) == 0
+    assert crossover_prescriber.main(["compose", str(path), "--round", str(round_dir), "--root", str(bank)]) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["candidate_fingerprint"] == preview["candidate_fingerprint"]
     child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
@@ -648,10 +645,10 @@ def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(document(base_name)))
     assert crossover_prescriber.main(["judge", str(path), "--root", str(bank)]) == 0
-    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert not {"status", "ok", "code", "error"} & json.loads(capsys.readouterr().out).keys()
     path.write_text(json.dumps(document(base_name, {"bass": {"low_boost_db": 99}})))
-    assert crossover_prescriber.main(["compose", str(path), "--base", base_name, "--root", str(bank)]) == 1
-    assert json.loads(capsys.readouterr().out)["section"] == "bass"
+    assert crossover_prescriber.main(["compose", str(path), "--root", str(bank)]) == 1
+    assert json.loads(capsys.readouterr().out)["detail"]["section"] == "bass"
     assert len(banked_candidates(root=bank)) == 1
 
 
@@ -809,8 +806,6 @@ def test_cli_names_missing_round_separately_from_read_faults(base, bank, tmp_pat
     args = [verb, "--round", str(round_path)]
     if verb != "contract":
         args += [str(path), "--root", str(bank)]
-    if verb == "compose":
-        args += ["--base", base.fingerprint]
     assert crossover_prescriber.main(args) == exit_code
     answer = json.loads(capsys.readouterr().out)
     assert answer["reason" if verb == "contract" else "code"] == expected

@@ -42,7 +42,8 @@ def _preview(tmp_path, capsys, sections, root=None, extra=()):
         "judge", "--preview", str(path), *(["--round", str(root)] if root else []), *extra,
     ])
     answer = json.loads(capsys.readouterr().out)
-    assert (status == 0) == answer["ok"]
+    assert (status == 0) == ("status" not in answer)
+    assert not {"ok", "error"} & answer.keys()
     if answer.get("code") == "evidence_unreadable":
         assert status == EXIT_UNREADABLE
     return answer
@@ -96,8 +97,8 @@ def test_grid_continues_after_a_refused_variant_without_writing_it(tmp_path, cap
     answer = _preview(tmp_path, capsys, {"rear_calibration": section}, pair_round(tmp_path), (
         "--vary", f"{path}=3,{MAX_CHAIN_BOOST_DB + 1},4", "--out-dir", str(directory)))
     rows = answer["variants"]
-    assert len(rows) == 3 and sum(row.get("ok") is False for row in rows) == 1
-    assert (rows[1]["out"], rows[1]["ok"], rows[1]["code"]) == (None, False, "rear_calibration_invalid")
+    assert len(rows) == 3 and sum("reason" in row for row in rows) == 1
+    assert (rows[1]["out"], rows[1]["reason"]) == (None, "rear_calibration_invalid")
     assert rows[1]["values"] == {path: MAX_CHAIN_BOOST_DB + 1}
     assert {path.name for path in directory.iterdir()} == {
         f"variant-{index:02d}{suffix}" for index in (1, 3) for suffix in (".json", ".preview.json")}
@@ -109,7 +110,7 @@ def test_bad_grid_path_refuses_the_call_without_writing(tmp_path, capsys):
     answer = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, extra=(
         "--vary", "rear_calibration.rear_muted=true,false", "--vary", "rear_calibration.missing=1,2",
         "--out-dir", str(directory)))
-    assert (answer["ok"], answer["code"], answer["section"]) == (False, "prescription_malformed", "rear_calibration")
+    assert (answer["status"], answer["code"], answer["detail"]["section"]) == ("refused", "prescription_malformed", "rear_calibration")
     assert not directory.exists()
 
 
@@ -245,7 +246,7 @@ def test_preview_refusals(tmp_path, capsys, case, code):
     root = None if case in ("both", "no_round") else (
         rear_round(tmp_path) if case == "summed" else pair_round(tmp_path))
     answer = _preview(tmp_path, capsys, sections, root)
-    assert (answer["code"], answer["section"]) == (code, "rear_calibration")
+    assert (answer["code"], answer["detail"]["section"]) == (code, "rear_calibration")
 
 
 def test_pair_takes_share_a_window_and_remove_each_clock_shift():

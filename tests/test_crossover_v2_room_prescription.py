@@ -320,8 +320,8 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
     assert cli.main(["judge", str(path), "--round", str(round_dir), "--root", str(root),
                      *(["--preview"] if preview else [])]) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["code"], answer["section"]) == ("set_required", "room")
-    assert answer["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}"} for i in range(2)]
+    assert (answer["code"], answer["detail"]["section"]) == ("set_required", "room")
+    assert answer["detail"]["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}"} for i in range(2)]
 
 
 @pytest.mark.parametrize("filters,code", [
@@ -350,7 +350,7 @@ def test_room_preview_reports_margins_and_residual_without_banking(tmp_path, cap
     if code:
         assert answer["code"] == code
         return
-    assert answer["ok"] is True and answer["banked"] is answer["adopted"] is False
+    assert "ok" not in answer and answer["banked"] is answer["adopted"] is False
     preview = answer["preview"]
     response = 20 * np.log10(np.abs(chain_response(filters, np.array(preview["freqs_hz"]))))
     side = preview["sides"]["mono"]
@@ -432,8 +432,6 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
         "sections": {"room": _document(sha256=room_median_sha256(median))},
     }))
     args = [verb, str(document), "--round", str(round_dir), "--set", set_id, "--root", str(root)]
-    if verb == "compose":
-        args += ["--base", base.fingerprint]
     assert cli.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["resolution"]["room"] == "document"
