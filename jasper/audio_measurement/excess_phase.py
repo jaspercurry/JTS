@@ -222,6 +222,14 @@ def _window_slopes(
 _MIN_SLOPE_SAMPLES = 4
 
 
+def local_group_delay_s(freqs: np.ndarray, phase: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Group delay, seconds, of an unwrapped phase on the :data:`PHASE_NFFT`
+    transform grid: minus its local slope over +/- :data:`GD_SPAN_OCT` at every bin."""
+    lo_idx = np.searchsorted(freqs, freqs * 2 ** -GD_SPAN_OCT)
+    hi_idx = np.minimum(np.searchsorted(freqs, freqs * 2 ** GD_SPAN_OCT) + 1, freqs.size)
+    return -_window_slopes(phase, lo_idx, hi_idx) / (2 * np.pi * sample_rate / PHASE_NFFT)
+
+
 @dataclass(frozen=True)
 class ExcessPhase:
     """One capture's excess phase, bulk time-of-flight removed."""
@@ -281,10 +289,7 @@ def excess_group_delay(
     residual = np.polyfit(omega[fit], excess[fit], 1)
     excess = excess - np.polyval(residual, omega)
 
-    lo_idx = np.searchsorted(freqs, freqs * 2 ** -GD_SPAN_OCT)
-    hi_idx = np.minimum(np.searchsorted(freqs, freqs * 2 ** GD_SPAN_OCT) + 1, freqs.size)
-    d_omega = 2 * np.pi * sample_rate / PHASE_NFFT
-    group_delay = -_window_slopes(excess, lo_idx, hi_idx) / d_omega
+    group_delay = local_group_delay_s(freqs, excess, sample_rate)
     group_delay[~in_band] = np.nan
 
     return ExcessPhase(

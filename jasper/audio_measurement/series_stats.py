@@ -36,37 +36,38 @@ def deviation_summary(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[st
 
 @dataclass(frozen=True)
 class CurveDifference:
-    """``a - b`` on ``a``'s grid, after ``level_offset_db`` came off ``a``."""
+    """``curve_db - against_db`` on the curve's grid, after ``level_offset_db``
+    came off the curve."""
 
     freqs_hz: np.ndarray
-    a_db: np.ndarray
-    b_db: np.ndarray
+    curve_db: np.ndarray
+    against_db: np.ndarray
     level_offset_db: float
 
     @property
     def delta_db(self) -> np.ndarray:
-        return (self.a_db - self.level_offset_db) - self.b_db
+        return (self.curve_db - self.level_offset_db) - self.against_db
 
 
 def curve_difference(
-    freqs_a_hz: np.ndarray, a_db: np.ndarray, freqs_b_hz: np.ndarray, b_db: np.ndarray, *,
+    freqs_hz: np.ndarray, curve_db: np.ndarray, against_freqs_hz: np.ndarray, against_db: np.ndarray, *,
     band_hz: tuple[float, float], remove_level: bool = True,
 ) -> CurveDifference | None:
-    """Two magnitude curves differenced over ``band_hz``: ``b`` read onto ``a``'s grid.
+    """``curve_db`` minus ``against_db`` over ``band_hz``, the second read onto the first's grid.
 
     With ``remove_level`` each curve's median over the band comes off before
     subtracting, and the offset is published: two graphs, or a model with no
     absolute reference, differ by a level that is not a difference in shape.
-    ``None`` when ``a`` has no bin in the band.
+    ``None`` when ``curve_db`` has no bin in the band.
     """
-    freqs = np.asarray(freqs_a_hz, dtype=float)
+    freqs = np.asarray(freqs_hz, dtype=float)
     mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
     if not np.any(mask):
         return None
-    a = np.asarray(a_db, dtype=float)[mask]
-    b = np.interp(freqs[mask], np.asarray(freqs_b_hz, dtype=float), np.asarray(b_db, dtype=float))
-    offset = float(np.median(a) - np.median(b)) if remove_level else 0.0
-    return CurveDifference(freqs[mask], a, b, offset)
+    curve = np.asarray(curve_db, dtype=float)[mask]
+    against = np.interp(freqs[mask], np.asarray(against_freqs_hz, dtype=float), np.asarray(against_db, dtype=float))
+    offset = float(np.median(curve) - np.median(against)) if remove_level else 0.0
+    return CurveDifference(freqs[mask], curve, against, offset)
 
 
 def series_stats(

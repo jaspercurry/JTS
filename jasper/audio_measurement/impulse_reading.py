@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .analysis import smooth_fractional_octave
-from .excess_phase import PHASE_NFFT, GD_SPAN_OCT, _window_slopes, excess_group_delay, gate
+from .excess_phase import PHASE_NFFT, excess_group_delay, gate, local_group_delay_s
 from .gating import analytic_envelope, f_trusted_floor_hz
 
 #: ISO 3382-1's start of an impulse: the first sample within this of its peak.
@@ -127,9 +127,7 @@ def timing_by_frequency(
     omega = 2 * np.pi * freqs
     spectrum = np.fft.rfft(segment, n=PHASE_NFFT) * np.exp(1j * omega * lead / sample_rate)
     phase = np.unwrap(np.angle(spectrum))
-    lo_idx = np.searchsorted(freqs, freqs * 2 ** -GD_SPAN_OCT)
-    hi_idx = np.minimum(np.searchsorted(freqs, freqs * 2 ** GD_SPAN_OCT) + 1, freqs.size)
-    group_delay_s = -_window_slopes(phase, lo_idx, hi_idx) / (2 * np.pi * sample_rate / PHASE_NFFT)
+    group_delay_s = local_group_delay_s(freqs, phase, sample_rate)
 
     lo, hi = band_hz
     grid = np.geomspace(lo, hi, max(2, int(round(np.log2(hi / lo) * points_per_octave)) + 1))

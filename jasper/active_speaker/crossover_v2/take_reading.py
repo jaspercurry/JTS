@@ -28,6 +28,7 @@ from jasper.audio_measurement.series_stats import curve_difference, deviation_su
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
 from .feature_optics import PHASE_GATE_LEAD_MS
+from .measurement_context import capture_basis, compare_capture_basis
 from .round_captures import PoseCapture, RoundCapturesRefused, capture_row, select_capture
 
 #: A take read through a window whose trusted band is too narrow to say anything.
@@ -197,11 +198,6 @@ def read_preview(document: Any) -> PreviewSide:
         raise RoundCapturesRefused(REFUSE_PREVIEW_UNREADABLE, {"detail": str(exc)}) from exc
 
 
-def _calibration_id(capture: PoseCapture) -> str | None:
-    calibration = capture.record_document.get("capture_calibration")
-    return calibration.get("calibration_id") if isinstance(calibration, dict) else None
-
-
 def _difference_report(
     grid: np.ndarray, a_db: np.ndarray, b_db: np.ndarray, band: tuple[float, float], *, remove_level: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -210,7 +206,7 @@ def _difference_report(
     if difference is None:
         raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {"band_hz": list(band)})
     delta = difference.delta_db
-    b_side, a_side = difference.a_db - difference.level_offset_db, difference.b_db
+    b_side, a_side = difference.curve_db - difference.level_offset_db, difference.against_db
 
     def band_mean(lo: float, hi: float) -> float | None:
         inside = delta[(difference.freqs_hz >= lo) & (difference.freqs_hz < hi)]
@@ -260,7 +256,6 @@ def compare_report(
     summary, curves = _difference_report(grid, a_db, b_db, band, remove_level=remove_level)
     same_recording = a.capture.capture_id == b.capture.capture_id
     a_arrival, b_arrival = a.arrival_ms, b.arrival_ms
-    a_basis = a.capture.record_document
     return {
         "parameters": {
             "roles": [a.role, b.role], "window_ms": window,
@@ -274,10 +269,8 @@ def compare_report(
             **summary, "same_recording": same_recording,
             "relative_arrival_ms": (_number(b_arrival - a_arrival, 3)
                                     if same_recording and a_arrival is not None and b_arrival is not None else None),
-            "calibration_ids": [_calibration_id(a.capture), _calibration_id(b.capture)],
-            "differs": sorted(key for key in ("candidate_id", "graph_fingerprint", "position_deg", "vertical_deg",
-                                              "mark_distance_m", "level_db", "phase")
-                              if a_basis.get(key) != b.capture.record_document.get(key)),
+            "basis": compare_capture_basis(capture_basis(b.capture.record_document),
+                                           capture_basis(a.capture.record_document)),
         },
         **curves,
     }
@@ -315,8 +308,6 @@ def compare_preview_report(
         },
         "a": {"preview_candidate_id": preview.candidate_id, "basis_capture_id": preview.basis_capture_id},
         "b": capture_row(b.capture),
-        "summary": {**summary, "same_recording": False, "relative_arrival_ms": None,
-                    "calibration_ids": [None, _calibration_id(b.capture)],
-                    "differs": ["predicted_vs_measured"]},
+        "summary": {**summary, "same_recording": False, "relative_arrival_ms": None, "basis": None},
         **curves,
     }

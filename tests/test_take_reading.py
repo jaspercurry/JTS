@@ -20,7 +20,8 @@ ORIGIN = 12_000
 
 
 def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: float = 1.0,
-          gate_ms: float | None = 8.0, band: tuple[float, float] = (100.0, 20_000.0)) -> TakeRead:
+          gate_ms: float | None = 8.0, band: tuple[float, float] = (100.0, 20_000.0),
+          record: dict | None = None) -> TakeRead:
     ir = np.zeros(36_000)
     ir[ORIGIN + delay] = gain
     return TakeRead(PoseCapture(
@@ -28,7 +29,7 @@ def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: floa
         azimuth_deg=0.0, vertical_deg=0.0, mark_distance_m=1.0, radiated_band_hz=band,
         sample_rate=RATE, ir=ir, peak_idx=ORIGIN + delay,
         preprocessing={"impulse_source": "kept", "pre_guard_samples": ORIGIN, "clock_shift_samples": 0.0},
-        curve={"gate_window_ms": gate_ms} if gate_ms else {},
+        curve={"gate_window_ms": gate_ms} if gate_ms else {}, record_document=record or {},
     ), role)
 
 
@@ -49,6 +50,17 @@ def test_arrival_compares_only_within_one_recording():
 
     assert (within["same_recording"], within["relative_arrival_ms"]) == (True, pytest.approx(25 / 48, abs=1e-3))
     assert (across["same_recording"], across["relative_arrival_ms"]) == (False, None)
+
+
+def test_a_different_microphone_is_disclosed_not_refused():
+    def mic(calibration_id: str) -> dict:
+        return {"capture_calibration": {"applied": True, "calibration_id": calibration_id,
+                                        "curve_fingerprint": f"fp-{calibration_id}"}}
+
+    report = compare_report(_take("t1", record=mic("umik-a")), _take("t2", record=mic("umik-b")))
+
+    assert report["summary"]["basis"]["basis_status"] == "incompatible"
+    assert "capture_calibration" in report["summary"]["basis"]["incompatible_fields"]
 
 
 def test_both_sides_are_read_through_the_shorter_take_window_unless_one_is_named():

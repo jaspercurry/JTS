@@ -38,6 +38,9 @@ class TakeImpulsesUnreadable(ValueError):
     """A take names impulses its bundle cannot give back as written."""
 
 
+REFUSE_TAKE_IMPULSES_UNREADABLE = "take_impulses_unreadable"
+
+
 @dataclass(frozen=True)
 class TakeImpulse:
     """One response's impulse within a take: its role, which occurrence, the samples."""
@@ -112,27 +115,25 @@ def take_impulses(bundle_dir: Path, document: Mapping[str, Any]) -> tuple[TakeIm
         return ()
     path = Path(bundle_dir) / str(block.get("path") or "")
     try:
-        if sha256_file(path) != block.get("sha256"):
-            raise TakeImpulsesUnreadable(f"{path}: content does not match the take record's hash")
-        with np.load(path, allow_pickle=False) as arrays:
-            return tuple(
-                TakeImpulse(
-                    str(row["role"]), int(row["repeat_index"]),
-                    RecordedImpulse(
-                        samples=np.asarray(arrays[row["key"]], dtype=np.float64),
-                        sample_rate_hz=int(row["sample_rate_hz"]),
-                        origin_index=int(row["origin_index"]),
-                        peak_index=int(row["peak_index"]),
-                        segment_id=str(row["segment_id"]),
-                        clock_shift_samples=float(row["clock_shift_samples"]),
-                    ),
+        if sha256_file(path) == block.get("sha256"):
+            with np.load(path, allow_pickle=False) as arrays:
+                return tuple(
+                    TakeImpulse(
+                        str(row["role"]), int(row["repeat_index"]),
+                        RecordedImpulse(
+                            samples=np.asarray(arrays[row["key"]], dtype=np.float64),
+                            sample_rate_hz=int(row["sample_rate_hz"]),
+                            origin_index=int(row["origin_index"]),
+                            peak_index=int(row["peak_index"]),
+                            segment_id=str(row["segment_id"]),
+                            clock_shift_samples=float(row["clock_shift_samples"]),
+                        ),
+                    )
+                    for row in block["responses"]
                 )
-                for row in block["responses"]
-            )
     except (OSError, KeyError, TypeError, ValueError) as exc:
-        if isinstance(exc, TakeImpulsesUnreadable):
-            raise
         raise TakeImpulsesUnreadable(f"{path}: {exc}") from exc
+    raise TakeImpulsesUnreadable(f"{path}: content does not match the take record's hash")
 
 
 def impulse_for(

@@ -13,7 +13,7 @@ from typing import Any
 
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
-from jasper.active_speaker.crossover_v2.take_impulses import TakeImpulsesUnreadable
+from jasper.active_speaker.crossover_v2.take_impulses import REFUSE_TAKE_IMPULSES_UNREADABLE, TakeImpulsesUnreadable
 from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview, read_take,
 )
@@ -56,7 +56,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     except TakeImpulsesUnreadable as exc:
-        return refused_by_name("take_impulses_unreadable", str(exc), code=EXIT_UNREADABLE)
+        return refused_by_name(REFUSE_TAKE_IMPULSES_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
     spec = ARTIFACT_BY_VIEW[args.command]
     name = take_artifact_name(spec.artifact, f"{a_label}-vs-{b.capture.capture_id}", b.role)
     written = _write(report, args.out, resolved_out(b_round, name), schema=spec.schema)

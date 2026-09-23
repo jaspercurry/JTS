@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
-from jasper.active_speaker.crossover_v2.take_impulses import TakeImpulsesUnreadable
+from jasper.active_speaker.crossover_v2.take_impulses import REFUSE_TAKE_IMPULSES_UNREADABLE, TakeImpulsesUnreadable
 from jasper.active_speaker.crossover_v2.take_reading import (
     TakeRead, group_delay_report, impulse_report, read_take,
 )
@@ -34,7 +34,7 @@ def _run(args: argparse.Namespace, report: Callable[[TakeRead], dict[str, Any]],
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     except TakeImpulsesUnreadable as exc:
-        return refused_by_name("take_impulses_unreadable", str(exc), code=EXIT_UNREADABLE)
+        return refused_by_name(REFUSE_TAKE_IMPULSES_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(written_report, args.out,
                      resolved_out(round_dir, take_artifact_name(spec.artifact, take_id, args.role)),
