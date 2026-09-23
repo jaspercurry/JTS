@@ -120,10 +120,6 @@ class PeeringMode(str, Enum):
     ON = "on"
 
 
-PEERING_ON_VALUES = frozenset({"on", "true", "1", "yes", "enabled"})
-PEERING_OFF_VALUES = frozenset({"", "off", "false", "0", "no", "disabled"})
-
-
 @dataclass(frozen=True)
 class PeeringConfig:
     """Resolved peering configuration.
@@ -201,8 +197,7 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
 
 
 def _parse_mode(raw: str) -> PeeringMode:
-    val = raw.strip().lower()
-    if val in PEERING_ON_VALUES:
+    if parse_bool_value(raw) is True:
         return PeeringMode.ON
     # Everything else (including the empty string, "off", anything
     # malformed) means off. We don't fail hard on a typo here — a

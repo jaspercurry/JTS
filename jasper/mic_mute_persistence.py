@@ -33,6 +33,7 @@ from pathlib import Path
 
 from .atomic_io import atomic_write_text
 from .env_file import read_value
+from .env_load import parse_bool_value
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +54,14 @@ def read_mic_muted(path: str | os.PathLike) -> bool:
     v = read_value(text, _KEY)
     if v is None:
         return False
-    if v in ("1", "true", "True", "yes", "on"):
-        return True
-    if v in ("0", "false", "False", "no", "off", ""):
-        return False
-    logger.warning(
-        "mic mute persistence: %s has unrecognised value %r — "
-        "treating as unmuted",
-        p, v,
-    )
-    return False
+    muted = parse_bool_value(v)
+    if muted is None and v.strip():
+        logger.warning(
+            "mic mute persistence: %s has unrecognised value %r — "
+            "treating as unmuted",
+            p, v,
+        )
+    return muted is True
 
 
 def write_mic_muted(path: str | os.PathLike, muted: bool) -> None:

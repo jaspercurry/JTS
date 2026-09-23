@@ -24,6 +24,7 @@ from jasper.aec_sweep import (
     knob_default,
 )
 from jasper.aec.bridge_telemetry import logger
+from jasper.env_load import parse_bool_value
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
 # requirement (160 samples); the binding splits 320 → 2×160 internally per
@@ -75,9 +76,7 @@ def _cfg_bool(
     *,
     default: str | None = None,
 ) -> bool:
-    return _cfg_value(name, overrides, default=default).strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    return parse_bool_value(_cfg_value(name, overrides, default=default)) is True
 
 
 class Aec3V1Engine:

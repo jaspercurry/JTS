@@ -920,6 +920,27 @@ def test_read_ha_env_file(tmp_path, content, expected):
     assert read_ha_env_file(str(p)) == expected
 
 
+async def test_probe_from_env_accepts_shared_false_value(tmp_path, monkeypatch):
+    from jasper.home_assistant import probe_status_from_env
+
+    p = tmp_path / "ha.env"
+    p.write_text(
+        "JASPER_HA_URL=http://homeassistant.local:8123\n"
+        "JASPER_HA_TOKEN=token\n"
+        "JASPER_HA_VERIFY_SSL=Disabled\n"
+    )
+    seen = {}
+
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
+        seen["verify_ssl"] = verify_ssl
+        return {}
+
+    monkeypatch.setattr("jasper.home_assistant.probe_status", fake_probe)
+    await probe_status_from_env(env_file_path=str(p))
+
+    assert seen["verify_ssl"] is False
+
+
 # ---- IPv6 bracketing -------------------------------------------------------
 #
 # Discovery returns IP addresses from python-zeroconf as ipaddress

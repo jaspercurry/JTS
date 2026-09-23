@@ -756,7 +756,7 @@ def test_check_citibike_verdicts(
     "ebike_only, reason",
     [
         ("", "REASON_CITIBIKE_CONNECTED"),
-        ("1", "REASON_CITIBIKE_CONNECTED_EBIKE_ONLY"),
+        ("enabled", "REASON_CITIBIKE_CONNECTED_EBIKE_ONLY"),
     ],
     ids=["mixed", "ebike-only"],
 )
