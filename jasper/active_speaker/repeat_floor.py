@@ -32,6 +32,13 @@ def pairwise_abs_deltas(values: Sequence[float]) -> list[float]:
     return [abs(a - b) for i, a in enumerate(vs) for b in vs[i + 1:]]
 
 
+def metric_summaries(samples: Mapping[str, Sequence[float]]) -> dict[str, dict[str, Any]]:
+    """Each metric's raw values beside their median and the p95 spread of their pairwise deltas."""
+    return {metric: {"values": values, "median": percentile(values, 50),
+                     "spread": percentile(pairwise_abs_deltas(values), 95.0), "n": len(values)}
+            for metric, values in samples.items()}
+
+
 def sample_spread(values: Sequence[float]) -> dict[str, float] | None:
     if len(values) < 2:
         return None

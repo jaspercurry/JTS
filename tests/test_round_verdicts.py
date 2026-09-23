@@ -11,7 +11,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
-from jasper.active_speaker.round_verdicts import round_verdicts
+from jasper.active_speaker.round_verdicts import common_measured_band, round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
 from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.interference_nulls import feature_position_variance
@@ -48,6 +48,20 @@ def test_feature_variance_direction(cv, count, total, gain, classification):
     feature = feature_position_variance(responses, freq_hz=1000, q=2, gain_db=gain, positions_total=total)
     assert feature == {"cv_percent": pytest.approx(cv, abs=0.005), "positions_deep": count, "positions_total": total,
                        "classification": classification, "frequencies_hz": pytest.approx(centers, abs=0.05)}
+
+
+def _curve(band_hz, floor_hz):
+    return {"curve": {"freqs_hz": [100.0, 20000.0], "magnitude_db": [0.0, 0.0],
+                      "band_hz": band_hz, "validity_floor_hz": floor_hz}}
+
+
+def test_common_measured_band_is_the_narrowest_shared_span():
+    takes = [_curve([200.0, 12000.0], 200.0), _curve([300.0, 9000.0], 300.0)]
+    assert common_measured_band(takes) == [300.0, 9000.0]
+
+
+def test_common_measured_band_is_none_without_any_measured_curve():
+    assert common_measured_band([{"curve": {}}]) is None
 
 
 @pytest.mark.parametrize("unit,residual,gap,marks", [

@@ -10,15 +10,13 @@ from __future__ import annotations
 import argparse
 from itertools import combinations, product
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.position_cycle import measured_curve_band
 from jasper.active_speaker.crossover_v2.round_inputs import SetTakes
-from jasper.active_speaker.attempts_loop import percentile
-from jasper.active_speaker.round_verdicts import held_pairs, mark_takes, pair_spread
+from jasper.active_speaker.round_verdicts import common_measured_band, held_pairs, mark_takes, pair_spread
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.json_fields import finite_float
-from jasper.active_speaker.repeat_floor import derive_repeat_floor, pairwise_abs_deltas
+from jasper.active_speaker.repeat_floor import derive_repeat_floor, metric_summaries
 from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -28,12 +26,6 @@ from ._common import (
     _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS, _write,
     answer, read_run_manifest, resolve_set, round_inputs, RoundSetRefused, RoundViewsError, default_out,
 )
-
-def _common_band(takes: Sequence[Mapping[str, Any]]) -> list[float] | None:
-    """The band every take measured, so each spread speaks for one span."""
-    bands = [measured[2] for take in takes if (measured := measured_curve_band(take.get("curve") or {}))]
-    return [max(lo for lo, _ in bands), min(hi for _, hi in bands)] if bands else None
-
 
 def _cmd_repeat_set(args: argparse.Namespace) -> int:
     if len(args.round_dirs) != 1:
@@ -65,11 +57,9 @@ def _cmd_repeat_set(args: argparse.Namespace) -> int:
     samples = {**take_values, **{f"{role}_trim_db": values for role, values in trims.items()}}
     floor = derive_repeat_floor(samples=samples, units={"delay_us": "us", "polarity": "sign"},
                                 rounds=[{"take_id": take["take_id"]} for take in takes])
-    summaries = {metric: {"values": values, "median": percentile(values, 50),
-                 "spread": percentile(pairwise_abs_deltas(values), 95.0), "n": len(values)}
-                 for metric, values in samples.items()}
+    summaries = metric_summaries(samples)
     held = mark_takes(selected, selected.capture_basis.get("role"))
-    band = _common_band(held)
+    band = common_measured_band(held)
     marks = {"band_hz": band, **pair_spread(held_pairs(held), band)}
     payload = {"set_id": selected.set_id, "take_ids": [take["take_id"] for take in takes],
                "take": {metric: summaries[metric] for metric in take_values},
@@ -98,7 +88,7 @@ def _cmd_repeat_rounds(args: argparse.Namespace) -> int:
                 marks.setdefault((basis.get("side"), basis.get("role")), []).append((index, row["set_id"], takes))
     drivers = []
     for (side, role), sets in marks.items():
-        band = _common_band([take for *_, takes in sets for take in takes])
+        band = common_measured_band([take for *_, takes in sets for take in takes])
         drivers.append({
             "side": side, "role": role, "band_hz": band,
             "within": [{"round": index, "set_id": set_id, "take_ids": [take["take_id"] for take in takes],

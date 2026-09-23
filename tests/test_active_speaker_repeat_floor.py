@@ -14,6 +14,7 @@ from jasper.active_speaker.repeat_floor import (
     SCHEMA_VERSION,
     derive_repeat_floor,
     load_repeat_floor,
+    metric_summaries,
     pairwise_abs_deltas,
     stopping_thresholds,
 )
@@ -52,6 +53,15 @@ def test_pairwise_abs_deltas_over_a_hand_derivable_set():
 @pytest.mark.parametrize("values", [[], [1.0]])
 def test_pairwise_abs_deltas_needs_two_values_to_have_a_difference(values):
     assert pairwise_abs_deltas(values) == []
+
+
+@pytest.mark.parametrize("values,median,spread", [
+    ([100.0, 101.0, 150.0], 101.0, pytest.approx(49.9)),
+    ([1.0, 1.0], 1.0, 0.0),
+])
+def test_metric_summaries_pairs_each_metrics_median_with_its_pairwise_p95_spread(values, median, spread):
+    summary, = metric_summaries({"metric": values}).values()
+    assert summary == {"values": values, "median": median, "spread": spread, "n": len(values)}
 
 
 def test_stopping_thresholds_derive_plateau_and_margin_from_the_aggregate_p95():
