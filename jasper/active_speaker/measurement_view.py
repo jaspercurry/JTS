@@ -18,7 +18,7 @@ def round_status(capture: Mapping[str, Any]) -> list[str]:
         if lines:
             return lines
         facts = {**facts, "packet_error": "packet_unreadable"}
-    return round_lines(facts, pending=bool(capture.get("position_pending") or capture.get("join")))
+    return round_lines(facts, pending=capture.get("position_pending") or capture.get("join") or {})
 
 
 def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture: bool = True) -> dict[str, Any]:
@@ -34,7 +34,7 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     actions = [a for a in held.get("actions", ()) if a["id"] != "retake"] + [
         retake_action(), {"id": "reset_round", "label": "Reset the round", "endpoint": CAPTURE_CANCEL_PATH, "body": {}},
     ] if live and facts.get("mover") == "human" else []
-    return {**result, "capture": None, "pending": {"actions": actions} if live else None, "busy": live}
+    return {**result, "capture": None, "pending": {**held, "actions": actions} if live else None, "busy": live}
 
 
 #: Registry ids whose layout, purpose, and regime duplicate another id's

@@ -1,15 +1,21 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
+from jasper.active_speaker.round_copy import pose_line, round_lines
+from jasper.active_speaker.timing_status import timing_status_lines
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, measurement_view, plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     REASON_MEASUREMENT_TARGETS_MISSING,
     CrossoverV2Refused,
+    refusal_copy_for,
 )
 from jasper.web import correction_crossover_flow as flow
 from jasper.active_speaker.measurement_programs import available_programs
@@ -117,3 +123,62 @@ def test_pre_round_choice_survives_a_stopped_run(monkeypatch):
     envelope, code = flow.handle_envelope()
     assert code == 200
     assert envelope["round_choices"] is choices
+
+
+def test_every_pose_hold_reaches_the_page_with_its_placement_words(monkeypatch):
+    """#5632 F5: poses 2..N sent the page their buttons but not where the microphone goes."""
+    hold = {"index": 2, "attempt": 2, "degrees": 0, "vertical_deg": 0, "mover": "human",
+            "prompt": {"progress": "", "title": "Move the microphone 12 in (30 cm) FORWARD.", "body": ""},
+            "actions": [{"id": "position_ready", "label": "Microphone is at the seat", "endpoint": "/placed", "body": {}}]}
+    facts = {"pose": 2, "poses": 3, "mover": "human", "pose_details": [{"kind": "seat"}] * 3}
+    monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True, "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {"phase": "measure"},
+        "capture": {"status": "awaiting_capture", "run": facts, "position_pending": hold}}, 200))
+    envelope, _ = flow.handle_envelope()
+    pending = envelope["pending"]
+    assert (pending["prompt"], pending["mover"], pending["degrees"]) == (hold["prompt"], "human", 0)
+    assert pending["actions"][0] == hold["actions"][0]
+
+
+@pytest.mark.parametrize("mover, action, held, names_release", [
+    ("human", "fix_and_retake", True, True),
+    ("human", "fix_and_retake", False, False),
+    ("arm", "fix_and_retake", True, False),
+    ("human", "retake_same", True, False),
+])
+def test_a_retake_names_its_release_only_while_it_waits_for_one(mover, action, held, names_release):
+    """#5632 F9: after ``anchor_ambiguous`` the page said "Taking it again." while it waited for a click."""
+    release = "Microphone is at the seat"
+    hold = {"mover": mover, "actions": [{"id": "position_ready", "label": release}] if mover == "human" else []}
+    facts = {"mover": mover, "retake_pose": 2, "retake_measurement": 5,
+             "retake_reason": "anchor_ambiguous", "retake_action": action}
+    line = measurement_view.round_status({"run": facts, **({"position_pending": hold} if held else {})})[0]
+    assert refusal_copy_for("anchor_ambiguous")[0] in line
+    assert (release in line) is names_release
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_round_counts_of_one_read_in_the_singular(n):
+    """#5632 F13: "1 measurements in total" and "Allow about 1 minutes"."""
+    before = {"poses": 1, "mover": "human", "measurements_per_pose": [n], "measurements": n, "estimated_seconds": 50 * n}
+    after = {"status": "partial", "takes": n, "not_measured": n}
+    text = " ".join(round_lines(before) + round_lines(after))
+    plural_after_n = re.findall(rf"\b{n} (?:[a-z]+ )?[a-z]+s\b", text)
+    assert (plural_after_n == []) is (n == 1), plural_after_n
+
+
+def test_a_one_measurement_pose_names_its_measurement_once():
+    """#5632 F13: "measurements 2–2"."""
+    facts = {"pose": 2, "poses": 3, "mover": "human", "measurements_per_pose": [1, 1, 1],
+             "pose_details": [{"kind": "seat"}] * 3}
+    assert re.findall(r"\d+", pose_line(facts)) == ["2", "3", "2"]
+
+
+def test_page_figures_are_rounded_for_reading():
+    """#5632 F13: "within 10.6152 dB; repeat noise 0.426631 dB"."""
+    profile = {"timing": {"delay_us": -186.04, "polarity": "normal", "provenance": "set_by_user"}}
+    round_ = {"alignment_verdict": {"verification": {"residual_rms_db": 10.6152, "repeat_noise_db": 0.426631}}}
+    lines = timing_status_lines(profile, round_)
+    figures = r"-?\d+(?:\.\d+)?"
+    assert re.findall(figures, lines["saved"] + lines["verification"]) == ["-186.04", "10.62", "0.43"]
+    assert re.findall(figures, round_lines({"level_raise_dbfs": -21.345678})[0]) == ["-21.3"]

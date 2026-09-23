@@ -80,6 +80,10 @@ class PositionGate:
     Reposted begins are idempotent. A placement grant carries only to the next
     capture and attempt within the same declared pose batch. A skipped index,
     repeated index, changed pose or abandoned hold needs a fresh grant.
+
+    A hold's ``attempt`` is the caller's grant sequence, not a take count:
+    ``plan_run`` passes the index plus its count of re-grants, and logs name
+    it ``grant``. The take's attempt is the run progress's ``attempt``.
     """
     def __init__(self, *, mover: str = MOVER_HUMAN, clock: Callable[[], float] | None = None) -> None:
         self._mover = mover
@@ -133,7 +137,7 @@ class PositionGate:
                     logger,
                     "correction.crossover_v2_position_hold_expired" if expired_hold
                     else "correction.crossover_v2_session_ceiling_expired",
-                    level=logging.WARNING, index=index, attempt=attempt,
+                    level=logging.WARNING, index=index, grant=attempt,
                     degrees=target, waited_s=round(waited, 1),
                 )
                 raise CaptureBeginRefused(
@@ -154,7 +158,7 @@ class PositionGate:
                 self._last = (index, attempt, batch)
                 log_event(
                     logger, "correction.crossover_v2_position_pending",
-                    index=index, attempt=attempt, degrees=target, vertical_deg=vertical, role=role,
+                    index=index, grant=attempt, degrees=target, vertical_deg=vertical, role=role,
                 )
         raise CaptureBeginDeferred(
             POSITION_HOLD_CODE, f"Waiting for the microphone to reach {target:+d}°{rise}.",
@@ -235,7 +239,7 @@ class PositionGate:
         if abandoned:
             log_event(
                 logger, "correction.crossover_v2_position_hold_abandoned",
-                index=int(abandoned["index"]), attempt=int(abandoned["attempt"]),
+                index=int(abandoned["index"]), grant=int(abandoned["attempt"]),
                 degrees=int(abandoned["degrees"]),
             )
 
@@ -258,6 +262,6 @@ class PositionGate:
             self._opened_at = None
         log_event(
             logger, "correction.crossover_v2_position_released",
-            index=wanted, attempt=wanted_attempt, degrees=int(released["degrees"]),
+            index=wanted, grant=wanted_attempt, degrees=int(released["degrees"]),
         )
         return released

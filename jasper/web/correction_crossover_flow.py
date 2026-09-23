@@ -71,32 +71,32 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       <div id="crossover-round-summary"></div>
       <div id="crossover-round-start" class="form-actions"></div>
     </div>
+    <div id="crossover-walk" class="capture-walk" hidden>
+      <!-- Page-local metric/imperial preference (#3629, #1941 Q2). Every
+           prompt below already carries both units in one string
+           (capture_plan.py's format_position_distance); the toggle only
+           reorders which one leads -- see units.js. -->
+      <div class="segmented" role="group" aria-label="Distance units">
+        <button type="button" class="segmented__btn" id="crossover-units-imperial" aria-pressed="true">in</button>
+        <button type="button" class="segmented__btn" id="crossover-units-metric" aria-pressed="false">cm</button>
+      </div>
+      <p id="crossover-walk-progress" class="eyebrow"></p>
+      <!-- The per-position picture (#3629, #1941 R11): speaker, the mark,
+           and an arrow to this prompt's spot -- see position-diagram.js.
+           Hidden whenever the prompt carries no bearing to draw. -->
+      <div id="crossover-walk-diagram" class="position-diagram-wrap" hidden></div>
+      <p id="crossover-walk-caption" class="form-hint position-diagram-caption" hidden></p>
+      <!-- A paragraph, not a heading: this block appears and disappears
+           inside the section's own `aria-live="polite"`, which announces
+           the instruction already, and a transient h3 under a section with
+           no h2 would put a hole in the page's heading outline. Same class,
+           same weight, as `.measurement-row__title`'s paragraph. -->
+      <p id="crossover-walk-headline" class="section__title"></p>
+      <p id="crossover-walk-detail" class="form-hint"></p>
+      <div id="crossover-walk-action" class="measurement-row__actions"></div>
+    </div>
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-capture" hidden>
-      <div id="crossover-walk" class="capture-walk" hidden>
-        <!-- Page-local metric/imperial preference (#3629, #1941 Q2). Every
-             prompt below already carries both units in one string
-             (capture_plan.py's format_position_distance); the toggle only
-             reorders which one leads -- see units.js. -->
-        <div class="segmented" role="group" aria-label="Distance units">
-          <button type="button" class="segmented__btn" id="crossover-units-imperial" aria-pressed="true">in</button>
-          <button type="button" class="segmented__btn" id="crossover-units-metric" aria-pressed="false">cm</button>
-        </div>
-        <p id="crossover-walk-progress" class="eyebrow"></p>
-        <!-- The per-position picture (#3629, #1941 R11): speaker, the mark,
-             and an arrow to this prompt's spot -- see position-diagram.js.
-             Hidden whenever the prompt carries no bearing to draw. -->
-        <div id="crossover-walk-diagram" class="position-diagram-wrap" hidden></div>
-        <p id="crossover-walk-caption" class="form-hint position-diagram-caption" hidden></p>
-        <!-- A paragraph, not a heading: this block appears and disappears
-             inside the section's own `aria-live="polite"`, which announces
-             the instruction already, and a transient h3 under a section with
-             no h2 would put a hole in the page's heading outline. Same class,
-             same weight, as `.measurement-row__title`'s paragraph. -->
-        <p id="crossover-walk-headline" class="section__title"></p>
-        <p id="crossover-walk-detail" class="form-hint"></p>
-        <div id="crossover-walk-action" class="measurement-row__actions"></div>
-      </div>
       <p id="crossover-capture-status" class="form-hint"></p>
       <button id="crossover-capture-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
     </div>

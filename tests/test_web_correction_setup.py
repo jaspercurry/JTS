@@ -79,7 +79,7 @@ def _render() -> str:
     ).decode("utf-8")
 
 
-def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
+def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b"", wfile=None):
     """Construct the wizard's Handler without binding a socket and drive a
     single request through it. Returns the raw response bytes."""
     # Same shape make_server builds: a route that spawns background work reads
@@ -98,7 +98,7 @@ def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
     raw = request_line + header_lines + b"\r\n" + body
 
     rfile = io.BytesIO(raw)
-    wfile = io.BytesIO()
+    wfile = io.BytesIO() if wfile is None else wfile
 
     handler = Handler.__new__(Handler)
     handler.rfile = rfile
@@ -204,6 +204,26 @@ def test_crossover_status_contains_unexpected_failures(monkeypatch):
     assert body["ok"] is False
     assert body["code"] is None
     assert body["next_action"] is None
+
+
+class _HungUp(io.BytesIO):
+    def write(self, data: bytes) -> int:
+        raise BrokenPipeError("the tab closed")
+
+
+def test_a_poller_that_hung_up_ends_quietly(monkeypatch, caplog):
+    """#5632 F13: a tab closed mid-envelope raised out of the write, and the
+    route's 500 net wrote again to the dead socket and journaled a traceback."""
+    from jasper.web import correction_crossover_flow
+
+    monkeypatch.setattr(correction_crossover_flow, "handle_status", lambda **_kw: ({"ok": True}, 200))
+    monkeypatch.setattr(correction_capture, "_enforce_session_volume_ceiling", lambda _: None)
+    with caplog.at_level(logging.INFO, logger=correction_setup.logger.name):
+        _drive("/crossover/status?poll=1", wfile=_HungUp())
+    assert event_fields(caplog, "correction.client_disconnected") == {
+        "path": "/crossover/status", "error": "BrokenPipeError",
+    }
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 def test_unknown_get_route_404():
