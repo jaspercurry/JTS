@@ -25,7 +25,7 @@ from jasper.control.audio_incidents import (
     IssueTracker,
     SessionRollup,
 )
-from tests.audio_health_fixtures import _airplay, _airplay_link, _outputd, _route
+from tests.audio_health_fixtures import _airplay, _airplay_link, _mux, _outputd, _route
 
 
 def test_session_rollup_is_observed_presentation_not_an_exact_boundary() -> None:
@@ -48,6 +48,7 @@ def test_session_rollup_is_observed_presentation_not_an_exact_boundary() -> None
         issues=[],
         sampled_at=1060.0,
         session=rollup.snapshot(1060.0),
+        mux_status=_mux("usbsink"),
     )
     session = health["current_stream"]["session"]
 
@@ -370,6 +371,7 @@ def test_corrupt_typed_fields_are_omitted_and_cannot_crash_presentation(tmp_path
         route=_route(),
         issues=[issue],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert "started_at" not in issue
@@ -523,6 +525,7 @@ def test_restart_does_not_split_incident_or_count_monitor_downtime(tmp_path) -> 
         route=_route(),
         issues=[record],
         sampled_at=10_000.0,
+        mux_status=_mux("usbsink"),
     )
     assert "duration_seconds" not in health["current_incident"]
 

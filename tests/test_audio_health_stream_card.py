@@ -17,7 +17,7 @@ import json
 
 from jasper.control.audio_health import compose_audio_health
 
-from .audio_health_fixtures import _airplay, _compose, _outputd, _route
+from .audio_health_fixtures import _airplay, _compose, _mux, _outputd, _route
 
 
 def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() -> None:
@@ -56,6 +56,7 @@ def test_usb_latency_omits_stale_or_unaged_dac_delay() -> None:
             route=_route(),
             issues=[],
             sampled_at=1000.0,
+            mux_status=_mux("usbsink"),
         )
         latency_details = health["current_stream"]["latency"]["details"]
         output_details = health["current_stream"]["output"]["details"]
@@ -79,6 +80,7 @@ def test_usb_latency_omits_negative_queue_telemetry() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
     latency = health["current_stream"]["latency"]
 
@@ -96,6 +98,7 @@ def test_current_stream_omits_processing_without_live_processing_telemetry() -> 
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("spotify"),
     )
 
     assert "processing" not in health["current_stream"]
@@ -121,6 +124,7 @@ def test_unsupported_source_omits_latency_and_missing_output_is_not_active() -> 
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("spotify"),
     )
     stream = health["current_stream"]
 

@@ -522,6 +522,17 @@ svg { display: block; }
 .badge--danger { --tone: var(--status-danger); }
 .badge--idle { --tone: var(--status-idle); }
 .badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+/* Pulsing "Live · …" indicator, used by the redesigned poll-driven pages. */
+.live-pill { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+.live-pill__dot {
+  width: 6px; height: 6px; border-radius: 9999px;
+  background: var(--primary);
+  animation: jts-pulse 1.6s ease-in-out infinite;
+}
+@keyframes jts-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .live-pill__dot { animation: none; }
+}
 /* Settings list — the tap-through row group the landing page and the area
    hubs are built from:
      <h2 class="eyebrow group-title">Sound</h2>

@@ -27,13 +27,15 @@ resolve) degrades to dropping that entry, and a total failure degrades to
 `[]`. The `zeroconf` import is lazy so importing this module stays cheap
 when no browse is performed.
 
-Deliberately NOT routed through here (so the boundary's scope is explicit):
+`browse_once` is deliberately NOT used by every mDNS consumer (so the
+boundary's scope is explicit):
 
   - `jasper/identity/speaker_name_discovery.py` — needs NAMES-ONLY across MULTIPLE
     service types and must INCLUDE instances that don't resolve to an
     address (a name conflict is real even with no A record). `browse_once`
     is single-type and drops address-less instances, the opposite of what a
-    name-collision check needs.
+    name-collision check needs. It does reuse this module's `instance_label`
+    for the shared name-decode step.
 """
 from __future__ import annotations
 
@@ -167,3 +169,18 @@ def browse_once(service_type: str, *, timeout: float = 2.0) -> list[DiscoveredSe
     except Exception:  # noqa: BLE001
         logger.exception("mdns: browse_once(%s) failed", service_type)
         return []
+
+
+def instance_label(full_name: str, service_type: str) -> str:
+    """Decode a full mDNS instance name into its display-safe label.
+
+    Strips the trailing ``service_type`` suffix and unescapes avahi's
+    ``\\032`` space encoding. Name DECODING only — which field a caller
+    prefers (TXT ``name=`` vs SRV host vs this stripped instance name) stays
+    caller policy, not this function's concern.
+    """
+    name = full_name.rstrip(".")
+    suffix = "." + service_type.rstrip(".")
+    if name.endswith(suffix):
+        name = name[: -len(suffix)]
+    return name.replace("\\032", " ").strip()

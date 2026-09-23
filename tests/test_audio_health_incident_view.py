@@ -20,7 +20,7 @@ import pytest
 from jasper.control import audio_attribution, audio_health, audio_incident_view
 from jasper.control.audio_health import compose_audio_health
 
-from .audio_health_fixtures import _airplay, _airplay_link, _outputd, _route
+from .audio_health_fixtures import _airplay, _airplay_link, _mux, _outputd, _route
 
 
 def test_current_incident_is_separate_from_five_recent_history_rows() -> None:
@@ -56,6 +56,7 @@ def test_current_incident_is_separate_from_five_recent_history_rows() -> None:
         route=_route(),
         issues=issues,
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert health["current_incident"]["key"] == "path.ongoing"
@@ -93,6 +94,7 @@ def test_current_incident_prefers_failure_over_newer_warning() -> None:
         route=_route(),
         issues=[warning, failure],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert health["current_incident"]["key"] == "path.outputd_unavailable"
@@ -130,6 +132,7 @@ def test_current_incident_prefers_active_source_and_keeps_secondary_ongoing() ->
         route=_route(),
         issues=[inactive_failure, active_warning],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["current_incident"]["key"] == "usbsink.latency_fallback"
@@ -161,6 +164,7 @@ def test_recurrence_aggregates_stable_key_over_explicit_30_min_window() -> None:
         route=_route(),
         issues=[recovered(990.0, 2), recovered(900.0, 3), recovered(-1000.0, 9)],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
     recurrence = health["recent_incidents"][0]["recurrence"]
 
@@ -192,6 +196,7 @@ def test_recurrence_does_not_count_pre_window_events_from_coalesced_record() -> 
         route=_route(),
         issues=[issue],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert "recurrence" not in health["recent_incidents"][0]
@@ -218,6 +223,7 @@ def test_old_recovered_row_does_not_claim_recent_recurrence() -> None:
         route=_route(),
         issues=[issue],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert "recurrence" not in health["recent_incidents"][0]

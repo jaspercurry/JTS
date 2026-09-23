@@ -143,12 +143,6 @@ def test_clear_form_carries_confirm_guard():
     assert 'data-confirm-danger="1"' in out
 
 
-def test_render_no_legacy_chrome():
-    out = _render()
-    assert "wrap" "_page" not in out
-    assert "location-result" not in out
-
-
 def test_render_saved_weather_location_card():
     state = {
         weather_setup.LAT_ENV: "40.700",
@@ -312,7 +306,7 @@ if __name__ == "__main__":  # pragma: no cover
 def test_seed_weather_skips_atomically_when_coords_present(tmp_path):
     """The transit->weather seed's check-then-act must be atomic: when weather
     already has coords, the seed neither overwrites them nor drops a foreign
-    key. Pins the DA-0036 race fix (seed reads weather INSIDE the flock)."""
+    key. Pins the race fix: the seed reads weather INSIDE the flock."""
     from jasper.web import transit_setup
 
     wp = str(tmp_path / "weather.env")

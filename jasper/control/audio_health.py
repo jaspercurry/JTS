@@ -203,7 +203,7 @@ def compose_audio_health(
     """
     ap = _mapping(airplay)
     route_state = _mapping(route)
-    mux = mux_status if mux_status is not None else _mapping(ap.get("mux_status"))
+    mux = mux_status
     active_source, activity_unknown, signal_path, latency = _health_prelude(
         ap, outputd, mux, route_state,
     )

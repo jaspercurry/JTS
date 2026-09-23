@@ -28,6 +28,7 @@ from .audio_health_fixtures import (
     _compose_camilla,
     _declared_topology,
     _live_parks,
+    _mux,
     _output_hardware,
     _outputd,
     _route,
@@ -241,6 +242,7 @@ def test_setup_hint_fires_for_absent_or_non_alsa_output(outputd: dict | None) ->
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
         output_hardware=_output_hardware(),
         output_topology_snapshot=_declared_topology(),
     )
@@ -370,6 +372,7 @@ def test_setup_hint_does_not_fire_without_a_genuine_undeclared_match(
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
         output_hardware=output_hardware,
         output_topology_snapshot=output_topology_snapshot,
     )
@@ -401,6 +404,7 @@ def test_setup_hint_yields_to_signal_paths_own_verdict(outputd, expected_code) -
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
         output_hardware=_output_hardware(),
         output_topology_snapshot=_declared_topology(),
     )
@@ -492,6 +496,7 @@ def test_a_park_outranks_the_deafness_it_causes() -> None:
             route=_route(),
             issues=[],
             sampled_at=1000.0,
+            mux_status=_mux(),
             transport_park=park,
         )
         assert health["signal_path"]["code"] == "transport_unservable"
@@ -504,6 +509,7 @@ def test_a_park_outranks_the_deafness_it_causes() -> None:
         ),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
     assert coherence["signal_path"]["code"] == "transport_parked"
 

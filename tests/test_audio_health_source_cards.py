@@ -8,7 +8,7 @@ import pytest
 
 from jasper.control.audio_health import compose_audio_health
 
-from .audio_health_fixtures import _airplay, _compose, _outputd, _route
+from .audio_health_fixtures import _airplay, _compose, _mux, _outputd, _route
 
 
 def test_usb_l0_reports_the_live_lowest_latency_runtime() -> None:
@@ -55,6 +55,7 @@ def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason
         route={**_route(), "low_latency_claim": False},
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["latency"]["runtime"]["preset"] == mode
@@ -90,6 +91,7 @@ def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["latency"]["runtime"]["raw_mode"] == "l2_fallback"
@@ -193,6 +195,7 @@ def test_usb_route_and_runtime_uncertainty_are_not_green() -> None:
         route={"status": "unavailable", "low_latency_claim": False},
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
     missing_clock = compose_audio_health(
         airplay=_airplay(selected="usbsink"),
@@ -200,6 +203,7 @@ def test_usb_route_and_runtime_uncertainty_are_not_green() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert unavailable["latency"]["status"] == "unknown"
