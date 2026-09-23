@@ -121,8 +121,12 @@ one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>
 the mark (`speaker/mark`); with a room, bass or rear section it trials that
 program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
 Read `jasper-round-views candidates <round-dir>` and
-its `candidates.json`: each pose has pairwise deltas per role. `window` is present
-only when reading the frequency view. `level_offset_db` is median A minus median B on A's grid;
+its `candidates.json`: each pose, keyed as the rear views key it, has pairwise
+deltas per role. `window` is present only when reading the frequency view. A
+table is `trusted` only when each curve's own gate windowed it
+(`gate_window_ms`); its `band_hz` then starts at their trusted floor. Only a
+trusted table sets the `max_abs_delta_*` headline. `omitted`, `superseded_take_ids` and `takes_naming_no_candidate`
+name every take no table compares. `level_offset_db` is median A minus median B on A's grid;
 `mean_abs_db`, `max_abs_db`, `max_abs_hz`, and `rms_db` describe the remaining
 shape difference over `band_hz`, with `bins` giving the count. Base keeps its
 fingerprint. These numbers do not rank candidates or establish a repeat floor.
@@ -199,6 +203,8 @@ single take can swing ±4 dB.
 
 `jasper-crossover-prescriber judge --preview` answers limits and predicted
 residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
+A room preview's `summary` gives each side's `residual_rms_db`, the
+`seat_spread_rms_db` and `under_seat_spread` over its `band_hz`.
 Good means median residual under the seat spread, no boost into a dip that
 changes with position, and a response that respects the ceiling. A preview
 can settle which document to measure; it cannot prove the sound of an

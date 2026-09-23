@@ -13,7 +13,8 @@ import numpy as np
 
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
-from jasper.audio_measurement.room_limits import boost_cap_db, cut_floor_db
+from jasper.audio_measurement.room_limits import boost_cap_db, cut_floor_db, spatial_support
+from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .blend_prescription import composed_grid
 
@@ -74,6 +75,8 @@ class RoomComposition:
         return bins
 
     def preview(self, median: RoomMedian, tolerance_db: float) -> dict[str, Any]:
+        residual = {side: median.median_db + np.interp(median.freqs_hz, self.freqs_hz, composed)
+                    for side, composed in self.composed_db.items()}
         return {
             "freqs_hz": self.freqs_hz.tolist(),
             "cut_floor_db": self.cut_floor_db.tolist(), "boost_cap_db": self.boost_cap_db.tolist(),
@@ -86,10 +89,25 @@ class RoomComposition:
             } for side, composed in self.composed_db.items()},
             "residual": {
                 "freqs_hz": median.freqs_hz.tolist(), "level_reference_db": median.level_reference_db,
-                "sides": {side: (median.median_db + np.interp(median.freqs_hz, self.freqs_hz, composed)).tolist()
-                          for side, composed in self.composed_db.items()},
+                "sides": {side: curve.tolist() for side, curve in residual.items()},
             },
+            "summary": _residual_summary(median, residual),
         }
+
+
+def _residual_summary(median: RoomMedian, residual: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    """The playbook's test over the fitted band: each side's predicted median
+    residual against the seat spread that sets the cut floor, both as the room
+    view's ``spread_rms_db`` reduces them."""
+    band_hz = [median.band_hz[0], median.ceiling_hz]
+    spread = spread_rms_db(median.spread_db, median.freqs_hz, band_hz=band_hz)
+    sides = {}
+    for side, curve in residual.items():
+        rms = spread_rms_db(curve, median.freqs_hz, band_hz=band_hz)
+        sides[side] = {"residual_rms_db": rms,
+                       "under_seat_spread": None if rms is None or spread is None else rms < spread}
+    return {"band_hz": band_hz, "spatial_support": spatial_support(median.n_positions),
+            "seat_spread_rms_db": spread, "sides": sides}
 
 
 def room_composition(sides: Mapping[str, Sequence[Mapping[str, Any]]], median: RoomMedian,

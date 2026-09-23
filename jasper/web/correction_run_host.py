@@ -16,6 +16,7 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
+from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
@@ -215,7 +216,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             await packet.finish()
             summary = packet.to_dict()
             gate.publish({key: summary[key] for key in ("status", "reason", "level", "runs", "honoured")} |
-                         {"manifest": manifest.path})
+                         take_counts(summary) | {"manifest": manifest.path})
 
     return door, analyze, assessor, execute
 

@@ -19,8 +19,10 @@ from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
-from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX
+from jasper.audio_measurement.seat_figures import spread_rms_db
+from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX, spatial_support
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
@@ -372,6 +374,24 @@ def test_room_preview_reports_margins_and_residual_without_banking(tmp_path, cap
     assert preview["residual"]["level_reference_db"] == value.level_reference_db
     np.testing.assert_allclose(preview["residual"]["sides"]["mono"],
                                value.median_db + 20 * np.log10(np.abs(chain_response(filters, value.freqs_hz))), atol=1e-10)
+    band_hz = [value.band_hz[0], value.ceiling_hz]
+    spread = spread_rms_db(median["spread_db"], median["freqs_hz"], band_hz=band_hz)
+    residual = spread_rms_db(preview["residual"]["sides"]["mono"], median["freqs_hz"], band_hz=band_hz)
+    assert preview["summary"] == {
+        "band_hz": band_hz, "spatial_support": spatial_support(value.n_positions),
+        "seat_spread_rms_db": pytest.approx(spread),
+        "sides": {"mono": {"residual_rms_db": pytest.approx(residual), "under_seat_spread": residual < spread}},
+    }
+
+
+def test_a_room_preview_without_a_seat_spread_says_why():
+    median = _room_median()
+    median.update(n_positions=1, positions=median["positions"][:1])
+    preview = preview_room_prescription(_document(filters=[]), room_median=read_room_median(median),
+                                        room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=SIDES)
+    summary = preview["summary"]
+    assert (summary["seat_spread_rms_db"], summary["spatial_support"]["reason"]) == (None, REASON_TOO_FEW_POSITIONS)
+    assert summary["sides"]["mono"]["under_seat_spread"] is None
 
 
 def test_an_accepted_set_becomes_the_candidates_room_peqs():

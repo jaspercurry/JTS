@@ -13,17 +13,19 @@ from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
+from jasper.json_fields import finite_float
+
 from .journey import PHASE_LATERAL
 from .position_cycle import (
-    parse_curve_magnitude,
+    measured_curve_band,
     read_take_curves,
     take_artifact_path,
 )
-from .record_index import bundle_measurements
-from .round_captures import doc_pose_key
+from .record_index import Measurement, measurement_documents
+from .round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key, document_capture_id
 from .round_inputs import RoundInputs
 from ..frequency_view import FREQUENCY_VIEW_FILENAME, frequency_run_from_view
-from ..measurement_programs import POSE_KIND_BEARING
 
 __all__ = [
     "REFUSE_NO_LADDER",
@@ -46,82 +48,111 @@ class CandidateLadderRefused(Exception):
 
 
 class _Curve(NamedTuple):
-    """One candidate's banked curve for one role at one pose."""
+    """One candidate's banked curve for one role at one pose; ``trusted``
+    when its own gate windowed it."""
 
+    take_id: str
     take_path: str
     freqs_hz: np.ndarray
     magnitude_db: np.ndarray
     band_hz: tuple[float, float]
+    trusted: bool
 
 
 _Roles = dict[tuple[str, str], dict[str, _Curve]]
 _Poses = dict[str, tuple[Mapping[str, Any], _Roles]]
 
 
-def _pose_curves(session_dir: Path, frequency_path: Path) -> Iterator[
-    tuple[Mapping[str, Any], str | None, str, Sequence[Mapping[str, Any]] | None]
-]:
+class _Take(NamedTuple):
+    """One lateral take: its own record, and the curves read for it."""
+
+    take_id: str
+    row: Measurement
+    record: Mapping[str, Any]
+    take_path: str
+    curves: Sequence[Mapping[str, Any]] | None
+
+
+class _Read(NamedTuple):
+    """The retained curves, and the takes that gave none, by why."""
+
+    poses: _Poses
+    usable: list[str]
+    unreadable: list[str]
+    unattributed: list[str]
+
+
+def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
+    """Every lateral take by its own record, with the banked view's curves
+    when the view holds any, else the record's. A take the view lacks reads
+    as having no curve."""
+    records = {
+        document_capture_id(record) or Path(row.path).stem: (row, record)
+        for row, record in measurement_documents(session_dir) if row.phase == PHASE_LATERAL
+    }
     if frequency_path.is_file():
         run = frequency_run_from_view(json.loads(frequency_path.read_text()))
-        rows = []
+        viewed: dict[str, list[Mapping[str, Any]]] = {}
         for curve in run.series:
-            fields = curve.details
-            pose, take_id = fields.get("position"), fields.get("take_id")
-            if (fields.get("phase") != PHASE_LATERAL or not isinstance(pose, Mapping)
-                or pose.get("deg") is None or not take_id):
-                continue
-            rows.append(({
-                "position_deg": pose["deg"], "vertical_deg": pose.get("vertical_deg") or 0,
-                "pose_kind": pose.get("kind") or POSE_KIND_BEARING,
-                "seat_offset_m": pose.get("seat_offset_m"), "mark_distance_m": pose.get("distance_m"),
-            }, fields.get("candidate_id"), f"{frequency_path}#{take_id}", [curve.to_dict()]))
-        if rows:
-            yield from rows
+            take_id = str(curve.details.get("take_id") or "")
+            if curve.details.get("phase") == PHASE_LATERAL and take_id in records:
+                viewed.setdefault(take_id, []).append(curve.to_dict())
+        if viewed:
+            for take_id, (row, record) in records.items():
+                yield _Take(take_id, row, record, f"{frequency_path}#{take_id}", viewed.get(take_id))
             return
-    for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
-        yield ({
+    for take_id, (row, record) in records.items():
+        yield _Take(take_id, row, record, row.path,
+                    read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
+
+
+def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:
+    """Latest retained curve per pose, role, window and named candidate.
+
+    A take's pose is keyed from its own record by :func:`doc_pose_key`, the
+    rear views' key, so seats at one bearing stay apart.
+    """
+    read = _Read({}, [], [], [])
+    for take in _lateral_takes(session_dir, frequency_path):
+        row = take.row
+        if row.position_deg is None:
+            read.unreadable.append(take.take_id)
+            continue
+        _, by_role = read.poses.setdefault(doc_pose_key(take.record), ({
             "position_deg": row.position_deg, "vertical_deg": row.vertical_deg,
             "pose_kind": row.pose_kind, "seat_offset_m": row.seat_offset_m,
             "mark_distance_m": row.mark_distance_m,
-        }, row.candidate_id, row.path,
-            read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
-
-
-def _read_poses(session_dir: Path, frequency_path: Path) -> tuple[_Poses, int]:
-    """Latest retained curve per pose, role, window and named candidate."""
-    poses: _Poses = {}
-    unattributed = set()
-    for pose, config_id, take_path, curves in _pose_curves(session_dir, frequency_path):
-        if pose["position_deg"] is None:
+        }, {}))
+        if not row.candidate_id:
+            read.unattributed.append(take.take_id)
             continue
-        _, by_role = poses.setdefault(doc_pose_key(pose), (pose, {}))
-        if not config_id:
-            unattributed.add(take_path)
-            continue
-        if curves is None:
-            continue
-        for curve in curves:
+        usable = False
+        for curve in take.curves or ():
             role = str(curve.get("role") or "")
-            parsed = parse_curve_magnitude(curve)
-            if not role or parsed is None:
+            measured = measured_curve_band(curve)
+            if not role or measured is None:
                 continue
-            freqs_hz, magnitude_db, swept_hz = parsed
+            freqs_hz, magnitude_db, band_hz = measured
             # In-record curves can carry -inf at a perfect cancellation.
             finite = np.isfinite(magnitude_db)
             if not np.any(finite):
                 continue
+            usable = True
             freqs_hz, magnitude_db = freqs_hz[finite], magnitude_db[finite]
-            by_role.setdefault((role, str(curve.get("window") or "")), {})[config_id] = _Curve(
-                take_path, freqs_hz, magnitude_db,
-                # The DECLARED sweep clamped to the grid actually banked. What
-                # the intersection below spans is then covered by every
-                # curve's own bins, so resampling one onto another can never
-                # reach past its measured span -- where ``np.interp`` holds
-                # the endpoint value and would publish an invented difference.
-                (max(swept_hz[0], float(freqs_hz.min())),
-                 min(swept_hz[1], float(freqs_hz.max()))),
+            by_role.setdefault((role, str(curve.get("window") or "")), {})[row.candidate_id] = _Curve(
+                take.take_id, take.take_path, freqs_hz, magnitude_db,
+                # The band the take can speak for, above its trusted floor,
+                # clamped to the bins actually banked. What the intersection
+                # below spans is then covered by every curve's own bins, so
+                # resampling one onto another can never reach past its
+                # measured span -- where ``np.interp`` holds the endpoint
+                # value and would publish an invented difference.
+                (max(band_hz[0], float(freqs_hz.min())),
+                 min(band_hz[1], float(freqs_hz.max()))),
+                finite_float(curve.get("gate_window_ms")) is not None,
             )
-    return poses, len(unattributed)
+        (read.usable if usable else read.unreadable).append(take.take_id)
+    return read
 
 
 def _deviation(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
@@ -209,6 +240,7 @@ def _role_table(by_candidate: dict[str, _Curve]) -> dict[str, Any] | None:
         return None
     return {
         "band_hz": list(band_hz),
+        "trusted": all(curve.trusted for curve in by_candidate.values()),
         "candidates": [
             {"candidate_id": candidate_id, **row} for candidate_id, row in rows.items()
         ],
@@ -251,11 +283,13 @@ def _tables(poses: _Poses) -> list[dict[str, Any]]:
 
 
 def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
-    """The largest pairwise departure anywhere in the round, and where.
+    """The largest pairwise departure in a trusted window, and where.
 
-    Empty values when no pair shared a role: two candidates measured at one
-    pose through different roles have nothing to difference, which is an
-    answer rather than a refusal.
+    A pair with a curve its gate did not window keeps the room and the sweep's
+    edges, so it is counted in ``pairs`` but never headlines. Empty values
+    when no trusted pair shared a role: two candidates measured at one pose
+    through different roles have nothing to difference, which is an answer
+    rather than a refusal.
     """
     deltas = [
         (delta, table, role)
@@ -265,7 +299,7 @@ def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     nothing: dict[str, Any] = {}
     delta, table, role = max(
-        deltas, key=lambda row: row[0]["max_abs_db"],
+        (row for row in deltas if row[2]["trusted"]), key=lambda row: row[0]["max_abs_db"],
         default=(nothing, nothing, nothing),
     )
     return {
@@ -275,9 +309,27 @@ def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
         "max_abs_delta_between": [delta["a"], delta["b"]] if delta else [],
         "max_abs_delta_role": role.get("role"),
         "max_abs_delta_window": role.get("window"),
+        "max_abs_delta_band_hz": role.get("band_hz"),
         "max_abs_delta_pose_key": table.get("pose_key"),
         "max_abs_delta_position_deg": table.get("deg"),
         "max_abs_delta_vertical_deg": table.get("vertical_deg"),
+    }
+
+
+def _left_out(read: _Read, tables: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every lateral take no table compares, each under why it is out."""
+    retained = {
+        curve.take_id: key for key, (_, by_role) in read.poses.items()
+        for by_candidate in by_role.values() for curve in by_candidate.values()
+    }
+    compared = {table["pose_key"] for table in tables}
+    omitted = [(take_id, REFUSE_CAPTURE_UNREADABLE) for take_id in read.unreadable] + [
+        (take_id, REASON_NO_COMPARISON) for take_id, key in retained.items() if key not in compared
+    ]
+    return {
+        "omitted": [{"capture_id": take_id, "reason": reason} for take_id, reason in sorted(omitted)],
+        "superseded_take_ids": [take_id for take_id in read.usable if take_id not in retained],
+        "takes_naming_no_candidate": read.unattributed,
     }
 
 
@@ -285,22 +337,25 @@ def candidate_ladder(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
     """The round's ladder as one publishable document: ``summary``, ``tables``.
 
     ``summary`` carries only scalars and run-bounded lists, so a caller can
-    print it whole; the curves it was reduced from stay in the round.
+    print it whole; the curves it was reduced from stay in the round. A take
+    no table compares is listed under why: ``omitted`` with a reason,
+    ``superseded_take_ids`` for an earlier take of one candidate at one pose,
+    ``takes_naming_no_candidate`` for a take that names none.
 
     Raises :class:`CandidateLadderRefused` when no pose played two candidates,
     carrying the counts that tell a round which walked no ladder apart from one
     whose takes named no config.
     """
-    poses, unattributed = _read_poses(inputs.session_dir, round_dir / FREQUENCY_VIEW_FILENAME)
-    tables = _tables(poses)
+    read = _read_poses(inputs.session_dir, round_dir / FREQUENCY_VIEW_FILENAME)
+    tables = _tables(read.poses)
     if not tables:
         raise CandidateLadderRefused(REFUSE_NO_LADDER, {
             "round_dir": str(round_dir),
-            "poses_walked": len(poses),
+            "poses_walked": len(read.poses),
             "candidates_named": sorted(
-                {c for _, by_role in poses.values() for c in _named(by_role)}
+                {c for _, by_role in read.poses.values() for c in _named(by_role)}
             ),
-            "takes_naming_no_candidate": unattributed,
+            "takes_naming_no_candidate": read.unattributed,
         })
     return {
         "summary": {
@@ -308,7 +363,7 @@ def candidate_ladder(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
             "banked": inputs.banked,
             "poses": len(tables),
             "candidates": sorted({c for table in tables for c in table["played"]}),
-            "takes_naming_no_candidate": unattributed,
+            **_left_out(read, tables),
             **_worst(tables),
         },
         "tables": tables,

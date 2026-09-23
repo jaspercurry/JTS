@@ -24,6 +24,7 @@ from ._common import (
     _write,
     answer,
     default_out,
+    omitted_note,
     refused_by_name,
     subject,
 )
@@ -43,20 +44,21 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(document, args.out, default_out(inputs, round_dir, spec.artifact), schema=spec.schema)
     worst = (
-        "no pair shared a role" if summary["max_abs_delta_db"] is None else
+        "no trusted-window pair shared a role" if summary["max_abs_delta_db"] is None else
         f"widest gap {summary['max_abs_delta_between'][0]} vs "
         f"{summary['max_abs_delta_between'][1]} "
         f"{summary['max_abs_delta_db']:.2f} dB @ "
         f"{summary['max_abs_delta_hz']:.0f} Hz "
-        f"({summary['max_abs_delta_role']} at "
-        f"{summary['max_abs_delta_position_deg']}deg)"
+        f"({' '.join(filter(None, (summary['max_abs_delta_role'], summary['max_abs_delta_window'])))} "
+        f"{summary['max_abs_delta_band_hz'][0]:g}-{summary['max_abs_delta_band_hz'][1]:g} Hz "
+        f"at {summary['max_abs_delta_pose_key']})"
     )
     return answer(
         args.command, schema=spec.schema, subject=subject(inputs), parameters={}, out=written, **summary,
         line=(
             f"candidates: {len(summary['candidates'])} candidate(s) over "
             f"{summary['poses']} held pose(s), {summary['pairs']} pair(s); "
-            f"{worst}{f' -> {written}' if written else ''}"
+            f"{worst}{omitted_note(summary['omitted'])}{f' -> {written}' if written else ''}"
         ),
     )
 
