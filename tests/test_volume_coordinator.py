@@ -2947,7 +2947,7 @@ async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     owner = coord.volume_owner
     await owner.declare_household_level_db(expected_db)
     claim = await owner.acquire_duck(5.0)
-    assert owner.holds_kind(ClaimKind.TRANSIENT_DUCK)
+    assert owner.holds(claim)
     ducked_db = client.db
     assert ducked_db == pytest.approx(expected_db - 5.0)
 

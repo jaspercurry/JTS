@@ -882,7 +882,7 @@ async def test_interrupted_relevel_retains_the_callers_claim(failure):
     assert fader.writes == [-36.0]
     fader.set = original_set
     await owner.release(claim)
-    assert not owner.holds_kind(ClaimKind.COMMISSIONING)
+    assert not owner.holds(claim)
     assert fader.db == HOUSEHOLD_DB
 
 

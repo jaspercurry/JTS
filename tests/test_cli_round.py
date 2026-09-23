@@ -39,6 +39,7 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
 from jasper.web import correction_crossover_v2_volume as v2volume
 from jasper.web._common import refusal_envelope
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
@@ -1272,25 +1273,37 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
 
 
 @pytest.mark.parametrize("source", ["flags", "plan"])
-@pytest.mark.parametrize("dry_run,attested,available,changes,reason,forwarded", [
-    (False, False, True, {}, "walk_rig_clear_not_attested", False),
-    (False, True, False, {}, "walk_mover_unavailable", False),
-    (True, True, False, {}, "walk_mover_unavailable", False),
-    (False, True, True, {"mic_present": False}, "wired_mic_missing", True),
-    (False, True, True, {"output_volume": {"muted": True}}, "measurement_output_muted", True),
-    (True, True, True, {"mic_present": False}, "wired_mic_missing", False),
+@pytest.mark.parametrize("dry_run,attested,available,changes,context,reason,action,forwarded", [
+    (False, False, True, {}, None, "walk_rig_clear_not_attested", "attest_rig_clear", False),
+    (False, True, False, {}, None, "walk_mover_unavailable", "connect_arm", False),
+    (True, True, False, {}, None, "walk_mover_unavailable", "connect_arm", False),
+    (False, False, True, {"output_volume": {"muted": True}}, None, "measurement_output_muted", "raise_volume", False),
+    (False, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic", True),
+    (False, True, True, {"output_volume": {"muted": True}}, None, "measurement_output_muted", "raise_volume", True),
+    (True, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic", False),
+    (False, True, True, {}, "real", "measure_box_not_ready", "speaker_setup", True),
+    (False, True, True, {}, "walk_layout_unsupported_for_per_driver_programs",
+     "walk_layout_unsupported_for_per_driver_programs", "review_plan", True),
 ])
 def test_run_refusals_keep_their_exit_and_code(
-    source, dry_run, attested, available, changes, reason, forwarded, arm_runtime, monkeypatch, capsys, tmp_path,
+    source, dry_run, attested, available, changes, context, reason, action, forwarded,
+    arm_runtime, monkeypatch, capsys, tmp_path,
 ):
-    """The CLI refuses on the arm facts only it can see and forwards the rest to
-    the door, whose own preflight refuses them; the dry run keeps its report.
-    Either way the answer keeps its exit code and reason, and the arm never moves."""
+    """When an arm fact, which only the CLI can see, blocks, the CLI refuses with
+    the report's first blocking issue; otherwise it forwards, and the door's own
+    context and preflight refuse. The dry run keeps its report. Either way the
+    answer keeps its exit code, reason and action, and the arm never moves."""
     arm_runtime.mover.available.return_value = available
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, **changes))
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan, **changes))
-    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: None)
     monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    if context == "real":  # an empty topology store: no active crossover to measure
+        monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+    else:
+        def resolve(_status):
+            if context is not None:
+                raise CrossoverV2Refused(REASON_REGISTRY[context].message, code=context)
+        monkeypatch.setattr(v2host, "resolve_conductor_context", resolve)
     flags = ["--poses", "0", "--mover", "arm"]
     if source == "plan":
         plan = AngleCaptureRequest((AngleStop(0, "summed"),), mover="arm")
@@ -1316,9 +1329,11 @@ def test_run_refusals_keep_their_exit_and_code(
                       *(["--attest-rig-clear"] if attested else []),
                       *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
     assert code == cli.EXIT_REFUSED
-    assert (body["issues"][0]["code"] if dry_run else (body["reason"], body["code"])) == (
-        reason if dry_run else (reason, reason))
+    answer = body["issues"][0] if dry_run else body
+    assert (answer["code"], answer["next_action"]["id"]) == (reason, action)
+    assert dry_run or body["reason"] == reason
     assert len(opener.posted_to(wc.SESSION_PATH)) == forwarded
+    assert forwarded or not opener.posts()
     assert not arm_runtime.mover.moves and not arm_runtime.threads
 
 

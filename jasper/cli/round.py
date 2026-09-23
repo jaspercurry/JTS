@@ -120,9 +120,10 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
-    refusal = next((issue for issue in report.issues if issue.blocking and issue.code in ARM_FACT_CODES), None)
-    if refusal is not None:
-        return failed(EXIT_REFUSED, refusal.code, report.to_dict(), code=refusal.code, next_action=refusal.next_action)
+    if any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues):
+        issue = report.blocking_issue
+        return failed(EXIT_REFUSED, issue.code, report.to_dict(),
+                      code=issue.code, next_action=issue.next_action)
     http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,

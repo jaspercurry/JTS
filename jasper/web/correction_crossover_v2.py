@@ -27,6 +27,7 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, LateralWalkRefused,
     default_run_level,
 )
+from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -490,7 +491,11 @@ def prepare_v2_session(
             "the measurement volume needs recovery; recover it before starting "
             "a new session", code=REASON_VOLUME_UNRESOLVED,
         )
-    context = resolve_conductor_context(status)
+    try:
+        context = resolve_conductor_context(status)
+    except CrossoverV2Refused as exc:  # answered as the preflight reports it, default action included
+        refusal = PreflightIssue.from_code(exc.code, str(exc))
+        raise CrossoverV2Refused(refusal.detail, code=refusal.code, next_action=refusal.next_action) from exc
     facts = preflight_live.read_preflight_facts(request, context=context)
     report = preflight_levels(request, facts)
     issue = next((issue for issue in report.issues if issue.blocking), None)
