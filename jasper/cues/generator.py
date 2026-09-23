@@ -74,13 +74,6 @@ OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
 # them) bust the cache cleanly.
 GROK_TTS_MODEL = "grok-tts-1"
 
-# Legacy default kept as a constant for tests / opt-in users — the
-# old preview-TTS model (2.5) returned `FinishReason.OTHER` with
-# empty content for ~60 % of calls in production, which is why we
-# moved off it. Pinned to the exported name so callers that import
-# `TTS_MODEL` (older external code) get the new sensible default.
-TTS_MODEL = GEMINI_TTS_MODEL
-
 WAV_RATE = 24000           # 24 kHz — what every supported provider returns
 WAV_CHANNELS = 1
 WAV_SAMPLE_WIDTH = 2       # 16-bit signed little-endian
@@ -108,7 +101,7 @@ def render_template(cue: CueDef, hostname: str) -> str:
 
 
 def cue_hash(
-    cue: CueDef, hostname: str, voice: str, model: str = TTS_MODEL,
+    cue: CueDef, hostname: str, voice: str, model: str = GEMINI_TTS_MODEL,
 ) -> str:
     """Short content-addressable cache key. Encoded into the cached
     filename so a mismatch on any input naturally invalidates the
@@ -124,14 +117,14 @@ def cue_hash(
 
 
 def cue_filename(
-    cue: CueDef, hostname: str, voice: str, model: str = TTS_MODEL,
+    cue: CueDef, hostname: str, voice: str, model: str = GEMINI_TTS_MODEL,
 ) -> str:
     return f"{cue.slug}-{cue_hash(cue, hostname, voice, model)}.wav"
 
 
 def cue_path(
     sounds_dir: str, cue: CueDef, hostname: str, voice: str,
-    model: str = TTS_MODEL,
+    model: str = GEMINI_TTS_MODEL,
 ) -> str:
     return os.path.join(sounds_dir, cue_filename(cue, hostname, voice, model))
 
@@ -140,7 +133,7 @@ def backend_model(backend: object | None) -> str:
     """The cache-key model identifier for a TTS backend — its actual
     synthesis model where exposed (every shipped generator, including
     `ChimeTTSGenerator`, has a `.model` property), else the legacy
-    `TTS_MODEL` constant.
+    `GEMINI_TTS_MODEL` default.
 
     The fallback keeps two cases stable: a playback-only manager
     (backend=None — regen disabled, plays whatever WAVs exist) and
@@ -148,7 +141,7 @@ def backend_model(backend: object | None) -> str:
     the model was threaded through. The single derivation point keeps
     the manager's read-side paths and `write_cue`'s write-side path
     agreeing on the same hash."""
-    return getattr(backend, "model", None) or TTS_MODEL
+    return getattr(backend, "model", None) or GEMINI_TTS_MODEL
 
 
 # --- WAV write ---
@@ -183,31 +176,33 @@ class TTSBackend(Protocol):
     def synthesise(self, text: str) -> TTSResult: ...
 
 
-class GeminiTTSGenerator:
-    """One-shot TTS via Gemini's audio-modal `generate_content`. The
-    Live API isn't used here — it's a streaming bidirectional
-    protocol, overkill for baking a few short messages.
+class _RetryableTTSError(Exception):
+    """Marker class for "the call returned but with no audio" — the
+    retry loop catches this and tries again. Other exception types
+    (HTTP 4xx, network unreachable) propagate up immediately."""
 
-    Default model is `gemini-3.1-flash-tts-preview` (released
-    2026-04-15). The older `gemini-2.5-flash-preview-tts` returned
-    `FinishReason.OTHER` with empty content for a meaningful
-    fraction of requests — kept reachable via the `model=` kwarg
-    for opt-in compatibility but no longer the default.
+
+class _ProviderTTS:
+    """Shared base for the provider TTS backends: validates api_key +
+    voice, stores the model, clamps attempts/backoff, and owns the
+    retry loop. Subclasses implement `_attempt(text) -> TTSResult`,
+    raising `_RetryableTTSError` for a transient empty/invalid
+    response (retried) — any other exception propagates immediately.
     """
 
     def __init__(
         self,
         api_key: str,
         voice: str,
-        model: str = GEMINI_TTS_MODEL,
+        model: str,
         *,
         max_attempts: int = TTS_MAX_ATTEMPTS,
         retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
-    ):
+    ) -> None:
         if not api_key:
-            raise ValueError("GeminiTTSGenerator requires an api_key")
+            raise ValueError(f"{type(self).__name__} requires an api_key")
         if not voice:
-            raise ValueError("GeminiTTSGenerator requires a voice name")
+            raise ValueError(f"{type(self).__name__} requires a voice name")
         self._api_key = api_key
         self._voice = voice
         self._model = model
@@ -218,26 +213,59 @@ class GeminiTTSGenerator:
     def model(self) -> str:
         return self._model
 
+    @property
+    def _label(self) -> str:
+        """Human-readable provider name for retry/error messages,
+        e.g. GeminiTTSGenerator -> "Gemini"."""
+        return type(self).__name__.removesuffix("TTSGenerator")
+
+    def _attempt(self, text: str) -> TTSResult:
+        raise NotImplementedError
+
     def synthesise(self, text: str) -> TTSResult:
-        last_status: str | None = None
+        last_err: _RetryableTTSError | None = None
         for attempt in range(self._max_attempts):
-            status, result = self._attempt(text)
-            if result is not None:
-                return result
-            last_status = status
-            if attempt + 1 >= self._max_attempts:
-                break
-            logger.warning(
-                "Gemini TTS empty response on attempt %d/%d (%s); retrying",
-                attempt + 1, self._max_attempts, status,
-            )
-            time.sleep(self._retry_backoff_sec * (attempt + 1))
+            try:
+                return self._attempt(text)
+            except _RetryableTTSError as e:
+                last_err = e
+                if attempt + 1 >= self._max_attempts:
+                    break
+                logger.warning(
+                    "%s TTS empty response on attempt %d/%d (%s); "
+                    "retrying", self._label, attempt + 1, self._max_attempts, e,
+                )
+                time.sleep(self._retry_backoff_sec * (attempt + 1))
         raise RuntimeError(
-            f"Gemini TTS returned no audio after {self._max_attempts} "
-            f"attempts (last status={last_status!r}, text={text!r})"
+            f"{self._label} TTS returned no audio after {self._max_attempts} "
+            f"attempts (last={last_err!r}, text={text!r})"
         )
 
-    def _attempt(self, text: str) -> "tuple[str, TTSResult | None]":
+
+class GeminiTTSGenerator(_ProviderTTS):
+    """One-shot TTS via Gemini's audio-modal `generate_content`. The
+    Live API isn't used here — it's a streaming bidirectional
+    protocol, overkill for baking a few short messages.
+
+    Default model is `gemini-3.1-flash-tts-preview`; pass `model=` to
+    override.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        voice: str,
+        model: str = GEMINI_TTS_MODEL,
+        *,
+        max_attempts: int = TTS_MAX_ATTEMPTS,
+        retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
+    ) -> None:
+        super().__init__(
+            api_key, voice, model,
+            max_attempts=max_attempts, retry_backoff_sec=retry_backoff_sec,
+        )
+
+    def _attempt(self, text: str) -> TTSResult:
         from google import genai
         from google.genai import types
 
@@ -258,25 +286,25 @@ class GeminiTTSGenerator:
         )
         candidates = getattr(response, "candidates", None) or []
         if not candidates:
-            return "no_candidates", None
+            raise _RetryableTTSError("no_candidates")
         candidate = candidates[0]
         finish_reason = getattr(candidate, "finish_reason", None)
         content = getattr(candidate, "content", None)
         if content is None:
-            return f"finish={finish_reason}_content=None", None
+            raise _RetryableTTSError(f"finish={finish_reason}_content=None")
         parts = getattr(content, "parts", None) or []
         audio_part = next(
             (p for p in parts if getattr(p, "inline_data", None)), None,
         )
         if audio_part is None:
-            return f"finish={finish_reason}_no_inline_audio", None
+            raise _RetryableTTSError(f"finish={finish_reason}_no_inline_audio")
         data = audio_part.inline_data.data
         if not data:
-            return f"finish={finish_reason}_empty_data", None
-        return "ok", TTSResult(pcm_24k=data)
+            raise _RetryableTTSError(f"finish={finish_reason}_empty_data")
+        return TTSResult(pcm_24k=data)
 
 
-class OpenAITTSGenerator:
+class OpenAITTSGenerator(_ProviderTTS):
     """One-shot TTS via OpenAI's `audio.speech.create` endpoint.
 
     Returns 24 kHz mono 16-bit signed little-endian PCM (no header)
@@ -299,40 +327,12 @@ class OpenAITTSGenerator:
         base_url: str | None = None,
         max_attempts: int = TTS_MAX_ATTEMPTS,
         retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
-    ):
-        if not api_key:
-            raise ValueError("OpenAITTSGenerator requires an api_key")
-        if not voice:
-            raise ValueError("OpenAITTSGenerator requires a voice name")
-        self._api_key = api_key
-        self._voice = voice
-        self._model = model
-        self._base_url = base_url
-        self._max_attempts = max(1, int(max_attempts))
-        self._retry_backoff_sec = max(0.0, float(retry_backoff_sec))
-
-    @property
-    def model(self) -> str:
-        return self._model
-
-    def synthesise(self, text: str) -> TTSResult:
-        last_err: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._attempt(text)
-            except _RetryableTTSError as e:
-                last_err = e
-                if attempt + 1 >= self._max_attempts:
-                    break
-                logger.warning(
-                    "OpenAI TTS empty response on attempt %d/%d (%s); "
-                    "retrying", attempt + 1, self._max_attempts, e,
-                )
-                time.sleep(self._retry_backoff_sec * (attempt + 1))
-        raise RuntimeError(
-            f"OpenAI TTS returned no audio after {self._max_attempts} "
-            f"attempts (last err={last_err!r}, text={text!r})"
+    ) -> None:
+        super().__init__(
+            api_key, voice, model,
+            max_attempts=max_attempts, retry_backoff_sec=retry_backoff_sec,
         )
+        self._base_url = base_url
 
     def _attempt(self, text: str) -> TTSResult:
         from openai import OpenAI
@@ -353,7 +353,7 @@ class OpenAITTSGenerator:
         return TTSResult(pcm_24k=data)
 
 
-class GrokTTSGenerator:
+class GrokTTSGenerator(_ProviderTTS):
     """One-shot TTS via xAI's standalone TTS endpoint at
     `https://api.x.ai/v1/tts`.
 
@@ -375,24 +375,15 @@ class GrokTTSGenerator:
         language: str = "auto",
         max_attempts: int = TTS_MAX_ATTEMPTS,
         retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
-    ):
-        if not api_key:
-            raise ValueError("GrokTTSGenerator requires an api_key")
-        if not voice:
-            raise ValueError("GrokTTSGenerator requires a voice name")
-        self._api_key = api_key
-        self._voice = voice
-        self._model = model
+    ) -> None:
+        super().__init__(
+            api_key, voice, model,
+            max_attempts=max_attempts, retry_backoff_sec=retry_backoff_sec,
+        )
         self._endpoint = endpoint
         self._language = language
-        self._max_attempts = max(1, int(max_attempts))
-        self._retry_backoff_sec = max(0.0, float(retry_backoff_sec))
 
-    @property
-    def model(self) -> str:
-        return self._model
-
-    def synthesise(self, text: str) -> TTSResult:
+    def _attempt(self, text: str) -> TTSResult:
         import urllib.error
         import urllib.request
 
@@ -402,59 +393,39 @@ class GrokTTSGenerator:
             "language": self._language,
             "output_format": {"codec": "pcm", "sample_rate": WAV_RATE},
         }).encode()
-        last_err: Exception | None = None
-        for attempt in range(self._max_attempts):
-            req = urllib.request.Request(
-                self._endpoint,
-                data=body,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "audio/pcm",
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=20) as response:
-                    data = response.read()
-            except urllib.error.HTTPError as e:
-                # 4xx is unrecoverable — bad voice / bad auth /
-                # bad text — don't burn retries on it.
-                if 400 <= e.code < 500:
-                    raise RuntimeError(
-                        f"Grok TTS HTTP {e.code} (text={text!r}): "
-                        f"{e.read()[:200]!r}"
-                    ) from e
-                last_err = e
-            except urllib.error.URLError as e:
-                last_err = e
-            else:
-                if data:
-                    return TTSResult(pcm_24k=data)
-                last_err = RuntimeError("grok_empty_pcm")
-            if attempt + 1 >= self._max_attempts:
-                break
-            logger.warning(
-                "Grok TTS empty/failed on attempt %d/%d (%s); retrying",
-                attempt + 1, self._max_attempts, last_err,
-            )
-            time.sleep(self._retry_backoff_sec * (attempt + 1))
-        raise RuntimeError(
-            f"Grok TTS failed after {self._max_attempts} attempts "
-            f"(last err={last_err!r}, text={text!r})"
+        req = urllib.request.Request(
+            self._endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                "Accept": "audio/pcm",
+            },
+            method="POST",
         )
-
-
-class _RetryableTTSError(Exception):
-    """Marker class for "the call returned but with no audio" — the
-    retry loop catches this and tries again. Other exception types
-    (HTTP 4xx, network unreachable) propagate up immediately."""
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                data = response.read()
+        except urllib.error.HTTPError as e:
+            # 4xx is unrecoverable — bad voice / bad auth / bad
+            # text — don't burn retries on it.
+            if 400 <= e.code < 500:
+                raise RuntimeError(
+                    f"Grok TTS HTTP {e.code} (text={text!r}): "
+                    f"{e.read()[:200]!r}"
+                ) from e
+            raise _RetryableTTSError(str(e)) from e
+        except urllib.error.URLError as e:
+            raise _RetryableTTSError(str(e)) from e
+        if not data:
+            raise _RetryableTTSError("grok_empty_pcm")
+        return TTSResult(pcm_24k=data)
 
 
 # --- Provider-free fallback backend ---
 
 # Cache-key model token for chime-baked cues, distinct from every real
-# provider's TTS_MODEL constant above. cue_hash() folds this in, so a
+# provider's default TTS model constant above. cue_hash() folds this in, so a
 # chime-baked WAV and a provider-baked WAV for the same cue never share
 # a filename: configuring a provider later computes a different hash,
 # misses the cache, and write_cue re-bakes real speech over the chime.
@@ -519,7 +490,7 @@ def write_cue(
     return path
 
 
-def dynamic_text_hash(text: str, voice: str, model: str = TTS_MODEL) -> str:
+def dynamic_text_hash(text: str, voice: str, model: str = GEMINI_TTS_MODEL) -> str:
     """Cache key for `speak_text(...)` — analogous to `cue_hash` but
     for arbitrary text not tied to a static CueDef. Uses the same
     GENERATOR_VERSION + audio-format inputs so a generator change
@@ -533,7 +504,7 @@ def dynamic_text_hash(text: str, voice: str, model: str = TTS_MODEL) -> str:
 
 
 def dynamic_text_path(
-    sounds_dir: str, text: str, voice: str, model: str = TTS_MODEL,
+    sounds_dir: str, text: str, voice: str, model: str = GEMINI_TTS_MODEL,
 ) -> str:
     h = dynamic_text_hash(text, voice, model)
     return os.path.join(sounds_dir, f"{_DYNAMIC_PREFIX}-{h}.wav")

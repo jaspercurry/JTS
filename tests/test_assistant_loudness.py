@@ -246,11 +246,12 @@ def test_gemini_tts_generator_honors_single_attempt(monkeypatch):
         max_attempts=1,
         retry_backoff_sec=99.0,
     )
-    monkeypatch.setattr(
-        generator,
-        "_attempt",
-        lambda _text: (calls.append(True) or ("empty", None)),
-    )
+
+    def fail(_text):
+        calls.append(True)
+        raise cue_generator._RetryableTTSError("empty")
+
+    monkeypatch.setattr(generator, "_attempt", fail)
     monkeypatch.setattr(cue_generator.time, "sleep", lambda sec: sleeps.append(sec))
 
     with pytest.raises(RuntimeError, match="after 1 attempts"):

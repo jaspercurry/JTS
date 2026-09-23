@@ -34,6 +34,7 @@ from .tool_state import ToolState, read_tool_state
 logger = logging.getLogger(__name__)
 
 DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
+CATALOG_SCHEMA_VERSION = 2
 
 # Statuses that mean "backend configured" — the user can turn these on/off,
 # and the wizard CAN re-derive their on/off from the disabled-set.
@@ -52,7 +53,12 @@ def _pack_id_for_tool(t: dict[str, Any]) -> str | None:
 
 
 def _unavailable() -> dict[str, Any]:
-    return {"schema_version": 2, "tools": [], "packs": [], "unavailable": True}
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "tools": [],
+        "packs": [],
+        "unavailable": True,
+    }
 
 
 def read_catalog_json(path: str = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
@@ -89,7 +95,7 @@ def _pack_status(tools: list[dict[str, Any]]) -> str:
     return "partial"
 
 
-def _build_pack_payloads(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_pack_payloads(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     packs: dict[str, dict[str, Any]] = {}
     for tool in tools:
         pack = tool.get("pack")
@@ -225,7 +231,7 @@ def overlay(
     return {
         **catalog,
         "tools": tools_out,
-        "packs": _build_pack_payloads([t for t in tools_out if isinstance(t, dict)]),
+        "packs": build_pack_payloads([t for t in tools_out if isinstance(t, dict)]),
         "pending": pending,
     }
 
