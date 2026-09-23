@@ -18,7 +18,9 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence,
 )
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, load_programs, programs_for_topology, run_program
+from jasper.active_speaker.measurement_programs import (
+    RUNNABLE_PROGRAMS, load_programs, prescription_sections, programs_for_topology, run_program, trial_program,
+)
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.preflight import preflight
 from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
@@ -101,11 +103,9 @@ def speaker(request, tmp_path_factory):
     )
 
 
-def _outcome(speaker, row):
-    selected = run_program(ROWS[row].purpose, row)
+def _outcome(speaker, selected, candidates, mover=None):
     request = request_for_program(
-        selected, mover=selected.mover or 'human', level=LevelPolicy(level_db=LEVEL_DB),
-        candidates=(speaker.candidate.fingerprint,) if selected.regime == 'branches' else ('base', speaker.candidate.fingerprint) if selected.purpose == 'rear' else (),
+        selected, mover=mover or selected.mover or 'human', level=LevelPolicy(level_db=LEVEL_DB), candidates=candidates,
     )
     report = preflight(request, ready_facts(
         request, candidates={speaker.candidate.fingerprint: speaker.candidate},
@@ -157,4 +157,21 @@ def test_every_program_on_every_layout(speaker, row):
     if ROWS[row].purpose == 'rear':
         assert ('rear' in programs_for_topology(speaker.topology)) == (speaker.name == 'cardioid')
     code = PLAN_REFUSALS[speaker.name].get(row)
-    assert _outcome(speaker, row) == ({('plan_refused', code)} if code else {('pass',)})
+    selected, fingerprint = run_program(ROWS[row].purpose, row), speaker.candidate.fingerprint
+    candidates = ((fingerprint,) if selected.regime == 'branches' else
+                  ('base', fingerprint) if selected.purpose == 'rear' else ())
+    assert _outcome(speaker, selected, candidates) == ({('plan_refused', code)} if code else {('pass',)})
+
+
+@pytest.mark.parametrize('speaker', ['cardioid'], indirect=True)
+@pytest.mark.parametrize('mover,trials', [
+    (None, {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/axis', 'room': 'room/seat'}),
+    ('arm', {'speaker': 'speaker/mark', 'rear': 'rear/express', 'bass': 'bass/axis', 'room': 'room/arm'}),
+    ('human', {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/nearfield', 'room': 'room/seat'}),
+], ids=('default', 'arm', 'human'))
+@pytest.mark.parametrize('program', RUNNABLE_PROGRAMS)
+def test_a_document_trials_its_own_program_through_the_composer(speaker, program, mover, trials):
+    """A document of each program trials base against it at that program's layout for the mover (#5632)."""
+    selected = trial_program(prescription_sections(program), mover)
+    assert selected is not None and f'{selected.program_id}/{selected.size}' == trials[program]
+    assert _outcome(speaker, selected, ('base', speaker.candidate.fingerprint), mover) == {('pass',)}

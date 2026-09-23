@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import MISSING, fields
 from importlib import import_module
 from pathlib import Path
@@ -45,7 +46,7 @@ def test_program_projections_preserve_document_order(actual, expected):
 
 
 @pytest.mark.parametrize("site", [
-    "purposes", "runnable", "regimes", "trial", "sections", "kinds", "kind_constants", "judge", "preview",
+    "purposes", "runnable", "regimes", "sections", "kinds", "kind_constants", "judge", "preview",
     "contracts", "compose", "optional_types", "typed_fields", "snapshot", "applied", "applied_names",
     "handoff", "measure", "graph",
 ])
@@ -61,15 +62,12 @@ def test_program_table_projections(site):
         candidate.source_preset, mono_output_topology(), {}, "null"))
     snapshot_header = {"schema_version", "domain", "topology_id", "topology_fingerprint", "preset", "corrections",
                        "driver_protection", "playback_device", "measured_candidate_fingerprint"}
-    trials = [(section.name, (row.purpose, *row.trial)) for row in rows if row.trial for section in row.sections]
-    room_trial = next(value for _, value in trials if value[0] == mp.PURPOSE_ROOM)
     actual, expected = {
         "purposes": (mp.PURPOSES, tuple(name for _, name in sorted(
             [(row.purpose_order, row.purpose) for row in rows] + [(3, mp.PURPOSE_REFERENCE)]))),
         "runnable": (mp.RUNNABLE_PROGRAMS, tuple(row.purpose for row in rows)),
         "regimes": ([(name, value) for name, value in mp._REGIMES_BY_PURPOSE.items() if name != mp.PURPOSE_REFERENCE],
                     [(row.purpose, row.regimes) for row in ordered]),
-        "trial": (list(mp._TRIAL_PROGRAMS.items()), [*trials, (None, room_trial)]),
         "sections": ([mp.prescription_sections(purpose) for purpose in (None, *(row.purpose for row in rows))],
                      [tuple(section.name for row in rows if purpose is None or row.purpose == purpose
                             for section in row.sections if section.reset) for purpose in (None, *(row.purpose for row in rows))]),
@@ -203,12 +201,10 @@ def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch
     assert (row.program_id, row.size, row.layout, row.mover) == (purpose, size, layout, mover)
 
 
-@pytest.mark.parametrize("mover,size,layout", [
-    (None, "seat", "seat_express"), ("human", "seat", "seat_express"), ("arm", "express", "rear_express"),
-])
-def test_rear_trial_uses_seats_by_hand_and_bearings_by_arm(mover, size, layout):
-    row = mp.trial_program(("rear_calibration",), mover)
-    assert (row.program_id, row.size, row.layout, row.mover) == ("rear", size, layout, mover or "human")
+def test_the_bass_handoff_names_a_layout_a_person_can_walk():
+    """The default bass layout pins the arm, so the prompt names the hand one (#5632 F4)."""
+    poses, mover = re.search(r"--poses (\S+) --mover (\S+)", th.build_tuning_handoff_prompt({}, "bass")).groups()
+    assert (mp.program("bass").mover, mp.run_program("bass", poses).mover, mover) == ("arm", "human", "human")
 
 
 def test_express_geometry() -> None:

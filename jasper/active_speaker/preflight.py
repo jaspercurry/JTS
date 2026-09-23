@@ -30,7 +30,7 @@ from .measured_crossover_candidate import (
     compile_candidate_config, prove_candidate_config,
 )
 from .movers import MOVER_ARM
-from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR
+from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, check_target_capture_dbfs, resolve_anchor_level,
@@ -44,6 +44,8 @@ LIVE_ADMISSION = (
     "crossover_v2.session.TuningSession.open",
     "crossover_v2.session.TuningSession._proven_level",
 )
+#: The anchor is the seat level at the 1 m mark; a near-field mic reads louder than it predicts.
+NEAR_FIELD_SPL_BASIS = "seat_anchor_1m (near-field pose: actual level higher)"
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_MEASUREMENT_OUTPUT_MUTED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
+    if any(stop.regime == REGIME_NEAR_FIELD for stop in plan.stops):
+        admission["predicted_spl_basis"] = NEAR_FIELD_SPL_BASIS
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
         issues.append(PreflightIssue.from_code(code, detail, blocking=blocking))

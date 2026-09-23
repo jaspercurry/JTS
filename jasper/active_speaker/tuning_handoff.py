@@ -60,17 +60,23 @@ def build_tuning_handoff_binding(
     }
 
 
-#: Rear alone needs extra operator guidance: composing the rear-muted
-#: reference and variants as ordinary candidates, then trialling them
-#: (playbook, Rear section). The other three programs carry none of this.
-_REAR_PROMPT_LINES = (
-    "First compose the rear-muted copy and the variants as ordinary "
-    f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
-    "<fingerprint> --candidates base,<muted>,<variant> (the trial picks "
-    "the rear positions).",
-    'Read packet["rear"] as the playbook says; the arm reaches 45 degrees, '
-    "a person any bearing.",
-)
+#: Extra operator guidance. Rear composes the rear-muted reference and
+#: variants as ordinary candidates, then trials them (playbook, Rear
+#: section); bass's default layout pins the arm.
+_PROGRAM_PROMPT_LINES = {
+    "rear": (
+        "First compose the rear-muted copy and the variants as ordinary "
+        f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
+        "<fingerprint> --candidates base,<muted>,<variant> (the trial picks "
+        "the rear positions).",
+        'Read packet["rear"] as the playbook says; the arm reaches 45 degrees, '
+        "a person any bearing.",
+    ),
+    "bass": (
+        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --poses bass/nearfield "
+        "--mover human (microphone 3 cm from the woofer).",
+    ),
+}
 
 
 
@@ -115,7 +121,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         entry["description"],
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
         f"Prescription contract: sudo {_BIN}/jasper-crossover-prescriber contract --round <dir> --section {program_id}",
-        *(_REAR_PROMPT_LINES if program_id == "rear" else ()),
+        *_PROGRAM_PROMPT_LINES.get(program_id, ()),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Orient with {ORIENTATION_COMMAND}.",
