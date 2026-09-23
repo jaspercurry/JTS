@@ -349,29 +349,13 @@ def dsp_write_epoch(*, state_path: str | Path | None = None) -> str:
     return dsp_write_epoch_from_state(last_dsp_apply_state(state_path=state_path))
 
 
-#: Proof-phase outcomes, as three DISTINCT results (#2519). The proof asks one
-#: question — "are the bytes about to be loaded the bytes that were proven?" —
-#: and there are three separate ways it cannot answer yes: nothing was recorded
-#: to compare against, the file could not be read, or the digests disagree.
-#: They were one result carrying one message, "DSP candidate changed after
-#: validation and before load", which describes only the third. A jts3 Undo
-#: refused under that sentence twice nine minutes apart — identical refusals,
-#: which a race does not produce — and it named a cause the operator could not
-#: act on. Each condition names itself now.
+#: Proof-phase outcomes, as three DISTINCT results (#2519): no digest was
+#: recorded to compare against, the candidate file could not be read, or the
+#: digests disagree. Each names its own condition rather than collapsing into
+#: one "DSP candidate changed after validation and before load" message.
 DSP_PROOF_ANCHOR_MISSING = "anchor_missing"
 DSP_PROOF_CANDIDATE_UNREADABLE = "candidate_unreadable"
 DSP_PROOF_CANDIDATE_CHANGED = "candidate_changed"
-
-#: Results that prove the load never ran. Every one of them is raised BEFORE
-#: ``load_config``, so the speaker is still playing whatever it was playing.
-#: Callers that classify "did this touch the graph?" read this set rather than
-#: transcribing the members, which is what kept the two new results from
-#: silently degrading to "we cannot tell what happened".
-DSP_PROOF_INACTIVE_RESULTS = frozenset({
-    DSP_PROOF_ANCHOR_MISSING,
-    DSP_PROOF_CANDIDATE_UNREADABLE,
-    DSP_PROOF_CANDIDATE_CHANGED,
-})
 
 
 def _sha256(path: Path) -> str | None:

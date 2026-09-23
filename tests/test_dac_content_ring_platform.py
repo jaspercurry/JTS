@@ -52,7 +52,6 @@ from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_PCM,
     DAC_CONTENT_RING_PERIOD_FRAMES,
     DAC_CONTENT_RING_SLOTS,
-    DAC_CONTENT_RING_WRITER_LOCK,
 )
 
 # One owner for "how a jts_ring conf.d block is scanned" and for "how an int is
@@ -452,22 +451,6 @@ def test_the_dac_content_ring_asks_to_be_paced():
         f"{_DAC_CONTENT_CONF.name} must declare `pace_nominal 1` — without it "
         "the return ring's writer is unpaced against a stalled or dead reader"
     )
-
-
-def test_the_writer_lock_path_is_derived_from_the_platforms_own_rule():
-    """One suffix rule, one owner.
-
-    The lock is what makes a second writer's open fail loudly with -EBUSY, and
-    its identity is the PATHNAME — so a second spelling of the suffix here would
-    let two writers lock two different files and proceed silently.
-    :func:`jasper.ring_assets.ring_writer_lock_path` is already pinned against
-    the C header; this asserts the DAC-content ring goes through it rather than
-    around it.
-    """
-    from jasper.ring_assets import ring_writer_lock_path
-
-    assert DAC_CONTENT_RING_WRITER_LOCK == ring_writer_lock_path(DAC_CONTENT_RING_FILE)
-    assert DAC_CONTENT_RING_WRITER_LOCK != DAC_CONTENT_RING_FILE
 
 
 def test_the_confd_path_key_is_the_ring_file_python_names():

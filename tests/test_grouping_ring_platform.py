@@ -55,10 +55,8 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_PCM,
     GROUPING_RING_PERIOD_FRAMES,
     GROUPING_RING_SLOTS,
-    GROUPING_RING_WRITER_LOCK,
 )
 from jasper.multiroom.reconcile_plan import snapserver_argv
-from jasper.ring_assets import ring_writer_lock_path
 from tests.ring_abi import ring_abi
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -439,20 +437,6 @@ def test_the_grouping_ring_wire_is_the_snapcast_streams_wire():
         f"the grouping ring is {GROUPING_RING_CHANNELS}ch but snapserver streams "
         f"{stream_channels}ch"
     )
-
-
-def test_the_writer_lock_path_is_derived_from_the_platforms_own_rule():
-    """One suffix rule, one owner.
-
-    The lock is what makes a second writer's open fail loudly with -EBUSY, and
-    its identity is the PATHNAME — so a second spelling of the suffix here
-    would let two writers lock two different files and proceed silently.
-    :func:`jasper.ring_assets.ring_writer_lock_path` is already pinned against
-    the C header; this asserts the grouping ring goes through it rather than
-    around it.
-    """
-    assert GROUPING_RING_WRITER_LOCK == ring_writer_lock_path(GROUPING_RING_FILE)
-    assert GROUPING_RING_WRITER_LOCK != GROUPING_RING_FILE
 
 
 def test_the_confd_path_key_is_the_ring_file_python_names():

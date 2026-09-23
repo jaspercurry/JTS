@@ -35,10 +35,12 @@ make that property **universal and explicit** across all five contracts —
 not to build the enforcement machinery (that's deferred, §5).
 
 Concretely, per contract:
-- a **Source** can only feed audio into a private snd-aloop lane; it has no
-  affordance to set output volume, bypass CamillaDSP, or reach the DAC. The
-  loud-output ceiling is a *stage it cannot route around*, not a rule it is
-  asked to honor.
+- a **Source** can only feed audio into its own private ingress lane into
+  fan-in (an snd-aloop lane, or — for USB — fan-in's own direct capture,
+  [ADR-0281](adr/0281-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md));
+  it has no affordance to set output volume, bypass CamillaDSP, or reach the
+  DAC. The loud-output ceiling is a *stage it cannot route around*, not a rule
+  it is asked to honor.
 - a **Tool** returns data through dispatch; it does not touch the audio path,
   the secret store, or another tool's internals directly.
 - a **Feature** (§4) *declares* its contributions; it does not reach into

@@ -20,6 +20,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
+    _numeric_or_none,
     _service_state_failure,
     _systemctl_unavailable_result,
 )
@@ -132,17 +133,13 @@ def _outputd_xrun_rate_warning(
     Both sections are checked independently; the worst qualifying lane wins.
     """
 
-    def _f(value: object) -> float | None:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return float(value)
-
     worst: tuple[float, str] | None = None
     for label, section in (("content", content), ("dac", dac)):
         if not isinstance(section, dict):
             continue
-        rate = _f(section.get("xrun_rate_per_hour"))
-        age = _f(section.get("last_xrun_age_ms"))  # null → None → no recent xrun
+        rate = _numeric_or_none(section.get("xrun_rate_per_hour"))
+        # last_xrun_age_ms: null → None → no recent xrun
+        age = _numeric_or_none(section.get("last_xrun_age_ms"))
         if rate is None or age is None:
             continue
         if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:

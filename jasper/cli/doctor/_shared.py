@@ -461,6 +461,15 @@ def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _numeric_or_none(value: object) -> float | None:
+    """``value`` as a ``float`` when it is a genuine ``int``/``float``, else
+    ``None``. ``bool`` is rejected even though it subclasses ``int`` — a
+    malformed boolean status field must not misread as a real 0.0/1.0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 # jasper-control's signal-path vocabulary (audio_signal_path.SIGNAL_PATH_CODES) split
 # three ways; the partition is pinned in tests/test_doctor_resilience.py.
 _SIGNAL_PATH_PLAYING_CODES = frozenset({
