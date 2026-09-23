@@ -46,7 +46,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
 from jasper.audio_measurement.program import build_measure_program
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
@@ -1192,14 +1191,11 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
 
 
 def test_executor_banks_the_capture_snr_the_packet_reads(tmp_path, monkeypatch):
-    ledger = FrameLedger(received_frames=32, declared_frames=32)
     record = bank_executor_take(tmp_path, monkeypatch, analysis_fields={
-        "frame_ledger": ledger, "pilot_snr_ok": True,
-        "pilots": (replace(_verify_pilot(-20.0), snr_db=41.7),),
+        "pilot_snr_ok": True, "pilots": (replace(_verify_pilot(-20.0), snr_db=41.7),),
         # The store refuses a non-finite number; an unmeasurable diagnostic must not cost the take.
         "verify_tracking": {"rms_db": float("nan")},
     })
-    assert record["frame_ledger"] == ledger.to_dict()
     assert record["diagnostic"]["rms_db"] is None
     session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     block = build_crossover_evidence_packet(session)["capture_snr"]

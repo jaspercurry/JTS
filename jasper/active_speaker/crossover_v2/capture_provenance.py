@@ -37,11 +37,9 @@ def analysis_blocks(analysis: Any) -> dict[str, Any]:
     The evidence packet's ``capture_snr`` block publishes the SNR columns of
     ``diagnostic``, and the distortion view gates its replay against it.
     """
-    ledger = getattr(analysis, "frame_ledger", None)
     branch = getattr(analysis, "branch_diagnostic", None)
     return {
         "diagnostic": _finite(analysis_diagnostic_summary(analysis)),
-        **({"frame_ledger": ledger.to_dict()} if ledger is not None else {}),
         **({"branch_diagnostic": branch} if branch else {}),
     }
 
