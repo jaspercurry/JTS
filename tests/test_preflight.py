@@ -20,7 +20,9 @@ from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, pref
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
-from jasper.active_speaker.seat_level_reference import AnchorFacts, resolve_anchor_level, rung_lift_bound_db
+from jasper.active_speaker.seat_level_reference import (
+    AnchorFacts, ResolvedLevel, predicted_rung_admission, resolve_anchor_level, rung_lift_bound_db,
+)
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
@@ -296,7 +298,7 @@ def test_run_level_keeps_anchor_and_clamps_to_statement_ceiling(level_db):
     assert preflight(report.plan, facts).plan == report.plan
     row = report.rung_admission
     assert row.get("bound_by") == ("commissioning_margin" if requested > admitted else None)
-    assert row["admitted_db_spl"] <= row["bound_db_spl"] == 84
+    assert row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 84
     assert row["requested_level_db"] == requested
 
 
@@ -323,11 +325,11 @@ def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, toleranc
         assert row["anchor_tolerance_db"] == tolerance
         assert row["lift_bound_db"] == rung_lift_bound_db(candidate.bass_extension, applied, fader)
         assert row["admitted_db_spl"] == report.plan.level.predicted_db_spl
-        assert row["admitted_db_spl"] <= row["bound_db_spl"] == 85 - (tolerance + row["lift_bound_db"])
+        assert row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 85 - (tolerance + row["lift_bound_db"])
         if spl == admitted:
             assert fader == requested
             assert row["lift_bound_db"] == pytest.approx(1.34283 if boost == 20 else 0, abs=0.001)
-            assert row["bound_db_spl"] == pytest.approx(82.65717 if boost == 20 else 85 - tolerance, abs=0.001)
+            assert row["margin_bound_db_spl"] == pytest.approx(82.65717 if boost == 20 else 85 - tolerance, abs=0.001)
 
 
 @pytest.mark.parametrize("tolerance", [None, 0, -1, float("nan")])
@@ -343,7 +345,7 @@ def test_missing_anchor_tolerance_uses_default_margin(tolerance):
     assert row["margin_db"] == SPL_RAISE_MARGIN_DB
     assert row["bound_by"] == "commissioning_margin"
     assert report.plan.level.volume_db == pytest.approx(-11)
-    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["bound_db_spl"] == 82
+    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 82
 
 
 @pytest.mark.parametrize("missing", ["max_window_db_spl", "loudest_half_second_db_spl", "ceiling_db_spl", "level_db", "previous_rung"])
@@ -364,26 +366,31 @@ def test_later_rung_holds_when_previous_capture_spl_is_missing(missing, requeste
     if blocked:
         assert [issue.code for issue in report.issues] == ["walk_level_policy_invalid"]
         assert report.issues[0].evidence["unavailable"] == [missing]
-        assert row["admitted_db_spl"] is None
+        assert row["admitted_db_spl"] is None and row["previous_level_db"] is None
     else:
         assert report.plan.level.volume_db == min(requested, -21.46)
-        assert row["bound_by"] == "previous_rung_unmeasured"
-        assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["bound_db_spl"]
+        assert row["previous_level_db"] == -21.46
+        assert row.get("bound_by") == ("previous_rung_unmeasured" if requested > -21.46 else None)
+        assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
 
 
-@pytest.mark.parametrize("serial,sens_factor,delta", [("other", -20, 0), ("1234", -10, -2), ("1234", -14, 2)])
-def test_calibrated_microphones_resolve_the_banked_anchor(serial, sens_factor, delta):
+@pytest.mark.parametrize("banked,serial,sens_factor,delta", [
+    ("1234", "other", -20, 0), ("1234", "1234", -10, -2), ("1234", "1234", -14, 2),
+    ("1234", None, -10, 0), ("1234", None, -14, 2), (None, "1234", -10, 0), (None, "1234", -14, 2),
+])
+def test_calibrated_microphones_resolve_the_banked_anchor(banked, serial, sens_factor, delta):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=0))
     facts = ready_facts(plan)
-    facts = replace(facts, anchor=replace(facts.anchor, sensitivity=MicSensitivity(sens_factor, 18, serial)))
+    record = {**facts.anchor.record, "mic_sensitivity": {"sens_factor_db": -12.0, "serial": banked}}
+    facts = replace(facts, anchor=AnchorFacts(record, MicSensitivity(sens_factor, 18, serial)))
     report = preflight(plan, facts)
     assert not report.blocking
     row = report.rung_admission
-    assert row["anchor_mic_serial"] == "1234" and row["anchor_rebased_db"] == delta
+    assert row["anchor_mic_serial"] == banked and row["anchor_rebased_db"] == delta
     assert report.plan.level.resolved.mic_serial == serial
     assert report.plan.level.volume_db == pytest.approx(-9 - delta)
     assert row["bound_by"] == "commissioning_margin"
-    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["bound_db_spl"]
+    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
 
 
 @pytest.mark.parametrize("carried_reference", [-25, -10])
@@ -391,7 +398,7 @@ def test_calibrated_microphones_resolve_the_banked_anchor(serial, sens_factor, d
 def test_plan_replaces_carried_anchor_without_raising_the_fader(carried_reference, requested):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
-    banked = resolve_anchor_level(facts=facts.anchor)
+    banked, _ = resolve_anchor_level(facts=facts.anchor)
     carried = replace(banked, anchor_db_spl=60, reference_volume_db=carried_reference)
     plan = replace(plan, level=LevelPolicy(level_db=requested, resolved=carried))
     received = AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
@@ -402,7 +409,7 @@ def test_plan_replaces_carried_anchor_without_raising_the_fader(carried_referenc
     assert report.plan.level.volume_db <= plan.level.volume_db
     assert report.rung_admission["carried_anchor_replaced"] is True
     assert report.rung_admission.get("bound_by") == ("commissioning_margin" if requested == 0 else None)
-    assert report.plan.level.predicted_db_spl == report.rung_admission["admitted_db_spl"] <= report.rung_admission["bound_db_spl"]
+    assert report.plan.level.predicted_db_spl == report.rung_admission["admitted_db_spl"] <= report.rung_admission["margin_bound_db_spl"]
 
 
 @pytest.mark.parametrize("anchor_spl", [126, 135])
@@ -433,10 +440,26 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
         fader = report.plan.level.volume_db
         assert fader <= requested
         row = report.rung_admission
-        assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["bound_db_spl"]
+        assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
         for descriptor in descriptors:
             margin = 1 + rung_lift_bound_db(descriptor, applied, fader)
             assert report.plan.level.predicted_db_spl <= 85 - margin
+
+
+@pytest.mark.parametrize("requested", [-17.621, -17.627])
+def test_margin_clamp_converges_where_the_bound_stops_moving(requested):
+    candidate = {**BASS_EXTENSION, "low_boost_db": 20, "reference_level_db": -10}
+    row = predicted_rung_admission(requested, ResolvedLevel(70.8695, -22.0129, "1234"), {"trial": candidate},
+                                   applied={}, ceiling_db_spl=85, tolerance_db=3)
+    assert row["level_db"] < requested
+    assert row["admitted_db_spl"] <= row["margin_bound_db_spl"]
+
+
+def test_unreadable_bass_descriptor_blocks_the_margin():
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),))
+    report = preflight(plan, ready_facts(plan, applied_bass_extension={"low_boost_db": 6}))
+    assert report.blocking_issue.code == "walk_level_policy_invalid"
+    assert (report.rung_admission["status"], report.rung_admission["admitted_db_spl"]) == ("blocked", None)
 
 
 @pytest.mark.parametrize("same", [True, False])
@@ -457,7 +480,12 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
     report = preflight(plan, facts)
     assert not report.blocking
     assert report.plan.level.predicted_db_spl == pytest.approx(84 if same else 74.23)
-    assert report.rung_admission["stimulus_mismatch"] is (not same)
+    row = report.rung_admission
+    assert row["stimulus_mismatch"] is (not same)
+    assert row["margin_bound_db_spl"] == 84
+    if not same:
+        assert (row["basis"], row["bound_by"], row["bound_db_spl"]) == (
+            "unmeasured_stimulus_opener", "unmeasured_stimulus_opener", 74.23)
 
 
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
@@ -483,7 +511,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     row = report.rung_admission
     assert report.plan.level.volume_db < 0
     assert row["bound_by"] == "commissioning_margin"
-    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["bound_db_spl"]
+    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
     if not descriptor:
         bass = DynamicBassDescriptor(**candidate.bass_extension)
         boost = loudness_boost_db(report.plan.level.volume_db, bass)

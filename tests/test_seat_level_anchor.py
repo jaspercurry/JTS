@@ -88,11 +88,10 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         assert excinfo.value.detail
         return
 
-    assert _resolve() == slr.ResolvedLevel(
+    assert _resolve()[0] == slr.ResolvedLevel(
         anchor_db_spl=pytest.approx(ANCHOR_DB_SPL + delta),
         reference_volume_db=REFERENCE_VOLUME_DB,
         mic_serial=calibration.parse_calibration_sensitivity(cal_text).serial,
-        anchor_mic_serial="8108494", anchor_rebased_db=pytest.approx(delta),
         session_id=slr.load_seat_level_reference()["session_id"],
         leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
     )
@@ -141,9 +140,9 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
             slr.resolve_anchor_level()
         assert excinfo.value.reason == slr.ANCHOR_UNUSABLE
     else:
-        assert slr.resolve_anchor_level() == slr.ResolvedLevel(
+        assert slr.resolve_anchor_level()[0] == slr.ResolvedLevel(
             anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB,
-            mic_serial="8108494", anchor_mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
+            mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
             leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
         )
         cached = calibration.fetch_vendor_calibration(
