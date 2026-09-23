@@ -8,6 +8,17 @@
 
 import { h } from "/assets/shared/js/dom.js";
 
+// Pulsing "Live · …" indicator. Returns the element plus its label node so
+// the staleness text can be updated in place each poll.
+export function livePill(initial = "Loading…") {
+  const label = h("p.eyebrow", null, initial);
+  const el = h("div.live-pill", null,
+    h("span.live-pill__dot", { "attr:aria-hidden": "true" }),
+    label,
+  );
+  return { el, label };
+}
+
 // Status pill. `tone` is one of ok/warn/danger/idle and names the app.css
 // modifier that sets --tone.
 export function badge(text, tone = "ok") {

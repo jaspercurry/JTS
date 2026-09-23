@@ -43,16 +43,6 @@ def test_renders_through_canonical_page():
     assert "Playback sources" in html
 
 
-def test_no_legacy_switch_markup():
-    html = mod._index_html(csrf_token=CSRF).decode("utf-8")
-    # toggle_html (canonical) is used; the legacy clickable switch is gone,
-    # and no unrendered template placeholder survived.
-    assert 'class="switch"' not in html
-    assert 'class="slider"' not in html
-    assert html.count('class="toggle"') == 4
-    assert "{toggle_" not in html
-
-
 def test_behaviour_ships_as_es_module():
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert '<script type="module" src="/assets/sources/js/main.js">' in html

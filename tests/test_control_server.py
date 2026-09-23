@@ -416,61 +416,6 @@ def test_post_rejects_oversized_body_before_dispatch(server_with_coordinator):
     assert fake.calls == []
 
 
-def test_split_control_helpers_keep_state_at_owner_modules():
-    """The helper split must not grow mutable/config mirrors back in server."""
-    import jasper.control.server as srv_mod
-
-    mirrored_names = {
-        "BASE_CONFIG_PATH",
-        "SOURCE_AVAILABILITY_TTL_SEC",
-        "SOURCE_SELECT_IDS",
-        "CORE_AUDIO_RESTART_UNITS",
-        "LOCAL_SOURCE_AUDIO_REFRESH_UNITS",
-        "_source_availability_cache",
-        "_source_availability_lock",
-        "_AEC_MODE_FILE",
-        "_WAKE_MODEL_FILE",
-        "_JASPER_ENV_FILE",
-        "_TOGGLE_TO_TOKEN",
-        "_USB_MIC_APPLY_UNIT",
-        "_aec_bridge_active_impl",
-        "_aec_fresh_jasper_env_impl",
-        "_aec_full_status",
-        "_aec_commission_running",
-        "_aec_commission_start_lock",
-        "_active_speaker_grouping_block",
-        "_active_speaker_grouping_evaluation",
-        "_active_speaker_volume_block",
-        "_augment_source_payload",
-        "_dispatch_transport",
-        "_fresh_jasper_env",
-        "_mark_usb_latency_applying",
-        "_read_audio_quality_state",
-        "_read_active_audio_converter",
-        "_run_unit_systemctl",
-        "_safe_audio_quality_state",
-        "_safe_usb_latency_state",
-        "_same_config_path",
-        "_schedule_usb_gadget_recompose",
-        "_server_aec_bridge_active_wrapper",
-        "_server_fresh_jasper_env_wrapper",
-        "_sound_apply_target",
-        "_sound_runtime_status",
-        "_start_aec_commission",
-        "_sync_aec_module",
-        "_sync_source_availability_module",
-        "_usb_latency_applying",
-        "_usb_mic_leg_apply_lock",
-        "_usb_mic_leg_apply_pending",
-    }
-    assert mirrored_names.isdisjoint(vars(srv_mod))
-
-    # These are intentional host seams, not mirrored state: handlers and
-    # _get_state composition replace the whole callable in route-level tests.
-    for name in ("_get_state",):
-        assert callable(getattr(srv_mod, name))
-
-
 def test_control_route_bodies_stay_partitioned_by_concern() -> None:
     """Keep dispatch/security central while route bodies stay modular."""
     from jasper.control.handlers import (

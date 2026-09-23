@@ -17,24 +17,6 @@
 
 body.stale { opacity: 0.72; }
 
-.live-pill {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 4px;
-}
-.live-pill__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: var(--primary);
-  animation: jts-chat-pulse 1.6s ease-in-out infinite;
-}
-@keyframes jts-chat-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
 .chat-setting {
   display: flex;
   align-items: center;
@@ -171,8 +153,4 @@ time {
   .chat-transcript {
     max-width: 100%;
   }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .live-pill__dot { animation: none; }
 }
