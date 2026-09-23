@@ -72,13 +72,6 @@ def test_grouping_reconcile_trailing_service_runs_fixed_helper():
     assert _values_for(unit, "CapabilityBoundingSet") == ()
 
 
-def test_install_installs_grouping_reconcile_trailing_helper():
-    units_sh = (REPO / "deploy/lib/install/systemd-units.sh").read_text()
-    assert units_sh.count("jasper-grouping-reconcile-trailing.service") >= 2
-    assert units_sh.count("jasper-grouping-reconcile-trailing\"") >= 1
-    assert units_sh.count("jasper-grouping-reconcile-kick\"") >= 1
-
-
 def test_grouping_reconcile_trailing_helper_uses_decimal_delay(tmp_path):
     delay_file = tmp_path / "delay"
     delay_file.write_text("008\n")

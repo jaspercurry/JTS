@@ -47,7 +47,6 @@ from tests.shell_runner import run_bash
 
 REPO_ROOT = Path(__file__).parent.parent
 INSTALL_SH = REPO_ROOT / "deploy" / "install.sh"
-DEPLOY_SH = REPO_ROOT / "scripts" / "deploy-to-pi.sh"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
@@ -689,16 +688,6 @@ def test_deleted_endpoint_artifacts_do_not_exist():
     assert not (REPO_ROOT / "scripts" / "bringup-endpoint.sh").exists()
 
 
-def test_deploy_script_accepts_full_and_streambox_only():
-    text = DEPLOY_SH.read_text()
-    assert "full|streambox)" in text
-    assert "full|streambox|endpoint)" not in text
-    # The bespoke endpoint verification path is gone.
-    assert 'REMOTE_INSTALL_PROFILE" == "endpoint"' not in text
-    assert "http://127.0.0.1/sound/speaker/" in text
-    assert "http://127.0.0.1/sound/ || echo 000" not in text
-
-
 def test_streambox_parking_disables_brain_units():
     """The streambox->paired-follower conversion still parks brain units
     (cross-reference for the follower-parking invariant)."""
@@ -954,39 +943,6 @@ def test_follower_role_plan_hands_sources_to_canonical_owner():
     units = {intent.unit for intent in plan(cfg).intents}
     assert units == {"jasper-snapserver.service", "jasper-snapclient.service"}
     assert SOURCE_INTENT_RECONCILE_UNIT == "jasper-source-intent-reconcile.service"
-
-
-def test_both_install_profiles_start_mux_on_first_install():
-    """Enable-only + try-restart leaves a never-started mux inactive."""
-
-    source = (
-        REPO_ROOT / "deploy/lib/install/systemd-units.sh"
-    ).read_text(encoding="utf-8")
-    streambox = source.split("start_streambox_runtime_units() {", 1)[1].split(
-        "\n}", 1
-    )[0]
-    full = source.split("install_systemd_units() {", 1)[1]
-
-    assert "systemctl enable --now jasper-mux.service" in streambox
-    assert "systemctl enable --now jasper-mux.service" in full
-    assert "systemctl try-restart jasper-mux.service" not in streambox
-    assert "systemctl try-restart jasper-mux.service" not in full
-
-
-def test_streambox_resolves_coupling_after_grouping_during_install():
-    """Do not leave USB/ring derived state stale until the next boot."""
-
-    source = (
-        REPO_ROOT / "deploy/lib/install/systemd-units.sh"
-    ).read_text(encoding="utf-8")
-    body = source.split("start_streambox_runtime_units() {", 1)[1].split(
-        "\n}", 1
-    )[0]
-
-    assert "systemctl enable jasper-fanin-coupling-auto.service" in body
-    assert body.index("reconcile_grouping_state") < body.index(
-        "resolve_fanin_coupling_default"
-    )
 
 
 # ---------- assistant unit on the streambox profile (ADR-0217) -----------

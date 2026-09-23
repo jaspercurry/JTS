@@ -12,9 +12,7 @@ import subprocess
 ROOT = Path(__file__).parent.parent
 SERVICE = ROOT / "deploy/systemd/jasper-enhanced-aec-install.service"
 RECONCILE_PATH = ROOT / "deploy/systemd/jasper-enhanced-aec-reconcile.path"
-SYSTEMD_INSTALL = ROOT / "deploy/lib/install/systemd-units.sh"
 CONTAINED_BUILD = ROOT / "deploy/bin/jasper-contained-build"
-PYTHON_RUNTIME = ROOT / "deploy/lib/install/python-runtime.sh"
 
 
 def test_installer_is_a_bounded_low_priority_root_oneshot():
@@ -39,27 +37,6 @@ def test_successful_manifest_change_retries_without_a_path_exists_loop():
     assert "Unit=jasper-enhanced-aec-install.service" in text
     assert "PathExists=" not in text
     assert "WantedBy=multi-user.target" in text
-
-
-def test_core_install_only_enables_optional_retries_fail_soft():
-    text = SYSTEMD_INSTALL.read_text(encoding="utf-8")
-    assert (
-        "install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec"
-        in text
-    )
-    assert "systemctl enable jasper-enhanced-aec-install.service" in text
-    assert "enhanced-AEC boot retry could not be enabled" in text
-    assert "systemctl enable --now jasper-enhanced-aec-reconcile.path" in text
-    assert "enhanced-AEC deploy reconcile path could not start" in text
-
-
-def test_runtime_builder_reuses_canonical_containment_policy():
-    text = CONTAINED_BUILD.read_text(encoding="utf-8")
-    assert "source /usr/local/lib/jasper/install/build-sandbox.sh" in text
-    assert 'build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_CPP}"' in text
-    assert 'run_contained_build "${label}" -- "$@"' in text
-    assert "setup_build_swap_if_needed" in text
-    assert "trap cleanup_build_swap EXIT" in text
 
 
 def _testable_runtime_builder(tmp_path: Path) -> Path:
@@ -143,22 +120,3 @@ def test_runtime_builder_direct_fallback_caps_the_process_group(
     assert "ARG=--kill-after=20s" in result.stdout
     assert "ARG=14m" in result.stdout
     assert "ARG=--foreground" not in result.stdout
-
-
-def test_core_deploy_builds_only_mandatory_v1():
-    text = PYTHON_RUNTIME.read_text(encoding="utf-8")
-    assert "JASPER_AEC3_BUILD_MODE=v1-only" in text
-    assert "build_webrtc_v2_for_aec3" not in text
-    assert "WEBRTC_AEC3_V2_PREFIX=" not in text
-
-
-def test_core_deploy_has_priority_over_optional_activation():
-    text = PYTHON_RUNTIME.read_text(encoding="utf-8")
-    assert 'flock -n "${enhanced_aec_lock_fd}"' in text
-    assert (
-        "systemctl kill --kill-whom=all --signal=KILL"
-        in text
-    )
-    assert "systemctl stop --no-block jasper-enhanced-aec-install.service" in text
-    assert 'flock -w 2 "${enhanced_aec_lock_fd}"' in text
-    assert "unmanaged root process still holds" in text

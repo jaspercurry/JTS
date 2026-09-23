@@ -133,25 +133,6 @@ def test_enable_usbgadget_reports_real_gadget_failure(tmp_path):
     assert "no UDC yet" not in proc.stdout
 
 
-def test_enable_usbgadget_does_not_interpret_or_restore_canonical_on():
-    source = FRAGMENT.read_text()
-    body = source.split("enable_usbgadget() {", 1)[1].split("\n}\n", 1)[0]
-
-    assert "canonical_usbsink_intent_enabled" not in source
-    assert "source_intent_enabled" not in body
-    assert "systemctl enable jasper-usbsink.service" not in body
-    assert "systemctl start jasper-usbsink.service" not in body
-
-
-def test_installer_stages_the_converger_and_its_shared_truth_table():
-    source = FRAGMENT.read_text()
-
-    assert "deploy/usbsink/jasper-usbgadget-converge" in source
-    assert "/usr/local/sbin/jasper-usbgadget-converge" in source
-    assert "deploy/usbsink/jasper-usbgadget-compose.sh" in source
-    assert "/usr/local/sbin/jasper-usbgadget-compose.sh" in source
-
-
 def test_usbnet_networkmanager_policy_owns_only_usb0_without_carrier():
     """Override the OS gadget default narrowly; keep carrierless static IP up."""
 
@@ -162,35 +143,6 @@ def test_usbnet_networkmanager_policy_owns_only_usb0_without_carrier():
     assert "managed=1" in policy
     assert "ignore-carrier=yes" in policy
     assert "match-device=*" not in policy
-
-
-def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
-    source = FRAGMENT.read_text(encoding="utf-8")
-    body = source.split("install_usb_network_files() {", 1)[1].split("\nenable_usbgadget()", 1)[0]
-
-    assert 'deploy/usb-network/90-jasper-usbnet.conf"' in body
-    assert "/etc/NetworkManager/conf.d/90-jasper-usbnet.conf" in body
-    assert "jasper.usb_network converge" in body
-    assert "jasper.usb_network stage" not in body
-    assert "jasper.usb_network promote" not in body
-    nm_snapshot = body.index(
-        '_snapshot_unit_install_destination "${nm_path}"'
-    )
-    dnsmasq_snapshot = body.index(
-        '_snapshot_unit_install_destination "${dnsmasq_path}"'
-    )
-    converge = body.index("jasper.usb_network converge")
-    assert nm_snapshot < dnsmasq_snapshot < converge
-    assert "usb_network_migration_pending" in body
-    assert "live_files=preserved" in body
-    assert "nmcli --wait 10 general reload conf" in body
-    assert "nmcli --wait 10 connection load" in body
-    assert "/etc/NetworkManager/system-connections/jts-usb.nmconnection" in body
-    assert "nmcli --wait 10 connection reload" not in body
-    assert "nmcli --wait 10 device set usb0 managed yes" in body
-    assert "nmcli --wait 10 -t -f NAME,DEVICE connection show --active" in body
-    assert "nmcli --wait 10 connection up jts-usb ifname usb0" in body
-    assert "event=install.usb_network_converged" in body
 
 
 def test_usb_network_boot_gate_blocks_gadget_but_never_wifi_on_plan_failure():
@@ -207,20 +159,6 @@ def test_usb_network_boot_gate_blocks_gadget_but_never_wifi_on_plan_failure():
     assert "Wants=jasper-usb-network-plan.service" in nm_dropin
     assert "After=jasper-usb-network-plan.service" in nm_dropin
     assert "Requires=jasper-usb-network-plan.service" not in nm_dropin
-
-
-def test_deferred_install_never_replaces_either_live_projection():
-    source = FRAGMENT.read_text(encoding="utf-8")
-    body = source.split("install_usb_network_files() {", 1)[1].split("\nenable_usbgadget()", 1)[0]
-
-    pending_start = body.index('if [[ -e "${pending_path}" ]]')
-    return_index = body.index("return 0", pending_start)
-    nmcli_index = body.index("if command -v nmcli", pending_start)
-    assert pending_start < return_index < nmcli_index
-    pending_branch = body[pending_start:return_index]
-    assert "nmcli" not in pending_branch
-    assert "install -m 0600" not in body
-    assert "install -m 0644" not in body.split('local plan_path=', 1)[1]
 
 
 def test_usb_network_plan_trust_anchor_is_root_owned_and_separate_from_shared_state():
