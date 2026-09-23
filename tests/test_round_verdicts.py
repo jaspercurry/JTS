@@ -192,6 +192,10 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     (tmp_path / INDEX_FILENAME).write_text(index)
     for prefix in ("series woofer:", "fit woofer:", "null ceiling "):
         assert sum(line.startswith(prefix) for line in index.splitlines()) == 1
+    for group in manifest["sets"]:
+        role = group["capture_basis"].get("role") or "summed"
+        assert any(f"impulse {tmp_path} --set {group['set_id']} --take " in line and line.endswith(f"--role {role}`")
+                   for line in index.splitlines())
 
 
 @pytest.mark.parametrize("change", [
