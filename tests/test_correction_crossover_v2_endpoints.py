@@ -2244,7 +2244,7 @@ def test_prepare_refuses_when_volume_needs_recovery():
         v2host.prepare_v2_session(
             _inline_body(), status={}, run_async=None, camilla_factory=None
         )
-    assert "recover" in str(excinfo.value)
+    assert excinfo.value.code == refusal_copy.REASON_VOLUME_UNRESOLVED
 
 
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
@@ -2302,8 +2302,9 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
         v2evidence, "open_v2_evidence_store",
         lambda *_: pytest.fail("bundle opened before protection preflight"),
     )
-    with pytest.raises(refusal_copy.CrossoverV2Refused, match="confirmed driver protection"):
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
+    assert refused.value.code == "driver_protection_invalid"
 
 
 def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
