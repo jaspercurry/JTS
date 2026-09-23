@@ -6,10 +6,11 @@
 
 This door owns the room class: the per-side filter sets, the round's own
 spatial median as the evidence they are measured against, and the order the
-gates run in. Every limit it applies — the per-frequency cut floor, the boost
-cap, the taper below the ceiling, and the evidence a boost must show — is
-:mod:`jasper.audio_measurement.room_limits`', never a second opinion here
-about the physics.
+gates run in. Every limit it applies — the boost cap, the taper below the
+ceiling, and the evidence a boost must show — and the per-frequency cut floor
+it discloses against are :mod:`jasper.audio_measurement.room_limits`', never a
+second opinion here about the physics. A cut past that floor is disclosed,
+never refused (`See ADR-0343`).
 
 Shape and posture are :mod:`.blend_prescription`'s, and what the two doors
 share is imported from it rather than restated: the prohibited-key walk, the
@@ -24,7 +25,7 @@ from __future__ import annotations
 from ._prescription_common import _prescriber, _rationale, _refuse
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 import numpy as np
@@ -75,7 +76,6 @@ from .room_analysis import RoomMedian, room_composition
 
 __all__ = [
     "BOOST_NOT_ADMITTED",
-    "FILTER_CUT_TOO_DEEP",
     "LAYOUT_UNAVAILABLE",
     "ROOM_COMPOSED_TOLERANCE_DB",
     "ROOM_MEDIAN_FIELD",
@@ -110,8 +110,8 @@ ROOM_MEDIAN_FIELD = "room_median_sha256"
 
 #: Slack, dB, on the COMPOSED cascade's per-frequency allowance. A Q >= 1 bell
 #: still leaves a skirt at the knee where the taper has closed the allowance to
-#: zero, so an exact bound would refuse every filter placed near the ceiling
-#: for arithmetic that spends no audible level.
+#: zero, so an exact bound would refuse a boost, or disclose a cut, for every
+#: filter placed near the ceiling for arithmetic that spends no audible level.
 ROOM_COMPOSED_TOLERANCE_DB = 0.5
 
 
@@ -124,12 +124,10 @@ ROOM_MEDIAN_UNAVAILABLE = "room_median_unavailable"
 #: No readable applied profile, so nothing can say which sides this speaker
 #: declares -- the median's sibling: evidence the door must have to judge at all.
 LAYOUT_UNAVAILABLE = "layout_unavailable"
-#: A cut past the depth this bin's cross-position spread supports.
-FILTER_CUT_TOO_DEEP = "filter_cut_too_deep"
 #: A boost the spatial evidence does not admit; the evidence carries the
 #: :class:`~jasper.audio_measurement.room_limits.BoostAdmission` finding.
 BOOST_NOT_ADMITTED = "boost_not_admitted"
-#: The composed cascade sits outside the tapered allowance somewhere.
+#: The composed cascade boosts past the tapered boost cap somewhere.
 TAPER_VIOLATED = "taper_violated"
 #: ``sides`` is not a mapping of side name to filter list.
 SIDE_MALFORMED = "side_malformed"
@@ -146,7 +144,6 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     COMPOSED_BOOST_EXCEEDED,
     ROOM_MEDIAN_UNAVAILABLE,
     LAYOUT_UNAVAILABLE,
-    FILTER_CUT_TOO_DEEP,
     BOOST_NOT_ADMITTED,
     TAPER_VIOLATED,
     SIDE_MALFORMED,
@@ -334,21 +331,15 @@ class RoomPrescription:
     #: turning everything else down.
     boost_db_total: float = 0.0
     level_cost_db: float = 0.0
+    #: dB past the spread-derived cut floor, keyed by ``(side, position)``,
+    #: for each filter the receipt discloses (`See ADR-0343`).
+    cut_beyond_spread_db: Mapping[tuple[str, int], float] = field(default_factory=dict)
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
     rationale_dropped_chars: int | None = None
     coverage_hz: tuple[float, float] | None = None
     measured_basis: Mapping[str, Any] | None = None
     answers_median: bool | None = None
-
-    @property
-    def filters(self) -> list[dict[str, Any]]:
-        """Every filter, flat, each naming its side — the printer's view."""
-        return [
-            {"side": side, **entry}
-            for side, entries in self.sides.items()
-            for entry in entries
-        ]
 
     @property
     def band_hz(self) -> tuple[float, float]:
@@ -360,12 +351,18 @@ class RoomPrescription:
 
     def to_dict(self) -> dict[str, Any]:
         """The receipt's view: what was prescribed, and what admits it."""
+        beyond = self.cut_beyond_spread_db
         return {
             "artifact_schema_version": ROOM_PRESCRIPTION_SCHEMA_VERSION,
             "kind": ROOM_PRESCRIPTION_KIND,
             "prescription_class": self.prescription_class,
             "sides": {
-                side: [dict(entry) for entry in entries]
+                side: [
+                    {**entry, "cut_beyond_spread_db": beyond[side, position]}
+                    if (side, position) in beyond
+                    else dict(entry)
+                    for position, entry in enumerate(entries)
+                ]
                 for side, entries in self.sides.items()
             },
             "band_hz": [self.band_hz[0], self.band_hz[1]],
@@ -428,11 +425,12 @@ def room_prescription_response_format() -> dict[str, Any]:
             "max_filters_per_side": ROOM_MAX_FILTERS_PER_SIDE,
             "max_filter_boost_db": ROOM_MAX_FILTER_BOOST_DB,
             "max_total_boost_db": ROOM_MAX_TOTAL_BOOST_DB,
-            "cut_depth_is_per_frequency": (
-                "a cut may not go below the depth that bin's cross-position "
-                "spread supports; both that floor and the boost cap are "
-                "scaled to zero over the third of an octave below the "
-                "ceiling, and the COMPOSED cascade is checked against them"
+            "cut_depth_is_disclosed": (
+                "a cut past the depth that bin's cross-position spread "
+                "supports is admitted, and its filter's receipt carries "
+                "cut_beyond_spread_db; that floor and the boost cap both "
+                "scale to zero over the third of an octave below the "
+                "ceiling, and the COMPOSED cascade is judged against them"
             ),
             "composed_tolerance_db": ROOM_COMPOSED_TOLERANCE_DB,
         },
@@ -585,13 +583,11 @@ def _checked_median(
 def _check_bounds(
     sides: Mapping[str, tuple[dict[str, Any], ...]],
     median: RoomMedian,
-    floor_db: np.ndarray,
 ) -> str:
     """Every per-filter bound, and the class the gains add up to.
 
-    The two depth bounds are per-FREQUENCY and come from the median: the cut
-    floor is what this bin's spread supports, the boost cap is D5's ceiling,
-    and both are already tapered toward the ceiling.
+    The boost cap is per-FREQUENCY: D5's cap, already tapered toward the room
+    ceiling. A cut's depth is never a bound here (`See ADR-0343`).
     """
     lo, hi = median.band_hz
     boosts = 0
@@ -647,17 +643,6 @@ def _check_bounds(
                         freq_hz=freq,
                     )
                 boosts += 1
-                continue
-            allowed = float(np.interp(freq, median.freqs_hz, floor_db))
-            if gain < allowed:
-                _refuse(
-                    FILTER_CUT_TOO_DEEP,
-                    f"{where} cuts {gain:.2f} dB, past the {allowed:.2f} dB "
-                    f"the spread at {freq:.1f} Hz supports",
-                    gain_db=gain,
-                    cut_floor_db=allowed,
-                    freq_hz=freq,
-                )
     return "boost" if boosts else "cut"
 
 
@@ -697,8 +682,9 @@ def _check_composed(
     sides: Mapping[str, tuple[dict[str, Any], ...]],
     median: RoomMedian,
     floor_db: np.ndarray,
-) -> float:
-    """Check slot count, boost spend and the shared response analysis."""
+) -> tuple[float, dict[tuple[str, int], float]]:
+    """Check slot count, boost spend and the taper's boost half; disclose, never
+    refuse, a cut past the floor (`See ADR-0343`)."""
     spend = 0.0
     for side, entries in sides.items():
         if len(entries) > ROOM_MAX_FILTERS_PER_SIDE:
@@ -719,13 +705,21 @@ def _check_composed(
                 max_composed_boost_db=ROOM_MAX_TOTAL_BOOST_DB,
             )
         spend = max(spend, boost)
-    bins = room_composition(sides, median, floor_db).violations(sides, ROOM_COMPOSED_TOLERANCE_DB)
-    if bins:
-        worst = max(bins, key=lambda row: max(row["cut_floor_db"] - row["composed_db"],
-                                              row["composed_db"] - row["boost_cap_db"]))
-        _refuse(TAPER_VIOLATED, "the composed room response exceeds the taper", **worst,
-                tolerance_db=ROOM_COMPOSED_TOLERANCE_DB, bins=bins)
-    return float(spend)
+    tolerance = ROOM_COMPOSED_TOLERANCE_DB
+    bins = room_composition(sides, median, floor_db).violations(sides, tolerance)
+    boosted = [row for row in bins if row["composed_db"] - row["boost_cap_db"] > tolerance]
+    if boosted:
+        worst = max(boosted, key=lambda row: row["composed_db"] - row["boost_cap_db"])
+        _refuse(TAPER_VIOLATED, "the composed room response exceeds the boost taper", **worst,
+                tolerance_db=tolerance, bins=boosted)
+    beyond: dict[tuple[str, int], float] = {}
+    for row in bins:
+        past = row["cut_floor_db"] - row["composed_db"]
+        for entry in row["filters"]:
+            if entry["response_db"] < -tolerance:
+                key = row["side"], entry["index"]
+                beyond[key] = max(beyond.get(key, 0.0), past)
+    return float(spend), beyond
 
 
 def _room_inputs(
@@ -776,9 +770,9 @@ def read_room_prescription(
         raw, room_median=room_median, room_median_sha256=room_median_sha256, round_id=round_id, sides=sides,
     )
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
-    prescription_class = _check_bounds(prescribed, median, floor_db)
+    prescription_class = _check_bounds(prescribed, median)
     admissions = _check_boosts(prescribed, median)
-    boost_db_total = _check_composed(prescribed, median, floor_db)
+    boost_db_total, cut_beyond_spread_db = _check_composed(prescribed, median, floor_db)
     return RoomPrescription(
         sides=prescribed,
         prescription_class=prescription_class,
@@ -796,6 +790,7 @@ def read_room_prescription(
         # One number, two names: the boost is paid for by turning the whole
         # graph down, so what it spends IS what the level costs.
         level_cost_db=boost_db_total,
+        cut_beyond_spread_db=cut_beyond_spread_db,
         rationale=rationale,
         rationale_dropped_chars=dropped,
     )

@@ -257,7 +257,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0230](0230-the-summed-graph-commissioning-lane-is-deleted.md) | The summed-graph commissioning lane is deleted | accepted |
 | [0237](0237-a-tuning-tools-stdout-is-its-answer.md) | A tuning tool's stdout is its answer | accepted |
 | [0255](0255-every-product-measures-through-the-wired-microphone.md) | Every product measures through the wired microphone | accepted |
-| [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260 |
+| [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260, §2 cut cap amended by 0343 |
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
 | [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265, §1 superseded by 0303 |
@@ -316,3 +316,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
+| [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |

@@ -57,12 +57,12 @@ from tests.test_crossover_v2_blend_prescription import _bundle
 
 
 @pytest.mark.parametrize("overrides, digest", [
-    ({}, "80cd247e6dccbdbec2548b6fd9e271b75d15f22c7248b4c891599db127de13f4"),
+    ({}, "3c021aa2bb8cd487729385a4c65b0f658f708a871c8688cfc4b06c61662b84f7"),
     ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "c567da0d2cc1098614134f37ba732364370f1b3dd4775000b18ceefe88438021"),
+    }}, "eea77d6aeba27b761d2916d1f02ff44aafa5d4098f22230dd80ad38d532d8f68"),
     ({"cloud_over": {"positions": {}}},
-     "be5142d3238ed2baed0a2011651f8f092fa7703bcc6b94e5c0891adb19df8657"),
+     "cea0756de4ffa1eff079e67c04aecd86956abe09fb4f334e50f6e3419b33228b"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
 def test_packet_json_bytes(tmp_path, overrides, digest):
     # A plain-box packet carries no rear contract (report H R3).
