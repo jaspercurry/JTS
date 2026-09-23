@@ -243,6 +243,20 @@ def parse_curve_magnitude(
     return freqs, magnitude, swept
 
 
+def measured_curve_band(
+    curve: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
+    """:func:`parse_curve_magnitude`, its band narrowed to what the take can
+    speak for: its own grid and driven band, above its trusted floor (else its
+    validity floor)."""
+    parsed = parse_curve_magnitude(curve)
+    if parsed is None:
+        return None
+    freqs, magnitude, band = parsed
+    floor = curve.get("trusted_floor_hz") or curve.get("validity_floor_hz") or 0
+    return freqs, magnitude, (float(max(freqs[0], band[0], floor)), float(min(freqs[-1], band[1])))
+
+
 class PoseCurvePair(NamedTuple):
     lower: Mapping[str, Any]
     upper: Mapping[str, Any]

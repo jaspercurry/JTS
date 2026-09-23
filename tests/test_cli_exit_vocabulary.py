@@ -39,6 +39,9 @@ from tests.crossover_v2_banked_round import (
     bank_verify_round,
 )
 from tests.room_median_fixture import write_room_median
+from tests.run_manifest_fixture import write_manifest
+from tests.test_round_views_directivity import BASELINE, _take as directivity_take
+from tests.test_round_views_repeat import _mark_take as mark_take
 
 CLI_DIR = Path(_refusal.__file__).resolve().parent
 
@@ -270,15 +273,29 @@ def _room_grade_argv(round_: _FixtureRound) -> list[str]:
     return ["room-grade", str(round_.measured)]
 
 
+def _directivity_argv(round_: _FixtureRound) -> list[str]:
+    takes = [directivity_take(index, pose, level) for index, (pose, level) in enumerate(BASELINE)]
+    write_manifest(round_.measured, groups=[{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}])
+    return ["directivity", str(round_.measured), "--set", "woofer"]
+
+
+def _repeat_argv(round_: _FixtureRound) -> list[str]:
+    for root in (round_.measured, round_.verified):
+        write_manifest(root, groups=[{"set_id": root.name, "capture_basis": {"role": "woofer"},
+                                      "takes": [mark_take(f"{root.name}-{i}", 0.5 * i) for i in range(2)]}])
+    return ["repeat", str(round_.measured), str(round_.verified)]
+
+
 #: How each view is run against that round -- or, for a view this fixture
 #: cannot feed, why not.
 _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "entry": lambda r: ["entry", str(r.measured)],
     "frozen": _NO_CLOUD_GROUP,
     "per-seat": _NO_CLOUD_GROUP,
-    "repeat": _NO_CLOUD_GROUP,
+    "repeat": _repeat_argv,
     "repeat-floor": _NO_CLOUD_GROUP,
     "candidates": lambda r: ["candidates", str(r.measured)],
+    "directivity": _directivity_argv,
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "sweep": _NO_CAPTURES,

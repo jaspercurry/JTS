@@ -69,7 +69,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "candidates": ViewArtifact("candidates.json"),
     "agreement": ViewArtifact("agreement.json", (TAKES_THIS_ROUND, "--include", "agreement"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
     "co-metrics": ViewArtifact("audibility_co_metrics.json", (TAKES_THIS_ROUND, "--include", "co-metrics"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "directivity": ViewArtifact("directivity.json", (TAKES_THIS_ROUND, "--include", "directivity"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
+    "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,)),
     "cloud-binding": ViewArtifact("cloud_binding.json", purposes=(PURPOSE_SPEAKER,)),
     "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),

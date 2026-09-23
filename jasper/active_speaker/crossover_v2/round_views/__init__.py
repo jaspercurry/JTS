@@ -46,6 +46,7 @@ from .co_metrics import (
     directivity_view,
     pooled_window_horizontal,
 )
+from .directivity import set_directivity
 from .entry_grade import (
     ENTRY_STATE_UNREADABLE,
     EntryStateGrade,
@@ -123,6 +124,7 @@ __all__ = [
     "pooled_window_horizontal",
     "repeat_floor_provenance",
     "repeatability_spread",
+    "set_directivity",
     "spec_with_gate_sensitivity",
     "verify_pose_curve",
 ]

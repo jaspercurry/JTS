@@ -85,33 +85,6 @@ def derive_repeat_floor(
     }
 
 
-def repeat_pair(
-    take: Mapping[str, Sequence[float]], trims: Mapping[str, Sequence[float]], floor: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Compare the first two takes against a previously banked floor (ADR-0302)."""
-    disagreements, unmeasured = [], []
-    limits: dict[str, float] = {}
-    metrics = [(name, values, {"scope": "take", "metric": name}) for name, values in take.items()]
-    metrics += [(f"{role}_trim_db", values, {"role": role, "metric": "trim_db"}) for role, values in trims.items()]
-    for name, values, finding in metrics:
-        delta = abs(values[0] - values[1])
-        if name == "polarity":
-            if delta:
-                disagreements.append(finding)
-            continue
-        thresholds = stopping_thresholds({**(floor or {}), "aggregate_metric": name})
-        unit = "us" if name == "delay_us" else "db"
-        threshold = thresholds.get(f"margin_{unit}") if thresholds else None
-        if threshold is None:
-            unmeasured.append(finding)
-        else:
-            limits[name] = threshold
-            if delta > threshold:
-                disagreements.append(finding)
-    return {"pair": "disagrees" if disagreements else "unmeasured" if unmeasured else "agrees",
-            "disagreements": disagreements, "unmeasured": unmeasured, "pair_limits": limits}
-
-
 def write_repeat_floor(
     payload: Mapping[str, Any], *, state_path: str | Path | None = None
 ) -> dict[str, Any]:
