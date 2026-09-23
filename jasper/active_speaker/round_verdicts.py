@@ -12,6 +12,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_FIT_BAND_UNAVAILABLE,
+    REASON_MARK_FIT_BAND_UNAVAILABLE,
+    REASON_MARK_RESPONSE_UNAVAILABLE,
+    REASON_NO_MARK_PAIRS,
+)
 from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
@@ -106,29 +112,29 @@ def _mark_repeat_spread(fit: Mapping[str, Any], group: Mapping[str, Any]) -> dic
             placements.setdefault(key, []).append(take)
     pairs = [pair for takes in placements.values() for pair in combinations(takes, 2)]
     result: dict[str, Any] = {"repeat_spread_db": None, "n_pairs": len(pairs),
-                              "repeat_basis": "mark_pairs_max_rms" if pairs else "no_mark_pairs"}
+                              "repeat_basis": "mark_pairs_max_rms" if pairs else REASON_NO_MARK_PAIRS}
     if not pairs:
-        return {**result, "reason": "no_mark_pairs"}
+        return {**result, "reason": REASON_NO_MARK_PAIRS}
     lo, hi = fit.get("fit_band_hz") or (0, 0)
     grid = DEFAULT_ENVELOPE_GRID_HZ[(DEFAULT_ENVELOPE_GRID_HZ >= lo) & (DEFAULT_ENVELOPE_GRID_HZ <= hi)]
     if not grid.size:
-        return {**result, "reason": "fit_band_unavailable"}
+        return {**result, "reason": REASON_FIT_BAND_UNAVAILABLE}
     curves = {}
     for take in {take["take_id"]: take for pair in pairs for take in pair}.values():
         curve = take.get("curve") or {}
         parsed = parse_curve_magnitude(curve)
         if parsed is None:
-            return {**result, "reason": "mark_response_unavailable"}
+            return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
         freqs, magnitude, band = parsed
         floor = curve.get("trusted_floor_hz") or curve.get("validity_floor_hz") or 0
         if grid[0] < max(freqs[0], band[0], floor) or grid[-1] > min(freqs[-1], band[1]):
-            return {**result, "reason": "mark_fit_band_unavailable"}
+            return {**result, "reason": REASON_MARK_FIT_BAND_UNAVAILABLE}
         curves[take["take_id"]] = np.interp(grid, freqs, magnitude)
     # The fit includes its upper edge; seat_figures uses half-open bands.
     spreads = [finite_float(spread_rms_db(curves[a["take_id"]] - curves[b["take_id"]], grid,
                                         band_hz=(lo, np.nextafter(hi, np.inf)))) for a, b in pairs]
     if any(spread is None for spread in spreads):
-        return {**result, "reason": "mark_response_unavailable"}
+        return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
     return {**result, "repeat_spread_db": max(spread for spread in spreads if spread is not None), "reason": None}
 
 
