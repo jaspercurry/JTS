@@ -120,7 +120,7 @@ async def test_grok_activity_meter_hooks_fire_on_turn_acquire_and_release() -> N
         def mark_started(self) -> None:
             events.append("started")
 
-        def mark_ended(self) -> None:
+        def mark_ended(self, *, seconds=None) -> None:
             events.append("ended")
 
     # The connection must expose the wiring point the daemon calls.

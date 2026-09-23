@@ -32,10 +32,10 @@ try:
     from google.genai import types
 
     from jasper.voice.gemini_session import (
-        ConnectionState,
         GeminiLiveConnection,
         GeminiLiveTurn,
     )
+    from jasper.voice.session import ConnectionState
     from jasper.tools import ToolRegistry, tool
     _HAVE_GENAI = True
 except ImportError:
@@ -1608,6 +1608,38 @@ async def test_gemini_acquire_cannot_return_a_disconnected_turn():
         assert len(factory.sessions) == 2
     finally:
         resume.set()
+        await asyncio.gather(acquiring, return_exceptions=True)
+        await conn.stop()
+
+
+async def test_gemini_acquire_that_meets_a_reconnect_waits_it_out():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    old_session = factory.sessions[0]
+    closing, finish_close = asyncio.Event(), asyncio.Event()
+
+    async def parked_close():
+        closing.set()
+        await finish_close.wait()
+
+    old_session.close = parked_close
+    await conn._turn_lock.acquire()
+    acquiring = asyncio.create_task(conn.acquire_turn())
+    try:
+        await asyncio.sleep(0)
+        old_session.feed_error(ConnectionError("disconnected"))
+        await asyncio.wait_for(closing.wait(), 1)
+        conn._turn_lock.release()
+        await _wait_until(conn._turn_lock.locked)
+        assert not conn._connected_event.is_set()
+        finish_close.set()
+        turn = await asyncio.wait_for(acquiring, 2)
+        assert not turn.turn_lost()
+        assert old_session.sent_realtime == []
+        assert [set(call) for call in factory.sessions[1].sent_realtime] == [{"activity_start"}]
+    finally:
+        finish_close.set()
+        acquiring.cancel()
         await asyncio.gather(acquiring, return_exceptions=True)
         await conn.stop()
 

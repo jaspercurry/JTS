@@ -2,14 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The skeleton both live-voice adapters subclass.
+"""The skeleton every live-voice adapter subclasses: Gemini Live, OpenAI
+Realtime (and Grok, its subclass) and OpenAI Live.
 
-`BaseLiveTurn` and `BaseLiveConnection` hold what the OpenAI Realtime and
-Gemini Live adapters do identically: the per-turn playout queue and its
-counters, the connection state machine, the initial-connect hand-off, one
-pre-emptive reconnect watchdog, one receive-loop exit. A subclass adds
-only wire logic — how its provider frames audio, tools and turn
-boundaries.
+`BaseLiveTurn` and `BaseLiveConnection` hold what the adapters share: the
+per-turn playout queue and its counters, the connection state machine,
+turn acquisition and its billable-activity meter, the initial-connect
+hand-off, one pre-emptive reconnect watchdog, one receive-loop exit. A
+subclass adds wire logic — how its provider frames audio, tools and turn
+boundaries — and overrides a shared step only where its wire differs.
 
 Lines logged from here go to the subclass's own `_logger` and carry a
 `provider` field, so a journal line still names the provider that produced it.
@@ -22,7 +23,7 @@ import json
 import logging
 import time as _time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, ClassVar
 
 from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
@@ -46,9 +47,13 @@ from .session import (
     AudioOutChunk,
     ConnectionState,
     CuePlayer,
+    LiveTurn,
     TurnUsage,
     log_first_chunk,
 )
+
+if TYPE_CHECKING:
+    from jasper.usage import BillableActivityMeter
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +126,9 @@ def upsample_16k_to_24k(
     frame boundaries — pass the returned state back in on the next
     call. Reset state to ``None`` at turn start.
 
-    ``audioop`` was REMOVED from Python 3.13's stdlib (PEP 594), and
-    PiOS Trixie ships 3.13. The ``audioop-lts`` backport on PyPI is a
-    drop-in replacement that registers under the ``audioop`` import
-    name — pyproject.toml depends on it conditionally for 3.13+, so
-    this import resolves transparently on every supported Python
-    version. If/when ``audioop-lts`` stops being maintained, swap to
-    ``scipy.signal.resample_poly`` or a hand-rolled 3:2 polyphase
-    filter."""
+    ``audioop`` left the stdlib in Python 3.13 (PEP 594), which PiOS
+    Trixie ships; there the ``audioop-lts`` backport pyproject.toml pins
+    provides it under the same import name."""
     return audioop.ratecv(
         pcm_16k, 2, 1, DAEMON_MIC_RATE_HZ, OPENAI_AUDIO_RATE_HZ, state,
     )
@@ -164,6 +164,7 @@ class BaseLiveTurn:
 
     def __init__(self, conn: "BaseLiveConnection", started_at: float) -> None:
         self._conn = conn
+        self._session: Any = getattr(conn, "_session", None)
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
         self._interrupt_event = asyncio.Event()
         # Loop time (asyncio) of the last inbound progress event;
@@ -171,9 +172,8 @@ class BaseLiveTurn:
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
         self._first_chunk_logged = False
-        # Monotonic anchors for elapsed-ms lines. `acquire_turn`
-        # overwrites the start so it lines up with the turn's first wire
-        # send; 0.0 end-input means the model was never asked to respond.
+        # Monotonic anchors for elapsed-ms lines; 0.0 end-input means the
+        # model was never asked to respond.
         self._started_at_monotonic: float = _time.monotonic()
         self._end_input_at_monotonic: float = 0.0
         self._bytes_sent: int = 0
@@ -548,6 +548,7 @@ class BaseLiveConnection:
     PROVIDER_NAME: str = ""
     _api_key: str = ""
     _session: Any
+    _turn_class: ClassVar[type[BaseLiveTurn]]
     # The subclass's module logger, so a line raised from a shared method
     # still lands under the provider's own logger name.
     _logger: logging.Logger = logger
@@ -602,6 +603,9 @@ class BaseLiveConnection:
         self._turn_lock = asyncio.Lock()
         # Loop time of the last completed turn, for the idle context reset.
         self._last_turn_end_at: float = 0.0
+        # None unless the provider bills by active time.
+        self._billable_activity_meter: BillableActivityMeter | None = None
+        self._billable_activity_interval_open = False
 
         self._receive_task: asyncio.Task | None = None
         self._tool_tasks: set[asyncio.Task[None]] = set()
@@ -668,6 +672,22 @@ class BaseLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CLOSED)
 
+    async def acquire_turn(self) -> LiveTurn:
+        await self._await_acquirable()
+
+        async with self._turn_lock:
+            if self._active_turn is not None:
+                raise RuntimeError(f"{self._log_tag} a turn is already active")
+            turn = await self._begin_turn()
+            self._mark_billable_activity_started()
+            async with self._state_lock:
+                if self._state is ConnectionState.CONNECTED:
+                    self._set_state(ConnectionState.IN_TURN)
+            log_event(
+                self._logger, "provider.turn_started", provider=self.PROVIDER_NAME, level=logging.INFO,
+            )
+            return turn
+
     def is_paused(self) -> bool:
         return self._state in (
             # `LiveConnection.is_paused` (session.py) counts a first
@@ -714,6 +734,16 @@ class BaseLiveConnection:
 
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
         self._outage.set_callback(cb)
+
+    def set_billable_activity_meter(self, meter: BillableActivityMeter) -> None:
+        """Wire the meter of a provider billed by active time.
+
+        The daemon calls this before ``start()``. A turn's acquisition
+        marks billable activity up; its release, or the provider's own
+        session end, marks it down. The warm idle WebSocket is not
+        counted: xAI's dashboard reports Voice Realtime charges that match
+        active turn time, not socket-open wall clock."""
+        self._billable_activity_meter = meter
 
     # ------------------------------------------------------------------
     # Internal — state and lifecycle
@@ -807,6 +837,15 @@ class BaseLiveConnection:
         await await_connected(self)
         await self._maybe_reset_context()
 
+    async def _begin_turn(self) -> Any:
+        """Make a new turn the active one; runs under `_turn_lock`.
+
+        An adapter whose turn opens with a wire send extends this, and
+        rolls the slot back if that send fails."""
+        turn = self._turn_class(self, started_at=asyncio.get_event_loop().time())
+        self._active_turn = turn
+        return turn
+
     def _owns_turn(self, turn: Any) -> bool:
         return (
             self._active_turn is turn and not turn._released and not turn._turn_lost
@@ -815,6 +854,8 @@ class BaseLiveConnection:
         )
 
     async def _on_turn_released(self, turn: Any) -> None:
+        if self._active_turn is turn:
+            self._mark_billable_activity_ended()
         locked = await self._take_turn_lock()
         try:
             if self._active_turn is not turn:
@@ -839,6 +880,22 @@ class BaseLiveConnection:
         finally:
             if locked:
                 self._turn_lock.release()
+
+    def _mark_billable_activity_started(self) -> None:
+        meter = self._billable_activity_meter
+        if meter is None or self._billable_activity_interval_open:
+            return
+        meter.mark_started()
+        self._billable_activity_interval_open = True
+
+    def _mark_billable_activity_ended(self, *, seconds: float | None = None) -> None:
+        """Close the open interval; `seconds` is the provider's own final
+        duration, when it reports one."""
+        meter = self._billable_activity_meter
+        if meter is None or not self._billable_activity_interval_open:
+            return
+        meter.mark_ended(seconds=seconds)
+        self._billable_activity_interval_open = False
 
     async def _take_turn_lock(self) -> bool:
         """Take `_turn_lock`, bounded once the connection is stopping.

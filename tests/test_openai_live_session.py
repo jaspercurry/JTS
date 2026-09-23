@@ -775,6 +775,29 @@ async def test_stop_releases_the_active_turn_and_closes_the_session_once():
     assert conn._state is ConnectionState.CLOSED
 
 
+async def test_the_billable_meter_spans_the_conversation_and_takes_its_final_seconds():
+    marks = []
+
+    class Meter:
+        def mark_started(self):
+            marks.append("started")
+
+        def mark_ended(self, *, seconds=None):
+            marks.append(("ended", seconds))
+
+    conn = OpenAILiveConnection(api_key="test", connect=LiveSocket)
+    conn.set_billable_activity_meter(Meter())
+    await conn.start(ToolRegistry(), "Be brief.")
+    try:
+        assert marks == []
+        turn = await conn.acquire_turn()
+        assert marks == ["started"]
+        await turn.release()
+    finally:
+        await conn.stop()
+    assert marks == ["started", ("ended", 12.5)]
+
+
 class HangingDial(LiveSocket):
     """A socket whose dial parks until `release` fires — a wake that is
     still opening its session when something else stops the connection.
