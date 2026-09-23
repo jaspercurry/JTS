@@ -29,7 +29,6 @@ CLIENT_EVENT = TypeAdapter(ClientEventParam)
 
 
 class RealtimeSocket:
-
     def __init__(self) -> None:
         self._inbox: asyncio.Queue = asyncio.Queue()
         self.sent: list[dict] = []
@@ -108,7 +107,6 @@ class RealtimeContext:
 
 
 class RealtimeConnect:
-
     def __init__(self) -> None:
         self.conns: list[RealtimeSocket] = []
         self.models: list[str] = []
@@ -129,7 +127,6 @@ class RealtimeConnect:
 
 
 class GeminiSession:
-
     def __init__(self, fake: "GeminiConnect") -> None:
         self._fake = fake
         self._inbox: asyncio.Queue[_Resp | Exception] = asyncio.Queue()
@@ -166,7 +163,6 @@ class GeminiSession:
     async def close(self) -> None:
         self.closed = True
 
-
     def feed(self, resp: _Resp) -> None:
         self._inbox.put_nowait(resp)
 
@@ -175,7 +171,6 @@ class GeminiSession:
 
 
 class GeminiContext:
-
     def __init__(self, session: GeminiSession) -> None:
         self._session = session
 
@@ -187,7 +182,6 @@ class GeminiContext:
 
 
 class GeminiConnect:
-
     def __init__(self) -> None:
         self.sessions: list[GeminiSession] = []
         self.configs: list[Any] = []
@@ -239,7 +233,6 @@ class LiveSocket:
         self.events.put_nowait(exc)
 
 
-
 def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs):
     if provider == "openai_live":
         return OpenAILiveConnection(api_key="test", connect=LiveSocket, **kwargs), None
@@ -251,6 +244,8 @@ def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs)
     kwargs.setdefault("backoff_schedule", (0.0, 0.0))
     kwargs.setdefault("context_reset_sec", 9999.0)
     if provider == "gemini":
+        if types is None:
+            pytest.skip("google-genai not installed")
         factory = GeminiConnect()
         kwargs.setdefault("rotate_after_sec", 0.0)
         conn = GeminiLiveConnection(api_key="fake", model="fake-model", connect_factory=factory, **kwargs)
@@ -262,10 +257,7 @@ def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs)
     return conn, factory
 
 
-PERSISTENT_PROVIDERS = [
-    "openai", "grok",
-    pytest.param("gemini", marks=pytest.mark.skipif(types is None, reason="google-genai not installed")),
-]
+PERSISTENT_PROVIDERS = ("openai", "grok", "gemini")
 
 
 @pytest.fixture(params=PERSISTENT_PROVIDERS)

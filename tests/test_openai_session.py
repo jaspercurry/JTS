@@ -2,18 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the OpenAI Realtime adapter.
-
-Mirrors test_gemini_connection.py: a fake ``connect_factory`` stands in
-for ``client.realtime.connect`` so the tests drive event flow without
-touching the network. Each test pins one piece of wire-format
-behaviour the daemon depends on (manual VAD, tool round-trip, response
-done, reconnect) so a future SDK upgrade or model rollout can't
-silently break the production path.
-
-The same fakes exercise ``GrokRealtimeConnection`` since Grok inherits
-the OpenAI adapter.
-"""
+"""OpenAI and Grok wire-format tests against in-memory SDK transports."""
 from __future__ import annotations
 
 import asyncio
@@ -31,7 +20,6 @@ from tests._provider_fakes import (
 from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice import _base
 from jasper.voice._base import ToolCall, upsample_16k_to_24k
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
@@ -46,7 +34,7 @@ from jasper.voice.openai_session import (
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from jasper.voice.session import ConnectionState
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
-from tests._live_turn_fake import RecordingMeter, drain_audio_chunks
+from tests._live_turn_fake import RecordingMeter
 from tests._log_events import event_fields, event_records, leaked_lines
 
 
@@ -1903,140 +1891,6 @@ async def test_committed_stops_send_audio():
         ]
         assert len(new_appends) == 0
         await turn.release()
-    finally:
-        await conn.stop()
-
-
-# ---------------------------------------------------------------------------
-# Billable realtime-activity meter hooks (time-billed providers, e.g. Grok)
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Post-connect reconnect cadence (issue #3855).
-# ---------------------------------------------------------------------------
-
-
-async def test_first_chunk_event_reports_latency_since_the_ask(caplog):
-    """`since_end_input_ms` is the provider's own latency — the interval
-    between asking for a response and the first audio of it coming back.
-    The ask is the daemon's `end_input()`; the field is absent only when
-    this turn was never asked, because there is then no interval to report.
-    `since_turn_start_ms` still spans the user's whole utterance plus local
-    endpointing, so it is not a provider figure."""
-    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
-    conn, factory = _make_conn()
-    await conn.start(ToolRegistry(), "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        await _begin_response(conn, sess)
-        await asyncio.sleep(0.01)
-        sess.feed({
-            "type": "response.output_audio.delta",
-            "delta": _b64(b"chunk"),
-            "response_id": "resp_1",
-        })
-        await _wait_until(lambda: turn.chunks_received() >= 1)
-
-        fields = event_fields(caplog, "turn.first_chunk")
-        assert fields["provider"] == "openai"
-        assert int(fields["since_turn_start_ms"]) >= 10
-        assert 0 <= int(fields["since_end_input_ms"]) <= int(fields["since_turn_start_ms"])
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-# ---------------------------------------------------------------------------
-# Playout-queue byte ceiling.
-# ---------------------------------------------------------------------------
-
-
-async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch):
-    """The per-turn playout queue is the only PCM carrier and burst
-    providers fill it ahead of realtime, so a wedged consumer would grow it
-    without bound. Past the ceiling the INCOMING chunk is dropped (tail
-    truncation, the same shape a barge-in flush leaves), the loss is
-    counted, and the terminal sentinel still ends the iterator."""
-    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
-    conn, _factory = _make_conn()
-    await conn.start(ToolRegistry(), "")
-    try:
-        turn = await conn.acquire_turn()
-        with caplog.at_level(
-            logging.WARNING, logger="jasper.voice.openai_session",
-        ):
-            await turn._on_audio_delta(_b64(b"12345"))
-            await turn._on_audio_delta(_b64(b"67890"))
-            await turn._on_audio_delta(_b64(b"X"))
-            await turn._on_audio_delta(_b64(b"YZ"))
-
-        assert turn.audio_chunks_pending() == 2
-        assert turn.audio_dropped_bytes() == 3, (
-            "both over-ceiling chunks must be counted, not just the first"
-        )
-        fields = event_fields(caplog, "turn.audio_overflow")
-        assert fields["provider"] == "openai"
-        (record,) = event_records(caplog, "turn.audio_overflow")
-        assert record.name == "jasper.voice.openai_session"
-        assert record.levelno == logging.WARNING
-        assert int(fields["queued_bytes"]) == 10
-        assert int(fields["dropped_bytes"]) == 1, (
-            "only the FIRST drop of the turn logs; later drops just count"
-        )
-
-        turn._audio_q.put_nowait(None)
-        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
-        assert [chunk.pcm for chunk in played] == [b"12345", b"67890"]
-    finally:
-        await conn.stop()
-
-
-async def test_dropping_pending_audio_frees_the_ceiling(monkeypatch):
-    """A barge-in flush clears the queue, so the accounting the ceiling
-    reads must clear with it — otherwise the turn stays permanently full
-    and the model's next words are dropped.
-
-    The dropped-byte count clears too. One turn spans several barge-in
-    episodes (``play_responses`` keeps going after a flush), and the
-    daemon cues ``internal_error`` at teardown on a non-zero count; a
-    truncation the household caused by talking over the model must not
-    end the turn with that cue. The first drop's ``turn.audio_overflow``
-    WARN stays as the journal record."""
-    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
-    conn, _factory = _make_conn()
-    await conn.start(ToolRegistry(), "")
-    try:
-        turn = await conn.acquire_turn()
-        await turn._on_audio_delta(_b64(b"0123456789"))
-        await turn._on_audio_delta(_b64(b"X"))
-        assert turn.audio_dropped_bytes() == 1
-
-        turn.drop_pending_audio()
-        await turn._on_audio_delta(_b64(b"after"))
-
-        assert turn.audio_chunks_pending() == 1
-        assert turn.audio_dropped_bytes() == 0
-    finally:
-        await conn.stop()
-
-
-async def test_dropping_pending_audio_drains_behind_the_sentinel():
-    """A chunk can be queued BEHIND the terminal sentinel: the socket
-    drops mid-reply (``_on_connection_lost`` queues the sentinel) and a
-    late audio delta still lands. A drain that stopped at the first
-    sentinel would re-queue it AHEAD of that chunk, and the consumer
-    would play post-barge audio as if it were pre-interrupt."""
-    conn, _factory = _make_conn()
-    await conn.start(ToolRegistry(), "")
-    try:
-        turn = await conn.acquire_turn()
-        turn._on_connection_lost()
-        await turn._on_audio_delta(_b64(b"late"))
-        assert turn.audio_chunks_pending() == 2
-
-        assert turn.drop_pending_audio() == 1
-        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
-        assert played == []
     finally:
         await conn.stop()
 

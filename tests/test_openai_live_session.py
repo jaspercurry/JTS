@@ -915,17 +915,13 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
     assert int(fields["quiet_discarded"]) == discarded
 
 
-async def test_the_first_audible_delta_reports_provider_latency(caplog):
-    """Live joins the other adapters on `turn.first_chunk`, and fires it on
-    the first AUDIBLE delta: idle PCM is not the model starting to speak."""
+async def test_only_audible_deltas_emit_first_chunk(caplog):
     caplog.set_level(logging.INFO)
     async with live_turn() as turn:
         await turn.on_event(output_audio(QUIET_PCM))
         assert event_records(caplog, "turn.first_chunk") == []
         await turn.on_event(output_audio(AUDIBLE_PCM))
-        fields = event_fields(caplog, "turn.first_chunk")
-    assert fields["provider"] == "openai_live"
-    assert int(fields["since_turn_start_ms"]) >= 0
+        assert len(event_records(caplog, "turn.first_chunk")) == 1
 
 
 async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeypatch):

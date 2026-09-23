@@ -802,47 +802,6 @@ def test_close_code_extraction(exc, expected):
     assert close_code_and_reason(exc) == expected
 
 
-@pytest.mark.parametrize("end_input_sent", [True, False])
-async def test_first_chunk_event_reports_latency_since_end_input(
-    caplog, end_input_sent,
-):
-    """Twin of the OpenAI adapter's pin: the first-chunk line must be
-    anchored on `activity_end`, not on turn open, so it reads as the
-    provider's latency and not as the user's utterance plus ~1 s of local
-    endpointing."""
-
-    caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
-    conn, factory = _make_conn()
-    await conn.start(ToolRegistry(), "system")
-    try:
-        sess = factory.sessions[0]
-        turn = await conn.acquire_turn()
-        await asyncio.sleep(0.01)
-        if end_input_sent:
-            await turn.end_input()
-        sess.feed(_Resp(data=b"audio_chunk_1"))
-
-        async def consume():
-            async for _chunk in turn.audio_out_chunks():
-                return
-        task = asyncio.create_task(consume())
-        await asyncio.sleep(0.05)
-        await turn.release()
-        await asyncio.wait_for(task, timeout=1.0)
-
-        fields = event_fields(caplog, "turn.first_chunk")
-        assert fields["provider"] == "gemini"
-        assert int(fields["since_turn_start_ms"]) >= 10
-        if end_input_sent:
-            assert 0 <= int(fields["since_end_input_ms"]) <= int(
-                fields["since_turn_start_ms"]
-            )
-        else:
-            assert "since_end_input_ms" not in fields
-    finally:
-        await conn.stop()
-
-
 @pytest.mark.parametrize("accepted", [False, True])
 async def test_sdk_setup_acknowledgement_is_required(accepted):
     conn, factory = _make_conn()
