@@ -492,15 +492,16 @@ def _locate_sweep(
     sample_rate: int, search_samples: int | None = None,
 ) -> tuple[int, float, float]:
     """:func:`_locate_in_window` for a sweep: full band, or above the room's modal
-    tails (:data:`WITNESS_BAND_FLOOR_HZ`) when the full band misses the locate floor."""
+    tails (:data:`WITNESS_BAND_FLOOR_HZ`) when only that view clears the locate floor."""
     located = _locate_in_window(capture, stim, scheduled, sweep.n_samples,
                                 sample_rate=sample_rate, search_samples=search_samples)
     assert sweep.f1_hz is not None and sweep.f2_hz is not None
     band_start = max(WITNESS_BAND_FLOOR_HZ, sweep.f1_hz)
     if located[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR or band_start >= sweep.f2_hz:
         return located
-    return _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate,
-                             band_hz=(band_start, sweep.f2_hz), search_samples=search_samples)
+    banded = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate,
+                               band_hz=(band_start, sweep.f2_hz), search_samples=search_samples)
+    return banded if banded[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR else located
 
 
 def _locate_segments(
