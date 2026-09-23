@@ -607,11 +607,7 @@ install_camilladsp() {
     # the household as "could not load the silent active-speaker setup" (the
     # jts3 2026-07-06 incident). check_camilla_configs_writable pins this at
     # runtime.
-    if getent group jasper >/dev/null 2>&1; then
-        install -d -m 2775 -g jasper /var/lib/camilladsp/configs
-    else
-        install -d -m 0755 /var/lib/camilladsp/configs
-    fi
+    install -d -m 2775 -g jasper /var/lib/camilladsp/configs
     ensure_state_dir
     # Shared correction/test artifacts are written by the correction web flow and
     # by jasper-web's /sound/ measurement arms. Keep the tree group-writable for
@@ -915,11 +911,7 @@ install_alsa() {
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     # 2775 root:jasper (setgid): jasper-control renders here; o+rx stays so pi-run renderers can read the /etc/asound.conf symlink.
-    if getent group jasper >/dev/null 2>&1; then
-        install -d -m 2775 -o root -g jasper /var/lib/jasper-asound
-    else
-        install -d -m 0755 /var/lib/jasper-asound
-    fi
+    install -d -m 2775 -o root -g jasper /var/lib/jasper-asound
     install -m 0644 \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         "${ENV_DIR}/asoundrc.jasper.source"
@@ -1359,16 +1351,11 @@ install_avahi_jasper_control() {
     # (jasper-peer.service) into this dir when /sound/pair/ peering is enabled
     # (off by default). os.replace needs WRITE on the parent dir, which
     # ReadWritePaths= does NOT grant (it only lifts ProtectSystem=strict;
-    # POSIX dir perms still apply). So when the `jasper` group exists, make the
-    # dir group-jasper writable + setgid (new files inherit group jasper). The
-    # static control advert below is still written by install.sh as root; a
-    # future avahi apt-upgrade could reset this dir to root:root 0755, but every
-    # deploy re-applies it. When the group is absent (pre-3b), stay 0755 root.
-    if getent group jasper >/dev/null 2>&1; then
-        install -d -m 2775 -g jasper /etc/avahi/services
-    else
-        install -d -m 0755 /etc/avahi/services
-    fi
+    # POSIX dir perms still apply). So make the dir group-jasper writable +
+    # setgid (new files inherit group jasper). The static control advert below
+    # is still written by install.sh as root; a future avahi apt-upgrade could
+    # reset this dir to root:root 0755, but every deploy re-applies it.
+    install -d -m 2775 -g jasper /etc/avahi/services
     # Render the live service from the template via the Python module (it
     # does the XML-escape and atomic write; Avahi picks up the change via
     # inotify). The package is already pip-installed by install_jasper
@@ -1461,27 +1448,25 @@ widen_jasper_web_writable_dirs() {
     # jasper-web, so repair stale root:root 0600 files from earlier builds to
     # root:jasper 0640. The shared DSP-apply lock is written by root CLIs and
     # non-root web flows, so it must be group-writable.
-    # Idempotent; harmless while jasper-web is still root.
-    if getent group jasper >/dev/null 2>&1; then
-        if [[ -d /etc/bluetooth ]]; then
-            chgrp jasper /etc/bluetooth 2>/dev/null || true
-            chmod 2775 /etc/bluetooth 2>/dev/null || true
-        fi
-        install -d -m 2775 -g jasper /var/lib/camilladsp/configs
-        touch /var/lib/camilladsp/configs/.dsp_apply.lock
-        chgrp jasper /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
-        chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
-        find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
-            -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
-        # The Layer-A SSOT (active_speaker_baseline_profile.json) and the Active
-        # run-record locks + records used to be healed here with path-following
-        # chgrp/chmod. That is a local priv-esc under a group-writable
-        # /var/lib/jasper (a group member can pre-create the name as a symlink
-        # onto a root file), so it moved to heal_shared_state_modes, which pins
-        # each inode with O_NOFOLLOW+fstat before touching it. See
-        # deploy/lib/install/state-and-secrets.sh.
-        echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
+    # Idempotent.
+    if [[ -d /etc/bluetooth ]]; then
+        chgrp jasper /etc/bluetooth 2>/dev/null || true
+        chmod 2775 /etc/bluetooth 2>/dev/null || true
     fi
+    install -d -m 2775 -g jasper /var/lib/camilladsp/configs
+    touch /var/lib/camilladsp/configs/.dsp_apply.lock
+    chgrp jasper /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
+    chmod 0660 /var/lib/camilladsp/configs/.dsp_apply.lock 2>/dev/null || true
+    find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
+        -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
+    # The Layer-A SSOT (active_speaker_baseline_profile.json) and the Active
+    # run-record locks + records used to be healed here with path-following
+    # chgrp/chmod. That is a local priv-esc under a group-writable
+    # /var/lib/jasper (a group member can pre-create the name as a symlink
+    # onto a root file), so it moved to heal_shared_state_modes, which pins
+    # each inode with O_NOFOLLOW+fstat before touching it. See
+    # deploy/lib/install/state-and-secrets.sh.
+    echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
 }
 
 ensure_peer_id() {
