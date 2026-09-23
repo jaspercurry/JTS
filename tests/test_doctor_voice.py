@@ -19,6 +19,7 @@ from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._evidence import evidence
 from jasper.config import Config
 from jasper.mic_presence import MicPresence
+from jasper.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
 from jasper.tools.packs import TOOL_PACKS
 from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manifest_text
 
@@ -86,8 +87,9 @@ def test_provider_key_accepts_each_catalog_provider(
 
     assert r.status == "ok"
     assert r.name == provider.key_env
-    # Presence only — never a prefix or a character count of the key.
-    assert r.detail == "configured"
+    assert r.reason == ""
+    assert key not in r.detail
+    assert provider.key_prefix_hint.rstrip(".") not in r.detail
 
 
 def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):
@@ -242,9 +244,6 @@ def test_voice_provider_ids_manifest_verdicts(
 
 
 def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Path):
-    """build_clients returns BuildResult, not a bare clients dict — a shape
-    mismatch used to crash `jasper-doctor --json` before rendering, which the
-    dashboard surfaced as "doctor output not JSON"."""
     accounts_path = tmp_path / "accounts.json"
     accounts_path.write_text(
         '{"accounts": [{"name": "jasper", "cache_path": "/tmp/cache"}], '
@@ -257,8 +256,6 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
         JASPER_SPOTIFY_ACCOUNTS_PATH=str(accounts_path),
         JASPER_SPEAKER_NAME="JTS",
     )
-
-    from jasper.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
 
     fake_client = SimpleNamespace(
         sp=SimpleNamespace(devices=lambda: {"devices": [{"name": "Kitchen JTS"}]}),
@@ -275,7 +272,7 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
         result = renderers.check_spotify_connect_device(cfg)
 
     assert result.status == "ok"
-    assert "jasper" in result.detail
+    assert result.reason == ""
 
 
 # --------------------------------------------------------- pricing / spend cap

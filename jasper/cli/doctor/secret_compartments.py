@@ -59,6 +59,7 @@ from ._shared import CheckResult, _systemctl_unavailable_result
 # result (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_COMPARTMENT_ABSENT = "compartment_absent"
 REASON_COMPARTMENT_OVER_EXPOSED = "compartment_over_exposed"
+REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE = "compartment_exposed_and_unavailable"
 REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 
 # privsep is the single home for "could a process with this uid + group-set
@@ -302,7 +303,11 @@ def _classify_compartment(
         detail = "OVER-EXPOSED (Phase 4 isolation regressed): " + "; ".join(shown)
         if warns:
             detail += f" (+{len(warns)} availability warning(s))"
-        return CheckResult(label, "fail", detail, reason=REASON_COMPARTMENT_OVER_EXPOSED)
+        return CheckResult(
+            label, "fail", detail,
+            reason=(REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE if warns
+                    else REASON_COMPARTMENT_OVER_EXPOSED),
+        )
     if warns:
         return CheckResult(
             label, "warn", "; ".join(_truncate(warns)),
