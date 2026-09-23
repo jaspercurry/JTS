@@ -317,3 +317,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
+| [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | accepted |

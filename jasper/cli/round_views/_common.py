@@ -123,6 +123,7 @@ def answer(
     envelope every view shares: the view and its answer version, what it read
     (one :func:`subject`, or a list of them as ``rounds`` for a view that
     compares rounds), and the analysis parameters it used."""
+    # See ADR-0344
     document = {
         "view": view, "schema": schema, "parameters": dict(parameters),
         "subject": dict(subject) if isinstance(subject, Mapping) else {"rounds": [dict(one) for one in subject]},
