@@ -14,15 +14,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ._common import finite_float as _finite_float
+from jasper.json_fields import as_mapping
+
+from ._common import coerce_finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 TUNING_OWNERS = frozenset({"manual", "automatic"})
 REASON_APPLIED_GRADE_MARK_ONLY = "applied_grade_mark_only"
 
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
@@ -42,10 +41,10 @@ def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
 
     sources = {
         str(value)
-        for value in _mapping(snapshot.get("corrections_source")).values()
+        for value in as_mapping(snapshot.get("corrections_source")).values()
     }
     return (
-        _mapping(snapshot.get("level_match")).get("applied") is True
+        as_mapping(snapshot.get("level_match")).get("applied") is True
         and "measured" in sources
     )
 
@@ -66,8 +65,8 @@ def crossover_snapshot_state(
     require_applied: bool = True,
 ) -> dict[str, Any]:
     """Validate immutable Layer-A ownership and return one stable verdict."""
-    profile = _mapping(profile)
-    snapshot = _mapping(profile.get("recomposition_snapshot"))
+    profile = as_mapping(profile)
+    snapshot = as_mapping(profile.get("recomposition_snapshot"))
     owner = _snapshot_owner(profile, snapshot) if snapshot else None
     reason: str | None = None
     detail: str
@@ -98,16 +97,16 @@ def crossover_snapshot_state(
             reason = "active_applied_profile_snapshot_invalid"
             detail = "The applied crossover snapshot has invalid speaker filters."
         else:
-            corrections = _mapping(snapshot.get("corrections"))
+            corrections = as_mapping(snapshot.get("corrections"))
             roles = required_driver_roles(preset.way_count)
             if set(corrections) != set(roles):
                 reason = "active_applied_profile_snapshot_invalid"
                 detail = "The applied crossover snapshot is missing driver corrections."
             else:
                 for role in roles:
-                    correction = _mapping(corrections.get(role))
-                    gain = _finite_float(correction.get("gain_db"))
-                    delay = _finite_float(correction.get("delay_ms"))
+                    correction = as_mapping(corrections.get(role))
+                    gain = coerce_finite_float(correction.get("gain_db"))
+                    delay = coerce_finite_float(correction.get("delay_ms"))
                     if (
                         gain is None
                         or not -60.0 <= gain <= 0.0
@@ -141,8 +140,8 @@ def legacy_manual_preservation_state(
     current_source_fingerprint: str | None,
 ) -> dict[str, Any]:
     """Whether a legacy manual graph can be snapshotted without filter drift."""
-    applied = _mapping(applied_profile)
-    source = _mapping(applied.get("source"))
+    applied = as_mapping(applied_profile)
+    source = as_mapping(applied.get("source"))
     applied_fingerprint = str(source.get("fingerprint") or "")
     current_fingerprint = str(current_source_fingerprint or "")
     legacy = bool(
