@@ -64,6 +64,7 @@ from jasper.source_intent_units import (
     _unit_action_timeout_sec,
 )
 from jasper.systemd_probe import unit_query, unit_state
+from jasper.usbgadget import uac2_card_present
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,6 @@ _WORST_CASE_ORDINARY_STOP_ACTIONS = (
 # rather than racing it, so its lock wait outlasts the unit ceiling. It stays
 # below the broker bound so the caller still owns the terminal result.
 _INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS = RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
-_UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 _BLUETOOTH_SETTLE_ATTEMPTS = 12
 _BLUETOOTH_SETTLE_SECONDS = 0.25
 _BLUETOOTH_DBUS_TIMEOUT_SEC = 0.75
@@ -180,13 +180,6 @@ def _local_sources_allowed() -> bool:
         return False
 
 
-def _usb_audio_present() -> bool:
-    try:
-        return os.path.isdir(_UAC2_CARD_PATH)
-    except OSError:
-        return False
-
-
 def _usb_direct_sample():
     return extract_direct_sample(read_fanin_status())
 
@@ -280,7 +273,7 @@ def default_reconcile_ops() -> ReconcileOps:
         unit_failed=_unit_failed,
         local_sources_allowed=_local_sources_allowed,
         usb_port_role=current_usb_data_role,
-        usb_audio_present=_usb_audio_present,
+        usb_audio_present=uac2_card_present,
         usb_direct_present=_usb_direct_present,
         usb_direct_ready=_usb_direct_ready,
         rfkill_state=read_bluetooth_rfkill_state,
