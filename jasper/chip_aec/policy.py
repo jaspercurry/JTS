@@ -72,8 +72,6 @@ SOURCE_STATIC = "static"
 SOURCE_OPERATOR_TESTING = "explicit_testing"
 SOURCE_RUNTIME_ENV = "runtime_env"
 
-HIFIBERRY_DAC8X_DAC_ID = dac_profiles.HIFIBERRY_DAC8X_ID
-
 
 @dataclass(frozen=True)
 class OutputdAecClockEvidence:

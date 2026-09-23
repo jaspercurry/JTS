@@ -719,19 +719,8 @@ def _rust_dac_format_arms() -> set[str]:
 
 
 def _registry_final_edge_formats() -> set[str]:
-    """The values ``DacProfile.__post_init__`` accepts, read out of its tuple."""
-    src = (ROOT / "jasper" / "audio_hardware" / "dac.py").read_text(encoding="utf-8")
-    match = re.search(r"if self\.final_edge_format not in \(([^)]*)\):", src)
-    assert match is not None, (
-        "could not locate the final_edge_format validation tuple in "
-        "jasper/audio_hardware/dac.py"
-    )
-    values = set(re.findall(r'"([^"]*)"', match.group(1)))
-    assert values, (
-        "the final_edge_format validation tuple parsed to an EMPTY set — the "
-        "regex found nothing, which would make the contract below vacuously true"
-    )
-    return values
+    """The values ``DacProfile.__post_init__`` accepts."""
+    return set(dac.FINAL_EDGE_FORMATS)
 
 
 def test_the_accepted_final_edge_format_set_is_exactly_what_outputd_parses() -> None:

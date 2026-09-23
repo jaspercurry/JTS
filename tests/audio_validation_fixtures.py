@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from jasper import audio_validation
+from jasper.audio_hardware import dac
 from jasper.audio_profile_state import MicProbe
 
 
@@ -158,7 +158,7 @@ def _outputd_stability_inputs() -> dict:
         "system_env": {
             "JASPER_OUTPUTD_BACKEND": "alsa",
             "JASPER_OUTPUTD_DAC_PCM": "outputd_dac",
-            "JASPER_AUDIO_DAC_ID": audio_validation.DAC8X_DAC_ID,
+            "JASPER_AUDIO_DAC_ID": dac.HIFIBERRY_DAC8X_ID,
             "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
         },
         "service_states": {
