@@ -2,18 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Renders a deliberately malicious tool object through the /assistant/tools/ catalog's
-// render.js and reports whether every untrusted field was HTML-escaped before
-// landing in the card markup. The /assistant/tools/ catalog is the marketplace's future
-// home for third-party tool name/description/labels/setup_url, so the escaping
-// is a security boundary — this turns the runtime-verified claim into a
-// regression-guarded one. Driven by tests/test_tools_render_xss.py.
-//
-//   node tools_render_harness.mjs <path-to-escape.js> <path-to-render.js>
-//
-// render.js `import`s escapeHtml by absolute URL (node can't resolve that), so
-// we inline escape.js ahead of it and strip the import/export keywords — the
-// same "load the ESM source via new Function" trick dialog_harness.mjs uses.
 import { buildFunction } from "./_loader.mjs";
 
 const stripImports = [/^\s*import\s.*$/gm, ""];
@@ -108,10 +96,18 @@ const defaultPromptCard = toolRow(defaultPrompt);
 const customPromptCard = toolRow(customPrompt);
 const html =
   toolRow(evil) +
-  toolList([
-    evil, evilScheme, evilProtoRel, evilBackslash,
-    evilTab, evilNewline, evilTabBackslash, safeUrl, noUrl,
-  ]) +
+  toolList({
+    tools: [evil, evilScheme, evilProtoRel, evilBackslash,
+      evilTab, evilNewline, evilTabBackslash, safeUrl, noUrl],
+    packs: [
+      { ...evil.pack, category: evil.category, status: evil.status, tool_names: [evil.name] },
+      ...[evilScheme, evilProtoRel, evilBackslash, evilTab, evilNewline,
+        evilTabBackslash, safeUrl, noUrl].map((tool) => ({
+        id: "tool:" + tool.name, title: tool.name, status: tool.status,
+        setup_url: tool.setup_url, tool_names: [tool.name],
+      })),
+    ],
+  }) +
   toolRow(noUrl) +
   defaultPromptCard +
   customPromptCard +
