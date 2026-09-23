@@ -238,8 +238,6 @@ def test_known_post_routes_reach_csrf_guard():
         # since W5b retired the legacy per-driver flow and the
         # JASPER_CROSSOVER_FLOW selector.
         "/crossover/v2/session", "/crossover/v2/apply",
-        # Retired routes still reject missing CSRF before returning HTTP 410.
-        "/crossover/v2/republish",
         # A gated session's position release — an external driver's POST, or a
         # person's on a hand-walked wired round, and CSRF-guarded exactly like
         # every other mutating route here.

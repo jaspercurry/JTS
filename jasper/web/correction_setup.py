@@ -210,10 +210,6 @@ def _dispatch_crossover(handler: _Handler) -> None:
             )
         return
 
-    if path == "/crossover/v2/republish":
-        handler._send_json({"ok": False, "code": "route_retired"}, status=HTTPStatus.GONE)
-        return
-
     if path == "/crossover/v2/position-ready":
         # A release that names the wrong (or no) pending capture is a
         # CONFLICT, not a malformed request: the driver's view of the
@@ -591,7 +587,6 @@ _POST_ROUTES = {
     # v2 session flow — the only crossover-measurement flow. There is no
     # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
     "/crossover/v2/session": _dispatch_crossover,
-    "/crossover/v2/republish": _dispatch_crossover,
     "/crossover/v2/apply": _dispatch_crossover,
     # A GATED session's position release — the report that the microphone has
     # reached the angle the envelope named, from an EXTERNAL driver on the

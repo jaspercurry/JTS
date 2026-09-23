@@ -838,9 +838,9 @@ def check_session_volume_unresolved() -> CheckResult:
 
     Two shapes refuse a new session and need different words: a latched
     ``unresolved`` state, and a durably ``active`` state with no live owner.
-    The second self-heals — past its wall-clock ceiling the flow's open path
-    force-drains it (``reconcile_session_volume_for_new_session``) — so it is
-    reported as a crash remnant rather than as something to act on.
+    The second self-heals — past its ceiling a status read or session open drains
+    it (``enforce_session_volume_ceiling_if_stale``, ``recover_session_volume``) —
+    so it is reported as a crash remnant rather than as something to act on.
     """
     label = "session measurement volume"
     plan = SessionVolumePlan(state_path=DEFAULT_SESSION_VOLUME_STATE_PATH)
