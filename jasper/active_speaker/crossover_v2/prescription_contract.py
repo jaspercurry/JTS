@@ -177,7 +177,9 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     topology_bounds: dict[str, Any] = {
         "supported_orders": sorted(topology.SUPPORTED_LR_ORDERS),
         "fc_hz": None, "minimum_slope_db_per_octave": None,
-        "fc_rejection_rule": "corner_admissibility._fc_rejection",
+        # A stable rule id, not a module path: it is hashed into the contract
+        # digests every round packet carries, so it keeps its name across renames.
+        "fc_rejection_rule": "fc_sweep._fc_rejection",
         "beaming_is_a_refusal": False,
         "beaming_ceiling_hz": beaming_onset_hz(diameter) if diameter is not None else None,
     }
