@@ -1123,11 +1123,6 @@ class RecordingBackend:
         with self._lock:
             return dict(self._chip_aec_config) if self._chip_aec_config else None
 
-    def aec3_sweep_source(self) -> str:
-        """Mic source that feeds the active session's AEC3 sweep variants."""
-        with self._lock:
-            return self._aec3_sweep_source
-
     def aec3_sweep_variants(self) -> list[dict[str, object]]:
         """Effective AEC3 sweep variants for the active session or UI status."""
         with self._lock:
@@ -1157,19 +1152,75 @@ class RecordingBackend:
         with self._lock:
             return dict(self._audio_context) if self._audio_context else None
 
-    def capture_plan_conformance(self) -> dict[str, Any] | None:
-        """Current bridge/runtime conformance for the active session plan."""
+    def status_snapshot(self) -> dict[str, Any]:
+        """Every `/api/status` field, read under one lock acquisition.
+
+        The route this feeds used to call over a dozen separate
+        single-field getters, each independently locked — a session
+        switch (begin/load/unload) between two of those calls could mix
+        fields from two different sessions in one response. Reading them
+        together here means every value in the snapshot reflects the
+        same instant.
+        """
         with self._lock:
-            capture_plan = dict(self._capture_plan or {})
-            current = (
+            include_aec3_sweep = self._include_aec3_sweep
+            aec3_sweep_variants = (
+                list(self._aec3_sweep_variants)
+                if include_aec3_sweep and self._aec3_sweep_variants else None
+            )
+            aec3_sweep_config = (
+                dict(self._aec3_sweep_config)
+                if include_aec3_sweep and self._aec3_sweep_config else None
+            )
+            capture_plan = dict(self._capture_plan) if self._capture_plan else None
+            capture_plan_conformance = (
                 dict(self._current_plan_conformance)
                 if self._current_plan_conformance else None
             )
-        if not capture_plan:
-            return None
-        if current is not None:
-            return current
-        return validate_active_capture_plan(capture_plan).to_json()
+            snapshot = {
+                "session_id": self._session_id,
+                "member": self._member,
+                "include_raw_mic_0": self._include_raw_mic_0,
+                "include_dtln": self._include_dtln,
+                "include_usb_mic": self._include_usb_mic,
+                "include_usb_dtln": self._include_usb_dtln,
+                "include_xvf_raw0_dtln": self._include_xvf_raw0_dtln,
+                "include_aec3_sweep": include_aec3_sweep,
+                "corpus_profile": self._corpus_profile,
+                "chip_aec_config": (
+                    dict(self._chip_aec_config) if self._chip_aec_config else None
+                ),
+                "aec3_sweep_source": self._aec3_sweep_source,
+                "enabled_legs": list(self._enabled_legs),
+                "capture_plan": capture_plan,
+                "audio_context": (
+                    dict(self._audio_context) if self._audio_context else None
+                ),
+                "is_recording": (
+                    self._current is not None
+                    or self._starting_clip_id is not None
+                ),
+                "elapsed_sec": (
+                    self._current.elapsed_sec() if self._current is not None else 0.0
+                ),
+                "clip_count": sum(1 for c in self._clips if not c.deleted),
+            }
+        # Stateless fallbacks + the conformance re-check, all pure functions
+        # of the values already snapshotted above — done outside the lock
+        # (matching what each getter this replaces did) without re-reading
+        # any `self._*` field, so the snapshot stays internally consistent.
+        snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
+            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
+        )
+        snapshot["aec3_sweep_config"] = aec3_sweep_config or config_metadata(
+            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
+        )
+        if capture_plan and capture_plan_conformance is None:
+            capture_plan_conformance = validate_active_capture_plan(capture_plan).to_json()
+        snapshot["capture_plan_conformance"] = (
+            capture_plan_conformance if capture_plan else None
+        )
+        return snapshot
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.
@@ -1750,12 +1801,6 @@ class RecordingBackend:
                 (c for c in self._clips if c.clip_id == clip_id),
                 None,
             )
-
-    def elapsed_recording_sec(self) -> float:
-        with self._lock:
-            if self._current is None:
-                return 0.0
-            return self._current.elapsed_sec()
 
     # ----- metadata persistence -------------------------------------
 
