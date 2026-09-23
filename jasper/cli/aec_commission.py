@@ -111,8 +111,6 @@ ARM_RECONCILE_REASON = "chip-aec-commission-arm"
 _RECONCILER_IDLE_STATES = frozenset({"inactive", "failed", systemd_probe.UNKNOWN})
 _RECONCILER_PROBE_TIMEOUT_SEC = 5.0
 _CLEANUP_RECONCILE_REASON = "chip-aec-commission"
-# This run's identity on mux's diagnostic gate; mux.FANIN_TEST_OWNERS is a
-# closed allowlist, so the two literals must stay in step.
 COMMISSION_GATE_OWNER = "chip-aec-commission"
 # Ceiling on the window's teardown, derived from the ladder it actually runs:
 # three mux TEST_RELEASE attempts, then one jasper-control release. Doubled for

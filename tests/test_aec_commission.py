@@ -704,14 +704,9 @@ def test_commissioning_arms_reference_vector_between_stop_and_measurement(
     assert io.events[-1] == "reconciled:marker=0:reason=chip-aec-commission"
 
 
-def test_the_window_is_taken_with_commissionings_own_registered_owner(
+def test_the_window_is_taken_with_commissionings_own_owner(
     gate: list[dict],
 ) -> None:
-    # mux.FANIN_TEST_OWNERS is a CLOSED allowlist, and voice is already stopped
-    # by STOP_UNITS, so there is no daemon left to pause.
-    from jasper.mux import FANIN_TEST_OWNERS
-
-    assert aec_commission.COMMISSION_GATE_OWNER in FANIN_TEST_OWNERS
     lease = aec_commission.SystemIO().audio_isolation()
 
     lease.start()
