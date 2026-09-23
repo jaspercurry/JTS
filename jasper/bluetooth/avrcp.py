@@ -43,9 +43,6 @@ async def _bluez_objects(session: BluezSession | None = None) -> dict[str, Any] 
         logger.debug("dbus_next unavailable: %s", exc)
         return None
     try:
-        # asyncio.timeout(), NOT wait_for(): awaited directly from
-        # cancellation-only poll loops (mux patrol, source-state tick), which
-        # wait_for on 3.11 would keep immortal. See jasper/renderer.py.
         async with asyncio.timeout(BLUEZ_PROBE_TIMEOUT_SEC):
             return await managed_objects(session)
     # LookupError: managed_objects returns body[0] of the reply.

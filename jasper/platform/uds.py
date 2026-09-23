@@ -84,14 +84,6 @@ async def daemon_command(
             except (OSError, RuntimeError):
                 pass
 
-    # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11 wait_for
-    # SWALLOWS a CancelledError that arrives in the same tick its awaited
-    # future completes (Lib/asyncio/tasks.py: `except CancelledError: if
-    # fut.done(): return fut.result()`). Callers on cancellation-only
-    # `while True:` loops -- measurement_window's lease refreshers (#1952),
-    # VolumeObserver._run through renderer.selected_source (#2003), Mux.run()'s
-    # patrol wait (#1935) -- would become immortal and wedge their owner's
-    # teardown. Do not "simplify" this back to wait_for while 3.11 is supported.
     async with asyncio.timeout(timeout):
         line = await exchange()
     if not line:

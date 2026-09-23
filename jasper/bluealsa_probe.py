@@ -71,15 +71,6 @@ async def list_pcms(logger: logging.Logger) -> bytes | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        # asyncio.timeout(), NOT asyncio.wait_for(): see the note on
-        # RendererClient.selected_source (jasper/renderer.py). This probe is
-        # one call earlier on the same directly-awaited chain out of
-        # VolumeObserver._run that busctl.set_property sits on -- _tick ->
-        # apply_active_source_transition -> _set_push_source_for_handoff ->
-        # _set_bluetooth -> here (jasper/volume_coordinator.py) -- so leaving
-        # it on wait_for would keep that cancellation-only loop immortal even
-        # with the set-property call fixed (#2003). Do not "simplify" this
-        # back to wait_for while 3.11 is supported.
         async with asyncio.timeout(2.0):
             stdout, _ = await proc.communicate()
     except FileNotFoundError:

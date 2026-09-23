@@ -436,8 +436,7 @@ async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
     death — the daemon's shutdown path, or a test's teardown gather — hung
     until an external timeout killed the process. 3.12 rewrote wait_for on
     top of ``asyncio.timeout()`` and is not affected -- only a py3.11 run
-    ever fails; whether any CI leg runs one is the pytest matrix's call
-    (tests.yml).
+    ever fails.
 
     The race below is deterministic, not probabilistic: ``notify_source_changed``
     resolves the awaited event and ``cancel()`` follows with no intervening

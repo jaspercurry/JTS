@@ -229,9 +229,8 @@ def _isolate_tts_wire_width_cache():
     EVERY test in the repo — including the ``python-policy`` job, which installs
     only the ``fast-landing`` dependency group and therefore has no numpy, while
     ``jasper/tts_playout.py`` imports numpy at module level. An unconditional import
-    here errored all 93 of that job's tests at setup, and because ``pytest-matrix``
-    runs ``needs: python-policy``, one fixture took the entire Python matrix down
-    with it.
+    here errored all 93 of that job's tests at setup, and because ``pytest``
+    runs ``needs: python-policy``, one fixture took the whole suite down with it.
 
     Consulting ``sys.modules`` instead is not merely lighter — it is the more
     precise statement of the invariant. The cache can only hold a stale answer
