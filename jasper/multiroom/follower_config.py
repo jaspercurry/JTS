@@ -101,7 +101,7 @@ def program_channel_for(channel: str) -> str:
 
 
 def _camilla():
-    """Return camilla#1 without coupling this oneshot to a web module."""
+    """Default `camilla_factory`: camilla#1 (jasper.camilla.primary_controller)."""
     return _stash.camilla()
 
 
