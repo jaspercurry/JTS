@@ -58,6 +58,7 @@ from ..graph_safety import (
     filter_param_matches,
     float_value as _float_value,
     mains_highpass_present,
+    mixer_output_proved as _mixer_output_proved,
     output_terminally_muted,
     pipeline_contains_chain,
     sub_audible_guard_present,
@@ -66,23 +67,47 @@ from ..graph_safety import (
     tweeter_guard_present,
     view_from_yaml_dict,
 )
-from ..profile import ADJACENT_PAIRS_BY_WAY, SUB_CROSSOVER_ORDER, SUPPORTED_LR_ORDERS
-from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
-from ..runtime_contract import (
+from ..output_contract import (
     ACTIVE_BASELINE_SOURCE,
     ACTIVE_DRIVER_DOMAIN_SOURCE,
     ACTIVE_PROGRAM_SOURCE,
-    ACTIVE_SPLIT_MIXER_PREFIX,
-    EVENT_LINEARIZATION_HEADROOM_UNPROVEN,
-    LINEARIZATION_HEADROOM_UNPROVEN_CODE,
     OutputAssignment,
     OutputContract,
-    _BASELINE_LIKE_SOURCES,
-    _LINEARIZATION_BOOST_EPS_DB,
-    _mains_lowest_driver_indexes,
-    _mixer_output_proved,
-    _subwoofer_output_indexes,
-    logger,
+    mains_lowest_driver_indexes as _mains_lowest_driver_indexes,
+    subwoofer_output_indexes as _subwoofer_output_indexes,
+)
+from ..profile import ADJACENT_PAIRS_BY_WAY, SUB_CROSSOVER_ORDER, SUPPORTED_LR_ORDERS
+from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
+
+logger = logging.getLogger(__name__)
+
+# Both emitted baseline-shaped sources run every output live through a
+# protective per-driver chain; they differ only in the pre-split prefix
+# (program-domain headroom + preference EQ vs inter-speaker channel-select).
+# Summed commissioning may derive a narrowly verified final mute tail from the
+# primary baseline source; the driver-domain source never may.
+_BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
+
+ACTIVE_SPLIT_MIXER_PREFIX = "split_active_"
+
+
+# Float slack (dB) on the boost-vs-headroom proof. The emitter writes both
+# numbers with 3-decimal formatting, so an exactly-absorbed boost can read a
+# hair over its allowance after the YAML round-trip; this keeps a graph that
+# is correct by construction from failing its own proof on the last digit.
+_LINEARIZATION_BOOST_EPS_DB: float = 1e-3
+
+#: The one NUMERIC refusal in this walk, named apart from the shape refusals
+#: because two other seams key on it rather than re-deriving the condition. A
+#: shape refusal says the graph is not the emitter's; this one says the graph IS
+#: the emitter's and its arithmetic no longer holds — a different remedy
+#: (re-emit, not re-commission).
+LINEARIZATION_HEADROOM_UNPROVEN_CODE = "active_linearization_headroom_unproven"
+
+#: Journal name for the same event — a grep contract, so a rename is visible as
+#: one.
+EVENT_LINEARIZATION_HEADROOM_UNPROVEN = (
+    "active_speaker.linearization_headroom_unproven"
 )
 
 

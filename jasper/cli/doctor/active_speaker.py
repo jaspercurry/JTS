@@ -112,13 +112,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     Parked is WARN, never FAIL (#2145): a parked speaker is silent, not broken,
     and a mid-commission box must stay deployable.
     """
+    from jasper.active_speaker.output_contract import CONTRACT_UNCONFIGURED, classify_output_contract, topology_allows_flat_dac_graph
     from jasper.active_speaker.runtime_contract import (
-        CONTRACT_UNCONFIGURED,
         active_graph_is_parked,
         classify_bass_extension_graph,
-        classify_output_contract,
         parked_muted_exits,
-        topology_allows_flat_dac_graph,
     )
     from jasper.output_topology import OutputTopologyError
 

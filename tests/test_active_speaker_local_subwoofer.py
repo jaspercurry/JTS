@@ -30,12 +30,12 @@ from jasper.active_speaker import (
     lowest_driver_role,
 )
 from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.active_speaker.output_contract import classify_output_contract
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_bass_extension_graph,
     classify_camilla_graph as _classify_camilla_graph,
-    classify_output_contract,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor

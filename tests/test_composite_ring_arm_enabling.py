@@ -9,8 +9,8 @@ made in prose somewhere in the diff:
 
 - **1b** ``active_ring_channels_for_topology`` answers 4 for a composite
   ``active_2_way``; still refuses duplicate and non-contiguous indices; and the
-  BOUNDARY — ``ring_channels_for_topology`` / ``topology_supports_shm_ring``
-  still give the excluded answer for the same fixture — is asserted, not assumed.
+  BOUNDARY — ``ring_channels_for_topology`` still gives the excluded answer for
+  the same fixture — is asserted, not assumed.
 - **1c** the composite's ``LatencyFloor`` period equals ``RING_SLOT_FRAMES``
   WITH ITS REASON, and equals its children's floor.
 - **1d** the conf.d ACTIVE block renders ``channels 4``.
@@ -42,16 +42,13 @@ from jasper.ring_conf import (
 )
 from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
 from jasper.camilla_config_contract import PeqFilter
-from jasper.active_speaker.runtime_contract import (
-    _flat_hard_muted_outputs,
+from jasper.active_speaker.output_contract import (
     active_ring_channels_for_topology,
-    classify_camilla_graph,
     classify_output_contract,
-    flat_graph_program_dest_map,
     ring_channels_for_topology,
     topology_sink_is_composite,
-    topology_supports_shm_ring,
 )
+from jasper.active_speaker.runtime_contract import _flat_hard_muted_outputs, classify_camilla_graph, flat_graph_program_dest_map
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
     FlatChannelPlan,
@@ -245,7 +242,6 @@ def test_the_ring_b_boundary_is_asserted_not_assumed():
     topology = _composite_active_2way()
     assert active_ring_channels_for_topology(topology) == 4
     assert ring_channels_for_topology(topology) is None
-    assert topology_supports_shm_ring(topology) is False
 
 
 def _stereo_topology() -> OutputTopology:
@@ -317,7 +313,6 @@ def test_a_passive_composite_still_resolves_no_ring_at_all():
     passive = _composite_passive_stereo()
     assert active_ring_channels_for_topology(passive) is None
     assert ring_channels_for_topology(passive) is None
-    assert topology_supports_shm_ring(passive) is False
 
 
 # --- 1c: the composite LatencyFloor -----------------------------------------

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 
 from jasper.active_speaker.environment import camilla_statefile_path
-from jasper.active_speaker.runtime_contract import active_ring_channels_for_topology
+from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.fanin import ring_readiness as rr
 from jasper.fanin.coupling_reconcile import _start_audio_hardware_reconcile
 from jasper.log_event import log_event

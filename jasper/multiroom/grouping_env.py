@@ -254,10 +254,10 @@ def output_topology_state() -> tuple[bool | None, bool]:
         from jasper.active_speaker.playback_route import (
             active_playback_route_capability,
         )  # lazy: import cost — jasper.active_speaker is a named-heavy import under ADR-0226
-        from jasper.active_speaker.runtime_contract import (
+        from jasper.active_speaker.output_contract import (
             classify_output_contract,
             topology_allows_flat_dac_graph,
-        )  # lazy: import cost — same active_speaker tree; its own SNAPFIFO import back into jasper.multiroom.reconcile is lazy for the same reason
+        )  # lazy: import cost — same active_speaker tree
         from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
 
         topology = load_output_topology_strict()

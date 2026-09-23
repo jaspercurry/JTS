@@ -575,7 +575,7 @@ def carrier_for_loaded_config(current_path, *, config_dir):
         return _BaseFlatCarrier(current_path)
     summary = _classify_loaded_config(current_path)
     if summary and summary.get("classification") == "active_startup_candidate":
-        from jasper.active_speaker.runtime_contract import ACTIVE_BASELINE_SOURCE
+        from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE
 
         is_baseline = summary.get("source") == ACTIVE_BASELINE_SOURCE
         return _ActiveGraphCarrier(current_path, is_baseline=is_baseline)

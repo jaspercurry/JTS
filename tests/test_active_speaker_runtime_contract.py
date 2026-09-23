@@ -19,7 +19,7 @@ import yaml
 from pathlib import Path
 
 from jasper.active_speaker import runtime_contract
-from jasper.active_speaker.graph.active_verifier import _linearization_boost_allowance_db as allowance
+from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE, _linearization_boost_allowance_db as allowance
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerConfigError,
@@ -36,8 +36,18 @@ from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.output_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
+    CONTRACT_ACTIVE_MONO_2WAY,
+    CONTRACT_ACTIVE_MONO_3WAY,
+    CONTRACT_ACTIVE_STEREO_2WAY,
+    CONTRACT_ACTIVE_STEREO_3WAY,
+    CONTRACT_NORMAL_MONO_FULL_RANGE,
+    CONTRACT_NORMAL_STEREO_FULL_RANGE,
+    CONTRACT_SUBWOOFER_PRESENT,
+    classify_output_contract,
+)
+from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -46,7 +56,6 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
-    LINEARIZATION_HEADROOM_UNPROVEN_CODE,
     FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
@@ -55,15 +64,7 @@ from jasper.active_speaker.runtime_contract import (
     _statefile_config_path,
     active_graph_is_parked,
     build_parked_muted_graph,
-    CONTRACT_ACTIVE_MONO_2WAY,
-    CONTRACT_ACTIVE_MONO_3WAY,
-    CONTRACT_ACTIVE_STEREO_2WAY,
-    CONTRACT_ACTIVE_STEREO_3WAY,
-    CONTRACT_NORMAL_MONO_FULL_RANGE,
-    CONTRACT_NORMAL_STEREO_FULL_RANGE,
-    CONTRACT_SUBWOOFER_PRESENT,
     classify_camilla_graph as _classify_camilla_graph,
-    classify_output_contract,
     apply_safe_graph_decision_to_statefile,
     flat_program_graph_block,
     flat_program_graph_blocked_reason,

@@ -10,7 +10,7 @@ from typing import Any, Callable
 import yaml
 
 from jasper.active_speaker import baseline_profile, design_draft
-from jasper.active_speaker.runtime_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
+from jasper.active_speaker.output_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER

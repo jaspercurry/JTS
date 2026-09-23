@@ -19,7 +19,7 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeake
 from jasper.active_speaker.rear_calibration import (
     diagnostic_seed, rear_stage_mixer_names,
 )
-from jasper.active_speaker.runtime_contract import active_ring_channels_for_topology
+from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.active_speaker.safe_playback import playback_target_signature
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from jasper.active_speaker.preset_binding import _bind_preset_to_topology, compile_preset_from_crossover_preview

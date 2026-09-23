@@ -648,7 +648,7 @@ def test_t5_cells_are_reachable():
     `GroupingConfig` costume — the exact failure the derived form exists to
     avoid.
     """
-    from jasper.active_speaker import runtime_contract as rc
+    from jasper.active_speaker import output_contract as oc
     from jasper.multiroom.config import is_active_member
 
     for label, cfg, endpoint, flat, _expected in _T5_CELLS:
@@ -664,16 +664,16 @@ def test_t5_cells_are_reachable():
     # "an ACTIVE topology can never be flat_output_allowed" against a future
     # classification being added to the accept-set.
     permitted = set()
-    for name in dir(rc):
+    for name in dir(oc):
         if not name.startswith("CONTRACT_"):
             continue
-        classification = getattr(rc, name)
-        contract = rc.OutputContract(
+        classification = getattr(oc, name)
+        contract = oc.OutputContract(
             classification=classification,
             topology_configured=True,
             main_layout="stereo",
         )
-        if rc.topology_allows_flat_dac_graph(contract):
+        if oc.topology_allows_flat_dac_graph(contract):
             permitted.add(name)
     assert permitted == {
         "CONTRACT_NORMAL_STEREO_FULL_RANGE",

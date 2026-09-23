@@ -1169,8 +1169,8 @@ def check_crossover_unit_installed() -> CheckResult:
     # Active/roleful topology is the second half of "active leader": only a
     # box that runs a per-driver crossover needs camilla#2. A passive leader
     # (full-range, no roleful outputs) skips. Imported lazily and read through
-    # the shared runtime contract, same as check_active_speaker_runtime_graph.
-    from ...active_speaker.runtime_contract import (
+    # the shared output contract, same as check_active_speaker_runtime_graph.
+    from ...active_speaker.output_contract import (
         active_topology_requires_roleful_graph,
     )
 

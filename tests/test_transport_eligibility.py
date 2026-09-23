@@ -40,7 +40,7 @@ from tests.test_composite_ring_arm_enabling import (
     _composite_active_2way,
     _composite_topology,
 )
-from tests.test_runtime_contract_ring import _dual_apple_stereo
+from tests.test_output_contract import _dual_apple_stereo
 
 #: The ring transport's arming marker, spelled as a LITERAL for the same
 #: reason the issue numbers below are: a case built from the constant it
@@ -301,16 +301,14 @@ def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
     downstream of every ring end — so nothing about it is unresolved and no
     class names it. The CLASS itself stays defined; retirement is a separate
     change, after hardware verification."""
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.output_contract import (
         RING_STEREO_PROGRAM_CHANNELS,
         ring_channels_for_topology,
-        topology_supports_shm_ring,
     )
 
     topology = _full_range_mono()
 
     assert ring_channels_for_topology(topology) == RING_STEREO_PROGRAM_CHANNELS
-    assert topology_supports_shm_ring(topology) is True
     assert transport_eligibility.snapshot(topology, {})["status"] == "ok"
 
 

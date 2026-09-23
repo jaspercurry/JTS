@@ -111,7 +111,7 @@ def active_lane_capability_gap(
     ActiveLaneCapabilityGap)``.
     """
 
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.output_contract import (  # lazy: import cost
         active_topology_requires_roleful_graph,
     )
 

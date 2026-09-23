@@ -353,7 +353,7 @@ def test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology():
         _subwoofer_topology,
         _topology,
     )
-    from tests.test_runtime_contract_ring import _dual_apple_stereo
+    from tests.test_output_contract import _dual_apple_stereo
 
     for label, topology in (
         ("none", None),
@@ -378,12 +378,12 @@ def test_resolve_ring_wire_reads_ring_b_channels_from_the_topology(monkeypatch):
     identically for a resolver that ignores its argument. Patching the topology
     answer is what separates the two.
     """
-    import jasper.active_speaker.runtime_contract as rc
+    import jasper.active_speaker.output_contract as oc
     from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     topology = _full_range_stereo()
-    monkeypatch.setattr(rc, "ring_channels_for_topology", lambda _t: 6)
+    monkeypatch.setattr(oc, "ring_channels_for_topology", lambda _t: 6)
     wire = resolve_ring_wire(topology)
     assert wire.ring_b_channels == 6
     # Ring A is NOT a topology axis — the program upstream of Camilla is stereo.
@@ -396,11 +396,11 @@ def test_resolve_ring_wire_falls_back_to_the_shipped_width_for_no_ring_topology(
     # An ineligible topology has no ring width; the wire still describes what
     # the conf.d on that box declares, which is the shipped stereo geometry.
     # Refusing to ARM is the preflights' job, not the resolver's.
-    import jasper.active_speaker.runtime_contract as rc
+    import jasper.active_speaker.output_contract as oc
     from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
-    monkeypatch.setattr(rc, "ring_channels_for_topology", lambda _t: None)
+    monkeypatch.setattr(oc, "ring_channels_for_topology", lambda _t: None)
     wire = resolve_ring_wire(_full_range_stereo())
     assert wire.ring_b_channels == RING_A_CHANNELS
 
