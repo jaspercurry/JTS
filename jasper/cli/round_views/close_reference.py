@@ -56,6 +56,7 @@ from jasper.cli._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
 from ._common import (
     ANSWER_SCHEMAS,
     ARTIFACT_BY_VIEW,
+    RoundViewsError,
     _write,
     answer,
     omitted_note,
@@ -74,6 +75,16 @@ def _refused(reason: str, detail: Mapping[str, Any]) -> int:
     return refused_by_name(
         reason, detail, code=EXIT_UNREADABLE if unreadable else EXIT_REFUSED
     )
+
+
+def _round_subject(path: str, take_id: str) -> dict[str, Any]:
+    """What one side read. A bare capture directory the round resolver cannot
+    place is still read (``round_captures``), and has no catalog id."""
+    try:
+        inputs = round_inputs(Path(path))
+    except RoundViewsError:
+        inputs = None
+    return subject(inputs, take_ids=[take_id])
 
 
 def _geometry(path: str) -> DeclaredGeometry | None:
@@ -132,6 +143,8 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
     # destination that could not be written.
     for line in summary_lines(report):
         print(line, file=sys.stderr)
+    read = [_round_subject(path, report["captures"][name]["capture_id"])
+            for name, path in (("far", args.far_round), ("close", args.close_round))]
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(
         {"outcome": "compared", "close_reference": report}, args.out,
@@ -144,9 +157,7 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
     # the numbers behind both, are in the artifact.
     far_window = next(w for w in report["windows"] if w["name"] == WINDOW_FAR)
     return answer(
-        args.command, schema=spec.schema,
-        subject=[subject(round_inputs(Path(path)), take_ids=[report["captures"][name]["capture_id"]])
-                 for name, path in (("far", args.far_round), ("close", args.close_round))],
+        args.command, schema=spec.schema, subject=read,
         parameters={
             "window_ms": {"far": frame["far_gate_ms"], "close": frame["close_gate_ms"]},
             "smoothing_fraction": frame["smooth_fraction"], "far_m": geometry["far_m"],

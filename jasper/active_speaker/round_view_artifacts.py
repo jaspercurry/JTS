@@ -12,6 +12,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_UNWRITABLE as REASON_UNWRITABLE,
 )
 from .run_manifest import RUN_MANIFEST_FILENAME
+from .bench.replay import DSP_LEVELS_SCHEMA, DSP_REPLAY_SCHEMA
 from .measurement_bass import BASS_VIEW_SCHEMA
 from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .frequency_view import FREQUENCY_VIEW_FILENAME, SCHEMA as FREQUENCY_VIEW_SCHEMA
@@ -61,8 +62,8 @@ class ViewArtifact(NamedTuple):
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "inventory": ViewArtifact("inventory.json", TAKES_SET, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.inventory", schema="jts_inventory/1"),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
-    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>"), schema="jts_dsp_replay/1"),
-    "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>"), schema="jts_dsp_levels/1"),
+    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>"), schema=DSP_REPLAY_SCHEMA),
+    "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>"), schema=DSP_LEVELS_SCHEMA),
     "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/1"),
     "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,), schema="jts_entry_state_grade/1"),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER, schema="jts_repeatability/1"),

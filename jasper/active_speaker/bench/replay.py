@@ -18,9 +18,11 @@ from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
 from jasper.json_fields import sha256_file
 
-from ..round_view_artifacts import ARTIFACT_BY_VIEW
 from .derivation import ArtifactHeader, derive_offline_render_config
 from .render import DEPLOYED_PROCESSING_PRECISION, RenderBounds, render_config, resolve_render_binary
+
+DSP_REPLAY_SCHEMA = "jts_dsp_replay/1"
+DSP_LEVELS_SCHEMA = "jts_dsp_levels/1"
 
 
 def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass_reference_db: float) -> dict:
@@ -40,7 +42,7 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass
         bounds=RenderBounds(timeout_s=max(30, duration_s * 2), rlimit_as_bytes=384 * 1024**2,
                             rlimit_cpu_s=max(30, math.ceil(duration_s * 2)), nice=10),
         fader_db=main_db, loudness_fader_db=bass_reference_db)
-    return {"schema": ARTIFACT_BY_VIEW["dsp-replay"].schema, "graph": str(graph), "graph_sha256": sha256_file(graph),
+    return {"schema": DSP_REPLAY_SCHEMA, "graph": str(graph), "graph_sha256": sha256_file(graph),
             "stimulus": str(stimulus), "stimulus_sha256": sha256_file(stimulus),
             "main_db": main_db, "bass_reference_db": bass_reference_db,
             "sample_rate_hz": derived.sample_rate_hz, "channels": derived.playback_channels,
@@ -51,7 +53,7 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass
 
 def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
                   bands: Sequence[tuple[float, float]] = BASS_BANDS_HZ) -> dict:
-    if manifest.get("schema") != ARTIFACT_BY_VIEW["dsp-replay"].schema or sha256_file(raw) != manifest["render"]["output_sha256"]:
+    if manifest.get("schema") != DSP_REPLAY_SCHEMA or sha256_file(raw) != manifest["render"]["output_sha256"]:
         raise ValueError("dsp_replay_output_identity_mismatch")
     start, stop = window_s
     if not 0 <= start < stop or stop - start > DEFAULT_MAX_CAPTURE_SECONDS:
@@ -62,7 +64,7 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
     if first < 0 or last > len(data) or last - first < 8:
         raise ValueError("dsp_replay_window_unavailable")
     named_bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in bands]
-    return {"schema": ARTIFACT_BY_VIEW["dsp-levels"].schema, "output_sha256": manifest["render"]["output_sha256"],
+    return {"schema": DSP_LEVELS_SCHEMA, "output_sha256": manifest["render"]["output_sha256"],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],
             "main_db": manifest["main_db"], "bass_reference_db": manifest["bass_reference_db"],
             "window_s": [first / rate, last / rate], "window": "rectangular",

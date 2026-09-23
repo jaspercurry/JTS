@@ -30,8 +30,10 @@
      answers no row names (`speaker-fit` and `close-reference --distance`
      write no artifact; `repeat --set` writes one no row lists). Rows for
      artifacts no view writes (the run manifest, the position cycle) name
-     none. Removing or renaming a key, or changing what a value means, bumps
-     the version; adding a key does not.
+     none. `rear` reads back the view the bookkeeping banked and echoes that
+     artifact's own schema, null for a round banked before schemas.
+     Removing or renaming a key, or changing what a value means, bumps the
+     version; adding a key does not.
   5. A `jasper-round-views` success answer or artifact never has a top-level
      `status` key. The two that had one say `outcome`.
   6. A view addresses one take with one flag, `--take <take-id>` (or a

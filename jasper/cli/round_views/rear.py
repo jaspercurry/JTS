@@ -24,7 +24,7 @@ from ._common import (
 REFUSE_NO_REAR = "rear_no_entries"
 
 
-def _read_packet(path: Path) -> Mapping[str, Any]:
+def _read_json(path: Path) -> Mapping[str, Any]:
     return json.loads(path.read_text())
 
 
@@ -32,14 +32,17 @@ def _cmd_rear(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     packet_path = default_out(inputs, round_dir, PACKET_FILENAME)
-    packet = stage(EXIT_UNREADABLE, (OSError, ValueError), _read_packet, packet_path)
+    packet = stage(EXIT_UNREADABLE, (OSError, ValueError), _read_json, packet_path)
     entries = packet.get("rear") or []
     if not entries:
         return refused_by_name(REFUSE_NO_REAR, {"round_dir": str(round_dir)})
-    spec = ARTIFACT_BY_VIEW[args.command]
-    out = default_out(inputs, round_dir, spec.artifact)
+    out = default_out(inputs, round_dir, ARTIFACT_BY_VIEW[args.command].artifact)
+    # The bookkeeping wrote this view; a round banked before views carried a
+    # schema answers null rather than a version its artifact never stated.
+    artifact = stage(EXIT_UNREADABLE, (OSError, ValueError), _read_json, out)
     return answer(
-        args.command, schema=spec.schema, subject=subject(inputs), parameters={}, out=out, entries=entries,
+        args.command, schema=artifact.get("schema"), subject=subject(inputs), parameters={}, out=out,
+        entries=entries,
         line=f"rear: {len(entries)} batch(es) -> {out}",
     )
 

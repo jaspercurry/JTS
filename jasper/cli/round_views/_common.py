@@ -116,7 +116,7 @@ def _write(
 
 
 def answer(
-    view: str, *, schema: str, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
     parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
 ) -> int:
     """Print scalar results and an artifact pointer (ADR-0237) under the

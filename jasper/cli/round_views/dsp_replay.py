@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 import wave
 
+from jasper.active_speaker.bench.render import RenderError
+from jasper.active_speaker.bench.replay import replay_graph, replay_levels
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.cli._report import output_path
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -18,9 +20,6 @@ from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bench.replay import replay_graph  # lazy: isolated native DSP work
-    from jasper.active_speaker.bench.render import RenderError  # lazy: native renderer dependencies
-
     def replay():
         if args.bass_descriptor is not None:
             from jasper.active_speaker.bench.bass_replay import replay_bass  # lazy: native bass attribution
@@ -60,8 +59,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_levels(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bench.replay import replay_levels  # lazy: laptop FFT analysis
-
     def levels():
         manifest = json.loads(args.manifest.read_text())
         if 'bass_attribution' in manifest:

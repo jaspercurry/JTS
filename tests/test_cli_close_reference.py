@@ -121,6 +121,20 @@ def test_compare_publishes_its_frame_and_its_binding(rounds, tmp_path, capsys):
     assert report["geometry"]["sidecar_disagrees"] is True
 
 
+def test_bare_capture_rounds_compare_and_name_only_their_takes(rounds, tmp_path, capsys):
+    """A capture directory with no bundle/ and no info.json is still read; its
+    subject simply has no catalog id."""
+    bare = []
+    for root in rounds:
+        session = root / "bundle" / "b0"
+        (session / "info.json").unlink()
+        bare.append(session)
+    assert main(_compare_argv(tuple(bare), tmp_path / "report.json")) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["subject"] == {
+        "rounds": [{"take_ids": ["verify_01_a01"]}, {"take_ids": ["verify_02_a01"]}],
+    }
+
+
 def test_with_no_out_the_report_lands_beside_the_far_round(rounds, tmp_path):
     """The far read is what the comparison explains, so its artifact travels
     with it -- and ``inventory`` reads presence at that path."""

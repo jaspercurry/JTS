@@ -20,18 +20,19 @@ holds where the tools actually reach it.
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib
 import importlib.util
-import io
 import json
 from collections.abc import Iterator, Mapping
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
 from jasper.active_speaker.crossover_v2 import prescription_document
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
@@ -41,10 +42,15 @@ from tests.crossover_v2_banked_round import (
     bank_seat_round,
     bank_verify_round,
 )
+from jasper.json_fields import sha256_file
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.room_median_fixture import write_room_median
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_cli_close_reference import _compare_argv as close_compare_argv, _round as capture_round
+from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
+from tests.test_crossover_v2_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
+from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
+from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -290,54 +296,135 @@ def _repeat_argv(round_: _FixtureRound) -> list[str]:
     return ["repeat", str(round_.measured), str(round_.verified)]
 
 
-def _sweep_argv(round_: _FixtureRound) -> list[str]:
+def _on_fixture_round(argv: Callable[[_FixtureRound], list[str]]) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    return lambda request, root: argv(_fixture_round(root))
+
+
+def _sweep_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     impulse = np.zeros(1800)
     impulse[100] = 1.0
-    return ["sweep", str(bank_capture_round(round_.measured.parent / "capture", [impulse] * 3)), "--scope", "round"]
+    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * 3)), "--scope", "round"]
 
 
-def _close_reference_argv(round_: _FixtureRound) -> list[str]:
-    root = round_.measured.parent
+def _close_reference_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     rounds = (capture_round(root / "far", 1.0), capture_round(root / "close", 0.30, take_ids=("verify_02_a01",)))
     return close_compare_argv(rounds, root / "close_reference.json")
 
 
+def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    rate = 48000
+    tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
+    raw = root / "output.f64le"
+    np.column_stack([tone, tone / 2]).astype("<f8").tofile(raw)
+    manifest = root / "dsp_replay.json"
+    manifest.write_text(json.dumps({
+        "schema": DSP_REPLAY_SCHEMA, "render": {"output_sha256": sha256_file(raw)}, "sample_rate_hz": rate,
+        "channels": 2, "graph_sha256": "graph", "stimulus_sha256": "stimulus", "main_db": -20, "bass_reference_db": -20,
+    }))
+    return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
+
+
+def _bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank("baseline"))
+    record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
+    write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
+    return ["bass", str(bundle), "--set", "bass"]
+
+
+def _bass_run_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    run = request.getfixturevalue("bass_run")
+    run.write()
+    if request.param == "bass-fit-table":
+        return run.argv
+    return ["bass-compare", str(run.roots[0]), str(run.roots[0]),
+            "--before-set", "set-0", "--after-set", "set-1", "--change", "candidate"]
+
+
+def _distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    return ["distortion", str(bank_measure_capture(request.getfixturevalue("harmonic_capture"), root))]
+
+
+def _classify_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    bundle, _ = feature_bundle(root, resonant_ir(+3.0))
+    return ["classify-features", str(bundle)]
+
+
+def _applied_calibration(basis: Mapping[str, Any]) -> Any:
+    calibration = basis.get("capture_calibration") or {}
+    return calibration.get("calibration_id") if calibration.get("applied") else None
+
+
 class _ViewRun(NamedTuple):
-    """One view's invocation against that round, and the parameters its
-    answer declares it used."""
+    """How one view is run to an answer; the parameters it declares; the ids
+    its subject names, per round for a view that compares rounds; and whether
+    one parameter equals the artifact's own record of it."""
 
-    argv: Callable[[_FixtureRound], list[str]]
+    argv: Callable[[pytest.FixtureRequest, Path], list[str]]
     parameters: frozenset[str] = frozenset()
+    subject: frozenset[str] = frozenset({"round_id"})
+    recorded: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None
 
 
-#: How each view is run against that round -- or, for a view this fixture
-#: cannot feed, why not.
+_ROUND_SET_TAKES = frozenset({"round_id", "set_id", "take_ids"})
+
+#: How each view is run to an answer -- or, for a view no fixture here can
+#: feed, why not.
 _VIEW_RUN: dict[str, str | _ViewRun] = {
-    "entry": _ViewRun(lambda r: ["entry", str(r.measured)],
-                      frozenset({"smoothing_fraction", "band_hz", "reference_band_hz"})),
-    "repeat": _ViewRun(_repeat_argv),
-    "candidates": _ViewRun(lambda r: ["candidates", str(r.measured)]),
-    "directivity": _ViewRun(_directivity_argv, frozenset({
-        "reference_pose", "ladder", "smoothing_fraction", "band_hz", "grid", "calibration_id"})),
+    "entry": _ViewRun(
+        _on_fixture_round(lambda r: ["entry", str(r.measured)]),
+        frozenset({"smoothing_fraction", "band_hz", "reference_band_hz"}),
+        recorded=lambda p, a: p["smoothing_fraction"] == a["report"]["smoothing_fraction"]),
+    "repeat": _ViewRun(_on_fixture_round(_repeat_argv)),
+    "candidates": _ViewRun(_on_fixture_round(lambda r: ["candidates", str(r.measured)])),
+    "directivity": _ViewRun(
+        _on_fixture_round(_directivity_argv),
+        frozenset({"reference_pose", "ladder", "smoothing_fraction", "band_hz", "grid", "calibration_id"}),
+        _ROUND_SET_TAKES, lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
-    "sweep": _ViewRun(_sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz"})),
-    "frequency": _ViewRun(lambda r: ["frequency", str(r.measured)],
-                          frozenset({"ref_band_hz", "normalize", "analyze_wavs", "reference_db"})),
-    "distortion": _NO_CAPTURES,
-    "bass": _NO_CAPTURES,
-    "bass-compare": _NO_CAPTURES,
-    "bass-fit-table": _NO_CAPTURES,
+    "sweep": _ViewRun(
+        _sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz"}), frozenset({"round_id", "take_ids"}),
+        lambda p, a: p["rungs_ms"] == a["frame"]["rungs_ms"]),
+    "frequency": _ViewRun(
+        _on_fixture_round(lambda r: ["frequency", str(r.measured)]),
+        frozenset({"ref_band_hz", "normalize", "analyze_wavs", "reference_db"}),
+        recorded=lambda p, a: all(curve["plot"]["ref_band_hz"] == p["ref_band_hz"]
+                                  for run in a["runs"] for curve in run["series"])),
+    "distortion": _ViewRun(
+        _distortion_argv, frozenset({"band_hz", "setup_calibration_id"}), frozenset({"round_id", "take_ids"}),
+        lambda p, a: all(block["sweep"]["read_band_hz"] in p["band_hz"][block["role"]] for block in a["roles"])),
+    "bass": _ViewRun(
+        _bass_argv, frozenset({"calibration_id"}), frozenset({"set_id", "candidate_id"}),
+        lambda p, a: p["calibration_id"] == a["takes"][0]["calibration"]["calibration_id"]),
+    "bass-compare": _ViewRun(
+        _bass_run_argv, frozenset({"change"}), _ROUND_SET_TAKES | {"candidate_id"},
+        lambda p, a: p["change"] == a["change"]),
+    "bass-fit-table": _ViewRun(
+        _bass_run_argv, frozenset({"reference_band_hz"}),
+        recorded=lambda p, a: all(table["reference_band_hz"] == p["reference_band_hz"] for table in a["tables"])),
     "rear": "a banked rear batch is covered in test_round_views_rear_cli",
-    "dsp-replay": _NO_CAPTURES,
-    "dsp-levels": _NO_CAPTURES,
-    "classify-features": _NO_CAPTURES,
-    "room-grade": _ViewRun(_room_grade_argv, frozenset({"calibration_id"})),
-    "close-reference": _ViewRun(_close_reference_argv, frozenset({
-        "window_ms", "smoothing_fraction", "far_m", "close_m", "fc_hz", "at_hz"})),
-    "room": _ViewRun(lambda r: ["room", str(r.seat)], frozenset({"calibration_id"})),
-    "delay-landscape": _ViewRun(lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
-                                frozenset({"fc_hz", "step_us", "path_difference_m", "inverted_role"})),
-    "inventory": _ViewRun(lambda r: ["inventory", str(r.measured)]),
+    "dsp-replay": "rendering needs the native DSP binary",
+    "dsp-levels": _ViewRun(
+        _dsp_levels_argv, frozenset({"window_s"}), frozenset(), lambda p, a: p["window_s"] == a["window_s"]),
+    "classify-features": _ViewRun(
+        _classify_argv, frozenset({"window_ms", "rungs_ms", "smoothing_fraction", "at_hz"}), frozenset(),
+        lambda p, a: p["window_ms"] == a["measurement"]["gate_ms_primary"]),
+    "room-grade": _ViewRun(
+        _on_fixture_round(_room_grade_argv), frozenset({"calibration_id"}), frozenset({"round_id", "set_id"}),
+        lambda p, a: p["calibration_id"] == _applied_calibration((a["evidence"] or {}).get("basis") or {})),
+    "close-reference": _ViewRun(
+        _close_reference_argv, frozenset({"window_ms", "smoothing_fraction", "far_m", "close_m", "fc_hz", "at_hz"}),
+        frozenset({"round_id", "take_ids"}),
+        lambda p, a: p["window_ms"]["far"] == a["close_reference"]["frame"]["far_gate_ms"]),
+    "room": _ViewRun(
+        _on_fixture_round(lambda r: ["room", str(r.seat)]), frozenset({"calibration_id"}),
+        _ROUND_SET_TAKES | {"candidate_id"},
+        lambda p, a: p["calibration_id"] == _applied_calibration(a["median"]["evidence"]["basis"])),
+    "delay-landscape": _ViewRun(
+        _on_fixture_round(lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"]),
+        frozenset({"fc_hz", "step_us", "path_difference_m", "inverted_role"}), frozenset({"round_id", "take_ids"}),
+        lambda p, a: p["step_us"] == a["landscape"]["spec"]["step_us"]),
+    "inventory": _ViewRun(_on_fixture_round(lambda r: ["inventory", str(r.measured)])),
 }
 
 
@@ -367,25 +454,35 @@ class _Answered(NamedTuple):
     code: int
     answer: dict[str, Any]
     artifact: dict[str, Any]
+    artifact_bytes: int
 
 
-@pytest.fixture(scope="module", params=_menu._subcommand_names(round_views.build_parser()))
-def view_answer(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> _Answered:
-    """Each registered view run once against the fixture round, with the
-    artifact its answer names."""
+#: Each view's one run, shared by the three tests below. It happens inside the
+#: first of them to ask, under that test's own host isolation.
+_ANSWERED: dict[str, _Answered] = {}
+
+
+@pytest.fixture(params=_menu._subcommand_names(round_views.build_parser()))
+def view_answer(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> _Answered:
+    """Each registered view run once to an answer, with the artifact it names."""
 
     run = _VIEW_RUN[request.param]
     if isinstance(run, str):
         pytest.skip(run)
-    root = tmp_path_factory.mktemp(request.param)
-    printed = io.StringIO()
-    with pytest.MonkeyPatch.context() as patch, redirect_stdout(printed), redirect_stderr(io.StringIO()):
+    if request.param not in _ANSWERED:
         # A view of a LIVE session bundle lands beside the CALLER, so the
         # caller stands in the temporary directory.
-        patch.chdir(root)
-        code = round_views.main(run.argv(_fixture_round(root)))
-    answer = json.loads(printed.getvalue())
-    return _Answered(request.param, code, answer, json.loads(Path(answer["out"]).read_text()))
+        monkeypatch.chdir(tmp_path)
+        code = round_views.main(run.argv(request, tmp_path))
+        answer = json.loads(capsys.readouterr().out)
+        written = Path(answer["out"])
+        _ANSWERED[request.param] = _Answered(
+            request.param, code, answer, json.loads(written.read_text()), written.stat().st_size,
+        )
+    return _ANSWERED[request.param]
 
 
 def test_a_view_that_succeeds_prints_one_bounded_answer(view_answer: _Answered) -> None:
@@ -394,20 +491,23 @@ def test_a_view_that_succeeds_prints_one_bounded_answer(view_answer: _Answered) 
 
     assert view_answer.code == _refusal.EXIT_OK
     assert max((len(a) for a in _numeric_arrays(view_answer.answer)), default=0) <= MAX_ANSWER_ARRAY
-    assert Path(view_answer.answer["out"]).stat().st_size == view_answer.answer["bytes"]
+    assert view_answer.artifact_bytes == view_answer.answer["bytes"]
 
 
 def test_every_view_answers_under_one_envelope(view_answer: _Answered) -> None:
-    """The answer names its view, the schema its artifact carries too, the
-    banked round or rounds it read, and exactly the parameters it declares."""
+    """The answer names its view, the schema its artifact carries too, the ids
+    of what it read, and exactly the parameters it declares, one of them equal
+    to the artifact's own record of it."""
 
     run = _VIEW_RUN[view_answer.view]
     assert isinstance(run, _ViewRun)
-    assert view_answer.answer["view"] == view_answer.view
-    assert view_answer.answer["schema"] == view_answer.artifact["schema"]
-    subject = view_answer.answer["subject"]
-    assert all("round_id" in one for one in subject.get("rounds", [subject]))
-    assert set(view_answer.answer["parameters"]) == run.parameters
+    answer = view_answer.answer
+    assert answer["view"] == view_answer.view
+    assert answer["schema"] == view_answer.artifact["schema"]
+    subject = answer["subject"]
+    assert [set(one) for one in subject.get("rounds", [subject])] == [run.subject] * len(subject.get("rounds", [subject]))
+    assert set(answer["parameters"]) == run.parameters
+    assert run.recorded is None or run.recorded(answer["parameters"], view_answer.artifact)
 
 
 def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _Answered) -> None:

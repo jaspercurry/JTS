@@ -34,25 +34,33 @@ from ._common import (
 )
 
 def _cmd_distortion(args: argparse.Namespace) -> int:
-    bands = {
-        "woofer": args.woofer_band,
-        "tweeter": args.tweeter_band,
-        "full_range": args.full_range_band,
-    }
     round_dir, artifact = stage(
         EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_bundle_harmonics,
-        args.bundle_dir, bands, calibration_path=args.calibration,
+        args.bundle_dir,
+        {
+            "woofer": args.woofer_band,
+            "tweeter": args.tweeter_band,
+            "full_range": args.full_range_band,
+        },
+        calibration_path=args.calibration,
     )
+    captures = artifact["captures"]
+    read = subject(round_inputs(args.bundle_dir), take_ids=[take["take_id"] for take in captures["read"]])
+    # Only the swept roles, each over the band it was read: a candidate-branch
+    # capture reads its own recorded program's band, not the flag's.
+    band_hz: dict[str, list[list[float]]] = {}
+    for block in artifact["roles"]:
+        read_bands = band_hz.setdefault(block["role"], [])
+        if block["sweep"]["read_band_hz"] not in read_bands:
+            read_bands.append(block["sweep"]["read_band_hz"])
     spec = ARTIFACT_BY_VIEW[args.command]
     # The bundle's own round directory, never `default_out`: this reading is
     # filed where the packet reader looks for it, and that is a banked tree.
     written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
-    captures = artifact["captures"]
     return answer(
-        args.command, schema=spec.schema,
-        subject=subject(round_inputs(args.bundle_dir), take_ids=[take["take_id"] for take in captures["read"]]),
-        parameters={"band_hz": {role: list(band) for role, band in bands.items()},
-                    "calibration_id": artifact["calibration"].get("setup_calibration_id")},
+        args.command, schema=spec.schema, subject=read,
+        parameters={"band_hz": band_hz,
+                    "setup_calibration_id": artifact["calibration"].get("setup_calibration_id") or None},
         out=written, orders=artifact["orders"],
         blocks=len(artifact["roles"]), captures_read=captures["n_read"],
         captures_refused=captures["n_refused"],
