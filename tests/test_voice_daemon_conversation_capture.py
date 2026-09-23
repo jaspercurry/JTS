@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 
 from jasper.conversation_history import (
-    CAPTURE_ALIAS_ENV,
+    CAPTURE_ENABLED_ENV,
     ConversationStore,
     DB_PATH_ENV,
 )
@@ -27,7 +27,7 @@ from tests.usage_store_fixtures import FakeUsageStore
 def _wake_loop(tmp_path, monkeypatch, *, capture: bool = True):
 
     db_path = tmp_path / "conversation_history.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1" if capture else "0")
+    monkeypatch.setenv(CAPTURE_ENABLED_ENV, "1" if capture else "0")
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     store = ConversationStore(str(db_path))
     wl = wake_loop_for_tests(
