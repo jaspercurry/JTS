@@ -54,10 +54,6 @@ def note_probe_success() -> None:
     _suppressed_until = 0.0
 
 
-def _reset_for_tests() -> None:
-    note_probe_success()
-
-
 async def list_pcms(logger: logging.Logger) -> bytes | None:
     """Return `bluealsa-cli list-pcms` stdout, or None on any probe failure."""
     if probe_suppressed():

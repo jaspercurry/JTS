@@ -2,23 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.volume_observers.
-
-The observers shell out to busctl/bluealsa-cli for AirPlay/BT, and
-read /run/librespot/state.env (written by librespot's --onevent hook)
-for Spotify. Tests mock the I/O boundary: subprocess for DBus, a
-tmp_path-backed state file for Spotify. Coverage:
-
-- AirPlay reader parses busctl variant/double output
-- Spotify reader maps librespot's raw 0-65535 volume to 0-100 percent
-- BT reader resolves transport path then reads MediaTransport1.Volume
-- _maybe_observe fires only on real change (>0.5 unit delta)
-- a tick probes only the active source's reader, and none when idle
-- source activation forwards one fresh observation even at same value
-- AirPlay ticks read but do not dispatch canonical observations
-- observer ignores readers that return None (source not active)
-- _run answers cancel() on each of _tick's directly-awaited chains (#2003)
-"""
+"""Volume observers with stubbed subprocess I/O and temporary Spotify state."""
 from __future__ import annotations
 
 import asyncio
@@ -39,9 +23,9 @@ from tests._log_events import event_field_maps
 
 @pytest.fixture(autouse=True)
 def _reset_bluealsa_probe_state():
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
     yield
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
 
 
 class _FakeCoordinator:

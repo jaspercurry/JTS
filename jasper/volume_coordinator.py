@@ -60,20 +60,19 @@ from . import volume_diagnostics
 from . import volume_push_sources
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_echo import (
-    ECHO_WINDOW_SEC as ECHO_WINDOW_SEC,  # re-exported: tests import it from here
-    PERSISTENCE_ECHO_WINDOW_SEC as PERSISTENCE_ECHO_WINDOW_SEC,
     is_own_echo,
     is_recent_cross_process_write,
     stamp_outbound,
 )
 from .volume_owner import VolumeClaimRefused, VolumeOwner
 from .volume_scales import native_to_listening_level
-from .volume_handoff import RECONCILE_DRIFT_DB, VolumeHandoff, main_mute_for_level
+from .volume_curve import percent_to_db
+from .volume_floor import RECONCILE_DRIFT_DB
+from .volume_handoff import VolumeHandoff, main_mute_for_level
 from .volume_state import VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
-    percent_to_db,
     regress_listening_level_if_stale,
 )
 
@@ -84,9 +83,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Test seam for the measurement-flag expiry below. Local, so a test never has
-# to patch time.monotonic process-wide (which would corrupt asyncio clocks) —
-# the same seam jasper/voice/measurement_hold.py keeps.
+# Keep the measurement clock independent of asyncio clocks.
 _measurement_monotonic = time.monotonic
 
 
@@ -155,9 +152,7 @@ class VolumeCoordinator:
         # coordinator holds the HOUSEHOLD claim — the standing level the
         # speaker plays at when nothing outranks it — and hands the same owner
         # to the transient-duck holders, so a duck and a volume twist are
-        # arbitrated rather than racing. Bound through methods rather than
-        # captured bound methods so a test that replaces ``camilla``'s
-        # attributes is still seen.
+        # arbitrated rather than racing.
         self._volume_owner = VolumeOwner(
             set_fader_db=self._write_fader_db,
             get_fader_db=self._read_fader_db,
@@ -230,7 +225,6 @@ class VolumeCoordinator:
         # uses `_camilla_volume_locked` in-process.
         self._duck_active_probe: CamillaLockProbe | None = duck_active_probe
         self._volume_context_publisher = volume_context_publisher
-        # Late binding preserves replacements of the existing I/O test seams.
         self._handoff = VolumeHandoff(
             effective_level=lambda: self.get_volume_state().effective_percent,
             read_carrier=lambda: self._read_camilla_volume_and_mute(),
@@ -529,8 +523,7 @@ class VolumeCoordinator:
             self._pre_mute_level = self._level
             self._mute_token = uuid4().hex
         elif self._pre_mute_level is not None and self._mute_token is None:
-            # Rolling-upgrade migration for a latch written by code that
-            # predates transition identities.
+            # Repair a latch whose token was missing or rejected on load.
             self._mute_token = uuid4().hex
         saved = self._pre_mute_level or 0
         self._persistence.save_mute_state(
@@ -727,8 +720,7 @@ class VolumeCoordinator:
             if persisted_pre_mute is None:
                 self._confirmed_push_mute_tokens.pop(source, None)
             elif push_mode and persisted_mute_token is None:
-                # A rolling-upgrade latch may predate transition identities.
-                # Migrate it before interpreting any renderer observation.
+                # Repair a latch whose token was missing or rejected on load.
                 persisted_mute_token = uuid4().hex
                 self._persistence.save_mute_state(
                     persisted_pre_mute,
@@ -1219,15 +1211,10 @@ class VolumeCoordinator:
                 source = await self._active_source()
                 if await self._camilla_carries_level(source):
                     downstream_db = percent_to_db(state.effective_percent)
-                elif muted:
-                    downstream_db = percent_to_db(0)
-                elif (
-                    before is not None
-                    and before.main_volume_db < -RECONCILE_DRIFT_DB
-                ):
-                    downstream_db = before.main_volume_db
                 else:
-                    downstream_db = 0.0
+                    downstream_db = self._push_carrier_target_db(
+                        muted, before.main_volume_db if before is not None else None,
+                    )
             else:
                 downstream_db = current_db
             if current_mute is not None:
@@ -1414,23 +1401,18 @@ class VolumeCoordinator:
         source = await self._active_source()
         if await self._camilla_carries_level(source):
             return percent_to_db(effective_level)
-        if main_mute_for_level(effective_level):
+        muted = main_mute_for_level(effective_level)
+        return self._push_carrier_target_db(
+            muted, None if muted else self._persisted_main_volume_db(),
+        )
+
+    @staticmethod
+    def _push_carrier_target_db(muted: bool, persisted_db: float | None) -> float:
+        # Preserve content mute and failed-push attenuation through duck release.
+        if muted:
             return percent_to_db(0)
-        # Push-mode sources normally run with Camilla pinned at 0 dB.
-        # 0% content mute and failed handoffs are deliberate exceptions:
-        # if the user asked for zero, preserve the mute floor; if we could not
-        # push the source's own volume, mux leaves Camilla at a guarded
-        # attenuation and records that in persistence. Preserve that
-        # guard through the duck release instead of unmasking a source we
-        # already know might be too loud.
-        record = self._persistence.load()
-        if (
-            record is not None
-            and record.main_volume_db < -RECONCILE_DRIFT_DB
-        ):
-            return record.main_volume_db
-        # Push-mode renderer: camilla is pinned at 0 dB; the source's
-        # own slider carries listening_level.
+        if persisted_db is not None and persisted_db < -RECONCILE_DRIFT_DB:
+            return persisted_db
         return 0.0
 
     async def maybe_reconcile_camilla(self, source: Source | None = None) -> None:
@@ -1640,24 +1622,19 @@ class VolumeCoordinator:
         Manual source selection is an audible fan-in policy override:
         if mux reports one, prefer it even when raw renderer probes
         say a different source is active. Fail soft to raw probes when
-        mux is unavailable or an older RendererClient lacks the method.
+        mux is unavailable.
         """
-        selected_source = getattr(self._backend, "selected_source", None)
-        if selected_source is not None:
-            try:
-                selected = await selected_source()
-                # Mux answers with a music source, "idle", or — during a
-                # measurement lease — a fan-in lane label. It holds its last
-                # committed answer while a handoff is in flight, so "idle" is
-                # true idle and takes the attenuating camilla-master carrier.
-                # Only the lane label is not a source; it falls through to the
-                # raw probes.
-                if selected in MUSIC_SOURCE_VALUES:
-                    return Source(selected)
-                if selected == Source.IDLE.value:
-                    return Source.IDLE
-            except Exception as e:  # noqa: BLE001
-                logger.debug("selected_source() failed (%s); using probes", e)
+        try:
+            selected = await self._backend.selected_source()
+            # A measurement lease returns a fan-in lane label, not a source;
+            # only that case falls through to raw probes. During a handoff,
+            # mux retains its last committed source, including true idle.
+            if selected in MUSIC_SOURCE_VALUES:
+                return Source(selected)
+            if selected == Source.IDLE.value:
+                return Source.IDLE
+        except Exception as e:  # noqa: BLE001
+            logger.debug("selected_source() failed (%s); using probes", e)
         try:
             active = await self._backend.active_renderers()
         except Exception as e:  # noqa: BLE001
@@ -1733,32 +1710,17 @@ class VolumeCoordinator:
     async def _read_camilla_volume_and_mute(
         self,
     ) -> tuple[float | None, bool | None]:
-        reader = getattr(self._camilla, "get_volume_and_mute", None)
-        if reader is not None:
-            result = await reader(best_effort=True)
-            if result is not None:
-                db, muted = result
-                return float(db), bool(muted)
-            return None, None
-        return await self._camilla.get_volume_db(best_effort=True), None
+        result = await self._camilla.get_volume_and_mute(best_effort=True)
+        if result is not None:
+            db, muted = result
+            return float(db), bool(muted)
+        return None, None
 
     async def _set_camilla_main_mute(
         self, muted: bool, *, context: str,
     ) -> bool:
         target = bool(muted)
-        setter = getattr(self._camilla, "set_main_mute", None)
-        if setter is None:
-            if target:
-                log_event(
-                    logger,
-                    "volume.main_mute_unsupported",
-                    muted=True,
-                    context=context,
-                    level=logging.WARNING,
-                )
-                return False
-            return True
-        ok = await setter(target, best_effort=True)
+        ok = await self._camilla.set_main_mute(target, best_effort=True)
         if ok:
             log_event(
                 logger,
@@ -1783,9 +1745,8 @@ class VolumeCoordinator:
     def volume_owner(self) -> VolumeOwner:
         """This process's fader owner, for the claim holders that share it.
 
-        Handed to a transient-duck holder rather than reached for globally:
-        the owner is instance state, so a test never inherits one and a
-        second coordinator never silently arbitrates against the first's.
+        Transient-duck holders share this instance's owner; separate
+        coordinators have separate claim ledgers.
         """
         return self._volume_owner
 
@@ -1946,24 +1907,21 @@ class VolumeCoordinator:
     async def _set_camilla(self, level: int) -> bool:
         db = percent_to_db(level)
         target_mute = main_mute_for_level(level)
-        # Defer gate #1: in-process Camilla-ownership flag. Set by
-        # WakeLoop.note_voice_session on the long-lived coordinator
-        # owned by jasper-voice, and only while the duck transport owns
-        # camilla. listening_level is still updated in self._level by the
-        # caller and persisted by _dispatch's finally block, so the user's
-        # intent survives; main_volume_db is intentionally NOT saved here —
-        # it'd diverge from camilla's actual state until restore.
-        if self._camilla_volume_locked:
-            mute_ok = await self._set_camilla_main_mute(
-                target_mute,
-                context="set_camilla_voice_session",
+        # The duck owns the fader, but mute and canonical intent still apply.
+        # An unknown cross-daemon lock fails open so the remote remains usable.
+        locally_locked = self._camilla_volume_locked
+        if await self._camilla_locked() is True:
+            context = (
+                "set_camilla_voice_session" if locally_locked
+                else "set_camilla_session_signaled"
             )
+            mute_ok = await self._set_camilla_main_mute(target_mute, context=context)
             log_event(
                 logger,
                 "volume.deferred",
                 # `level` collides with log_event's level= param → fields=.
                 fields={
-                    "reason": "camilla_volume_locked",
+                    "reason": "camilla_volume_locked" if locally_locked else "session_signaled",
                     "level": f"{level}%",
                     "target_db": f"{db:.1f}",
                     "muted": str(target_mute).lower(),
@@ -1971,50 +1929,6 @@ class VolumeCoordinator:
                 },
             )
             return bool(mute_ok)
-        # Defer gate #2: cross-daemon Camilla-lock probe. The flag
-        # above only fires on jasper-voice's long-lived coordinator.
-        # jasper-control builds a fresh VolumeCoordinator per HTTP
-        # request whose flag is always False, so it asks jasper-voice
-        # over UDS whether a camilla-owning duck is currently engaged.
-        # Probe returning True defers identically to the flag path — the
-        # duck release converges camilla on session end.
-        #
-        # Fail-open by design: probe returning None (UDS unreachable,
-        # voice daemon wedged, timeout) means "unknown" → write
-        # camilla normally. The remote must never silently stop working
-        # because of an inter-daemon problem; better to occasionally
-        # un-duck music for a moment than to leave the user with a
-        # dead knob.
-        if self._duck_active_probe is not None:
-            try:
-                duck_active = await self._duck_active_probe()
-            except Exception as e:  # noqa: BLE001
-                # Probe should never raise — it's expected to
-                # convert errors to None internally. If it does
-                # raise, treat as None (fail-open) and warn.
-                logger.warning(
-                    "duck_active_probe raised %s; treating as unknown",
-                    e,
-                )
-                duck_active = None
-            if duck_active is True:
-                mute_ok = await self._set_camilla_main_mute(
-                    target_mute,
-                    context="set_camilla_session_signaled",
-                )
-                log_event(
-                    logger,
-                    "volume.deferred",
-                    # `level` collides with log_event's level= param → fields=.
-                    fields={
-                        "reason": "session_signaled",
-                        "level": f"{level}%",
-                        "target_db": f"{db:.1f}",
-                        "muted": str(target_mute).lower(),
-                        "result": "main_mute_applied" if mute_ok else "main_mute_failed",
-                    },
-                )
-                return bool(mute_ok)
         # best_effort: remote twist arriving during a 2s camilla restart
         # blip should still update listening_level on disk and persist
         # main_volume_db, even if the actual write didn't land. The

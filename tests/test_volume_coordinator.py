@@ -35,7 +35,8 @@ from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import ECHO_WINDOW_SEC, VolumeCoordinator
+from jasper.volume_coordinator import VolumeCoordinator
+from jasper.volume_echo import ECHO_WINDOW_SEC
 from jasper.volume_scales import (
     BT_VOLUME_MAX,
     bt_volume_to_listening_level,
@@ -51,22 +52,18 @@ from jasper.volume_diagnostics import (
 )
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused
-from jasper.volume_persistence import VolumePersistence, percent_to_db
+from jasper.volume_persistence import VolumePersistence
+from jasper.volume_curve import percent_to_db
 
 
 @pytest.fixture(autouse=True)
 def _reset_bluealsa_probe_state():
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
     yield
-    bluealsa_probe._reset_for_tests()
+    bluealsa_probe.note_probe_success()
 
 
 # ---------- mapping helpers -------------------------------------------------
-
-
-# AirPlay has no mapping helper here: shairport's volume hook owns that
-# scale and reaches the coordinator in percent (ADR-0206). Its endpoints are
-# pinned against AIRPLAY_DB_MIN/MAX in tests/test_airplay_volume_hook.py.
 
 
 @pytest.mark.parametrize("level", [0, 50, 100])
@@ -2482,29 +2479,26 @@ async def test_reconcile_no_loop_when_already_converged(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("active", "level", "expected"),
+    ("active", "level", "persisted_db", "expected"),
     [
-        pytest.param({}, 70, percent_to_db(70), id="idle"),
-        pytest.param({"aplactive": True}, 40, percent_to_db(40), id="airplay"),
-        pytest.param({"spotactive": True}, 70, 0.0, id="push_mode"),
-        pytest.param(
-            {"spotactive": True}, 0, percent_to_db(0), id="push_mode_at_zero",
-        ),
+        pytest.param({}, 70, 0.0, percent_to_db(70), id="idle"),
+        pytest.param({"aplactive": True}, 40, 0.0, percent_to_db(40), id="airplay"),
+        pytest.param({"spotactive": True}, 70, 0.0, 0.0, id="push_mode"),
+        pytest.param({"spotactive": True}, 0, 0.0, percent_to_db(0), id="push_mode_at_zero"),
+        pytest.param({"spotactive": True}, 70, -1.0, 0.0, id="guard_boundary"),
+        pytest.param({"spotactive": True}, 70, -1.01, -1.01, id="guard_active"),
+        pytest.param({"spotactive": True}, 0, -25.0, percent_to_db(0), id="mute_before_guard"),
     ],
 )
 async def test_the_duck_restore_target_follows_the_active_carrier(
-    tmp_path, active, level, expected,
+    tmp_path, active, level, persisted_db, expected,
 ):
-    """Camilla-master sources restore to the household level; push-mode
-    restores to camilla's 0 dB carrier because the source's own slider holds
-    the level — except at 0%, where restore must not unmask a content mute."""
-    coord, _, persistence = _real_coord(tmp_path, active=active, level=level)
-    # A persisted attenuation would mean a degraded handoff guard, which is a
-    # deliberate exception pinned by
-    # test_get_camilla_target_db_preserves_degraded_push_guard.
-    persistence.save_now(0.0)
+    coord, cam, persistence = _real_coord(tmp_path, active=active, level=level)
+    persistence.save_now(persisted_db)
+    cam.unavailable = True
 
     assert await coord.get_camilla_target_db() == pytest.approx(expected)
+    assert (await coord.effective_volume_context()).downstream_db == pytest.approx(expected)
 
 
 async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
