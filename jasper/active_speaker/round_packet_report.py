@@ -127,15 +127,16 @@ def packet_index(
     commands += [shlex.join(["jasper-round-views", "speaker-fit", str(target), "--set", fit["set_id"], "--take", fit["take_id"]])
                  for fit in packet["fits"]]
     for group in manifest.get("sets", ()):
-        takes = SetTakes.from_row(group)
+        set_takes = SetTakes.from_row(group)
         bearings = {(take["pose"].get("deg"), take["pose"].get("elevation_deg"), take["pose"].get("distance_m"))
-                    for take in takes.takes
+                    for take in set_takes.takes
                     if take["selected"] and take["pose"].get("kind") == POSE_KIND_BEARING}
         if len(bearings) >= 2:
             commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", group["set_id"]]))
-        for take in (takes.on_axis or tuple(take for take in takes.takes if take["selected"]))[:1]:
+        role = str(set_takes.capture_basis.get("role") or "summed")
+        for take in (set_takes.on_axis or tuple(take for take in set_takes.takes if take["selected"]))[:1]:
             commands += [shlex.join(["jasper-round-views", view, str(target), "--set", group["set_id"],
-                                     "--take", take["take_id"], "--role", str(takes.capture_basis.get("role") or "summed")])
+                                     "--take", take["take_id"], "--role", role])
                          for view in ("impulse", "group-delay")]
     decisions: dict[str, dict[str, list[str]]] = {}
     for set_id, limits in packet["limits"].items():
