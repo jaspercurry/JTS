@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_volume as v2volume
 
 import asyncio
 import concurrent.futures
@@ -319,6 +320,70 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
 
     expected_label = "crossover_v2:session"
     assert seen["kind"].label == expected_label
+
+@pytest.mark.parametrize(
+    "recovery", ["exact_restored", "failed", v2volume.RECOVERY_DEFERRED]
+)
+def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery):
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+    from jasper.web import correction_crossover_backend
+    from jasper.web import correction_crossover_v2 as v2host
+
+    plan = SimpleNamespace(needs_recovery=True)
+    calls = []
+    real_prepare = v2host.prepare_v2_session
+    body = {"plan": AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),)).to_dict()}
+
+    def recover(run_async, camilla_factory):
+        assert run_async is correction_runtime.run_async
+        assert camilla_factory is correction_runtime.camilla_controller
+        calls.append("recover")
+        plan.needs_recovery = recovery != "exact_restored"
+        return not plan.needs_recovery, recovery
+
+    def prepare(raw, **kwargs):
+        calls.append("prepare")
+        if plan.needs_recovery:
+            return real_prepare(raw, **kwargs)
+        return SimpleNamespace(
+            label="crossover_v2:session",
+            open=None,
+            run_and_consume=None,
+            request_stop=None,
+            position_gate=None,
+            request_complete=None,
+            request_retake=None,
+            session_id="test",
+            join_spec=None,
+        )
+
+    def stage(kind, **kwargs):
+        calls.append("stage")
+        return {"status": "awaiting_capture", "session_id": kind.session_id}
+
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: plan)
+    monkeypatch.setattr(v2volume, "recover_session_volume", recover)
+    monkeypatch.setattr(correction_runtime, "read_json_body", lambda _: body)
+    monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
+    monkeypatch.setattr(v2host, "prepare_v2_session", prepare)
+    monkeypatch.setattr(correction_capture, "_stage_capture", stage)
+
+    if recovery == "exact_restored":
+        assert correction_handlers._handle_crossover_v2_capture(None) == {
+            "capture": {"status": "awaiting_capture", "session_id": "test"},
+        }
+        assert calls == ["recover", "prepare", "stage"]
+        assert not plan.needs_recovery
+    else:
+        with pytest.raises(CrossoverV2Refused) as expected:
+            real_prepare(body, status={}, run_async=None, camilla_factory=None)
+        with pytest.raises(CrossoverV2Refused) as actual:
+            correction_handlers._handle_crossover_v2_capture(None)
+        assert refusal_envelope(actual.value) == refusal_envelope(expected.value)
+        assert calls == ["recover", "prepare"]
+        assert plan.needs_recovery
 
 def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
