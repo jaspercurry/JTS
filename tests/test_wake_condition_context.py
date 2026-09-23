@@ -5,6 +5,7 @@
 """Unit tests for the runtime acoustic-condition estimator (classify_condition)."""
 from __future__ import annotations
 
+from jasper.voice.content_activity import ContentActivityTracker
 from jasper.wake_conditions import CONDITIONS
 from jasper.wake_condition_context import (
     AMBIENT_FLOOR_DBFS,
@@ -66,3 +67,12 @@ def test_context_carries_the_raw_signals():
     ctx = classify_condition(music_dbfs=-12.0, noise_floor_dbfs=-44.0)
     assert ctx.music_dbfs == -12.0
     assert ctx.noise_floor_dbfs == -44.0
+
+
+def test_content_activity_tracker_agrees_with_classify_condition():
+    """One owner for the "is music playing" threshold: ContentActivityTracker
+    and classify_condition must agree on both sides of MUSIC_FLOOR_DBFS."""
+    tracker = ContentActivityTracker(object())
+    for dbfs in (MUSIC_FLOOR_DBFS - 1, MUSIC_FLOOR_DBFS + 1):
+        tracker._last_dbfs = dbfs
+        assert tracker.music_is_playing() == classify_condition(dbfs, None).music_active
