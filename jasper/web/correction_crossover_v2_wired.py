@@ -34,7 +34,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 from jasper.log_event import log_event
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY, exception_detail
-from jasper.web._common import refusal_envelope
+from jasper.web.correction_runtime import refusal_envelope
 
 logger = logging.getLogger(__name__)
 

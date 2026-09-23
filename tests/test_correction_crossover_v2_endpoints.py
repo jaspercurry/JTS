@@ -97,11 +97,9 @@ def _isolated_state(tmp_path, monkeypatch):
         "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
         str(tmp_path / "model_error.json"),
     )
-    v2volume.reset_session_measurement_pause_for_tests()
     yield
     v2state.set_state_path_for_tests(None)
     v2volume.set_volume_plan_for_tests(None)
-    v2volume.reset_session_measurement_pause_for_tests()
 
 
 def _bg_run_async(coro, *, timeout=None):
@@ -164,8 +162,6 @@ class _FakeVolCam:
 def _live_measurement_session(
     monkeypatch,
     *,
-    household_db: float = -15.0,
-    measurement_db: float = -20.0,
     ceiling_s: float = 10.0,
 ):
     """A plan holding a LIVE rank-1 claim over a real owner, as a drain finds it.
@@ -175,11 +171,6 @@ def _live_measurement_session(
     ``MeasurementVolumeClaim``, an opened plan, and that plan installed as the
     host's — because a double that merely LOOKS held exercises the no-claim
     door instead of the drain.
-
-    ``household_db == measurement_db`` is the same-level case: the door's
-    deferral test compares the level in effect against the level being
-    restored, so equal levels answer LANDED under a live claim rather than
-    DEFERRED.
 
     Returns ``(plan, cam, claim, clock)``; ``clock`` is a one-element list the
     caller advances to walk past the ceiling.
@@ -198,20 +189,20 @@ def _live_measurement_session(
     plan = SessionVolumePlan(
         wall_clock_ceiling_s=ceiling_s, clock=lambda: clock[0],
     )
-    cam = _FakeVolCam(household_db)
+    cam = _FakeVolCam(-15.0)
     _own_the_fader(monkeypatch, cam)
     owner = volume_owner()
     claim = MeasurementVolumeClaim(owner)
     opened = asyncio.run(
         plan.open(
-            measurement_db,
+            -20.0,
             OwnerVolumeDoor(
                 owner, read_fader=cam.get_volume_db, claim=claim,
             ),
         )
     )
     assert opened is SessionVolumeOpenResult.OPENED
-    assert cam.vol == measurement_db
+    assert cam.vol == -20.0
     v2volume.set_volume_plan_for_tests(plan)
     return plan, cam, claim, clock
 
@@ -2253,12 +2244,12 @@ def test_prepare_refuses_when_volume_needs_recovery():
         v2host.prepare_v2_session(
             _inline_body(), status={}, run_async=None, camilla_factory=None
         )
-    assert "recover" in str(excinfo.value)
+    assert excinfo.value.code == refusal_copy.REASON_VOLUME_UNRESOLVED
 
 
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
 def test_session_requires_an_inline_v3_plan(body):
-    from jasper.web._common import refusal_envelope
+    from jasper.web.correction_runtime import refusal_envelope
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
     envelope = refusal_envelope(caught.value)
@@ -2275,7 +2266,6 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     name = "unbanked"
     request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    monkeypatch.setattr(v2volume, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
         safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
     ))
@@ -2303,7 +2293,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
 
     _ready_inline(monkeypatch)
     v2volume.set_volume_plan_for_tests(_Ready())
-    monkeypatch.setattr(v2volume, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(
         v2host, "resolve_conductor_context",
         lambda _status: _inline_context(),
@@ -2313,8 +2302,9 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
         v2evidence, "open_v2_evidence_store",
         lambda *_: pytest.fail("bundle opened before protection preflight"),
     )
-    with pytest.raises(refusal_copy.CrossoverV2Refused, match="confirmed driver protection"):
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
+    assert refused.value.code == "driver_protection_invalid"
 
 
 def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
@@ -4058,74 +4048,6 @@ def test_candidate_summary_none_candidate_returns_none():
     assert v2durable.candidate_summary(None) is None
 
 
-class _FakeWindow:
-    """A recording stand-in for coordinator.measurement_window()."""
-
-    def __init__(self, log: list) -> None:
-        self.log = log
-
-    async def __aenter__(self):
-        self.log.append("enter")
-        return None
-
-    async def __aexit__(self, *exc):
-        self.log.append("exit")
-        return False
-
-
-def _patch_measurement_window(monkeypatch, log: list) -> None:
-    from jasper import measurement_window as coordinator
-
-    monkeypatch.setattr(
-        coordinator, "measurement_window", lambda **kw: _FakeWindow(log)
-    )
-
-
-def test_session_measurement_pause_is_idempotent(monkeypatch):
-    """Acquire enters the window exactly once (a second acquire is a no-op, so a
-    per-play cannot open a second exclusive window); release exits exactly once
-    and a double-release is safe (no double-exit)."""
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-
-    async def scenario():
-        assert not v2volume.session_measurement_pause_held()
-        await v2volume.acquire_session_measurement_pause()
-        assert v2volume.session_measurement_pause_held()
-        await v2volume.acquire_session_measurement_pause()  # idempotent
-        assert v2volume.session_measurement_pause_held()
-        await v2volume.release_session_measurement_pause()
-        assert not v2volume.session_measurement_pause_held()
-        await v2volume.release_session_measurement_pause()  # idempotent
-
-    asyncio.run(scenario())
-    assert log == ["enter", "exit"]  # exactly one enter, one exit
-
-
-def test_reconcile_drains_residual_owned_active_before_new_session(monkeypatch):
-    """E1: a residual owned-active plan (a prior failed session's leftover) is
-    drained before a fresh session, so plan.open() starts clean instead of
-    raising SessionVolumePlanError into the silent 200→adapter_failed loop."""
-    from jasper.active_speaker.session_volume_plan import (
-        FaderVolumeDoor,
-        SessionVolumePlan,
-    )
-
-    plan = SessionVolumePlan()
-    cam = _FakeVolCam(-15.0)
-    _own_the_fader(monkeypatch, cam)
-    asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
-    assert plan.measurement_volume_db == -20.0
-    assert not plan.needs_recovery  # owned-active this process, within ceiling
-    v2volume.set_volume_plan_for_tests(plan)
-
-    v2volume.reconcile_session_volume_for_new_session(_bg_run_async, lambda: cam)
-
-    assert plan.measurement_volume_db is None  # residual drained
-    assert not plan.needs_recovery
-    assert cam.vol == -15.0  # restored to household
-
-
 def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatch):
     """E3: enforce_ceiling (previously zero callers) force-drains a session that
     outlived the wall-clock ceiling, and is a no-op on a healthy session."""
@@ -4157,38 +4079,10 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatc
     assert cam.vol == -15.0
 
 
-def test_a_live_claim_holds_the_pause_when_the_ceiling_drain_defers(monkeypatch):
-    """Arm 1: the ordinary deferral. The gate still hears the ceiling expired."""
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
+def test_a_raising_ceiling_drain_still_reports_the_expired_ceiling(monkeypatch):
+    """The drain RAISES, so there is no outcome at all; the gate still hears
+    that the ceiling expired."""
     plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2volume.acquire_session_measurement_pause())
-    clock[0] += 3600.0
-
-    assert v2volume.enforce_session_volume_ceiling_if_stale(
-        _bg_run_async, lambda: cam
-    ) is True, "the caller's gate must still hear that the ceiling expired"
-
-    assert plan.measurement_volume_db == -20.0, "a live session was drained"
-    assert cam.vol == -20.0, "the drain moved a fader it does not own"
-    assert v2volume.session_measurement_pause_held(), (
-        "the drain freed the isolation a live session is measuring behind"
-    )
-    assert log == ["enter"], "the measurement window was exited under the session"
-    assert plan.needs_recovery is False, "no recovery screen for a live session"
-
-
-def test_a_raising_ceiling_drain_holds_the_pause_under_a_live_claim(monkeypatch):
-    """Arm 2: the drain RAISES, so there is no outcome to gate on at all.
-
-    ``result`` stays ``None`` — not DEFERRED — so an outcome-gated release
-    falls straight through to freeing the pause. The session is still holding
-    the fader and still measuring through its graph.
-    """
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-    plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2volume.acquire_session_measurement_pause())
     clock[0] += 3600.0
 
     def _raise(*_a, **_kw):
@@ -4200,67 +4094,20 @@ def test_a_raising_ceiling_drain_holds_the_pause_under_a_live_claim(monkeypatch)
         _bg_run_async, lambda: cam
     ) is True
 
-    assert v2volume.session_measurement_pause_held(), (
-        "a raising drain freed the isolation out from under a live session"
-    )
-    assert log == ["enter"], "the measurement window was exited under the session"
-
-
-def test_a_same_level_landed_holds_the_pause_under_a_live_claim(monkeypatch):
-    """Arm 3: the drain answers LANDED while the claim is still held.
-
-    When the household level already equals the measurement level, the door's
-    deferral test (level in effect vs level being restored) does not fire, so
-    a LIVE session reads as a completed restore. Reachable on defaults: both
-    sides sit at ``-20.0`` on a box that never ran
-    seat-SPL. No error anywhere — which is what makes an outcome-gated release
-    unsafe even on the happy path.
-    """
-
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-    plan, cam, _claim, clock = _live_measurement_session(
-        monkeypatch,
-        household_db=-20.0,
-        measurement_db=-20.0,
-    )
-    asyncio.run(v2volume.acquire_session_measurement_pause())
-    clock[0] += 3600.0
-
-    assert v2volume.enforce_session_volume_ceiling_if_stale(
-        _bg_run_async, lambda: cam
-    ) is True
-
-    # The LANDED branch really was taken -- the plan resolved and cleared its
-    # durable intent -- so this is not a deferral wearing a different hat.
-    assert plan.measurement_volume_db is None, (
-        "expected the LANDED branch; a deferral would leave the intent standing"
-    )
-    assert v2volume.session_measurement_pause_held(), (
-        "a coincidental LANDED freed the isolation under a live session"
-    )
-    assert log == ["enter"], "the measurement window was exited under the session"
-
 
 def test_recover_on_a_deferral_reports_no_recovery(monkeypatch):
     """Arm 3 of G2: a deferral is not a recovery, and must not be sold as one.
 
-    ``succeeded`` gates both the household's ``recovered`` banner and the
-    pause release, so counting DEFERRED as success told the household its
-    volume was restored while a live session still held the fader.
+    ``succeeded`` gates the household's ``recovered`` banner, so counting
+    DEFERRED as success told the household its volume was restored while a
+    live session still held the fader.
     """
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
     _plan, cam, _claim, _clock = _live_measurement_session(monkeypatch)
-    asyncio.run(v2volume.acquire_session_measurement_pause())
 
     succeeded, recovery = v2volume.recover_session_volume(_bg_run_async, lambda: cam)
 
     assert succeeded is False, "a deferral was reported to the household as recovered"
     assert recovery == v2volume.RECOVERY_DEFERRED
-    assert v2volume.session_measurement_pause_held(), (
-        "recover freed the isolation on a restore that has not happened"
-    )
 
 
 def test_the_recovery_deferred_value_tracks_the_enum():
@@ -4313,63 +4160,6 @@ def test_recover_session_volume_routes_to_the_plan(monkeypatch):
     assert recovery == "exact_restored"
     assert drained == [True]
     assert cam.vol == -15.0
-
-
-def test_gate_abort_mid_play_cancels_the_play_and_names_the_error(monkeypatch):
-    """Renew failure mid-play: the coordinator's abort cancels the REGISTERED
-    play task (not the session task) and the cancellation surfaces as a named
-    MeasurementWindowError so the cleanup arm persists it honestly."""
-    from jasper.measurement_window import MeasurementWindowError
-
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-
-    async def scenario():
-        await v2volume.acquire_session_measurement_pause()
-        target = v2volume._session_abort_target
-        assert target is not None
-        started = asyncio.Event()
-
-        async def play_body():
-            started.set()
-            await asyncio.sleep(30)
-
-        play = asyncio.create_task(v2volume._play_under_session_pause(play_body))
-        await started.wait()
-        # What the coordinator's refresh task does on a 40 s renew failure.
-        target.abort(None)
-        with pytest.raises(MeasurementWindowError) as excinfo:
-            await play
-        assert "isolation was lost" in str(excinfo.value)
-        assert target.failed is True
-
-    asyncio.run(scenario())
-
-
-def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
-    """Renew failure between plays: the latched failed flag refuses the NEXT
-    play with a named error before any audio — never a silent nest-skip into an
-    unconfirmed music-isolation gate."""
-    from jasper.measurement_window import MeasurementWindowError
-
-    log: list = []
-    _patch_measurement_window(monkeypatch, log)
-    body_ran: list = []
-
-    async def scenario():
-        await v2volume.acquire_session_measurement_pause()
-        target = v2volume._session_abort_target
-        target.abort(None)  # no play registered: latch only, no crash
-
-        async def play_body():
-            body_ran.append(True)
-
-        with pytest.raises(MeasurementWindowError) as excinfo:
-            await v2volume._play_under_session_pause(play_body)
-        assert "isolation was lost" in str(excinfo.value)
-
-    asyncio.run(scenario())
-    assert body_ran == []  # refused before any audio
 
 
 def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch, tmp_path):
@@ -5899,7 +5689,6 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(
     })
     assert env["round_lines"]
     assert env["capture"]["join"] == result["join"]
-    assert not v2volume.session_measurement_pause_held()
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]
     assert plan["level"]["level_db"] == reference
@@ -6047,20 +5836,6 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
             assert refused.value.code == "capture_slot_busy"
     finally:
         release.set()
-
-
-def test_retired_republish_route_cannot_change_state(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-    from jasper.web.correction_setup import _dispatch_crossover
-
-    _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    before = v2state.load_v2_state()
-    replies = []
-    handler = SimpleNamespace(path="/crossover/v2/republish",
-                              _send_json=lambda payload, **kwargs: replies.append((payload, kwargs["status"])))
-    _dispatch_crossover(handler)
-    assert replies == [({"ok": False, "code": "route_retired"}, 410)]
-    assert v2state.load_v2_state() == before
 
 
 @pytest.mark.parametrize("applied,epoch,receipt,expected", [
@@ -6285,7 +6060,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         assert refused.value.code == code
         if fault == "graph":
             from jasper.active_speaker import runtime_contract
-            from jasper.web._common import refusal_envelope
+            from jasper.web.correction_runtime import refusal_envelope
 
             # The refusal names WHICH door refused: a bare code sent the
             # operator to read the graph by hand.

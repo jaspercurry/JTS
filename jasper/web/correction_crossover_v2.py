@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_VOLUME_UNRESOLVED
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -27,6 +27,7 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, LateralWalkRefused,
     default_run_level,
 )
+from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -488,9 +489,13 @@ def prepare_v2_session(
     if v2volume.session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
-            "a new session"
+            "a new session", code=REASON_VOLUME_UNRESOLVED,
         )
-    context = resolve_conductor_context(status)
+    try:
+        context = resolve_conductor_context(status)
+    except CrossoverV2Refused as exc:  # answered as the preflight reports it, default action included
+        refusal = PreflightIssue.from_code(exc.code, str(exc))
+        raise CrossoverV2Refused(refusal.detail, code=refusal.code, next_action=refusal.next_action) from exc
     facts = preflight_live.read_preflight_facts(request, context=context)
     report = preflight_levels(request, facts)
     issue = next((issue for issue in report.issues if issue.blocking), None)
@@ -506,9 +511,8 @@ def prepare_v2_session(
             context.safety_profile, context.role_targets
         )
     except ValueError as exc:
-        raise CrossoverV2Refused(
-            "The confirmed driver protection cannot be used for this measurement."
-        ) from exc
+        raise CrossoverV2Refused("The confirmed driver protection cannot be used for this measurement.",
+                                 code="driver_protection_invalid") from exc
 
     stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
     engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}

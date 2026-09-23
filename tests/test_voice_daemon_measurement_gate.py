@@ -8,8 +8,8 @@ window (issues #1786, #1898, #1913).
 A window is opened and closed by `MeasurementHold.pause_response()` /
 `MeasurementHold.resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
 commands — see `jasper.measurement_window.measurement_window()`,
-which the crossover-v2 flow holds open for a whole session via
-`acquire_session_measurement_pause()`). Refusal happens at one
+which the crossover-v2 flow holds open for a whole run via
+`crossover_v2.door.isolation_hold()`). Refusal happens at one
 admission authority asked at two moments: `AssistantOutputGate`
 refuses an episode that has not started, and the `TtsPlayout`
 emission seam refuses the bytes of one that already had — so a task

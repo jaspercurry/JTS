@@ -104,7 +104,7 @@ def _run_links(run_id: str) -> dict[str, str]:
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
-    from ._run_request import resolve_run  # lazy: run-only measurement imports
+    from ._run_request import ARM_FACT_CODES, resolve_run  # lazy: run-only measurement imports
 
     try:
         report = resolve_run(args)
@@ -120,7 +120,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
-    if report.blocking:
+    if any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues):
         issue = report.blocking_issue
         return failed(EXIT_REFUSED, issue.code, report.to_dict(),
                       code=issue.code, next_action=issue.next_action)

@@ -69,7 +69,7 @@ from jasper.active_speaker.crossover_v2 import summed_alignment
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
 from tests.test_plan_run import AnsweredGate, _Store, _walk
 from tests.engine_twin import FakeSeams as EngineSeams
-from jasper.web._common import refusal_envelope
+from jasper.web.correction_runtime import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
