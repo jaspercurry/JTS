@@ -46,7 +46,7 @@ from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.round_packet import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
+from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
 from jasper.active_speaker import measurement_programs
 from jasper.active_speaker.measurement_programs import bookkeeping_views
 

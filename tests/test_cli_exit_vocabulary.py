@@ -48,7 +48,7 @@ from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_cli_close_reference import _compare_argv as close_compare_argv, _round as capture_round
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
-from tests.test_crossover_v2_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
+from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
 from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take

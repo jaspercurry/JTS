@@ -32,7 +32,7 @@ import pytest
 from jasper.active_speaker.driver_protection import (
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
 )
-from jasper.active_speaker.crossover_v2.fc_sweep import (
+from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
     _fc_rejection,
@@ -336,7 +336,7 @@ def test_a_pin_and_a_declared_corner_are_admissible_on_identical_terms(corner_hz
     be refused, and one who pins a corner those declarations exclude must not be
     admitted. Two spellings of the same comparisons is exactly how those two
     answers drift apart on one speaker — so the gate asks
-    ``fc_sweep._fc_rejection``, and this walks a grid across every declared
+    ``corner_admissibility._fc_rejection``, and this walks a grid across every declared
     edge to prove it still does.
 
     Neither side has a beaming term: #1675 makes the ka onset guidance rather
@@ -541,7 +541,7 @@ def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
 
 def test_a_pin_above_the_beaming_onset_is_admitted_and_disclosed():
     """#1675 defines the ka ceiling as guidance to warn on rather than a fence,
-    so no admissibility bound anywhere reads it — ``fc_sweep._fc_rejection``
+    so no admissibility bound anywhere reads it — ``corner_admissibility._fc_rejection``
     carries no beaming term for the automatic path either. A pinned corner IS
     its round's configured corner, so enforcing it here would be stricter about
     this speaker than that path is."""

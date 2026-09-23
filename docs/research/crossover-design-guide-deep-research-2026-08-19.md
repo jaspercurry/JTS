@@ -37,7 +37,7 @@ deferred prose that never shipped as code and died with the file; the
 #2736 apply gate it named as backstop is live and deliberately slope-blind
 (`camilla_yaml.EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR`,
 `crossover_declaration.CROSSOVER_BELOW_DECLARED_FLOOR`,
-`fc_sweep.FC_REJECT_BELOW_DECLARED_FLOOR`).
+`corner_admissibility.FC_REJECT_BELOW_DECLARED_FLOOR`).
 **Standing caution:** every numeric anchor below is a PRIOR that seeds
 the search space — in-situ measurement decides (the report's own rule,
 and the house fresh-eyes rule).

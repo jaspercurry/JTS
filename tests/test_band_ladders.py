@@ -29,7 +29,7 @@ from jasper.cli.round_views import main
 from tests.room_median_fixture import room_median_document
 from tests.test_active_speaker_crossover_v2_round_views import gate_sweep_round as gate_sweep_round
 from tests.test_bass_level_evidence import pair as pair
-from tests.test_crossover_v2_frequency_view import (
+from tests.test_crossover_v2_round_frequency_view import (
     bass_fit_pairs as bass_fit_pairs,
     summed_capture_bundle as summed_capture_bundle,
 )
