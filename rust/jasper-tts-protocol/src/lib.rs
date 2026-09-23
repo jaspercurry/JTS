@@ -376,50 +376,12 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
         return Ok(Some(TtsCommand::GainDb(gain)));
     }
     if let Some(rest) = line.strip_prefix("VOLUME_CONTEXT ") {
-        let mut parts = rest.split(' ');
-        let canonical_db = parts.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing VOLUME_CONTEXT canonical dB",
-            )
-        })?;
-        let downstream_db = parts.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing VOLUME_CONTEXT downstream dB",
-            )
-        })?;
-        let tts_envelope_lufs = parts.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing VOLUME_CONTEXT silence target",
-            )
-        })?;
-        let muted = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing VOLUME_CONTEXT mute")
-        })?;
-        let stamp_boot_ns = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing VOLUME_CONTEXT stamp")
-        })?;
-        if parts.next().is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "VOLUME_CONTEXT expects exactly five arguments",
-            ));
-        }
-        return Ok(Some(TtsCommand::VolumeContext(VolumeContext {
-            canonical_db: parse_required_f32(canonical_db, "VOLUME_CONTEXT canonical dB")?,
-            downstream_db: parse_required_f32(downstream_db, "VOLUME_CONTEXT downstream dB")?,
-            tts_envelope_lufs: parse_required_f32(
-                tts_envelope_lufs,
-                "VOLUME_CONTEXT silence target",
-            )?,
-            muted: parse_bool_token(muted, "VOLUME_CONTEXT mute")?,
-            stamp_boot_ns: stamp_boot_ns.parse::<u64>().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "invalid VOLUME_CONTEXT stamp")
-            })?,
-        })));
+        return Ok(Some(TtsCommand::VolumeContext(parse_volume_context(
+            rest.split(' '),
+            "VOLUME_CONTEXT",
+        )?)));
     }
+
     if let Some(rest) = line.strip_prefix("AUDIO ") {
         let bytes = read_audio_payload(reader, rest, TtsWireWidth::Narrow)?;
         let samples = bytes
@@ -540,58 +502,10 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 "missing PREPARE_ASSISTANT silence target",
             )
         })?;
-        let volume_context = match parts.next() {
-            None => None,
-            Some(canonical_db) => {
-                let downstream_db = parts.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing PREPARE_ASSISTANT downstream dB",
-                    )
-                })?;
-                let context_tts_envelope_lufs = parts.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing PREPARE_ASSISTANT context silence target",
-                    )
-                })?;
-                let muted = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT mute")
-                })?;
-                let stamp_boot_ns = parts.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing PREPARE_ASSISTANT context stamp",
-                    )
-                })?;
-                if parts.next().is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "PREPARE_ASSISTANT expects four or nine arguments",
-                    ));
-                }
-                Some(VolumeContext {
-                    canonical_db: parse_required_f32(
-                        canonical_db,
-                        "PREPARE_ASSISTANT canonical dB",
-                    )?,
-                    downstream_db: parse_required_f32(
-                        downstream_db,
-                        "PREPARE_ASSISTANT downstream dB",
-                    )?,
-                    tts_envelope_lufs: parse_required_f32(
-                        context_tts_envelope_lufs,
-                        "PREPARE_ASSISTANT context silence target",
-                    )?,
-                    muted: parse_bool_token(muted, "PREPARE_ASSISTANT mute")?,
-                    stamp_boot_ns: stamp_boot_ns.parse::<u64>().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "invalid PREPARE_ASSISTANT context stamp",
-                        )
-                    })?,
-                })
-            }
+        let volume_context = if parts.clone().next().is_some() {
+            Some(parse_volume_context(parts, "PREPARE_ASSISTANT")?)
+        } else {
+            None
         };
         validate_token(provider, "PREPARE_ASSISTANT provider")?;
         validate_token(model, "PREPARE_ASSISTANT model")?;
@@ -1086,6 +1000,46 @@ fn read_audio_payload<R: BufRead>(
     let mut bytes = vec![0u8; byte_len];
     reader.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+
+fn parse_volume_context(
+    mut parts: std::str::Split<'_, char>,
+    command: &str,
+) -> io::Result<VolumeContext> {
+    let mut next = |field| {
+        parts.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing {command} {field}"),
+            )
+        })
+    };
+    let canonical_db = next("canonical dB")?;
+    let downstream_db = next("downstream dB")?;
+    let tts_envelope_lufs = next("context silence target")?;
+    let muted = next("mute")?;
+    let stamp_boot_ns = next("context stamp")?;
+    if parts.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{command} volume context expects exactly five arguments"),
+        ));
+    }
+    Ok(VolumeContext {
+        canonical_db: parse_required_f32(canonical_db, &format!("{command} canonical dB"))?,
+        downstream_db: parse_required_f32(downstream_db, &format!("{command} downstream dB"))?,
+        tts_envelope_lufs: parse_required_f32(
+            tts_envelope_lufs,
+            &format!("{command} context silence target"),
+        )?,
+        muted: parse_bool_token(muted, &format!("{command} mute"))?,
+        stamp_boot_ns: stamp_boot_ns.parse::<u64>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid {command} context stamp"),
+            )
+        })?,
+    })
 }
 
 fn parse_optional_f32(value: &str, field: &str) -> io::Result<Option<f32>> {
