@@ -802,14 +802,15 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
 
         _run_action(handler, "/pair", body, apply)
 
-    def _post_connect(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/connect")
+    def _post_device_action(handler: BaseHTTPRequestHandler, action: str) -> None:
+        path = f"/{action}"
+        body = _prepare_action(handler, path)
         if body is None:
             return
 
         def apply(body: dict[str, Any]) -> None:
             attempt, resumed = _start_device_mutation(
-                "connect", body["mac"], body["mutationId"], idle_hold=idle_hold,
+                action, body["mac"], body["mutationId"], idle_hold=idle_hold,
             )
             if attempt is None:
                 handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
@@ -818,52 +819,16 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                 _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
             )
 
-        _run_action(handler, "/connect", body, apply)
-
-    def _post_disconnect(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/disconnect")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            attempt, resumed = _start_device_mutation(
-                "disconnect", body["mac"], body["mutationId"], idle_hold=idle_hold,
-            )
-            if attempt is None:
-                handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
-                return
-            handler._send_json(
-                _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
-            )
-
-        _run_action(handler, "/disconnect", body, apply)
-
-    def _post_forget(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/forget")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            attempt, resumed = _start_device_mutation(
-                "forget", body["mac"], body["mutationId"], idle_hold=idle_hold,
-            )
-            if attempt is None:
-                handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
-                return
-            handler._send_json(
-                _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
-            )
-
-        _run_action(handler, "/forget", body, apply)
+        _run_action(handler, path, body, apply)
 
     _POST_ROUTES = {
         "/power": _post_power,
         "/discoverable": _post_discoverable,
         "/scan": _post_scan,
         "/pair": _post_pair,
-        "/connect": _post_connect,
-        "/disconnect": _post_disconnect,
-        "/forget": _post_forget,
+        "/connect": lambda handler: _post_device_action(handler, "connect"),
+        "/disconnect": lambda handler: _post_device_action(handler, "disconnect"),
+        "/forget": lambda handler: _post_device_action(handler, "forget"),
     }
 
     return Handler
