@@ -33,7 +33,6 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     COMPOSED_BOOST_EXCEEDED,
     FILTER_BOOST_TOO_HIGH,
     FILTER_COUNT_EXCEEDED,
-    FILTER_CUT_TOO_DEEP,
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
     ROOM_MEDIAN_UNAVAILABLE,
@@ -64,8 +63,8 @@ MEDIAN_SHA256 = "a" * 64
 MODE_HZ = 33.0
 DIP_HZ = 45.0
 NULL_HZ = 90.0
-#: Where the seats disagree most (sigma 9 dB), so a cut there is bounded well
-#: above the strategy's own floor.
+#: Where the seats disagree most (sigma 9 dB), so the floor a cut there is
+#: disclosed against sits well above the strategy's own.
 WIDE_SPREAD_HZ = 200.0
 CEILING_HZ = 350.0
 #: Seats in the fixture cloud. Five of them see the dip, which clears the 70%
@@ -80,10 +79,10 @@ def _bell(freq_hz: float, center_hz: float, depth_db: float, sigma: float) -> fl
     return depth_db * math.exp(-((math.log2(freq_hz / center_hz)) / sigma) ** 2)
 
 
-def _room_median(*, present: int = 5, window: str = "ungated") -> dict[str, Any]:
+def _room_median(*, present: int = 5, window: str = "ungated", dip_hz: float = DIP_HZ) -> dict[str, Any]:
     """One round's median document: 1/12-octave, 20 Hz to just under 400.
 
-    ``present`` is how many of the seats see the dip at :data:`DIP_HZ`; the
+    ``present`` is how many of the seats see the dip at ``dip_hz``; the
     rest read it back to nearly flat, which is what an interference null looks
     like across a cloud.
     """
@@ -95,7 +94,7 @@ def _room_median(*, present: int = 5, window: str = "ungated") -> dict[str, Any]
         "freqs_hz": freqs,
         "median_db": [
             _bell(freq, MODE_HZ, 6.0, 0.15)
-            + _bell(freq, DIP_HZ, -8.0, 0.22)
+            + _bell(freq, dip_hz, -8.0, 0.22)
             + _bell(freq, NULL_HZ, -14.0, 0.04)
             for freq in freqs
         ],
@@ -109,7 +108,7 @@ def _room_median(*, present: int = 5, window: str = "ungated") -> dict[str, Any]
                 "id": f"seat-{index}",
                 "deviation_db": [
                     6.0
-                    if index >= present and abs(math.log2(freq / DIP_HZ)) <= 0.2
+                    if index >= present and abs(math.log2(freq / dip_hz)) <= 0.2
                     else 0.0
                     for freq in freqs
                 ],
@@ -214,18 +213,6 @@ def test_an_unreadable_median_is_not_evidence(break_document):
             id=f"q_outside_the_room_range_{q}",
         ) for q in (-1.0, 0.0, 0.5, ROOM_PEQ_Q_MAX + 1.0)),
         pytest.param(
-            FILTER_CUT_TOO_DEEP,
-            {"filters": [{"freq": WIDE_SPREAD_HZ, "q": 3.0, "gain": -8.0}]},
-            {},
-            id="cut_past_what_the_spread_supports",
-        ),
-        pytest.param(
-            TAPER_VIOLATED,
-            {"filters": [{"freq": 277.0, "q": 1.0, "gain": -6.0}]},
-            {},
-            id="wide_cut_still_open_at_the_ceiling",
-        ),
-        pytest.param(
             FILTER_COUNT_EXCEEDED,
             {"filters": [
                 {"freq": 30.0 + index, "q": 3.0, "gain": -1.0} for index in range(9)
@@ -288,10 +275,11 @@ def test_optional_median_echo_and_author_are_disclosed(echo, author):
 
 @pytest.mark.parametrize("sides", [("mono",), ("left", "right")])
 def test_taper_refusal_carries_every_bin_and_filter_contribution(sides):
-    filters = [{"freq": 277.0, "q": 1.0, "gain": -3.0}, {"freq": 282.0, "q": 8.0, "gain": -2.0}]
+    # A boost the seats admit below the knee whose skirt stays open at the ceiling.
+    filters = [{"freq": 250.0, "q": 1.0, "gain": 4.0}, {"freq": 282.0, "q": 8.0, "gain": -2.0}]
     raw = _document(sides={side: filters for side in sides})
     with pytest.raises(RoomPrescriptionRefused) as refused:
-        read_room_prescription(raw, room_median=read_room_median(_room_median()),
+        read_room_prescription(raw, room_median=read_room_median(_room_median(dip_hz=250.0)),
                                room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=sides)
     assert refused.value.reason == TAPER_VIOLATED
     evidence = refused.value.evidence
@@ -300,9 +288,31 @@ def test_taper_refusal_carries_every_bin_and_filter_contribution(sides):
     assert {row["side"] for row in evidence["bins"]} == set(sides)
     assert any(row["freq_hz"] == CEILING_HZ for row in evidence["bins"])
     for row in evidence["bins"]:
-        assert max(row["cut_floor_db"] - row["composed_db"], row["composed_db"] - row["boost_cap_db"]) > evidence["tolerance_db"]
+        assert row["composed_db"] - row["boost_cap_db"] > evidence["tolerance_db"]
         assert row["composed_db"] == pytest.approx(sum(f["response_db"] for f in row["filters"]))
         assert [{k: f[k] for k in ("freq", "q", "gain")} for f in row["filters"]] == filters
+
+
+@pytest.mark.parametrize("sides,disclosed", [
+    pytest.param({"mono": [{"freq": WIDE_SPREAD_HZ, "q": 3.0, "gain": -8.0}]}, {("mono", 0)},
+                 id="cut_past_what_the_spread_supports"),
+    pytest.param({"mono": [{"freq": 277.0, "q": 1.0, "gain": -6.0}]}, {("mono", 0)},
+                 id="wide_cut_still_open_at_the_ceiling"),
+    pytest.param({side: [{"freq": 277.0, "q": 1.0, "gain": -3.0}, {"freq": 282.0, "q": 8.0, "gain": -2.0}]
+                  for side in ("left", "right")}, {("left", 0), ("right", 0)},
+                 id="only_the_filter_cutting_where_the_side_is_past_the_floor"),
+])
+def test_a_cut_past_the_spread_floor_is_disclosed_not_refused(sides, disclosed):
+    prescription = read_room_prescription(
+        _document(sides=sides), room_median=read_room_median(_room_median()),
+        room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=tuple(sides))
+    assert room_prescription_to_candidate_fields(prescription)["room_correction"]["sides"] == sides
+    receipt = prescription.to_dict()["sides"]
+    beyond = {(side, position): entry.pop("cut_beyond_spread_db")
+              for side, entries in receipt.items() for position, entry in enumerate(entries)
+              if "cut_beyond_spread_db" in entry}
+    assert set(beyond) == disclosed and all(value > 0.0 for value in beyond.values())
+    assert receipt == sides
 
 
 @pytest.mark.parametrize("preview", [False, True])
@@ -450,15 +460,15 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
         assert child.analysis["measurement_status"] == "unmeasured"
 
 
-@pytest.mark.parametrize("n_positions,gain,count,legacy,reason", [
-    (1, -9.0, 1, False, FILTER_CUT_TOO_DEEP),
-    (1, -9.0, 1, True, FILTER_CUT_TOO_DEEP),
-    (3, -9.0, 1, False, None),
-    (1, -6.0, 1, False, None),
-    (1, -4.0, 2, False, TAPER_VIOLATED),
-    (3, -4.0, 2, False, None),
+@pytest.mark.parametrize("n_positions,gain,count,legacy,discloses", [
+    (1, -9.0, 1, False, True),
+    (1, -9.0, 1, True, True),
+    (3, -9.0, 1, False, False),
+    (1, -6.0, 1, False, False),
+    (1, -4.0, 2, False, True),
+    (3, -4.0, 2, False, False),
 ])
-def test_the_producers_spatial_support_bounds_room_cuts(tmp_path, n_positions, gain, count, legacy, reason):
+def test_the_producers_spatial_support_sets_the_disclosed_cut_floor(tmp_path, n_positions, gain, count, legacy, discloses):
     round_dir = bank_seat_round(tmp_path, magnitudes_db=[np.full(SEAT_GRID_HZ.shape, -30.0)] * n_positions)
     bundle_dir = round_inputs(round_dir).session_dir
     document = room_median(select_seat_takes(bundle_dir).takes, room_ceiling(bundle_dir))
@@ -473,12 +483,9 @@ def test_the_producers_spatial_support_bounds_room_cuts(tmp_path, n_positions, g
     assert np.allclose(median.median_db, 0.0)
     assert median.freqs_hz[0] >= ROOM_FLOOR_HZ and median.freqs_hz[-1] <= median.ceiling_hz
     proposal = _document(filters=[{"freq": MODE_HZ, "q": 3.0, "gain": gain}] * count)
-    if reason:
-        with pytest.raises(RoomPrescriptionRefused) as excinfo:
-            _read(proposal, document)
-        assert excinfo.value.reason == reason
-        assert excinfo.value.evidence["cut_floor_db"] == pytest.approx(-6.0)
-    else:
-        accepted = _read(proposal, document)
-        assert accepted is not None
-        assert list(accepted.sides["mono"]) == proposal["sides"]["mono"]
+    accepted = _read(proposal, document)
+    assert accepted is not None
+    assert list(accepted.sides["mono"]) == proposal["sides"]["mono"]
+    # One position earns only the -6 dB envelope floor; three earn the -10 dB one.
+    beyond = [entry.get("cut_beyond_spread_db") for entry in accepted.to_dict()["sides"]["mono"]]
+    assert beyond == [pytest.approx(-6.0 - gain * count, abs=0.01) if discloses else None] * count
