@@ -31,6 +31,12 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 
+# jasper/audio_runtime_settings.py owns the live Camilla statefile paths.
+from jasper.audio_runtime_settings import (
+    DEFAULT_CAMILLA2_STATEFILE_PATH,
+    DEFAULT_CAMILLA_STATEFILE_PATH,
+)
+
 
 SAMPLE_RATE = 48_000
 CHANNELS = 2
@@ -148,7 +154,7 @@ def _remote_gain_archive_command(paths: list[str]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="UMIK-2")
-    parser.add_argument("--speaker", default="http://jts3.local")
+    parser.add_argument("--speaker", required=True)
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument("--tone-frequency-hz", type=float, default=1000.0)
     parser.add_argument("--safe-cap-volume-db", type=float, default=-4.0)
@@ -275,8 +281,8 @@ def main() -> int:
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
             "/var/lib/jasper/dsp_apply_state.json",
-            "/var/lib/camilladsp/statefile.yml",
-            "/var/lib/camilladsp/statefile2.yml",
+            DEFAULT_CAMILLA_STATEFILE_PATH,
+            DEFAULT_CAMILLA2_STATEFILE_PATH,
         ]
         if isinstance(active_config, str) and active_config.startswith("/"):
             paths.append(active_config)
