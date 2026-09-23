@@ -36,9 +36,12 @@ import pytest
 
 import jasper.control.handlers.peering as srv_peering
 from jasper.control.server import (
+    _GET_ROUTES,
+    _POST_ROUTES,
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
+from jasper.install_profile import install_profile_has_capability
 from jasper.platform.control_client import PEER_RESPONSE_MAX_BYTES, ControlError
 
 from tests._async_wait import wait_until_sync
@@ -155,83 +158,54 @@ def test_access_log_skips_only_200_on_quiet_paths(
     assert len(_access_log_records(caplog)) == expected_info_records
 
 
-def test_full_profile_allows_every_control_route():
-    # Full speakers allow every route.
-    for path in ("/state", "/mic", "/cue/play", "/session/start"):
-        assert _control_route_allowed_for_install_profile(
-            "full", method="GET", path=path,
+_ROUTES = [
+    (method, path, requires)
+    for method, table in (("GET", _GET_ROUTES), ("POST", _POST_ROUTES))
+    for path, (_handler_name, requires) in table.items()
+]
+
+
+# "endpoint" is a legacy token that normalizes to streambox.
+@pytest.mark.parametrize("profile", ["full", "streambox", "endpoint"])
+@pytest.mark.parametrize(
+    ("method", "path", "requires"),
+    # The last two are routes only under the other method: the gate passes
+    # them and dispatch 404s them.
+    [*_ROUTES, ("POST", "/mic", None), ("GET", "/session/start", None)],
+)
+def test_route_allowed_iff_the_profile_grants_its_capability(
+    profile, method, path, requires,
+):
+    assert _control_route_allowed_for_install_profile(
+        profile, method=method, path=path,
+    ) is (requires is None or install_profile_has_capability(profile, requires))
+
+
+@pytest.mark.parametrize("profile", ["streambox", "endpoint"])
+def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes(profile):
+    """A streambox serves every other route, including the measurement routes
+    its own measurement pages call and the assistant's (ADR-0217)."""
+    routes = {(method, path) for method, path, _ in _ROUTES}
+    allowed = {
+        (method, path)
+        for method, path in routes
+        if _control_route_allowed_for_install_profile(
+            profile, method=method, path=path,
         )
-        assert _control_route_allowed_for_install_profile(
-            "full", method="POST", path=path,
-        )
-
-
-def test_legacy_endpoint_token_uses_streambox_route_policy():
-    # The removed endpoint tier maps to streambox, so the legacy token gets
-    # the streambox route policy (e.g. /state + /source/state allowed).
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/state",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/source/state",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/source/select",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="GET", path="/mic",
-    )
-
-
-def test_streambox_profile_control_route_policy():
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/healthz",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/state",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/source/state",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/system/snapshot",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/mic",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method="GET", path="/aec",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/volume/set",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/source/select",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/transport/toggle",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/transport/next",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/transport/previous",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/system/audio-quality",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/system/usb-latency",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/system/restart/audio",
-    )
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/usb-forensics",
-    )
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path="/mic/mute",
-    )
+    }
+    assert routes - allowed == {
+        (method, path)
+        for method, path in routes
+        if path.split("/")[1] in ("mic", "aec")
+    }
+    assert allowed >= {
+        ("GET", "/measurement"),
+        ("POST", "/measurement/hold"),
+        ("POST", "/measurement/release"),
+        ("POST", "/session/start"),
+        ("POST", "/cue/play"),
+        ("POST", "/system/restart/voice"),
+    }
 
 
 def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
@@ -433,9 +407,7 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         "/nonexistent.sock",
         ha_status_cache=object(),
     )
-    assert {"do_GET", "do_POST", "_GET_ROUTES", "_POST_ROUTES"} <= set(
-        handler.__dict__,
-    )
+    assert {"do_GET", "do_POST"} <= set(handler.__dict__)
 
     concern_mixins = (
         VolumeRoutes,
@@ -446,8 +418,9 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         SystemRoutes,
     )
     routed_methods = {
-        *handler._GET_ROUTES.values(),
-        *handler._POST_ROUTES.values(),
+        handler_name
+        for table in (_GET_ROUTES, _POST_ROUTES)
+        for handler_name, _requires in table.values()
     }
     for method_name in routed_methods:
         assert method_name not in handler.__dict__
