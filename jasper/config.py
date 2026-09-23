@@ -26,6 +26,7 @@ from .location_state import (
     WEATHER_UNITS_ENV,
 )
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
+from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
@@ -833,7 +834,7 @@ class Config:
             # systemd's RuntimeDirectory=jasper auto-creates /run/jasper
             # at service start with mode 0750.
             voice_control_socket=_env(
-                "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+                "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
             ),
             # Multi-device peering — read JASPER_PEERING the same way
             # the peering daemon does. Anything other than "on" / "true"
