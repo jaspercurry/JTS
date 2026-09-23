@@ -101,6 +101,10 @@ JASPER_RETIRED_LEFTOVERS=(
     # install after this lands.
     "file|${LOCAL_SBIN_DIR}/jasper-audio-topology ${LOCAL_SBIN_DIR}/jasper-derive-device-name|the retired topology switcher and device-name deriver"
     "dir|/etc/jasper/audio-topology|the retired topology switcher's config tree"
+    # The deleted tone lane's scratch tree: short bounded tone WAVs, never
+    # user data. REMOVAL CONDITION: every box has taken one install after
+    # this lands.
+    "dir|${STATE_DIR}/active_speaker_tone_artifacts|the retired tone lane's artifact directory"
     # Keys an older .env.example seeded that the wizards now own in their
     # compartments: every unit loads jasper.env first, so the compartment
     # already wins — the stale jasper.env copy is a second, dead writer's
