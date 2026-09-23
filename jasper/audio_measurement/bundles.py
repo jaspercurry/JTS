@@ -43,8 +43,6 @@ KIND_NAMESPACE_PREFIX = "jts_"
 LEGACY_UNNAMESPACED_KINDS = frozenset(
     {
         # active-speaker commissioning (jasper/active_speaker)
-        "apply_transaction",
-        "candidate_profile",
         "capture_analysis",
         "capture_wav",
         "metadata",
