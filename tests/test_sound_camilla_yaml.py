@@ -1031,13 +1031,9 @@ def test_muted_outputs_leaves_the_CLAIMED_channel_byte_identical():
 
 
 def test_every_width_this_emitter_uses_is_one_the_ring_accepts():
-    """``_normalize_width`` skips the bounds import ON the default width, so the
-    default has to be in range as a fact rather than an assumption. Both halves
-    of the graph are rings (ADR-0100), so the program's width is bounded too."""
-    from jasper.active_speaker.camilla_yaml import (
-        MAX_RING_CHANNELS,
-        MIN_RING_CHANNELS,
-    )
+    """Both halves of the graph are rings (ADR-0100), so the program's width is
+    bounded as well as the output's."""
+    from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
     from jasper.sound.camilla_yaml import FLAT_GRAPH_WIDTH, FLAT_PROGRAM_WIDTH
 
     assert MIN_RING_CHANNELS <= FLAT_PROGRAM_WIDTH <= MAX_RING_CHANNELS

@@ -23,8 +23,6 @@ from .decorate_rear import (
 )
 from .devices import (
     FORBIDDEN_ACTIVE_PLAYBACK_TOKENS as FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
-    MAX_RING_CHANNELS as MAX_RING_CHANNELS,
-    MIN_RING_CHANNELS as MIN_RING_CHANNELS,
     ActiveEmitDevices as ActiveEmitDevices,
     _assert_ring_playback_width as _assert_ring_playback_width,
     _camilla_latency as _camilla_latency,

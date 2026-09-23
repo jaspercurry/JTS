@@ -24,8 +24,9 @@ from jasper.output_topology import (
     SpeakerGroup,
 )
 
+from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
+
 from ._common import issue as _issue
-from .camilla_yaml import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 
 ACTIVE_BASELINE_SOURCE = (

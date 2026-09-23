@@ -43,6 +43,7 @@ from jasper.camilla_emit import (
 )
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from .profile import (
     SoundProfile,
@@ -79,20 +80,10 @@ def _normalize_width(width: int) -> int:
 
     Bounded by the ring's own channel accept-set: playback is Ring B
     (ADR-0100), so a width the transport cannot carry fails the ioplug open
-    rather than degrading. Those bounds are imported from their owner and only
-    OFF the default, keeping the runtime module out of an ordinary stereo
-    emission (see this module's ``TYPE_CHECKING`` note); the default sitting
-    inside them is test-pinned instead.
+    rather than degrading.
     """
 
     width = int(width)
-    if width == FLAT_GRAPH_WIDTH:
-        return width
-    from jasper.active_speaker.camilla_yaml import (
-        MAX_RING_CHANNELS,
-        MIN_RING_CHANNELS,
-    )
-
     if not MIN_RING_CHANNELS <= width <= MAX_RING_CHANNELS:
         raise ValueError(
             f"width must be {MIN_RING_CHANNELS}..{MAX_RING_CHANNELS} playback "
