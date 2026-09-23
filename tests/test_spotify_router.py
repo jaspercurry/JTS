@@ -991,5 +991,4 @@ async def test_airplay_client_name_from_busctl(monkeypatch, stdout, expected):
 @pytest.mark.parametrize("result", [None, BusctlResult(1, b"", b"denied")])
 async def test_airplay_client_name_busctl_failure(monkeypatch, result):
     monkeypatch.setattr("jasper.spotify_router.run_busctl", AsyncMock(return_value=result))
-    with pytest.raises(RuntimeError):
-        await airplay_client_name()
+    assert await airplay_client_name() == ""

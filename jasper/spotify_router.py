@@ -317,15 +317,15 @@ _CLIENT_NAME_RE = re.compile(r'^s\s+"((?:[^"\\]|\\.)*)"$')
 
 
 async def airplay_client_name() -> str:
-    """Read the connected sender name; raise RuntimeError if the query fails."""
+    """Read the connected sender name. Returns "" when AirPlay is not
+    active, the query is unavailable or times out, or the property is
+    empty — unreadable is treated the same as "no AirPlay"."""
     result = await run_busctl(
         "get-property", GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, "ClientName",
         timeout=2.0,
     )
-    if result is None:
-        raise RuntimeError("ClientName unavailable or timed out")
-    if result.returncode != 0:
-        raise RuntimeError(f"ClientName failed: {result.stderr.decode(errors='replace').strip()}")
+    if result is None or result.returncode != 0:
+        return ""
     m = _CLIENT_NAME_RE.search(result.stdout.decode(errors="replace").strip())
     return m.group(1) if m else ""
 
