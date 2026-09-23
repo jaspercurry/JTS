@@ -807,15 +807,12 @@ def test_make_server_accepts_host_port_tuple(backend) -> None:
     from http.server import ThreadingHTTPServer
     server = wake_corpus_setup.make_server(
         ("127.0.0.1", 0),  # port=0 → OS picks a free port (no clash in CI)
-        csrf_token="test-token",
         backend=backend,
     )
     try:
         assert isinstance(server, ThreadingHTTPServer)
-        # Handler must have backend + csrf_token bound for request handling
-        handler_cls = server.RequestHandlerClass
-        assert handler_cls.backend is backend
-        assert handler_cls.csrf_token == "test-token"
+        # Handler must have the backend bound for request handling
+        assert server.RequestHandlerClass.backend is backend
     finally:
         server.server_close()
 
@@ -832,9 +829,7 @@ def test_make_server_accepts_prebound_socket(backend) -> None:
     s.bind(("127.0.0.1", 0))
     s.listen(5)
     try:
-        server = wake_corpus_setup.make_server(
-            s, csrf_token="test-token", backend=backend,
-        )
+        server = wake_corpus_setup.make_server(s, backend=backend)
         try:
             assert isinstance(server, ThreadingHTTPServer)
             # The server adopted our pre-bound socket — same fd, same address

@@ -135,7 +135,7 @@ def test_post_session_handler_refuses_while_muted(
         output_dir=tmp_path / "out",
         mic_mute_path=mute_path,
     )  # intentionally not started — refusal must come first
-    handler_cls = wake_corpus_setup._make_handler_class(backend, "tok")
+    handler_cls = wake_corpus_setup._make_handler_class(backend)
     handler = handler_cls.__new__(handler_cls)
     body = json.dumps({"member": "jasper"}).encode()
     handler.headers = Message()

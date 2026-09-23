@@ -55,12 +55,10 @@ lives in ``jasper.wake_corpus.bridge_session``.
 from __future__ import annotations
 
 import argparse
-import functools
 import html
 import json
 import logging
 import os
-import secrets
 import subprocess
 import time
 from dataclasses import dataclass
@@ -117,14 +115,16 @@ from jasper.wake_corpus.recording_backend import (
     RecordingBackend,
     StateError,
 )
+from jasper.platform import systemd
 from jasper.web._common import (
-    RouteFn,
+    begin_request,
     dispatch_get,
     dispatch_post,
-    guard_mutating_host,
+    guard_mutating_request,
     json_body,
     prefix_route,
     read_json_body,
+    reject_csrf,
     resolve_samples,
     route_path,
     send_html_response,
@@ -197,12 +197,6 @@ CAPTURE_OPTIONS: tuple[CaptureOption, ...] = (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8782
 
-# CSRF header name. Matches common JS framework conventions; the page's
-# ES module (/assets/wake-corpus/js/main.js) reads `<meta name="jts-csrf">`
-# and sends this header
-# on every mutating request.
-CSRF_HEADER = "X-CSRF-Token"
-
 
 # ---------------------------------------------------------------------------
 # HTTP handlers
@@ -211,7 +205,6 @@ CSRF_HEADER = "X-CSRF-Token"
 
 class _Handler(BaseHTTPRequestHandler):
     backend: RecordingBackend
-    csrf_token: str
 
     # ----- helpers --------------------------------------------------
 
@@ -233,54 +226,11 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return body
 
-    def _check_csrf(self) -> bool:
-        """Verify the request's Host/Origin, then its X-CSRF-Token header.
-
-        Calls `guard_mutating_host` first — the same DNS-rebinding /
-        cross-site Host/Origin allowlist `guard_mutating_request` applies
-        for every other wizard — before comparing the X-CSRF-Token header
-        against the server-held token. Returns True if both pass, False
-        (having sent the 403 itself) otherwise.
-
-        The CSRF token is embedded in the served HTML page via a meta
-        tag; the page's JS reads it and sends it on every mutating
-        request. Defense against a malicious cross-origin site triggering
-        recordings or daemon toggles from the operator's browser.
-
-        Uses `secrets.compare_digest` for timing-safe comparison
-        (defense-in-depth — the attacker probably can't observe
-        latency in practice, but it's a one-line free win).
-        """
-        if not guard_mutating_host(self):
-            self._send_error_json(
-                403,
-                "request rejected: Host/Origin not allowed for "
-                "mutating requests",
-            )
-            return False
-        header_token = self.headers.get(CSRF_HEADER, "")
-        # http.server decodes headers latin-1, so a non-ASCII header byte
-        # still arrives as a str; compare_digest raises TypeError on a
-        # non-ASCII str operand, so reject one before the compare.
-        if not header_token.isascii() or not secrets.compare_digest(
-            header_token, self.csrf_token,
-        ):
-            self._send_error_json(
-                403,
-                f"missing or invalid {CSRF_HEADER} header — reload "
-                "the page to refresh the token",
-            )
-            return False
-        return True
-
     # ----- routing --------------------------------------------------
     #
     # GET and POST ride the shared seam. do_DELETE stays hand-rolled: its
     # `/api/clip|session/<id>` shapes are prefix routes with no table, and
-    # the seam covers GET/POST only. GET is read-guarded but NOT
-    # CSRF-protected (read-only); every POST route body wears
-    # `_csrf_guarded`, this recorder's sanctioned bespoke scheme, which
-    # runs before `@json_body` reads anything.
+    # the seam covers GET/POST only.
 
     def do_GET(self) -> None:  # noqa: N802
         dispatch_get(self, _GET_ROUTES, resolve=_resolve_clip_wav)
@@ -370,7 +320,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- POST -------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
-        dispatch_post(self, _POST_ROUTES, guard="per-body")
+        dispatch_post(self, _POST_ROUTES, guard="header")
 
     # ----- DELETE -----------------------------------------------------
 
@@ -387,7 +337,8 @@ class _Handler(BaseHTTPRequestHandler):
         ):
             self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
             return
-        if not self._check_csrf():
+        if not guard_mutating_request(self):
+            reject_csrf(self)
             return
         # /api/clip/<id>
         if parts[2] == "clip":
@@ -815,8 +766,9 @@ def _post_voice_daemon(handler: _Handler, body: dict[str, Any]) -> None:
 
 
 def _get_index(handler: _Handler) -> None:
+    ctx = begin_request(handler)
     send_html_response(
-        handler, _render_index_html(handler.csrf_token).encode("utf-8"),
+        handler, _render_index_html(ctx["csrf_token"]).encode("utf-8"),
     )
 
 
@@ -836,19 +788,6 @@ _resolve_clip_wav = resolve_samples({"/api/clip/sample/wav": _get_clip_wav})(
 )
 
 
-def _csrf_guarded(fn: RouteFn) -> RouteFn:
-    """Run this recorder's bespoke server-token CSRF check before the route
-    body — the sanctioned exception to the shared double-submit chokepoint.
-    `_check_csrf` sends its own 403; a rejected POST reads no body."""
-    @functools.wraps(fn)
-    def route(handler: Any) -> None:
-        if not handler._check_csrf():
-            return
-        fn(handler)
-    setattr(route, "csrf_mode", "header")
-    return route
-
-
 # ----- route tables (exact path -> callable taking the handler) -----
 # test_get_routes_resolve_via_render_and_module asserts the ES module's
 # relative api paths stay in sync.
@@ -862,50 +801,36 @@ _GET_ROUTES = {
     "/api/recording/level": _get_recording_level,
 }
 _POST_ROUTES = {
-    "/api/session": _csrf_guarded(_post_session),
-    "/api/capture-plan": _csrf_guarded(_post_capture_plan),
-    "/api/session/load": _csrf_guarded(_post_session_load),
-    "/api/session/unload": _csrf_guarded(_post_session_unload),
-    "/api/clip/start": _csrf_guarded(_post_clip_start),
-    "/api/clip/stop": _csrf_guarded(_post_clip_stop),
-    "/api/bridge-outputs": _csrf_guarded(_post_bridge_outputs),
-    "/api/corpus-test-mode": _csrf_guarded(_post_corpus_test_mode),
-    "/api/voice-daemon": _csrf_guarded(_post_voice_daemon),
+    "/api/session": _post_session,
+    "/api/capture-plan": _post_capture_plan,
+    "/api/session/load": _post_session_load,
+    "/api/session/unload": _post_session_unload,
+    "/api/clip/start": _post_clip_start,
+    "/api/clip/stop": _post_clip_stop,
+    "/api/bridge-outputs": _post_bridge_outputs,
+    "/api/corpus-test-mode": _post_corpus_test_mode,
+    "/api/voice-daemon": _post_voice_daemon,
 }
 
 
-def _make_handler_class(
-    backend: RecordingBackend, csrf_token: str,
-) -> type[_Handler]:
+def _make_handler_class(backend: RecordingBackend) -> type[_Handler]:
     class _BoundHandler(_Handler):
         pass
     _BoundHandler.backend = backend
-    _BoundHandler.csrf_token = csrf_token
     return _BoundHandler
 
 
 def make_server(
     target,
     *,
-    csrf_token: str,
     backend: RecordingBackend,
 ) -> ThreadingHTTPServer:
-    """Construct the recorder's HTTP server bound to `target`.
-
-    `target` is either:
-      - an `(host, port)` tuple for direct binding (CLI use)
-      - a `socket.socket` already bound by systemd (socket-activation
-        path via `jasper.web.__main__`)
-      - an `int` port (legacy direct-bind shortcut)
-
-    Pairs with `jasper.platform.systemd.make_http_server` to handle the
-    socket-vs-bind branching. The backend must already be `start()`ed
-    by the caller (the asyncio loop thread + crash-recovery state both
-    depend on it).
+    """Construct the recorder's HTTP server bound to `target` — any target
+    `jasper.platform.systemd.make_http_server` accepts. The backend must
+    already be `start()`ed by the caller (the asyncio loop thread +
+    crash-recovery state both depend on it).
     """
-    from ..platform import systemd
-    handler_cls = _make_handler_class(backend, csrf_token)
-    return systemd.make_http_server(target, handler_cls)
+    return systemd.make_http_server(target, _make_handler_class(backend))
 
 
 # ---------------------------------------------------------------------------
@@ -1233,17 +1158,8 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = RecordingBackend(args.output, ports=ports)
     backend.start()
-    # CSRF token regenerated each process startup. If you reload the
-    # tab the page picks up the current token; old tabs keep their
-    # stale token and get 403s until reload — acceptable UX for an
-    # operator tool that runs for a single session.
-    csrf_token = secrets.token_hex(16)
     try:
-        server = make_server(
-            (args.host, args.port),
-            csrf_token=csrf_token,
-            backend=backend,
-        )
+        server = make_server((args.host, args.port), backend=backend)
         logger.info(
             "jasper-wake-corpus-web on http://%s:%d  output=%s  legs=%s",
             args.host, args.port, args.output,

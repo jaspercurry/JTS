@@ -165,23 +165,14 @@ def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
 # same). First run of the ordering guard caught wake_corpus_setup.py checking
 # CSRF before routing in both do_POST and do_DELETE — bogus paths 403'd.
 
-# wake_corpus_setup predates the shared double-submit seam and runs a
-# reviewed bespoke scheme (server-held token + X-CSRF-Token header compare
-# in _check_csrf). It is the only sanctioned exception to the
-# guard_mutating_request chokepoint; do not grow this set. It is NOT
-# exempt from the Host/Origin allowlist axis guard_mutating_request also
-# applies — _check_csrf must call guard_mutating_host first, asserted
-# below.
-_BESPOKE_CSRF_WIZARDS = {"wake_corpus_setup.py"}
 _CSRF_GUARD_CALL_RE = re.compile(
-    r"\bguard_mutating_request\s*\(|\b_check_csrf\s*\(|\bguard_mutating_host\s*\("
+    r"\bguard_mutating_request\s*\(|\bguard_mutating_host\s*\("
 )
 
 
 def _call_target_name(call: ast.Call) -> str | None:
     """Resolve a Call's target name, bare (`f(...)`) or attribute
-    (`mod.f(...)`) — `guard_mutating_host` and `secrets.compare_digest`
-    are called in each shape."""
+    (`mod.f(...)`)."""
     func = call.func
     if isinstance(func, ast.Name):
         return func.id
@@ -436,11 +427,12 @@ def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
 # handler instances instead of reading a dispatcher's source, so a wizard is
 # free to hold its table in a closure, on the class, or at module level.
 
-# The recorder's bespoke scheme compares a server-held token, so the pins
-# hand it back the same one _make_handler_class was built with.
-_WAKE_CORPUS_TOKEN = "wake-corpus-test-token"
 # Syntactically valid double-submit token (base64url, 32..128 chars).
 _VALID_CSRF_TOKEN = "A" * 43
+_CSRF_HEADERS = {
+    "Cookie": f"{CSRF_COOKIE_NAME}={_VALID_CSRF_TOKEN}",
+    "X-CSRF-Token": _VALID_CSRF_TOKEN,
+}
 
 _TABLED_WIZARD_FACTORIES = {
     "bluetooth_setup": lambda: bluetooth_setup._make_handler(),
@@ -483,9 +475,7 @@ _TABLED_WIZARD_FACTORIES = {
         "assistant_loudness_profile_path": str(_SCRATCH / "voice-loudness.json"),
         "loudness_seed_fn": lambda *a, **k: None,
     }),
-    "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
-        object(), _WAKE_CORPUS_TOKEN,
-    ),
+    "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(object()),
     "wake_setup": lambda: wake_setup._make_handler(
         {
             "state_path": str(_SCRATCH / "wake.env"),
@@ -511,6 +501,7 @@ _HEADER_CSRF_WIZARDS = frozenset({
     "sources_setup",
     "system_setup",
     "tools_setup",
+    "wake_corpus_setup",
     "wifi_setup",
 })
 
@@ -651,15 +642,6 @@ _JSON_BODY_POST_ROUTES = [
 ]
 
 
-def _csrf_headers(module_name: str) -> dict[str, str]:
-    if f"{module_name}.py" in _BESPOKE_CSRF_WIZARDS:
-        return {"X-CSRF-Token": _WAKE_CORPUS_TOKEN}
-    return {
-        "Cookie": f"{CSRF_COOKIE_NAME}={_VALID_CSRF_TOKEN}",
-        "X-CSRF-Token": _VALID_CSRF_TOKEN,
-    }
-
-
 @pytest.mark.parametrize(
     ("module_name", "handler_cls", "path"),
     TABLED_POST_ROUTES,
@@ -692,7 +674,7 @@ def test_tabled_post_route_without_a_csrf_token_is_forbidden(
 def test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token(
     module_name, handler_cls,
 ):
-    for token_headers in ({}, _csrf_headers(module_name)):
+    for token_headers in ({}, _CSRF_HEADERS):
         req = _WizardRequest(
             handler_cls,
             "/not-a-route",
@@ -765,7 +747,7 @@ def test_a_malformed_json_body_never_reaches_a_route_body(
     req = _WizardRequest(
         handler_cls,
         path,
-        headers={"Host": "jts.local", **_csrf_headers(module_name)},
+        headers={"Host": "jts.local", **_CSRF_HEADERS},
         body=b"{not json",
     )
     req.do_POST()
@@ -794,7 +776,7 @@ _POST_WORK_MARKERS = (
     "self._read_json(",
     "self._handle_",
 )
-_POST_GUARD_MARKERS = ("guard_mutating_request(", "self._check_csrf(")
+_POST_GUARD_MARKERS = ("guard_mutating_request(",)
 
 
 def _dispatcher_source(path: Path, name: str) -> str | None:
@@ -828,56 +810,9 @@ def test_untabled_wizard_dispatchers_guard_reads_and_guard_before_work(path):
     )
 
 
-def test_bespoke_csrf_scheme_guards_the_host_before_the_token_compare():
-    """The sanctioned bespoke scheme is exempt from the shared
-    double-submit chokepoint, not from the Host/Origin allowlist axis
-    `guard_mutating_request` also applies."""
-    for file_name in _BESPOKE_CSRF_WIZARDS:
-        path = next(p for p in WEB_PY_FILES if p.name == file_name)
-        source = path.read_text()
-        check_csrf_defs = [
-            node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
-        ]
-        assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
-        csrf_calls = [
-            node for node in ast.walk(check_csrf_defs[0])
-            if isinstance(node, ast.Call)
-        ]
-        # AST-walk for a real Call node, not a regex over the source
-        # text — a docstring/comment reading "guard_mutating_host(handler)"
-        # must not satisfy this.
-        guard_calls = [
-            c for c in csrf_calls if _call_target_name(c) == "guard_mutating_host"
-        ]
-        assert guard_calls, (
-            f"{path}::_check_csrf must call guard_mutating_host() first — "
-            "the shared Host/Origin allowlist axis is not part of the "
-            "bespoke-CSRF-scheme exception"
-        )
-        compare_calls = [
-            c for c in csrf_calls if _call_target_name(c) == "compare_digest"
-        ]
-        assert compare_calls, (
-            f"{path}::_check_csrf must compare the token with "
-            "secrets.compare_digest()"
-        )
-        # Ordering invariant guard_mutating_request's docstring documents
-        # (_common.py): the host/Origin guard runs before the token
-        # compare. AST line positions, not string indexes.
-        assert (
-            min(c.lineno for c in guard_calls)
-            < min(c.lineno for c in compare_calls)
-        ), (
-            f"{path}::_check_csrf must call guard_mutating_host() before "
-            "the compare_digest() token compare"
-        )
-
-
 # The chokepoint reach a do_POST may have: the guard called in the
-# dispatcher, the shared `dispatch_post` seam that calls it there, or
-# wake_corpus_setup's sanctioned bespoke scheme (pinned above).
-_CHOKEPOINT_CALLS = ("guard_mutating_request", "dispatch_post", "_check_csrf")
+# dispatcher, or the shared `dispatch_post` seam that calls it there.
+_CHOKEPOINT_CALLS = ("guard_mutating_request", "dispatch_post")
 
 
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():

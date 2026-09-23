@@ -310,7 +310,6 @@ web_main._make_lazy_wake_corpus_server(
     ("127.0.0.1", 0),
     output_dir=Path("."),
     ports={"on": 9876},
-    csrf_token="x",
 )
 loaded = [
     m for m in ("numpy", "scipy", "jasper.web.wake_corpus_setup")

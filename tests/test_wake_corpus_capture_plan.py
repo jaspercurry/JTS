@@ -195,7 +195,6 @@ def test_combined_web_lazy_wake_corpus_serves_after_first_request(
         ("127.0.0.1", 0),
         output_dir=tmp_path / "out",
         ports={"on": 9876, "off": 9877},
-        csrf_token="test-token",
     )
     port = server.server_address[1]
     th = threading.Thread(target=server.serve_forever, daemon=True)

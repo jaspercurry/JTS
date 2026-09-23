@@ -181,24 +181,22 @@ def test_leg_label_contract_and_runtime_xss_sinks() -> None:
 
 def test_public_surface_and_lazy_load_contract_preserved() -> None:
     """jasper.web.__main__'s lazy loader calls RecordingBackend +
-    _make_handler_class(backend, csrf_token); make_server/main are CLI
-    entrypoints. Migrating presentation must not move these names."""
+    _make_handler_class(backend); make_server/main are CLI entrypoints.
+    Migrating presentation must not move these names."""
     assert hasattr(wc, "RecordingBackend")
     assert callable(wc._make_handler_class)
     assert callable(wc.make_server)
     assert callable(wc.main)
     assert callable(wc._render_index_html)
-    assert wc.CSRF_HEADER == "X-CSRF-Token"
 
 
-def test_make_handler_class_binds_backend_and_token(tmp_path) -> None:
-    """_make_handler_class returns a handler subclass with backend + token
+def test_make_handler_class_binds_backend(tmp_path) -> None:
+    """_make_handler_class returns a handler subclass with the backend
     bound, without starting the asyncio loop / opening any UDP socket."""
     backend = recording_backend.RecordingBackend(output_dir=tmp_path / "out")  # no .start()
-    handler_cls = wc._make_handler_class(backend, "tok-123")
+    handler_cls = wc._make_handler_class(backend)
     assert issubclass(handler_cls, BaseHTTPRequestHandler)
     assert handler_cls.backend is backend
-    assert handler_cls.csrf_token == "tok-123"
 
 
 def test_get_routes_resolve_via_render_and_module() -> None:

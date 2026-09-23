@@ -178,7 +178,6 @@ def _make_lazy_wake_corpus_server(
     *,
     output_dir: Path,
     ports: dict[str, int],
-    csrf_token: str,
 ):
     """Bind `/wake-corpus/` without importing NumPy until first use."""
 
@@ -194,17 +193,14 @@ def _make_lazy_wake_corpus_server(
                 if cls._loaded:
                     return
 
-                from . import wake_corpus_setup
+                from . import wake_corpus_setup  # lazy: numpy import cost
 
                 backend = wake_corpus_setup.RecordingBackend(
                     output_dir=output_dir,
                     ports=ports,
                 )
                 backend.start()
-                real_cls = wake_corpus_setup._make_handler_class(
-                    backend,
-                    csrf_token,
-                )
+                real_cls = wake_corpus_setup._make_handler_class(backend)
 
                 for base in reversed(real_cls.mro()):
                     if base in {
@@ -418,8 +414,6 @@ def _make_sound_server(target: object) -> object:
 
 
 def _make_wake_corpus_server(target: object) -> object:
-    import secrets
-
     return _make_lazy_wake_corpus_server(
         target,
         output_dir=Path(
@@ -429,7 +423,6 @@ def _make_wake_corpus_server(target: object) -> object:
             )
         ),
         ports=_wake_corpus_ports_from_env(),
-        csrf_token=secrets.token_hex(16),
     )
 
 
