@@ -16,12 +16,8 @@ Keep two concepts separate:
 * effective runtime permission: whether the current role may run/advertise
   local sources at all.
 
-This is an inventory, not a generic lifecycle executor. It declares shared
-defaults and the ordinary runtime/guard/health resources used by status,
-installer, and safety checks. Source-specific mechanics remain in the one
-host-owned source coordinator. For example, USB Audio Input needs ordered
-fan-in arming and ConfigFS recomposition; those operations are deliberately
-implemented by ``jasper.local_sources.reconcile``.
+Source-specific mechanics live in ``jasper.local_sources.reconcile``, including
+USB Audio Input fan-in arming and ConfigFS recomposition.
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..music_sources import Source
-from ..service_units import LIBRESPOT_SERVICE
+from ..service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 
 
 @dataclass(frozen=True)
@@ -65,12 +61,12 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     LocalSourceLifecycle(
         source=Source.AIRPLAY,
         default_enabled=True,
-        intent_unit="shairport-sync.service",
-        runtime_units=("shairport-sync.service", "nqptp.service"),
-        health_units=("shairport-sync.service", "nqptp.service"),
-        park_units=("shairport-sync.service", "nqptp.service"),
-        advertise_units=("shairport-sync.service",),
-        audio_refresh_units=("shairport-sync.service",),
+        intent_unit=SHAIRPORT_SYNC_SERVICE,
+        runtime_units=(SHAIRPORT_SYNC_SERVICE, "nqptp.service"),
+        health_units=(SHAIRPORT_SYNC_SERVICE, "nqptp.service"),
+        park_units=(SHAIRPORT_SYNC_SERVICE, "nqptp.service"),
+        advertise_units=(SHAIRPORT_SYNC_SERVICE,),
+        audio_refresh_units=(SHAIRPORT_SYNC_SERVICE,),
     ),
     LocalSourceLifecycle(
         source=Source.SPOTIFY,
@@ -109,12 +105,12 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
         default_enabled=False,
         intent_unit="jasper-usbsink.service",
         runtime_units=(
-            "jasper-usbgadget.service",
+            USBGADGET_SERVICE,
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
         health_units=(
-            "jasper-usbgadget.service",
+            USBGADGET_SERVICE,
             "jasper-usbsink.service",
         ),
         # Park the audio readiness marker and volume observer only. The composite
@@ -125,7 +121,7 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
-        advertise_units=("jasper-usbgadget.service",),
+        advertise_units=(USBGADGET_SERVICE,),
         audio_refresh_units=("jasper-usbsink.service", "jasper-usbsink-volume.service"),
     ),
 )
