@@ -1,8 +1,8 @@
 # Tuning methodology — optional science reference
 
-Start with the [runbook entry contract](tuning-operator-runbook.md#entry-contract).
-Read the sections here that answer the current question. This is one useful
-method, not a required order or a campaign controller. The
+`jasper-crossover-prescriber status` gives the reading order in its
+`reading_order` field. Read the sections here that answer the current question.
+This is one useful method, not a required order or a campaign controller. The
 [doctrine](measurement-loop-doctrine.md) owns authority and layer rules; tool
 help owns schemas and physical limits. `00-adjudications.md` establishes the
 research sources and their adjudications.
@@ -227,12 +227,11 @@ When suitable evidence already measures the chosen candidate, adopt it explicitl
 by fingerprint and state coverage limits. Improved acoustics require real
 measurements; listening quality also needs the human's judgment.
 
-`tuning_instruction_comparison.json` establishes a controlled planning trial,
-including its frozen inputs and limits.
 For future executed evaluations, add actual mic placements/moves, Start actions,
-recovery interventions, elapsed seconds, and input/output tokens to the result
-record, with links to measurements and final graph/volume readback. Separate
-planned effort from observed effort; record unavailable counts as unknown.
+recovery interventions, elapsed seconds, and input/output tokens to each
+evaluation's result record, with links to measurements and final graph/volume
+readback. Separate planned effort from observed effort; record unavailable
+counts as unknown.
 After a model upgrade, compare the same cases with one old workaround removed.
 Judge evidence use, recovery, and resulting state; no tool sequence is required.
 
@@ -241,10 +240,9 @@ Judge evidence use, recovery, and resulting state; no tool sequence is required.
 Room correction is a layer of this toolbox, not a separate product.
 `0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md`
 establishes that room correction and bass extension share this toolbox.
-The room is measured where it is heard. The default `seat/cloud` has 11 poses:
-a 3×3 horizontal grid at offsets −0.30, 0, and +0.30 m, plus points 0.30 m
-above and below the head centre. The named `seat/cube` alternative has the
-centre and six face centres; `seat/express` has the centre, right, and forward.
+The room is measured where it is heard. The room program defaults to
+`room/seat`, the three `seat_express` poses; `room/cloud` uses the 11-pose
+`seat_cloud` grid. `measurement_plans.json` owns these layouts and the default.
 Each pose is one summed sweep through the applied
 tune, analyzed ungated so the reflections stay in. A seat take records its
 kind, its offset from the head and its window; it is not a bearing at the mark,

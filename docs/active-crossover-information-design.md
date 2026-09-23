@@ -1,7 +1,8 @@
 # Active Crossover Builder: product and architecture reference
 
-Start with the [tuning runbook](tuning-operator-runbook.md). This document
-explains the crossover's product boundary and measurement reasoning.
+For a tuning session, `jasper-crossover-prescriber status` gives the reading
+order in its `reading_order` field. This document explains the crossover's
+product boundary and measurement reasoning.
 [Measurement loop doctrine](measurement-loop-doctrine.md) owns authority;
 [tuning methodology](tuning-methodology.md) is optional science guidance.
 The [ADR index](adr/README.md) records stable scope, and command help owns the
@@ -178,27 +179,25 @@ measurement deliberately retains reflections because they are its subject.
 
 #### Low-frequency reconstruction: retained scientific limits
 
-Near-field pressure is not a free-field response. The earlier
-`sealed_single_radiator_v1` proposal described a restricted reconstruction, not
-a currently supported automatic campaign step. Near-field splicing remains
-outside ADR-0260's toolbox scope. Its useful physical
-limits are retained here without claiming that its proposed artifact schemas,
-refusal codes, or capture host are implemented.
+Near-field pressure is not a free-field response. Near-field splicing is
+outside ADR-0260's toolbox scope. The physical limits below still bound any
+reconstruction.
 
-That model assumed one sealed circular radiator, with measured effective
-radius `a`, baffle width `w`, height `h`, and near/far microphone distances.
-It excluded ports, passive radiators, and coupled cones. A nominal placement
-instruction or driver frame diameter is not a measured geometry value.
+A restricted reconstruction model assumes one sealed circular radiator, with
+measured effective radius `a`, baffle width `w`, height `h`, and near/far
+microphone distances. It excludes ports, passive radiators, and coupled cones.
+A nominal placement instruction or driver frame diameter is not a measured
+geometry value.
 
-The ARTA approximation used square-equivalent baffle dimension
+The ARTA approximation uses square-equivalent baffle dimension
 `d_eq = w (h/w)^(1/3)`, with dimensions in metres, and `f0 = 34.16/d_eq` Hz.
-Its correction was
+Its correction is
 
 `B_db(f) = 20 log10 |(1 + j f/f0) / (2 + j f/f0)|`.
 
 This models the broad transition from about −6 dB at low frequency to 0 dB at
 high frequency. It does not predict edge ripple, off-axis response, or arbitrary
-cabinet radiation. The proposed domain used `0 < r_nf < a/20`, `r_ff > 6a`,
+cabinet radiation. Its domain is `0 < r_nf < a/20`, `r_ff > 6a`,
 `ka = 2πfa/c <= 0.8` with `c = 343 m/s`, and
 `1/40 <= (a/d_eq)^2 <= 1/10`. These are model assumptions, not measurements of
 any JTS installation or a new playback permission.
@@ -237,12 +236,10 @@ The common session is
 graph, volume, records, and playback. CLI and web entry points are adapters;
 analysis and candidate tools own their outputs outside the capture lifetime.
 
-The one-use `play_admitted_wav` control adapter is retired. Current measurement
-access uses `TuningSession.measure` through
+Measurement access uses `TuningSession.measure` through
 [program_playback.py](../jasper/active_speaker/program_playback.py), with fresh
 program admission and verified WAV playback. The live transaction records
-emission and cleanup observations; it does not need the retired runner's
-persisted before-audio receipt protocol.
+emission and cleanup observations.
 
 ### Slice 0: measurement-validity substrate
 

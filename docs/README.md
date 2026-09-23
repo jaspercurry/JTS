@@ -30,8 +30,9 @@ references describe how the repository works now.
 
 ## Tuning and measurement
 
-Start with the [runbook entry contract](tuning-operator-runbook.md#entry-contract),
-then the selected tool's `--help`. Read further only for the question at hand:
+`jasper-crossover-prescriber status` gives the reading order in its
+`reading_order` field. Each tool's `--help` owns its calls. Read further only
+for the question at hand:
 
 - [Doctrine](measurement-loop-doctrine.md): authority and layer boundaries.
 - [Methodology](tuning-methodology.md): optional scientific interpretation.

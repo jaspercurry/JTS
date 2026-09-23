@@ -1,7 +1,8 @@
 # Active speaker tuning — layer model
 
-This document explains the layer boundaries and fitting rationale. Start with
-[tuning-operator-runbook.md](tuning-operator-runbook.md) for a tuning session.
+This document explains the layer boundaries and fitting rationale. For a tuning
+session, `jasper-crossover-prescriber status` gives the reading order in its
+`reading_order` field.
 [measurement-loop-doctrine.md](measurement-loop-doctrine.md) owns the experiment
 contract; [tuning-methodology.md](tuning-methodology.md) is optional scientific
 context. Code owns numerical bounds and supported measurement programs.

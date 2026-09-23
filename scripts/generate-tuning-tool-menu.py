@@ -166,8 +166,7 @@ END_MARKER = "<!-- END GENERATED TOOL MENU -->"
 # The tuning tools this table covers: the [project.scripts] entries from
 # pyproject.toml that docs/tuning-operator-runbook.md's tool menu names, in
 # the happy path's own order. Widening this list is a deliberate edit, not
-# something the generator infers -- see the module docstring for who is
-# excluded and why.
+# something the generator infers.
 TUNING_TOOL_MODULES: tuple[str, ...] = (
     "jasper.cli.basic_profile",
     "jasper.cli.mic_calibration",
