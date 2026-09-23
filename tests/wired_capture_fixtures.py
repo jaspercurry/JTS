@@ -20,9 +20,9 @@ class FakePcm:
     """Deterministic capture PCM: a scripted sequence of read results.
 
     Each script step is ``(frames, values)`` for a good read, the string
-    ``"overrun"`` for a −EPIPE read, or ``"empty"`` — pyalsaaudio semantics.
-    After the script, reads block briefly and return silence so the reader
-    keeps running until stopped.
+    ``"overrun"`` for a −EPIPE read, ``"empty"``, or an exception the read
+    raises — pyalsaaudio semantics. After the script, reads block briefly and
+    return silence so the reader keeps running until stopped.
     """
 
     def __init__(self, script, *, idle_frames=64):
@@ -33,6 +33,8 @@ class FakePcm:
     def read(self):
         if self._script:
             step = self._script.pop(0)
+            if isinstance(step, BaseException):
+                raise step
             if step == "overrun":
                 return -32, b""
             if step == "empty":

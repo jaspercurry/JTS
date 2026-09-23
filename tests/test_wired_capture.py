@@ -29,6 +29,7 @@ What is pinned, and why each pin exists:
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 import struct
@@ -45,6 +46,9 @@ import pytest
 from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,
 )
+from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
+from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
+from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
     REPORT_KEY_FRAMES,
@@ -55,6 +59,7 @@ from jasper.audio_measurement.frame_ledger import (
 from jasper.audio_measurement.wired_capture import (
     CAPTURE_RING_PERIODS,
     CODE_WIRED_MIC_MISSING,
+    MAX_CONSECUTIVE_READ_FAILURES,
     SPL_BATCH_S,
     WiredCaptureError,
     WiredMicDevice,
@@ -76,6 +81,7 @@ from jasper.audio_measurement.wired_capture import (
     setup_from_hint,
 )
 from jasper.mics.xvf3800 import USB_VID_PID as XVF_USB_VID_PID
+from tests._log_events import event_fields
 from tests.wired_capture_fixtures import FakePcm
 
 UMIK2_USB_ID = "2752:002b"
@@ -175,20 +181,22 @@ def _record(script, *, max_capture_s=10.0, clock_ns=time.monotonic_ns, tail_s=0.
 class _PacedMic:
     """A mic whose clock runs with its audio. A step ``(samples, late_s)`` returns an int32
     ``(frames, channels)`` block once it was captured, and ``late_s`` later still (a reader held
-    off the GIL while ALSA's ring filled); a negative int is the overrun that caused. After the
-    script it trickles silence, one 1 ms read per 20 ms, so a test can stop the reader between
-    reads."""
+    off the GIL while ALSA's ring filled); a negative int is the overrun that caused. Each
+    scripted read blocks ``wall_s`` of real time first. After the script it trickles silence,
+    one 1 ms read per 20 ms, so a test can stop the reader between reads."""
 
-    def __init__(self, script):
+    def __init__(self, script, *, wall_s=0.0):
         self.now_ns = 0
         self.drained = threading.Event()
         self._script = list(script)
+        self._wall_s = wall_s
 
     def clock_ns(self):
         return self.now_ns
 
     def read(self):
         if self._script:
+            time.sleep(self._wall_s)
             samples, late_s = self._script.pop(0)
         else:
             self.drained.set()
@@ -413,6 +421,36 @@ def test_the_recorder_stops_on_the_same_period_within_one_batch(loud_at):
     assert 0 <= recorder._frames - (loud + 1) * period < SPL_BATCH_S * RATE
 
 
+class _SlowMonitor(WiredSplMonitor):
+    """A stop that judges slowly enough for the playback watcher to poll mid-judgement."""
+
+    def observe(self, *args, **kwargs):
+        time.sleep(0.3)
+        super().observe(*args, **kwargs)
+
+
+@pytest.mark.parametrize("exit_by", ["budget", "overruns"])
+async def test_a_loud_read_waiting_at_a_reader_exit_stops_the_take_as_the_spl_stop(exit_by, caplog, tmp_path):
+    rng = np.random.default_rng(0)
+    script = [(_noise(rng, 1024), 0.0), (_noise(rng, 1024, loud=True), 0.0)]
+    script += [(-32, 0.0)] * MAX_CONSECUTIVE_READ_FAILURES if exit_by == "overruns" else []
+    budget = {"max_capture_s": 2 * 1024 / RATE} if exit_by == "budget" else {}
+    capture = WiredStimulusCapture(
+        device=None, bundle_dir=tmp_path, spl_monitor=_SlowMonitor(_Sensitivity(), 85.0, 0),
+        # Reads paced like real ones, so the exit comes after start() returned and the
+        # watcher is polling while the waiting read is judged.
+        recorder_factory=lambda *_: _paced_recorder(_PacedMic(script, wall_s=0.05), **budget),
+    )
+
+    async def play():
+        await asyncio.Event().wait()  # plays until the watcher stops it
+
+    with pytest.raises(StimulusCaptureStopped) as caught:
+        await capture.around(play, program=SimpleNamespace(sample_rate_hz=RATE, total_samples=RATE))
+    assert caught.value.code == SPL_CEILING_EXCEEDED
+    assert float(event_fields(caplog, "active_speaker.measurement_spl_ceiling_stop")["observed_db_spl"]) > 85
+
+
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
     monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
     quiet = (2 ** 26).to_bytes(4, "little", signed=True) * 32
@@ -520,16 +558,22 @@ def test_open_failure_raises_wired_capture_error():
         recorder.start()
 
 
-def test_the_capture_opens_a_deep_alsa_ring(monkeypatch):
-    """The ring, not the reader, absorbs a stall under web load (#5632)."""
-    opened = []
+@pytest.fixture
+def fake_alsaaudio(monkeypatch):
+    """pyalsaaudio as far as the capture path touches it; like the real one, its error
+    derives from ``Exception``, not ``OSError``."""
     alsaaudio = ModuleType("alsaaudio")
     alsaaudio.PCM_CAPTURE, alsaaudio.PCM_NORMAL, alsaaudio.PCM_FORMAT_S32_LE = "capture", "normal", "s32"
-    alsaaudio.ALSAAudioError = RuntimeError
-    alsaaudio.PCM = lambda **kwargs: opened.append(kwargs) or FakePcm([])
+    alsaaudio.ALSAAudioError = type("ALSAAudioError", (Exception,), {})
     monkeypatch.setitem(sys.modules, "alsaaudio", alsaaudio)
-    device = WiredMicDevice("UMIK2", 2, UMIK2_USB_ID, "minidsp_umik2", "miniDSP UMIK-2")
-    recorder = make_wired_recorder(device, sample_rate_hz=RATE, max_capture_s=1.0)
+    return alsaaudio
+
+
+def test_the_capture_opens_a_deep_alsa_ring(fake_alsaaudio):
+    """The ring, not the reader, absorbs a stall under web load (#5632)."""
+    opened = []
+    fake_alsaaudio.PCM = lambda **kwargs: opened.append(kwargs) or FakePcm([])
+    recorder = make_wired_recorder(_umik2(), sample_rate_hz=RATE, max_capture_s=1.0)
     recorder.start(ready_timeout_s=5.0)
     recorder.abort()
     assert opened == [{
@@ -537,6 +581,22 @@ def test_the_capture_opens_a_deep_alsa_ring(monkeypatch):
         "channels": 2, "format": "s32", "periodsize": 1024, "periods": CAPTURE_RING_PERIODS,
     }]
     assert CAPTURE_RING_PERIODS * 1024 / RATE >= 0.5  # seconds of ring
+
+
+def test_an_alsa_read_error_mid_take_fails_the_reader_for_the_watcher(fake_alsaaudio):
+    """An unplugged mic raises ``ALSAAudioError`` from ``read()``. Uncaught, it ended the reader
+    silently: no failure for the watcher, so playback ran on with no SPL watch."""
+    unplugged = fake_alsaaudio.ALSAAudioError("No such device [UMIK2]")
+    fake_alsaaudio.PCM = lambda **_: FakePcm([(32, [(1, 1)] * 32), unplugged])
+    recorder = make_wired_recorder(_umik2(), sample_rate_hz=RATE, max_capture_s=1.0)
+    with pytest.raises(WiredCaptureError) as caught:
+        recorder.start(ready_timeout_s=5.0)  # the error can land before start() returns
+        deadline = time.monotonic() + 5.0
+        while recorder.failure is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        recorder.finish(tail_s=0)
+    assert recorder.failure is caught.value
+    assert caught.value.__cause__ is unplugged
 
 
 # --------------------------------------------------------------------------- #

@@ -393,6 +393,16 @@ def open_alsa_capture_pcm(
         ) from exc
 
 
+def _read_errors() -> tuple[type[Exception], ...]:
+    """What a failed capture read raises. ``ALSAAudioError`` derives from ``Exception``, so
+    uncaught, an unplugged mic would end the reader silently, SPL watch and all."""
+    try:
+        from alsaaudio import ALSAAudioError  # lazy: ALSA-only dependency, capture path only
+    except ImportError:  # no ALSA on this host, so the PCM is a test double
+        return (OSError, RuntimeError)
+    return (OSError, RuntimeError, ALSAAudioError)
+
+
 @dataclass(frozen=True)
 class WiredRecording:
     #: Raw interleaved S32_LE frames, in read order.
@@ -467,11 +477,12 @@ class WiredRecorder:
         # the read after an overrun.
         started_ns, delivered = self._clock_ns(), 0
         consecutive_failures = 0
+        read_errors = _read_errors()
         try:
             while not self._stop.is_set():
                 try:
                     length, data = self._pcm.read()
-                except (OSError, RuntimeError) as exc:
+                except read_errors as exc:
                     raise WiredCaptureError(
                         f"wired capture read failed on {self._device}: {exc}"
                     ) from exc
@@ -514,13 +525,15 @@ class WiredRecorder:
                 self._first_chunk.set()
             self._judge(unjudged)  # the take's tail, shorter than a batch
         except WiredCaptureError as exc:
-            self._reader_error = exc
+            error = exc
             try:
                 # Periods still unjudged came before this failure: a period-by-period watch
-                # would have stopped on them first.
+                # would have stopped on them first. Judged before the error is published, so
+                # the watcher never sees the lesser failure.
                 self._judge(unjudged)
             except WiredCaptureError as stop:
-                self._reader_error = stop
+                error = stop
+            self._reader_error = error
             # Wake a start() still waiting on the first chunk so it fails now, not at timeout.
             self._first_chunk.set()
 
