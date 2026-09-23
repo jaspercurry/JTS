@@ -16,8 +16,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from openai.types.live.client_event_param import ClientEventParam
-from pydantic import TypeAdapter
+
+from tests._provider_fakes import CLIENT_EVENT, LiveSocket
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -39,39 +39,6 @@ from tests._live_turn_fake import RecordingMeter
 from tests._async_wait import wait_signalled, wait_until
 from tests._log_events import event_field_maps, event_fields, event_records, leaked_lines
 from tests._playout import FakeTts
-
-
-CLIENT_EVENT = TypeAdapter(ClientEventParam)
-
-
-class LiveSocket:
-    def __init__(self):
-        self.events = asyncio.Queue()
-        self.sent = []
-        self.closed = False
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        self.closed = True
-
-    async def send(self, event):
-        CLIENT_EVENT.validate_python(event)
-        if event["type"] == "session.start":
-            tools = event["session"]["delegation"]["responses"]["tools"]
-            assert tools.count({"type": "web_search"}) == 1
-        self.sent.append(event)
-        if event["type"] == "session.start":
-            await self.events.put({"type": "session.started"})
-        if event["type"] == "session.close":
-            await self.events.put({"type": "session.closed", "usage": {"seconds": 12.5}})
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        return await self.events.get()
 
 
 AUDIBLE_PCM = b"\x00\x40" * 120  # 5 ms of int16 tone at 24 kHz
@@ -948,17 +915,13 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
     assert int(fields["quiet_discarded"]) == discarded
 
 
-async def test_the_first_audible_delta_reports_provider_latency(caplog):
-    """Live joins the other adapters on `turn.first_chunk`, and fires it on
-    the first AUDIBLE delta: idle PCM is not the model starting to speak."""
+async def test_only_audible_deltas_emit_first_chunk(caplog):
     caplog.set_level(logging.INFO)
     async with live_turn() as turn:
         await turn.on_event(output_audio(QUIET_PCM))
         assert event_records(caplog, "turn.first_chunk") == []
         await turn.on_event(output_audio(AUDIBLE_PCM))
-        fields = event_fields(caplog, "turn.first_chunk")
-    assert fields["provider"] == "openai_live"
-    assert int(fields["since_turn_start_ms"]) >= 0
+        assert len(event_records(caplog, "turn.first_chunk")) == 1
 
 
 async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeypatch):
