@@ -6,19 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 import pytest
+
+from tests._provider_fakes import GeminiConnect as _FakeConnect
 
 
 from jasper.voice._base import ToolCall, close_code_and_reason
 from jasper.voice._supervisor import (
-    CANT_CONNECT_CUE_SLUG,
     request_planned_reopen,
-    run_reconnect_with_backoff,
 )
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._gemini_fakes import GoAway as _GoAway
@@ -44,112 +42,6 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _HAVE_GENAI, reason="google-genai not installed in this environment"
 )
-
-
-# ---------------------------------------------------------------------------
-# Fake SDK plumbing.
-# ---------------------------------------------------------------------------
-
-
-class _FakeSession:
-    """Minimal substitute for the SDK's Live session.
-
-    Tracks every send_realtime_input call (so tests can assert
-    activity_start / activity_end / audio were sent), and exposes a
-    `feed(response)` helper to push a synthetic server message into the
-    receive iterator. `close_with_error(exc)` lets the test simulate a
-    drop / 1006 close — `receive()` will raise the exception on its
-    next iteration."""
-
-    def __init__(self, fake: "_FakeConnect") -> None:
-        self._fake = fake
-        self._inbox: asyncio.Queue[_Resp | Exception] = asyncio.Queue()
-        self.sent_realtime: list[dict] = []
-        self.sent_client_content: list[dict] = []
-        self.sent_tool_responses: list[Any] = []
-        self.closed = False
-        self.received = 0
-        self.setup_complete = types.LiveServerSetupComplete()
-
-    async def send_realtime_input(self, **kwargs) -> None:
-        self.sent_realtime.append(kwargs)
-
-    async def send_client_content(self, **kwargs) -> None:
-        self.sent_client_content.append(kwargs)
-
-    async def send_tool_response(self, function_responses=None) -> None:
-        self.sent_tool_responses.append(function_responses)
-
-    async def receive(self):
-        # Legacy async-generator path — preserved for any out-of-tree
-        # consumers; the persistent-connection receive_loop calls
-        # `_receive()` (below) directly to bypass python-genai #2244.
-        while True:
-            item = await self._inbox.get()
-            if isinstance(item, Exception):
-                raise item
-            yield item
-
-    async def _receive(self):
-        """Match production's lower-level call: returns one response
-        per call, raises on error. The persistent-connection
-        ``_receive_loop`` calls this in a ``while True`` loop instead
-        of iterating the public ``receive()`` generator (which
-        early-breaks on every ``turn_complete`` per python-genai
-        bug #2244)."""
-        item = await self._inbox.get()
-        if isinstance(item, Exception):
-            raise item
-        self.received += 1
-        return item
-
-    async def close(self) -> None:
-        self.closed = True
-
-    # Test-side controls.
-
-    def feed(self, resp: _Resp) -> None:
-        self._inbox.put_nowait(resp)
-
-    def feed_error(self, exc: Exception) -> None:
-        self._inbox.put_nowait(exc)
-
-
-class _FakeAsyncCM:
-    """Async context manager wrapper around a _FakeSession (matches the
-    SDK's `client.aio.live.connect(...)` shape)."""
-
-    def __init__(self, session: _FakeSession) -> None:
-        self._session = session
-
-    async def __aenter__(self) -> _FakeSession:
-        return self._session
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
-
-
-class _FakeConnect:
-    """Drop-in for `client.aio.live.connect`. Each call to the factory
-    returns a fresh _FakeSession, recorded on `self.sessions` so tests
-    can assert how many opens happened and inspect the config that was
-    passed."""
-
-    def __init__(self) -> None:
-        self.sessions: list[_FakeSession] = []
-        self.configs: list[Any] = []
-        # Optional: queue of exceptions to raise on the next N opens
-        # (lets tests simulate "first open succeeds, second open fails").
-        self.next_exceptions: list[Exception] = []
-
-    def __call__(self, *, model, config) -> _FakeAsyncCM:
-        if self.next_exceptions:
-            exc = self.next_exceptions.pop(0)
-            raise exc
-        self.configs.append(config)
-        sess = _FakeSession(self)
-        self.sessions.append(sess)
-        return _FakeAsyncCM(sess)
 
 
 # ---------------------------------------------------------------------------
@@ -456,107 +348,6 @@ async def test_go_away_triggers_reconnect_and_marks_active_turn_lost():
         await conn.stop()
 
 
-async def test_reconnect_with_backoff_eventually_succeeds():
-    """First open succeeds; an injected exception drops the WS; the
-    backoff retries and the second open lands. Verifies the supervisor
-    runs through `RECONNECTING → PAUSED_FOR_BACKOFF → CONNECTING →
-    CONNECTED` and that we don't blow the backoff budget."""
-    # 0.0 / 0.05 backoff: first retry instant (so we still see the
-    # PAUSED_FOR_BACKOFF state transition with a tiny sleep).
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.05))
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        sess = factory.sessions[0]
-        # Queue a 1006-equivalent exception.
-        class _Drop(Exception):
-            class _Rcvd:
-                code = 1006
-                reason = "abnormal"
-            rcvd = _Rcvd()
-        sess.feed_error(_Drop())
-        # Reconnect should succeed on the first attempt (0.0 backoff).
-        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
-        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
-        # Connection is usable for a turn after reconnect.
-        turn = await conn.acquire_turn()
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_drop_signalled_during_a_reconnect_is_not_swallowed():
-    """A set() landing during the reopen must trigger one more cycle (#3915)."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
-
-    def signalling_factory(*, model, config):
-        cm = factory(model=model, config=config)
-        if len(factory.sessions) == 2:
-            # The supervisor's reopen is in flight; a fresh drop lands
-            # before `_open_session_attempt` finishes.
-            conn._reconnect_event.set()
-        return cm
-
-    conn._connect_factory = signalling_factory
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        factory.sessions[0].feed_error(_ws_close_error(1006, "abnormal"))
-
-        await _wait_until(lambda: len(factory.sessions) >= 3, timeout=3.0)
-        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
-        turn = await conn.acquire_turn()
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_repeated_failures_surface_failed_state():
-    """If every open in the backoff schedule fails, the connection
-    transitions to FAILED. Subsequent acquire_turn() calls raise."""
-    factory = _FakeConnect()
-    # Pre-load enough exceptions to exhaust both the initial 409-retry
-    # schedule (4 attempts: 0/1/2/4s — values 0.0 in our test mock) AND
-    # the supervisor's reconnect schedule. We override the initial-connect
-    # path by catching it specifically.
-
-    # First, get a successful initial connect.
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
-    )
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        sess = factory.sessions[0]
-        # Queue exceptions for ALL future opens — both reconnect attempts fail.
-        factory.next_exceptions = [
-            RuntimeError("fail 1"),
-            RuntimeError("fail 2"),
-        ]
-        # Drop the active session.
-        class _Drop(Exception):
-            class _Rcvd:
-                code = 1006
-                reason = "abnormal"
-            rcvd = _Rcvd()
-        sess.feed_error(_Drop())
-        # Wait for the supervisor to give up.
-        await _wait_until(lambda: conn._state is ConnectionState.FAILED, timeout=3.0)
-        # acquire_turn now raises.
-        with pytest.raises(RuntimeError):
-            await conn.acquire_turn()
-        # is_paused() is True.
-        assert conn.is_paused()
-    finally:
-        await conn.stop()
-
-
 async def test_idle_context_reset_drops_resumption_handle_and_reopens():
     """Connection healthy, but idle longer than the configured threshold:
     the next acquire_turn should close + reopen with no resumption
@@ -690,100 +481,6 @@ async def test_context_reset_disabled_when_threshold_is_zero():
         assert len(factory.sessions) == 1
         assert conn._resumption_handle == "hndl-stable"
         await turn2.release()
-    finally:
-        await conn.stop()
-
-
-async def test_acquire_turn_blocks_on_failed_state():
-    """Calling acquire_turn() while in FAILED raises immediately
-    (doesn't deadlock on the connected_event)."""
-    conn, factory = _make_conn(backoff_schedule=(0.0,))
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
-    try:
-        # Force into FAILED via repeated failures (mirrors the
-        # `repeated_failures` test but smaller schedule).
-        sess = factory.sessions[0]
-        factory.next_exceptions = [RuntimeError("perma-fail")]
-        class _Drop(Exception):
-            class _Rcvd:
-                code = 1006
-                reason = "x"
-            rcvd = _Rcvd()
-        sess.feed_error(_Drop())
-        await _wait_until(lambda: conn._state is ConnectionState.FAILED, timeout=3.0)
-        # acquire_turn raises rather than hanging.
-        with pytest.raises(RuntimeError):
-            await conn.acquire_turn()
-    finally:
-        await conn.stop()
-
-
-async def test_transient_first_connect_leaves_the_daemon_up_and_connects():
-    """A box whose link is down at boot must not cost the process:
-    `start()` returns paused, and the supervisor's next attempt
-    connects."""
-    factory = _FakeConnect()
-    factory.next_exceptions = [
-        OSError(-3, "Temporary failure in name resolution"),
-    ]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-        sleep=lambda _delay: asyncio.sleep(0),
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        # No await between start() and these — the supervisor task is
-        # scheduled but has not run, so the post-failure state is intact.
-        assert conn._supervisor_task is not None
-        assert conn.is_paused()
-
-        await _wait_until(
-            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
-        )
-        assert conn.last_failure_detail() is None
-    finally:
-        await conn.stop()
-
-
-@pytest.mark.parametrize("attr, value", [("status_code", 403), ("code", 1007)])
-async def test_terminal_first_connect_stays_up_and_heals(attr, value):
-    """A blocked account (403) and a refused setup message (close 1007,
-    no HTTP status at all) both rule terminal, and neither may kill the
-    daemon: `start()` returns with the connection paused, the outage on
-    the fields `/state` reads, and self-heals once the provider
-    accepts."""
-    exc = type("_Terminal", (Exception,), {attr: value})("rejected")
-    factory = _FakeConnect()
-    factory.next_exceptions = [exc]
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        voice="Aoede",
-        context_reset_sec=9999.0,
-        rotate_after_sec=0.0,
-        backoff_schedule=(0.0,),
-        connect_factory=factory,
-    )
-    await conn.start(ToolRegistry(), "system")
-    try:
-        # No await between start() and these — the supervisor task is
-        # scheduled but has not run, so the post-failure state is intact.
-        assert conn._supervisor_task is not None
-        assert conn.is_paused()
-        assert isinstance(conn.last_failure_detail(), str)
-
-        await _wait_until(
-            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
-        )
-        assert not conn.is_paused()
-        assert conn.last_failure_detail() is None
     finally:
         await conn.stop()
 
@@ -1149,118 +846,6 @@ async def test_tool_round_metadata_captures_tool_name_without_args_or_payload():
 # ---------------------------------------------------------------------------
 
 
-class _TerminalRejection(Exception):
-    status_code = 403
-
-    def __str__(self) -> str:
-        return "403 Forbidden: account has no credits"
-
-
-class _SlowThenDeadConnect:
-    """A connect that hangs on the first attempt, then always fails.
-
-    The hang is the window the household's wake actually lands in: a TCP
-    or TLS connect to a dead provider takes tens of seconds, and
-    `is_paused()` is true for all of it."""
-
-    def __init__(self, connecting: asyncio.Event, release: asyncio.Event):
-        self.calls = 0
-        self._connecting = connecting
-        self._release = release
-
-    async def __aenter__(self):
-        self.calls += 1
-        if self.calls == 1:
-            self._connecting.set()
-            await self._release.wait()
-        raise _TerminalRejection()
-
-    async def __aexit__(self, *exc):
-        return None
-
-
-async def test_reconnect_nudge_needs_a_paused_connection_and_is_gated():
-    """A nudge only cuts a wait short while the connection is paused.
-
-    `IDLE_INIT` (a fresh, not-yet-started connection) counts as paused
-    per `LiveConnection.is_paused`, so the "refused" arm drives past it
-    into `CONNECTED` — a genuinely not-paused state — via the real
-    connect path before asserting the refusal.
-    """
-    conn, _factory = _make_conn()
-    await conn.start(ToolRegistry(), "system")
-    try:
-        assert not conn.is_paused()
-        # Nothing is waiting, so there is nothing to cut short.
-        assert conn.request_reconnect_now() is False
-    finally:
-        await conn.stop()
-    conn._state = ConnectionState.PAUSED_FOR_BACKOFF
-    assert conn.request_reconnect_now() is True
-    # Repeated wakes must not retry the provider faster than an
-    # ordinary blip already does.
-    assert conn.request_reconnect_now() is False
-
-
-async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
-    """`request_reconnect_now` must land wherever `is_paused()` is true.
-
-    A bare `sleep(900)` cannot be shortened, so without an interruptible
-    wait a household whose credit is restored waits out the interval;
-    and a nudge accepted during the connect attempt itself must not be
-    dropped before the next wait sees it.
-    """
-    from jasper.backoff import (
-        RECONNECT_BACKOFF_JITTER_FRACTION,
-        TERMINAL_POLL_INTERVAL_SEC,
-    )
-
-    delays: list[float] = []
-    connecting = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _sleep(seconds: float) -> None:
-        delays.append(seconds)
-        if len(delays) == 1:
-            return  # the seeded ramp delay
-        # Every terminal poll: nothing but a nudge can end this wait.
-        await asyncio.sleep(3600)
-
-    connect = _SlowThenDeadConnect(connecting, release)
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        backoff_schedule=None,
-        connect_factory=lambda *, model, config: connect,
-        sleep=_sleep,
-    )
-    task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
-    try:
-        await asyncio.wait_for(connecting.wait(), timeout=5.0)
-        assert conn.is_paused()
-        assert conn.request_reconnect_now() is True
-        assert conn.request_reconnect_now() is False
-        release.set()
-        await _wait_until(lambda: len(delays) == 3, timeout=5.0)
-        lo = TERMINAL_POLL_INTERVAL_SEC * (
-            1.0 - RECONNECT_BACKOFF_JITTER_FRACTION
-        )
-        hi = TERMINAL_POLL_INTERVAL_SEC * (
-            1.0 + RECONNECT_BACKOFF_JITTER_FRACTION
-        )
-        assert lo <= delays[1] <= hi, delays
-        # One nudge buys exactly one extra attempt: the loop is parked
-        # on the next poll, not spinning through the schedule.
-        await asyncio.sleep(0.05)
-        assert len(delays) == 3, delays
-        assert connect.calls == 2
-        assert not task.done()
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-
 async def test_planned_rotation_rolls_the_session_without_backoff():
     """The rotate watchdog opens a fresh session before the server's
     idle abort can, and the roll skips the reconnect backoff wait."""
@@ -1404,34 +989,6 @@ async def test_first_chunk_event_reports_latency_since_end_input(
         else:
             assert "since_end_input_ms" not in fields
     finally:
-        await conn.stop()
-
-
-async def test_the_first_connect_reads_as_paused_while_it_dials():
-    """The daemon serves wake while the first connect is still dialling
-    (a boot with the WAN down). A wake landing then must take the paused
-    path — the bounded re-check and a connection cue — rather than open a
-    turn against a session that does not exist yet."""
-    connecting = asyncio.Event()
-    release = asyncio.Event()
-    connect = _SlowThenDeadConnect(connecting, release)
-    conn = GeminiLiveConnection(
-        api_key="fake",
-        model="fake-model",
-        backoff_schedule=(0.0,),
-        connect_factory=lambda *, model, config: connect,
-    )
-    task = asyncio.ensure_future(conn.start(ToolRegistry(), "system"))
-    try:
-        await asyncio.wait_for(connecting.wait(), timeout=5.0)
-        assert conn.is_paused()
-        # No failure recorded yet: the honest cue is the generic
-        # "can't connect right now, I'll keep trying".
-        assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
-    finally:
-        release.set()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(task, timeout=5.0)
         await conn.stop()
 
 
