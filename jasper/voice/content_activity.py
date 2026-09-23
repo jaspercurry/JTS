@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 
 from ..camilla import CamillaController
+from ..wake_condition_context import MUSIC_FLOOR_DBFS
 
 CONTENT_ACTIVITY_POLL_SEC = 1.0
-CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 
 
 class ContentActivityTracker:
@@ -22,14 +22,8 @@ class ContentActivityTracker:
     value for ``/state`` and the wake-event columns.
     """
 
-    def __init__(
-        self,
-        camilla: CamillaController,
-        *,
-        threshold_dbfs: float = CONTENT_ACTIVITY_THRESHOLD_DBFS,
-    ) -> None:
+    def __init__(self, camilla: CamillaController) -> None:
         self._camilla = camilla
-        self._threshold_dbfs = float(threshold_dbfs)
         self._last_dbfs: float | None = None
         self._paused = False
         self._task: asyncio.Task | None = None
@@ -40,7 +34,7 @@ class ContentActivityTracker:
         return self._last_dbfs
 
     def music_is_playing(self) -> bool:
-        return self._last_dbfs is not None and self._last_dbfs > self._threshold_dbfs
+        return self._last_dbfs is not None and self._last_dbfs > MUSIC_FLOOR_DBFS
 
     def pause(self) -> None:
         self._paused = True

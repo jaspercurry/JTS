@@ -35,13 +35,13 @@ from jasper.voice._supervisor import (
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
-    ConnectionState,
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from jasper.voice.session import ConnectionState
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
-from tests._live_turn_fake import drain_audio_chunks
+from tests._live_turn_fake import RecordingMeter, drain_audio_chunks
 from tests._log_events import event_fields, event_records, leaked_lines
 
 
@@ -168,7 +168,7 @@ def _make_conn(
     model: str = "gpt-realtime-2",
     voice: str = "marin",
     reasoning_effort: str = "low",
-    noise_reduction: str = "off",
+    noise_reduction: str | None = None,
 ) -> tuple[OpenAIRealtimeConnection, _FakeConnectFactory]:
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
@@ -239,9 +239,10 @@ def test_upsample_state_continuity_across_chunks():
     assert len(out1) + len(out2) >= 3700
 
 
-def test_invalid_noise_reduction_rejected_at_construction():
+@pytest.mark.parametrize("value", ["potato", "off"])
+def test_invalid_noise_reduction_rejected_at_construction(value):
     with pytest.raises(RuntimeError, match="OpenAI noise_reduction"):
-        _make_conn(noise_reduction="potato")
+        _make_conn(noise_reduction=value)
 
 
 def test_secret_literals_reports_the_api_key():
@@ -2447,8 +2448,7 @@ async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
 
 
 @pytest.mark.parametrize("intent, wire", [
-    ("off", None),  # chip-AEC streams opt out of OpenAI-side denoising
-    ("auto", None),  # unresolved intent: omit rather than guess
+    (None, None),  # chip-AEC streams opt out of OpenAI-side denoising
     ("near", {"type": "near_field"}),
     ("far", {"type": "far_field"}),
 ])
@@ -2500,25 +2500,18 @@ async def test_activity_meter_hooks_fire_on_turn_acquire_and_release():
     Grok inherits this connection wholesale, so the base class covers it.
     """
     conn, _factory = _make_conn()
-    events: list[str] = []
-
-    class _StubMeter:
-        def mark_started(self) -> None:
-            events.append("started")
-
-        def mark_ended(self) -> None:
-            events.append("ended")
-
-    conn.set_billable_activity_meter(_StubMeter())
+    meter = RecordingMeter()
+    events = meter.marks
+    conn.set_billable_activity_meter(meter)
     registry = ToolRegistry()
     await conn.start(registry, "")
     assert events == []
     turn = await conn.acquire_turn()
     assert events == ["started"]
     await turn.release()
-    assert events == ["started", "ended"]
+    assert events == ["started", ("ended", None)]
     await conn.stop()
-    assert events == ["started", "ended"]
+    assert events == ["started", ("ended", None)]
 
 
 async def test_no_activity_meter_by_default_is_safe():
@@ -3203,16 +3196,9 @@ async def test_aborted_input_is_cleared_before_the_fresh_command():
 @pytest.mark.parametrize("pending_ack", [False, True])
 async def test_reconnect_discards_ownership_and_late_release(pending_ack):
     conn, factory = _make_conn()
-    meter_events = []
-
-    class Meter:
-        def mark_started(self):
-            meter_events.append("start")
-
-        def mark_ended(self):
-            meter_events.append("end")
-
-    conn.set_billable_activity_meter(Meter())
+    meter = RecordingMeter()
+    meter_events = meter.marks
+    conn.set_billable_activity_meter(meter)
     await conn.start(ToolRegistry(), "")
     try:
         old_wire = factory.conns[0]
@@ -3230,12 +3216,12 @@ async def test_reconnect_discards_ownership_and_late_release(pending_ack):
         fresh = await conn.acquire_turn()
         fresh_wire = factory.conns[-1]
         assert fresh_wire is not old_wire
-        assert meter_events == ["start", "end", "start"]
+        assert meter_events == ["started", ("ended", None), "started"]
         conn._deferred_reconnect.request()
         await old.release()
         assert conn._state is ConnectionState.IN_TURN
         assert conn._deferred_reconnect.pending
-        assert meter_events == ["start", "end", "start"]
+        assert meter_events == ["started", ("ended", None), "started"]
         assert conn._pending_commit is None
         assert conn._pending_response is None
         for event in (

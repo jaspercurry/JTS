@@ -23,6 +23,7 @@ from jasper.cues.generator import (
     write_cue,
 )
 from jasper.cues.registry import find
+from tests.download_response_fixtures import FakeResponse
 
 
 # --- Registry ---
@@ -249,19 +250,21 @@ def test_gemini_tts_default_model_is_3_1():
 
 
 def test_gemini_tts_retries_on_empty_content(monkeypatch):
-    """Core fix: when `_attempt` reports no content (the production
-    failure mode, FinishReason.OTHER content=None), synthesise loops
-    and tries again. Three failures then a success → returns OK with
-    one logged retry warning per failure."""
-    from jasper.cues.generator import GeminiTTSGenerator, TTSResult
+    """Core fix: when `_attempt` raises `_RetryableTTSError` (the
+    production failure mode, FinishReason.OTHER content=None), synthesise
+    loops and tries again. Three failures then a success → returns OK
+    with one logged retry warning per failure."""
+    from jasper.cues.generator import (
+        GeminiTTSGenerator, TTSResult, _RetryableTTSError,
+    )
     g = GeminiTTSGenerator(api_key="x", voice="Aoede")
     calls = {"n": 0}
 
     def fake_attempt(text):
         calls["n"] += 1
         if calls["n"] < 4:
-            return ("finish=OTHER_content=None", None)
-        return ("ok", TTSResult(pcm_24k=b"\x00\x00" * 240))
+            raise _RetryableTTSError("finish=OTHER_content=None")
+        return TTSResult(pcm_24k=b"\x00\x00" * 240)
 
     monkeypatch.setattr(g, "_attempt", fake_attempt)
     # Don't actually sleep between retries during tests.
@@ -279,12 +282,14 @@ def test_gemini_tts_raises_after_max_attempts(monkeypatch):
     a vague AttributeError."""
     from jasper.cues.generator import (
         GeminiTTSGenerator,
+        _RetryableTTSError,
     )
     g = GeminiTTSGenerator(api_key="x", voice="Aoede")
-    monkeypatch.setattr(
-        g, "_attempt",
-        lambda text: ("finish=OTHER_content=None", None),
-    )
+
+    def fake_attempt(text):
+        raise _RetryableTTSError("finish=OTHER_content=None")
+
+    monkeypatch.setattr(g, "_attempt", fake_attempt)
     monkeypatch.setattr(
         "jasper.cues.generator.time.sleep", lambda *_: None,
     )
@@ -309,6 +314,55 @@ def test_grok_tts_construction_and_model():
     )
     g = GrokTTSGenerator(api_key="x", voice="eve")
     assert g.model == GROK_TTS_MODEL
+
+
+def test_grok_tts_5xx_retries_4xx_does_not(monkeypatch):
+    """4xx is unrecoverable (bad auth/voice/text) and must not burn a
+    retry; 5xx is transient and goes through the shared retry policy."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    from jasper.cues.generator import GrokTTSGenerator
+
+    def http_error(code):
+        return urllib.error.HTTPError(
+            "https://example.invalid/tts", code, "err",
+            {}, io.BytesIO(b"error body"),
+        )
+
+    monkeypatch.setattr(
+        "jasper.cues.generator.time.sleep", lambda *_: None,
+    )
+
+    # --- 5xx: one failure, one retry that succeeds ---
+    pending = [http_error(503)]
+    calls = {"n": 0}
+
+    def fake_urlopen_5xx(_req, *, timeout):
+        calls["n"] += 1
+        if pending:
+            raise pending.pop()
+        return FakeResponse(b"\x00\x00" * 240)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_5xx)
+    g = GrokTTSGenerator(api_key="x", voice="eve", max_attempts=2)
+    result = g.synthesise("hello")
+    assert result.pcm_24k == b"\x00\x00" * 240
+    assert calls["n"] == 2
+
+    # --- 4xx: raises immediately, budget for more attempts unused ---
+    calls["n"] = 0
+
+    def fake_urlopen_4xx(_req, *, timeout):
+        calls["n"] += 1
+        raise http_error(400)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_4xx)
+    g2 = GrokTTSGenerator(api_key="x", voice="eve", max_attempts=3)
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        g2.synthesise("hello")
+    assert calls["n"] == 1
 
 
 def test_provider_tts_generators_reject_empty_credentials():
@@ -356,17 +410,17 @@ def test_dynamic_text_path_includes_model_in_hash(tmp_path):
 def test_backend_model_reads_backend_else_legacy_default():
     """`backend_model` is the single derivation point for the cache-key
     model. Backends expose `.model` (all three shipped generators);
-    None / model-less fakes fall back to the legacy TTS_MODEL constant
-    so pre-existing Gemini-default hashes stay stable."""
+    None / model-less fakes fall back to the legacy GEMINI_TTS_MODEL
+    default so pre-existing Gemini-default hashes stay stable."""
     from jasper.cues.generator import (
+        GEMINI_TTS_MODEL,
         GeminiTTSGenerator,
         GrokTTSGenerator,
         OpenAITTSGenerator,
-        TTS_MODEL,
         backend_model,
     )
-    assert backend_model(None) == TTS_MODEL
-    assert backend_model(object()) == TTS_MODEL
+    assert backend_model(None) == GEMINI_TTS_MODEL
+    assert backend_model(object()) == GEMINI_TTS_MODEL
     for cls in (GeminiTTSGenerator, OpenAITTSGenerator, GrokTTSGenerator):
         g = cls(api_key="x", voice="v", model="custom-tts-9")
         assert backend_model(g) == "custom-tts-9"

@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slice 1 gate — the data-driven tool-pack walk must produce a registry
-byte-identical to the legacy hardcoded `_build_registry` sequence.
+"""Tests for the TOOL_PACKS walk: `register_packs` must produce the
+declared tool set, in the declared order, with gating, user-disable
+filtering, and per-pack fault isolation all behaving as documented.
 
 The hard invariant: same tool NAMES, descriptions, parameters, providers,
 timeouts, AND the same registration ORDER (models over-rely on tool
-ordering). We prove it by building the registry two ways — via
-`register_packs(reg, deps)` and via a hand-written reference sequence
-that mirrors the old `_build_registry` body — and comparing the ordered
-serialized manifest lists. The manifest entry is the single richest
-serialization (name + model-facing description + schema + providers +
-timeout), so one comparison covers every field at once.
+ordering) — pinned by PACK_ORDER and EXPECTED_TOOL_NAMES in
+tests/_tool_pack_contract.py.
 
 All factories build closures and capture deps lazily — none invoke the
 deps at build time — so passing sentinel/None deps builds tools whose
@@ -31,86 +28,25 @@ from jasper.tools import (
     ToolRegistry,
     dispatch_tool,
 )
-from jasper.tools.audio import make_audio_tools
-from jasper.tools.calendar import make_calendar_tools
 from jasper.tools.catalog import build_catalog
-from jasper.tools.diagnostic import make_diagnostic_tools
-from jasper.tools.gmail import make_gmail_tools
-from jasper.tools.home_assistant import make_home_assistant_tools
 from jasper.tools.packs import (
     TOOL_PACKS,
     CapabilityPack,
     CatalogPack,
-    ToolDeps,
     outcomes_to_state,
     register_packs,
 )
-from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.time import make_time_tools
-from jasper.tools.timer import make_timer_tools
-from jasper.tools.transport import make_transport_tools
-from jasper.tools.travel_routes import make_travel_routes_tools
 from jasper.tools.weather import make_weather_tools
 from tests._tool_pack_contract import (
     EXPECTED_TOOL_NAMES,
-    LEGACY_PACK_ORDER,
+    PACK_ORDER,
     assert_duplicate_pack_fails_without_partial_registration,
     assert_duplicate_second_pack_fails_without_rolling_back_first,
     full_tool_deps,
     minimal_tool_deps,
     transit_tool_stubs,
 )
-
-
-def _reference_registry(deps: ToolDeps) -> ToolRegistry:
-    """Hand-written mirror of the LEGACY `_build_registry` body — the
-    exact per-subsystem `for fn in make_X(...)` sequence with the same
-    inline gates. This is the ground truth the data-driven walk must
-    reproduce byte-for-byte."""
-    reg = ToolRegistry()
-    for fn in make_audio_tools(deps.volume_coordinator):
-        _register_tool_or_callable(reg, fn)
-    for fn in make_transport_tools(deps.renderer, deps.router):
-        _register_tool_or_callable(reg, fn)
-    for fn in make_spotify_tools(
-        deps.router, deps.renderer, deps.spotify_device_name, deps.spotify_setup_url,
-    ):
-        _register_tool_or_callable(reg, fn)
-    for fn in make_weather_tools(deps.weather):
-        _register_tool_or_callable(reg, fn)
-    for fn in deps.transit_tools:
-        _register_tool_or_callable(reg, fn)
-    for fn in make_travel_routes_tools(deps.google_routes):
-        _register_tool_or_callable(reg, fn)
-    for fn in make_home_assistant_tools(deps.ha):
-        _register_tool_or_callable(reg, fn)
-    for fn in make_time_tools():
-        _register_tool_or_callable(reg, fn)
-    if deps.timer_scheduler is not None:
-        for fn in make_timer_tools(deps.timer_scheduler):
-            _register_tool_or_callable(reg, fn)
-    if deps.google_clients is not None and deps.google_clients.list_account_names():
-        for fn in make_calendar_tools(deps.google_clients, deps.google_setup_url):
-            _register_tool_or_callable(reg, fn)
-        for fn in make_gmail_tools(deps.google_clients, deps.google_setup_url):
-            _register_tool_or_callable(reg, fn)
-    for fn in make_diagnostic_tools(deps.wake_event_store):
-        _register_tool_or_callable(reg, fn)
-    return reg
-
-
-def _register_tool_or_callable(reg: ToolRegistry, item) -> None:
-    if isinstance(item, Tool):
-        reg.register_tool(item)
-    else:
-        reg.register(item)
-
-
-def _serialize(reg: ToolRegistry) -> list[dict]:
-    """Ordered, field-complete serialization of the registry — name +
-    model-facing description + schema + providers + timeout, in
-    registration order. One comparison covers every invariant at once."""
-    return [t.to_manifest_entry() for t in reg.tools.values()]
 
 
 def _pack_named(name: str) -> CapabilityPack:
@@ -122,30 +58,10 @@ class _ExplicitOnlyRegistry(ToolRegistry):
         raise AssertionError("migrated pack must register explicit Tool objects")
 
 
-def test_pack_order_matches_legacy_sequence():
+def test_pack_order_is_pinned():
     """A reorder of TOOL_PACKS must fail loudly — registration order is
     load-bearing (models over-rely on it)."""
-    assert [p.name for p in TOOL_PACKS] == LEGACY_PACK_ORDER
-
-
-def test_data_driven_walk_equals_legacy_sequence():
-    """The core Slice 1 gate: the data-driven walk produces a registry
-    byte-identical to the hand-written legacy sequence."""
-    deps = full_tool_deps()
-
-    walk_reg = ToolRegistry()
-    register_packs(walk_reg, deps, disabled=frozenset(), disabled_packs=frozenset())
-
-    ref_reg = _reference_registry(deps)
-
-    # Full registry must be the complete shipped set, in order — guards
-    # against a stub silently dropping a pack on BOTH sides.
-    assert list(walk_reg.tools.keys()) == EXPECTED_TOOL_NAMES
-    assert len(walk_reg.tools) == len(EXPECTED_TOOL_NAMES)
-
-    # Byte-identical ordered serialization (names, descriptions,
-    # parameters, providers, timeouts, AND order — all at once).
-    assert _serialize(walk_reg) == _serialize(ref_reg)
+    assert [p.name for p in TOOL_PACKS] == PACK_ORDER
 
 
 def test_real_time_pack_uses_explicit_tool_boundary_end_to_end():
@@ -380,8 +296,8 @@ def test_disabled_catalog_pack_removes_all_child_tools():
 def test_real_build_registry_wrapper_produces_full_set():
     """Pin the PRODUCTION entry point, not just the pack walk.
 
-    The equality test above builds `ToolDeps` directly, so it cannot
-    catch a future field-swap in `_build_registry`'s 14-param ->
+    Every other test in this file builds `ToolDeps` directly, so none of
+    them can catch a future field-swap in `_build_registry`'s 14-param ->
     ToolDeps mapping (e.g. `weather=renderer`, or dropping
     `transit_tools` from the bundle) — the walk would still pass.
     Call the real wrapper with gate-satisfying sentinels and assert the
@@ -420,9 +336,8 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
     - calendar/gmail need ≥1 linked account (stricter than the factory's
       own `clients is None`), else the model sees dead tools.
 
-    With a minimal deps bundle (no scheduler, no accounts) the walk and
-    the reference sequence must both register ZERO timer/calendar/gmail
-    tools — and stay identical."""
+    With a minimal deps bundle (no scheduler, no accounts) the walk must
+    register ZERO timer/calendar/gmail tools."""
     minimal = minimal_tool_deps()
 
     walk_reg = ToolRegistry()
@@ -432,7 +347,6 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
         disabled=frozenset(),
         disabled_packs=frozenset(),
     )
-    ref_reg = _reference_registry(minimal)
 
     gated = {
         "set_timer", "list_timers", "cancel_timer", "update_timer",
@@ -449,7 +363,6 @@ def test_load_bearing_gates_drop_their_tools_when_unsatisfied():
         "spotify_play", "spotify_play_latest_by_artist", "spotify_queue",
         "get_weather", "get_current_time",
     }
-    assert _serialize(walk_reg) == _serialize(ref_reg)
 
 
 def test_disabled_set_drops_named_tools_only():

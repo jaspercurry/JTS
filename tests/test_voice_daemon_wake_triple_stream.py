@@ -29,6 +29,7 @@ import pytest
 from jasper.voice.wake_detect import LegRuntime
 from jasper.voice_daemon import WakeLoop
 from jasper.wake_legs import by_token
+from jasper.wake_condition_context import classify_condition
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests
 
@@ -89,7 +90,7 @@ def _make_wake_loop_triple(
             by_token("chip_aec_210"), MagicMock(), detector_chip_aec_210, None,
         )
     wl._wake_legs.fire_lock = asyncio.Lock()
-    wl._wake_legs.condition = "quiet"
+    wl._wake_legs.condition_ctx = classify_condition(None, None)  # "quiet"
     wl._wake_legs.condition_refreshed_at = 0.0
     wl._wake_legs.refractory_until = 0.0
     wl._acquiring = False

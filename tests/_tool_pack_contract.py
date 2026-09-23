@@ -17,7 +17,7 @@ from jasper.tools.catalog import (
 )
 from jasper.tools.packs import CapabilityPack, ToolDeps, register_packs
 
-LEGACY_PACK_ORDER = [
+PACK_ORDER = [
     "audio",
     "transport",
     "spotify",

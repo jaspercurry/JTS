@@ -26,6 +26,19 @@ async def drain_audio_chunks(turn) -> list[AudioOutChunk]:
     return [chunk async for chunk in turn.audio_out_chunks()]
 
 
+class RecordingMeter:
+    """A billable-activity meter that records its marks in order."""
+
+    def __init__(self) -> None:
+        self.marks: list[object] = []
+
+    def mark_started(self) -> None:
+        self.marks.append("started")
+
+    def mark_ended(self, *, seconds: float | None = None) -> None:
+        self.marks.append(("ended", seconds))
+
+
 class FakeLiveTurn:
     owns_interruption = False
     continuous_input = False

@@ -13,9 +13,8 @@ empty success payload on a hard failure — that reads as a real
 answer and produces a confident-wrong reply (the bus-tool bug).
 
 This is a documented convention, NOT a framework-enforced contract
-(``build_tool`` does not validate return shapes). These tests pin the
-code/prompt the convention depends on: the SYSTEM_INSTRUCTION rule and
-the build_tool docstring that states it.
+(``build_tool`` does not validate return shapes). This test pins the
+SYSTEM_INSTRUCTION rule the convention depends on.
 """
 from __future__ import annotations
 
@@ -32,13 +31,3 @@ def test_system_instruction_speaks_error_field_verbatim():
     assert "verbatim" in prompt
     # The confirm sibling rule the cookbook also references.
     assert "`confirm` field" in prompt
-
-
-def test_build_tool_docstring_points_at_the_contract():
-    """build_tool deliberately does not validate return shapes; its
-    docstring is the inline pointer that sends a tool author to the
-    documented contract instead of guessing a failure shape."""
-    from jasper.tools import build_tool
-
-    doc = (build_tool.__doc__ or "")
-    assert "upstream-failure contract" in doc

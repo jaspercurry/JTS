@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.wake_condition_context import AMBIENT_FLOOR_DBFS
+from jasper.wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from tests._wake_loop import wake_loop_for_tests
 
 
@@ -41,7 +41,7 @@ def test_ring_noise_floor_tracks_quiet_background_not_utterance():
     assert floor < -40.0  # 25th pct sits in the quiet group, far below loud
 
 
-# --- Phase 1.3a: live-condition refresh (WakeLoop._read_music_dbfs +
+# --- Live-condition refresh (WakeLoop._read_music_dbfs +
 # _maybe_refresh_condition) ---
 
 def _wakeloop_for_condition(music_dbfs=-30.0):
@@ -52,7 +52,7 @@ def _wakeloop_for_condition(music_dbfs=-30.0):
 
     wl = wake_loop_for_tests(content_activity=MagicMock())
     wl._wake_legs.condition_refreshed_at = 0.0
-    wl._wake_legs.condition = "quiet"
+    wl._wake_legs.condition_ctx = classify_condition(None, None)  # "quiet"
     wl._wake_legs.capture_ring_on = deque(maxlen=8)
     wl._content_activity.music_dbfs = music_dbfs
     return wl
@@ -71,16 +71,16 @@ def test_read_music_dbfs_none_when_unavailable():
 def test_maybe_refresh_condition_recomputes_when_elapsed():
     wl = _wakeloop_for_condition(music_dbfs=-30.0)  # > -60 dBFS -> music
     wl._wake_legs.refresh_condition(now_loop=5.0)
-    assert wl._wake_legs.condition == "music"
+    assert wl._wake_legs.condition_ctx.condition == "music"
     assert wl._wake_legs.condition_refreshed_at == 5.0
 
 
 def test_maybe_refresh_condition_skips_within_window():
     wl = _wakeloop_for_condition(music_dbfs=-30.0)
     wl._wake_legs.condition_refreshed_at = 4.5
-    wl._wake_legs.condition = "quiet"
+    wl._wake_legs.condition_ctx = classify_condition(None, None)  # "quiet"
     wl._wake_legs.refresh_condition(now_loop=5.0)  # 0.5 s < CONDITION_REFRESH_SEC
-    assert wl._wake_legs.condition == "quiet"  # unchanged
+    assert wl._wake_legs.condition_ctx.condition == "quiet"  # unchanged
     assert wl._wake_legs.condition_refreshed_at == 4.5  # unchanged
 
 
@@ -115,13 +115,13 @@ def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
     # raised. On error: keep the last good condition, advance the timer (so a
     # persistent failure retries at ~1 Hz, not every frame), do not propagate.
     wl = _wakeloop_for_condition(music_dbfs=-30.0)
-    wl._wake_legs.condition = "ambient"  # last good
+    wl._wake_legs.condition_ctx = classify_condition(None, AMBIENT_FLOOR_DBFS + 1)  # "ambient", last good
 
     def _boom(*_a, **_k):
         raise RuntimeError("classify blew up")
 
     monkeypatch.setattr("jasper.voice.wake_detect.classify_condition", _boom)
     wl._wake_legs.refresh_condition(now_loop=5.0)  # must not raise
-    assert wl._wake_legs.condition == "ambient"  # stale condition kept
+    assert wl._wake_legs.condition_ctx.condition == "ambient"  # stale condition kept
     assert wl._wake_legs.condition_refreshed_at == 5.0   # timer advanced -> ~1 Hz retry
 

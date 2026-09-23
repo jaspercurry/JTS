@@ -14,7 +14,7 @@ import pytest
 
 from jasper.cues import AudioCueManager, CUES
 from jasper.cues.generator import (
-    TTS_MODEL,
+    GEMINI_TTS_MODEL,
     TTSResult,
     WAV_CHANNELS,
     WAV_RATE,
@@ -364,7 +364,7 @@ def _speak_text_read_error(tmp_path):
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=FakeTts(),
     )
-    path = dynamic_text_path(str(tmp_path), "hello", "Aoede", TTS_MODEL)
+    path = dynamic_text_path(str(tmp_path), "hello", "Aoede", GEMINI_TTS_MODEL)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(b"not a wav file")

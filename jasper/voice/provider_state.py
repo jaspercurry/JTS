@@ -184,22 +184,6 @@ def read_active_provider_state(path: str | None = None) -> ActiveProviderState:
     )
 
 
-def read_active_model(provider: str, path: str | None = None) -> str | None:
-    """The model string configured for ``provider`` per the SSOT file,
-    falling back to the catalog default for that provider when the file
-    is readable but doesn't pin one (which matches what ``jasper-voice``
-    itself uses). ``None`` when ``provider`` is not a known provider id
-    or the SSOT file cannot be read."""
-    entry = provider_by_id(provider)
-    if entry is None:
-        return None
-    file_state = read_env_file_state(_resolve_path(path))
-    if not file_state.loaded:
-        return None
-    model = (file_state.values.get(entry.model_env) or "").strip()
-    return model or default_model_id(provider)
-
-
 def read_active_model_from_env_files(
     provider: str, paths: "tuple[str, ...] | None" = None,
 ) -> str:
@@ -213,9 +197,9 @@ def read_active_model_from_env_files(
     wizard file instead — whichever one was written to last wins, which
     is exactly what merging the full env-file set (operator file first,
     wizard file after — the same order ``jasper-voice`` sources them in)
-    gives you. That is why this is not just ``read_active_model``
-    (:data:`PROVIDER_FILE` alone): a model an operator pinned only in
-    ``jasper.env`` would read back as the catalog default there.
+    gives you. That is why this doesn't just read :data:`PROVIDER_FILE`
+    alone: a model an operator pinned only in ``jasper.env`` would read
+    back as the catalog default there.
 
     Bypassing ``os.environ`` matters because a calling-shell export of
     ``JASPER_GEMINI_MODEL``/``JASPER_OPENAI_MODEL``/``JASPER_GROK_MODEL``

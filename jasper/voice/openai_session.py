@@ -66,7 +66,8 @@ from ._supervisor import (
     openai_error_is_terminal, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
-from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
+from .session import AudioOutChunk, TurnCapture
+from .trace import emit as _trace_emit
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +83,8 @@ SESSION_SETUP_TIMEOUT_SEC = 15.0
 # via ``JASPER_OPENAI_REASONING_EFFORT`` if needed.
 DEFAULT_REASONING_EFFORT = "low"
 
-DEFAULT_NOISE_REDUCTION = "off"
-# ``auto`` is resolved to an intent by voice.input_policy before production
-# constructs this adapter. If a bare test/tool instantiates the adapter with
-# auto, omit provider denoising rather than guessing a wire value.
-_NOISE_REDUCTION_DISABLED = frozenset((
-    "", "auto", "off", "none", "disabled", "false", "0",
-))
-# The host's intent -> the OpenAI wire value this adapter sends.
+# The host's intent -> the OpenAI wire value this adapter sends. None (no
+# provider denoising) omits the block; voice.input_policy owns the spellings.
 _NOISE_REDUCTION_WIRE_VALUES = {
     NOISE_REDUCTION_NEAR: "near_field",
     NOISE_REDUCTION_FAR: "far_field",
@@ -116,20 +111,16 @@ def _is_progress_event(etype: str) -> bool:
     return etype in _PROGRESS_EVENT_TYPES or etype.startswith(_PROGRESS_EVENT_PREFIXES)
 
 
-def _normalize_noise_reduction(value: str | None) -> str:
+def _noise_reduction_wire_value(intent: str | None) -> str:
     """Host intent -> OpenAI wire value; "" omits the session block."""
-    intent = (value or "").strip().lower()
-    if intent in _NOISE_REDUCTION_DISABLED:
+    if intent is None:
         return ""
-    wire = _NOISE_REDUCTION_WIRE_VALUES.get(intent)
-    if wire is None:
-        allowed = sorted(
-            (_NOISE_REDUCTION_DISABLED | set(_NOISE_REDUCTION_WIRE_VALUES)) - {""}
-        )
+    if intent not in _NOISE_REDUCTION_WIRE_VALUES:
         raise RuntimeError(
-            "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
+            "OpenAI noise_reduction must be None or one of: "
+            + ", ".join(sorted(_NOISE_REDUCTION_WIRE_VALUES))
         )
-    return wire
+    return _NOISE_REDUCTION_WIRE_VALUES[intent]
 
 
 # ---------- Per-turn adapter ------------------------------------------------
@@ -159,7 +150,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # Whether `commit()` + `response.create()` has been sent; makes
         # `end_input` idempotent.
         self._committed = False
-        self._session = getattr(conn, "_session", None)
         self._response_id: str | None = None
         self._response_item_ids: set[str] = set()
         self._input_item_id: str | None = None
@@ -430,6 +420,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
 
     PROVIDER_NAME = "openai"
     _logger = logger
+    _turn_class = OpenAIRealtimeTurn
     # The watchdog below pre-empts a server cap rather than rotating on
     # our own schedule, so its reconnect backs off from attempt 1.
     _watchdog_is_planned = False
@@ -441,7 +432,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         voice: str = "marin",
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-        noise_reduction: str = DEFAULT_NOISE_REDUCTION,
+        noise_reduction: str | None = None,
         # Proactive pre-cap reconnect — see `_watchdog_delay_sec`.
         # Both default to 0 (disabled) so tests and bare-construction don't
         # spawn surprise tasks. Production wires production values from
@@ -480,7 +471,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
         self._api_key = api_key
         self._reasoning_effort = reasoning_effort
-        self._noise_reduction = _normalize_noise_reduction(noise_reduction)
+        self._noise_reduction = _noise_reduction_wire_value(noise_reduction)
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
         self._connect_factory = connect_factory
@@ -499,60 +490,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         # Release reopens unresolved requests instead of rebinding their acks.
         self._pending_commit: OpenAIRealtimeTurn | None = None
         self._pending_response: OpenAIRealtimeTurn | None = None
-
-        # Optional billable-activity meter (time-billed providers, e.g.
-        # Grok). Wired by the daemon before start() when the active
-        # provider bills realtime activity; None for token-billed providers.
-        # See jasper.usage.BillableActivityMeter.
-        self._billable_activity_meter = None
-        self._billable_activity_interval_open: bool = False
-
-    # ------------------------------------------------------------------
-    # Public LiveConnection protocol
-    # ------------------------------------------------------------------
-
-    def set_billable_activity_meter(self, meter) -> None:
-        """Wire a ``BillableActivityMeter`` for time-billed providers.
-
-        Daemon calls this before ``start()``. Once set, ``acquire_turn``
-        marks billable realtime activity up and turn release / connection
-        loss marks it down. The warm idle WebSocket is intentionally not
-        counted: xAI's dashboard reports Voice Realtime charges that match
-        active turn time, not socket-open wall clock."""
-        self._billable_activity_meter = meter
-
-    def _mark_billable_activity_started(self) -> None:
-        meter = self._billable_activity_meter
-        if meter is None or self._billable_activity_interval_open:
-            return
-        meter.mark_started()
-        self._billable_activity_interval_open = True
-
-    def _mark_billable_activity_ended(self) -> None:
-        meter = self._billable_activity_meter
-        if meter is None or not self._billable_activity_interval_open:
-            return
-        meter.mark_ended()
-        self._billable_activity_interval_open = False
-
-    async def acquire_turn(self) -> LiveTurn:
-        await self._await_acquirable()
-
-        async with self._turn_lock:
-            if self._active_turn is not None:
-                raise RuntimeError(f"{self._log_tag} a turn is already active")
-            now_loop = asyncio.get_event_loop().time()
-            turn = OpenAIRealtimeTurn(self, started_at=now_loop)
-            turn._started_at_monotonic = _time.monotonic()
-            self._active_turn = turn
-            self._mark_billable_activity_started()
-            async with self._state_lock:
-                if self._state is ConnectionState.CONNECTED:
-                    self._set_state(ConnectionState.IN_TURN)
-            log_event(
-                self._logger, "provider.turn_started", provider=self.PROVIDER_NAME, level=logging.INFO,
-            )
-            return turn
 
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
@@ -665,8 +602,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     )
                     if self._session is session and unresolved:
                         request_planned_reopen(self)
-        if self._active_turn is turn:
-            self._mark_billable_activity_ended()
         await super()._on_turn_released(turn)
 
     # ------------------------------------------------------------------
@@ -869,13 +804,12 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
     def _watchdog_delay_sec(self) -> float:
         """How long into a session to pre-empt OpenAI's hard cap.
 
-        The cap is 60 min today, with no resumption and no pre-cap
-        warning event (verified against the realtime-conversations docs
-        as of 2026-05). When it fires the server sends a 1001 close and
-        the supervisor reconnects reactively, costing the user a ~3 s
-        `cant_connect` cue; firing a buffer ahead of it, in an idle
-        window, means the next wake hits a fresh connection instead.
-        Disabled when either knob is 0."""
+        The cap is 60 min, with no resumption and no pre-cap warning
+        event (per the realtime-conversations docs). When it fires the
+        server sends a 1001 close and the supervisor reconnects
+        reactively, costing the user a ~3 s `cant_connect` cue; firing a
+        buffer ahead of it, in an idle window, means the next wake hits a
+        fresh connection instead. Disabled when either knob is 0."""
         if self._session_max_sec <= 0 or self._proactive_buffer_sec <= 0:
             return 0.0
         delay = self._session_max_sec - self._proactive_buffer_sec
@@ -989,7 +923,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             delta = _event_field(event, "delta")
             if isinstance(delta, str) and delta:
                 turn._on_assistant_text_delta(delta)
-                from .trace import emit as _trace_emit  # lazy: optional evaluation trace
                 _trace_emit("text_out", {"delta": delta})
         elif etype in (
             "response.audio_transcript.done", "response.output_audio_transcript.done",

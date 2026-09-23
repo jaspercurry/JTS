@@ -17,10 +17,12 @@ into one :data:`jasper.wake_conditions.CONDITIONS` label:
 
 :func:`classify_condition` is intentionally **pure** — both signals are
 passed in — so it is unit-testable. The result is recorded as
-``wake_events.condition_class``.
+``wake_events.condition_class``: a telemetry label the wake fire gate never
+reads (it compares only the leg detector's own score threshold).
 
-The boundaries below are tunable knobs, not laws. ``MUSIC_FLOOR_DBFS``
-matches the daemon's existing ``music_active_proxy`` threshold.
+The boundaries below are tunable knobs, not laws. ``MUSIC_FLOOR_DBFS`` is
+the one threshold for "is music playing" — also used by
+:class:`jasper.voice.content_activity.ContentActivityTracker`.
 ``AMBIENT_FLOOR_DBFS`` is a **placeholder** on a different signal (the mic
 noise floor) — the quiet/ambient split is the soft boundary to tune against
 the corpus; it affects an observability label, never a wake decision.
@@ -29,8 +31,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Playback-chain loudness (dBFS) above which we call it music. Mirrors the
-# daemon's long-standing music_active_proxy threshold.
+# Playback-chain loudness (dBFS) above which we call it music. The one
+# threshold for "is music playing" — jasper.voice.content_activity also
+# compares against this constant.
 MUSIC_FLOOR_DBFS: float = -60.0
 
 # Mic-capture noise floor (dBFS) above which a non-music room counts as
@@ -55,9 +58,6 @@ class ConditionContext:
 def classify_condition(
     music_dbfs: float | None,
     noise_floor_dbfs: float | None,
-    *,
-    music_floor_dbfs: float = MUSIC_FLOOR_DBFS,
-    ambient_floor_dbfs: float = AMBIENT_FLOOR_DBFS,
 ) -> ConditionContext:
     """Map the two runtime signals to one acoustic condition. Pure.
 
@@ -67,10 +67,10 @@ def classify_condition(
     unknown noise floor -> quiet. So a misread can only make wake less eager,
     never spuriously more.
     """
-    music_active = music_dbfs is not None and music_dbfs > music_floor_dbfs
+    music_active = music_dbfs is not None and music_dbfs > MUSIC_FLOOR_DBFS
     if music_active:
         condition = "music"
-    elif noise_floor_dbfs is not None and noise_floor_dbfs > ambient_floor_dbfs:
+    elif noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
         condition = "ambient"
     else:
         condition = "quiet"
