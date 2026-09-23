@@ -140,7 +140,8 @@ def timing_candidate(candidate: MeasuredCrossoverCandidate, *, output_trim_db: f
     from .linearization_fit import linearization_filters_by_role  # lazy: NumPy cost belongs to graph compilation
 
     front = _front_drivers(candidate)
-    # Headroom this graph no longer charges moves into the trims: each front driver keeps the candidate's level.
+    # Headroom this graph no longer charges, the muted rear's included, moves into the trims. The dropped
+    # layers' cuts do not, so at a cut the take plays louder than the candidate. See ADR-0345.
     headroom = camilla_yaml.program_headroom_db(
         linearization_filters_by_role(candidate.linearization),
         branch_context=camilla_yaml._branch_context(effective_preset(candidate), driver_corrections(candidate)),

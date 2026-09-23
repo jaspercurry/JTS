@@ -17,20 +17,29 @@
 - **Decision:**
   1. The summed timing take plays the front drivers only: it drops the bass
      layer (as before) and mutes the rear branch, while the rear section's
-     front chain stays as applied. The rear headroom no longer charged moves
-     into the trims, so each front driver plays at the candidate's own level.
-     The prediction maps only primary outputs.
+     front chain stays as applied. The rear headroom that is no longer
+     charged moves into the trims, so muting the rear raises no level.
+     Otherwise the take plays as it did before this ADR: it still drops the
+     candidate's linearization, blend and room layers, so at one of their
+     cuts it plays louder than the candidate by that cut's depth. The
+     prediction maps only primary outputs.
   2. The timing verdict carries `status: comparable | not_comparable` with
      `reasons` (`snr_short: [roles]`, `graph_mismatch: [targets]`) beside the
      residual, the repeat noise and the floor. `snr_short` names the driver
      takes below the 35 dB alignment signal-to-noise floor. `graph_mismatch`
      names the outputs the played graph left audible that the prediction
-     does not model.
+     does not model. With the rear muted, only a timing take made before
+     this ADR and analysed again can raise it; `graph_mismatch` and
+     `remeasure_timing` are removed once every cardioid speaker has banked
+     a speaker round after this ADR.
   3. ADR-0319's reset rule applies only to a `comparable` reading. A
      `not_comparable` reading never asks for a reset: `snr_short` asks to
      measure timing again louder or in a quieter room (`measure_timing`);
      `graph_mismatch` asks to re-measure the timing take on the matching
-     graph (`remeasure_timing`) and wins when both reasons apply.
+     graph (`remeasure_timing`) and wins when both reasons apply. A verdict
+     with no `status` (analysis stored before this ADR) has unknown
+     comparability: it never asks for a reset either, and asks for
+     `measure_timing`.
   4. One verdict: `jasper/audio_measurement/timing_verification.py` builds it
      and picks the next action; the packet stores it; the page and the
      envelope show the packet's verdict and never judge a second time.
@@ -42,6 +51,9 @@
   before the rear mute reads `graph_mismatch` when it is analysed again; a
   banked packet keeps the verdict it stored. A first timing decision (no
   saved timing) does not read `graph_mismatch`; the mute keeps new takes
-  clean of it. Rejected: keeping the rear on and predicting through it (the
-  rear chain's level and delay are what the rear program tunes, so the
-  timing read would depend on a later layer).
+  clean of it. On a cardioid speaker the entry-baseline take is this timing
+  take, so `entry_grade` and the `entry_baseline` frequency series now
+  measure a sum without the rear. In the rear's band they do not compare
+  with rounds banked before this ADR. Rejected: keeping the rear on and
+  predicting through it (the rear chain's level and delay are what the rear
+  program tunes, so the timing read would depend on a later layer).

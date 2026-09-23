@@ -34,9 +34,12 @@ def timing_next_action(
     residual, noise = (finite_float(verification.get(key)) for key in ("residual_rms_db", "repeat_noise_db"))
     if timing.get("saved") is not None:
         # See ADR-0345
+        # Remove graph_mismatch, remeasure_timing and SummedAlignmentReference.unmodelled_targets once every
+        # cardioid speaker has banked a speaker round after ADR-0345: only an older take can raise it.
         if REASON_GRAPH_MISMATCH in (verification.get("reasons") or {}):
             return {"id": "remeasure_timing", "label": "measure timing again: the take played a driver the check leaves out"}
-        if verification.get("status") == TIMING_NOT_COMPARABLE:
+        # A verdict stored before ADR-0345 has no status: its comparability is unknown, so it never resets.
+        if verification and verification.get("status") != TIMING_COMPARABLE:
             return dict(_MEASURE_TIMING)
         if (residual is not None and noise is not None
                 and residual > 3 * noise and residual > TIMING_RESIDUAL_FLOOR_DB):
