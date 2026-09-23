@@ -118,8 +118,9 @@ seconds, supports a speaker claim
 `jasper-round run --program speaker --poses baseline/express` collects driver
 fits, timing and room evidence in one round; `baseline/full` adds poses.
 Write one document with every section the evidence supports.
+`jasper-crossover-prescriber judge --help` shows the document's envelope, and
 `jasper-crossover-prescriber contract --round <dir> --section speaker` prints
-the schema. Normally omit `alignment`: saved timing carries forward. See Timing
+each section's schema. Normally omit `alignment`: saved timing carries forward. See Timing
 below for when to include it. A refusal names the crossed bound; correct that field.
 
 Trial the whole document with two or three candidates: the fitted totals and
@@ -167,11 +168,11 @@ positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
 available count and spread. State what that evidence supports.
 
 Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
-`ceiling.provenance`, then `persistence`, `limits.cut_floor_db`,
-`limits.boost_cap_db` and `admit_boost`. Read `incumbent` and
-`incumbent_reason` before comparison. Top-level `limits` carries the contract.
-Do not infer an incumbent from a file name when the entry says the set is
-ambiguous.
+`ceiling.provenance`, then `persistence`. The room contract for that set is
+`packet["limits"][set_id]`: its `bounds` hold `cut_floor_db`, `boost_cap_db`
+and `admit_boost` per bin of `freqs_hz`. Read `incumbent` and
+`incumbent_reason` before comparison. Do not infer an incumbent from a file
+name when the entry says the set is ambiguous.
 Read `spread_rms_db` beside `median`: RMS of the per-bin cross-position spread from the coverage floor to the ceiling, with `n_positions`; `None` below two positions.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the

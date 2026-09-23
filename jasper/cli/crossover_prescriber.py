@@ -28,8 +28,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
-    preview_prescription_document, parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
+    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence,
+    judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
+    read_prescription_document, saved_base, vary_document,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
@@ -670,7 +671,10 @@ def build_parser() -> argparse.ArgumentParser:
     contract.set_defaults(func=_cmd_contract)
     for verb in ("judge", "compose"):
         command = sub.add_parser(verb, help="judge every section and preview resolution" if verb == "judge" else "judge, prove and bank one candidate")
-        command.add_argument("document", metavar="DOC")
+        command.add_argument("document", metavar="DOC", help=(
+            f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
+            f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
+            f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
