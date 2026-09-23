@@ -22,12 +22,13 @@ import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
-from jasper.active_speaker.baseline_profile import (
+from jasper.active_speaker.applied_tune import (
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
     REAR_CALIBRATION_ROOM_BAND_OVERLAP,
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
-    baseline_candidate_fingerprint,
+    rear_calibration_issues,
 )
+from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
 from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
@@ -956,7 +957,7 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
     document["geometry"]["cabinet_back_wall_m"] = None if gap_m == "absent" else gap_m
     document["front"]["delay_ms"] = front_delay_ms
     candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration={} if gap_m == "absent" else document)
-    issues = baseline_profile_mod.rear_calibration_issues(replace(
+    issues = rear_calibration_issues(replace(
         candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}}))
 
     assert [issue["code"] for issue in issues] == codes
@@ -984,7 +985,7 @@ def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaratio
         {"type": "Biquad", "parameters": {"type": kind, "freq": freq, "q": 0.7}}
         for kind, freq in zip(("Highpass", "Lowpass"), band or [])]
     candidate = replace(cardioid_declaration[3], rear_calibration=document, room_correction=room)
-    issues = baseline_profile_mod.rear_calibration_issues(candidate)
+    issues = rear_calibration_issues(candidate)
     assert [issue["code"] for issue in issues] == ([REAR_CALIBRATION_ROOM_BAND_OVERLAP] if room_band else [])
     if room_band:
         assert issues[0]["severity"] == "warning"

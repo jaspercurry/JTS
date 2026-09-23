@@ -9,7 +9,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.active_speaker import baseline_profile, runtime_contract
+from jasper.active_speaker import applied_tune, baseline_profile, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -114,7 +114,7 @@ async def apply_candidate(
                 MeasuredCrossoverCandidateError, ActiveSpeakerConfigError, CrossoverBelowDeclaredFloor) as exc:
             code = getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused"
             log_event(logger, "correction.crossover_v2_apply", status="blocked", code=code, candidate_fingerprint=expected)
-            baseline_profile._commissioning_refusal(prepared, exc)
+            applied_tune.commissioning_refusal(prepared, exc)
             if not from_saved_draft:
                 raise CrossoverV2Refused(str(exc), code=code, issues=getattr(exc, "issues", ())) from exc
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}

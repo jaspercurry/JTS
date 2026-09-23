@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Sequence
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_apply import (
     DspApplyError,
@@ -30,14 +29,13 @@ from jasper.output_topology import (
     canonical_fingerprint as _fingerprint,
     topology_config_fingerprint,
 )
-from jasper.output_topology_store import load_output_topology
 
 from ._common import coerce_finite_float, issue as _issue
 from .camilla_yaml import (
     _branch_context,
     linearization_headroom_db,
 )
-from .candidate_bank import BankedCandidate, CandidateBankRefusal, bank_candidate, load_applied_candidate
+from .candidate_bank import BankedCandidate
 from .measurement_emit import MeasurementGraphProfile
 from .crossover_contract import (
     measured_level_match_applied,
@@ -68,7 +66,6 @@ from .measurement import empty_driver_check_summary
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import snapshot_declares_single_branch
-from .rear_calibration import rear_operating_facts
 from . import passive_profile as _passive
 from .state_paths import (
     baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path, config_text_sha256,
@@ -78,12 +75,6 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
-REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
-REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
-REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
-# The wizard declares the wall gap in millimetres while a document carries an
-# inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
-REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
 
 # Canonical per-parameter provenance vocabulary (SC-3).
 PROVENANCE_MANUAL = "manual"
@@ -190,120 +181,6 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
         ),
         "recomposition_snapshot": hashed_snapshot,
     })
-
-
-def reviewed_candidate_refusal(
-    candidate: Mapping[str, Any], expected_candidate_fingerprint: str,
-) -> dict[str, Any] | None:
-    if expected_candidate_fingerprint and candidate.get("candidate_fingerprint") == expected_candidate_fingerprint:
-        return None
-    refused = dict(candidate)
-    refused["permissions"] = {**(refused.get("permissions") or {}), "may_apply": False}
-    refused["issues"] = [*(refused.get("issues") or []), _issue(
-        "blocker", "baseline_candidate_fingerprint_mismatch",
-        "the crossover candidate changed after review; refresh and review the current candidate before applying",
-    )]
-    return {"status": "blocked", "profile": refused, "apply": None, "issues": refused["issues"]}
-
-
-def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
-    profile.update(status="blocked", permissions={"may_apply": False, "may_compile": False})
-    profile["issues"] = getattr(exc, "issues", None) or [_issue(
-        "blocker", getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused", str(exc),
-    )]
-
-
-def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, Any]]:
-    """Disclose geometry, timing and room-band interactions (ADR-0101, ADR-0322)."""
-    from jasper.audio_measurement.measurement_geometry import load_declared_geometry  # lazy: geometry pulls NumPy in
-
-    document = candidate.rear_calibration
-    if not document:
-        return []
-    issues: list[dict[str, Any]] = []
-    fitted_m = (document.get("geometry") or {}).get("cabinet_back_wall_m")
-    geometry = load_declared_geometry()
-    declared_m = None if geometry is None else geometry.cabinet_back_wall_m
-    if fitted_m is not None and declared_m is not None and (
-        abs(fitted_m - declared_m) > REAR_CALIBRATION_WALL_GAP_TOLERANCE_M
-    ):
-        issues.append(_issue(
-            "warning", REAR_CALIBRATION_WALL_GAP_MISMATCH,
-            f"the rear calibration was fitted {fitted_m:g} m from the wall behind the cabinet, "
-            f"but the declared rig geometry says {declared_m:g} m",
-        ))
-    front_delay_ms = (document.get("front") or {}).get("delay_ms")
-    if front_delay_ms and (candidate.analysis.get("resolution") or {}).get("alignment") == "measured":
-        issues.append(_issue(
-            "warning", REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
-            f"the rear calibration delays the front woofer by {front_delay_ms:g} ms, which moves it "
-            "away from the measured woofer/tweeter arrival difference",
-        ))
-    cancellation_band = rear_operating_facts(document)["band_hz"]
-    if cancellation_band:
-        for peq in (entry for filters in candidate.room_correction.get("sides", {}).values()
-                    for entry in filters if entry["gain"]):
-            width = 2 ** bell_half_width_oct(peq["q"])
-            room_band = [peq["freq"] / width, peq["freq"] * width]
-            if max(room_band[0], cancellation_band[0]) < min(room_band[1], cancellation_band[1]):
-                issues.append({
-                    **_issue("warning", REAR_CALIBRATION_ROOM_BAND_OVERLAP,
-                             "the room correction layer and the rear cancellation branch are "
-                             "not reconciled against each other in v1"),
-                    "room_band_hz": room_band, "cancellation_band_hz": cancellation_band,
-                })
-    return issues
-
-
-def compile_commissioning_profile(
-    *, applied_profile: Mapping[str, Any] | None, topology: OutputTopology | None = None,
-    design_draft: Mapping[str, Any] | None = None,
-    crossover_preview: Mapping[str, Any] | None = None,
-    find_candidate: Callable[[str], BankedCandidate] | None = None,
-) -> dict[str, Any]:
-    """Review the applied candidate, or bootstrap from the declared crossover.
-
-    Read-only: the review compiles and proves the graph an apply would load,
-    and writes nothing."""
-    from .commissioning_experiment import commissioning_candidate  # lazy: candidate parts consumes baseline readers
-    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
-    from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
-    from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
-    from jasper.sound.settings import saved_sound_layers  # lazy: household settings import baseline readers
-
-    profile: dict[str, Any] = {"artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
-                              "status": "blocked", "permissions": {"may_apply": False}, "issues": []}
-    try:
-        topology = topology if topology is not None else load_output_topology()
-        draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
-        declaration = load_tuning_declaration(topology, design_draft=draft)
-        applied = applied_profile
-        if applied is not None:
-            fingerprint = (applied.get("source") or {}).get("measured_candidate_fingerprint", "")
-            banked = (find_candidate(fingerprint) if find_candidate is not None
-                      else load_applied_candidate(fingerprint, applied_profile=applied))
-        else:
-            banked = bank_candidate(commissioning_candidate(topology, draft), find_candidate=find_candidate)
-        candidate = banked.candidate
-        preference_filters, trim_db = saved_sound_layers()
-        text = compile_tuning_graph(declaration, candidate=candidate,
-                                    preference_filters=preference_filters, output_trim_db=trim_db)
-        target = baseline_candidate_config_path(text)
-        profile.update(prepare_applied_baseline_profile(
-            banked, declaration=declaration, design_draft=draft,
-            config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
-            saved_timing=(applied or {}).get("timing"),
-        ))
-        profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
-        profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
-        profile["config"]["exists"] = target.exists()
-        proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)
-        if not proof.allowed or proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
-            raise MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
-        profile.update(status="ready_to_compile", permissions={"may_apply": False, "may_compile": True})
-    except (CandidateBankRefusal, ValueError) as exc:
-        _commissioning_refusal(profile, exc)
-    return profile
 
 
 def _source_payload(

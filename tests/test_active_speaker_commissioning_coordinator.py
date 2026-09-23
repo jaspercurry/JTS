@@ -11,7 +11,7 @@ from jasper.active_speaker.round_copy import RUN_ENDED
 from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
-from jasper.active_speaker import baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
+from jasper.active_speaker import applied_tune, baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
@@ -162,7 +162,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: view)
     monkeypatch.setattr(tuning_handoff, "build_tuning_handoff_binding", lambda *args: {})
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: {})
+    monkeypatch.setattr(applied_tune, "compile_commissioning_profile", lambda **kw: {})
 
     choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices}

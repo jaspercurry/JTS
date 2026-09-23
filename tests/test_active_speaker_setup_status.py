@@ -17,6 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 
+import jasper.active_speaker.applied_tune as applied_tune_mod
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.output_topology import topology_config_fingerprint
@@ -344,7 +345,7 @@ def _applied_automatic_room_status(
         automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
     _write_applied_graph(topology, automatic, config_path, monkeypatch=monkeypatch)
     monkeypatch.setattr(
-        baseline_mod,
+        applied_tune_mod,
         "compile_commissioning_profile",
         lambda **k: _candidate(status="ready_to_compile", config_path=config_path),
     )
@@ -646,7 +647,7 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
             raise OSError("diagnostics unavailable")
         return review
 
-    monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", compile_review)
+    monkeypatch.setattr(applied_tune_mod, "compile_commissioning_profile", compile_review)
     monkeypatch.setattr(baseline_mod, "load_applied_baseline_profile_state", lambda path=None: saved)
     status = setup_mod.read_active_speaker_setup_status(active_config_path=str(path))
     readiness = setup_mod.read_active_speaker_setup_status(

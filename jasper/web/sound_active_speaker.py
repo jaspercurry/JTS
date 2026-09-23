@@ -923,7 +923,8 @@ async def _active_speaker_commissioning_view_payload(
 
 
 def _active_speaker_baseline_profile_payload() -> dict[str, Any]:
-    from jasper.active_speaker.baseline_profile import compile_commissioning_profile, load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
 
     topology = load_output_topology()
     payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology)
@@ -1101,7 +1102,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
     baseline, through the same ``base: saved`` composer
     ``jasper-crossover-prescriber compose`` uses; never applies it."""
 
-    from jasper.active_speaker.baseline_profile import rear_calibration_issues  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.applied_tune import rear_calibration_issues  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.candidate_bank import (  # lazy: graph compilation imports NumPy
         CandidateBankRefusal,
         publish_authored_candidate,

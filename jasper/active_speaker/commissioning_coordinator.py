@@ -73,7 +73,8 @@ def build_commissioning_view(
     recent_rounds: Mapping[str, Mapping[str, Any]] | None = None,
     programs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
+    from .applied_tune import reviewed_candidate_refusal  # lazy: the review compiles graphs
+    from .baseline_profile import APPLIED_PROFILE_DISPLACED  # lazy: baseline imports measurement
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     programs = programs_for_topology(topology) if programs is None else programs
@@ -158,9 +159,8 @@ def load_commissioning_view(
     A caller that omits ``commission`` silently degrades the view; ``None``
     composes identical steps.
     """
-    from jasper.active_speaker.baseline_profile import (
-        compile_commissioning_profile, load_applied_baseline_profile_state,
-    )
+    from jasper.active_speaker.applied_tune import compile_commissioning_profile
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
     from jasper.active_speaker.crossover_preview import build_crossover_preview

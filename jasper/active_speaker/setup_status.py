@@ -343,7 +343,7 @@ def read_active_speaker_setup_status(
 
     profile = None
     if topology is not None and status["active"]:
-        from .baseline_profile import compile_commissioning_profile  # lazy: import cost — setup diagnostics
+        from .applied_tune import compile_commissioning_profile  # lazy: import cost — setup diagnostics
         from .design_draft import load_design_draft  # lazy: import cost — setup diagnostics
 
         try:
