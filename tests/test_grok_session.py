@@ -40,6 +40,7 @@ from jasper.voice.grok_session import (
     GROK_WEBSOCKET_BASE_URL,
     GrokRealtimeConnection,
 )
+from tests._live_turn_fake import RecordingMeter
 from tests._log_events import parse_event
 
 
@@ -114,18 +115,11 @@ async def test_grok_activity_meter_hooks_fire_on_turn_acquire_and_release() -> N
     and false-trip the daily cap.
     """
     conn, _factory = _make_grok_conn()
-    events: list[str] = []
-
-    class _StubMeter:
-        def mark_started(self) -> None:
-            events.append("started")
-
-        def mark_ended(self) -> None:
-            events.append("ended")
-
+    meter = RecordingMeter()
+    events = meter.marks
     # The connection must expose the wiring point the daemon calls.
     assert callable(getattr(conn, "set_billable_activity_meter", None))
-    conn.set_billable_activity_meter(_StubMeter())
+    conn.set_billable_activity_meter(meter)
 
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -134,9 +128,9 @@ async def test_grok_activity_meter_hooks_fire_on_turn_acquire_and_release() -> N
     turn = await conn.acquire_turn()
     assert events == ["started"]
     await turn.release()
-    assert events == ["started", "ended"]
+    assert events == ["started", ("ended", None)]
     await conn.stop()
-    assert events == ["started", "ended"]
+    assert events == ["started", ("ended", None)]
 
 
 async def test_grok_no_meter_by_default_is_safe() -> None:

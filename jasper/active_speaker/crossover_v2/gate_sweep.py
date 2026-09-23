@@ -40,6 +40,7 @@ import numpy as np
 
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.band_ladders import GATE_SWEEP_REFERENCE_BAND_HZ
 from jasper.audio_measurement.calibration import CalibrationCurve, apply_calibration_curve
 from jasper.audio_measurement.deconv import cap_capture_length
 from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
@@ -96,7 +97,7 @@ RESOLUTION_GREY_CYCLES = 5.0
 #: reference must not drift with the thing it is referencing (P1). Not
 #: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`, which this
 #: module already imports a sibling of: that one grades.
-REFERENCE_BAND_HZ = (2500.0, 8000.0)
+REFERENCE_BAND_HZ = GATE_SWEEP_REFERENCE_BAND_HZ
 #: The rung the reference is read at IS the shipped window: every cloud
 #: sidecar P1 worked from carried ``gate_window_ms: 7.0`` with
 #: ``gate_floor_source: search_span_bound``, so the reference sits where

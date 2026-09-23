@@ -21,6 +21,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import tool
+from ..log_event import log_event
 from ..platform.control_client import AsyncControlClient, ControlError
 
 if TYPE_CHECKING:
@@ -81,9 +82,12 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
             else:
                 resp = await client.post(path, body)
         except ControlError as e:
-            logger.warning(
-                "event=volume.pair_tool_forward_failed path=%s error=%s",
-                path, e,
+            log_event(
+                logger,
+                "volume.pair_tool_forward_failed",
+                path=path,
+                error=e,
+                level=logging.WARNING,
             )
             return {
                 "error": "Couldn't reach the pair leader to change the "

@@ -49,11 +49,13 @@ WAKE_REFRACTORY_SEC = 0.2
 # score. 4x MicCapture's 80 ms frame period.
 WAKE_STALE_SCORE_SEC = 0.32
 
-# How often the WAKE loop recomputes the acoustic condition. The fire gate
-# reads a cached `condition`; this bounds its staleness
-# while keeping the ring-noise-floor cost off the per-frame path
-# (recompute ~1x/s, not ~12x/s/leg). Conditions — music starting, the room
-# going quiet — change on a human timescale, so ~1 s is ample.
+# How often the WAKE loop recomputes the acoustic condition. Feeds the
+# wake-event `condition_class` and the /state `idle_rms_dbfs` +
+# `input_last_above_floor_at` columns — telemetry only, never the fire gate,
+# which compares only `detector.threshold` (score_frame below). Recomputing
+# ~1x/s rather than ~12x/s/leg keeps the ring-noise-floor cost off the
+# per-frame path; conditions — music starting, the room going quiet —
+# change on a human timescale, so ~1 s is ample.
 CONDITION_REFRESH_SEC = 1.0
 
 # Per-leg wake-telemetry capture-ring depth, in frames. Sized to the
@@ -294,7 +296,6 @@ class WakeLegs:
         # fire the same wake event simultaneously.
         self.fire_lock: asyncio.Lock = asyncio.Lock()
         self.condition_ctx = classify_condition(None, None)
-        self.condition: str = self.condition_ctx.condition
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
         # a refresh on the first WAKE frame.
         self.condition_refreshed_at: float = 0.0
@@ -353,7 +354,6 @@ class WakeLegs:
                 music_dbfs=self._music_dbfs(),
                 noise_floor_dbfs=noise_floor_dbfs,
             )
-            self.condition = self.condition_ctx.condition
             self.idle_rms_dbfs = noise_floor_dbfs
             if noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
                 self.input_last_above_floor_at = time.time()
@@ -389,8 +389,8 @@ class WakeLegs:
         if now_loop < self.refractory_until:
             return None
 
-        # Keep the condition fresh (~1x/s) so the
-        # per-frame gate below works off a live condition.
+        # Keep the wake-event condition telemetry fresh (~1x/s). The
+        # per-frame gate below never reads it — only detector.threshold does.
         self.refresh_condition(now_loop)
 
         # Track the raw score regardless of threshold so another leg, when it

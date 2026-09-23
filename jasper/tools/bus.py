@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 
+from ..log_event import log_event
 from ..transit.base import TransitError
 from . import tool
 
@@ -100,10 +101,13 @@ def make_bus_tools(bus):
             # — a total BusTime outage. Surface a single LLM-visible
             # error string rather than narrating it as "no buses"; the
             # voice prompt says "speak the error verbatim".
-            logger.warning(
-                "event=transit.bus.tool.error outcome=fetch_failed "
-                "route=%r err=%s",
-                route, exc,
+            log_event(
+                logger,
+                "transit.bus.tool.error",
+                outcome="fetch_failed",
+                route=route,
+                err=exc,
+                level=logging.WARNING,
             )
             return {
                 "error": (

@@ -21,6 +21,7 @@ import asyncio
 import logging
 
 from ..citibike import CitiBikeClient
+from ..log_event import log_event
 from ..transit.base import TransitError
 from . import tool
 
@@ -148,18 +149,24 @@ def make_citibike_tools(client: CitiBikeClient | None):
             # already logged the underlying outcome bucket. Surface
             # a single LLM-visible error string; voice prompt says
             # "speak the error verbatim".
-            logger.warning(
-                "event=transit.citibike.tool.error outcome=fetch_failed "
-                "filter=%r err=%s",
-                station_label, exc,
+            log_event(
+                logger,
+                "transit.citibike.tool.error",
+                outcome="fetch_failed",
+                filter=station_label,
+                err=exc,
+                level=logging.WARNING,
             )
             return {"error": f"Citi Bike data is unavailable: {exc}"}
 
         no_match = bool(station_label.strip()) and not stations
-        logger.info(
-            "event=transit.citibike.tool.result filter=%r returned=%d no_match=%s "
-            "ebike_only=%s",
-            station_label, len(stations), no_match, client.ebike_only,
+        log_event(
+            logger,
+            "transit.citibike.tool.result",
+            filter=station_label,
+            returned=len(stations),
+            no_match=no_match,
+            ebike_only=client.ebike_only,
         )
         return {
             "stations": [

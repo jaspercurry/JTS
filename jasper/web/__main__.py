@@ -308,7 +308,7 @@ def _make_tools_server(target: object) -> object:
         target,
         catalog_path=os.environ.get(
             "JASPER_TOOLS_CATALOG_FILE",
-            tools_setup.CATALOG_FILE,
+            tools_setup.DEFAULT_CATALOG_PATH,
         ),
         state_path=os.environ.get(
             "JASPER_TOOL_STATE_FILE",

@@ -60,7 +60,7 @@ from typing import Any
 from ..log_event import log_event
 from ..tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
 from ..tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
-from ..tool_catalog_view import catalog_view
+from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
 from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
@@ -81,7 +81,6 @@ from .chrome import canonical_header, canonical_page, json_island
 
 logger = logging.getLogger(__name__)
 
-CATALOG_FILE = "/run/jasper/tools.json"
 TOOLS_PAGE_CSS_HREF = "/assets/tools/tools.css"
 _JSON_BODY_LIMIT = 65536
 
@@ -863,7 +862,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    catalog_path: str = CATALOG_FILE,
+    catalog_path: str = DEFAULT_CATALOG_PATH,
     state_path: str = TOOL_STATE_FILE,
     prompt_overrides_path: str = PROMPT_OVERRIDES_FILE,
     apply_ts_path: str | None = None,

@@ -17,9 +17,9 @@ from jasper.tools import Tool, ToolDefinition, ToolRegistry
 from jasper.tools.catalog import (
     _CATALOG_HIDDEN,
     CATALOG_SCHEMA_VERSION,
-    _build_pack_payloads,
     _full_catalog_registry,
     build_catalog,
+    build_pack_payloads,
     write_catalog,
 )
 from jasper.tool_state import ToolState
@@ -190,7 +190,7 @@ def test_full_catalog_registry_ignores_staged_disabled_packs(monkeypatch):
 
 
 def test_pack_payloads_synthesize_singleton_for_packless_tool():
-    packs = _build_pack_payloads([{
+    packs = build_pack_payloads([{
         "name": "standalone_tool",
         "summary": "Standalone summary",
         "category": "Utilities",
