@@ -18,7 +18,6 @@ from jasper.env_load import EnvFileState
 from jasper.voice.provider_state import (
     barge_in_env_key,
     read_active_provider_state,
-    read_active_model,
     read_active_model_from_env_files,
     read_active_provider,
     read_barge_in_enabled,
@@ -42,7 +41,6 @@ def test_reads_configured_provider_and_model(tmp_path):
         """,
     )
     assert read_active_provider(path) == "openai"
-    assert read_active_model("openai", path) == "gpt-realtime-2"
     state = read_active_provider_state(path)
     assert state.configured
     assert state.status == "configured"
@@ -102,25 +100,15 @@ def test_model_falls_back_to_catalog_default(tmp_path):
     assert state.model == default_model_id("gemini")
 
 
-def test_read_active_model_unknown_provider_is_none(tmp_path):
-    path = _write(tmp_path, "JASPER_VOICE_PROVIDER=gemini\n")
-    assert read_active_model("not-a-provider", path) is None
-
-
-def test_read_active_model_missing_file_is_none(tmp_path):
-    path = str(tmp_path / "does-not-exist.env")
-    assert read_active_model("gemini", path) is None
-
-
 # --- Model resolution from the merged env files (issue #3133) ----------
 #
 # The model's documented home is EITHER jasper.env (the operator base
 # file — .env.example ships the keys there) or this module's own wizard
-# file (scripts/switch-gemini-model.sh writes that one), so unlike
-# read_active_model above (PROVIDER_FILE alone) this reads the merged
-# env-file set — jasper.env_load.merged_env_files — and must ignore
-# os.environ entirely: a calling-shell export outranks both files there
-# (load_env_files uses setdefault), which is the drift #3133 closes.
+# file (scripts/switch-gemini-model.sh writes that one), so unlike reading
+# PROVIDER_FILE alone this reads the merged env-file set —
+# jasper.env_load.merged_env_files — and must ignore os.environ entirely: a
+# calling-shell export outranks both files there (load_env_files uses
+# setdefault), which is the drift #3133 closes.
 
 
 def test_model_from_env_files_prefers_the_later_wizard_file(tmp_path):
