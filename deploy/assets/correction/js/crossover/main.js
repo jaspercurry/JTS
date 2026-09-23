@@ -258,8 +258,8 @@ function renderActions(primary, alternates = [], note = '', timing = {}) {
 // admitted, so without this the panel would drop from "Measurement 3 of 9 —
 // turn the microphone to +7°" to a bare status line for the whole 25 s the
 // tone plays, and the household would lose their place mid-round. Cleared
-// whenever the session stops being in flight (renderWalk's own !active arm),
-// so it can never describe a session that is over.
+// once neither a live capture nor a round's hold describes a spot, so it can
+// never describe a session that is over.
 let walkPrompt = null;
 let walkGeometry = null;
 let lastWalkKey = null;
@@ -302,10 +302,20 @@ function setUnitsButtons(unit) {
   els.walkUnitsImperial.setAttribute('aria-pressed', String(!metric));
 }
 
-function renderWalk(capture, {active, yielded}) {
-  const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
-  const held = walking ? (capture.join || capture.position_pending) : null;
-  const pending = held && held.mover === 'human' ? held : null;
+function walkingCapture(capture) {
+  return captureIsActive(capture) && !CAPTURE_WINDING_DOWN.has(capture.status);
+}
+
+// The hold a person releases on this page: the capture's own, else a
+// measurement round's (`round`, the envelope's `pending`).
+function humanHold(capture, round) {
+  const held = walkingCapture(capture) ? (capture.join || capture.position_pending) : round;
+  return held && held.mover === 'human' ? held : null;
+}
+
+function renderWalk(capture, {yielded, round = null}) {
+  const walking = walkingCapture(capture);
+  const pending = humanHold(capture, round);
   // The entry the gate is EXECUTING, and the only thing that moves during a
   // pose batch: configs 2..N are granted under the first config's release, so
   // no second hold is published and the retained prompt would otherwise freeze
@@ -314,8 +324,8 @@ function renderWalk(capture, {active, yielded}) {
   const current = walking && !pending ? capture.position_current : null;
   if (pending && pending.prompt) walkPrompt = pending.prompt;
   if (pending) walkGeometry = {degrees: pending.degrees, vertical_deg: pending.vertical_deg};
-  if (!walking) { walkPrompt = null; walkGeometry = null; }
-  const show = Boolean(walking && walkPrompt && !yielded);
+  if (!walking && !pending) { walkPrompt = null; walkGeometry = null; }
+  const show = Boolean((walking || pending) && walkPrompt && !yielded);
   const progress = show
     ? ((current && current.prompt.progress) || walkPrompt.progress || '')
     : '';
@@ -332,7 +342,10 @@ function renderWalk(capture, {active, yielded}) {
   els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
   els.walkDetail.hidden = !walkPrompt.body;
   renderWalkDiagram(walkGeometry);
-  if (pending && pending.actions?.length) {
+  if (!walking) {
+    // A round's hold: renderActionRow carries its buttons.
+    els.walkAction.replaceChildren();
+  } else if (pending && pending.actions?.length) {
     els.walkAction.replaceChildren(...pending.actions.map((action, index) => {
       const button = el('button', {
         class: index === 0 ? 'btn btn--primary' : 'btn btn--ghost',
@@ -353,7 +366,7 @@ function renderWalk(capture, {active, yielded}) {
   }
 }
 
-function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
+function renderCapture(capture, {suppressConnectAffordance = false, round = null} = {}) {
   const active = capture && CAPTURE_IN_FLIGHT.has(capture.status);
   const stoppable = capture && CAPTURE_STOPPABLE.has(capture.status);
   els.capture.hidden = !active;
@@ -362,7 +375,7 @@ function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
   // Ahead of the status branches below, all of which return early: the walk is
   // a property of the SESSION, not of the branch that happens to be describing
   // it, and it has to be torn down on the terminal ones too.
-  renderWalk(capture, {active, yielded: suppressConnectAffordance});
+  renderWalk(capture, {yielded: suppressConnectAffordance, round});
   if (!active) {
     if (capture && capture.status === 'failed') {
       setStatus(capture.error || 'Capture failed. Retry this step.', 'bad');
@@ -456,6 +469,7 @@ function render(env) {
   }
   renderCapture(env.capture, {
     suppressConnectAffordance: screenOwnsLiveControl(env),
+    round: env.pending,
   });
   renderActionRow(env);
   schedulePoll(captureIsActive(env.capture) || env.busy || passive ? POLL_MS : null);
@@ -539,8 +553,8 @@ async function runAction(action, button) {
       // household's next spot looks refused.
       if (envelope) {
         renderWalk(envelope.capture, {
-          active: captureIsActive(envelope.capture),
           yielded: screenOwnsLiveControl(envelope),
+          round: envelope.pending,
         });
       }
     }

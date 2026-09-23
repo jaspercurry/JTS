@@ -42,6 +42,19 @@ render(env);
 assert.equal(elements.get('crossover-round-choice').hidden, true);
 assert.deepEqual(elements.get('crossover-round-lines').children.map(n => n.textContent), env.round_lines);
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
+// Every pose's hold shows its own placement words in the walk card, not only
+// the first pose's; the action row keeps the buttons (#5632 F5).
+const hold = {mover: 'human', degrees: 0, vertical_deg: 0,
+  prompt: {progress: 'Pose 2 of 3', title: 'Move the microphone 12 in (30 cm) FORWARD of the head centre.', body: 'Keep it still.'},
+  actions: [{id: 'position_ready', label: 'Microphone is at the seat', endpoint: '/placed', body: {}}, {...action, id: 'retake'}]};
+render({...env, pending: hold});
+assert.equal(elements.get('crossover-walk').hidden, false);
+assert.deepEqual(['progress', 'headline', 'detail'].map(id => elements.get(`crossover-walk-${id}`).textContent),
+  [hold.prompt.progress, hold.prompt.title, hold.prompt.body]);
+assert.deepEqual(elements.get('crossover-walk-action').children, []);
+assert.deepEqual(elements.get('crossover-action').children.map(n => n.textContent), hold.actions.map(a => a.label));
+render(env);
+assert.equal(elements.get('crossover-walk').hidden, true);
 render({...env, busy: false, pending: null, next_action: action});
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
 for (const reason of ['no_repeats', 'insufficient_positions', 'insufficient_agreement_seats', 'unknown_analysis_reason']) {

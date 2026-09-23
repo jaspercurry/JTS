@@ -117,3 +117,18 @@ def test_pre_round_choice_survives_a_stopped_run(monkeypatch):
     envelope, code = flow.handle_envelope()
     assert code == 200
     assert envelope["round_choices"] is choices
+
+
+def test_every_pose_hold_reaches_the_page_with_its_placement_words(monkeypatch):
+    """#5632 F5: poses 2..N sent the page their buttons but not where the microphone goes."""
+    hold = {"index": 2, "attempt": 2, "degrees": 0, "vertical_deg": 0, "mover": "human",
+            "prompt": {"progress": "", "title": "Move the microphone 12 in (30 cm) FORWARD.", "body": ""},
+            "actions": [{"id": "position_ready", "label": "Microphone is at the seat", "endpoint": "/placed", "body": {}}]}
+    facts = {"pose": 2, "poses": 3, "mover": "human", "pose_details": [{"kind": "seat"}] * 3}
+    monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True, "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {"phase": "measure"},
+        "capture": {"status": "awaiting_capture", "run": facts, "position_pending": hold}}, 200))
+    envelope, _ = flow.handle_envelope()
+    pending = envelope["pending"]
+    assert (pending["prompt"], pending["mover"], pending["degrees"]) == (hold["prompt"], "human", 0)
+    assert pending["actions"][0] == hold["actions"][0]
