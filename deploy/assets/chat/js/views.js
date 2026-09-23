@@ -244,7 +244,7 @@ function metadataNote(parsed) {
     notes.push(`${tools.length === 1 ? "Tool" : "Tools"}: ${tools.join(", ")}`);
   }
   if (parsed.transcripts_available === false) {
-    notes.push("Transcript text is not available for this provider.");
+    notes.push("Transcript text is not available for this turn.");
   }
   return notes.length ? h("p.chat-turn-meta", null, notes.join(" ")) : null;
 }

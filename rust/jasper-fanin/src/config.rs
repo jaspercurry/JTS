@@ -275,17 +275,13 @@ pub struct Config {
     /// is off. Env: `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`.
     pub usb_direct_period_frames: u32,
 
-    /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
-    /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
-    /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
-    /// the DAC clock through the shared [`jasper_host_clock`] ladder. Fail-safe:
-    /// only the exact literal
-    /// `enabled` (case-insensitive) arms it; any other non-empty value warns
-    /// once (`event=fanin.host_clock_config_ignored`) and stays OFF. Meaningful
-    /// ONLY with `usb_direct_enabled`: fan-in must own the gadget capture to own
-    /// the pitch ctl. `enabled` + direct-off resolves to a fully-inert warn (no
-    /// ctl writes ever). Env:
-    /// `JASPER_FANIN_HOST_CLOCK` (`enabled` to arm).
+    /// DEFAULT-OFF combo-mode host-slaved USB clock. When `true` AND
+    /// `usb_direct_enabled`, a dedicated `fanin-host-clock` thread steers the
+    /// gadget's `Capture Pitch 1000000` ctl so the host tracks the DAC clock
+    /// through the shared [`jasper_host_clock`] ladder. Meaningful ONLY with
+    /// `usb_direct_enabled`: fan-in must own the gadget capture to own the pitch
+    /// ctl. `enabled` + direct-off resolves to a fully-inert warn (no ctl writes
+    /// ever). Env: `JASPER_FANIN_HOST_CLOCK` (`enabled` to arm).
     pub host_clock_enabled: bool,
 
     /// The commanded pitch step (in ppm) for the host-clock per-session
@@ -615,26 +611,7 @@ impl Config {
             }
         }
 
-        // Unlike the sibling `enabled` flags above, which stay off silently on any
-        // other value, this one WARNS on a non-empty non-`enabled` value — the
-        // usbsink literal idiom (`JASPER_USBSINK_HOST_CLOCK`), so a typo like
-        // `on`/`1` leaves a breadcrumb rather than silently disabling the feature.
-        let host_clock_enabled = match std::env::var("JASPER_FANIN_HOST_CLOCK") {
-            Ok(raw) => {
-                let v = raw.trim();
-                if v.is_empty() {
-                    false
-                } else if v.eq_ignore_ascii_case("enabled") {
-                    true
-                } else {
-                    log::warn!(
-                        "event=fanin.host_clock_config_ignored key=JASPER_FANIN_HOST_CLOCK value={v:?} reason=not_literal_enabled"
-                    );
-                    false
-                }
-            }
-            Err(_) => false,
-        };
+        let host_clock_enabled = env_enabled("JASPER_FANIN_HOST_CLOCK");
         let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
         if !(200..=800).contains(&host_clock_probe_ppm) {
             anyhow::bail!(
@@ -725,10 +702,40 @@ impl Config {
 
 // ---- env var helpers ------------------------------------------------
 
-/// Fail-safe feature gate: only the exact `enabled` token, ignoring case and
-/// surrounding whitespace, arms the feature.
+/// A default-off feature switch's value, trimmed and ignoring case.
+#[derive(Debug, PartialEq, Eq)]
+enum Switch<'a> {
+    /// `enabled`, the only value that arms a switch.
+    On,
+    /// Unset, blank, or `disabled`: the spellings of off the env writers use.
+    Off,
+    /// Any other value, trimmed: off too, but a likely typo.
+    Ignored(&'a str),
+}
+
+fn classify_switch(raw: Option<&str>) -> Switch<'_> {
+    match raw.map(str::trim) {
+        None | Some("") => Switch::Off,
+        Some(value) if value.eq_ignore_ascii_case("enabled") => Switch::On,
+        Some(value) if value.eq_ignore_ascii_case("disabled") => Switch::Off,
+        Some(value) => Switch::Ignored(value),
+    }
+}
+
+/// Fail-safe feature gate. An ignored value warns instead of failing the parse,
+/// so a typo leaves a breadcrumb rather than parking fan-in.
 fn env_enabled(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| value.trim().eq_ignore_ascii_case("enabled"))
+    let raw = std::env::var(name).ok();
+    match classify_switch(raw.as_deref()) {
+        Switch::On => true,
+        Switch::Off => false,
+        Switch::Ignored(value) => {
+            log::warn!(
+                "event=fanin.switch_ignored key={name} value={value:?} reason=not_enabled_or_disabled"
+            );
+            false
+        }
+    }
 }
 
 fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
@@ -970,22 +977,35 @@ mod tests {
     }
 
     #[test]
-    fn usb_direct_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(cfg.usb_direct_enabled, "{raw:?} should arm USB direct");
-            });
+    fn switches_arm_only_on_enabled_and_ignore_unknown_values() {
+        for (raw, want) in [
+            (Some("enabled"), Switch::On),
+            (Some("ENABLED"), Switch::On),
+            (Some(" Enabled "), Switch::On),
+            (None, Switch::Off),
+            (Some(""), Switch::Off),
+            (Some("   "), Switch::Off),
+            (Some("disabled"), Switch::Off),
+            (Some("DISABLED"), Switch::Off),
+            (Some("on"), Switch::Ignored("on")),
+            (Some("1"), Switch::Ignored("1")),
+            (Some("true"), Switch::Ignored("true")),
+        ] {
+            assert_eq!(classify_switch(raw), want, "{raw:?}");
         }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.usb_direct_enabled,
-                    "{raw:?} must NOT arm USB direct (only `enabled` does)"
-                );
-            });
-        }
+        with_env(
+            &[
+                ("JASPER_FANIN_USB_DIRECT", Some("on")),
+                ("JASPER_FANIN_HOST_CLOCK", Some("on")),
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("on")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("an ignored switch value must parse");
+                assert!(!cfg.usb_direct_enabled);
+                assert!(!cfg.host_clock_enabled);
+                assert!(!cfg.input_resampler_cushion_decay_enabled);
+            },
+        );
     }
 
     #[test]
@@ -1098,25 +1118,6 @@ mod tests {
     }
 
     // ---- combo-mode host-slaved USB clock ---------------------------------
-
-    #[test]
-    fn host_clock_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_HOST_CLOCK", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(cfg.host_clock_enabled, "{raw:?} should arm host-clock");
-            });
-        }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_HOST_CLOCK", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.host_clock_enabled,
-                    "{raw:?} must NOT arm host-clock (only `enabled` does)"
-                );
-            });
-        }
-    }
 
     #[test]
     fn host_clock_servo_armed_requires_both_host_clock_and_direct() {
@@ -1433,28 +1434,6 @@ mod tests {
                     Config::from_env().expect_err("out-of-range direct period must error");
                 },
             );
-        }
-    }
-
-    #[test]
-    fn cushion_decay_arms_only_on_literal_enabled() {
-        for (raw, want) in [
-            (None, false),
-            (Some(""), false),
-            (Some("on"), false),
-            (Some("1"), false),
-            (Some("true"), false),
-            (Some("enabled"), true),
-            (Some("Enabled"), true),
-            (Some(" ENABLED "), true),
-        ] {
-            with_env(&[("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", raw)], || {
-                let cfg = Config::from_env().expect("decay flag must parse");
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_enabled, want,
-                    "raw={raw:?} should arm={want}"
-                );
-            });
         }
     }
 

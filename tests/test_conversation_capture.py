@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 
 from jasper.conversation_history import (
-    CAPTURE_ALIAS_ENV,
+    CAPTURE_ENABLED_ENV,
     ConversationStore,
     ConversationTurn,
     DB_PATH_ENV,
@@ -19,7 +19,7 @@ from jasper.voice.conversation_capture import ConversationCapture
 
 def _capture(tmp_path, monkeypatch, *, capture: bool = True):
     db_path = tmp_path / "conversation_history.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1" if capture else "0")
+    monkeypatch.setenv(CAPTURE_ENABLED_ENV, "1" if capture else "0")
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     store = ConversationStore(str(db_path))
     return ConversationCapture(store=store, voice_provider="test"), store
@@ -62,7 +62,7 @@ def test_record_lazily_opens_store_after_capture_enabled(
     monkeypatch,
 ) -> None:
     db_path = tmp_path / "conversation_history.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1")
+    monkeypatch.setenv(CAPTURE_ENABLED_ENV, "1")
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     capture = ConversationCapture(store=None, voice_provider="test")
 
@@ -82,7 +82,7 @@ def test_record_reopens_store_when_db_path_changes(
 ) -> None:
     first_db = tmp_path / "first.db"
     second_db = tmp_path / "second.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1")
+    monkeypatch.setenv(CAPTURE_ENABLED_ENV, "1")
     monkeypatch.setenv(DB_PATH_ENV, str(first_db))
     capture = ConversationCapture(store=None, voice_provider="test")
 

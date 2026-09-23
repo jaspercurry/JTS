@@ -516,7 +516,8 @@ def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
     )
 
 
-def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None):
+def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None,
+                       analysis_fields=None):
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -524,7 +525,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         model="minidsp_umik2", label="miniDSP UMIK-2", source="fixture", root=calibration_root)
     with monkeypatch.context() as patch:
         patch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(calibration_root))
-        analysis = (_measure_analysis(program) if program.phase == "measure" else _verify_analysis(program))
+        analysis = replace(_measure_analysis(program) if program.phase == "measure" else _verify_analysis(program),
+                           **(analysis_fields or {}))
         def analyzed(*args, **kwargs):
             if analysis_error is not None:
                 raise analysis_error

@@ -24,8 +24,7 @@ DEFAULT_DB_PATH = "/var/lib/jasper/conversation_history.db"
 DEFAULT_SETTINGS_PATH = "/var/lib/jasper/conversation_history.env"
 SETTINGS_PATH_ENV = "JASPER_CONVERSATION_HISTORY_FILE"
 DB_PATH_ENV = "JASPER_CONVERSATION_HISTORY_DB"
-CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_HISTORY_ENABLED"
-CAPTURE_ALIAS_ENV = "JASPER_CONVERSATION_CAPTURE"
+CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_CAPTURE"
 RETENTION_DAYS_ENV = "JASPER_CONVERSATION_HISTORY_RETENTION_DAYS"
 RETENTION_MAX_ROWS_ENV = "JASPER_CONVERSATION_HISTORY_MAX_ROWS"
 # Code defaults so retention is bounded even when the env vars are ABSENT.
@@ -338,17 +337,8 @@ def read_settings(
     settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
     file_state = read_env_file_state(settings_path)
     merged = {**base_env, **file_state.values}
-    file_values = file_state.values
-    if CAPTURE_ALIAS_ENV in file_values:
-        capture_raw = file_values.get(CAPTURE_ALIAS_ENV)
-    elif CAPTURE_ENABLED_ENV in file_values:
-        capture_raw = file_values.get(CAPTURE_ENABLED_ENV)
-    elif CAPTURE_ALIAS_ENV in base_env:
-        capture_raw = base_env.get(CAPTURE_ALIAS_ENV)
-    else:
-        capture_raw = base_env.get(CAPTURE_ENABLED_ENV)
     return ConversationSettings(
-        capture_enabled=parse_bool_value(capture_raw) is True,
+        capture_enabled=parse_bool_value(merged.get(CAPTURE_ENABLED_ENV)) is True,
         db_path=(merged.get(DB_PATH_ENV) or DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH,
         retention_days=_env_retention_int(
             merged, RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS,
@@ -428,10 +418,7 @@ def write_settings(
     current = read_settings(path=settings_path, environ=base_env)
     values = dict(read_env_file(settings_path))
 
-    values[CAPTURE_ALIAS_ENV] = "1" if capture_enabled else "0"
-    # Keep a single capture flag in the wizard-owned file. read_settings()
-    # still accepts the older explicit name for compatibility.
-    values.pop(CAPTURE_ENABLED_ENV, None)
+    values[CAPTURE_ENABLED_ENV] = "1" if capture_enabled else "0"
     values[DB_PATH_ENV] = current.db_path
 
     write_env_file(
