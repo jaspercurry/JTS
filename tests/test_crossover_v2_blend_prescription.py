@@ -47,7 +47,6 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as bp
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
     BLEND_PRESCRIPTION_REFUSAL_REASONS,
-    BOOST_MIN_TESTIFYING_POSITIONS,
     PRESCRIPTION_KIND,
     PRESCRIPTION_MAX_BOOST_Q,
     PRESCRIPTION_MAX_BYTES,
@@ -2104,7 +2103,6 @@ def test_the_bounds_are_the_numbers_the_ruling_and_the_evidence_earned():
     # the solver's own cut ceilings they happen to equal.
     assert PRESCRIPTION_MAX_FILTER_BOOST_DB == 3.0
     assert PRESCRIPTION_MAX_TOTAL_BOOST_DB == 4.0
-    assert BOOST_MIN_TESTIFYING_POSITIONS == 3
     assert PRESCRIPTION_MAX_BYTES == 65536
 
 
@@ -2306,12 +2304,6 @@ def test_the_response_format_states_every_bound_the_gate_applies():
                         "q_max_cut"):
         assert retired_key not in fmt["bounds"]
     assert "ADR-0207" in fmt["bounds"]["cuts_are_free"]
-    # The positional block is a FINDING now, not a bar, and its key says so —
-    # a prescriber reading "boost_bar" would take it for something that refuses.
-    assert "boost_bar" not in fmt, "the bar is gone; the key must not outlive it"
-    finding = fmt["boost_positional_finding"]
-    assert finding["min_testifying_positions"] == BOOST_MIN_TESTIFYING_POSITIONS
-    assert "REFUSES NOTHING" in finding["note"]
     assert set(fmt["refusal_reasons"]) == BLEND_PRESCRIPTION_REFUSAL_REASONS
     # …and the two retired slugs are gone from the vocabulary entirely, so a
     # prescriber cannot read a bar this door no longer applies.

@@ -42,7 +42,6 @@ from jasper.sound.profile import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 from .blend_correction import (
     BLEND_FILTER_Q,
     BLEND_MAX_FILTERS,
-    BLEND_MIN_CUT_DB,
     blend_filters_from_mapping,
 )
 
@@ -55,8 +54,6 @@ __all__ = [
     "BLEND_CANDIDATE_FIELD",
     "BLEND_PRESCRIPTION_MALFORMED",
     "BLEND_PRESCRIPTION_REFUSAL_REASONS",
-    "BOOST_MIN_DIP_DB",
-    "BOOST_MIN_TESTIFYING_POSITIONS",
     "BOOST_ROUTE_UNAVAILABLE",
     "PRESCRIPTION_KIND",
     "PRESCRIPTION_MAX_BOOST_Q",
@@ -148,21 +145,6 @@ PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 #: refuses there too. This class's alone, pinned against the driver class's own
 #: ceiling as an inequality.
 PRESCRIPTION_MAX_TOTAL_BOOST_DB = 4.0
-
-#: How deep a per-position deviation must be to count as "the dip is present
-#: here", dB. :data:`BLEND_MIN_CUT_DB` under a reading: it is this program's own
-#: measured model-tracking error, so a shallower dip is indistinguishable from
-#: the instrument.
-BOOST_MIN_DIP_DB = BLEND_MIN_CUT_DB
-
-#: The fewest positions that must testify before the all-but-one rule means
-#: anything. Three: "present at every position but at most one" is VACUOUS at
-#: two — it admits a dip seen at exactly one — and undefined at one.
-BOOST_MIN_TESTIFYING_POSITIONS = 3
-
-#: How many positions may miss the dip and still leave it supported. Read
-#: together with the count above.
-BOOST_MAX_DISSENTING_POSITIONS = 1
 
 
 # --------------------------------------------------------------------------- #
@@ -385,29 +367,6 @@ def prescription_response_format() -> dict[str, Any]:
                 "the composed boost cap is checked on the evaluated biquad "
                 "cascade over the region, not on a sum of gains: two filters "
                 "whose skirts overlap deliver more than either alone"
-            ),
-        },
-        "boost_positional_finding": {
-            "note": (
-                "a positive gain is a distinct prescription class and carries "
-                "a positional finding on the receipt. It REFUSES NOTHING: a "
-                "dip appearing at only one seat is evidence it may be an "
-                "interference null, which swallows added energy instead of "
-                "being filled by it — weigh it, and let the next measurement "
-                "settle it. The delta probe rolls a boost back if it proves "
-                "spatially costly."
-            ),
-            "min_testifying_positions": BOOST_MIN_TESTIFYING_POSITIONS,
-            "max_dissenting_positions": BOOST_MAX_DISSENTING_POSITIONS,
-            "min_dip_db": BOOST_MIN_DIP_DB,
-            "denominator": (
-                "positions whose own validity floor sits above the proposed "
-                "frequency cannot testify and are removed from the "
-                "denominator; the finding reports both counts"
-            ),
-            "if_evidence_is_missing": (
-                "no positional finding is recorded at all — measure more "
-                "positions to get one; the prescription is not refused for it"
             ),
         },
         "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
