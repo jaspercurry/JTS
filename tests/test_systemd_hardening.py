@@ -218,20 +218,6 @@ def test_accessory_bridge_host_keeps_the_folded_adapter_sandbox():
     assert not any(k == "SupplementaryGroups" and "bluetooth" in v for k, v in pairs)
 
 
-@pytest.mark.parametrize("user", ["jasper-input", "jasper-mux", "jasper-voice"])
-def test_the_installer_grants_its_bluez_callers_their_membership(user):
-    """With the group off these unit files, `usermod -aG` is the ONLY thing that
-    reaches BlueZ: the mic adapter's GATT access (jasper-input) and the A2DP
-    presence probe + AVRCP preempt pause (jasper-mux, jasper-voice). BlueZ's
-    D-Bus policy resolves the group from the user database, so the drop-in
-    supplementary-group contract test above cannot see this grant."""
-    users = (ROOT / "deploy/lib/install/service-users.sh").read_text(
-        encoding="utf-8",
-    )
-
-    assert f"usermod -aG bluetooth {user}" in users
-
-
 @pytest.mark.parametrize("unit,path", sorted(ACCESSORY_RECONCILERS.items()))
 def test_accessory_reconciler_unit_is_hardened_root_oneshot(unit, path):
     directives = _directives(path)

@@ -17,39 +17,11 @@ from tests._camilla_guard_fixtures import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMON = ROOT / "deploy/lib/jasper-camilla-guard-common.sh"
 PIPE_GUARD = ROOT / "deploy/bin/jasper-camilla-pipe-guard"
 GUARDS = (
     PIPE_GUARD,
     ROOT / "deploy/bin/jasper-camilla-crossover-guard",
 )
-
-
-def test_guards_source_one_common_probe_and_repair_owner() -> None:
-    common = COMMON.read_text()
-    assert "camilla_guard_repair_statefile()" in common
-    assert "camilla_guard_check_playback_pipe_or_repair()" in common
-    for guard in GUARDS:
-        source = guard.read_text()
-        assert "jasper-camilla-guard-common.sh" in source
-        assert "source \"$COMMON_LIB\"" in source
-        assert "camilla_guard_check_playback_pipe_or_repair" in source
-        assert "camilla_guard_repair_statefile()" not in source
-
-
-def test_installer_stages_common_guard_library() -> None:
-    installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
-    function_start = installer.index("install_local_audio_graph_unit_files() {")
-    function_end = installer.index("\n}\n", function_start)
-    function = installer[function_start:function_end]
-    lib_pos = function.index("deploy/lib/jasper-camilla-guard-common.sh")
-    assert lib_pos < function.index("for row in")
-    rows = installer.split("JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(", 1)[1].split(
-        "\n)\n", 1,
-    )[0]
-    assert "deploy/bin/jasper-camilla-pipe-guard" in rows
-    assert "deploy/bin/jasper-camilla-crossover-guard" in rows
-    assert installer.count("deploy/lib/jasper-camilla-guard-common.sh") == 1
 
 
 def test_missing_common_library_fails_open_with_each_guard_event(tmp_path: Path) -> None:

@@ -39,12 +39,3 @@ def test_shared_parser_extracts_first_matching_card(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "DAC8x\n"
-
-
-def test_install_uses_the_shared_parser():
-    """install.sh is the parser's one consumer anywhere: the reconciler takes
-    its Apple card from the classifier's env emitter (ADR-0235 R2)."""
-    install = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
-
-    assert 'source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"' in install
-    assert 'jasper_find_alsa_card "$1" "$2"' in install

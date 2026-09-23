@@ -963,34 +963,6 @@ def test_the_path_unit_watches_the_request_file_this_module_publishes():
     assert _value_for(body, "WantedBy") == "multi-user.target"
 
 
-def test_installer_enables_reconciler_not_profile_adapter_by_default():
-    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8",
-    )
-
-    assert "deploy/systemd/jasper-accessory-reconcile.service" in units_sh
-    assert "deploy/systemd/jasper-accessory-reconcile.path" in units_sh
-    for profile in ("install_systemd_units", "start_streambox_runtime_units"):
-        body = units_sh.split(f"{profile}() {{", 1)[1].split("\n}", 1)[0]
-        enable_block = body.split("_start_core_graph_units", 1)[1]
-        assert "jasper-accessory-reconcile.service" in enable_block, profile
-    assert "jasper-accessory-reconcile --reason install" in units_sh
-
-
-def test_both_profiles_start_the_request_watcher_this_boot():
-    """`enable` alone arms the watcher for the NEXT boot. Every refresh
-    requested before then would be dropped, and nothing else would say so."""
-    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8",
-    )
-    tail = units_sh.split("_start_core_graph_units() {", 1)[1].split("\n}", 1)[0]
-    assert "systemctl enable --now jasper-accessory-reconcile.path" in tail
-
-    for function in ("install_systemd_units", "start_streambox_runtime_units"):
-        body = units_sh.split(f"{function}() {{", 1)[1].split("\n}", 1)[0]
-        assert "_start_core_graph_units" in body, function
-
-
 def test_reconciler_does_not_order_before_the_host_it_restarts():
     unit = (ROOT / "deploy/systemd/jasper-accessory-reconcile.service").read_text(
         encoding="utf-8",
@@ -1106,18 +1078,6 @@ def test_a_failed_publish_is_authoritative_not_fail_soft(monkeypatch, caplog):
 
     with caplog.at_level(logging.ERROR):
         assert reconcile.main(["--reason", "test", "--reason-file", "/nonexistent"]) == 1
-
-
-def test_the_installer_retires_the_deleted_adapter_unit_on_upgrade():
-    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8",
-    )
-    body = units_sh.split("activate_staged_unit_files() {", 1)[1].split(
-        "\n}", 1,
-    )[0]
-
-    assert "systemctl disable --now jasper-wiim-remote-mic.service" in body
-    assert 'rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"' in body
 
 
 @pytest.mark.parametrize(

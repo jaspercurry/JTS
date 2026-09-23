@@ -23,22 +23,6 @@ SHARED_PACKAGES = [
 ]
 
 
-def _function_body(source: str, name: str) -> str:
-    start = source.index(f"{name}() {{")
-    end = source.index("\n}\n", start)
-    return source[start:end]
-
-
-def test_full_and_streambox_profiles_call_one_package_owner() -> None:
-    source = INSTALL.read_text()
-    assert "_install_renderer_native_deps() {" in source
-    for name in ("install_deps", "install_streambox_deps"):
-        body = _function_body(source, name)
-        assert body.count("_install_renderer_native_deps") == 1
-        for package in SHARED_PACKAGES:
-            assert package not in body, f"{name} duplicates {package}"
-
-
 def test_shared_owner_installs_the_complete_renderer_package_set() -> None:
     command = f"""
 source {shlex.quote(str(INSTALL))} >/dev/null

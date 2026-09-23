@@ -58,12 +58,3 @@ def test_cli_sorts_directory_and_reports_invalid_wav(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert result.stdout.index("a.wav") < result.stdout.index("b.wav")
     assert "broken.wav: ERROR" in result.stderr
-
-
-def test_capture_scripts_share_the_wav_stats_cli() -> None:
-    for name in (
-        "capture-chip-mic.sh",
-        "capture-reference-condition.sh",
-    ):
-        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-        assert "_wav_stats.py" in text

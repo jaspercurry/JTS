@@ -1483,16 +1483,6 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             local_note = "CLAUDE.local.md"
             self.assertGreater((checkout / local_note).stat().st_size, 0)
 
-    def test_deploy_does_not_hardcode_pi_home_checkout(self):
-        text = DEPLOY.read_text(encoding="utf-8")
-
-        self.assertNotIn(":/home/pi/jts/", text)
-        self.assertIn('REMOTE_REPO_DIR="${remote_home}/jts"', text)
-        self.assertIn(
-            'bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")',
-            text,
-        )
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

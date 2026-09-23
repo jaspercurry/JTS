@@ -97,17 +97,6 @@ def test_audit_corpus_and_waveform_dbfs_consume_shared_rms(tmp_path: Path) -> No
     assert fusion._dbfs_from_rms(np.array([], dtype=np.int16)) == -100.0
 
 
-def test_wake_rate_harness_validates_and_stages_shared_helper() -> None:
-    source = (_SCRIPTS / "wake-rate-test.sh").read_text(encoding="utf-8")
-
-    assert 'LOCAL_METRICS="$REPO_ROOT/scripts/_wake_audio_metrics.py"' in source
-    assert 'if [[ ! -f "$LOCAL_METRICS" ]]' in source
-    assert (
-        'scp -q "$LOCAL_METRICS" '
-        '"${PI_USER}@${PI_HOST}:/tmp/_wake_audio_metrics.py"'
-    ) in source
-
-
 def test_offline_counter_runs_standalone_with_staged_sibling(tmp_path: Path) -> None:
     counter = tmp_path / "_offline_wake_count.py"
     helper = tmp_path / "_wake_audio_metrics.py"

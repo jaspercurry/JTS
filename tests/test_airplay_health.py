@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 import types
 
 import pytest
@@ -16,6 +17,7 @@ from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
+from jasper.control.camilla_health import CamillaHealth
 from jasper.control.camilla_rate_storm import STORM_EXIT_DEBOUNCE_SEC, CamillaRateStorm
 from jasper.control.fanin_view import FaninView
 
@@ -55,94 +57,29 @@ def _fanin_status(
     }
 
 
-def _sampler(*, fanin_probe=None, **kwargs) -> AirPlayHealthSampler:
+def _sampler(
+    *, fanin_probe=None, camilla_probe=None, rate_storm=None,
+    time_fn=time.time, **kwargs,
+) -> AirPlayHealthSampler:
     """Build a sampler isolated from live Pi maintenance markers.
 
     Warmup + connect-grace default OFF here so the classification tests
     below exercise steady-state behaviour at small clock values; the
     warmup / connect-grace suppression has its own dedicated tests.
-    ``fanin_probe`` feeds the composed :class:`FaninView`.
+    ``fanin_probe`` feeds the composed :class:`FaninView`; ``camilla_probe``
+    and ``rate_storm`` feed the composed :class:`CamillaHealth`.
     """
     kwargs.setdefault("maintenance_suppress_path", None)
     kwargs.setdefault("warmup_sec", 0.0)
     kwargs.setdefault("connect_grace_sec", 0.0)
-    return AirPlayHealthSampler(fanin_view=FaninView(probe=fanin_probe), **kwargs)
-
-
-def test_camilla_probe_uses_bounded_controller_and_reads_device_config(
-    monkeypatch,
-) -> None:
-    import jasper.camilla as camilla
-    import jasper.camilla_config_contract as contract
-
-    constructed: list[tuple[str, int]] = []
-    closed = 0
-
-    class Controller:
-        def __init__(self, host: str, port: int) -> None:
-            constructed.append((host, port))
-
-        async def get_runtime_status(self):
-            return {
-                "buffer_level": 31,
-                "rate_adjust": 1.0001,
-                "capture_rate": 48000,
-            }
-
-        async def get_config_file_path(self, *, best_effort: bool):
-            assert best_effort is True
-            return "/tmp/camilla.yml"
-
-        async def close(self):
-            nonlocal closed
-            closed += 1
-
-    monkeypatch.setattr(camilla, "CamillaController", Controller)
-    monkeypatch.setattr(
-        contract,
-        "read_camilla_devices_config",
-        lambda path: {"chunksize": 256} if path == "/tmp/camilla.yml" else None,
+    return AirPlayHealthSampler(
+        fanin_view=FaninView(probe=fanin_probe),
+        camilla=CamillaHealth(
+            probe=camilla_probe, rate_storm=rate_storm, time_fn=time_fn,
+        ),
+        time_fn=time_fn,
+        **kwargs,
     )
-
-    assert AirPlayHealthSampler._read_camilla_state("127.0.0.1", 1234) == {
-        "buffer_level": 31,
-        "rate_adjust": 1.0001,
-        "capture_rate": 48000,
-        "config_path": "/tmp/camilla.yml",
-        "chunksize": 256,
-    }
-    assert constructed == [("127.0.0.1", 1234)]
-    assert closed == 1
-
-
-def test_camilla_probe_rejects_incomplete_runtime_snapshot(monkeypatch) -> None:
-    import jasper.camilla as camilla
-
-    class Controller:
-        def __init__(self, _host: str, _port: int) -> None:
-            pass
-
-        async def get_runtime_status(self):
-            return {"buffer_level": 31}
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(camilla, "CamillaController", Controller)
-
-    assert AirPlayHealthSampler._read_camilla_state("127.0.0.1", 1234) is None
-
-
-class _FakeHaStatus:
-    def snapshot(self) -> dict:
-        return {
-            "configured": False,
-            "connected": False,
-            "url": "",
-            "instance_name": None,
-            "version": None,
-            "error": None,
-        }
 
 
 @pytest.mark.parametrize("value", [True, False])
@@ -163,23 +100,6 @@ def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     assert drop["type"] == "shairport_packet_drop"
     assert drop["severity"] == "issue"
     assert drop["lead_time_sec"] == 0.118
-
-    short = classify_journal_line(
-        "jasper-camilla",
-        "Capture read 768 frames instead of the requested 1024",
-    )
-    assert short is not None
-    assert short["type"] == "camilla_short_read"
-    assert short["severity"] == "watch"
-    assert short["deficit_frames"] == 256
-
-    underrun = classify_journal_line(
-        "jasper-camilla",
-        "PB: Prepare playback after buffer underrun",
-    )
-    assert underrun is not None
-    assert underrun["type"] == "camilla_playback_underrun"
-    assert underrun["severity"] == "issue"
 
 
 def test_offset_too_short_warning_rolls_into_shairport_events() -> None:
@@ -245,32 +165,6 @@ def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
     assert snap["summary_30m"]["shairport_events"] >= 1
 
 
-def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
-    assert (
-        classify_journal_line(
-            "jasper-camilla",
-            "Capture read 1023 frames instead of the requested 1024",
-        )
-        is None
-    )
-    assert (
-        classify_journal_line(
-            "jasper-camilla",
-            "Capture read 1016 frames instead of the requested 1024",
-        )
-        is None
-    )
-
-    material = classify_journal_line(
-        "jasper-camilla",
-        "Capture read 1008 frames instead of the requested 1024",
-    )
-
-    assert material is not None
-    assert material["type"] == "camilla_short_read"
-    assert material["deficit_frames"] == 16
-
-
 def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     tmp_path,
 ) -> None:
@@ -302,7 +196,7 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
         fanin_view=FaninView(probe=lambda: statuses.pop(0)),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
-        camilla_probe=lambda: None,
+        camilla=CamillaHealth(probe=lambda: None, time_fn=lambda: now[0]),
         maintenance_suppress_path=str(marker),
         warmup_sec=0.0,
         connect_grace_sec=0.0,
@@ -356,7 +250,7 @@ def test_journal_scan_widens_after_no_airplay_session_for_5_minutes() -> None:
         fanin_view=FaninView(probe=lambda: _fanin_status()),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
-        camilla_probe=lambda: None,
+        camilla=CamillaHealth(probe=lambda: None, time_fn=lambda: now[0]),
         maintenance_suppress_path=None,
         warmup_sec=0.0,
         connect_grace_sec=0.0,
@@ -400,7 +294,7 @@ def test_journal_scan_returns_to_default_cadence_once_a_session_starts() -> None
         fanin_view=FaninView(probe=lambda: _fanin_status()),
         journal_reader=journal,
         mpris_probe=lambda: dict(mpris),
-        camilla_probe=lambda: None,
+        camilla=CamillaHealth(probe=lambda: None, time_fn=lambda: now[0]),
         maintenance_suppress_path=None,
         warmup_sec=0.0,
         connect_grace_sec=0.0,
@@ -670,7 +564,7 @@ def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
             ("shairport-sync", "recovering from a previous underrun"),
         ],
         mpris_probe=lambda: {"playing": False},
-        camilla_probe=lambda: None,
+        camilla=CamillaHealth(probe=lambda: None, time_fn=lambda: now[0]),
         maintenance_suppress_path=None,
         warmup_sec=120.0,
         connect_grace_sec=0.0,

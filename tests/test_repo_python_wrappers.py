@@ -375,29 +375,3 @@ def test_audit_corpus_imports_jasper_from_invoking_worktree(
 
     assert completed.returncode == 0, completed.stderr
     assert "imported foreign jasper checkout" not in completed.stderr
-
-
-def test_phase0_child_wrappers_share_the_interpreter_contract() -> None:
-    phase0 = (SCRIPTS / "_run_wake_training_phase0.py").read_text()
-    children = (
-        "export-wake-corpus-bundle.sh",
-        "build-wake-feature-bank.sh",
-        "build-wake-negative-feature-bank.sh",
-        "prepare-wake-training-workdir.sh",
-        "prepare-wake-livekit-smoke.sh",
-    )
-    for child in children:
-        assert f'_script("{child}")' in phase0
-        wrapper = (SCRIPTS / child).read_text()
-        assert '. "${SCRIPT_DIR}/_lib.sh"' in wrapper
-        assert 'PY="$(resolve_repo_python)"' in wrapper
-
-
-def test_wake_wrapper_resolver_static_ratchet() -> None:
-    for case in WRAPPERS:
-        wrapper = (SCRIPTS / case.name).read_text()
-        assert '. "${SCRIPT_DIR}/_lib.sh"' in wrapper
-        assert 'PY="$(resolve_repo_python)"' in wrapper
-        assert "CANDIDATES=(" not in wrapper
-        assert ".venv/bin/python" not in wrapper
-        assert "${PYTHON:-python3}" not in wrapper

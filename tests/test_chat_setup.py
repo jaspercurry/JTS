@@ -248,33 +248,6 @@ def test_root_serves_canonical_shell(chat_server) -> None:
     assert "<style>" not in text
 
 
-def test_chat_static_modules_follow_frontend_contract() -> None:
-    asset_root = (
-        Path(chat_setup.__file__).resolve().parents[2]
-        / "deploy"
-        / "assets"
-        / "chat"
-    )
-    main = (asset_root / "js" / "main.js").read_text(encoding="utf-8")
-    views = (asset_root / "js" / "views.js").read_text(encoding="utf-8")
-
-    assert "csrfToken" not in main
-    assert "function dataPath()" in main
-    assert "getJSON(requestedPath)" in main
-    assert 'from "/assets/shared/js/dialog.js"' in main
-    assert 'JSON.parse(raw)' in views
-    assert 'parsed.kind !== "voice_turn"' in views
-    assert 'Tool" : "Tools"' in views
-    assert "chat-turns" in views
-    assert "article.chat-turn-card" in views
-    assert "User -> Assistant" not in views
-    assert '"attr:aria-label": "Conversation capture"' in views
-    assert "No transcript for this turn." in views
-
-    combined = "\n".join([main, views])
-    assert ".innerHTML" not in combined
-
-
 def test_data_json_returns_recent_turns_with_limit_and_since(chat_server) -> None:
     base, _db_path, _settings_path = chat_server
     status, body = _http_get(

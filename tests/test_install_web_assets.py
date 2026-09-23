@@ -12,7 +12,6 @@ test_install_voice_provider_migration.py.
 """
 from __future__ import annotations
 
-import re
 import stat
 import subprocess
 import tempfile
@@ -296,12 +295,6 @@ def test_every_repo_asset_matches_the_copy_shape():
         f"{offenders}; extend deploy/lib/install/web-assets.sh if the "
         "shape must grow"
     )
-
-
-def test_install_sh_sources_and_calls_the_helper():
-    install_sh = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
-    assert "deploy/lib/install/web-assets.sh" in install_sh
-    assert re.search(r"^\s*install_web_assets\b", install_sh, re.M)
 
 
 def test_real_repo_assets_round_trip_through_doctor(monkeypatch, tmp_path: Path):

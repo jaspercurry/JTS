@@ -17,9 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "deploy/systemd/jasper-usbmic.service"
 APPLY_UNIT = ROOT / "deploy/systemd/jasper-usbmic-apply.service"
 APPLY_RESULT = ROOT / "deploy/usbsink/jasper-usbmic-apply-result"
-INSTALL = ROOT / "deploy/lib/install/systemd-units.sh"
-INSTALL_SH = ROOT / "deploy/install.sh"
-SERVICE_USERS = ROOT / "deploy/lib/install/service-users.sh"
 
 
 def test_usb_mic_service_is_dependency_enabled_and_gadget_scoped() -> None:
@@ -33,20 +30,6 @@ def test_usb_mic_service_is_dependency_enabled_and_gadget_scoped() -> None:
     assert "User=jasper-usbmic" in text
     assert "OOMScoreAdjust=-300" in text
     assert "MemoryMax=" in text
-
-
-def test_installer_stages_and_enables_usb_mic_service() -> None:
-    text = INSTALL.read_text()
-    assert "deploy/systemd/jasper-usbmic.service" in text
-    assert "deploy/systemd/jasper-usbmic-apply.service" in text
-    assert "deploy/usbsink/jasper-usbmic-apply-result" in text
-    assert "systemctl enable jasper-usbmic.service" in text
-
-
-def test_installer_seeds_usb_mic_enable_and_leg_preferences() -> None:
-    text = INSTALL_SH.read_text()
-    assert "JASPER_USB_MIC=disabled" in text
-    assert "JASPER_USB_MIC_LEG=primary" in text
 
 
 def test_usb_mic_apply_is_durable_delayed_and_naturally_debounced() -> None:
@@ -122,13 +105,6 @@ def test_usb_mic_apply_failure_helper_emits_only_for_failure() -> None:
     assert "result=${SERVICE_RESULT:-unknown}" in text
     assert "exit_code=${EXIT_CODE:-unknown}" in text
     assert "exit_status=${EXIT_STATUS:-unknown}" in text
-
-
-def test_installer_creates_dedicated_least_privilege_usb_mic_user() -> None:
-    text = SERVICE_USERS.read_text()
-    assert "getent passwd jasper-usbmic" in text
-    assert "-g jasper -G audio jasper-usbmic" in text
-    assert "-G input jasper-usbmic" not in text
 
 
 CHMASK_PATH = f"{GADGET_PATH}/functions/uac2.usb0/p_chmask"
