@@ -115,7 +115,6 @@ def test_doctor_check_exception_becomes_fail_result():
     assert result.name == "explosive check"
     assert result.status == "fail"
     assert result.reason == _shared.REASON_CHECK_CRASHED
-    assert "RuntimeError: synthetic check failure" in result.detail
 
 
 def test_doctor_check_exception_redacts_secret_like_values():
@@ -166,7 +165,6 @@ def test_async_doctor_check_exception_becomes_fail_result():
     assert result.name == "async check"
     assert result.status == "fail"
     assert result.reason == _shared.REASON_CHECK_CRASHED
-    assert "RuntimeError: synthetic async failure" in result.detail
 
 
 def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):

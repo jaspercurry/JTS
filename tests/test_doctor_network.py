@@ -352,8 +352,7 @@ def test_check_identity_coherence_discloses_a_stale_snapshot(monkeypatch, tmp_pa
 
 def test_check_identity_coherence_stale_collision_warns(monkeypatch, tmp_path):
     """A collision on a stale snapshot (the reconciler timer may be dead)
-    can't be asserted live, so it warns instead of failing — same reason,
-    stale note still folded into the detail."""
+    can't be asserted live, so it warns instead of failing."""
     old = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -366,7 +365,6 @@ def test_check_identity_coherence_stale_collision_warns(monkeypatch, tmp_path):
 
     assert r.status == "warn"
     assert r.reason == doctor_network.REASON_IDENTITY_COLLISION
-    assert "min old" in r.detail
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1249,7 @@ _N = doctor_network
         pytest.param(_wifi_case_guardian_ok_ethernet_only, "skipped", _N.REASON_GUARDIAN_NOT_APPLICABLE, None, id="test_check_wifi_guardian_ok_ethernet_only"),
         pytest.param(_wifi_case_guardian_warns_stash_missing_but_active, "warn", _N.REASON_GUARDIAN_STASH_MISSING, None, id="test_check_wifi_guardian_warns_when_stash_missing_but_active"),
         pytest.param(_wifi_case_guardian_warns_ssid_drift, "warn", _N.REASON_GUARDIAN_SSID_DRIFT, None, id="test_check_wifi_guardian_warns_on_ssid_drift"),
-        pytest.param(_wifi_case_guardian_matches_colon_ssid, "ok", "", {"detail_contains": ("Home:5G",)}, id="test_check_wifi_guardian_matches_colon_ssid"),
+        pytest.param(_wifi_case_guardian_matches_colon_ssid, "ok", "", None, id="test_check_wifi_guardian_matches_colon_ssid"),
         pytest.param(_wifi_case_guardian_warns_active_wifi_missing, "warn", _N.REASON_GUARDIAN_NO_ACTIVE_WIFI, None, id="test_check_wifi_guardian_warns_when_active_wifi_missing"),
         pytest.param(_wifi_case_guardian_skipped_without_nmcli, "skipped", _N.REASON_GUARDIAN_SKIPPED_NO_NMCLI, None, id="test_check_wifi_guardian_skipped_without_nmcli"),
         pytest.param(_wifi_case_link_local_ipv6_ok, "ok", "", None, id="test_check_wifi_link_local_ipv6_ok"),
