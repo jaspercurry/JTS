@@ -6,15 +6,12 @@
 
 Pins the acceptance items ``docs/historical/attribution-stage-plan.md`` §7 assigns to
 WO-1 that are about *shape* rather than *storage* — the schema test, the
-golden round-trip, the stable cross-store session identity, and the plan rules
-the excluded-band promotion path is bound by. Storage and retention live in
-``tests/test_attribution_persistence.py``.
+golden round-trip and the stable cross-store session identity.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 
@@ -43,10 +40,6 @@ from jasper.attribution.mechanisms import (
     MechanismError,
     mechanism_spec,
 )
-from jasper.attribution.promotion import (
-    PRODUCED_BY,
-    promote_carve_outs,
-)
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
     SESSION_IDENTITY_KEY,
@@ -56,7 +49,9 @@ from jasper.attribution.session_identity import (
     read_session_identity,
     stamp_session_identity,
 )
-from tests._log_events import event_fields
+
+#: The producer every banked finding set names.
+PRODUCED_BY = "jasper.attribution.promotion.promote_carve_outs"
 
 _SESSION = SessionIdentity(
     session_id="7f54494228cc",
@@ -426,219 +421,6 @@ def test_a_token_cannot_be_confused_with_a_content_hash() -> None:
         SessionIdentity.from_token("a" * 64)
     with pytest.raises(SessionIdentityError):
         SessionIdentity(session_id="7f54494228cc", scheme="sha256")
-
-
-# --------------------------------------------------------------------------- #
-# The excluded-band promotion path (§3.1's embryo)
-# --------------------------------------------------------------------------- #
-
-
-def _carve_outs(**overrides: object) -> list[dict]:
-    row = {
-        "f_lo_hz": 4200.0,
-        "f_hi_hz": 4600.0,
-        "source": "identified_null",
-        "f_center_hz": 4400.0,
-        "n": 3,
-        "tau_us": 310.0,
-        "r_time": 0.28,
-        "r_freq": 0.31,
-        "depth_db": -6.4,
-        "classification": "position_invariant",
-        "reason": (
-            "This range is a cancellation between two arrivals. Adding level "
-            "cannot fill a cancellation, so it is left out of correction and "
-            "out of grading. It sat at the same frequencies at every "
-            "microphone position."
-        ),
-    }
-    row.update(overrides)
-    return [{"band_hz": [2000.0, 8000.0], "intervals": [row]}]
-
-
-def test_the_embryo_becomes_a_finding_with_mechanism_and_fix_class() -> None:
-    """§3.1: "The excluded-band tau records are the embryo: [attribution]
-    promotes them from 'reason to refuse EQ' to findings with mechanism and
-    fix class attached."""
-
-    findings = promote_carve_outs(
-        _carve_outs(), session=_SESSION, cites=(_CITE,)
-    )
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.mechanism == MECHANISM_HF_REFLECTION
-    assert finding.fix_class == "carve"
-    assert finding.band_hz == (4200.0, 4600.0)
-    assert finding.evidence["tau_us"] == 310.0
-    assert finding.evidence["classification"] == "position_invariant"
-
-
-def test_a_p2_only_finding_never_rises_above_unsure() -> None:
-    """§5, unconditionally: "Any finding whose only support is P2 stays
-    ``unsure`` with P4 as its recommended probe." The cloud is a P2
-    instrument — the shipped ``interference_nulls`` docstring says a single
-    session cannot separate "travels with the speaker" from "a path that did
-    not change while measuring" — so no tau, however clean, earns a higher
-    tier from this path."""
-
-    for classification in ("position_invariant", "position_dependent"):
-        findings = promote_carve_outs(
-            _carve_outs(classification=classification),
-            session=_SESSION,
-            cites=(_CITE,),
-        )
-        assert [f.confidence for f in findings] == ["unsure"]
-        assert [f.probes_run for f in findings] == [("P2",)]
-        assert [f.probes_recommended for f in findings] == [("P4",)]
-
-
-def test_promotion_never_routes_eq() -> None:
-    """§3.3's hard rule, pinned: ``eq`` is never the routed class for a
-    position-variant null or a source-fixed interference ripple. The warrant
-    is the physics one (§11.3 X22) — energy added into a cancellation is
-    itself cancelled, so the null is an interference zero, not a deficit the
-    drive can fill — not the headphones-only psychoacoustic one."""
-
-    for classification in ("position_invariant", "position_dependent"):
-        findings = promote_carve_outs(
-            _carve_outs(classification=classification),
-            session=_SESSION,
-            cites=(_CITE,),
-        )
-        assert findings
-        assert all(f.fix_class != "eq" for f in findings)
-    variant = promote_carve_outs(
-        _carve_outs(classification="position_dependent"),
-        session=_SESSION,
-        cites=(_CITE,),
-    )
-    assert variant[0].mechanism == MECHANISM_BOUNDARY_SBIR
-    assert variant[0].fix_class == "physical"
-
-
-def test_an_unattributable_record_is_left_alone_not_guessed_at() -> None:
-    """§10: "No speculative mechanisms." A position-screen carve has no tau
-    and no classification by construction, and a null the shipped gate called
-    ``insufficient_evidence`` has, by that gate's own verdict, nothing to
-    attribute."""
-
-    assert (
-        promote_carve_outs(
-            _carve_outs(source="position_screen", classification=""),
-            session=_SESSION,
-            cites=(_CITE,),
-        )
-        == ()
-    )
-    assert (
-        promote_carve_outs(
-            _carve_outs(classification="insufficient_evidence"),
-            session=_SESSION,
-            cites=(_CITE,),
-        )
-        == ()
-    )
-    assert promote_carve_outs(None, session=_SESSION, cites=(_CITE,)) == ()
-    assert promote_carve_outs([], session=_SESSION, cites=(_CITE,)) == ()
-
-
-@pytest.mark.parametrize(
-    "bound",
-    [
-        {"f_lo_hz": None},
-        {"f_hi_hz": None},
-        {"f_lo_hz": "4200"},
-        {"f_hi_hz": float("nan")},
-        {"f_lo_hz": float("inf")},
-        {"f_hi_hz": True},
-    ],
-)
-def test_an_attributable_record_with_an_unusable_band_is_refused_loudly(
-    bound: dict, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The chosen behaviour, pinned: **refused with an event**, not skipped.
-
-    This record IS attributable — the shipped gate classified it — but its
-    own frequency edges are missing or non-finite, which makes it malformed
-    rather than "correctly not attributable". Those are different states and
-    only the first deserves a log line, so a silent drop here would hide a
-    genuine data defect behind the same silence that correctly covers a
-    position-screen carve.
-
-    ``True`` is in the table on purpose: ``isinstance(True, int)`` is true in
-    Python, so a band edge of ``True`` would otherwise be accepted as 1.0 Hz.
-
-    The refusal is not new — ``Finding``'s own validation already rejected
-    these and the caller already logged. What the explicit narrowing adds is
-    that the call site passes a real ``tuple[float, float]`` instead of two
-    ``Any | None`` values that only happened to be numbers, and that the
-    message now NAMES the bad bound instead of reporting a generic band
-    error. The message assertion below is what pins that, and it is what
-    fails if the narrowing is removed and the record falls through to the
-    constructor again.
-    """
-
-    with caplog.at_level(logging.WARNING, logger="jasper.attribution.promotion"):
-        findings = promote_carve_outs(
-            _carve_outs(**bound), session=_SESSION, cites=(_CITE,)
-        )
-
-    assert findings == ()
-    fields = event_fields(caplog, "attribution.carve_out_promotion_refused")
-    assert "no usable band" in fields["error"]
-    # The offending values are quoted, so a reader does not have to re-derive
-    # which edge was bad from the record.
-    assert "f_lo_hz=" in fields["error"] and "f_hi_hz=" in fields["error"]
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"source": "position_screen", "classification": ""},
-        {"classification": "insufficient_evidence"},
-    ],
-)
-def test_a_correctly_unattributable_record_is_skipped_silently(
-    overrides: dict, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The other half of the same distinction. §10's "no speculative
-    mechanisms" means these records SHOULD produce nothing, so producing a
-    warning for them would train a reader to ignore the warning that matters."""
-
-    with caplog.at_level(logging.WARNING, logger="jasper.attribution.promotion"):
-        findings = promote_carve_outs(
-            _carve_outs(**overrides), session=_SESSION, cites=(_CITE,)
-        )
-
-    assert findings == ()
-    assert caplog.text == ""
-
-
-def test_a_straddling_null_becomes_one_finding_not_two() -> None:
-    """The persisted carve-out structure lists a null under every spec band it overlaps —
-    correct for disclosure, since it removes bins from both — but a
-    straddling null is one physical feature."""
-
-    row = _carve_outs()[0]["intervals"][0]
-    straddling = [
-        {"band_hz": [250.0, 2000.0], "intervals": [row]},
-        {"band_hz": [2000.0, 8000.0], "intervals": [row]},
-    ]
-    assert len(
-        promote_carve_outs(straddling, session=_SESSION, cites=(_CITE,))
-    ) == 1
-
-
-def test_the_household_sentence_is_the_shipped_one_copied() -> None:
-    """One owner per verdict (§3.1): the carve-out record's own ``reason`` is
-    the shipped SSOT for what a household is told about an excluded band.
-    Minting a second sentence here would put the hardware-noun prohibition in
-    two places instead of one."""
-
-    carve_outs = _carve_outs()
-    shipped = carve_outs[0]["intervals"][0]["reason"]
-    findings = promote_carve_outs(carve_outs, session=_SESSION, cites=(_CITE,))
-    assert findings[0].household_copy == shipped
 
 
 def test_a_finding_must_be_anchored_in_the_bundle_that_holds_its_evidence() -> None:

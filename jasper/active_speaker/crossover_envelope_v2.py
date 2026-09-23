@@ -910,9 +910,8 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     (and pinned, before this fix) as capable of overshooting by up to one
     stride: 1031 raw points strode by 4 and yielded 258, not 256. That was
     tolerable while every caller's persisted length always landed at or above
-    ``CAP * 2`` (both ``_decimate_sum``'s old raw stride and
-    ``_decimate_curve_for_json``'s stride always overshoot to slightly above
-    their own 512-point cap). #1858's block-average fix to ``_decimate_sum``
+    ``CAP * 2`` (``_decimate_sum``'s old raw stride always overshot to slightly
+    above its own 512-point cap). #1858's block-average fix to ``_decimate_sum``
     changed that: block-averaging *undershoots* its cap instead of
     overshooting it (a 32769-bin capture landed at 504, not 512-513), which
     put the predicted curve's persisted length just BELOW ``CAP * 2`` — where

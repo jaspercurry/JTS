@@ -42,6 +42,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
@@ -52,6 +53,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
+    PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
@@ -476,6 +478,64 @@ def _bundle_store(tmp_path):
     return CommissioningEvidenceStore.open(
         Path(info["bundle_dir"]), expected_session_id=info["session_id"]
     )
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_kind"),
+    [
+        (PHASE_CHECK, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_MEASURE, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_LATERAL, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_VERIFY, "summed"),
+        (PHASE_CLOUD_MEASURE, "summed"),
+    ],
+)
+def test_a_banked_take_records_the_kind_its_phase_actually_played(
+    tmp_path: Path, phase: str, expected_kind: str,
+) -> None:
+    """CHECK, MEASURE and LATERAL play ONE recording that steps through every
+    driver in turn, which is neither a single driver nor a simultaneous sum.
+    They were banked as ``summed`` only because the taxonomy had no third
+    value; now they are banked as what they are. A lateral pose belongs with
+    the other two because ``programs.program_for_phase`` answers it with
+    MEASURE's program OBJECT verbatim — the same stimulus under a third name.
+    VERIFY and the cloud position groups really do play one summed sweep and
+    keep the old label.
+    """
+
+    store = _bundle_store(tmp_path)
+    bundle_dir = Path(store.bundle_dir)
+    bank = retained_take_writer(store, "cap_kind_session", asyncio.run)
+
+    class _Result:
+        wav = b"take-bytes"
+
+    # A lateral pose names its prompted spot ``pose_id``; every other phase
+    # calls it ``position_id``. The two vocabularies ``spatial._take_identity``
+    # keeps apart, so the lateral row drives the shape a pose really banks.
+    id_key = "pose_id" if phase == PHASE_LATERAL else "position_id"
+    bank(
+        _Result(),
+        {
+            id_key: f"{phase}_00",
+            "phase": phase,
+            "index": 0,
+            "attempt": 1,
+            "take_id": f"{phase}_00_a01",
+            "measure_kind": "",
+            "prompt": "",
+            "wide": False,
+            "captured_at": 1.0,
+            "session_id": "cap_kind_session",
+            "wav_sha256": "d" * 64,
+        },
+    )
+
+    info = json.loads((bundle_dir / "info.json").read_text())
+    # Every kind here shares one list — the recorded kind is the only thing
+    # that tells the three apart, which is why it is written at all.
+    assert [e["kind"] for e in info["summed_captures"]] == [expected_kind]
+    assert info["captures"] == []
 
 
 @pytest.mark.parametrize("banked", [True, False])
@@ -1205,8 +1265,7 @@ def test_a_row_without_a_real_sentence_is_dropped_never_coerced(copy):
     sentence — "42", "True", "None" — into the one register this program
     promises is household-readable, on the screen that tells someone their
     speaker is tuned. Dropping is the honest answer to a row this build cannot
-    read, exactly as `read_finding_set` returning None is the honest answer to
-    a bundle that never banked one.
+    read.
     """
     _findings_state([{"household_copy": copy, "at": time.time()}])
     assert v2status.crossover_v2_status_block()["findings"] == []

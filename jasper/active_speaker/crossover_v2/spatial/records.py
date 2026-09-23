@@ -559,11 +559,6 @@ def entry_baseline_record(
     """The entry baseline's retained record — a cloud position's shape, minus
     the group, plus the curve.
 
-    Structurally a cloud-position record, handed to the same retention seam so
-    it lands in ``refs["position_artifacts"]`` beside every other retained take.
-    It is NOT a group member, which is why the retention call is explicit at its
-    call site.
-
     Three fields a cloud position has no use for make THIS capture comparable to
     the post-apply one, and are why it is a separate builder: WHAT was played
     (``program_id``), WHERE from (``reference_mark``), and WHICH graph it went
