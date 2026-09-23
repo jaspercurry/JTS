@@ -79,8 +79,8 @@ CASES = {
     "unreadable_keys_file_exits_2_before_any_write": Case(
         ["voice", "--provider", "gemini"], 2, {"reason": "unreadable"}, keys=b"\xff\xfe\n",
     ),
-    "discovered_model_no_env_file_can_hold_exits_2": Case(
-        ["voice", "--model", "gpt-realtime\nbroken"], 2, {"reason": "unreadable"},
+    "discovered_model_no_env_file_can_hold_is_refused": Case(
+        ["voice", "--model", "gpt-realtime\nbroken"], 1, {"reason": "unusable_value"},
     ),
     "skipped_restart_still_saves": Case(
         ["voice", "--provider", "gemini"], 0,

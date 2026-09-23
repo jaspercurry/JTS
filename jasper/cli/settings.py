@@ -156,7 +156,7 @@ def _voice(args: argparse.Namespace) -> int:
         return refused(exc.reason, str(exc), exit_code=EXIT_REFUSED)
     except ValueError as exc:
         # A discovered model id no env file can hold (an inner newline).
-        return failed(EXIT_UNREADABLE, "unreadable", str(exc))
+        return refused("unusable_value", str(exc), exit_code=EXIT_REFUSED)
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "save_failed", str(exc))
     return _restart({

@@ -298,10 +298,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         selection = ("JASPER_VOICE_PROVIDER", provider.model_env)
         settings = {k: v for k, v in new.items() if k not in selection}
         settings.update((k, current[k]) for k in selection if k in current)
+        keys_saved = False
         try:
             # Keys first, so select_voice finds a key this form brought; the
             # rest after, so a refused selection saves no other setting.
             _write_half(cfg, current, settings, secret=True)
+            keys_saved = True
             select_voice(
                 provider.id, new.get(provider.model_env),
                 via="wizard", client=handler.address_string(),
@@ -315,7 +317,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             return None
         except OSError as e:
             logger.exception("could not write voice provider env file")
-            _reject_save(handler, form, f"Could not save: {e}")
+            _reject_save(handler, form, f"Could not save: {e}", key_saved=keys_saved)
             return None
         return new
 
