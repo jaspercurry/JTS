@@ -2,22 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// debug-card.js — the /system "Debug logging" card.
-//
-// Self-contained: fetches its own state from the long-lived control
-// daemon (GET/POST /debug, an *absolute* path nginx proxies to :8780 —
-// this card's host page on :8772 idle-exits, so the toggle's auto-expiry
-// timer lives in control, not here), renders one checkbox per subsystem,
-// and runs a client-side expiry countdown.
-//
-// Additive-only by construction: a toggle can only raise a subsystem to
-// DEBUG; it never lowers logging below the always-on WARN/`event=` floor.
-// Text content goes through dom.js (escaped by construction) — no
-// innerHTML path. The collapsible's open state survives row re-renders.
-
 import { h } from "/assets/shared/js/dom.js";
 import { collapsible } from "./components.js";
-import { getJSON, jsonHeaders } from "./api.js";
+import { getJSON, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
 export function buildDebugCard() {

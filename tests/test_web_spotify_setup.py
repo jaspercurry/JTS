@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import http
 import logging
+import shutil
+import subprocess
 import time
 import types
 import urllib.parse
@@ -680,3 +682,65 @@ def test_playlist_preview_is_json_and_needs_no_csrf(monkeypatch):
     assert ctype == ["application/json"]
     body = h.wfile.getvalue().decode()
     assert "error" in body
+
+
+@pytest.mark.parametrize("next_value", ["", "https://open.spotify.com/playlist/new"])
+def test_playlist_preview_ignores_response_after_edit(next_value):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    script = r"""
+import assert from 'node:assert/strict';
+import { buildFunction, repoPath } from './tests/js/_loader.mjs';
+import { element } from './tests/js/_dom.mjs';
+const input = element(), preview = element(), submit = element();
+let edit;
+input.addEventListener = (event, fn) => { assert.equal(event, 'input'); edit = fn; };
+const form = {
+  closest: () => ({ dataset: { account: 'dummy account' } }),
+  querySelector: (selector) => ({ '.pl-input': input, '.pl-preview': preview, '.pl-submit': submit })[selector],
+};
+const timers = new Map();
+let nextTimer = 0;
+const requests = [];
+const run = buildFunction(repoPath('deploy/assets/spotify/js/main.js'), {
+  stripImports: true, guardNoImports: true,
+  params: ['document', 'window', 'wireConfirmForms', 'wireCopyButtons', 'setTimeout', 'clearTimeout', 'fetch'],
+});
+run({ querySelectorAll: (selector) => selector === 'form.pl-add' ? [form] : [] },
+  { location: { href: 'http://jts.local/spotify/' } }, () => {}, () => {},
+  (fn, ms) => { assert.equal(ms, 350); timers.set(++nextTimer, fn); return nextTimer; },
+  (id) => timers.delete(id),
+  (url, opts) => new Promise((resolve) => requests.push({ url, opts, resolve })));
+input.value = 'https://open.spotify.com/playlist/old';
+edit();
+const old = timers.get(nextTimer)();
+assert.equal(requests.length, 1);
+assert.equal(requests[0].url.pathname, '/spotify/playlist-preview');
+assert.equal(requests[0].url.searchParams.get('account'), 'dummy account');
+assert.equal(requests[0].url.searchParams.get('url'), input.value);
+assert.equal(requests[0].opts.cache, 'no-store');
+input.value = process.argv[1];
+edit();
+assert.equal(preview.textContent, '');
+assert.equal(submit.disabled, true);
+requests[0].resolve({ json: async () => ({ name: 'Old playlist' }) });
+await old;
+assert.equal(preview.textContent, '');
+assert.equal(submit.disabled, true);
+if (input.value) {
+  const fresh = timers.get(nextTimer)();
+  assert.equal(requests[1].url.searchParams.get('url'), input.value);
+  requests[1].resolve({ json: async () => ({ name: '<b>Fresh playlist</b>' }) });
+  await fresh;
+  assert.equal(preview.textContent, '✓ <b>Fresh playlist</b>');
+  assert.equal(submit.disabled, false);
+} else {
+  assert.equal(timers.size, 0);
+}
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", script, next_value],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

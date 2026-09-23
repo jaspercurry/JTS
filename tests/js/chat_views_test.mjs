@@ -2,13 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Source harness for /assistant/chat/'s date-filter helpers. Node cannot resolve the
-// browser-absolute imports in views.js, so ratchet the exact import/export
-// surface, strip it, and evaluate only the three helpers under test plus their
-// two local formatting dependencies. Also pins shared/js/chrome.js's
-// appHeader() against the element tree jasper/web/_common.py's
-// canonical_header() emits (SP-1: one page-header contract, not four).
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadEsm, repoPath } from "./_loader.mjs";
@@ -20,7 +13,7 @@ if (!modulePath) throw new Error("usage: node chat_views_test.mjs <views.js>");
 const expectedImports = [
   'import { h } from "/assets/shared/js/dom.js";',
   'import { appHeader } from "/assets/shared/js/chrome.js";',
-  'import { actionButton, livePill, titledCard } from "./components.js";',
+  'import { actionButton, livePill, titledCard } from "/assets/shared/js/ui.js";',
 ];
 const expectedExports = [
   "buildPage",

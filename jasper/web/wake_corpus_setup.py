@@ -852,7 +852,7 @@ _INDEX_BODY_TEMPLATE = """{header}
     <div class="row">
       <label>Mode:</label>
       <span id="corpus-mode-status" class="pill gray">checking…</span>
-      <button id="corpus-mode-exit">Exit corpus test mode</button>
+      <button id="corpus-mode-exit" class="btn btn--default">Exit corpus test mode</button>
     </div>
     <div class="row">
       <label>jasper-voice:</label>
@@ -885,10 +885,10 @@ _INDEX_BODY_TEMPLATE = """{header}
       recording refuses to start while the household mic mute is on.
     </p>
     <div class="session-primary-actions">
-      <button id="session-begin" class="primary">
+      <button id="session-begin" class="btn btn--primary">
         Enter corpus test mode &amp; begin session
       </button>
-      <button id="session-unload" hidden>Unload session</button>
+      <button id="session-unload" class="btn btn--default" hidden>Unload session</button>
     </div>
   </div>
 
@@ -933,7 +933,7 @@ _INDEX_BODY_TEMPLATE = """{header}
       <div class="mic-level-track"><div id="mic-level-fill" class="mic-level-fill"></div></div>
       <span id="mic-level-readout" class="mic-level-readout">—</span>
     </div>
-    <button id="record-btn" class="primary recordBtn" disabled>● RECORD</button>
+    <button id="record-btn" class="btn btn--primary recordBtn" disabled>● RECORD</button>
     <div id="recording-info" hidden>
       <span class="pill red">RECORDING</span>
       <span id="elapsed">0.0s</span>
@@ -964,19 +964,6 @@ _INDEX_BODY_TEMPLATE = """{header}
 
 
 def _render_index_html(csrf_token: str = "") -> str:
-    """Render the recorder page on the canonical design system.
-
-    Returns the full HTML document (str). The document shell comes from
-    ``canonical_page()`` (shared /assets/app.css); the body is the
-    ``_INDEX_BODY_TEMPLATE`` fragment with the canonical header injected.
-
-    The Python-owned leg labels + playback order (which depend on the
-    AEC3 sweep registry and so can't live in the cached ES module) are
-    serialized into a JSON data island (``json_island()``) the
-    behaviour module reads at load time; the helper owns the
-    serialization + escaping that keeps a label from closing the inline
-    ``<script>`` element early.
-    """
     config = {
         "leg_labels": LEG_LABELS,
         "aec3_sweep_order": list(AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS),

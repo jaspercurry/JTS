@@ -258,7 +258,6 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     )
     main = (asset_root / "js" / "main.js").read_text(encoding="utf-8")
     views = (asset_root / "js" / "views.js").read_text(encoding="utf-8")
-    components = (asset_root / "js" / "components.js").read_text(encoding="utf-8")
 
     assert "csrfToken" not in main
     assert "function dataPath()" in main
@@ -274,7 +273,7 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     assert '"attr:aria-label": "Conversation capture"' in views
     assert "No transcript for this turn." in views
 
-    combined = "\n".join([main, views, components])
+    combined = "\n".join([main, views])
     assert ".innerHTML" not in combined
 
 

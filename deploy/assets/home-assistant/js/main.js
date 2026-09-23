@@ -28,6 +28,7 @@
 // textContent / escaped data-* attributes, never innerHTML string-concat, so a
 // hostile instance name can't inject markup.
 
+import { copyText } from "/assets/shared/js/copy.js";
 import { csrfHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
@@ -281,30 +282,6 @@ const TOKEN_PLACEHOLDER_FOR_SHARING =
   "<paste a long-lived access token from HA → Profile → Security → " +
   "Long-Lived Access Tokens>";
 
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (e) {
-    // execCommand fallback for browsers that block writeText in non-secure
-    // contexts (rare on LAN but cheap insurance).
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try {
-      ok = document.execCommand("copy");
-    } catch (e2) {
-      ok = false;
-    }
-    document.body.removeChild(ta);
-    return ok;
-  }
-}
-
 function wireCopyButtons(template) {
   const feedback = document.getElementById("copy-voice-prompt-feedback");
   function showFeedback(msg, ok) {
@@ -322,7 +299,7 @@ function wireCopyButtons(template) {
       const text = template
         .replace("{HA_URL_PLACEHOLDER}", URL_PLACEHOLDER_FOR_SHARING)
         .replace("{HA_TOKEN_PLACEHOLDER}", TOKEN_PLACEHOLDER_FOR_SHARING);
-      const ok = await copyToClipboard(text);
+      const ok = await copyText(text);
       showFeedback(
         ok
           ? "Prompt copied — paste into your coding agent"
@@ -366,7 +343,7 @@ function wireCopyButtons(template) {
       const text = template
         .replace("{HA_URL_PLACEHOLDER}", creds.url)
         .replace("{HA_TOKEN_PLACEHOLDER}", creds.token);
-      const copied = await copyToClipboard(text);
+      const copied = await copyText(text);
       showFeedback(
         copied
           ? "Prompt + credentials copied — paste into your coding agent"

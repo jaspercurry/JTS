@@ -2,32 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /wake-corpus/ wake-word corpus recorder.
-//
-// The browser half of the multi-leg UDP wake-capture recorder: it polls
-// api/status every 2 s, lists/loads/deletes sessions, drives the
-// enter/exit corpus-test-mode flow, runs the click-to-record clip loop,
-// and shows the live mic-level meter (Server-Sent Events). The Python
-// backend (jasper.web.wake_corpus_setup) owns all recording, bridge
-// reconfiguration, and systemctl side effects — this module only talks to
-// it over the same api/* JSON endpoints it always did.
-//
-// Moved from the page's old inline <script> when /wake-corpus/ moved onto the
-// canonical design system. The important ownership seams are:
-//   * api() builds its headers via jsonHeaders() from the shared http.js
-//     module: X-CSRF-Token from the <meta name="jts-csrf"> tag
-//     canonical_page() renders, which the server's shared double-submit
-//     guard matches against the jts_csrf cookie.
-//   * jtsConfirm comes from the shared dialog.js module — never
-//     window.confirm, which the browser can suppress.
-//   * The Python-owned leg labels/order + USB AEC3 sweep-baseline label
-//     ride in a <script type="application/json" id="wake-corpus-config">
-//     block the page renders, read once below. A cached ES module can't
-//     carry per-deploy Python data, so it's injected via the (no-store)
-//     HTML instead.
-//   * capture-option state rules live in ./controls.js so they can be tested
-//     directly without loading this full recorder module.
-//
 // All api/* paths stay RELATIVE ('api/...' not '/api/...') so the same module
 // works standalone (http://host:8782/) AND behind nginx
 // (http://host/wake-corpus/) — absolute paths would 502 under the prefix strip.
@@ -387,14 +361,14 @@ async function refreshStatus() {
     if (s.is_recording) {
       $('recording-info').hidden = false;
       $('record-btn').textContent = '■ STOP';
-      $('record-btn').classList.add('recording');
-      $('record-btn').classList.remove('primary');
+      $('record-btn').classList.add('recording', 'btn--danger');
+      $('record-btn').classList.remove('btn--primary');
       $('record-btn').disabled = false;
     } else {
       $('recording-info').hidden = true;
       $('record-btn').textContent = '● RECORD';
-      $('record-btn').classList.remove('recording');
-      $('record-btn').classList.add('primary');
+      $('record-btn').classList.remove('recording', 'btn--danger');
+      $('record-btn').classList.add('btn--primary');
       $('record-btn').disabled = !s.session_id || voiceActive || !sessionBridgeReady;
     }
   } catch (e) { showErr(`status: ${e.message}`); }
@@ -567,8 +541,8 @@ async function refreshSessions() {
           <div class="breakdown">${clipCount} clip(s) · ${escapeHtml(condText)} · legs: ${legsText || 'none'} · ${escapeHtml(date)}</div>
         </div>
         <div class="session-actions">
-          <button data-load="${sessionId}" ${s.is_active ? 'disabled' : ''}>Load</button>
-          <button class="danger" data-delete="${sessionId}" data-summary="${clipCount} clip(s)">Delete</button>
+          <button class="btn btn--default" data-load="${sessionId}" ${s.is_active ? 'disabled' : ''}>Load</button>
+          <button class="btn btn--danger" data-delete="${sessionId}" data-summary="${clipCount} clip(s)">Delete</button>
         </div>
       `;
       row.querySelector('[data-load]').onclick = (ev) => loadSession(
@@ -664,7 +638,7 @@ async function refreshClips() {
         <span>${c.distance}</span>
         <span>${c.duration_sec.toFixed(2)}s</span>
         ${audioHtml}
-        <button class="danger icon" data-id="${c.clip_id}" title="Delete clip">🗑</button>
+        <button class="btn btn--danger icon" data-id="${c.clip_id}" title="Delete clip">🗑</button>
       `;
       const selector = row.querySelector('[data-audio-leg]');
       if (selector) {

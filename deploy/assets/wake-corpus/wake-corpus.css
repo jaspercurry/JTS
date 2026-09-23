@@ -46,22 +46,6 @@
 .pill.green { background: #d8f0d8; color: #1f7a1f; }
 .pill.red { background: #f7d8d8; color: #a31f1f; }
 .pill.gray { background: #eee; color: #555; }
-button {
-  padding: 0.45em 0.9em;
-  border: 1px solid #999;
-  border-radius: 4px;
-  background: #f4f4f4;
-  cursor: pointer;
-  font-size: 0.95em;
-}
-button.primary {
-  background: #1f7a1f;
-  color: white;
-  border-color: #1f7a1f;
-  font-weight: 600;
-}
-button.danger { background: #a31f1f; color: white; border-color: #a31f1f; }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.recordBtn {
   width: 100%;
   padding: 1.2em;
@@ -70,9 +54,6 @@ button.recordBtn {
   letter-spacing: 0.05em;
 }
 button.recording {
-  background: #d32d2d;
-  color: white;
-  border-color: #d32d2d;
   animation: pulse 1.5s infinite;
 }
 @keyframes pulse {

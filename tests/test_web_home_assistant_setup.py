@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import http
 import json
+import shutil
+import subprocess
 from typing import Any
 from unittest.mock import Mock
 from urllib.parse import urlencode
@@ -409,3 +411,15 @@ def test_credentials_for_copy_returns_creds_with_csrf(monkeypatch):
     payload = json.loads(h.wfile.getvalue().decode())
     assert payload["url"] == "http://homeassistant.local:8123"
     assert payload["token"].startswith("eyJ0eXAi")
+
+
+def test_confirm_copy_and_ha_credentials_via_node():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    result = subprocess.run(
+        [node, "tests/js/confirm_forms_copy_test.mjs"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["ok"] is True
