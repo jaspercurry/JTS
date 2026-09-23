@@ -101,5 +101,5 @@ remote_prefix="$(quote_args "${remote_systemd_run[@]}")"
 # both in sync.
 remote_tail="$(quote_args -- /usr/bin/bash -lc 'exec "$@"' _ "$@")"
 
-exec ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" \
+exec ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" \
     "${remote_prefix} ${prop_text} ${remote_tail}"
