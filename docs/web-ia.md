@@ -38,7 +38,7 @@ Grep before adding a class or a helper. A second implementation is a defect.
 | flash, 303, rejected-POST re-render (`send_rejected_form`) | `jasper/web/_common.py` |
 | route dispatch, 404-before-guard ordering, POST CSRF chokepoint placement (`dispatch_get`/`dispatch_post`) | `jasper/web/_common.py` |
 | button, info-card, badge, segmented, field, form-actions, spinner, dialog | `deploy/assets/app.css` |
-| CSRF fetch, control token, stale-session reload, polling with hidden-tab backoff (`startPolling`), confirm / alert / prompt, element building, escaping, page header (client-rendered), confirm before submit, copy to clipboard, badge/action-button/titled-card/live-pill primitives | `deploy/assets/shared/js/`: `http.js`, `dialog.js`, `dom.js`, `escape.js`, `chrome.js` (`appHeader`), `confirm-forms.js` (`data-confirm`), `copy.js` (`data-copy`), `ui.js` (`badge`, `actionButton`, `titledCard`, `livePill`) |
+| CSRF fetch, control token, stale-session reload, polling with hidden-tab backoff (`startPolling`), confirm / alert, element building, escaping, page header (client-rendered), confirm before submit, copy to clipboard, badge/action-button/titled-card/live-pill primitives | `deploy/assets/shared/js/`: `http.js`, `dialog.js`, `dom.js`, `escape.js`, `chrome.js` (`appHeader`), `confirm-forms.js` (`data-confirm`), `copy.js` (`data-copy`), `ui.js` (`badge`, `actionButton`, `titledCard`, `livePill`) |
 | capability gating (`[data-requires]`) + live `status-*` sublabels | `deploy/assets/shared/js/settings-status.js` (`initSettingsStatus`) |
 | mic capture, worklet, WAV encode | `deploy/assets/shared/js/measurement-audio.js` |
 

@@ -26,39 +26,25 @@ function csrfToken() {
 // {error:"control_token_required"}
 // without it. The page embeds the token in `meta[name=jts-control-token]`
 // (canonical_page), so the dashboard sends it on each destructive POST.
-// A per-browser localStorage value supports a rotated token.
 // The token is never baked into this cached JS and never logged.
-const CONTROL_TOKEN_KEY = "jts-control-token";
-
 function controlToken() {
-  // Prefer the server-embedded meta tag (invisible auto-delivery); fall back to
-  // a per-browser stored value. document may be absent under the node test
-  // harness — guard for it.
+  // document may be absent under the node test harness — guard for it.
   try {
     const meta = (typeof document !== "undefined") &&
       document.querySelector('meta[name="jts-control-token"]');
     if (meta && meta.content) return meta.content;
-  } catch (_) { /* no DOM — fall through to storage */ }
-  try {
-    return localStorage.getItem(CONTROL_TOKEN_KEY) || "";
-  } catch (_) {
-    // Private-mode / disabled storage: degrade to "no stored token".
-    return "";
-  }
+  } catch (_) { /* no DOM */ }
+  return "";
 }
 
-function storeControlToken(token) {
-  try {
-    localStorage.setItem(CONTROL_TOKEN_KEY, token);
-  } catch (_) { /* storage unavailable — the retry still uses the in-call value */ }
-}
-
-// True when a failed response is control's "you need the token" verdict, so
-// callers know to prompt rather than surface a generic error.
+// True when a failed response is control's "you need the token" verdict:
+// this page's embedded token is stale, and a reload renders the current one.
 export function isControlTokenRequired(err) {
   return !!(err && err.status === 403 && err.body &&
             err.body.error === "control_token_required");
 }
+
+const CONTROL_TOKEN_REQUIRED_MESSAGE = "Access expired — reload the page and try again.";
 
 // True when a failed response is the mutating chokepoint's stale-session
 // rejection — jasper.web._common.reject_csrf (a stale/missing CSRF token) or
@@ -98,10 +84,9 @@ function reloadForStaleSession() {
   return STALE_SESSION_MESSAGE;
 }
 
-// Add the X-CSRF-Token header (when a token is present) to an existing
-// headers object, returning it. Pass nothing to start from a bare object.
-// Also attaches X-JTS-Token from localStorage when the browser has stored
-// one for the control-token gate; absent storage adds nothing.
+// Add the X-CSRF-Token and X-JTS-Token headers (each when the page carries
+// one) to an existing headers object, returning it. Pass nothing to start
+// from a bare object.
 export function csrfHeaders(headers) {
   const out = headers || {};
   const token = csrfToken();
@@ -142,21 +127,6 @@ async function parseResponse(r) {
   return r.json();
 }
 
-// Lazy import keeps dialog.js out of the module graph for pages that never hit
-// a token-gated route (the import only runs the first time we must prompt).
-async function promptForControlToken() {
-  const { jtsPrompt } = await import("/assets/shared/js/dialog.js");
-  const token = await jtsPrompt(
-    "This speaker requires a control token for power, mic-mute, and " +
-    "grouping actions. Paste the token from `jasper-control-token --show`.",
-    { title: "Control token required", label: "Control token", secret: true,
-      okLabel: "Save & retry" },
-  );
-  if (token === null || token === "") return "";
-  storeControlToken(token);
-  return token;
-}
-
 // POST a JSON body with the CSRF header; parse + return the JSON response.
 // Throws on a non-2xx status or transport failure, mirroring getJSON — but
 // the thrown Error carries the server's parsed JSON verdict on `.body`
@@ -165,51 +135,35 @@ async function promptForControlToken() {
 // rolled_back flags). Without this, every carefully built failure payload
 // dies unread at the browser.
 //
-// Control-token gate: if the first attempt comes back 403
-// control_token_required, prompt ONCE for the token, store it, and retry exactly
-// once. A second 403 (wrong token) throws normally so the caller surfaces it —
-// we never loop.
-//
 // `keepalive` lets a teardown POST (a pagehide stop or restore) outlive the
-// page, so a caller on that path does not have to hand-roll a bare fetch. The
-// token retry above is inert on such a request — the page is gone before the
-// prompt's dynamic import can resolve — so those callers swallow the rejection.
+// page, so a caller on that path does not have to hand-roll a bare fetch.
 export async function postJSON(path, body, { keepalive = false } = {}) {
   const payload = JSON.stringify(body === undefined ? {} : body);
-  const send = () => fetch(path, {
-    method: "POST", headers: jsonHeaders(), body: payload, keepalive: !!keepalive,
-  });
   try {
-    return await parseResponse(await send());
+    return await parseResponse(await fetch(path, {
+      method: "POST", headers: jsonHeaders(), body: payload, keepalive: !!keepalive,
+    }));
   } catch (err) {
     if (isStaleSessionRejection(err)) {
       err.message = reloadForStaleSession();
-      throw err;
+    } else if (isControlTokenRequired(err)) {
+      err.message = CONTROL_TOKEN_REQUIRED_MESSAGE;
     }
-    if (!isControlTokenRequired(err)) throw err;
-    const token = await promptForControlToken();
-    if (!token) throw err;        // user dismissed the prompt — original error
-    return parseResponse(await send());   // retry once with the stored token
+    throw err;
   }
 }
 
 // POST a parameterless control action (no JSON body), returning a flat
 // {ok, status, body} so callers that reflect raw status into a button label
 // (the /system/ restart / reboot / power-off buttons) don't each re-implement
-// the fetch + JSON-parse + control-token plumbing. Same token-gate flow as
-// postJSON: a first 403 control_token_required prompts ONCE, stores, and
-// retries exactly once; a second 403 (wrong token) is returned for the caller
-// to surface. `body` is the parsed JSON response (or {} when non-JSON).
+// the fetch + JSON-parse + control-token plumbing. `body` is the parsed JSON
+// response (or {} when non-JSON); a control-token refusal keeps its code in
+// `body.error` and adds the reload copy as `body.message`.
 export async function postControlAction(path) {
-  const send = () => fetch(path, { method: "POST", headers: csrfHeaders() });
-  let r = await send();
-  let body = await r.json().catch(() => ({}));
-  if (r.status === 403 && body && body.error === "control_token_required") {
-    const token = await promptForControlToken();
-    if (token) {
-      r = await send();
-      body = await r.json().catch(() => ({}));
-    }
+  const r = await fetch(path, { method: "POST", headers: csrfHeaders() });
+  const body = await r.json().catch(() => ({}));
+  if (isControlTokenRequired({ status: r.status, body })) {
+    body.message = CONTROL_TOKEN_REQUIRED_MESSAGE;
   }
   return { ok: r.ok, status: r.status, body };
 }
