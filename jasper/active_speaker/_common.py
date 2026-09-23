@@ -104,9 +104,6 @@ def coerce_finite_float(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
-# Removal condition: baseline_profile, crossover_contract and level_trim import coerce_finite_float.
-finite_float = coerce_finite_float
-
 
 def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     """Coerce an integer and clamp it to the inclusive ``lo``/``hi`` range."""

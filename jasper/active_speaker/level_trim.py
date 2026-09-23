@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ._common import finite_float, issue
+from ._common import coerce_finite_float, issue
 from .driver_pad import effective_sensitivity_db
 
 
@@ -30,10 +30,10 @@ def declared_driver_gains(
         driver = drivers.get(role)
         if not isinstance(driver, Mapping):
             continue
-        sensitivity = effective_sensitivity_db(finite_float(driver.get("sensitivity_db_2v83_1m")), driver.get("pad"))
+        sensitivity = effective_sensitivity_db(coerce_finite_float(driver.get("sensitivity_db_2v83_1m")), driver.get("pad"))
         if sensitivity is not None:
             sensitivities[role] = sensitivity
-        gain = finite_float(driver.get("gain_offset_db"))
+        gain = coerce_finite_float(driver.get("gain_offset_db"))
         if gain is None:
             continue
         if gain > 0:

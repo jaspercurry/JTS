@@ -38,7 +38,7 @@ from jasper.output_topology import (
 )
 from jasper.output_topology_store import load_output_topology
 
-from ._common import finite_float as _finite_float, issue as _issue
+from ._common import coerce_finite_float, issue as _issue
 from .camilla_yaml import (
     _branch_context,
     linearization_headroom_db,
@@ -1054,7 +1054,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     trims_db: dict[str, float] = {}
     for role, entry in corrections.items():
         gain = (
-            _finite_float(entry.get("gain_db"))
+            coerce_finite_float(entry.get("gain_db"))
             if isinstance(entry, Mapping)
             else None
         )
