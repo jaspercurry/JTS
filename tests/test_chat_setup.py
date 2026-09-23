@@ -32,6 +32,7 @@ from tests._web_test_helpers import make_real_handler
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CHAT_VIEWS_TEST = _ROOT / "tests" / "js" / "chat_views_test.mjs"
+_CHAT_VIEWS_XSS_TEST = _ROOT / "tests" / "js" / "chat_views_xss_test.mjs"
 _CHAT_VIEWS_JS = _ROOT / "deploy" / "assets" / "chat" / "js" / "views.js"
 _NODE = shutil.which("node")
 
@@ -54,6 +55,27 @@ def test_chat_view_date_helpers_in_new_york_timezone():
     assert json.loads(result.stdout.strip().splitlines()[-1]) == {
         "ok": True,
         "timezone": "America/New_York",
+    }
+
+
+def test_chat_views_render_untrusted_transcripts_as_text():
+    if _NODE is None:
+        pytest.skip("node is required for the chat views XSS harness")
+
+    result = subprocess.run(
+        [_NODE, str(_CHAT_VIEWS_XSS_TEST), str(_CHAT_VIEWS_JS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "html_sinks": [],
+        "elements_from_payload": [],
+        "handler_attributes": [],
+        "tainted_attributes": [],
+        "payloads_missing_from_text": [],
     }
 
 

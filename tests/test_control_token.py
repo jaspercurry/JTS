@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
 from jasper.cli import control_token as cli
 from jasper.control import control_token
+from jasper.install_profile import system_capabilities_for_profile
+from jasper.web import chrome
+from jasper.web.landing import render_landing
 from tests._web_test_helpers import assert_verify_uses_constant_time_compare
 
 # An installed landing page around its token meta, carrying bytes a text round
@@ -31,6 +35,7 @@ INSTALLED_LANDING = (
     '  <meta name="jts-control-token" content="{}">\n'
     "  <title>JTS — home</title>\n"
 )
+LANDING_TEMPLATE = Path(__file__).resolve().parents[1] / "deploy" / "index.html"
 
 
 # --- core: token_enforced / verify ----------------------------------------
@@ -202,6 +207,35 @@ def test_cli_token_change_reaches_the_installed_landing_page(
     assert not any(t in err for t in ("old-token", token) if t)
 
 
+def test_cli_rewrite_of_the_shipped_landing_page_matches_a_fresh_render(
+    monkeypatch, tmp_path
+):
+    """The CLI finds deploy/index.html's token meta by pattern, so the tag must
+    keep the shape that pattern reads, around a token the renderer escaped."""
+    token_file = tmp_path / "control_token"
+    page = tmp_path / "index.html"
+    _point_cli_at(monkeypatch, token_file)
+    token_file.write_text("\"&<>'\n")
+    template = LANDING_TEMPLATE.read_text(encoding="utf-8")
+
+    def render() -> bytes:
+        return render_landing(
+            template,
+            app_css_version="abc1234",
+            caps=system_capabilities_for_profile("full"),
+            control_token=control_token.ensure_token(),
+        ).encode("utf-8")
+
+    installed = render()
+    page.write_bytes(installed)
+
+    assert cli.main(["--enable", "--force"]) == 0
+
+    rotated = render()
+    assert rotated != installed
+    assert page.read_bytes() == rotated
+
+
 # --- ensure_token() makes the gate mandatory + invisible. -----------------
 
 
@@ -252,8 +286,6 @@ def test_current_token_matches_verify_path(monkeypatch, tmp_path):
 def test_canonical_page_embeds_token_meta_only_when_present(monkeypatch, tmp_path):
     """canonical_page auto-delivers the token as a meta tag once it exists, and
     emits nothing while the gate is off (pages stay byte-identical)."""
-    from jasper.web import chrome
-
     path = tmp_path / "control_token"
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
 
