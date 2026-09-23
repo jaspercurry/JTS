@@ -16,7 +16,7 @@ from typing import Any
 
 from .atomic_io import write_env_file
 from .env_file import read_env_file
-from .env_load import read_env_file_state
+from .env_load import parse_bool_value, read_env_file_state
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ def read_settings(
     else:
         capture_raw = base_env.get(CAPTURE_ENABLED_ENV)
     return ConversationSettings(
-        capture_enabled=_env_bool(capture_raw, default=False),
+        capture_enabled=parse_bool_value(capture_raw) is True,
         db_path=(merged.get(DB_PATH_ENV) or DEFAULT_DB_PATH).strip() or DEFAULT_DB_PATH,
         retention_days=_env_retention_int(
             merged, RETENTION_DAYS_ENV, DEFAULT_RETENTION_DAYS,
@@ -494,17 +494,6 @@ def _chmod_store(db_path: str) -> None:
             db_path,
             e,
         )
-
-
-def _env_bool(value: str | None, *, default: bool) -> bool:
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if normalized in {"0", "false", "no", "off", "disabled"}:
-        return False
-    return default
 
 
 def _env_optional_positive_int(value: str | None) -> int | None:

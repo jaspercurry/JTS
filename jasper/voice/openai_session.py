@@ -49,6 +49,7 @@ import os
 import time as _time
 from typing import TYPE_CHECKING, Any
 
+from jasper.env_load import parse_bool_value
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
 
@@ -589,7 +590,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if not pcm_24khz:
             return False
         # Debug tee — see OpenAIRealtimeTurn._debug_wav docstring.
-        if os.environ.get("JASPER_DEBUG_RECORD_OPENAI_AUDIO", "").strip() in ("1", "true", "yes", "on"):
+        if parse_bool_value(os.environ.get("JASPER_DEBUG_RECORD_OPENAI_AUDIO")):
             try:
                 if turn._debug_wav is None:
                     import wave as _wave

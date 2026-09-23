@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_text
+from jasper.env_load import parse_bool_value
 from jasper.log_event import log_event
 
 
@@ -262,11 +263,9 @@ def _normalize_bool(key: str, raw: Any) -> str:
     if isinstance(raw, int) and raw in (0, 1):
         return str(raw)
     if isinstance(raw, str):
-        value = raw.strip().lower()
-        if value in ("1", "true", "yes", "on"):
-            return "1"
-        if value in ("0", "false", "no", "off"):
-            return "0"
+        parsed = parse_bool_value(raw)
+        if parsed is not None:
+            return "1" if parsed else "0"
     raise Aec3SweepConfigError(f"{key} must be boolean-like")
 
 

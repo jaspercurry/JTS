@@ -32,7 +32,7 @@ from enum import Enum
 from typing import Mapping
 
 from jasper.atomic_io import atomic_write_text
-from jasper.env_load import read_env_file_or_warn
+from jasper.env_load import parse_bool_value, read_env_file_or_warn
 from jasper.identity.reader import PEER_ID_FILE
 from jasper.identity.speaker_name import default_room
 
@@ -165,7 +165,7 @@ def state_enabled(state: Mapping[str, str]) -> bool:
 def state_primary(state: Mapping[str, str]) -> bool:
     """Return whether the state mapping marks this speaker primary."""
     raw = state.get("JASPER_PEER_PRIMARY", os.environ.get("JASPER_PEER_PRIMARY", ""))
-    return _parse_bool(raw)
+    return parse_bool_value(raw) is True
 
 
 def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
@@ -210,10 +210,6 @@ def _parse_mode(raw: str) -> PeeringMode:
     return PeeringMode.OFF
 
 
-def _parse_bool(raw: str) -> bool:
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
 def _parse_int(raw: str, *, default: int, lo: int, hi: int) -> int:
     try:
         val = int(raw.strip())
@@ -255,7 +251,7 @@ def load_config(
 
     mode = _parse_mode(src.get("JASPER_PEERING", "off"))
     room = src.get("JASPER_PEER_ROOM", "").strip() or default_room()
-    primary = _parse_bool(src.get("JASPER_PEER_PRIMARY", "0"))
+    primary = parse_bool_value(src.get("JASPER_PEER_PRIMARY")) is True
     arb_window_ms = _parse_int(
         src.get("JASPER_PEER_ARB_WINDOW_MS", ""),
         default=DEFAULT_ARB_WINDOW_MS,

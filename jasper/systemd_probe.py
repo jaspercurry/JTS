@@ -122,13 +122,18 @@ def unit_states(units: Sequence[str], *, timeout: float) -> dict[str, str]:
     return {unit: (lines[i].strip() or UNKNOWN) for i, unit in enumerate(units)}
 
 
-def state_is_live(state: str, *, activating_is_live: bool) -> bool:
+def state_is_live(
+    state: str, *, activating_is_live: bool, deactivating_is_live: bool = False,
+) -> bool:
     """Whether an ``is-active`` word counts as running.
 
     Split out of :func:`unit_active` for callers that already hold the word —
     a batched read, or a probe whose failure they want to raise on.
+    ``deactivating_is_live`` is for a caller that must not treat a unit still
+    stopping as settled.
     """
-    return state in (_RUNNING_OR_STARTING if activating_is_live else _RUNNING)
+    live = _RUNNING_OR_STARTING if activating_is_live else _RUNNING
+    return state in live or (deactivating_is_live and state == "deactivating")
 
 
 def unit_query(result: UnitState) -> bool | None:

@@ -136,6 +136,26 @@ class EnvFileState:
         return self.status == "loaded"
 
 
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+
+
+def parse_bool_value(value: str | None) -> bool | None:
+    """Parse one value in the shared env-bool vocabulary (case-insensitive,
+    surrounding blanks ignored).
+
+    None when there is no answer: unset, blank, or a token outside the
+    vocabulary (a reconciler's literal ``unknown``). A caller with a default
+    applies it to None.
+    """
+    token = (value or "").strip().lower()
+    if token in _TRUE_VALUES:
+        return True
+    if token in _FALSE_VALUES:
+        return False
+    return None
+
+
 def bounded_env_float(
     name: str,
     default: float,

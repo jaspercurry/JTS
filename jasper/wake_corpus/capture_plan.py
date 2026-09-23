@@ -40,6 +40,7 @@ from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
+from jasper.env_load import parse_bool_value
 from jasper.log_event import log_event
 from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
@@ -66,7 +67,6 @@ from .runtime_probe import (
     RAW0_LEG,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
-    env_truthy,
     leg_detail,
     mic_chip_aec_available,
     missing_bridge_outputs_from_required,
@@ -447,7 +447,7 @@ def _bridge_env_overrides_for_request(
 ) -> dict[str, str]:
     values: dict[str, str] = {}
     dtln_enabled = system_env.get(DTLN_ENABLED_ENV)
-    if include_dtln and not env_truthy(dtln_enabled):
+    if include_dtln and not parse_bool_value(dtln_enabled):
         values[DTLN_ENABLED_ENV] = "1"
     elif (
         (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
