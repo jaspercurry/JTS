@@ -458,8 +458,10 @@ function renderActionRow(env) {
 
 // One primary control at a time: closing's Save/Record-again actions make the
 // capture block and walkthrough yield, so they cannot compete for the next step.
+// A round's own actions (`pending`) take the action row instead, so a round's
+// hold keeps its placement card even beside a live failure's retake.
 function screenOwnsLiveControl(env) {
-  return Boolean(env && env.next_action && env.next_action.show_during_capture);
+  return Boolean(env && !env.pending && env.next_action && env.next_action.show_during_capture);
 }
 
 function render(env) {
@@ -526,9 +528,11 @@ async function runAction(action, button) {
       renderActionRow({capture: response.capture, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    const takeStarted = captureStarted || Boolean(response?.released);
+    // A join answers before any sound: the tone waits for the placement.
+    const released = Boolean(response?.released);
+    const takeStarted = (captureStarted && response.capture.status !== 'awaiting_join') || released;
     setStatus(takeStarted ? 'Measurement started.' : 'Updated.', 'ok');
-    takeAcknowledged = takeStarted || sessionBusy(envelope);
+    takeAcknowledged = captureStarted || released || sessionBusy(envelope);
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
