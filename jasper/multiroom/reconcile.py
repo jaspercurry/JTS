@@ -83,7 +83,6 @@ from .grouping_env import (
 from .reconcile_plan import (
     ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
     ARGS_FILE,
-    SNAPFIFO as SNAPFIFO,  # re-exported: jasper.active_speaker.runtime_contract imports it from here
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,

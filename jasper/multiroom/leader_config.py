@@ -44,7 +44,6 @@ from pathlib import Path
 
 from ..camilla_config_contract import (
     devices_playback_is_pipe,
-    parse_camilla_devices_config,
     read_camilla_devices_config,
 )
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
@@ -341,14 +340,6 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
 
 
 # ---------- producer liveness (for runtime health + the doctor) ----------
-
-def playback_is_pipe(text: str, fifo: str) -> bool:
-    """True when a CamillaDSP config's ``devices.playback`` block is a
-    File sink writing ``fifo`` — the bonded-leader pipe. The text-taking
-    face of :func:`devices_playback_is_pipe`, for the one caller that holds
-    config text rather than a path."""
-    return devices_playback_is_pipe(parse_camilla_devices_config(text), fifo)
-
 
 def active_leader_pipe_path() -> str:
     """``SNAPFIFO`` when the ACTIVE CamillaDSP config writes the

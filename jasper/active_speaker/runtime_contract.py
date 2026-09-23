@@ -37,8 +37,10 @@ from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
+from jasper.camilla_config_contract import playback_is_pipe
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
+from jasper.multiroom.reconcile_plan import SNAPFIFO
 
 from jasper.output_topology import (
     OutputTopology,
@@ -396,15 +398,8 @@ def _playback_is_program_bake_pipe(text: str) -> bool:
 
     This is the load-bearing key for the program-bake exemption: a ``File`` sink
     has no DAC, so no driver can be over-driven — safe regardless of topology.
-    It reuses :func:`jasper.multiroom.leader_config.playback_is_pipe` (and the
-    same ``SNAPFIFO`` target) verbatim so this exemption and the leader-pipe
-    liveness check cannot disagree about what "pipe-shaped" means. Both symbols
-    are imported lazily — they live in the grouping reconciler chain, which this
-    read-heavy module must not pull eagerly (the leader_config sibling uses the
-    same lazy-import idiom)."""
-    from jasper.multiroom.leader_config import playback_is_pipe
-    from jasper.multiroom.reconcile import SNAPFIFO
-
+    The leader-pipe liveness check reads the same predicate and ``SNAPFIFO``, so
+    the two cannot disagree about what "pipe-shaped" means."""
     return playback_is_pipe(text, SNAPFIFO)
 
 

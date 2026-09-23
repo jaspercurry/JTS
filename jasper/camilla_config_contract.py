@@ -443,6 +443,12 @@ def devices_playback_is_pipe(devices: Mapping[str, Any], fifo: str) -> bool:
     )
 
 
+def playback_is_pipe(text: str, fifo: str) -> bool:
+    """:func:`devices_playback_is_pipe` for config text rather than a parsed
+    ``devices`` block."""
+    return devices_playback_is_pipe(parse_camilla_devices_config(text), fifo)
+
+
 def read_camilla_devices_config(path: str | Path | None) -> dict[str, Any] | None:
     """Best-effort file reader for :func:`parse_camilla_devices_config`."""
 
