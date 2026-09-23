@@ -10,8 +10,8 @@
   used a bundle only when one was staged. No install ever staged one, and
   the path cost about 4,000 lines. On #5643 (R-243) the owner chose, for
   now, to point new users at the stock Pi OS flasher and let Claude load the
-  rest of the software; that also settles the older approved backlog item
-  #4707.
+  rest of the software; that also settles backlog row R-243 on #4804
+  (first tracked as #4707).
 - **Decision:** JTS ships no prebuilt image and no runtime bundle. A speaker
   starts as stock Raspberry Pi OS written by the official Raspberry Pi
   Imager; the Claude-driven `scripts/onboard.sh` and `scripts/deploy-to-pi.sh`
