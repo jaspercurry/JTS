@@ -336,6 +336,10 @@ def test_pre_fix_offset_would_have_failed_this_capture():
 
 @pytest.mark.parametrize("shelf_db", [0.0, 6.0, 12.0, 18.0])
 def test_low_shelf_preserves_witness_corroboration_and_offset(monkeypatch, shelf_db):
+    """VERIFY's summed sweep is its own anchor witness, so the integrity check
+    must hear it wherever the anchor did: at 18 dB its full-band margin is under
+    the floor (the band-less arm below), and a jts3 seat take was refused
+    "couldn't hear the speaker" at 0.2998 on exactly that split (#5632)."""
     prog = _verify_program(sweep_band_hz=(30.0, 20_000.0))
     # A 12.5 ms low-band echo competes outside the ±5 ms main lobe.
     ir = (_band_impulse(1000, 30.0, 6000.0, 1.0)
@@ -346,6 +350,8 @@ def test_low_shelf_preserves_witness_corroboration_and_offset(monkeypatch, shelf
 
     assert anchor.corroborated is True
     assert offset == baseline
+    integrity = analyze_program_capture(prog, cap, SR).capture_integrity
+    assert INTEGRITY_CHECK_SWEEP_HEARD not in integrity.failed
 
     if shelf_db == 18.0:
         locate = locate_mod._locate_in_window
@@ -1640,3 +1646,118 @@ def test_repeated_summed_anchor_uses_sweep_spacing(passes, displacement_ms, buri
     assert verdict.evidence["anchor_confidence"] == anchor.confidence
     if not buried:
         assert anchor.witness_residual_ms == pytest.approx(displacement_ms, abs=0.5)
+
+
+# --------------------------------------------------------------------------- #
+# #5632 F2 -- a seat near-tie the anchor pair's own schedule clears
+#
+# jts3's rear/seat trial of 2026-09-23 refused five clean takes as
+# `anchor_ambiguous`: leads of 22-49x over a runner-up reading that cleared the
+# locate floor at 0.316-0.394. That runner-up is the one-spacing-early reading,
+# whose witness window holds guard silence and a displaced part of the sweep:
+# an empty window, not a copy of the witness (VERIFY has none, see
+# `test_the_witness_is_confusable_one_gap_LATER_and_only_on_check`). The field's
+# own scores are scripted onto the witness locates; everything else -- the
+# anchor pair included -- reads the real samples.
+# --------------------------------------------------------------------------- #
+
+#: Speaker take 2's witness scorings, ``(confidence, presence)``, best first: a
+#: 41x lead whose runner-up cleared the floor. The best reading's confidence was
+#: not reported; any value above the floor keeps the shape.
+_SEAT_READINGS = ((0.8, 0.290), (0.316, 0.00709))
+
+
+def _script_witness(monkeypatch, program, capture, readings, witness_id="sweep_verify"):
+    """Pin the two readings' witness scores by where each reading looks for it."""
+    locate = locate_mod._locate_in_window
+    offset, _, _, _ = _global_offset(program, capture, SR)
+    first = next(s for s in program.segments if s.kind in STIMULUS_KINDS)
+    spacing = next(s.start_sample for s in program.segments if s.kind in STIMULUS_KINDS
+                   and s is not first and _stimulus_shape(s) == _stimulus_shape(first)) - first.start_sample
+    witness = program.segment(witness_id)
+    slots = dict(zip((offset + witness.start_sample, offset + witness.start_sample - spacing), readings))
+
+    def scripted(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
+        if band_hz is None and n == witness.n_samples and scheduled in slots:
+            return (scheduled, *slots[scheduled])
+        return locate(capture, stim, scheduled, n, sample_rate=sample_rate,
+                      band_hz=band_hz, search_samples=search_samples)
+
+    monkeypatch.setattr(locate_mod, "_locate_in_window", scripted)
+
+
+def _witness_alone_is_a_near_tie(anchor) -> bool:
+    return (anchor.runner_up_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+            and anchor.presence < anchor.runner_up_presence * ANCHOR_DISCRIMINATION_RATIO)
+
+
+def test_a_seat_near_tie_is_cleared_by_the_pilot_the_schedule_predicts(monkeypatch):
+    prog = _verify_program()
+    cap = _pristine(prog)
+    _script_witness(monkeypatch, prog, cap, _SEAT_READINGS)
+
+    analysis = analyze_program_capture(prog, cap, SR)
+    anchor = analysis.anchor
+    assert _witness_alone_is_a_near_tie(anchor), "the fixture must be #5632's shape"
+    assert anchor.ambiguous is False
+    # The loud pilot sits where the best reading schedules it; nothing sits where
+    # the runner-up reading schedules the quiet one.
+    assert anchor.pair_presence > anchor.pair_runner_up_presence * ANCHOR_DISCRIMINATION_RATIO
+    offset = analysis.locations[0].scheduled_start - prog.segments[0].start_sample
+    assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
+    verdict = cd.assess(analysis, phase="verify", program=prog)
+    assert (verdict.ok, verdict.fault, verdict.next) == (True, None, "accept")
+
+
+@pytest.mark.parametrize("spoiler", ["runner_up_segment_off_schedule", "recording_starts_late", "unknown_competitor"])
+def test_a_near_tie_the_schedule_does_not_explain_is_still_refused(monkeypatch, spoiler):
+    """The pair corroborates only a reading the schedule explains. Its segment
+    100 ms off its slot, a slot the recording never held, or an unscheduled
+    copy of the witness where the runner-up reading looks each leave the take
+    un-attributed."""
+    prog = _verify_program()
+    cap = _pristine(prog)
+    spacing = _pilot_spacing(prog)
+    if spoiler == "runner_up_segment_off_schedule":
+        hi = prog.segment("pilot_summed_hi")
+        start, span = GLOBAL_OFFSET + hi.start_sample, hi.n_samples + 2400
+        piece = cap[start:start + span].copy()
+        cap[start:start + span] = 0.0
+        cap[start + 4800:start + 4800 + span] += piece
+    elif spoiler == "recording_starts_late":
+        cap = cap[GLOBAL_OFFSET + prog.segment("pilot_summed_lo").start_sample - spacing // 2:]
+    else:
+        sweep = prog.segment("sweep_verify")
+        start, span = GLOBAL_OFFSET + sweep.start_sample, sweep.n_samples + 2400
+        cap[start - spacing:start - spacing + span] += 0.5 * cap[start:start + span]
+    if spoiler != "unknown_competitor":
+        _script_witness(monkeypatch, prog, cap, _SEAT_READINGS)
+
+    analysis = analyze_program_capture(prog, cap, SR)
+    assert _witness_alone_is_a_near_tie(analysis.anchor)
+    assert analysis.anchor.ambiguous is True
+    assert (analysis.anchor.pair_presence is None) is (spoiler == "recording_starts_late")
+    assert cd.assess(analysis, phase="verify", program=prog).fault == "anchor_ambiguous"
+
+
+def test_check_keeps_the_witness_only_guard_where_its_witness_has_a_twin(monkeypatch):
+    """CHECK's witness has a same-shape twin one spacing away (#2644), so a rival
+    reading can land on a real copy of it. The pilot pair would clear this
+    near-tie hundreds of times over; the twin keeps the witness-only guard."""
+    prog = _incident_program()
+    cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
+    offset, lo, stimuli, _ = _global_offset(prog, cap, SR)
+    hi = prog.segment("pilot_woofer_hi")
+    readings = ((0.8, 0.29), (0.316, 0.0145))
+    (lo_confidence, lo_presence), (hi_confidence, hi_presence) = readings
+    pair = locate_mod._pair_presences(
+        cap, stimuli[lo.segment_id], (lo_presence, lo_confidence, lo, offset),
+        (hi_presence, hi_confidence, hi, offset + lo.start_sample - hi.start_sample), SR,
+    )
+    assert pair[0] > pair[1] * ANCHOR_DISCRIMINATION_RATIO
+    _script_witness(monkeypatch, prog, cap, readings, witness_id="pilot_tweeter_lo")
+
+    _, segment, _, anchor = _global_offset(prog, cap, SR)
+    assert segment.segment_id == "pilot_woofer_lo"
+    assert anchor.ambiguous is True
+    assert anchor.pair_presence is None

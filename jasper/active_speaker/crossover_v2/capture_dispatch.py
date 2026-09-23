@@ -142,6 +142,8 @@ def _assess_recording(
         "anchor_confidence": anchor.confidence if anchor else None,
         "anchor_runner_up_presence": anchor.runner_up_presence if anchor else None,
         "anchor_runner_up_confidence": anchor.runner_up_confidence if anchor else None,
+        "anchor_pair_presence": anchor.pair_presence if anchor else None,
+        "anchor_pair_runner_up_presence": anchor.pair_runner_up_presence if anchor else None,
         "anchor_witnesses_tried": anchor.witnesses_tried if anchor else None,
         "anchor_corroborated": anchor.corroborated if anchor else None,
         "anchor_shift_ms": anchor.shift_ms if anchor else None,
