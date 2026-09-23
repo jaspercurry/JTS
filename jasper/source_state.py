@@ -12,10 +12,7 @@ a transient D-Bus/CLI/status failure from creating a false stop/start edge.
 
 Both `jasper.renderer.RendererClient.active_renderers` (consumed
 by voice tools, transport, volume coordinator) and `jasper.mux`'s
-source-arbiter tick loop call into here. The probes had lived
-duplicated in those two modules; consolidating them here gives
-both callers a single shape to depend on and one place to evolve
-when daemons change.
+source-arbiter tick loop call into here.
 """
 from __future__ import annotations
 
@@ -38,12 +35,13 @@ from .json_fields import finite_float
 logger = logging.getLogger(__name__)
 
 
-# Match a non-empty xesam:title in busctl's MPRIS Metadata output.
-# Format is a single line containing key/type/value triples; the
-# title appears as:  "xesam:title" s "Some Song Name"
-# (string type indicator `s`, then quoted value).
-# Empty metadata renders as `v a{sv} 0\n` with no title key at all,
-# so a search-fail is the phantom signal.
+MPRIS_DEST = "org.mpris.MediaPlayer2.ShairportSync"
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+GNOME_DEST = "org.gnome.ShairportSync"
+GNOME_PATH = "/org/gnome/ShairportSync"
+GNOME_REMOTE_IFACE = "org.gnome.ShairportSync.RemoteControl"
+
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
 # Display/renderer-status threshold for fan-in's USB DIRECT lane. Mux source
@@ -118,11 +116,9 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     Transport failures are unknown rather than inactive.
     """
     result = await run_busctl(
-        "call",
-        "org.mpris.MediaPlayer2.ShairportSync",
-        "/org/mpris/MediaPlayer2",
+        "call", MPRIS_DEST, MPRIS_PATH,
         "org.freedesktop.DBus.Properties", "Get", "ss",
-        "org.mpris.MediaPlayer2.Player", "Metadata",
+        MPRIS_PLAYER_IFACE, "Metadata",
     )
     if result is None:
         logger.debug("busctl Metadata probe failed")
@@ -142,11 +138,9 @@ async def airplay_playbackstatus_observed() -> bool | None:
     corroborated predicate instead.
     """
     result = await run_busctl(
-        "call",
-        "org.mpris.MediaPlayer2.ShairportSync",
-        "/org/mpris/MediaPlayer2",
+        "call", MPRIS_DEST, MPRIS_PATH,
         "org.freedesktop.DBus.Properties", "Get", "ss",
-        "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+        MPRIS_PLAYER_IFACE, "PlaybackStatus",
     )
     if result is None:
         logger.debug("busctl PlaybackStatus probe failed")

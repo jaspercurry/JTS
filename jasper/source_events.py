@@ -24,6 +24,7 @@ from typing import Any
 
 from .log_event import log_event
 from .music_sources import Source
+from .source_state import MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +41,13 @@ _INOTIFY_EVENT = struct.Struct("iIII")
 
 _PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
 _OBJECT_MANAGER_IFACE = "org.freedesktop.DBus.ObjectManager"
-_AIRPLAY_PATH = "/org/mpris/MediaPlayer2"
-_AIRPLAY_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 _BT_INTERFACES = frozenset({"org.bluez.MediaTransport1", "org.bluealsa.PCM1"})
 _DBUS_IFACE = "org.freedesktop.DBus"
 # A producer that dies mid-stream emits no PropertiesChanged and no
 # InterfacesRemoved; its bus name simply loses its owner. Without these the
 # only detector is the reconciler's slow repair probe.
 _PRODUCER_BUS_NAMES = {
-    "org.mpris.MediaPlayer2.ShairportSync": Source.AIRPLAY,
+    MPRIS_DEST: Source.AIRPLAY,
     "org.bluealsa": Source.BLUETOOTH,
 }
 _RETRY_INITIAL_SEC = 1.0
@@ -80,8 +79,8 @@ def classify_source_signal(
         invalidated = body[2] if len(body) > 2 and isinstance(body[2], list) else []
         keys = {str(key) for key in changed} | {str(key) for key in invalidated}
         if (
-            path == _AIRPLAY_PATH
-            and changed_iface == _AIRPLAY_PLAYER_IFACE
+            path == MPRIS_PATH
+            and changed_iface == MPRIS_PLAYER_IFACE
             and keys.intersection({"PlaybackStatus", "Metadata"})
         ):
             return (Source.AIRPLAY,)
@@ -247,7 +246,7 @@ async def watch_dbus_sources(notify: Notify) -> None:
                 await bus.connect()
             rules = (
                 "type='signal',interface='org.freedesktop.DBus.Properties',"
-                "member='PropertiesChanged',path='/org/mpris/MediaPlayer2'",
+                f"member='PropertiesChanged',path='{MPRIS_PATH}'",
                 "type='signal',interface='org.freedesktop.DBus.Properties',"
                 "member='PropertiesChanged',arg0='org.bluez.MediaTransport1'",
                 "type='signal',interface='org.freedesktop.DBus.Properties',"

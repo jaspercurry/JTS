@@ -11,6 +11,7 @@ from typing import Any
 
 from .busctl import name_is_absent, run_busctl
 from .log_event import log_event
+from .source_state import GNOME_DEST, GNOME_PATH, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,7 @@ class AirplaySessionCleanup:
         self._attempted_at = time.time()
         self._status, self._reason = "unobserved", "cleanup_pending"
         dropped = await run_busctl(
-            "--auto-start=no", "call", "org.gnome.ShairportSync", "/org/gnome/ShairportSync",
-            "org.gnome.ShairportSync", "DropSession",
+            "--auto-start=no", "call", GNOME_DEST, GNOME_PATH, GNOME_DEST, "DropSession",
         )
         if dropped is not None and dropped.returncode == 0:
             # Shairport replies after stop_play(), not after queuing a request.
@@ -51,8 +51,7 @@ class AirplaySessionCleanup:
             self._status, self._reason = "ok", "receiver_absent"
         else:
             stopped = await run_busctl(
-                "--auto-start=no", "call", "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Stop",
+                "--auto-start=no", "call", MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE, "Stop",
             )
             # Stop asks the sender to stop; it cannot prove session release.
             self._status = "degraded"

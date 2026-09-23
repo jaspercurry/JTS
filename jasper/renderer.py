@@ -33,6 +33,7 @@ from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from .platform import wire
 from .platform.uds import mux_socket_command
 from .source_state import (
+    MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
     airplay_playing,
     bluetooth_playing,
     spotify_playing,
@@ -45,10 +46,7 @@ logger = logging.getLogger(__name__)
 async def airplay_now_playing() -> dict[str, str]:
     """Return Shairport's canonical MPRIS title/artist/album projection."""
     out = await _busctl_get_property(
-        "org.mpris.MediaPlayer2.ShairportSync",
-        "/org/mpris/MediaPlayer2",
-        "org.mpris.MediaPlayer2.Player",
-        "Metadata",
+        MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE, "Metadata",
     )
     if not out:
         return {}

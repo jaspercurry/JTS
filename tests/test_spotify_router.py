@@ -8,10 +8,13 @@ import asyncio
 import logging
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from jasper.accounts import Account
-from jasper.spotify_router import AccountClient, Router
+from jasper.busctl import BusctlResult
+from jasper.spotify_router import AccountClient, Router, airplay_client_name
 from tests._log_events import event_records
 
 
@@ -964,3 +967,28 @@ def test_failure_log_cache_hard_cap_bounds_never_recovering_account(
     keys = router_mod._ACCOUNT_FAILURE_LOG_CACHE
     assert ("jasper", ACCOUNT_ERROR, f"connection reset from 10.0.0.{n - 1}:443", "") in keys
     assert ("jasper", ACCOUNT_ERROR, "connection reset from 10.0.0.0:443", "") not in keys
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (b's "Jasper\'s iPhone"\n', "Jasper's iPhone"),
+        (b's ""\n', ""),
+        (rb's "A \"quoted\" name"', r'A \"quoted\" name'),
+        (b'malformed', ""),
+    ],
+)
+async def test_airplay_client_name_from_busctl(monkeypatch, stdout, expected):
+    busctl = AsyncMock(return_value=BusctlResult(0, stdout, b""))
+    monkeypatch.setattr("jasper.spotify_router.run_busctl", busctl)
+    assert await airplay_client_name() == expected
+    busctl.assert_awaited_once_with(
+        "get-property", "org.gnome.ShairportSync", "/org/gnome/ShairportSync",
+        "org.gnome.ShairportSync.RemoteControl", "ClientName", timeout=2.0,
+    )
+
+
+@pytest.mark.parametrize("result", [None, BusctlResult(1, b"", b"denied")])
+async def test_airplay_client_name_busctl_failure(monkeypatch, result):
+    monkeypatch.setattr("jasper.spotify_router.run_busctl", AsyncMock(return_value=result))
+    assert await airplay_client_name() == ""
