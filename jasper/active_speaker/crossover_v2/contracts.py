@@ -55,7 +55,6 @@ __all__ = [
     "ROUND_RECEIPT_KIND",
     "ResponseCurve",
     "VERIFY_TOLERANCE_DB",
-    "detached_json",
 ]
 
 SCHEMA_VERSION = 3
@@ -119,71 +118,12 @@ def _positive(value: Any, *, field_name: str) -> float:
     return number
 
 
-def _rounded(value: Any, digits: int) -> float | None:
-    """``round(value, digits)`` for a real number, ``None`` for anything else.
-
-    Keeps a diagnostic line's absent values as ``None`` rather than letting a
-    missing field become ``0.0``.
-    """
-    return round(float(value), digits) if isinstance(value, (int, float)) else None
-
-
 def _text(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise CrossoverV2ContractError(
             f"{field_name} must be a non-empty trimmed string"
         )
     return value
-
-
-def detached_json(value: Any) -> Any:
-    """One JSON-shaped value with no container shared with the caller.
-
-    Recursive on purpose: a shallow ``dict(value)`` detaches only the top level,
-    so a caller holding a NESTED dict it passed in could still mutate a frozen
-    proposal after its fingerprint was taken (#2307 gate note N1). Leaves are
-    returned as they are — this normalizes containers, not values. A copied list
-    stays a ``list`` because the shared fingerprinter's ``_freeze_json`` admits
-    ``type(value) is list`` exactly and refuses a tuple, so no digest moves.
-    """
-
-    if isinstance(value, Mapping):
-        return {key: detached_json(item) for key, item in value.items()}
-    if isinstance(value, (str, bytes, bytearray)):
-        return value
-    if isinstance(value, Sequence):
-        return [detached_json(item) for item in value]
-    return value
-
-
-def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
-    """A defensive DEEP copy of one JSON-shaped mapping, or ``{}`` for ``None``.
-
-    The depth matters: a frozen dataclass holding a caller's live dict at any
-    level is immutable in name only. See :func:`detached_json`.
-    """
-
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise CrossoverV2ContractError(f"{field_name} must be a mapping")
-    for key in value:
-        if not isinstance(key, str):
-            raise CrossoverV2ContractError(f"{field_name} keys must be strings")
-    return {key: detached_json(item) for key, item in value.items()}
-
-
-def _trim_map(value: Any, *, field_name: str) -> dict[str, float] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise CrossoverV2ContractError(f"{field_name} must be a mapping")
-    return {
-        _text(role, field_name=f"{field_name} role"): _finite(
-            level, field_name=f"{field_name}[{role}]"
-        )
-        for role, level in value.items()
-    }
 
 
 # --------------------------------------------------------------------------
@@ -354,13 +294,6 @@ class CandidateAcousticContext(FingerprintedRecord):
 #: committed trim pair for a speaker that solved none.
 LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
-#: What a record carries when the host cannot name the graph a capture was
-#: measured through, e.g. ``round_evidence.EntryBaseline.graph_fingerprint``.
-#: A NAMED sentinel rather than ``""`` because the record requires a non-empty
-#: trimmed identity on write and read: an empty string would make
-#: ``from_dict`` refuse the whole record.
-ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
-
 
 # --------------------------------------------------------------------------- #
 # constants the flow used to own
@@ -488,17 +421,3 @@ DESIGN_AXIS_DEG = 0
 CLAIM_PASS = "pass"
 CLAIM_FAIL = "fail"
 CLAIM_NOT_EVALUATED = "not_evaluated"
-
-
-def realized_branch_level(
-    verdict: Mapping[str, Any] | None, *, pair_reason: str | None,
-) -> Mapping[str, Any] | None:
-    """The committed pair's realized level, or the named absence of a pair.
-
-    ``None`` still means a pair existed and nothing graded it; ``pair_reason``
-    names the case where there was no pair, in the MEASURE verdict's own
-    ``not_evaluated`` vocabulary.
-    """
-    if verdict is not None or pair_reason is None:
-        return verdict
-    return {"status": CLAIM_NOT_EVALUATED, "reason": pair_reason}

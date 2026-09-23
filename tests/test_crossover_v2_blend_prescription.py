@@ -1005,10 +1005,9 @@ def _bank_take_with_diagnostic(
 ) -> Path:
     """One banked take carrying the analysis block a capture produced.
 
-    The shape ``bind_position_retention`` writes: the store's envelope, the
-    take's own identity, and the ``diagnostic`` the analyze seam handed it.
-    ``diagnostic=None`` writes a take that carried no analysis at all — the
-    shape every round banked before that carry existed.
+    The store's envelope, the take's own identity, and the analysis
+    ``diagnostic`` block. ``diagnostic=None`` writes a take that carried no
+    analysis at all.
     """
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     positions = round_dir / "positions"

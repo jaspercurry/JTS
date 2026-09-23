@@ -121,9 +121,8 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``None`` for everything that is not one, and the four ways that happens are
     deliberately indistinguishable to the caller: unreadable, not a JSON
     object, not a position-evidence record at all, or a CLOUD position. The
-    last is the ordinary case rather than an error — the web host's
-    ``bank_take`` serves both groups into the same directory, and this reader
-    wants one of them.
+    last is the ordinary case rather than an error — both groups bank into
+    the same directory, and this reader wants one of them.
 
     **The rule is phase, not bearing presence** —
     :func:`~.spatial.cloud_position_record` also stamps ``position_deg``, so a

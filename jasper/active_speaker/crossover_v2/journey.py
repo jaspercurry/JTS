@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The commission journey: where a round is, and what its stage can do (#2291).
+"""The commission journey: where a round is (#2291).
 
-Two facts, one owner each: where the round is (the phase walk, as one frozen
-plan plus the round's position in it) and what a stage can do (the capability
-declarations). This module runs no DSP, reads no file, renders nothing and
-emits no journal line — every question here is bookkeeping over plain data.
+The phase walk, as one frozen plan plus the round's position in it. This
+module runs no DSP, reads no file, renders nothing and emits no journal line —
+every question here is bookkeeping over plain data.
 """
 
 from __future__ import annotations
@@ -155,9 +154,8 @@ class JourneyPlan:
     ) -> "JourneyPlan":
         """Derive the plan from the capture index map the session will emit.
 
-        ``post_apply_verifies=None`` keeps the phase-derived reading; the
-        measuring stage, whose own plan carries no VERIFY, declares it, and
-        :func:`open_stage` derives that declaration from the tier's numbers.
+        ``post_apply_verifies=None`` keeps the phase-derived reading; a caller
+        that knows better declares it.
         """
         resolved = MappingProxyType(dict(index_phase_map))
         present = set(resolved.values())
@@ -287,64 +285,3 @@ class CommissionJourney:
         unequal on disk.
         """
         return tuple(p for p in CAPTURE_PHASES if p in self._accepted)
-
-
-# --------------------------------------------------------------------------- #
-# stage capabilities — one declaration per commission stage
-# --------------------------------------------------------------------------- #
-
-@dataclass(frozen=True)
-class V2StageCapabilities:
-    """The seams a measurement session provides and the inputs it declares."""
-
-    stage: str
-    provides: frozenset[str]
-    requires: frozenset[str] = frozenset()
-
-
-STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(stage="measure", provides=frozenset())
-
-@dataclass(frozen=True)
-class StageOpening:
-    """A measurement session's plan, capabilities, and missing inputs."""
-
-    capabilities: V2StageCapabilities
-    plan: JourneyPlan
-    #: ``requires`` minus what was handed over, sorted. Empty is the good case.
-    missing: tuple[str, ...]
-
-    @property
-    def stage(self) -> str:
-        return self.capabilities.stage
-
-
-def open_stage(
-    capabilities: V2StageCapabilities,
-    *,
-    index_phase_map: Mapping[int, str],
-    verify_capture_target: int | None = None,
-    available: Iterable[str] = (),
-) -> StageOpening:
-    """Resolve one stage's opening: its declaration, its walk, its shortfall.
-
-    ``available`` is what this stage actually got handed, so ``requires`` minus
-    it is what is missing. Nothing is refused: a missing prior narrows what the
-    stage can CLAIM — the delta probe reports unavailable, the benefit verdict
-    grades indeterminate — and both are honest outcomes the round carries.
-
-    ``verify_capture_target`` is the tier's declared count of post-apply capture
-    positions, and ``>= 1`` is the whole of the rule: a tier that declares no
-    post-apply positions drops boost permission along with them. ``None`` leaves
-    the plan's phase-derived reading in place.
-    """
-    return StageOpening(
-        capabilities=capabilities,
-        plan=JourneyPlan.from_index_map(
-            index_phase_map,
-            post_apply_verifies=(
-                None if verify_capture_target is None
-                else int(verify_capture_target) >= 1
-            ),
-        ),
-        missing=tuple(sorted(capabilities.requires - set(available))),
-    )

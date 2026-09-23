@@ -2,48 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The cloud JSON decimation, the measurement band, the geometry guidance copy,
-and the per-band flatness journal field."""
+"""The measurement band, the geometry guidance copy, and the per-band flatness
+journal field."""
 from __future__ import annotations
 
 
-import numpy as np
-import pytest
-
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
-from jasper.active_speaker.crossover_v2.spatial import (
-    CLOUD_CURVE_MAX_JSON_POINTS,
-    _decimate_curve_for_json,
-    _geometry_guidance_copy,
-)
+from jasper.active_speaker.crossover_v2.spatial import _geometry_guidance_copy
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
-
-
-# --------------------------------------------------------------------------- #
-# Synthetic two-path cloud (local to this file — a different test file's own
-# fixture generator is not a shared-library import; this is the same ~15-line
-# shape test_interference_nulls.py builds, reused in spirit, not coupled).
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("size", [0, 1, 512, 513, 1023, 1024, 1535])
-def test_cloud_curve_serialization_bounds_paired_ordered_samples(size):
-    freqs = np.arange(size, dtype=float)
-    magnitudes = -0.25 * freqs
-
-    curve = _decimate_curve_for_json(freqs, magnitudes)
-    kept = curve["freqs_hz"]
-
-    assert len(kept) <= CLOUD_CURVE_MAX_JSON_POINTS
-    assert len(kept) == len(curve["magnitude_db"])
-    np.testing.assert_array_equal(curve["magnitude_db"], -0.25 * np.asarray(kept))
-    if size:
-        assert kept[0] == freqs[0]
-        assert np.all(np.diff(kept) > 0)
-    if size <= CLOUD_CURVE_MAX_JSON_POINTS:
-        np.testing.assert_array_equal(kept, freqs)
 
 
 # --------------------------------------------------------------------------- #

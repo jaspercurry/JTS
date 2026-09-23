@@ -345,19 +345,6 @@ class FakeSeams:
     verify: Any = _verify_analysis
     analyzed: list = field(default_factory=list)
     published_checks: list = field(default_factory=list)
-    published_candidates: list = field(default_factory=list)
-    apply_done: bool = False
-    apply_failed_code: str = ""
-    rollback_available: Any = None
-    applied_boosts: bool = False
-    applied_profile_state: Any = None
-
-    def applied_profile(self) -> dict[str, Any]:
-        return (
-            self.applied_profile_state
-            if self.applied_profile_state is not None
-            else _fixture_applied_profile()
-        )
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry, *, phase=None):
@@ -371,13 +358,7 @@ class FakeSeams:
             analyze=analyze,
             records=V2RecordPublishers(
                 check=lambda plan, ambient: self.published_checks.append(plan),
-                candidate=self.published_candidates.append,
             ),
-            apply_complete=lambda: self.apply_done,
-            apply_failed=lambda: self.apply_failed_code,
-            rollback_available=self.rollback_available,
-            applied_boosts=lambda: self.applied_boosts,
-            applied_profile=self.applied_profile,
         )
 
 

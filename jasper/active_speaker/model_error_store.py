@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persist an adopted floor and bounded, idempotent VERIFY model-error history."""
+"""Persist an adopted floor; read the bounded VERIFY model-error history."""
 
 from __future__ import annotations
 
@@ -37,10 +37,6 @@ MAX_MODEL_ERROR_RECORDS = 32
 _STORE_LOCK_TIMEOUT_SEC = 5.0
 
 logger = logging.getLogger(__name__)
-
-
-class ModelErrorConflictError(RuntimeError):
-    """A stable observation identity was reused with different numbers."""
 
 
 @dataclass(frozen=True)
@@ -224,110 +220,3 @@ def _optional_float(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
-
-
-def record_model_error(
-    *,
-    speaker_id: str,
-    attempt_id: str,
-    metric: str,
-    predicted_db: float,
-    realized_db: float,
-    path: str | Path | None = None,
-    context: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Bank one ``realized − predicted`` observation, newest first.
-
-    Sign convention, stated once so nothing has to re-derive it: ``error_db =
-    realized_db - predicted_db``, on a lower-is-better grade. **Positive means
-    the hardware came out worse than the model promised**, which is the
-    direction that matters — it is the model over-claiming.
-
-    ``speaker_id`` + ``attempt_id`` + ``metric`` is the stable observation
-    identity. Replaying an identical write is an idempotent no-op; reusing
-    that identity with different numbers raises :class:`ModelErrorConflictError`
-    without changing the store. That closes the crash window between this
-    write and the session's separate journey-state persist.
-
-    ``context`` is free-form provenance (build sha, session id, band) stored
-    verbatim under ``context``. It is never interpreted here; the store's job
-    is to keep the pair, not to explain it.
-    """
-
-    speaker = str(speaker_id)
-    attempt = str(attempt_id)
-    metric_name = str(metric)
-    if not speaker:
-        raise ValueError("speaker_id must be non-empty")
-    if not attempt:
-        raise ValueError("attempt_id must be non-empty")
-    if not metric_name:
-        raise ValueError("metric must be non-empty")
-    predicted = float(predicted_db)
-    realized = float(realized_db)
-    resolved = model_error_state_path(path)
-    with advisory_file_lock(
-        _store_lock_path(resolved),
-        timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
-    ):
-        state = load_state(resolved)
-        records = state["model_error"]
-        for existing in records:
-            if not (
-                str(existing.get("speaker_id") or "") == speaker
-                and str(existing.get("attempt_id") or "") == attempt
-                and str(existing.get("metric") or "") == metric_name
-            ):
-                continue
-            if (
-                _optional_float(existing.get("predicted_db")) == predicted
-                and _optional_float(existing.get("realized_db")) == realized
-            ):
-                log_event(
-                    logger,
-                    "active_speaker.model_error_duplicate_ignored",
-                    path=str(resolved),
-                    speaker_id=speaker,
-                    attempt_id=attempt,
-                    metric=metric_name,
-                )
-                return state
-            log_event(
-                logger,
-                "active_speaker.model_error_identity_conflict",
-                path=str(resolved),
-                speaker_id=speaker,
-                attempt_id=attempt,
-                metric=metric_name,
-                level=logging.WARNING,
-            )
-            raise ModelErrorConflictError(
-                "model-error identity already exists with different values: "
-                f"{speaker}/{attempt}/{metric_name}"
-            )
-
-        error_db = realized - predicted
-        record = {
-            "speaker_id": speaker,
-            "attempt_id": attempt,
-            "metric": metric_name,
-            "predicted_db": predicted,
-            "realized_db": realized,
-            "error_db": error_db,
-            "recorded_at": _utc_now(),
-            "context": dict(context or {}),
-        }
-        state["model_error"] = (
-            [record] + list(records)
-        )[:MAX_MODEL_ERROR_RECORDS]
-        _write_state(resolved, state)
-    log_event(
-        logger,
-        "active_speaker.model_error_recorded",
-        path=str(resolved),
-        speaker_id=speaker,
-        attempt_id=attempt,
-        metric=metric_name,
-        error_db=round(error_db, 5),
-    )
-    return state

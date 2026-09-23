@@ -6,19 +6,15 @@
 
 Pins the acceptance items ``docs/historical/attribution-stage-plan.md`` §7 assigns to
 WO-1 that are about *storage* — the Q-C retention model and provenance-marker
-discipline — plus the flow seam that produces them. The schema itself is pinned
-in ``tests/test_attribution_findings.py``.
+discipline. The schema itself is pinned in ``tests/test_attribution_findings.py``.
 """
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2 import durable_state as v2durable
-from jasper.web import correction_crossover_v2_evidence as v2evidence
 
 from tests.engine_twin import retained_take_writer
 
 import asyncio
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -50,7 +46,6 @@ from jasper.attribution.findings import (
 from jasper.attribution.promotion import PRODUCED_BY
 from jasper.attribution.session_identity import (
     SessionIdentity,
-    read_session_identity,
 )
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.attribution.storage import (
@@ -331,177 +326,6 @@ def test_findings_inherit_the_bundle_s_group_readable_mode(tmp_path: Path) -> No
     assert path.stat().st_gid == path.parent.stat().st_gid
 
 
-# --------------------------------------------------------------------------- #
-# The cross-store identity, through the real web seams (§6, §7 acceptance)
-# --------------------------------------------------------------------------- #
-
-
-def _carve_outs() -> list[dict]:
-    return [
-        {
-            "band_hz": [2000.0, 8000.0],
-            "intervals": [
-                {
-                    "f_lo_hz": 4200.0,
-                    "f_hi_hz": 4600.0,
-                    "source": "identified_null",
-                    "f_center_hz": 4400.0,
-                    "n": 3,
-                    "tau_us": 310.0,
-                    "r_time": 0.28,
-                    "r_freq": 0.31,
-                    "depth_db": -6.4,
-                    "classification": "position_invariant",
-                    "reason": (
-                        "This range is a cancellation between two arrivals. "
-                        "Adding level cannot fill a cancellation, so it is "
-                        "left out of correction and out of grading."
-                    ),
-                }
-            ],
-        }
-    ]
-
-
-def test_the_cloud_artifact_and_its_findings_share_one_identity(
-    tmp_path: Path,
-) -> None:
-    """The hop that matters most: the finding set and the evidence it cites
-    resolve to the same session, and the capture id rides as an alias rather
-    than as a competing identity."""
-
-
-    store, bundle_dir = _open_store(tmp_path)
-    refs: dict = {}
-    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
-        PHASE, {"available": True, "carve_outs": _carve_outs()}
-    )
-
-    cloud = json.loads(
-        (
-            bundle_dir
-            / "evidence/v1/artifacts/crossover_v2"
-            / CAPTURE
-            / f"{PHASE}.json"
-        ).read_text()
-    )
-    cloud_identity = read_session_identity(cloud)
-    assert cloud_identity is not None
-    assert cloud_identity.session_id == store.session_id
-    assert cloud_identity.aliases["capture_session_id"] == CAPTURE
-
-    findings = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
-    assert findings is not None
-    assert findings.session == cloud_identity
-
-
-def test_the_live_seam_promotes_carve_outs_and_cites_the_cloud_artifact(
-    tmp_path: Path,
-) -> None:
-    """End to end through the real publisher: the excluded-band records become
-    findings, and each cites the exact cloud artifact its numbers were read
-    from — so ``read_finding_set``'s default verification has something real
-    to check."""
-
-
-    store, _ = _open_store(tmp_path)
-    refs: dict = {}
-    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
-        PHASE, {"available": True, "carve_outs": _carve_outs()}
-    )
-
-    findings = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
-    assert findings is not None
-    assert [f.mechanism for f in findings.findings] == ["M2"]
-    assert findings.findings[0].confidence == "unsure"
-    assert findings.findings[0].fix_class == "carve"
-    assert refs["finding_artifacts"][PHASE]
-    cite = findings.findings[0].cites[0]
-    assert cite.locator.endswith(f"crossover_v2/{CAPTURE}/{PHASE}.json")
-    assert len(cite.sha256) == 64
-
-
-def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> None:
-    """§3.4: findings are *optional* evidence artifacts — "a session with no
-    findings behaves exactly as it does today". So this seam fails soft,
-    unlike its two strict siblings, and the cloud artifact it rides behind is
-    already durable by the time findings run."""
-
-
-    store, _ = _open_store(tmp_path)
-    refs: dict = {}
-
-    # A carve-out block shaped in a way promotion cannot read at all.
-    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
-        PHASE, {"available": True, "carve_outs": "not-a-list"}
-    )
-
-    assert refs["cloud_artifacts"][PHASE]
-    empty = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
-    assert empty is not None and empty.findings == ()
-
-
-def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None:
-    """The deliberate boundary: the store holds every finding; the household
-    wire holds only sentences no other surface already owns.
-
-    A carve-out finding's ``household_copy`` is COPIED from the carve-out record
-    (``promote_carve_outs`` rule 3), so the copy already has an owner, and
-    projecting it again would put one fact on one screen twice, from two owners.
-    """
-
-    store, _ = _open_store(tmp_path)
-    refs: dict = {}
-    v2evidence.bind_cloud_publisher(store, CAPTURE, refs, asyncio.run)(
-        PHASE, {"available": True, "carve_outs": _carve_outs()}
-    )
-    # Recorded — the durable finding set exists and reopens.
-    banked = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
-    assert banked is not None and [f.mechanism for f in banked.findings] == ["M2"]
-    # …and NOT on the household wire.
-    assert v2durable.FINDING_HOUSEHOLD_REFS_KEY not in refs
-
-
-def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
-    tmp_path: Path,
-) -> None:
-    """§6: "the per-position WAV path + SHA-256 **in the state itself** so the
-    state alone is replayable", and the accepted-attempt mapping alongside it.
-    ``refs`` is what the durable v2 state persists as its evidence block."""
-
-    store, bundle_dir = _open_store(tmp_path)
-    refs: dict = {}
-    bank = retained_take_writer(store, CAPTURE, refs, asyncio.run)
-
-    class _Result:
-        wav = b"take-bytes"
-
-    bank(
-        _Result(),
-        {
-            "position_id": "cloud_measure_03",
-            "phase": PHASE,
-            "index": 3,
-            "attempt": 2,
-            "take_id": "cloud_measure_03_a02",
-            "measure_kind": "",
-            "prompt": "Two hand-widths LEFT of the mark.",
-            "wide": False,
-            "captured_at": 1.0,
-            "session_id": CAPTURE,
-            "wav_sha256": "c" * 64,
-        },
-    )
-
-    entry = refs["position_artifacts"][0]
-    assert entry["take_id"] == "cloud_measure_03_a02"
-    assert entry["attempt"] == 2
-    assert entry["wav_sha256"] == hashlib.sha256(b"take-bytes").hexdigest()
-    assert entry["wav_path"]
-    # The path is bundle-relative and really points at the retained bytes.
-    assert (bundle_dir / entry["wav_path"]).read_bytes() == b"take-bytes"
-
-
 @pytest.mark.parametrize(
     ("phase", "expected_kind"),
     [
@@ -526,7 +350,7 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     """
 
     store, bundle_dir = _open_store(tmp_path)
-    bank = retained_take_writer(store, CAPTURE, {}, asyncio.run)
+    bank = retained_take_writer(store, CAPTURE, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"

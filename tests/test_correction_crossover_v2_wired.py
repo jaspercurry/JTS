@@ -639,7 +639,6 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     assert len(gate.grants) == 2
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
-    assert flow.published_candidates == []
     apply_route.assert_not_called()
     apply_dsp.assert_not_called()
 
@@ -1012,7 +1011,6 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
         else:
             assert verdict.ok
     assert ceilings is conductor._measure_gain_ceiling_db
-    assert fakes.published_candidates == []
 
 
 @pytest.mark.parametrize(("anchor", "sensitivity"), [

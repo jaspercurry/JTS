@@ -47,10 +47,6 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_verify_program,
 )
-from jasper.audio_measurement.program_analysis import (
-    MeasurementGeometry,
-    MeasurementPriors,
-)
 from tests._log_events import event_field_maps, event_fields
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
@@ -454,7 +450,6 @@ def _drive_one_capture(
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.session import TuningSession
-    from jasper.audio_measurement import program_analysis as pa_mod
     from tests.engine_twin import FakeGraph, FakeRecords, FakeVolume
 
     scope = graph_scope or ("drivers" if phase == PHASE_CHECK else "candidate")
@@ -512,9 +507,8 @@ def _drive_one_capture(
         return SimpleNamespace(allowed=True)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
         monkeypatch.setattr(program_admission, name, readmit)
-    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
     v2volume.set_volume_plan_for_tests(plan)
-    recorder, carry = CaptureProvenanceRecorder(), CaptureProvenanceRecorder()
+    recorder = CaptureProvenanceRecorder()
     production = v2evidence.bind_production_play(
         camilla_factory=lambda: cam,
         evidence_store=_FakeEvidenceStore(tmp_path),
@@ -557,16 +551,7 @@ def _drive_one_capture(
     assert (record["graph_scope"], record["candidate_id"], record["wav_path"]) == (
         scope, spec.candidate_id, "capture.wav",
     )
-    analyze = v2evidence.bind_production_analyze(
-        resolve_calibration=lambda setup, device: None,
-        meta={}, provenance=recorder, carry=carry,
-    )
-    analyze(
-        program,
-        SimpleNamespace(wav=(tmp_path / "capture.wav").read_bytes(), setup=None, device=None),
-        MeasurementPriors(crossover_fc_hz=2000.0), MeasurementGeometry(), phase=phase,
-    )
-    carried = carry.take()
+    carried = recorder.take()
     return carried.to_dict() if carried is not None else None
 
 
@@ -584,13 +569,13 @@ def test_a_household_capture_carries_provenance_with_nothing_to_arm(
     While the ring existed, observation was bought only when its ENABLED
     marker was present, so an ordinary household session carried nothing and
     every banked take named no graph. This drives the real play seam with
-    nothing armed — no marker, no flag, no environment — and the carry the
-    banking seam drains is full.
+    nothing armed — no marker, no flag, no environment — and the recorder is
+    full.
 
     The fader is at the declared −20.0, so the play path's hold PROVES it and
     the capture happens. What the record carries is the level the capture was
     actually taken at, and the two fields agree because a capture that reached
-    the carry is by construction one whose fader was proven — the hold refuses
+    the recorder is by construction one whose fader was proven — the hold refuses
     rather than writing when it is not (#2925).
     """
     cam = _FakeCam(volume_db=-20.0)
@@ -613,7 +598,7 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
 ):
     """Graph swaps retain the config path; provenance must name the played graph."""
     # Both faders sit at the declared measurement volume, so neither capture is
-    # refused by the play path's hold and both reach the carry.
+    # refused by the play path's hold and both reach the recorder.
     routed = _drive_one_capture(
         monkeypatch, tmp_path / "routed", phase=PHASE_CHECK,
         cam=_FakeCam(volume_db=-20.0),
@@ -676,29 +661,6 @@ def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
     assert event_field_maps(
         caplog, "active_speaker.capture_provenance", result="volume_disagreement"
     )
-
-
-def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
-    """A capture this recorder cannot speak for gets no block at all."""
-    from jasper.audio_measurement import program_analysis as pa_mod
-
-    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
-
-    carry = CaptureProvenanceRecorder()
-    analyze = v2evidence.bind_production_analyze(
-        resolve_calibration=lambda setup, device: None,
-        meta={},
-        provenance=CaptureProvenanceRecorder(),
-        carry=carry,
-    )
-    analyze(
-        _program(),
-        SimpleNamespace(wav=_mono_wav_bytes(), setup=None, device=None),
-        MeasurementPriors(crossover_fc_hz=2000.0),
-        MeasurementGeometry(),
-        phase=PHASE_CHECK,
-    )
-    assert carry.take() is None
 
 
 @pytest.mark.parametrize(

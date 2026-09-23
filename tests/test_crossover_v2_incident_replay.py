@@ -123,12 +123,7 @@ def _conductor() -> CrossoverV2Session:
     """
     seams = V2FlowSeams(
         analyze=lambda *a, **k: None,
-        records=V2RecordPublishers(
-            check=lambda plan, ambient: None,
-            candidate=lambda candidate: None,
-        ),
-        apply_complete=lambda: False,
-        apply_failed=lambda: "",
+        records=V2RecordPublishers(check=lambda plan, ambient: None),
     )
     return CrossoverV2Session(
         session_id=SESSION_ID,

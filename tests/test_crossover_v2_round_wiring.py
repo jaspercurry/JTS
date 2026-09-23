@@ -335,20 +335,6 @@ def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     }
 
 
-def test_stage_1_declares_itself_too(monkeypatch, caplog):
-    """Both stages declare; the measuring one needs nothing handed to it."""
-    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
-        _conductor, _state = _stage_1(monkeypatch)
-
-    declared = [
-        record.getMessage() for record in caplog.records
-        if "event=correction.crossover_v2_stage_capabilities" in record.getMessage()
-    ]
-    assert len(declared) == 1
-    assert "stage=measure" in declared[0]
-    assert 'provides="" requires="" missing=""' in declared[0]
-
-
 def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
     from tests.engine_twin import FakeSeams
 

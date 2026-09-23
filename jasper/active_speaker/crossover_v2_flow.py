@@ -135,44 +135,14 @@ class AnalyzeCapture(Protocol):
 
 
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
-PublishCandidate = Callable[[Any], None]
-ApplyGate = Callable[[], bool]
-ApplyFailureGate = Callable[[], str]
-BankTake = Callable[[Any, Mapping[str, Any]], str]
-
-
-def _no_bank_take(_result: Any, _record: Mapping[str, Any]) -> str:
-    """The unbound record seam: nothing is stored, and that is not an error."""
-    return ""
-
-
-class RecordModelError(Protocol):
-    """Banks one model-predicted/realized pair outside the session."""
-
-    def __call__(
-        self,
-        *,
-        attempt_id: str,
-        metric: str,
-        speaker_id: str,
-        predicted_db: float,
-        realized_db: float,
-        context: Mapping[str, Any],
-    ) -> bool: ...
 
 
 @dataclass(frozen=True)
 class V2RecordPublishers:
-    """The durable-write seams, one field, discriminated by kind (ADR-0227 §12).
-
-    Each still funnels through
-    :class:`~.crossover_v2.record_store.BankedRecordStore`; this is
-    :class:`V2FlowSeams`'s single point of contact with it, replacing the five
-    top-level seams the ruling found still separate.
-    """
+    """The durable-write seam, funnelled through
+    :class:`~.crossover_v2.record_store.BankedRecordStore` (ADR-0227 §12)."""
 
     check: PublishCheck
-    candidate: PublishCandidate
 
 
 @dataclass(frozen=True)
@@ -181,17 +151,7 @@ class V2FlowSeams:
 
     analyze: AnalyzeCapture
     records: V2RecordPublishers
-    apply_complete: ApplyGate
-    apply_failed: ApplyFailureGate
-    bank_take: BankTake = _no_bank_take
-    applied_offset_db: Callable[[], float] | None = None
-    applied_profile: Callable[[], Mapping[str, Any] | None] | None = None
     summed_alignment_reference: Callable[[Any, Any], Any] | None = None
-    record_model_error: RecordModelError | None = None
-    entry_graph_fingerprint: Callable[[], str] | None = None
-    rollback_available: Callable[[], bool] | None = None
-    tuning_graph_fingerprint: Callable[[], str] | None = None
-    applied_boosts: Callable[[], bool] | None = None
 
 
 class CrossoverV2Session:

@@ -109,22 +109,6 @@ def _bg_run_async(coro, *, timeout=None):
     return asyncio.run(coro)
 
 
-def test_live_model_error_binding_reports_identity_conflict_to_conductor():
-    observation = {
-        "speaker_id": "speaker-a",
-        "attempt_id": "candidate-a",
-        "metric": "max_db_notch_excluded",
-        "predicted_db": 0.0,
-        "realized_db": 0.9,
-        "context": {"session_id": "session-a"},
-    }
-
-    assert v2state._record_live_model_error(**observation) is True
-    assert v2state._record_live_model_error(
-        **{**observation, "realized_db": 0.7},
-    ) is False
-
-
 def _own_the_fader(monkeypatch, cam) -> None:
     """Seat a real ``VolumeOwner`` over ``cam`` for the drain paths.
 
@@ -350,10 +334,7 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     store = CommissioningEvidenceStore.open(
         info["bundle_dir"], expected_session_id=info["session_id"]
     )
-    refs: dict = {}
-    bank = retained_take_writer(
-        store, "cap_retake_session", refs, asyncio.run,
-    )
+    bank = retained_take_writer(store, "cap_retake_session", asyncio.run)
 
     position_id = f"{PHASE_CLOUD_MEASURE}_10"
     base = {
@@ -381,10 +362,6 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
          "prompt": "Same measurement, wider spot: move the microphone "
                    "30 in (75 cm) to the LEFT of the mark."},
     )
-
-    # Two artifacts, both published — the second is NOT a refused duplicate.
-    assert [entry["attempt"] for entry in refs["position_artifacts"]] == [10, 11]
-    assert len({entry["artifact"] for entry in refs["position_artifacts"]}) == 2
 
     # The strict store namespaces every artifact under evidence/v1/artifacts/.
     sidecars = sorted(
@@ -446,10 +423,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     store = CommissioningEvidenceStore.open(
         bundle_dir, expected_session_id=info["session_id"]
     )
-    refs: dict = {}
-    bank = retained_take_writer(
-        store, "cap_record_session", refs, asyncio.run,
-    )
+    bank = retained_take_writer(store, "cap_record_session", asyncio.run)
 
     oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
     bank_id = bank(
@@ -484,8 +458,8 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     ).hexdigest()
 
 
-def _retention_bundle(tmp_path, capture_session_id, *, provenance=None):
-    """A real bundle, a real evidence store, and the seam bound over both."""
+def _bundle_store(tmp_path):
+    """A real bundle and its real evidence store."""
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
@@ -499,784 +473,9 @@ def _retention_bundle(tmp_path, capture_session_id, *, provenance=None):
         sessions_dir=tmp_path / "sessions",
     )
     assert info is not None
-    bundle_dir = Path(info["bundle_dir"])
-    store = CommissioningEvidenceStore.open(
-        bundle_dir, expected_session_id=info["session_id"]
+    return CommissioningEvidenceStore.open(
+        Path(info["bundle_dir"]), expected_session_id=info["session_id"]
     )
-    refs: dict = {}
-    bank = retained_take_writer(
-        store, capture_session_id, refs, asyncio.run, provenance=provenance,
-    )
-    return bank, refs, bundle_dir, store
-
-
-def _entry_baseline_take(index=9, attempt=1):
-    """One entry-baseline record, from the builder the flow actually calls."""
-    from jasper.active_speaker.crossover_v2.spatial import entry_baseline_record
-
-    return entry_baseline_record(
-        index=index,
-        attempt=attempt,
-        session_id="cap_entry_session",
-        program_id="prog-entry",
-        reference_mark="design_axis",
-        graph_fingerprint="fp-entry",
-        captured_at="2026-08-27T00:00:00Z",
-        freqs_hz=[100.0, 200.0, 400.0],
-        magnitude_db=[0.0, -1.0, -2.0],
-        excluded=[False, False, True],
-        validity_floor_hz=140.0,
-        gate_window_ms=8.0,
-        summed_ripple_db=1.0,
-        glitch_detected=False,
-        wav_sha256="d" * 64,
-    )
-
-
-def test_an_entry_baseline_banks_under_the_take_id_its_own_record_names(tmp_path):
-    """The artifact's stem IS ``record["take_id"]`` — one mint, not two.
-
-    An entry baseline is the one retained kind whose ``position_id`` is already
-    a take id, so a seam that re-minted one from the position id appended a
-    second ``_aNN``: the file landed at ``entry_baseline_09_a01_a01.json`` while
-    the record inside said ``entry_baseline_09_a01``, and
-    ``refs["position_artifacts"]`` carried the doubled id. Nothing was
-    observed-broken, because every reader globs rather than reconstructing a
-    filename — what was broken is the JOIN between a take and its artifact, and
-    that join is what W1-d's index is built on.
-
-    The store names the artifact from the record's own take id, so the fix falls
-    out of the lift. Pinned anyway: "it fell out for free" is what gets un-fixed.
-    """
-    bank, refs, bundle_dir, _store = _retention_bundle(
-        tmp_path, "cap_entry_session",
-    )
-
-    record = _entry_baseline_take()
-    record_id = bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
-
-    banked = sorted(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / "cap_entry_session" / "positions").glob("*.json")
-    )
-    assert [path.stem for path in banked] == [record["take_id"]]
-    assert record_id.endswith(f"/{record['take_id']}.json")
-    # ...and the state's own index names the same take, which is the half the
-    # doubled mint actually corrupted.
-    assert [e["take_id"] for e in refs["position_artifacts"]] == [
-        record["take_id"]
-    ]
-    assert json.loads(banked[0].read_text())["take_id"] == record["take_id"]
-
-
-def _stage_seams_over(store, capture_session_id, refs, recorder):
-    """One stage's REAL seams, bound the way production binds them.
-
-    ``bind_v2_stage_seams`` is the single owner of which callable fills which
-    seam, and the provenance carry is a coupling BETWEEN two of them — so a
-    pin that built the two binders itself would prove the halves work and
-    never notice the day the binder stopped handing them the same recorder.
-    """
-    from jasper.active_speaker.crossover_v2.journey import (
-        STAGE_MEASURE_CAPABILITIES,
-        open_stage,
-    )
-
-    seams = v2host.bind_v2_stage_seams(
-        open_stage(STAGE_MEASURE_CAPABILITIES, index_phase_map={}),
-        evidence_store=store,
-        capture_session_id=capture_session_id,
-        refs=refs,
-        publish_check=lambda *_a, **_kw: None,
-        publish_candidate=lambda *_a, **_kw: None,
-        run_async=asyncio.run,
-        provenance=recorder,
-    )
-
-    from dataclasses import replace
-    return replace(seams, bank_take=retained_take_writer(
-        store, capture_session_id, refs, asyncio.run, retention=seams.bank_take,
-    ))
-
-
-def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
-    tmp_path, monkeypatch,
-):
-    """Obligation 4: the single shot is re-homed, not dropped.
-
-    ``provenance.take()`` used to have exactly one consumer — the capture-dump
-    ring's writer — and that ring is gone. Deleting the only consumer without
-    re-homing the shot would have made the recorder write-only and lost the
-    graph a capture went through, and it would have done that while PASSING
-    EVERY TEST, because nothing asserted a banked take carries provenance.
-    This is that assertion, and it is why this pin was written before the code
-    it guards.
-
-    Driven through ``bind_v2_stage_seams`` so all three halves are covered: the
-    analyze seam carrying the shot forward, the banking seam draining it, and
-    the binder handing both the SAME recorder.
-
-    The values ORIGINATE at the play seam, observed while the stimulus was
-    emitting. This pin seeds the recorder directly rather than driving a real
-    play — the observation itself is ``record_capture_provenance``'s own
-    subject — so what it asserts is the CARRY: that the value the play seam
-    left reaches the banked record unchanged, and never a fresh reading.
-
-    Note what the seeding stands in for: in an ordinary session the play seam
-    feeds the recorder on every capture it holds one for, with nothing to arm.
-    ``tests/test_capture_provenance.py`` drives that half through the real play
-    seam; a banked take with no ``provenance`` key now means the take was
-    banked with no analyze behind it.
-    """
-    from jasper.active_speaker.capture_provenance import (
-        CaptureProvenance,
-        CaptureProvenanceRecorder,
-    )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
-    from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.audio_measurement.program import build_verify_program
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementGeometry,
-        MeasurementPriors,
-    )
-
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture",
-        lambda *_a, **_kw: "analysis",
-    )
-
-    _bank, refs, bundle_dir, store = _retention_bundle(
-        tmp_path, "cap_prov_session",
-    )
-    recorder = CaptureProvenanceRecorder()
-    seams = _stage_seams_over(store, "cap_prov_session", refs, recorder)
-
-    # What the play seam saw while this capture's stimulus was emitting.
-    recorder.record(CaptureProvenance(
-        graph_kind="measurement",
-        main_volume_db=-20.0,
-        session_volume_db=-20.0,
-        graph_fingerprint="fp-at-play",
-        stimulus_program_id="prog-entry",
-        stimulus_wav_sha256="c" * 64,
-    ))
-
-    seams.analyze(
-        build_verify_program(FC_HZ, sweep_s=0.5),
-        _FakeResult(),
-        MeasurementPriors(crossover_fc_hz=FC_HZ),
-        MeasurementGeometry(),
-        phase=PHASE_ENTRY_BASELINE,
-    )
-    record = _entry_baseline_take()
-    assert seams.bank_take(WiredCaptureAnswer(wav=b"entry-bytes"), record)
-
-    banked = json.loads(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / "cap_prov_session" / "positions" / f"{record['take_id']}.json"
-         ).read_text()
-    )
-    carried = banked["provenance"]
-    assert carried["graph"]["kind"] == "measurement"
-    assert carried["graph"]["fingerprint"] == "fp-at-play"
-    assert carried["main_volume_db"] == -20.0
-    assert carried["session_volume_db"] == -20.0
-    assert carried["stimulus"]["program_id"] == "prog-entry"
-    # The PLAYED program's digest is lifted to its own top-level column, so a
-    # reader joining takes by stimulus need not open the provenance block —
-    # and it never displaces ``wav_sha256``, which is the CAPTURED audio's.
-    assert banked["stimulus_wav_sha256"] == "c" * 64
-    assert banked["wav_sha256"] != banked["stimulus_wav_sha256"]
-
-
-def test_a_capture_that_observed_nothing_never_inherits_the_last_one_s_graph(
-    tmp_path, monkeypatch,
-):
-    """B1: a refused capture must not leave its provenance for the next one.
-
-    Banking is accepted-only, so a REFUSED capture's analyze parks a value in
-    the carry that nobody takes out. If the next accepted capture's own
-    observation missed — a marker flipped mid-session, or the blind belt ate a
-    CamillaDSP hiccup — it would drain that stranded value and write it into a
-    write-once forensic record, naming the graph and the fader of a capture
-    that never became evidence.
-
-    ``record`` cannot clear it: the case that strands a value is exactly the
-    case where there is no new value to overwrite it with. So the carry is
-    drained unconditionally at every analyze, and this drives that sequence —
-    observe, refuse (nothing banks), observe NOTHING, accept — and requires the
-    accepted take to name no provenance rather than the refused one's.
-    """
-    from jasper.active_speaker.capture_provenance import (
-        CaptureProvenance,
-        CaptureProvenanceRecorder,
-    )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
-    from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.audio_measurement.program import build_verify_program
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementGeometry,
-        MeasurementPriors,
-    )
-
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture", lambda *_a, **_kw: "analysis",
-    )
-
-    _bank, refs, bundle_dir, store = _retention_bundle(
-        tmp_path, "cap_stale_session",
-    )
-    recorder = CaptureProvenanceRecorder()
-    seams = _stage_seams_over(store, "cap_stale_session", refs, recorder)
-
-    def _analyze_once():
-        seams.analyze(
-            build_verify_program(FC_HZ, sweep_s=0.5),
-            _FakeResult(),
-            MeasurementPriors(crossover_fc_hz=FC_HZ),
-            MeasurementGeometry(),
-            phase=PHASE_ENTRY_BASELINE,
-        )
-
-    # 1. A capture that WAS observed — and then refused, so nothing banks it.
-    recorder.record(CaptureProvenance(
-        graph_kind="measurement", graph_fingerprint="fp-of-the-refused-take",
-    ))
-    _analyze_once()
-
-    # 2. The next capture observes nothing at all, and is accepted.
-    _analyze_once()
-    accepted = _entry_baseline_take(index=11)
-    assert seams.bank_take(WiredCaptureAnswer(wav=b"accepted-bytes"), accepted)
-
-    banked = json.loads(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / "cap_stale_session" / "positions" / f"{accepted['take_id']}.json"
-         ).read_text()
-    )
-    assert "provenance" not in banked
-
-
-def test_a_take_with_no_play_behind_it_names_no_provenance(
-    tmp_path, monkeypatch,
-):
-    """The drain is single-shot, for the reason the recorder already gives.
-
-    Stale provenance on a forensic record is worse than absent: absent is
-    visibly absent. A bank with no analyze between it and the previous one is
-    not a second capture of the same stimulus — it is a capture the recorder
-    cannot speak for, and it names nothing rather than the last one's graph.
-    """
-    from jasper.active_speaker.capture_provenance import (
-        CaptureProvenance,
-        CaptureProvenanceRecorder,
-    )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
-    from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.audio_measurement.program import build_verify_program
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementGeometry,
-        MeasurementPriors,
-    )
-
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture",
-        lambda *_a, **_kw: "analysis",
-    )
-
-    _bank, refs, bundle_dir, store = _retention_bundle(
-        tmp_path, "cap_drain_session",
-    )
-    recorder = CaptureProvenanceRecorder()
-    seams = _stage_seams_over(store, "cap_drain_session", refs, recorder)
-
-    recorder.record(CaptureProvenance(graph_kind="measurement"))
-    seams.analyze(
-        build_verify_program(FC_HZ, sweep_s=0.5),
-        _FakeResult(),
-        MeasurementPriors(crossover_fc_hz=FC_HZ),
-        MeasurementGeometry(),
-        phase=PHASE_ENTRY_BASELINE,
-    )
-    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
-
-    # No play and no analyze — so nothing this second take may claim.
-    second = _entry_baseline_take(index=10)
-    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
-
-    banked = json.loads(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / "cap_drain_session" / "positions" / f"{second['take_id']}.json"
-         ).read_text()
-    )
-    assert "provenance" not in banked
-
-
-DECLARED_FRAMES = 4800
-RECEIVED_FRAMES = DECLARED_FRAMES - 128
-
-
-def _lossy_page_report():
-    """A page report the host's own count disagrees with — a real defect."""
-    return {
-        "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
-        "capture_gaps": 0, "capture_gap_frames": 0, "zero_run_count": 0,
-    }
-
-
-def _analysis_double(epsilon_ppm=1.25):
-    """An analysis the REAL summary and the REAL ledger can both be run over.
-
-    Deliberately not a ``ProgramAnalysis``: what these pins are about is the
-    CARRY, and ``analysis_diagnostic_summary`` is duck-typed by contract (its
-    own docstring names this file's stubbing as the reason). The numbers it
-    reads are real ones, so the block it produces is really computed rather
-    than a literal a stub handed back.
-    """
-    return SimpleNamespace(
-        phase=PHASE_MEASURE,
-        drift=SimpleNamespace(
-            epsilon_ppm=epsilon_ppm,
-            max_residual_samples=0.5,
-            repeat_level_delta_db=0.25,
-            glitch_detected=False,
-            glitch_inputs=(),
-            discontinuity_samples=0.0,
-            discontinuity_after_segment="",
-            per_role_epsilon_ppm={},
-        ),
-    )
-
-
-def _bank_one_analyzed_take(
-    tmp_path, monkeypatch, capture, *, report, epsilon_ppm=1.25, index=9,
-):
-    """Analyze one capture through the REAL seams, then bank it. Returns both.
-
-    Driven through ``bind_v2_stage_seams`` for the reason the provenance pins
-    above give: the carry is a coupling BETWEEN two seams, so a pin that built
-    the two binders itself would never notice the day the binder stopped
-    handing them the same slot.
-    """
-    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
-    from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
-    from jasper.audio_measurement.program import build_verify_program
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementGeometry,
-        MeasurementPriors,
-    )
-
-    analysis = _analysis_double(epsilon_ppm=epsilon_ppm)
-
-    def _analyze_program_capture(
-        _program, samples, _rate, *, capture_report=None, **_kw
-    ):
-        # The REAL reconciliation, over the frames this host really decoded
-        # and the counters the page really reported — the one number in the
-        # block set that a stub could not stand in for.
-        analysis.frame_ledger = reconcile_capture_frames(
-            capture_report, received_frames=len(samples),
-        )
-        return analysis
-
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture", _analyze_program_capture,
-    )
-
-    _bank, refs, bundle_dir, store = _retention_bundle(tmp_path, capture)
-    seams = _stage_seams_over(store, capture, refs, CaptureProvenanceRecorder())
-    result = _FakeResult(capture_integrity=report)
-    # One quantum short of what the page declared: the host's count is the
-    # WAV's own, so the ledger below reconciles two real numbers.
-    result.wav = _mono_wav_bytes(RECEIVED_FRAMES)
-    seams.analyze(
-        build_verify_program(FC_HZ, sweep_s=0.5),
-        result,
-        MeasurementPriors(crossover_fc_hz=FC_HZ),
-        MeasurementGeometry(),
-        phase=PHASE_MEASURE,
-    )
-    record = _entry_baseline_take(index=index)
-    assert seams.bank_take(WiredCaptureAnswer(wav=b"analyzed-bytes"), record)
-    banked = json.loads(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / capture / "positions" / f"{record['take_id']}.json").read_text()
-    )
-    return banked, analysis
-
-
-def test_a_banked_take_carries_the_three_blocks_the_analysis_computed(
-    tmp_path, monkeypatch,
-):
-    """The data-loss window the dump ring's death opened, closed.
-
-    ``diagnostic``, ``capture_integrity`` and ``frame_ledger`` were the ring
-    sidecar's, and #3250 deleted the ring — since then the analyze seam has
-    computed all three and dropped them, so a round banked from here on could
-    not be graded on frame loss at all. The banked record is the only
-    retention path there is, so it carries them.
-
-    Real content, not presence: the ledger is the REAL
-    ``reconcile_capture_frames`` over the frames this host decoded against the
-    counters the page reported, and it names the losing hop. A carry that
-    passed the blocks through unchanged from some earlier capture, or wrote a
-    placeholder, fails on those numbers rather than on a key check.
-    """
-    from jasper.audio_measurement.frame_ledger import LOST_AT_ENCODER_TO_HOST
-
-    report = _lossy_page_report()
-    banked, analysis = _bank_one_analyzed_take(
-        tmp_path, monkeypatch, "cap_blocks_session", report=report,
-    )
-
-    # The recorder's own counters, verbatim — the checker's read set.
-    assert banked["capture_integrity"] == report
-    # The reconciliation, and the hop it names: the page encoded a quantum
-    # this host never received, so the loss is real and attributed.
-    ledger = banked["frame_ledger"]
-    assert ledger == analysis.frame_ledger.to_dict()
-    assert ledger["encoded_frames"] == DECLARED_FRAMES
-    assert ledger["received_frames"] == RECEIVED_FRAMES
-    assert ledger["lost_at"] == [LOST_AT_ENCODER_TO_HOST]
-    # The flat numeric account, computed over this analysis and no other.
-    diagnostic = banked["diagnostic"]
-    assert diagnostic["phase"] == PHASE_MEASURE
-    assert diagnostic["epsilon_ppm"] == 1.25
-    assert diagnostic["frames_received"] == RECEIVED_FRAMES
-
-
-def test_an_unmeasurable_diagnostic_never_costs_the_whole_take_record(
-    tmp_path, monkeypatch,
-):
-    """A ``NaN`` in one block nulls that field, never the record.
-
-    The evidence store canonicalises with ``allow_nan=False`` and the
-    retention seam fail-softs, so one unmeasurable number reaching the record
-    unscrubbed would refuse the write and lose the take entirely — the take
-    id, the digest, the pose, everything — over a diagnostic. That is worse
-    than the loss this change exists to stop, so the value becomes ``null``
-    while the record banks.
-
-    ``null`` and not a removed key: the field's absence is its own answer
-    elsewhere in this block, so see
-    :func:`test_the_scrub_nulls_a_bad_number_without_flattening_a_tri_state`.
-    """
-    banked, _analysis = _bank_one_analyzed_take(
-        tmp_path, monkeypatch, "cap_nan_session",
-        report=_lossy_page_report(), epsilon_ppm=float("nan"),
-    )
-
-    assert banked["diagnostic"]["epsilon_ppm"] is None
-    # The record itself is intact, blocks and all.
-    assert banked["diagnostic"]["phase"] == PHASE_MEASURE
-    assert banked["frame_ledger"]["received_frames"] == RECEIVED_FRAMES
-    assert banked["take_id"]
-
-
-def test_the_scrub_nulls_a_bad_number_without_flattening_a_tri_state():
-    """Both directions, because the two answers are different facts.
-
-    ``analysis_diagnostic_summary`` spends ``None`` deliberately —
-    ``polarity_agrees_with_sum`` is ``None`` for "nobody cross-checked" where
-    an ABSENT key means "no alignment estimate at all", and the ``frame_*``
-    terms are "present with ``None`` when the comparison ran but no frame
-    could be fitted; absent only when no comparison happened". A scrub that
-    dropped empty keys would collapse those two into one on a WRITE-ONCE
-    record, so the distinction could never be recovered.
-
-    So: an unbankable number becomes ``null`` and an explicit ``null``
-    survives as a key. Nested, because the blocks are documents rather than
-    flat rows.
-    """
-    scrubbed = v2evidence._bankable({
-        "epsilon_ppm": float("nan"),
-        "overflowed": float("inf"),
-        "polarity_agrees_with_sum": None,
-        "frame": {"tilt_db": None, "max_db": -3.5},
-        "lost_at": ["encoder->host"],
-        "declared_frames": 4800,
-        "glitch_detected": False,
-        "phase": "measure",
-    })
-
-    # The scrub's own half: unbankable numbers stop being numbers.
-    assert scrubbed["epsilon_ppm"] is None
-    assert scrubbed["overflowed"] is None
-    # The tri-state's half: an explicit None is an ANSWER, and it keeps its key.
-    assert "polarity_agrees_with_sum" in scrubbed
-    assert scrubbed["polarity_agrees_with_sum"] is None
-    assert scrubbed["frame"] == {"tilt_db": None, "max_db": -3.5}
-    # Everything bankable is untouched, ``False`` and ``0`` included.
-    assert scrubbed["lost_at"] == ["encoder->host"]
-    assert scrubbed["declared_frames"] == 4800
-    assert scrubbed["glitch_detected"] is False
-    assert scrubbed["phase"] == "measure"
-
-
-@pytest.mark.parametrize(
-    "analysis, survives, lost",
-    [
-        # The two shapes the summary's own top-level defence already covers:
-        # nothing raises, so nothing is lost and nothing is disclosed.
-        pytest.param(object(), {"diagnostic"}, 0, id="foreign-object"),
-        pytest.param("analysis", {"diagnostic"}, 0, id="bare-string"),
-        # A sub-object that EXISTS makes the nested reads bare:
-        # ``drift.epsilon_ppm`` raises AttributeError.
-        pytest.param(
-            SimpleNamespace(phase="measure", drift=SimpleNamespace()),
-            set(), 1, id="drift-with-no-fields",
-        ),
-        # ``to_dict`` is a method call, not a getattr default — and the
-        # summary reads the same ledger, so BOTH blocks are lost here.
-        pytest.param(
-            SimpleNamespace(phase="measure", frame_ledger=object()),
-            set(), 2, id="ledger-with-no-to-dict",
-        ),
-        # ``math.isfinite`` over a pilot's ``snr_db`` raises TypeError on a
-        # non-number: the guard's second caught type, exercised for real.
-        pytest.param(
-            SimpleNamespace(
-                phase="measure",
-                pilots=[SimpleNamespace(role="woofer", snr_db="not-a-number")],
-            ),
-            set(), 1, id="pilot-snr-that-is-not-a-number",
-        ),
-    ],
-)
-def test_building_the_blocks_never_costs_the_capture(
-    analysis, survives, lost, caplog,
-):
-    """A half-populated analysis loses a BLOCK, never the measurement.
-
-    The deleted ring writer wrapped this whole computation in a guard whose
-    reason it stated outright — *"ANY failure here must never affect the
-    measurement itself"* — and the belt has to survive the move, because the
-    computation moved somewhere stricter: it now runs inside the analyze seam
-    on the accepted path, where a raise costs the CAPTURE. The sweep already
-    played and the operator is already standing at the mark.
-
-    ``analysis_diagnostic_summary`` is defensive at its TOP level and bare
-    below it — the first two rows are why the top-level defence is not enough
-    to lean on, and the last three are the real shapes that get past it. Each
-    is asserted by what survives rather than by "it did not raise", so a guard
-    that swallowed a block it should have banked fails here too.
-
-    A lost block is DISCLOSED and never silent: it is forensic evidence going
-    missing, and the count is asserted so losing two blocks cannot read as
-    losing one.
-    """
-    with caplog.at_level(logging.WARNING):
-        blocks = v2evidence._capture_evidence_blocks(_FakeResult(), analysis)
-
-    assert set(blocks) == survives
-    assert all(isinstance(value, dict) for value in blocks.values())
-    assert len(
-        event_records(caplog, "correction.crossover_v2_capture_evidence_block_failed")
-    ) == lost
-
-
-def test_a_take_with_no_analyze_behind_it_carries_no_blocks(
-    tmp_path, monkeypatch,
-):
-    """Single-shot, for the reason the provenance drain already gives.
-
-    A second bank with no analyze between is a capture the analyze seam
-    cannot speak for. Stale blocks on a write-once forensic record are worse
-    than absent ones: absent is visibly absent, where a stale ``frame_ledger``
-    would credit this take with another capture's frame accounting.
-    """
-    from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder
-    from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper.audio_measurement.program import build_verify_program
-    from jasper.audio_measurement.program_analysis import (
-        MeasurementGeometry,
-        MeasurementPriors,
-    )
-
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture",
-        lambda *_a, **_kw: _analysis_double(),
-    )
-    _bank, refs, bundle_dir, store = _retention_bundle(
-        tmp_path, "cap_no_analyze_session",
-    )
-    seams = _stage_seams_over(
-        store, "cap_no_analyze_session", refs, CaptureProvenanceRecorder(),
-    )
-    seams.analyze(
-        build_verify_program(FC_HZ, sweep_s=0.5),
-        _FakeResult(),
-        MeasurementPriors(crossover_fc_hz=FC_HZ),
-        MeasurementGeometry(),
-        phase=PHASE_MEASURE,
-    )
-    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
-
-    second = _entry_baseline_take(index=10)
-    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
-
-    banked = json.loads(
-        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-         / "cap_no_analyze_session" / "positions" / f"{second['take_id']}.json"
-         ).read_text()
-    )
-    assert not {"diagnostic", "capture_integrity", "frame_ledger"} & set(banked)
-
-
-@pytest.mark.parametrize(
-    "phase", [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-)
-def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
-    """The three new takes are ROUTABLE, not merely built.
-
-    Their measurement kind is ``""`` — honestly unresolved, because a CHECK or
-    a MEASURE is taken through whatever graph is live and ``take_kind`` refuses
-    to guess. The store accepts that, but only under the ``measure_kind``
-    spelling: it routes that key by PRESENCE, while ``kind`` is routed by
-    membership in ``MEASURE_KINDS``, which ``""`` fails. A tidy-up that made
-    the two symmetrical would leave every take of these three phases with no
-    route, and the retention fail-soft would turn that into a WARN and silence
-    — a phase that banks nothing looks exactly like a phase nobody captured.
-
-    So this drives the REAL store rather than a recorder: routed, written, and
-    readable back under the take id its own record names.
-    """
-    from jasper.active_speaker.crossover_v2.spatial import phase_capture_record
-
-    bank, refs, bundle_dir, _store = _retention_bundle(
-        tmp_path, f"cap_{phase}_session",
-    )
-    # A fingerprint of the shape production emits. ``""`` would ALSO produce an
-    # empty measure kind, but by a second route — ``take_kind`` reads an
-    # unnamed graph as unclassifiable — so anchoring there would let this pin
-    # keep passing for the wrong reason the day a claim states the comparand.
-    # ``ENTRY_GRAPH_FINGERPRINT_UNKNOWN`` is what the coordinator hands the
-    # flow when it cannot name the applied profile, which is the live shape.
-    from jasper.active_speaker.crossover_v2.contracts import (
-        ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
-    )
-
-    record = phase_capture_record(
-        phase=phase, index=3, attempt=1,
-        session_id=f"cap_{phase}_session",
-        graph_fingerprint=ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
-        captured_at="2026-08-27T00:00:00Z",
-        wav_sha256="e" * 64,
-    )
-    assert record["measure_kind"] == ""
-
-    banked_id = bank(WiredCaptureAnswer(wav=b"unprompted-bytes"), record)
-    assert banked_id, "an unresolved measure kind must still route"
-
-    landed = (
-        bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
-        / f"cap_{phase}_session" / "positions" / f"{record['take_id']}.json"
-    )
-    assert json.loads(landed.read_text())["phase"] == phase
-    assert [e["take_id"] for e in refs["position_artifacts"]] == [
-        record["take_id"]
-    ]
-
-
-def test_a_failed_take_write_never_enters_the_position_index(tmp_path):
-    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreError
-
-    bank, refs, _bundle_dir, _store = _retention_bundle(tmp_path, "cap_refuse_session")
-    record = _entry_baseline_take()
-    assert bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
-    with pytest.raises(CommissioningEvidenceStoreError):
-        bank(WiredCaptureAnswer(wav=b"entry-bytes"), {**record, "summed_ripple_db": 9.0})
-    assert len(refs["position_artifacts"]) == 1
-
-
-def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
-    tmp_path,
-):
-    """Flat-linearization plan PR-4's ``publish_cloud`` seam against the REAL,
-    write-once evidence store — mirrors
-    ``test_position_retention_survives_a_retake_through_the_real_evidence_store``
-    above, proving the two-groups-in-one-session shape does not collide.
-
-    This is the mechanism deviation ``bind_cloud_publisher`` documents: the
-    work order's literal ``crossover_v2/<session>/cloud.json`` would be
-    written TWICE in one real session (once per closed group), and the store
-    refuses a repeated path — so each group gets its own
-    ``<phase>.json`` artifact instead.
-    """
-    from jasper.active_speaker.bundles import open_bundle
-    from jasper.active_speaker.commissioning_evidence_store import (
-        CommissioningEvidenceStore,
-    )
-
-    from tests.active_speaker_fixtures import mono_output_topology
-
-    info = open_bundle(
-        mono_output_topology(mode="active_2_way"),
-        calibration_id="calibration-test",
-        sessions_dir=tmp_path / "sessions",
-    )
-    store = CommissioningEvidenceStore.open(
-        info["bundle_dir"], expected_session_id=info["session_id"]
-    )
-    refs: dict = {}
-    publish_cloud = v2evidence.bind_cloud_publisher(
-        store, "cap_cloud_session", refs, asyncio.run
-    )
-
-    measure_result = {
-        "available": True,
-        "geometry": {"locked": True, "reason": "geometry_locked"},
-        "null_registry": {"classification": "position_invariant"},
-        "spec": {"overall_within_target": False},
-        "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-1.0, -2.0]},
-    }
-    verify_result = {
-        "available": True,
-        "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
-        "null_registry": {"classification": "insufficient_evidence"},
-        "spec": {"overall_within_target": True},
-        "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-0.5, -0.6]},
-    }
-    publish_cloud(PHASE_CLOUD_MEASURE, measure_result)
-    publish_cloud(PHASE_CLOUD_VERIFY, verify_result)
-
-    # Both artifacts published, both fingerprints recorded — no collision.
-    assert set(refs["cloud_artifacts"]) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
-    assert (
-        refs["cloud_artifacts"][PHASE_CLOUD_MEASURE]
-        != refs["cloud_artifacts"][PHASE_CLOUD_VERIFY]
-    )
-
-    artifacts_dir = (
-        Path(info["bundle_dir"]) / "evidence" / "v1" / "artifacts"
-        / "crossover_v2" / "cap_cloud_session"
-    )
-    # One CLOUD artifact per closed group, distinctly named — the claim this
-    # test exists for. Attribution's per-phase finding set (WO-1) rides in the
-    # same directory under its own `findings_` prefix and shares the same
-    # per-phase rule, so it is named here rather than allowed to widen the
-    # assertion into "whatever happens to be on disk".
-    assert sorted(p.name for p in artifacts_dir.glob("*.json")) == [
-        f"{PHASE_CLOUD_MEASURE}.json",
-        f"{PHASE_CLOUD_VERIFY}.json",
-        f"findings_{PHASE_CLOUD_MEASURE}.json",
-        f"findings_{PHASE_CLOUD_VERIFY}.json",
-    ]
-    measure_on_disk = json.loads(
-        (artifacts_dir / f"{PHASE_CLOUD_MEASURE}.json").read_text()
-    )
-    assert measure_on_disk["kind"] == "jts_crossover_v2_cloud_evidence"
-    assert measure_on_disk["capture_session_id"] == "cap_cloud_session"
-    assert measure_on_disk["phase"] == PHASE_CLOUD_MEASURE
-    assert measure_on_disk["geometry"]["locked"] is True
-    assert measure_on_disk["null_registry"]["classification"] == "position_invariant"
-    assert measure_on_disk["curve"]["freqs_hz"] == [100.0, 200.0]
-    verify_on_disk = json.loads(
-        (artifacts_dir / f"{PHASE_CLOUD_VERIFY}.json").read_text()
-    )
-    assert verify_on_disk["geometry"]["locked"] is False
-    assert verify_on_disk["spec"]["overall_within_target"] is True
 
 
 @pytest.mark.parametrize("banked", [True, False])
@@ -1613,12 +812,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(
-                check=lambda *a, **k: None,
-                candidate=lambda *a, **k: None,
-            ),
-            apply_complete=v2state._applied_gate,
-            apply_failed=v2state._apply_failure_gate,
+            records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -1715,12 +909,7 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(
-                check=lambda *a, **k: None,
-                candidate=lambda *a, **k: None,
-            ),
-            apply_complete=v2state._applied_gate,
-            apply_failed=v2state._apply_failure_gate,
+            records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
         accepted_phases=(),
@@ -1763,12 +952,7 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(
-                check=lambda *a, **k: None,
-                candidate=lambda *a, **k: None,
-            ),
-            apply_complete=v2state._applied_gate,
-            apply_failed=v2state._apply_failure_gate,
+            records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -2172,12 +1356,7 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
             analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(
-                check=lambda *a, **k: None,
-                candidate=lambda *a, **k: None,
-            ),
-            apply_complete=v2state._applied_gate,
-            apply_failed=v2state._apply_failure_gate,
+            records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -2321,9 +1500,9 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     ``max(1, n // CAP)`` floor-division stride, so a length not a multiple of
     it overshot by up to one stride (1031 raw points strode by 4 and yielded
     258, not 256). That was tolerable only because every persisted length that
-    ever reached this function historically overshot its OWN cap (both
-    ``_decimate_sum``'s old raw stride and ``_decimate_curve_for_json``'s
-    still land at/above 512-513 for a real capture). #1858's block-average fix
+    ever reached this function historically overshot its OWN cap
+    (``_decimate_sum``'s old raw stride landed at/above 512-513 for a real
+    capture). #1858's block-average fix
     to ``_decimate_sum`` undershoots its cap instead (a 32769-bin capture
     persists at 504, not 512-513) — landing the predicted curve's persisted
     length just below ``CAP * 2``, where the OLD floor-division stride
@@ -2336,7 +1515,7 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     1031 strode by 5 yields 207, not 258. Both curve families still ride the
     identical function, so the "one owner" pin is unmoved; only the stride
     arithmetic inside that one owner changed, verified by direct sweep (see
-    ``test_realized_chart_lengths_stay_within_cap_for_both_curve_families``)
+    ``test_a_realized_prediction_stays_within_the_chart_cap``)
     over 1..5000 plus 2000 random larger lengths: max observed output was
     exactly 256, never more, for any input."""
     n = v2projection.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
@@ -2367,59 +1546,21 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     assert len(predicted["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
 
 
-def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
-    """Gate finding on #1858 (SF-1): the constants-only drift guard
-    (``test_cloud_curve_max_json_points_mirrors_the_verify_priors_
-    decimation_cap`` in ``tests/test_crossover_v2_cloud_pipeline.py``) pins
-    ``MAX_PERSISTED_SUM_POINTS == CLOUD_CURVE_MAX_JSON_POINTS`` (512 == 512),
-    never the REALIZED wire lengths downstream of them — so it stayed green
-    straight through the regression where the predicted curve rendered at
-    ~2x the cloud curves' density in the same chart frame (504 points,
-    undecimated, next to 257). This test drives both persist-time decimators
-    (``_decimate_sum`` for the prediction, ``_decimate_curve_for_json`` for
-    the cloud) through the SAME chart-time re-decimation
-    (``decimate_curve_for_chart``) at real FFT-bin grid sizes, and asserts
-    what actually reaches the wire, not the constants that feed it.
-
-    Two sizes, both realistic ``np.fft.rfftfreq`` outputs (the shape
-    ``predicted_sum`` and the cloud's combined curve actually carry): the
-    65536-point FFT window's 32769-bin grid (matches the size
-    ``test_predicted_spec_report_is_graded_on_the_shared_analysis_grid``
-    already uses as its own "real capture" fixture) and a second, smaller
-    16384-point window's 8193-bin grid — so the bound is pinned as a
-    property of the functions, not of one fixture that happens to clear it.
+def test_a_realized_prediction_stays_within_the_chart_cap():
+    """Gate finding on #1858 (SF-1): pin the REALIZED wire length, not the
+    constants that feed it. The persist-time decimator (``_decimate_sum``)
+    and the chart-time re-decimation (``decimate_curve_for_chart``) are driven
+    at real FFT-bin grid sizes — the 65536- and 16384-point windows' 32769-
+    and 8193-bin grids — so the bound is a property of the functions, not of
+    one fixture that happens to clear it.
     """
-    from jasper.active_speaker.crossover_v2.spatial import _decimate_curve_for_json
-
     for n_fft in (1 << 16, 1 << 14):
         freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)
-        mag_db = np.zeros(freqs.size)
-
-        persisted_pred = v2durable._decimate_sum((freqs, mag_db))
-        rendered_pred = v2projection.decimate_curve_for_chart(
-            persisted_pred["freqs_hz"], persisted_pred["magnitude_db"],
+        persisted = v2durable._decimate_sum((freqs, np.zeros(freqs.size)))
+        rendered = v2projection.decimate_curve_for_chart(
+            persisted["freqs_hz"], persisted["magnitude_db"],
         )
-        persisted_cloud = _decimate_curve_for_json(freqs, mag_db)
-        rendered_cloud = v2projection.decimate_curve_for_chart(
-            persisted_cloud["freqs_hz"], persisted_cloud["magnitude_db"],
-        )
-
-        # The hard ceiling itself, for BOTH curve families -- this is what
-        # the constants-equality guard could never see.
-        assert len(rendered_pred["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-        assert len(rendered_cloud["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-
-        # Same-frame density parity: the bug's own signature was an
-        # UNBOUNDED mismatch (504 undecimated vs. 257, ~2x and growing with
-        # input size, since floor-division gave the prediction NO reduction
-        # at all). A generous 2x margin still catches that class outright
-        # while tolerating the two decimators' differing raw-stride vs.
-        # block-average characters (measured ~1.4-1.5x on these two grids).
-        len_pred = len(rendered_pred["freqs_hz"])
-        len_cloud = len(rendered_cloud["freqs_hz"])
-        assert max(len_pred, len_cloud) <= 2 * min(len_pred, len_cloud), (
-            n_fft, len_pred, len_cloud,
-        )
+        assert len(rendered["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
 
 
 def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
@@ -2515,16 +1656,15 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
-def test_observe_apply_success_arms_the_deferred_verify_gate():
+def test_observe_apply_success_marks_the_state_applied():
     v2state.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    assert v2state._applied_gate() is False
     v2state.observe_apply_success("fp-1")
-    assert v2state._applied_gate() is True
+    assert v2state.load_v2_state()["applied"] is True
 
 
 def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
@@ -2588,16 +1728,15 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
         "attempts_loop": loop,
     })
 
-    from jasper.active_speaker.model_error_store import record_model_error
+    from jasper.active_speaker.model_error_store import (
+        MODEL_ERROR_STATE_KIND,
+        model_error_state_path,
+    )
 
-    for index in range(7):
-        record_model_error(
-            speaker_id="speaker-a",
-            attempt_id=f"candidate-{index}",
-            metric="max_db_notch_excluded",
-            predicted_db=0.0,
-            realized_db=float(index),
-        )
+    model_error_state_path().write_text(json.dumps({
+        "kind": MODEL_ERROR_STATE_KIND,
+        "model_error": [{"attempt_id": f"candidate-{index}"} for index in range(7)],
+    }))
 
     block = v2status.crossover_v2_status_block()
     assert block["attempts_loop"] == {
@@ -3313,9 +2452,8 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
         return _Record()
 
     meta: dict[str, Any] = {}
-    evidence = v2evidence.CaptureEvidenceCarry()
     analyze = v2evidence.bind_production_analyze(
-        resolve_calibration=resolver, meta=meta, evidence=evidence,
+        resolve_calibration=resolver, meta=meta,
     )
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
@@ -3336,12 +2474,6 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": "cal-123",
         "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
-    }
-    assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
-    uncalibrated = v2evidence.bind_production_analyze(evidence=evidence)
-    uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
-    assert evidence.take()["capture_calibration"] == {
-        "applied": False, "calibration_id": None, "curve_fingerprint": None,
     }
 
 
@@ -4716,7 +3848,6 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
     assert payload["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
     # Durable, and readable through the very seam the conductor's probe uses.
     assert v2state.load_v2_state()["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
-    assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB
     # The speaker's commanded level did not move. This is the safety claim.
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
@@ -4761,7 +3892,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
         _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()},
                _bg_run_async, _FakeApplyAndVolumeCam)
     assert refused.value.code == "tweeter:required_highpass_missing"
-    assert v2state._applied_offset_gate() == 0.0
+    assert "expected_post_apply_offset_db" not in v2state.load_v2_state()
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
 
@@ -4796,14 +3927,15 @@ def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_p
         _bg_run_async,
         _FakeApplyAndVolumeCam,
     )
-    assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB
+    offset = v2state.load_v2_state()["expected_post_apply_offset_db"]
+    assert offset == _APPLY_OFFSET_DB
 
     # One more capture in the SAME session, then the re-arm's brand-new one.
     for session_id in ("cap_run6", "cap_rearm"):
         v2state.persist_conductor_state(
             _StubConductor(session_id), failure_code=None,
         )
-        assert v2state._applied_offset_gate() == _APPLY_OFFSET_DB, session_id
+        assert v2state.load_v2_state()["expected_post_apply_offset_db"] == offset, session_id
 
 
 class _StubConductor:
@@ -4913,22 +4045,6 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         )
 
 
-def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
-    """``0.0`` is the honest answer for an absent or malformed value — the
-    probe then leaves the whole shift visible in ``residual_offset_db``
-    instead of claiming it was accounted for."""
-    v2state.save_v2_state({"session_id": "s", "applied": True})
-    assert v2state._applied_offset_gate() == 0.0
-    for bad in ("loud", None, True, float("nan"), float("inf")):
-        # Planted as a file: two of these are values ``save_v2_state`` refuses
-        # since #2839, and it is a state FILE this gate has to survive.
-        _plant_unbankable_v2_state({
-            "session_id": "s", "applied": True,
-            "expected_post_apply_offset_db": bad,
-        })
-        assert v2state._applied_offset_gate() == 0.0
-
-
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
@@ -4954,7 +4070,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     )
 
     assert payload["status"] == "applied", payload.get("issues")
-    assert v2state._applied_gate() is True
+    assert v2state.load_v2_state()["applied"] is True
 
 
 def _prior_measured_candidate(preset):
@@ -4977,97 +4093,6 @@ def _prior_measured_candidate(preset):
             delay_us=250.0, delay_role="tweeter", polarity="keep",
         ),
     )
-
-
-def test_entry_graph_fingerprint_names_the_applied_profile(monkeypatch):
-    """#2291: the entry baseline records WHICH graph it was measured through.
-
-    The conductor's three fallbacks (no seam, seam raised, no applied profile)
-    each have coverage; the seam's REAL path — the one production binds on both
-    stages — did not, so nothing pinned that it reads the applied SSOT's own
-    recomputed ``candidate_fingerprint`` rather than inventing an identity.
-    That field is the one `load_applied_baseline_profile_state` re-derives from
-    the immutable source, which is precisely why this reads the stored value
-    instead of hashing anything itself: one hash function, one definition of
-    "which graph".
-
-    The empty answer is pinned beside it because it is not an error. A speaker
-    with no applied profile is on its first-ever round, where the entry graph
-    genuinely has no identity to name; the conductor turns "" into its own
-    ``unknown`` word rather than this function inventing one.
-    """
-    calls: list[int] = []
-
-    def _applied() -> dict[str, Any]:
-        calls.append(1)
-        return {"candidate_fingerprint": "fp-live-graph", "status": "applied"}
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        _applied,
-    )
-    assert v2host._active_graph_fingerprint() == "fp-live-graph"
-    assert calls == [1], "the applied SSOT is the only thing consulted"
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda: None,
-    )
-    assert v2host._active_graph_fingerprint() == ""
-
-
-def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
-    monkeypatch, caplog,
-):
-    """#2614: the previous-graph seam applies its sibling's displacement guard.
-
-    A record is only an answer to "which graph is on the speaker" while it is
-    still the graph on the speaker. An out-of-band reconcile changes the RUNNING
-    config without touching the record — the 2026-08-15 cycle-4 shape — and
-    ``_active_graph_fingerprint`` has refused a displaced record since #2537 for
-    exactly that reason. This seam makes the same record ROLLBACK-DECIDING, so
-    it must refuse it too, and the surface is named on the journal so the two
-    refusals are told apart.
-
-    Only a POSITIVE displacement refuses. The other two codes mean the
-    comparison could not be made, and an absent measurement is not evidence of a
-    defect — a box with no readable statefile would otherwise lose its commanded
-    axis forever.
-    """
-    import logging
-
-    from jasper.active_speaker.baseline_profile import (
-        APPLIED_PROFILE_DISPLACED,
-        APPLIED_PROFILE_RUNNING_UNKNOWN,
-    )
-
-    record = {"candidate_fingerprint": "fp-live-graph", "status": "applied"}
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda: record,
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
-        lambda applied, **kwargs: "",
-    )
-    assert v2host._applied_profile_now() == record
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
-        lambda applied, **kwargs: APPLIED_PROFILE_RUNNING_UNKNOWN,
-    )
-    assert v2host._applied_profile_now() == record, (
-        "an unreadable statefile is 'we could not check', not 'it moved'"
-    )
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.applied_profile_displacement",
-        lambda applied, **kwargs: APPLIED_PROFILE_DISPLACED,
-    )
-    with caplog.at_level(logging.WARNING):
-        assert v2host._applied_profile_now() is None
-    fields = event_fields(caplog, "correction.crossover_v2_applied_profile_displaced")
-    assert fields["surface"] == "commanded_axis"
 
 
 def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
@@ -5116,12 +4141,7 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
             session_volume_db=SESSION_VOLUME_DB,
             seams=V2FlowSeams(
                 analyze=lambda *a, **k: None,
-                records=V2RecordPublishers(
-                    check=lambda *a, **k: None,
-                    candidate=lambda *a, **k: None,
-                ),
-                apply_complete=v2state._applied_gate,
-                apply_failed=v2state._apply_failure_gate,
+                records=V2RecordPublishers(check=lambda *a, **k: None),
             ),
             driver_spacing_m=0.15,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -5363,7 +4383,7 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
     from jasper.audio_measurement.program_analysis import GainPlan, RoleGainSolve
 
     store = _RecordingEvidenceStore()
-    publish_check, _publish_candidate, refs = v2evidence.bind_evidence_publishers(
+    publish_check, refs = v2evidence.bind_evidence_publishers(
         store, "capture-session", asyncio.run
     )
     plan = GainPlan(
@@ -5401,7 +4421,7 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
     from jasper.audio_measurement.program_analysis import GainPlan
 
     store = _RecordingEvidenceStore()
-    publish_check, _publish_candidate, _refs = v2evidence.bind_evidence_publishers(
+    publish_check, _refs = v2evidence.bind_evidence_publishers(
         store, "capture-session", asyncio.run
     )
     publish_check(
@@ -5619,7 +4639,7 @@ def _inline_prepared(monkeypatch, tmp_path, body=None):
     _ready_inline(monkeypatch)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
-    _, _, _, store = _retention_bundle(tmp_path, "inline")
+    store = _bundle_store(tmp_path)
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (store, store.session_id))
     return v2host.prepare_v2_session(body or _inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
