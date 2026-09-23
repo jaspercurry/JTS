@@ -72,7 +72,6 @@ import html
 import logging
 import os
 import re
-import secrets
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -117,6 +116,7 @@ from ._common import (
     send_json_response,
     send_see_other,
 )
+from .oauth_pending import PendingFlows, new_nonce
 from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
@@ -146,45 +146,10 @@ def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
     return cfg["bounce_redirect_uri"]
 
 
-# In-memory pending-flow store:
-#   {nonce: (account_name, code_verifier, code_challenge, created_monotonic)}.
-#
-# State (the value Spotify echoes back) is the random nonce; we look
-# it up on the callback to recover the account this flow belongs to
-# AND both halves of the PKCE handshake parameters that were generated
-# when the authorize URL was built.
-#
-# Why persist both: spotipy's `SpotifyPKCE.get_access_token` regenerates
-# verifier+challenge if EITHER is None — the guard reads
-# `if self.code_verifier is None or self.code_challenge is None`, then
-# calls `get_pkce_handshake_parameters()` which clobbers both. Setting
-# only `code_verifier` on a fresh instance (leaving `code_challenge`
-# at its `__init__` default of None) silently triggers that path,
-# regenerates a new verifier, and Spotify rejects the exchange with
-# `invalid_grant: code_verifier was incorrect`. So we capture both at
-# /start and restore both at /oauth-callback. The challenge value
-# isn't used in the exchange POST itself (only `code_verifier` is sent),
-# but assigning it suppresses the regeneration check.
-#
-# 10-minute TTL matches Spotify's auth-code lifetime; expired entries
-# are pruned lazily on each /start. Per-process is fine — jasper-web
-# runs as one systemd unit, and the wizard isn't load-balanced.
-_PENDING_FLOWS: dict[str, tuple[str, str, str, float]] = {}
-_FLOW_TTL_SEC = 600.0
-
-
-def _gc_pending(now: float | None = None) -> None:
-    if now is None:
-        now = time.monotonic()
-    expired = [
-        k for k, (_, _, _, t) in _PENDING_FLOWS.items() if now - t > _FLOW_TTL_SEC
-    ]
-    for k in expired:
-        _PENDING_FLOWS.pop(k, None)
-
-
-def _new_nonce() -> str:
-    return secrets.token_urlsafe(16)
+# (account, code_verifier, code_challenge). Keep both PKCE halves: spotipy's
+# SpotifyPKCE.get_access_token regenerates both when either is None, and
+# Spotify then rejects the exchange with invalid_grant.
+_PENDING_FLOWS = PendingFlows[tuple[str, str, str]]()
 
 
 def _read_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> dict[str, str]:
@@ -1028,11 +993,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             registry.add_or_update(Account(name=name, cache_path=cache_path))
             registry.save()
 
-            # Generate a CSRF nonce; we'll use it as Spotify's `state`
-            # and look it up on the callback to recover the account
-            # name AND the PKCE verifier.
-            _gc_pending()
-            nonce = _new_nonce()
+            nonce = new_nonce()
 
             from spotipy.oauth2 import SpotifyPKCE
             redirect_uri = _redirect_uri_for_mode(cfg["mode"], cfg)
@@ -1047,18 +1008,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state=nonce,
                 open_browser=False,
             )
-            # `get_authorize_url()` lazily generates verifier+challenge
-            # on the SpotifyPKCE instance. The challenge goes into the
-            # URL we redirect to; both have to come back with us to
-            # /oauth-callback, where we'll restore them on a fresh
-            # SpotifyPKCE instance before the token exchange. spotipy's
-            # CacheFileHandler doesn't persist either value, so we
-            # stash both in _PENDING_FLOWS keyed by the nonce. See the
-            # `_PENDING_FLOWS` docstring for why both are required.
             authorize_url = auth.get_authorize_url()
-            _PENDING_FLOWS[nonce] = (
-                name, auth.code_verifier, auth.code_challenge, time.monotonic(),
-            )
+            _PENDING_FLOWS.add(nonce, (name, auth.code_verifier, auth.code_challenge))
 
             if cfg["mode"] == "manual":
                 # Don't bounce the browser to Spotify yet — the user
@@ -1115,8 +1066,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if not cfg["client_id"]:
                 send_see_other(self, "./", flash="Credentials were cleared mid-flow. Start over.")
                 return
-            _gc_pending()
-            entry = _PENDING_FLOWS.pop(state, None)
+            entry = _PENDING_FLOWS.consume(state)
             if entry is None:
                 send_see_other(
                     self, "./",
@@ -1126,7 +1076,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     ),
                 )
                 return
-            account_name, verifier, challenge, _created = entry
+            account_name, verifier, challenge = entry
             try:
                 self._exchange_code(account_name, code, verifier, challenge)
             except Exception as e:  # noqa: BLE001

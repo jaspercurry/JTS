@@ -21,7 +21,6 @@ import http
 import logging
 import shutil
 import subprocess
-import time
 import types
 import urllib.parse
 from email.message import Message
@@ -31,10 +30,16 @@ from io import BytesIO
 import pytest
 
 from jasper.web import spotify_setup
+from jasper.web.oauth_pending import PendingFlows
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 from ._web_test_helpers import assert_canonical_page
 from tests._log_events import leaked_lines
+
+
+@pytest.fixture(autouse=True)
+def pending_flows(monkeypatch):
+    monkeypatch.setattr(spotify_setup, "_PENDING_FLOWS", PendingFlows())
 
 
 # ---------------------------------------------------------------------------
@@ -234,14 +239,6 @@ def test_playlist_section_add_form_has_no_inline_js():
 # ---------------------------------------------------------------------------
 # Handler / routing tests (drive do_GET/do_POST on a real handler instance).
 # ---------------------------------------------------------------------------
-#
-# After the canonical migration the Handler's do_GET/do_POST delegate to
-# instance helpers it defines on itself (_render_index, _render_redirect_uri_page,
-# _send_see_other, _send_json, ...). So -- mirroring the proven harness in
-# tests/test_web_wifi_setup.py -- we instantiate the *real* Handler class via
-# __new__ (skipping BaseHTTPRequestHandler.__init__'s socket plumbing), bolt the
-# synthetic request I/O onto it, and stub only the network-touching surface so
-# those real helper methods run without a socket.
 
 
 class _Request:
@@ -472,7 +469,6 @@ def test_post_unknown_route_404s():
 
 
 def test_manual_start_paste_form_preserves_session_csrf(monkeypatch, tmp_path):
-    monkeypatch.setattr(spotify_setup, "_PENDING_FLOWS", {})
     monkeypatch.setattr(
         spotify_setup, "default_cache_path_for", lambda name: str(tmp_path / name),
     )
@@ -560,10 +556,7 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
     """A token persistence failure must not look like a successful re-link."""
     state = "state-abc"
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
-    spotify_setup._PENDING_FLOWS.clear()
-    spotify_setup._PENDING_FLOWS[state] = (
-        "jasper", "verifier", "challenge", time.monotonic(),
-    )
+    spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     calls = {"invalidate": 0, "restart": 0}
 
     def boom(self, account_name, code, verifier, challenge):
@@ -594,7 +587,7 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
     )
     assert all("Linked" not in cookie for cookie in cookies)
     assert calls == {"invalidate": 0, "restart": 0}
-    assert state not in spotify_setup._PENDING_FLOWS
+    assert spotify_setup._PENDING_FLOWS.consume(state) is None
 
 
 def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
@@ -603,10 +596,7 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     beside the flash gets the same scrubbing."""
     state = "state-red"
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
-    spotify_setup._PENDING_FLOWS.clear()
-    spotify_setup._PENDING_FLOWS[state] = (
-        "jasper", "verifier", "challenge", time.monotonic(),
-    )
+    spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     leaked = "GOCSPX-fakefake1234"
 
     def boom(self, account_name, code, verifier, challenge):
@@ -655,7 +645,6 @@ def test_oauth_callback_rejects_unknown_state_without_exchange(monkeypatch):
     # CSRF guard: a forged or expired callback state must not run the
     # token exchange.
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
-    spotify_setup._PENDING_FLOWS.clear()
     exchanged = []
     monkeypatch.setattr(
         handler_cls, "_exchange_code",

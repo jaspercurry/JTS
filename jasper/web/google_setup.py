@@ -43,8 +43,6 @@ import json
 import logging
 import os
 import re
-import secrets
-import time
 import urllib.parse
 import urllib.request
 from contextlib import suppress
@@ -77,6 +75,7 @@ from ._common import (
     send_see_other,
     SECRET_ENV_MODE,
 )
+from .oauth_pending import PendingFlows, new_nonce
 from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
 
 logger = logging.getLogger(__name__)
@@ -663,33 +662,7 @@ def _management_html(
 # ----------------------------------------------------------------------
 
 
-# ----------------------------------------------------------------------
-# OAuth CSRF state — nonce-keyed pending-flow store.
-# ----------------------------------------------------------------------
-# The OAuth `state` param round-trips through Google unchanged and is the
-# only defence against a login-CSRF (an attacker forging a /callback that
-# links THEIR Google account under a known label). It must be
-# unguessable, single-use, and time-bounded — a raw account name is none
-# of those. Mirrors jasper.web.spotify_setup's `_PENDING_FLOWS`: the nonce
-# is Google's `state`, and the callback looks it up to recover the account
-# name AND the PKCE code_verifier (which the callback's fresh Flow can't
-# regenerate). Per-process is fine — jasper-web is one unfarmed unit.
-#
-#   {nonce: (account_name, code_verifier, created_monotonic)}
-_PENDING_FLOWS: dict[str, tuple[str, str, float]] = {}
-_FLOW_TTL_SEC = 600.0  # 10 min, matches Google's auth-code lifetime
-
-
-def _gc_pending(now: float | None = None) -> None:
-    if now is None:
-        now = time.monotonic()
-    expired = [k for k, (_, _, t) in _PENDING_FLOWS.items() if now - t > _FLOW_TTL_SEC]
-    for k in expired:
-        _PENDING_FLOWS.pop(k, None)
-
-
-def _new_nonce() -> str:
-    return secrets.token_urlsafe(16)
+_PENDING_FLOWS = PendingFlows[tuple[str, str | None]]()
 
 
 def _build_flow(cfg: dict[str, Any], creds: tuple[str, str], *, state: str | None = None):
@@ -820,11 +793,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 flash="Credentials were cleared mid-flow. Start over.",
             )
             return
-        # Validate the CSRF nonce: pop-once, and reject an unknown
-        # or expired one so a forged callback can't link an
-        # attacker's account under a guessed label.
-        _gc_pending()
-        entry = _PENDING_FLOWS.pop(state, None)
+        entry = _PENDING_FLOWS.consume(state)
         if entry is None:
             send_see_other(
                 handler, "./",
@@ -834,7 +803,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ),
             )
             return
-        account_name, verifier, _created = entry
+        account_name, verifier = entry
         try:
             _exchange_code(account_name, code, verifier, creds)
         except Exception as e:  # noqa: BLE001
@@ -917,10 +886,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         token_path = default_token_path_for(name)
         registry.add_or_update(GoogleAccount(name=name, token_path=token_path))
         registry.save()
-        # Generate a CSRF nonce; it's Google's `state` and the callback
-        # looks it up to recover the account name + PKCE verifier.
-        _gc_pending()
-        nonce = _new_nonce()
+        nonce = new_nonce()
         try:
             flow = _build_flow(cfg, creds, state=nonce)
             # `prompt='consent'` forces Google to issue a refresh
@@ -944,7 +910,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # it on this Flow instance. The /callback handler builds a
         # fresh Flow (no shared state across requests), so the verifier
         # has to ride along, keyed by the nonce Google round-trips back.
-        _PENDING_FLOWS[nonce] = (name, flow.code_verifier, time.monotonic())
+        _PENDING_FLOWS.add(nonce, (name, flow.code_verifier))
         send_see_other(handler, auth_url)
 
     @form_guarded
