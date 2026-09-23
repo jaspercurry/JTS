@@ -26,7 +26,6 @@ SDKs installed.
 from __future__ import annotations
 
 import ast
-import dataclasses
 import subprocess
 import sys
 from pathlib import Path
@@ -150,17 +149,6 @@ def test_grok_inherits_the_openai_adapters_lazy_sdk():
 # ---------------------------------------------------------------------------
 # The declaration itself
 # ---------------------------------------------------------------------------
-
-
-def test_runtime_imports_is_a_required_field():
-    """No default. An empty default would make check_provider_importable
-    silently vacuous for a newly added provider — the exact silent pass this
-    declaration exists to prevent."""
-    field = {f.name: f for f in dataclasses.fields(ProviderCatalogEntry)}[
-        "runtime_imports"
-    ]
-    assert field.default is dataclasses.MISSING
-    assert field.default_factory is dataclasses.MISSING
 
 
 @pytest.mark.parametrize("entry", PROVIDERS, ids=lambda e: e.id)

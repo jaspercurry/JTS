@@ -28,12 +28,11 @@ class InterruptReconcile(StrEnum):
     Client truncation uses an owned item's confirmed local ledger boundary.
     Gemini server truncation retains content already sent to the client; it
     cannot account for JTS playback queues. JTS reopens without that context
-    after cancellation. INHERITS resolves the adapter's subclass contract.
+    after cancellation.
     """
     NEEDS_CLIENT_TRUNCATE = "needs_client_truncate"
     SERVER_SELF_TRUNCATES = "server_self_truncates"
     NATIVE_CONTINUOUS = "native_continuous"
-    INHERITS = "inherits"
 
 
 @dataclass(frozen=True)
@@ -89,11 +88,11 @@ class ProviderCatalogEntry:
     models: tuple[ModelOption, ...]
     voices: tuple[VoiceOption, ...]
     # Barge-in reconciliation kind — the "pack" capability declaration. The
-    # runtime dispatch is the daemon's getattr seam (jasper/voice/session.py),
-    # NOT a branch on this field; this is the declared, test-validated,
-    # observable contract (resolved once per daemon, surfaced on
-    # event=barge.detected / /state) — see ``InterruptReconcile`` and
-    # ``resolve_interrupt_reconcile``. REQUIRED,
+    # runtime dispatch is isinstance(turn, Interruptible) in
+    # jasper/voice/turn_playback.py, NOT a branch on this field; this is the
+    # declared, test-validated, observable contract (resolved once per
+    # daemon, surfaced on event=barge.detected / /state) — see
+    # ``InterruptReconcile`` and ``resolve_interrupt_reconcile``. REQUIRED,
     # no default: a correctness-bearing capability is declared per provider,
     # never silently defaulted (same no-silent-fallback stance the active-
     # provider selection takes). A future provider that omits it fails loudly
@@ -122,12 +121,8 @@ class ProviderCatalogEntry:
     # tests/test_voice_provider_runtime_imports.py pins both halves against
     # the code they describe.
     runtime_imports: tuple[str, ...]
-    # Only meaningful when ``interrupt_reconcile`` is ``INHERITS``: the
-    # provider id whose reconciliation kind this one adopts (its adapter
-    # subclasses that provider's adapter). Empty otherwise.
     continuous_input: bool = False
     barge_in_default: bool = False
-    interrupt_reconcile_base: str = ""
     extras: tuple[ProviderExtra, ...] = ()
     pricing_url: str = ""
     pricing_buckets: tuple[str, ...] = ()
@@ -332,17 +327,10 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         ),
         pricing_url="https://docs.x.ai/developers/pricing",
         pricing_buckets=("flat_per_hour_usd",),
-        # GrokRealtimeConnection subclasses the OpenAI adapter and reuses its
-        # conversation.item.truncate / response.cancel wire shape — inherit
-        # OpenAI's reconciliation kind rather than restating it.
-        interrupt_reconcile=InterruptReconcile.INHERITS,
-        interrupt_reconcile_base="openai",
+        # GrokRealtimeConnection subclasses the OpenAI adapter's wire shape.
+        interrupt_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         # grok_session imports openai_session at module top (it subclasses
         # the adapter), so it inherits the same audioop + openai SDK needs.
-        # Spelled out rather than derived from interrupt_reconcile_base:
-        # subclassing the adapter and sharing its dependencies are two
-        # different facts, and a future provider could do one without the
-        # other.
         runtime_imports=("jasper.voice.grok_session", "openai"),
     ),
 )
@@ -373,30 +361,9 @@ def _require_provider(provider_id: str) -> ProviderCatalogEntry:
 
 
 def resolve_interrupt_reconcile(provider_id: str) -> InterruptReconcile:
-    """Resolve a provider's concrete barge-in reconciliation kind.
-
-    Follows an ``INHERITS`` declaration through ``interrupt_reconcile_base``
-    so callers (the robust-barge-in packs) always get a concrete kind —
-    never ``INHERITS`` — without encoding the subclass relationship
-    themselves. Raises if an ``INHERITS`` entry has no resolvable base or the
-    inheritance chain cycles."""
-    provider = _require_provider(provider_id)
-    seen: set[str] = set()
-    while provider.interrupt_reconcile is InterruptReconcile.INHERITS:
-        if provider.id in seen:
-            raise RuntimeError(
-                f"voice provider {provider.id!r}: cyclic interrupt_reconcile "
-                "inheritance",
-            )
-        seen.add(provider.id)
-        base_id = provider.interrupt_reconcile_base
-        if not base_id:
-            raise RuntimeError(
-                f"voice provider {provider.id!r} declares INHERITS interrupt "
-                "reconciliation but sets no interrupt_reconcile_base",
-            )
-        provider = _require_provider(base_id)
-    return provider.interrupt_reconcile
+    """A provider's declared barge-in reconciliation kind. Raises
+    ``KeyError`` for an unknown provider id."""
+    return _require_provider(provider_id).interrupt_reconcile
 
 
 def default_model_id(provider_id: str) -> str:

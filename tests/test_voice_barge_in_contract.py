@@ -76,7 +76,6 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
     assert set(PROVIDER_TURN_CLASSES) == {p.id for p in PROVIDERS}
     for provider_id, cls in PROVIDER_TURN_CLASSES.items():
         kind = resolve_interrupt_reconcile(provider_id)
-        # Resolved, never the INHERITS placeholder.
         assert kind in (
             InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
             InterruptReconcile.SERVER_SELF_TRUNCATES,
@@ -131,8 +130,8 @@ def test_grok_inherits_openai_seam():
     """Grok reuses the OpenAI adapter rather than reimplementing the seam.
 
     Same function objects ⇒ Grok's barge-in behaviour follows OpenAI's,
-    which is exactly what its ``interrupt_reconcile = INHERITS`` declaration
-    promises."""
+    which is why the catalog declares Grok's ``interrupt_reconcile`` as
+    ``NEEDS_CLIENT_TRUNCATE`` directly rather than reimplementing it."""
     # Grok overrides neither acquire_turn (which constructs the turn) nor the
     # turn class itself, so it drives OpenAIRealtimeTurn verbatim and the
     # per-turn seam (cancel/truncate) is inherited unchanged. Same function
