@@ -26,8 +26,7 @@ gap that left this family unexecuted in the first place.
 **This bridge IS the CI coverage — verified, not assumed** (two-stage PR-T2
 review, 2026-07-29). The workflow's ``js`` job still runs seven explicit
 ``node`` invocations and none of them is a crossover harness; what executes
-this family is the pytest matrix (py3.11/3.12/3.13), each leg running
-``scripts/test-merge``, which ignores only ``tests/voice_eval``. ``node`` is on
+this family is ``scripts/test-merge``, which ignores only ``tests/voice_eval``. ``node`` is on
 ``ubuntu-latest`` by default — the ``js`` job calls it with no
 ``actions/setup-node`` step and passes — so :data:`_NODE` resolves there and
 these run rather than skip. Adding the family to the ``js`` job as well would

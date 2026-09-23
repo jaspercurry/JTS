@@ -91,7 +91,7 @@ async def daemon_command(
     # `while True:` loops -- measurement_window's lease refreshers (#1952),
     # VolumeObserver._run through renderer.selected_source (#2003), Mux.run()'s
     # patrol wait (#1935) -- would become immortal and wedge their owner's
-    # teardown. Do not "simplify" this back to wait_for while 3.11 is supported.
+    # teardown.
     async with asyncio.timeout(timeout):
         line = await exchange()
     if not line:

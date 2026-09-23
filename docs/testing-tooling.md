@@ -116,7 +116,7 @@ these two.
 **Node-on-runner reliance.** Some browser modules are behaviourally tested by a
 Node harness invoked from pytest (`tests/test_dialog_helper.py`,
 `tests/test_landing_page_html.py`) behind a `shutil.which("node")` skip-guard.
-`pytest-matrix` has no `actions/setup-node` step — it relies on the runner image
+The `pytest` job has no `actions/setup-node` step — it relies on the runner image
 shipping Node. If that wiring changes, these flip to **green-by-skip** and lose
 their coverage silently; keep Node preinstalled or move the harnesses to a job
 that installs it. `scripts/check-js-syntax.sh` only `node --check`s syntax.

@@ -498,9 +498,6 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert triggers["pull_request"] is None
     assert triggers["push"] == {"branches": ["main"]}
 
-    # Campaign speed measure during the 2026-08 right-sizing refactor:
-    # deployed interpreter only. Restoring the fan-out is an owner call.
-    assert 'python-version: ["3.13"]' in workflow
     for flag in ci_classifier.TARGET_REGISTRIES:
         assert f"python3 scripts/ci-classify.py --{flag}" in workflow
 
@@ -514,7 +511,6 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
         "docs",
         "shell",
         "python-policy",
-        "pytest-matrix",
         "pytest",
         "js",
         "rust",
@@ -522,9 +518,8 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     for job in ("fast-landing", "docs", "shell", "python-policy", "js", "rust"):
         assert jobs[job]["needs"] == "classify", job
         assert "needs.classify.outputs.lane ==" in jobs[job]["if"], job
-    assert jobs["pytest-matrix"]["needs"] == ["classify", "python-policy"]
-    assert "needs.classify.outputs.lane ==" in jobs["pytest-matrix"]["if"]
-    assert jobs["pytest"]["needs"] == ["classify", "python-policy", "pytest-matrix"]
+    assert jobs["pytest"]["needs"] == ["classify", "python-policy"]
+    assert "needs.classify.outputs.lane ==" in jobs["pytest"]["if"]
 
 
 def test_every_workflow_run_script_parses() -> None:
@@ -585,7 +580,6 @@ def test_every_workflow_cancels_superseded_pull_request_runs() -> None:
 _SKIPPED_FULL_FARM = {
     "SHELL_RESULT": "skipped",
     "PYTHON_POLICY_RESULT": "skipped",
-    "PYTEST_MATRIX_RESULT": "skipped",
     "PYTEST_RESULT": "skipped",
     "JS_RESULT": "skipped",
     "RUST_RESULT": "skipped",
@@ -597,7 +591,6 @@ _AGGREGATE_SHAPES = {
         "DOCS_RESULT": "skipped",
         "SHELL_RESULT": "success",
         "PYTHON_POLICY_RESULT": "success",
-        "PYTEST_MATRIX_RESULT": "success",
         "PYTEST_RESULT": "success",
         "JS_RESULT": "success",
         "RUST_RESULT": "success",

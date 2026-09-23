@@ -16,8 +16,8 @@ first PR."
 
 Recommended path is [uv](https://docs.astral.sh/uv/) — it reads
 `requires-python` from `pyproject.toml` and refuses to build a venv
-below the 3.11 floor (prefer 3.13; uv accepts any floor-satisfying
-interpreter, so check `.venv/bin/python --version`). (Plain `python -m venv` silently accepts
+below the 3.13 floor, the interpreter CI and the Pi run (uv also accepts
+a newer one, so check `.venv/bin/python --version`). (Plain `python -m venv` silently accepts
 whatever python you invoked it with, which on macOS defaults to
 Apple's 3.9 — produces a broken venv that fails with confusing
 errors deep in `jasper/peering/`.)
@@ -172,11 +172,10 @@ Two operational notes:
   `lint-imports` layers contract and then the lenient, baselined `mypy`
   gate (pyproject.toml config) as steps before pytest, then the
   hardware-free suite in parallel, excluding paid `tests/voice_eval`.
-  Full CI runs this lane on Python 3.13 only — the deployed interpreter
-  (PiOS Trixie ships python3.13); the internal `pytest` aggregate fails
-  unless every versioned matrix leg passes.
+  Full CI's `pytest` job runs this lane on Python 3.13 only — the
+  deployed interpreter (PiOS Trixie ships python3.13).
 - **Python static checks** (`ruff check .` and `mypy`) — `ruff check .`
-  runs once in the Python 3.13 matrix leg before the test suite (also
+  runs once in the `pytest` job before the test suite (also
   covered locally by `scripts/test-fast` and `pre-commit`). `mypy` runs
   once, inside `scripts/test-merge`, so the same lenient, baselined gate
   applies identically in CI and locally — no separate CI-only mypy step.
@@ -212,10 +211,9 @@ Two operational notes:
 
 ## Code style
 
-- Python 3.13 — the deployed interpreter and the only one any CI test
-  leg runs. `requires-python` still floors at 3.11, and mypy/ruff still
-  target the 3.11 API surface (pyproject `python_version`/`target-version`),
-  but no test leg executes an older interpreter.
+- Python 3.13 — the deployed interpreter, the `requires-python` floor,
+  and the only one CI runs; mypy and ruff target it too (pyproject
+  `python_version`/`target-version`).
 - Lint with `ruff check .` and type-check with `mypy`. Do not run a
   tree-wide `ruff format` as drive-by cleanup; formatting the whole tree is a
   separate, deliberate PR.
