@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-import jasper.control.airplay_health as airplay_health
 import jasper.control.camilla_rate_storm as camilla_rate_storm
+from jasper.control.camilla_health import CAMILLA_UNIT
 from jasper.service_units import CAMILLA_SERVICE
 from tests._log_events import event_fields, event_records
 from tests.test_airplay_health import _material_short_read_lines, _storm_sampler
@@ -43,9 +43,7 @@ def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
 
 def _camilla_reader(pending):
     def reader(_units, _since, _until):
-        return [
-            (airplay_health.CAMILLA_UNIT, line) for line in pending["lines"]
-        ]
+        return [(CAMILLA_UNIT, line) for line in pending["lines"]]
     return reader
 
 

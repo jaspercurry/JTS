@@ -41,10 +41,7 @@ from jasper.control._health_fields import (
     _read_int_file,
     _read_text_file,
 )
-from jasper.control.camilla_rate_storm import (
-    STORM_SAMPLE_INTERVAL_SEC,
-    CamillaRateStorm,
-)
+from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
 from jasper.service_units import JournalctlUnavailable, run_journalctl_json
 
@@ -63,7 +60,6 @@ JOURNAL_INTERVAL_SEC = 30.0
 JOURNAL_IDLE_THRESHOLD_SEC = 5 * 60.0
 JOURNAL_IDLE_INTERVAL_SEC = 120.0
 MPRIS_INTERVAL_SEC = 30.0
-CAMILLA_INTERVAL_SEC = 30.0
 BUCKET_SECONDS = 10.0
 HISTORY_SECONDS = 30 * 60.0
 EVENT_RING_SIZE = 20
@@ -106,16 +102,6 @@ except (ValueError, OSError, AttributeError):
     _CLK_TCK = 100
 
 SHAIRPORT_UNIT = "shairport-sync"
-CAMILLA_UNIT = "jasper-camilla"
-CAMILLA_SHORT_READ_RE = re.compile(
-    r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
-)
-
-# CamillaDSP logs a warning for any partial ALSA read, then immediately loops to
-# read the remaining frames before emitting the chunk. Tiny recovered partials
-# are normal with the plug/dsnoop/rate-adjust path and do not indicate an
-# audio-path recovery event by themselves.
-BENIGN_CAMILLA_SHORT_READ_DEFICIT_RATIO = 0.01
 
 
 def _empty_bucket(t: float) -> dict[str, Any]:
@@ -146,7 +132,8 @@ EVENT_BUCKET_FIELD = {
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
-    """Classify one journal line into the compact dashboard event shape.
+    """Classify one shairport-sync journal line into the compact dashboard
+    event shape (CamillaDSP's lines: ``camilla_health.classify_camilla_line``).
 
     The patterns are intentionally literal and pinned to the messages.
     Unknown log lines are ignored.
@@ -232,46 +219,6 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
                     "configured offset exceeds the sender's AirPlay latency "
                     "budget — output plays late"
                 ),
-            }
-        return None
-
-    if unit == CAMILLA_UNIT:
-        m = CAMILLA_SHORT_READ_RE.search(line)
-        if m:
-            frames_read = _as_int(m.group("read"))
-            frames_requested = _as_int(m.group("requested"))
-            deficit = max(0, frames_requested - frames_read)
-            if frames_requested > 0:
-                benign_deficit = math.ceil(
-                    frames_requested * BENIGN_CAMILLA_SHORT_READ_DEFICIT_RATIO,
-                )
-                if deficit <= benign_deficit:
-                    return None
-            return {
-                "type": "camilla_short_read",
-                "subsystem": "camilla",
-                "severity": "watch",
-                "title": "Camilla short read",
-                "detail": (
-                    f"capture delivered {frames_read}/{frames_requested} "
-                    "frames"
-                ),
-                "frames_read": frames_read,
-                "frames_requested": frames_requested,
-                "deficit_frames": deficit,
-            }
-        if (
-            "Prepare playback after buffer underrun" in line
-            or "playback_underrun" in line
-            or "Could not write" in line
-            or "Broken pipe" in line
-        ):
-            return {
-                "type": "camilla_playback_underrun",
-                "subsystem": "camilla",
-                "severity": "issue",
-                "title": "Camilla playback underrun",
-                "detail": "playback buffer underrun",
             }
     return None
 
@@ -395,7 +342,6 @@ class AirPlayHealthSampler:
         journal_idle_threshold_sec: float = JOURNAL_IDLE_THRESHOLD_SEC,
         journal_idle_interval_sec: float = JOURNAL_IDLE_INTERVAL_SEC,
         mpris_interval_sec: float = MPRIS_INTERVAL_SEC,
-        camilla_interval_sec: float = CAMILLA_INTERVAL_SEC,
         bucket_seconds: float = BUCKET_SECONDS,
         history_seconds: float = HISTORY_SECONDS,
         journal_reader: (
@@ -403,7 +349,6 @@ class AirPlayHealthSampler:
             | None
         ) = None,
         mpris_probe: Callable[[], dict[str, Any] | None] | None = None,
-        camilla_probe: Callable[[], dict[str, Any] | None] | None = None,
         link_probe: Callable[[], dict[str, Any]] | None = None,
         receiver_probe: Callable[[int], dict[str, Any]] | None = None,
         camilla_host: str = "127.0.0.1",
@@ -412,21 +357,17 @@ class AirPlayHealthSampler:
         warmup_sec: float = DEFAULT_WARMUP_SEC,
         connect_grace_sec: float = DEFAULT_CONNECT_GRACE_SEC,
         fanin_view: FaninView | None = None,
-        rate_storm: CamillaRateStorm | None = None,
+        camilla: CamillaHealth | None = None,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
         self._journal_interval = journal_interval_sec
         self._journal_idle_threshold = journal_idle_threshold_sec
         self._journal_idle_interval = journal_idle_interval_sec
         self._mpris_interval = mpris_interval_sec
-        self._camilla_interval = camilla_interval_sec
         self._bucket_seconds = bucket_seconds
         self._history_points = max(1, int(math.ceil(history_seconds / bucket_seconds)))
         self._journal_reader = journal_reader or self._read_journal_lines
         self._mpris_probe = mpris_probe or self._read_airplay_mpris
-        self._camilla_probe = camilla_probe or (
-            lambda: self._read_camilla_state(camilla_host, camilla_port)
-        )
         self._link_probe = link_probe or _read_link_counters
         self._receiver_probe = receiver_probe or _read_receiver_stat
         self._maintenance_suppress_path = maintenance_suppress_path
@@ -443,26 +384,19 @@ class AirPlayHealthSampler:
         self._warmup_active = warmup_sec > 0.0
         self._suppressed_reason: str | None = None
         self._fanin = fanin_view or FaninView()
-        self._rate_storm = rate_storm or CamillaRateStorm()
+        self._camilla = camilla or CamillaHealth(
+            host=camilla_host, port=camilla_port, time_fn=time_fn,
+        )
 
         self._lock = threading.Lock()
         self._buckets: deque[dict[str, Any]] = deque(maxlen=self._history_points)
         self._events: deque[dict[str, Any]] = deque(maxlen=EVENT_RING_SIZE)
         self._current_mpris: dict[str, Any] | None = None
-        self._current_camilla: dict[str, Any] | None = None
         self._current_link: dict[str, Any] | None = None
         self._last_sample_at: float | None = None
-        # R21 (#4416) split the merged journal scan in two: the idle-widened
-        # cadence below is AirPlay-specific (shairport journal lines), so it
-        # must not also widen the camilla scan — camilla's short-read storm
-        # detector is unrelated to AirPlay activity and stays on the base
-        # cadence.
         self._last_shairport_scan_at = 0.0
-        self._last_camilla_scan_at = 0.0
         self._shairport_journal_since = self._time()
-        self._camilla_journal_since = self._time()
         self._last_mpris_sample_at = 0.0
-        self._last_camilla_sample_at = 0.0
         self._last_link_counts: dict[str, Any] | None = None
         self._last_receiver_counts: dict[str, Any] | None = None
         # Per-session healthy-tick baseline (reset on lane detach, an
@@ -497,12 +431,12 @@ class AirPlayHealthSampler:
                 "current": {
                     "fanin": copy.deepcopy(fanin),
                     "mpris": copy.deepcopy(self._current_mpris),
-                    "camilla": copy.deepcopy(self._current_camilla),
+                    "camilla": copy.deepcopy(self._camilla.current),
                     "link": copy.deepcopy(self._current_link),
                 },
                 "summary_5m": summary_5m,
                 "summary_30m": summary_30m,
-                "storm": self._rate_storm.snapshot(),
+                "storm": self._camilla.storm_snapshot(),
                 "events": [dict(event) for event in self._events],
             }
 
@@ -525,16 +459,7 @@ class AirPlayHealthSampler:
 
         if now - self._last_mpris_sample_at >= self._mpris_interval:
             self._sample_mpris(now)
-        # While storming, sample Camilla at the faster cadence and append a
-        # trajectory row each time (Tier 2). Steady-state cadence is unchanged.
-        camilla_interval = (
-            STORM_SAMPLE_INTERVAL_SEC
-            if self._rate_storm.active else self._camilla_interval
-        )
-        if now - self._last_camilla_sample_at >= camilla_interval:
-            self._sample_camilla(now)
-            if self._rate_storm.active:
-                self._rate_storm.append_trajectory(now, self._current_camilla)
+        self._camilla.sample(now)
 
         # PTP-anchor settle emits expected shairport sync-correction /
         # out-of-sequence bursts. Arm after MPRIS sampling so the grace
@@ -564,12 +489,19 @@ class AirPlayHealthSampler:
             self._shairport_journal_since = max(self._shairport_journal_since, now)
             self._last_shairport_scan_at = now
         elif now - self._last_shairport_scan_at >= shairport_interval:
-            self._scan_journal_unit(SHAIRPORT_UNIT, now)
-        if suppress_base:
-            self._camilla_journal_since = max(self._camilla_journal_since, now)
-            self._last_camilla_scan_at = now
-        elif now - self._last_camilla_scan_at >= self._journal_interval:
-            self._scan_journal_unit(CAMILLA_UNIT, now)
+            self._scan_journal(
+                SHAIRPORT_UNIT, self._shairport_journal_since, now,
+                classify_journal_line,
+            )
+            self._shairport_journal_since = now
+            self._last_shairport_scan_at = now
+        self._camilla.scan_journal(
+            now,
+            suppress=suppress_base,  # not the connect grace: that is shairport's
+            interval_sec=self._journal_interval,
+            scan=self._scan_journal,
+            active_source=self._active_source_hint(),
+        )
 
         if suppress_until is not None:
             reason: str | None = "maintenance"
@@ -779,55 +711,30 @@ class AirPlayHealthSampler:
             self._current_mpris = current if isinstance(current, dict) else None
         self._last_mpris_sample_at = now
 
-    def _sample_camilla(self, now: float) -> None:
-        try:
-            current = self._camilla_probe()
-        except Exception:  # noqa: BLE001
-            logger.debug("camilla state probe failed", exc_info=True)
-            current = None
-        with self._lock:
-            self._current_camilla = current if isinstance(current, dict) else None
-        self._last_camilla_sample_at = now
-
-    def _scan_journal_unit(self, unit: str, now: float) -> None:
-        """Scan one unit's journal on its own cadence/cursor.
-
-        Split from a single merged scan (R21, #4416) so shairport's
-        idle-widened cadence never delays the camilla scan that feeds the
-        short-read storm detector — that detector fires on any source's
-        audio path, unrelated to whether an AirPlay session is in sight.
+    def _scan_journal(
+        self,
+        unit: str,
+        since: float,
+        now: float,
+        classify: Callable[[str, str], dict[str, Any] | None],
+    ) -> list[dict[str, Any]]:
+        """Read one unit's journal lines, record each event ``classify``
+        finds and return those events. The shairport scan and
+        :meth:`CamillaHealth.scan_journal` share it, each on its own cadence
+        and cursor (R21, #4416).
         """
-        is_camilla = unit == CAMILLA_UNIT
-        if is_camilla:
-            last_scan_at = self._last_camilla_scan_at
-            since = self._camilla_journal_since
-        else:
-            last_scan_at = self._last_shairport_scan_at
-            since = self._shairport_journal_since
-        scan_window = now - last_scan_at if last_scan_at else 0.0
-        material_short_reads = 0
         try:
             entries = self._journal_reader((unit,), since, now)
         except Exception:  # noqa: BLE001
             logger.debug("journal scan failed", exc_info=True)
             entries = []
+        events = []
         for scanned_unit, line in entries:
-            event = classify_journal_line(scanned_unit, line)
+            event = classify(scanned_unit, line)
             if event is not None:
                 self._record_event(now, event)
-                if event.get("type") == "camilla_short_read":
-                    material_short_reads += 1
-        if is_camilla:
-            self._camilla_journal_since = now
-            self._last_camilla_scan_at = now
-            self._rate_storm.update(
-                now, material_short_reads, scan_window,
-                camilla=self._current_camilla,
-                active_source=self._active_source_hint(),
-            )
-        else:
-            self._shairport_journal_since = now
-            self._last_shairport_scan_at = now
+                events.append(event)
+        return events
 
     def _active_source_hint(self) -> str | None:
         fanin = self._fanin.current or {}
@@ -1017,37 +924,3 @@ class AirPlayHealthSampler:
         except Exception:  # noqa: BLE001
             return None
         return {"playing": bool(playing)}
-
-    @staticmethod
-    def _read_camilla_state(host: str, port: int) -> dict[str, Any] | None:
-        try:
-            from ..camilla import CamillaController
-            from ..camilla_config_contract import read_camilla_devices_config
-
-            async def read() -> tuple[dict[str, Any], str | None]:
-                controller = CamillaController(host, port)
-                try:
-                    status = await controller.get_runtime_status()
-                    if status is None or not all(
-                        key in status
-                        for key in (
-                            "buffer_level", "rate_adjust", "capture_rate",
-                        )
-                    ):
-                        raise OSError("incomplete CamillaDSP runtime status")
-                    config_path = await controller.get_config_file_path(
-                        best_effort=True,
-                    )
-                    return status, config_path
-                finally:
-                    await controller.close()
-
-            out, config_path = asyncio.run(read())
-            if config_path:
-                out["config_path"] = config_path
-                devices = read_camilla_devices_config(config_path)
-                if devices:
-                    out.update(devices)
-            return out
-        except Exception:  # noqa: BLE001
-            return None
