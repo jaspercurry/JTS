@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jasper import systemd_probe
+from tests._async_wait import wait_signalled
 
 
 def _fake_run(monkeypatch, *, stdout="", returncode=0, raises=None, calls=None,
@@ -218,7 +219,7 @@ async def test_async_probe_kills_and_reaps_on_timeout_or_cancel(
 
     async def communicate():
         started.set()
-        await asyncio.Event().wait()
+        await asyncio.sleep(3600)  # a hung child; the probe's timeout or cancel ends it
 
     proc = SimpleNamespace(
         communicate=communicate,
@@ -229,7 +230,7 @@ async def test_async_probe_kills_and_reaps_on_timeout_or_cancel(
     task = asyncio.create_task(
         systemd_probe.async_unit_probe("is-active", "u.service", timeout=0.01),
     )
-    await started.wait()
+    await wait_signalled(started, "probe spawned communicate", producer=task)
     if cancel:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
