@@ -1014,11 +1014,11 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 
-    fn test_config() -> Config {
+    pub(crate) fn test_config() -> Config {
         Config {
             backend: BackendMode::Alsa,
             sink_mode: SinkMode::SingleAlsa,
