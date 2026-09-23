@@ -377,7 +377,7 @@ def isolated_candidate_bank(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
 
 
-def declared_profile_fixture(topology, *, design_draft, measurements, config_path, write=False):
+def declared_profile_fixture(topology, *, design_draft, config_path, write=False):
     import hashlib
     from jasper.active_speaker.baseline_profile import (
         baseline_candidate_config_path, baseline_candidate_fingerprint, prepare_applied_baseline_profile,
@@ -388,7 +388,7 @@ def declared_profile_fixture(topology, *, design_draft, measurements, config_pat
     text = compile_tuning_graph(declaration, candidate=candidate)
     target = baseline_candidate_config_path(text, config_path)
     profile = prepare_applied_baseline_profile(
-        bank_candidate(candidate), declaration=declaration, design_draft=design_draft, measurements=measurements,
+        bank_candidate(candidate), declaration=declaration, design_draft=design_draft,
         config_path=target, config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
     profile.update(status="ready_to_apply" if write else "ready_to_compile",

@@ -23,7 +23,6 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
 from jasper.active_speaker.baseline_profile import (
-    MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB,
     PROVENANCE_MANUAL,
     PROVENANCE_MEASURED,
     PROVENANCE_RECOMMENDED_START,
@@ -225,7 +224,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
         "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
     })
     preset = resolve_commission_preset(topology, crossover_preview=preview)
-    trims, meta = baseline_profile_mod.measured_level_trims(preset, {}, preview, design_draft=draft)
+    trims, meta = baseline_profile_mod.measured_level_trims(preset, preview, design_draft=draft)
     assert trims == {"woofer": 0.0, "tweeter": -6.0}
     assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
 
@@ -238,7 +237,6 @@ def _applied_layer_a_yaml(tmp_path: Path) -> str:
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements={},
         write=False,
         config_path=tmp_path / "active_speaker_baseline.yml",
     )
@@ -326,17 +324,6 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
     assert active_layer_a_fingerprint(yaml_lib.safe_dump(readback)) == (
         active_layer_a_fingerprint(baseline_yaml)
     )
-
-
-def test_measured_vs_datasheet_tolerance_clears_its_own_error_budget() -> None:
-    """The tolerance's derivation, pinned rather than left in prose: it must
-    clear the sum of what CAN honestly differ between the two frames
-    (~2 dB datasheet spec + ~2 dB realized pad impedance + ~1.3 dB measured
-    frame spread + ~0.5 dB estimator systematic) and stay well under the ~12 dB
-    defect it exists to catch."""
-    honest_worst_case_db = 2.0 + 2.0 + 1.3 + 0.5
-    assert MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB > honest_worst_case_db
-    assert MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB < 12.0
 
 
 # --- Persisted working-crossover values (Slice 0): polarity/delay ------------
@@ -587,7 +574,7 @@ def _bank_events(caplog) -> list[dict[str, str]]:
 def _applied_with_sources(tmp_path: Path, sources: dict[str, str]) -> dict[str, Any]:
     topology = _dual_apple_topology()
     candidate = declared_profile_fixture(
-        topology, design_draft=_draft(topology), measurements={},
+        topology, design_draft=_draft(topology),
         config_path=tmp_path / "baseline.yml", write=True,
     )
     candidate["corrections_source"] = dict(sources)
@@ -670,7 +657,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     "named_chain",
     [
         pytest.param("c" * 64, id="a_candidate_resolved_it"),
-        pytest.param(None, id="the_guided_captures_did"),
+        pytest.param(None, id="no_candidate_named_it"),
     ],
 )
 def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
@@ -681,9 +668,8 @@ def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
     A trim is degenerate with the chain it was resolved against, so the apply
     passes the resolving candidate's own fingerprint — already on the profile's
     source block — through to the record, and it reaches the level-match ledger
-    every downstream reader looks at. A profile the guided captures levelled
-    names no candidate and banks no frame, which is a different fact from
-    naming the bare one.
+    every downstream reader looks at. A profile that names no candidate banks
+    no frame, which is a different fact from naming the bare one.
     """
     candidate = _applied_with_sources(
         tmp_path, {"woofer": "measured", "tweeter": "measured"}
@@ -718,8 +704,8 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
 
     A refused write left the PREVIOUS apply's record standing, so the box went
     on levelling a ``--level-matched`` walk by numbers describing a graph it
-    had stopped playing. The resolver's fallback (guided captures, then the
-    datasheet) is conservative; a stale record is not.
+    had stopped playing. The resolver's empty answer is conservative; a stale
+    record is not.
     """
     caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
     baseline_profile_mod.persist_applied_baseline_profile(
@@ -864,7 +850,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
                                       evidence={"packet_fingerprint": "room-round"})
     monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
-        design_draft=draft, measurements={}, applied_at=identity["at"], saved_timing=incumbent,
+        design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
     baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
@@ -885,7 +871,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     corrections = applied["corrections"]
     assert 1000 * (corrections["tweeter"]["delay_ms"] - corrections["woofer"]["delay_ms"]) == pytest.approx(delay)
     later = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
-        design_draft=draft, measurements={}, provenance=applied)
+        design_draft=draft, provenance=applied)
     assert later["timing"] == expected
     assert later["corrections"] == corrections
     applied.pop("timing")
@@ -919,7 +905,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     text = compile_tuning_graph(declaration, candidate=candidate)
 
     applied = baseline_profile_mod.prepare_applied_baseline_profile(
-        bank_candidate(candidate), declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=tmp_path / "baseline.yml",
         config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
@@ -948,7 +934,7 @@ def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration)
     candidate = replace(declared, rear_calibration=_rear_document())
 
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(
-        bank_candidate(candidate), declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )
 

@@ -80,5 +80,5 @@ def prepare_candidate(candidate, topology, config_path, *, design_draft=None):
     preference_filters, trim_db = saved_sound_layers()
     text = compile_tuning_graph(declaration, candidate, preference_filters=preference_filters, output_trim_db=trim_db)
     Path(config_path).write_text(text)
-    return prepare_applied_baseline_profile(banked, declaration=declaration, design_draft=draft, measurements={},
+    return prepare_applied_baseline_profile(banked, declaration=declaration, design_draft=draft,
         config_path=config_path, config_sha256=hashlib.sha256(text.encode()).hexdigest())

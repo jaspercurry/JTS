@@ -185,17 +185,16 @@ def _stub_evidence_loaders(monkeypatch):
 def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
     monkeypatch,
 ):
-    """Precedence has one owner. This resolver hands that owner the same two
-    inputs the applied profile's own build hands it and reports its verdict —
-    it does not re-rank banked against guided, and it does not substitute a
-    datasheet estimate for a measurement of this cabinet."""
+    """The answer has one owner. This resolver hands that owner the declaration
+    it is keyed to and reports its verdict — it does not substitute a datasheet
+    estimate for a measurement of this cabinet."""
     from jasper.active_speaker import baseline_profile
 
     seen: list[object] = []
 
-    def _owner(preset, measurements, crossover_preview=None, *, design_draft=None):
-        seen.append((preset, measurements, crossover_preview, design_draft))
-        return {DRIVER_ROLE_TWEETER: -9.5}, {"source": "guided_captures"}
+    def _owner(preset, crossover_preview=None, *, design_draft=None):
+        seen.append((preset, crossover_preview, design_draft))
+        return {DRIVER_ROLE_TWEETER: -9.5}, {"source": "banked_base_trim"}
 
     monkeypatch.setattr(baseline_profile, "measured_level_trims", _owner)
     _stub_evidence_loaders(monkeypatch)
@@ -205,7 +204,7 @@ def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
     )
 
     assert trims == {DRIVER_ROLE_TWEETER: -9.5}
-    assert source == "guided_captures"
+    assert source == "banked_base_trim"
     assert len(seen) == 1
 
 

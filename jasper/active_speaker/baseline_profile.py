@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -60,17 +59,11 @@ from .driver_base_trim import (
     BANK_WRITE_FAILED,
     BANK_WRITE_REFUSED,
     REFUSE_NO_FRAME,
-    STATUS_SUPERSEDED as BASE_TRIM_STATUS_SUPERSEDED,
     DriverBaseTrimError,
     banked_base_trims,
     clear_base_trim,
     load_base_trim,
     write_base_trim,
-)
-from .level_trim import (
-    MAX_ATTENUATION_DB,
-    LevelTrimError,
-    attenuation_from_group_deltas,
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
@@ -80,7 +73,7 @@ from .measured_crossover_candidate import (
 from .measurement import empty_driver_check_summary
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
-from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
+from .profile import snapshot_declares_single_branch
 from .rear_calibration import rear_operating_facts
 from . import passive_profile as _passive
 from .state_paths import baseline_profile_state_path
@@ -97,49 +90,6 @@ REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
 # The wizard declares the wall gap in millimetres while a document carries an
 # inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
 REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
-
-# How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
-# may disagree about the same pair of drivers before the measured value is
-# refused (linearization-integrity PR-L4 item 3). Two independent frames for one
-# physical quantity; on the 2026-07-27 JTS3 run they were ~12 dB apart and were
-# compared nowhere.
-#
-# 6.0 dB, summed from what CAN honestly differ between them:
-#
-#   ~2 dB   driver datasheet sensitivity is typically specified +/-2 dB, and
-#           a household transcribes it from a spec sheet
-#   ~2 dB   an L-pad's REALIZED attenuation follows the driver's actual
-#           impedance curve, not the nominal resistance the pad math assumes
-#   ~1.3 dB the measured estimator's own frame spread — PR-L3's five archived
-#           captures agreed with the fit frame to 1.30 dB worst case
-#   ~0.5 dB that estimator's known linear-bin systematic
-#
-# ~5.8 dB of honest disagreement in the worst case; 6.0 is the first whole dB
-# above it. The defect this exists to catch was more than twice that.
-# Tightening it is a measurement question, not a taste one: it needs a corpus
-# of households whose datasheet AND pad values are both known-good — and note
-# how little headroom 6.0 leaves over 5.8, which is the real argument for
-# gathering that corpus rather than nudging the number.
-MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0
-
-# How far the crossover sweep and the level-match sitting may place one driver
-# apart before the gap is DISCLOSED. A disclosure trigger, never an agreement
-# bar and never a refusal (ruling S8): both sittings read THE level fact, so
-# this decides when a gap is worth saying, never which number is right.
-#
-# Same value as the refusal bar above, and the reuse is accounted for rather
-# than assumed, because only part of that derivation survives here: its ~2 dB
-# datasheet-spec and ~2 dB realized-pad terms are DATASHEET artifacts, absent
-# on a measured-vs-measured comparison. What survives is ~1.3 dB of frame
-# spread plus ~0.5 dB of linear-bin systematic; the remaining ~4 dB is headroom
-# for the term neither constant measures — two captures at different distances,
-# on different axes, in different sittings.
-#
-# Tightening toward that ~1.8 dB is a MEASUREMENT question, not a taste one: it
-# needs a corpus of speakers read both ways in one session. Until that exists
-# the wider trigger only discloses less often, the direction that cannot
-# mislead.
-LEVEL_SITTING_TOLERANCE_DB = MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
 
 # Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
 # is reserved for future profile prefills; no code path in this module emits
@@ -371,7 +321,7 @@ def compile_commissioning_profile(
                                     preference_filters=preference_filters, output_trim_db=trim_db)
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
-            banked, declaration=declaration, design_draft=draft, measurements={},
+            banked, declaration=declaration, design_draft=draft,
             config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
             saved_timing=(applied or {}).get("timing"),
         ))
@@ -548,89 +498,20 @@ def _source_payload(
             "design_draft_updated_at": design_draft.get("updated_at")}
 
 
-def _overlap_level_at(
-    record: Any, fc: float, *, tol_hz: float = 1.0
-) -> float | None:
-    """A usable measured overlap-band level (dB) for ``fc``, or None (fail-closed).
-
-    Requires the driver's acoustic verdict to be ``present`` (the driver actually
-    produced in-band sound) and an overlap entry around ``fc`` flagged ``usable``
-    (good SNR, not silent, not clipped, enough bins). Anything else returns None,
-    so a missing / low-SNR / clipped capture cannot contribute a measured trim.
-    """
-    from .driver_acoustics import usable_overlap_level_db
-
-    if not isinstance(record, Mapping):
-        return None
-    acoustic = record.get("acoustic")
-    if not isinstance(acoustic, Mapping) or acoustic.get("verdict") != "present":
-        return None
-    return usable_overlap_level_db(
-        acoustic.get("overlap_levels") or (), fc, tol_hz=tol_hz
-    )
-
-
-def _effective_excitation_dbfs(record: Any) -> float | None:
-    """Return a verified analyzer excitation, or ``None`` (fail closed).
-
-    The excitation artifact is a small gain ledger owned by the capture record:
-    generated sweep peak + the role-varying commissioning gain + any exact
-    server-owned main-volume lock = the effective digital drive (the remaining
-    commissioning gains are common and cancel).
-    We recompute the total instead of trusting a loose scalar, which makes the
-    evidence independently auditable and lets captures made through different
-    applied role trims be normalized onto one common 0 dB reference. The quiet
-    by-ear identity-test level is not acoustic measurement evidence.
-    """
-    if not isinstance(record, Mapping):
-        return None
-    from .crossover_contract import verified_driver_excitation
-
-    verified = verified_driver_excitation(record.get("excitation"))
-    return (
-        float(verified["effective_peak_dbfs"])
-        if isinstance(verified, Mapping)
-        else None
-    )
-
-
 def measured_level_trims(
     preset: ActiveSpeakerPreset,
-    measurements: Mapping[str, Any],
     crossover_preview: Mapping[str, Any] | None = None,
     *,
     design_draft: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
-    """The public door onto :func:`_measured_level_trims`, for callers outside
-    the profile build.
+    """This box's banked per-driver level offsets for the declaration in hand.
 
-    It exists because the crossover-v2 MEASUREMENT graph needs the same answer
-    the applied profile needs — *"what does this box's own evidence say the
-    per-driver level offsets are?"* — and a second derivation of it would be
-    the third opinion the one-owner rule forbids. A thin wrapper rather than a
-    rename because the private name is the one the profile's own callers and
-    their fixtures spell.
-
-    ``meta['source']`` names WHICH evidence answered (``banked_base_trim`` or
-    ``guided_captures``), which is what a caller discloses beside the trims;
-    an empty mapping means neither did, and no caller may substitute an
-    estimate for it.
+    The one owner of *"what does this box's own evidence say the per-driver
+    level offsets are?"*, which the crossover-v2 MEASUREMENT graph levels by.
+    ``meta['source']`` names the evidence that answered, which is what a caller
+    discloses beside the trims; empty trims mean none did (``meta['base_trim']``
+    says why), and no caller may substitute an estimate for them.
     """
-    return _measured_level_trims(preset, measurements, crossover_preview, design_draft=design_draft)
-
-
-def _measured_level_trims(
-    preset: ActiveSpeakerPreset,
-    measurements: Mapping[str, Any],
-    crossover_preview: Mapping[str, Any] | None = None,
-    *,
-    design_draft: Mapping[str, Any] | None = None,
-) -> tuple[dict[str, float], dict[str, Any]]:
-    from .capture_geometry import (
-        DRIVER_PLACEMENT_POLICY_ID,
-        capture_proof_valid,
-    )
-
     roles = required_driver_roles(preset.way_count)
     declaration_fingerprint = (
         crossover_preview_fingerprint(crossover_preview, design_draft)
@@ -638,209 +519,29 @@ def _measured_level_trims(
         else None
     )
     base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
-    # A valid banked trim does NOT return here: whether it wins depends on the
-    # guided walk below — captures newer than the record supersede it (S20).
-
-    active_comparison_set = measurements.get("active_comparison_set")
-    latest = measurements.get("latest_by_target")
-    if not isinstance(latest, Mapping):
-        summary = measurements.get("summary")
-        latest = (
-            summary.get("latest_driver_measurements")
-            if isinstance(summary, Mapping)
-            else None
-        )
-    records = [
-        record
-        for record in (latest.values() if isinstance(latest, Mapping) else [])
-        if isinstance(record, Mapping)
-    ]
-
-    regions = sorted(preset.crossover_regions, key=lambda region: region.fc_hz)
-
-    by_group: dict[str, dict[str, Mapping[str, Any]]] = {}
-    for record in records:
-        group_id = record.get("speaker_group_id")
-        role = record.get("role")
-        if (
-            isinstance(group_id, str)
-            and group_id
-            and isinstance(role, str)
-            and role in roles
-        ):
-            by_group.setdefault(group_id, {})[role] = record
-
-    per_group_delta_chains: list[list[tuple[str, str, float]]] = []
-    deltas: list[dict[str, Any]] = []
-    incomparable_groups: list[dict[str, Any]] = []
-    # Newest ``created_at`` across the records the ACCEPTED chains consumed.
-    # ISO-8601 UTC strings compare lexicographically; an undated record
-    # contributes "" and so can never claim to be newer than the banked trim.
-    newest_capture_at = ""
-    for group_id, group_records in sorted(by_group.items()):
-        if not any(
-            isinstance(record.get("acoustic"), Mapping)
-            for record in group_records.values()
-        ):
-            # Operator-only floor checks prove routing but are not attempted as
-            # acoustic level evidence, so do not diagnose their intentionally
-            # absent analyzer ledger as malformed.
-            continue
-        placement_invalid_roles = [
-            role
-            for role in roles
-            if not capture_proof_valid(
-                group_records.get(role),
-                active_comparison_set,
-                policy_id=DRIVER_PLACEMENT_POLICY_ID,
-                role=role,
-                speaker_group_id=group_id,
-            )
-        ]
-        if placement_invalid_roles:
-            incomparable_groups.append({
-                "speaker_group_id": group_id,
-                "reason": "placement_or_comparison_set_missing_or_invalid",
-                "roles": placement_invalid_roles,
-            })
-            continue
-        excitation_by_role = {
-            role: _effective_excitation_dbfs(group_records.get(role))
-            for role in roles
-        }
-        if any(value is None for value in excitation_by_role.values()):
-            incomparable_groups.append({
-                "speaker_group_id": group_id,
-                "reason": "excitation_ledger_missing_or_invalid",
-            })
-            continue
-        assert all(value is not None for value in excitation_by_role.values())
-        adjacent_deltas: list[tuple[str, str, float]] = []
-        group_deltas: list[dict[str, Any]] = []
-        usable = True
-        for region in regions:
-            lo_role = region.lower_driver
-            up_role = region.upper_driver
-            fc = float(region.fc_hz)
-            measured_lo = _overlap_level_at(group_records.get(lo_role), fc)
-            measured_up = _overlap_level_at(group_records.get(up_role), fc)
-            level_lo = (
-                measured_lo - float(excitation_by_role[lo_role])
-                if measured_lo is not None
-                else None
-            )
-            level_up = (
-                measured_up - float(excitation_by_role[up_role])
-                if measured_up is not None
-                else None
-            )
-            if level_lo is None or level_up is None:
-                usable = False
-                break
-            adjacent_deltas.append((lo_role, up_role, level_up - level_lo))
-            group_deltas.append({
-                "speaker_group_id": group_id,
-                "crossover_fc_hz": fc,
-                "lower_role": lo_role,
-                "upper_role": up_role,
-                "delta_db": round(level_up - level_lo, 1),  # + => upper hotter
-                "effective_peak_dbfs": {
-                    lo_role: round(float(excitation_by_role[lo_role]), 2),
-                    up_role: round(float(excitation_by_role[up_role]), 2),
-                },
-            })
-        if not usable:
-            continue
-        per_group_delta_chains.append(adjacent_deltas)
-        deltas.extend(group_deltas)
-        for record in group_records.values():
-            newest_capture_at = max(
-                newest_capture_at, str(record.get("created_at") or "")
-            )
-
-    meta: dict[str, Any] = {
-        "source": "guided_captures",
+    if not base_trims:
+        return {}, {"base_trim": base_trim_meta}
+    banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
+    return base_trims, {
+        "source": "banked_base_trim",
         "base_trim": base_trim_meta,
-        "groups_total": len(by_group),
-        "groups_measured": len(per_group_delta_chains),
-        "measured_group_ids": sorted({
-            str(item["speaker_group_id"])
-            for item in deltas
-            if item.get("speaker_group_id")
-        }),
-        "deltas": deltas,
-        # WHEN this answer's evidence was measured. The apply seam banks it as
-        # the record's ``measured_at``, so a re-persist of a frozen candidate
-        # re-banks the evidence time, never the persist time.
-        "newest_capture_at": newest_capture_at,
-        "comparison": "placement_attested_gain_ledger_normalized",
-        "placement_policy": DRIVER_PLACEMENT_POLICY_ID,
-        "active_comparison_set_id": (
-            active_comparison_set.get("comparison_set_id")
-            if isinstance(active_comparison_set, Mapping)
-            else None
-        ),
-        "incomparable_groups": incomparable_groups,
+        "newest_capture_at": base_trim_meta.get("measured_at"),
+        # The record's own trim source, not a second word for it: the
+        # apply that banked it stamped WHICH evidence levelled the
+        # graph, and this ledger repeats that rather than minting a
+        # comparison of its own.
+        "comparison": base_trim_meta.get("trim_source"),
+        "groups_total": len(banked_group_ids),
+        "groups_measured": len(banked_group_ids),
+        "measured_group_ids": list(banked_group_ids),
+        # Empty because the record banks an ALREADY-APPLIED level
+        # match: the per-crossover evidence behind it lives with the
+        # profile that was applied, which ``base_trim.trim_source``
+        # names.
+        "deltas": [],
+        "incomparable_groups": [],
+        "trims": dict(base_trims),
     }
-    trims: dict[str, float] = {}
-    if per_group_delta_chains:
-        try:
-            trims = attenuation_from_group_deltas(
-                roles, per_group_delta_chains, minimum_db=MAX_ATTENUATION_DB
-            )
-        except LevelTrimError:
-            trims = {}
-
-    if base_trims:
-        banked_measured_at = str(base_trim_meta.get("measured_at") or "")
-        if not trims or newest_capture_at <= banked_measured_at:
-            banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
-            return base_trims, {
-                "source": "banked_base_trim",
-                "base_trim": base_trim_meta,
-                # The record's ``measured_at`` IS the evidence time, so a
-                # candidate levelled by the bank re-banks that same instant.
-                "newest_capture_at": base_trim_meta.get("measured_at"),
-                # The record's own trim source, not a second word for it: the
-                # apply that banked it stamped WHICH evidence levelled the
-                # graph, and this ledger repeats that rather than minting a
-                # comparison of its own.
-                "comparison": base_trim_meta.get("trim_source"),
-                "groups_total": len(banked_group_ids),
-                "groups_measured": len(banked_group_ids),
-                "measured_group_ids": list(banked_group_ids),
-                # Empty because the record banks an ALREADY-APPLIED level
-                # match: the per-crossover evidence behind it lives with the
-                # profile that was applied, which ``base_trim.trim_source``
-                # names.
-                "deltas": [],
-                "incomparable_groups": [],
-                "trims": dict(base_trims),
-            }
-        # Ruling S20: the captures behind this guided answer postdate the
-        # banked record, so the newest measurement wins. Disclosed with both
-        # evidence identities, so the receipt trail shows the handoff.
-        log_event(
-            logger,
-            "dsp.baseline_base_trim_superseded",
-            superseded_measured_at=banked_measured_at,
-            superseded_trim_source=str(base_trim_meta.get("trim_source") or ""),
-            declaration=str(
-                base_trim_meta.get("declaration_fingerprint") or ""
-            )[:12],
-            newest_capture_at=newest_capture_at,
-            comparison=str(meta["comparison"]),
-            comparison_set_id=str(meta["active_comparison_set_id"] or ""),
-        )
-        meta["base_trim"] = {
-            **base_trim_meta,
-            "status": BASE_TRIM_STATUS_SUPERSEDED,
-        }
-
-    if not trims:
-        return {}, meta
-    meta["trims"] = dict(trims)
-    return trims, meta
 
 
 def _load_saved_state(path: Path) -> dict[str, Any] | None:
@@ -1165,135 +866,6 @@ def applied_profile_displacement(
     return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
 
 
-def _compare_level_sittings(
-    preset: ActiveSpeakerPreset,
-    measurements: Mapping[str, Any],
-    candidate_trims_db: Mapping[str, float],
-) -> tuple[list[str], dict[str, Any]]:
-    """How far apart two SITTINGS place the same level fact, as copy strings.
-
-    **One definition, read twice** (ruling S8), which is what separates this
-    from its two siblings. "Level-matched" means matched acoustic output
-    through the handover region, and both numbers here answer exactly that:
-
-    * The persisted point-at-Fc read via :func:`_measured_level_trims` — both
-      branches sit on their matched
-      −6 dB Linkwitz-Riley shoulder, so their delta is the sensitivity delta,
-      taken as a single interpolated point;
-    * ``program_analysis.solve_branch_trims``' power-band average over the
-      mirrored ±1-octave halves about Fc, which is what a v2 measured candidate
-      carries and which S8 makes THE level fact.
-
-    Its two siblings ask something else. ``intervention``'s
-    :func:`~jasper.active_speaker.crossover_v2.intervention.compare_level_definitions`
-    reports the handover level against the PASSBAND estimate — two physical
-    questions on ONE capture; item 3(a)'s measured-vs-datasheet check grades
-    one capture against a physical model. Here the definition is shared and the
-    CAPTURE is not: the crossover MEASURE sweep and the GUIDED per-driver
-    captures are separate sittings, and the candidate branch below never runs
-    the point-at-Fc path itself.
-
-    **The guided captures, never the banked base trim**, which is why no
-    crossover preview reaches :func:`_measured_level_trims` here. Since ruling
-    S16 the banked trim is written BY the apply, from the very candidate whose
-    trims this compares — reading it back would compare a number with itself
-    and report agreement that means nothing. Passing no preview is the
-    documented way to ask that resolver for the guided sitting alone.
-
-    So a gap here is neither a fault nor a verdict on either number — the
-    sittings are taken at different distances and on different axes, which
-    ``profile.LEVEL_MATCH_AXIS`` explains has no single correct answer.
-    ``frame`` therefore names both: the MEASURE sweep's axis is that constant,
-    while the other sitting's geometry is per-capture and is disclosed by the
-    guided captures' own placement attestation. A level gap whose frames the
-    reader cannot recover is unplaceable.
-
-    **Disclosed, never refused**, and nothing is asked for: the candidate's own
-    trim ships whatever this says, so there is no remediation to recommend.
-    ``notes`` is empty when nothing crosses
-    :data:`LEVEL_SITTING_TOLERANCE_DB`, the common case; ``frame`` rides
-    unconditionally because it describes the captures rather than whichever
-    condition was the reason.
-    """
-    frame: dict[str, Any] = {"crossover_sweep_axis": LEVEL_MATCH_AXIS}
-    if not candidate_trims_db:
-        return [], frame
-    try:
-        point_trims, point_meta = _measured_level_trims(preset, measurements)
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        # The point-at-Fc reader is fail-closed by design and this is a
-        # disclosure path; an unreadable measurements blob means "no second
-        # sitting available", never a failed profile build. Logged at WARNING
-        # like its sibling below, so a comparison that silently stopped running
-        # is visible rather than indistinguishable from two sittings agreeing.
-        log_event(
-            logger, "baseline_profile.level_sitting_comparison_unavailable",
-            level=logging.WARNING, error=f"{type(exc).__name__}: {exc}",
-        )
-        return [], frame
-    frame["level_match_sitting"] = point_meta.get("source")
-    notes: list[str] = []
-    for role in sorted(set(point_trims) & set(candidate_trims_db)):
-        gap_db = abs(point_trims[role] - candidate_trims_db[role])
-        if gap_db <= LEVEL_SITTING_TOLERANCE_DB:
-            continue
-        notes.append(
-            f"{role} crossover sweep {candidate_trims_db[role]:.1f} dB vs "
-            f"level match {point_trims[role]:.1f} dB "
-            f"({gap_db:.1f} dB apart)"
-        )
-    return notes, frame
-
-
-def _bundle_dir_from_measurements(measurements: Mapping[str, Any]) -> Path | None:
-    """The open commissioning bundle a comparison set was stamped with, if any.
-
-    A follower/driver_domain apply, a manual-only apply with no comparison
-    set, or measurements shaped unexpectedly all resolve to ``None`` — there
-    is simply nothing to record an apply outcome into.
-    """
-
-    try:
-        comparison_set = measurements.get("active_comparison_set")
-        session_id = (
-            comparison_set.get("bundle_session_id")
-            if isinstance(comparison_set, Mapping)
-            else None
-        )
-    except (AttributeError, TypeError):
-        return None
-    if not session_id:
-        return None
-
-    from jasper.active_speaker import bundles as active_speaker_bundles
-
-    return active_speaker_bundles.sessions_dir() / str(session_id)
-
-
-async def _record_apply_outcome_into_bundle(
-    measurements: Mapping[str, Any],
-    *,
-    candidate: Mapping[str, Any],
-    apply_state: Mapping[str, Any] | None,
-    rollback_target: Mapping[str, Any] | None,
-) -> None:
-    """Record the outcome off-thread; the bundle writer handles I/O failures."""
-
-    bundle_dir = _bundle_dir_from_measurements(measurements)
-    if bundle_dir is None:
-        return
-
-    from jasper.active_speaker import bundles as active_speaker_bundles
-
-    await asyncio.to_thread(
-        active_speaker_bundles.record_apply,
-        bundle_dir,
-        candidate=candidate,
-        apply_state=apply_state,
-        rollback_target=rollback_target,
-    )
-
-
 def _baseline_apply_started(topology: OutputTopology, candidate: Mapping[str, Any]) -> None:
     log_event(
         logger, "correction.crossover_apply_started",
@@ -1305,7 +877,7 @@ def _baseline_apply_started(topology: OutputTopology, candidate: Mapping[str, An
 
 
 async def _baseline_apply_result(
-    topology: OutputTopology, profile: Mapping[str, Any], measurements: Mapping[str, Any],
+    topology: OutputTopology, profile: Mapping[str, Any],
     *, apply_state: DspApplyState, error: DspApplyError | None = None, state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     state = apply_state.to_dict()
@@ -1336,10 +908,6 @@ async def _baseline_apply_result(
         linearization = profile.get("linearization") or {}
         log_event(logger, "dsp.baseline_linearization", topology_id=topology.topology_id,
                   **({role: len(filters) for role, filters in linearization.items()} if linearization else {"none": True}))
-    await _record_apply_outcome_into_bundle(
-        measurements, candidate=profile, apply_state=state,
-        rollback_target={"config_path": apply_state.prior_config_path} if apply_state.prior_config_path else None,
-    )
     return {"status": profile["status"], "profile": profile, "apply": state, "issues": profile.get("issues", [])}
 
 
@@ -1351,10 +919,10 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     blind run's F-1: a box could apply a measured level match, report
     ``corrections_source: measured``, and still refuse a ``--level-matched``
     walk ``walk_level_match_no_evidence``, because the resolver
-    (:func:`_measured_level_trims`) reads only the banked record and the guided
-    captures — never a candidate's applied corrections. Banking here makes the
-    applied trim the very thing the resolver already looks for, so the walk
-    door and the acoustic confirm unblock with no change of their own.
+    (:func:`measured_level_trims`) reads only the banked record — never a
+    candidate's applied corrections. Banking here makes the applied trim the
+    very thing the resolver already looks for, so the walk door and the
+    acoustic confirm unblock with no change of their own.
 
     Three answers, not two, and the middle one is the whole point:
 
@@ -1501,15 +1069,13 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             )
             return
         trims_db[str(role)] = gain
-    # The record's ``measured_at`` is the EVIDENCE time (the S20 supersede
-    # compares capture times against it), never this persist's wall clock:
-    # this seam re-runs on frozen candidates (the apply retry before the
-    # idempotent early-return, any re-apply of an older candidate), and
-    # stamping now would re-date old evidence past strictly newer captures —
-    # silently, forever. Candidates carry their own recency in the ledger;
-    # a frozen candidate from before that field existed inherits the standing
-    # record's time (never re-dated forward), and only a box with no dated
-    # evidence and no record lets the writer mint now.
+    # The record's ``measured_at`` is the EVIDENCE time, never this persist's
+    # wall clock: this seam re-runs on frozen candidates (the apply retry
+    # before the idempotent early-return, any re-apply of an older candidate),
+    # and stamping now would re-date old evidence. Candidates carry their own
+    # recency in the ledger; a frozen candidate from before that field existed
+    # inherits the standing record's time (never re-dated forward), and only a
+    # box with no dated evidence and no record lets the writer mint now.
     evidence_at = str(level_match.get("newest_capture_at") or "") or None
     if evidence_at is None:
         existing = load_base_trim()
@@ -1528,8 +1094,8 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             # candidate's own fingerprint, already on the profile's source
             # block — passed through rather than derived, because the frame
             # exists at fit time and no later reader can reconstruct it. A
-            # profile levelled by the guided captures names none, which banks
-            # as "frame unknown" rather than as the bare frame.
+            # profile that names none banks as "frame unknown" rather than as
+            # the bare frame.
             chain_fingerprint=_passive.measured_candidate_fingerprint(source) or None,
             measured_at=evidence_at,
         )
@@ -1540,9 +1106,8 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
         )
         # A measured graph is now playing and could not be banked, so whatever
         # was banked before describes some OTHER apply. Absent beats wrong:
-        # the resolver's fallback (guided captures, then the datasheet) is
-        # conservative, while a stale record levels the graph by numbers
-        # nothing is playing.
+        # the resolver's empty answer is conservative, while a stale record
+        # levels the graph by numbers nothing is playing.
         cleared(BANK_WRITE_REFUSED, "the measured trim could not be banked")
         return
     log_event(
@@ -1560,12 +1125,11 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
 
 def _measured_candidate_metadata(
     candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset,
-    topology: OutputTopology, measurements: Mapping[str, Any], created_at: str,
+    topology: OutputTopology, created_at: str,
 ) -> dict[str, Any]:
     roles = required_driver_roles(preset.way_count)
     groups = sorted(group.id for group in topology.speaker_groups if group.mode in {"active_2_way", "active_3_way"})
     measured = candidate.analysis.get("measurement_status") != "unmeasured"
-    notes, frame = _compare_level_sittings(preset, measurements, dict(candidate.role_attenuations_db)) if measured else ([], {})
     origin = PROVENANCE_MEASURED if measured else PROVENANCE_MANUAL
     return {
         "sources": {role: "measured" if measured else "operator_pinned" for role in roles},
@@ -1574,8 +1138,7 @@ def _measured_candidate_metadata(
         "corrections_provenance": {role: {"gain_db": origin} for role in roles},
         "level_match": {"groups_total": len(groups), "groups_measured": len(groups) if measured else 0,
                         "comparison": "strict_measured_candidate" if measured else "", "incomparable_groups": [],
-                        "applied": measured, "newest_capture_at": created_at if measured else None,
-                        "sitting_differences": list(notes), "sitting_frame": frame},
+                        "applied": measured, "newest_capture_at": created_at if measured else None},
         "automatic_candidate": {"ready": measured, "reason": None, "detail": "",
                                 "required_group_ids": groups, "measured_group_ids": groups if measured else [],
                                 "summed_group_ids": groups if measured else [],
@@ -1663,7 +1226,6 @@ def prepare_applied_baseline_profile(
     *,
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
-    measurements: Mapping[str, Any],
     config_path: str | Path | None = None,
     crossover_preview: Mapping[str, Any] | None = None,
     config_sha256: str | None = None,
@@ -1693,7 +1255,7 @@ def prepare_applied_baseline_profile(
         fields = alignment_to_candidate_fields({**timing, "alignment_status": "ok"},
                                               roles=required_driver_roles(candidate.source_preset.way_count))
         projected = replace(candidate, alignment=MeasuredCrossoverAlignment(*fields))
-    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, at)
+    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, at)
     snapshot = recomposition_snapshot_for(candidate, declaration=declaration, design_draft=design_draft,
         projected=projected, topology_fingerprint=source["topology_fingerprint"], provenance=provenance)
     corrections, linearization = snapshot["corrections"], snapshot["linearization"]

@@ -57,7 +57,6 @@ def _reigning_candidate_box(tmp_path: Path, monkeypatch):
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements={},
         write=True,
         config_path=config_dir / "active_speaker_baseline.yml",
     )

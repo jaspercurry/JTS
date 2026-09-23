@@ -3073,7 +3073,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     draft = standard_design_draft(topology)
     declaration, declared = declared_graph_fixture(topology, draft)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(
-        bank_candidate(declared), declaration=declaration, design_draft=draft, measurements={},
+        bank_candidate(declared), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )
     prepared["status"] = "applied"
