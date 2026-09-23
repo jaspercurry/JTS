@@ -153,7 +153,10 @@ class CamillaHealth:
         *,
         suppress: bool,
         interval_sec: float,
-        scan: Callable[..., list[dict[str, Any]]],
+        scan: Callable[
+            [str, float, float, Callable[[str, str], dict[str, Any] | None]],
+            list[dict[str, Any]],
+        ],
         active_source: str | None,
     ) -> None:
         """Scan CamillaDSP's journal every ``interval_sec`` through the
