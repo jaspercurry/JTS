@@ -121,7 +121,8 @@ def _capture_reference(bundle_dir: Path, row: Measurement, preset: Any) -> Summe
     configured, polarity = configured_crossover_transfers(preset)
     reference = reference_from_graph(
         summed.freqs_hz, summed.magnitude_db, graph,
-        output_channels={output.driver_role: output.index for output in preset.channel_map.outputs},
+        output_channels={output.driver_role: output.index for output in preset.channel_map.outputs
+                         if output.output_variant == "primary"},
         configured_response_by_role=configured or {}, configured_polarity_by_role=polarity,
         band_hz=(max(1200.0, summed.validity_floor_hz or 0), 5000.0),
     )
