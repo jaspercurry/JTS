@@ -682,10 +682,7 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
     )
     monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-    from jasper.active_speaker import baseline_profile as bp_mod
-    monkeypatch.setattr(
-        bp_mod, "baseline_config_path", lambda *a, **k: tmp_path / "no_durable.yml",
-    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_durable.yml"))
     _patch_restore_reproof(monkeypatch, allowed=False)
     corrupt = tmp_path / "active_speaker_baseline.yml"
     corrupt.write_text("# a flat/passive config that slipped onto disk\n", encoding="utf-8")

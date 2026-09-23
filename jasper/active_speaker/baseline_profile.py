@@ -6,10 +6,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -27,7 +25,6 @@ from jasper.dsp_apply import (
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
@@ -73,14 +70,14 @@ from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_dri
 from .profile import snapshot_declares_single_branch
 from .rear_calibration import rear_operating_facts
 from . import passive_profile as _passive
-from .state_paths import baseline_profile_state_path
+from .state_paths import (
+    baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path, config_text_sha256,
+)
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
-DEFAULT_CONFIG_PATH = CANONICAL_CAMILLA_CONFIG_DIR / "active_speaker_baseline.yml"
-CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
 REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
 REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
@@ -105,20 +102,6 @@ def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str
     snapshot = (source or {}).get("recomposition_snapshot") or {}
     raw = snapshot.get("bass_extension") or {}
     return validate_dynamic_bass_descriptor(raw) if raw else {}
-
-
-def baseline_config_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
-
-
-def config_text_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def baseline_candidate_config_path(text: str, path: str | Path | None = None) -> Path:
-    target = baseline_config_path(path)
-    sha256 = config_text_sha256(text)
-    return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
 
 
 @asynccontextmanager

@@ -21,6 +21,7 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path, config_text_sha256
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
 from jasper.log_event import log_event
@@ -40,7 +41,7 @@ async def apply_candidate(
     from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
-    async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
+    async with dsp_writer_lock(baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
             if isinstance(candidate, str):
                 banked = find_banked_candidate(candidate)
@@ -65,14 +66,14 @@ async def apply_candidate(
             if preference_filters or trim_db:
                 text = compile_tuning_graph(declaration, candidate=selected,
                     preference_filters=preference_filters, output_trim_db=trim_db)
-            sha = baseline_profile.config_text_sha256(text)
+            sha = config_text_sha256(text)
             proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
                 applied_baseline_state={"recomposition_snapshot": baseline_profile.recomposition_snapshot_for(
                     selected, declaration=declaration, design_draft=draft)})
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
-            target = baseline_profile.baseline_candidate_config_path(text)
+            target = baseline_candidate_config_path(text)
             prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
                 config_path=target, config_sha256=sha,
                 saved_timing=(incumbent or {}).get("timing"))

@@ -36,6 +36,7 @@ from jasper.paths import resolve_state_path
 from jasper.sound.settings import saved_sound_layers
 from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for
 from jasper.active_speaker.rear_calibration import rear_stage_gain_name
+from jasper.active_speaker.state_paths import baseline_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +408,6 @@ async def start_audition(
 
     from jasper.active_speaker.baseline_profile import (
         applied_profile_displacement,
-        baseline_config_path,
         load_applied_baseline_profile_state,
     )
     from jasper.active_speaker.runtime_contract import (
@@ -548,7 +548,6 @@ async def stop_audition(
     worst possible reading of a corrupt byte.
     """
 
-    from jasper.active_speaker.baseline_profile import baseline_config_path
     from jasper.dsp_apply import dsp_writer_lock
 
     if not audition_state_path(state_path).exists():

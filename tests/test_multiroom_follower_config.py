@@ -758,11 +758,7 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     # No durable baseline on disk → only the (unprovable) stash candidate.
-    from jasper.active_speaker import baseline_profile as bp_mod
-    monkeypatch.setattr(
-        bp_mod, "baseline_config_path",
-        lambda *a, **k: tmp_path / "no_durable_baseline.yml",
-    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_durable_baseline.yml"))
     _patch_restore_reproof(monkeypatch, allowed=False)  # candidate fails re-proof
     corrupt = tmp_path / "active_speaker_baseline.yml"
     corrupt.write_text("# a flat/passive config that slipped onto disk\n", encoding="utf-8")
@@ -784,10 +780,7 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
-    from jasper.active_speaker import baseline_profile as bp_mod
-    monkeypatch.setattr(
-        bp_mod, "baseline_config_path", lambda *a, **k: tmp_path / "no_baseline.yml"
-    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_baseline.yml"))
     monkeypatch.setattr(
         runtime_contract_mod,
         "safe_graph_for_current_topology",

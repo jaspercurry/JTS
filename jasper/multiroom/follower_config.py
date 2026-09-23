@@ -39,6 +39,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from ..active_speaker.state_paths import baseline_config_path
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
 from . import _stash
@@ -318,7 +319,6 @@ async def restore_active_camilla_solo(
     the two arms stay distinguishable in the journal; ``apply_source`` labels the
     dsp-apply for the same reason.
     """
-    from jasper.active_speaker.baseline_profile import baseline_config_path
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         safe_graph_for_current_topology,

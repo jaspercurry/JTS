@@ -394,6 +394,7 @@ def commissioning_box(tmp_path, monkeypatch):
 async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch, commissioning_box, applied):
     from dataclasses import replace
     from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.state_paths import config_text_sha256
     from jasper.active_speaker.candidate_bank import find_banked_candidate
     from jasper.active_speaker.candidate_parts import candidate_from_design_draft
     from jasper.active_speaker.crossover_v2 import door
@@ -427,7 +428,7 @@ async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_
     monkeypatch.setattr(door, "find_banked_candidate", lookup)
     graph = door.bind_measurement_graph(profile, candidate=candidate, camilla_factory=Mock(), config_dir=tmp_path)
     assert graph.graph_yaml() == compile_tuning_graph(profile, scope="candidate", candidate=candidate)
-    assert reviewed["config"]["sha256"] == baseline_profile.config_text_sha256(graph.graph_yaml())
+    assert reviewed["config"]["sha256"] == config_text_sha256(graph.graph_yaml())
     result = await web._active_speaker_baseline_profile_apply_payload(camilla_factory=lambda: cam)
     assert result["status"] == "applied", result
     assert Path(cam.path).read_text() == graph.graph_yaml()

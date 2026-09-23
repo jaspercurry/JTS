@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_runtime_plan import apply_capture_precedence
 from jasper.audio_runtime_settings import EmitSoundConfigKwargs
@@ -406,8 +407,6 @@ class _ActiveGraphCarrier:
         return result
 
     def destination(self, result: ReemitResult, config_dir: str | Path, *, audition: bool = False) -> Path:
-        from jasper.active_speaker.baseline_profile import baseline_candidate_config_path, baseline_config_path  # lazy: active graph owner
-
         if audition:
             return sound_audition_config_path(config_dir)
         return baseline_candidate_config_path(
