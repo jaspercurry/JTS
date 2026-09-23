@@ -341,6 +341,13 @@ def _outputd_env_bool(raw: "str | None") -> bool:
 #: bare outputd marker — the ACTIVE endpoint's and the dac-content lane's alike.
 OUTPUTD_ENV_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
 
+#: The outputd env key that arms the bonded dac-content ring as a box's content
+#: source. A BARE marker, never a path: outputd derives the file from its own
+#: ``DEFAULT_DAC_CONTENT_RING_PATH``, pinned equal to
+#: :data:`jasper.multiroom.dac_content_ring.DAC_CONTENT_RING_FILE`, so no env
+#: can name that ring and the two ends have no second spelling to disagree on.
+DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
+
 
 @dataclass(frozen=True)
 class RingWire:
@@ -611,17 +618,13 @@ def outputd_bridge_is_ring(raw: str | None) -> bool:
 def dac_content_lane_marker_armed(env: "Mapping[str, str]") -> bool:
     """Is this box armed onto the bonded dac-content RETURN ring?
 
-    Reads :data:`~jasper.multiroom.dac_content_ring.DAC_CONTENT_LANE_ENV`, whose
+    Reads :data:`DAC_CONTENT_LANE_ENV`, whose
     single writer is ``jasper.multiroom.reconcile.outputd_grouping_env``. A BARE
     marker, so the accept-set is outputd's own ``env_bool`` vocabulary
     (:data:`OUTPUTD_ENV_BOOL_TRUE`) and ``=0`` is not armed — a reader testing
     mere PRESENCE would call a cleared bond armed, since that writer clears by
     writing the key EMPTY.
     """
-    from jasper.multiroom.dac_content_ring import (  # lazy: cycle — that module imports this one at module scope
-        DAC_CONTENT_LANE_ENV,
-    )
-
     return _outputd_env_bool(env.get(DAC_CONTENT_LANE_ENV))
 
 

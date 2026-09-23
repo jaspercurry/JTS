@@ -22,10 +22,8 @@ from tests._bonded_member import bonded_grouping_env
 from jasper.cli.doctor import grouping as doctor_grouping
 from jasper.cli.doctor._evidence import evidence
 
-from jasper.multiroom.dac_content_ring import (
-    DAC_CONTENT_LANE_ENV,
-    DAC_CONTENT_RING_PERIOD_FRAMES,
-)
+from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
+from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.config import (
     GroupingConfig,
     is_active_member,

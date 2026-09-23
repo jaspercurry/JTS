@@ -685,7 +685,7 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     from jasper.fanin_coupling import TRANSPORT_SHAPES
     from jasper.transport_coherence import transport_topology_for_coupling
 
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     produced = {
         transport_topology_for_coupling(

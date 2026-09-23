@@ -17,7 +17,7 @@ agree on.
 **Its writer is** ``jasper.multiroom.reconcile_plan.assemble_args`` (the member's
 snapclient ``--soundcard``) **and its arm is**
 ``jasper.multiroom.reconcile.outputd_grouping_env`` (the bare
-:data:`DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
+:data:`~jasper.fanin_coupling.DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
 FIFO spelling still parks, and what the two env layers have to agree on:
 :doc:`ADR-0220 <../docs/adr/0220-the-dac-content-marker-is-served-and-its-contradiction-parks>`.
 
@@ -56,15 +56,6 @@ DAC_CONTENT_RING_FILE = f"{RING_SHM_DIR}/dac-content.ring"
 #: (``deploy/lib/install/ring-platform.sh``'s ``install_jts_ring_conf_assets``).
 #: Sibling of :data:`jasper.multiroom.grouping_ring.GROUPING_RING_CONF_D`.
 DAC_CONTENT_RING_CONF_D = "/etc/alsa/conf.d/63-jts-ring-dac-content.conf"
-
-#: The outputd env key that arms this ring as a box's dac-content source. A
-#: BARE marker, never a path: outputd derives the file from its own
-#: ``DEFAULT_DAC_CONTENT_RING_PATH``, pinned equal to
-#: :data:`DAC_CONTENT_RING_FILE`, so no env can name this ring and the two ends
-#: have no second spelling to disagree on. Truthiness is outputd's ``env_bool``
-#: accept-set (:data:`jasper.fanin_coupling.OUTPUTD_ENV_BOOL_TRUE`) — a reader
-#: that tests mere PRESENCE would call ``=0`` armed.
-DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
 
 #: The channel this box drops to from the bond's shared stereo (outputd's
 #: ``ChannelPick``) and its pair-balance trim in dB. Both are written as EMPTY
