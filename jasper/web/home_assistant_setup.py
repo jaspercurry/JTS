@@ -218,6 +218,25 @@ def _push_recent_url(existing: list[str], url: str) -> list[str]:
     return out[:RECENT_URLS_MAX]
 
 
+def _write_url(
+    path: str, url: str, existing: dict[str, str], *,
+    token: str = "", agent_id: str = "", verify_ssl: bool = True,
+) -> None:
+    values = {ENV_URL: url}
+    recent = _recent_urls(existing)
+    if token:
+        values.update({
+            ENV_TOKEN: token,
+            ENV_AGENT_ID: agent_id,
+            ENV_RECENT_URLS: json.dumps(_push_recent_url(recent, url)),
+        })
+    if not verify_ssl:
+        values[ENV_VERIFY_SSL] = "0"
+    if recent and not token:
+        values[ENV_RECENT_URLS] = json.dumps(recent)
+    write_env_file(path, values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
+
+
 # ---- mDNS discovery ---------------------------------------------------------
 
 def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]]:
@@ -1085,13 +1104,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # When the URL changes, drop the prior token — it belongs to a
         # different HA instance. The user has to re-paste.
         if existing_token and existing.get(ENV_URL, "") != normalized_url and not raw_token:
-            values = {ENV_URL: normalized_url}
-            # Keep recent URLs around
-            recent = _recent_urls(existing)
-            if recent:
-                values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
+                _write_url(cfg["state_path"], normalized_url, existing)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1102,12 +1116,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # is empty hidden input), just persist the URL and bounce to
         # state 2 for the token paste.
         if not raw_token and not existing_token:
-            values = {ENV_URL: normalized_url}
-            recent = _recent_urls(existing)
-            if recent:
-                values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
+                _write_url(cfg["state_path"], normalized_url, existing)
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1123,15 +1133,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # Keep the URL in the env file so the user lands in state
             # 2 with a still-valid URL on the next render — only the
             # token gets dropped.
-            values = {ENV_URL: normalized_url}
-            # Persist verify_ssl so state-2's hint is accurate.
-            if not verify_ssl:
-                values[ENV_VERIFY_SSL] = "0"
-            recent = _recent_urls(existing)
-            if recent:
-                values[ENV_RECENT_URLS] = json.dumps(recent)
             try:
-                write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
+                _write_url(
+                    cfg["state_path"], normalized_url, existing, verify_ssl=verify_ssl,
+                )
             except OSError as e:
                 send_see_other(handler, "./", flash=f"Could not save: {e}")
                 return
@@ -1141,21 +1146,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             return
 
-        # Validation passed. Persist URL + token + agent + verify_ssl +
-        # bump recent URLs.
-        recent = _push_recent_url(_recent_urls(existing), normalized_url)
-        values = {
-            ENV_URL: normalized_url,
-            ENV_TOKEN: token,
-            ENV_AGENT_ID: agent_id,
-            ENV_RECENT_URLS: json.dumps(recent),
-        }
-        # Only write the flag when explicitly off — keeps the env
-        # file small and matches "absent = default safe value".
-        if not verify_ssl:
-            values[ENV_VERIFY_SSL] = "0"
         try:
-            write_env_file(cfg["state_path"], values, mode=SECRET_ENV_MODE, owner=HA_ENV_OWNER)
+            _write_url(
+                cfg["state_path"], normalized_url, existing,
+                token=token, agent_id=agent_id, verify_ssl=verify_ssl,
+            )
         except OSError as e:
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
