@@ -46,11 +46,6 @@ async def test_first_chunk_event_reports_latency_since_end_input(provider, end_i
                 conn._session.feed(event)
         await wait_until(lambda: turn.chunks_received() >= 1)
 
-        async def consume_first():
-            async for _ in turn.audio_out_chunks():
-                return
-
-        await asyncio.wait_for(consume_first(), timeout=1.0)
         fields = event_fields(caplog, "turn.first_chunk")
         assert fields["provider"] == provider.args[0]
         assert int(fields["since_turn_start_ms"]) >= 10
@@ -69,13 +64,12 @@ async def test_playout_queue_ceiling_drops_the_newest_chunk(provider, caplog, mo
     await conn.start(ToolRegistry(), "")
     try:
         turn = await conn.acquire_turn()
-        with caplog.at_level(
-            logging.WARNING,
-        ):
-            turn._enqueue_audio(AudioOutChunk(b"12345"))
-            turn._enqueue_audio(AudioOutChunk(b"67890"))
-            turn._enqueue_audio(AudioOutChunk(b"X"))
-            turn._enqueue_audio(AudioOutChunk(b"YZ"))
+        with caplog.at_level(logging.WARNING):
+            for pcm in (b"12345", b"67890", b"X", b"YZ"):
+                if conn.PROVIDER_NAME in {"openai", "grok"}:
+                    await turn._on_audio_delta(base64.b64encode(pcm).decode())
+                else:
+                    turn._enqueue_audio(AudioOutChunk(pcm))
 
         assert turn.audio_chunks_pending() == 2
         assert turn.audio_dropped_bytes() == 3, (
