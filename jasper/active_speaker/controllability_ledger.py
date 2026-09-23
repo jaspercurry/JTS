@@ -31,6 +31,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from jasper.json_fields import as_mapping
+
 __all__ = ["ROUND_RECEIPT_GLOB", "read_controllability_ledger"]
 
 #: ``*`` one is the bundle id, ``*`` two the minting capture session id — two
@@ -52,10 +54,6 @@ MAX_RECEIPTS_SCANNED = 64
 MAX_RECEIPT_BYTES = 1024 * 1024
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _load(path: Path) -> Mapping[str, Any] | None:
     """Parse one receipt, or ``None`` when it is not usable. Never raises.
 
@@ -73,16 +71,16 @@ def _load(path: Path) -> Mapping[str, Any] | None:
 
 def _round(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """One receipt's two blocks, as banked. Absent blocks read as empty."""
-    realization = _mapping(
-        _mapping(receipt.get("round_measurements")).get("realization")
+    realization = as_mapping(
+        as_mapping(receipt.get("round_measurements")).get("realization")
     )
-    evidence = _mapping(
-        _mapping(_mapping(receipt.get("round_axes")).get("quality")).get("evidence")
+    evidence = as_mapping(
+        as_mapping(as_mapping(receipt.get("round_axes")).get("quality")).get("evidence")
     )
     misses = evidence.get("spec_bands")
     return {
-        "bands": dict(_mapping(realization.get("bands"))),
-        "spec": str(_mapping(receipt.get("verification")).get("spec") or ""),
+        "bands": dict(as_mapping(realization.get("bands"))),
+        "spec": str(as_mapping(receipt.get("verification")).get("spec") or ""),
         "spec_misses": list(misses) if isinstance(misses, (list, tuple)) else [],
     }
 
