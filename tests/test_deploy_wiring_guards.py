@@ -280,21 +280,24 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 
 
 # ----------------------------------------------------------------------
-# 4b — OAuth callbacks stay out of nginx's access log
+# 4b — OAuth callbacks stay out of nginx's logs
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("callback", ["/spotify/oauth-callback", "/google/callback"])
 @pytest.mark.parametrize("profile", tuple(nginx_site.PROFILE_CONFS))
-def test_oauth_callbacks_are_never_access_logged(profile, callback):
-    """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's access log."""
+def test_oauth_callbacks_are_never_logged(profile, callback):
+    """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's logs."""
     servers = nginx_site.servers(nginx_site.conf_text(profile))
     assert {frozenset({80}), frozenset({443})} <= {ports for ports, _ in servers}
     for ports, locations in servers:
-        # An exact match wins outright; otherwise nginx picks one of the
-        # matching prefix or regex locations, so each must be unlogged.
+        # An exact match wins outright, and it proxies the code, so an upstream
+        # failure would also log it at error level. Otherwise nginx picks one
+        # of the matching prefix or regex locations, so each must be unlogged.
+        required = {"access_log off;"}
         if ("=", callback) in locations:
             candidates = [("=", callback)]
+            required.add("error_log /dev/null crit;")
         else:
             candidates = [
                 (mod, path)
@@ -306,7 +309,7 @@ def test_oauth_callbacks_are_never_access_logged(profile, callback):
         assert candidates, ports
         for key in candidates:
             lines = {line.strip() for line in locations[key].splitlines()}
-            assert "access_log off;" in lines, (ports, key)
+            assert required <= lines, (ports, key, required - lines)
 
 
 # ----------------------------------------------------------------------
