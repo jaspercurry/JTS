@@ -380,14 +380,13 @@ require_root() {
 # chown their cargo cache dirs to this user
 # and `sudo -u` the builds — the appliance-standard account, NOT the
 # laptop-side PI_USER deploy transport setting (custom appliance users
-# are out of scope; see "Custom user boundary" in AGENTS.md).
+# are out of scope).
 BUILD_USER="pi"
 
 require_build_user() {
-    # Fail fast, BEFORE any host mutation. Without this preflight a
-    # custom-user install died ~15 minutes in, at the first
-    # `chown pi:pi` in build_install_jasper_fanin — after apt packages
-    # and the renderer stack had already been mutated.
+    # Fail fast, BEFORE any host mutation: the Rust builds that chown to and
+    # `sudo -u` this user run only after apt and the renderer stack have
+    # already mutated the host.
     if getent passwd "${BUILD_USER}" >/dev/null 2>&1; then
         return 0
     fi
@@ -408,12 +407,11 @@ EOF
 
 fetch_verified_source_archive() {
     # Fetch-to-temp-then-swap: download, hash-check, and extract into a
-    # staging dir first; only replace ${dest_dir} once everything
-    # succeeded. The previous shape rm -rf'd the destination BEFORE the
-    # curl, so under `set -e` a transient network failure aborted the
-    # install with the prior source tree already destroyed. Bounded
-    # retries absorb flaky Pi WiFi; --max-time caps a stalled transfer
-    # (these archives are a few MB) so the install can't hang forever.
+    # staging dir first, and replace ${dest_dir} only once all of that
+    # succeeded, so a transient network failure under `set -e` never leaves
+    # the prior source tree destroyed. Bounded retries absorb flaky Pi WiFi;
+    # --max-time caps a stalled transfer (these archives are a few MB) so the
+    # install can't hang forever.
     local url="$1"
     local expected_sha="$2"
     local dest_dir="$3"
@@ -562,20 +560,8 @@ while time.monotonic() < deadline:
             raise RuntimeError(
                 f"dac.pcm={data.get('dac', {}).get('pcm')!r}, expected {expected_dac!r}"
             )
-        # CONTENT PCM: keyed on the BRIDGE, never on sink_mode. This derived the
-        # expectation from sink_mode + ACTIVE_CHANNELS and demanded
-        # `outputd_active_content_capture` from a composite or active box. That
-        # lane is deleted (#2534) and the hardware reconciler now writes
-        # explicit-EMPTY for both shapes, so the old expectation would have
-        # WARNed "jasper-outputd is not ready" on every deploy to every armed
-        # roleful box in the fleet, jts.local included.
-        #
-        # Under the ring outputd reads the ring FILE and opens no content PCM at
-        # all, so there is nothing for this probe to compare; jasper-doctor's
-        # check_outputd_service owns the ring-side rule (it rejects the retired
-        # snd-aloop name) and runs later in this same install via
-        # run_doctor_summary. Keeping a second copy of that rule here is what
-        # let this one go stale in the first place.
+        # No content-PCM expectation: under the ring outputd opens none, and
+        # jasper-doctor's check_outputd_service owns the ring-side rule.
         sys.exit(0)
     except Exception as e:
         last_error = e
@@ -597,10 +583,8 @@ install_camilladsp() {
     # room-correction configs, so it must be group-writable from its FIRST
     # creation — not only after the later widen step below. A deploy that stops
     # between here and that widen (or a future reorder) must not leave it
-    # root-only, or non-root staging fails with PermissionError and surfaces to
-    # the household as "could not load the silent active-speaker setup" (the
-    # jts3 2026-07-06 incident). check_camilla_configs_writable pins this at
-    # runtime.
+    # root-only, or non-root staging fails with PermissionError.
+    # check_camilla_configs_writable pins this at runtime.
     install -d -m 2775 -g jasper /var/lib/camilladsp/configs
     ensure_state_dir
     # Shared correction/test artifacts are written by the correction web flow and
@@ -779,7 +763,7 @@ reconcile_sound_dsp_state() {
 
 ensure_crossover_camilla_statefile() {
     # Seed camilla#2's OWN statefile (crossover-statefile.yml) so the
-    # endpoint-crossover instance (jasper-camilla-crossover.service, :1235)
+    # endpoint-crossover instance (jasper-camilla-crossover.service)
     # has a config to load on first start (the unit has no positional
     # config — same CamillaDSP-v4 statefile-clobber reason as camilla#1).
     #
@@ -795,9 +779,7 @@ ensure_crossover_camilla_statefile() {
     #
     # PARKED DEFAULT (issue #2135): a roleful box that has staged no startup
     # graph yet seeds the PARKED graph here instead — a File sink to /dev/null
-    # with every output hard muted. Before #2135 this call BLOCKED on such a
-    # box (exit 1), which failed the whole install. Same benign-seam reasoning
-    # as the flat case below, and strictly safer than it: camilla#2 is INERT
+    # with every output hard muted. That seed is benign: camilla#2 is INERT
     # until the grouping reconciler arms it, and `seed_crossover_statefile`
     # (jasper/multiroom/active_leader_config.py, called from the reconciler's
     # active-leader bake arm) repoints this statefile at the re-proven
@@ -892,7 +874,7 @@ install_alsa() {
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
-        echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*); see PR #223."
+        echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*)."
     fi
     install -d -m 0755 "${ENV_DIR}"
     ensure_state_dir
@@ -942,11 +924,10 @@ write_build_manifest() {
     # started installing X" note. It is written ONCE, as the final
     # mutation in main(), so `set -euo pipefail` guarantees every
     # build/install/migration step above ran to completion before this
-    # line is reached. A mid-install abort (e.g. the OOM-killed WebRTC
-    # build on jts2, 2026-06-21) therefore leaves the PRIOR good manifest
-    # untouched — so the deploy direction-guard and the /system "Software"
-    # card never advertise a SHA the box is not cleanly running. See
-    # ADR-0172.
+    # line is reached. A mid-install abort therefore leaves the PRIOR good
+    # manifest untouched — so the deploy direction-guard and the /system
+    # "Software" card never advertise a SHA the box is not cleanly running.
+    # See ADR-0172.
     #
     # JASPER_INSTALL_STATUS=ok records exactly that honest claim: the
     # install process for this SHA completed. (Runtime subsystem health —
@@ -1435,7 +1416,7 @@ widen_jasper_web_writable_dirs() {
     # CamillaDSP sound profiles under /var/lib/camilladsp/configs (the /sound/
     # EQ editor). os.replace() needs WRITE on the *directory*, so make both
     # root:jasper 2775 (setgid → new files inherit group jasper). Mirrors
-    # install_avahi_jasper_control's /etc/avahi/services widening (3b-2). The
+    # install_avahi_jasper_control's /etc/avahi/services widening. The
     # ordinary sound-profile files inside keep their own owners (root reads/writes
     # them fine; the group-writable dir is what lets the dropped daemon swap them
     # atomically). Every generated YAML is also read by jasper-control /state or
@@ -1454,12 +1435,11 @@ widen_jasper_web_writable_dirs() {
     find /var/lib/camilladsp/configs -maxdepth 1 -type f -name '*.yml' \
         -exec chgrp jasper {} + -exec chmod 0640 {} + 2>/dev/null || true
     # The Layer-A SSOT (active_speaker_baseline_profile.json) and the Active
-    # run-record locks + records used to be healed here with path-following
-    # chgrp/chmod. That is a local priv-esc under a group-writable
-    # /var/lib/jasper (a group member can pre-create the name as a symlink
-    # onto a root file), so it moved to heal_shared_state_modes, which pins
-    # each inode with O_NOFOLLOW+fstat before touching it. See
-    # deploy/lib/install/state-and-secrets.sh.
+    # run-record locks + records are NOT healed here: a path-following
+    # chgrp/chmod under a group-writable /var/lib/jasper is a local priv-esc
+    # (a group member can pre-create the name as a symlink onto a root file).
+    # heal_shared_state_modes (deploy/lib/install/state-and-secrets.sh) owns
+    # them and pins each inode with O_NOFOLLOW+fstat before touching it.
     echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
 }
 
@@ -1624,14 +1604,12 @@ install_camillagui() {
     systemctl daemon-reload
     systemctl enable camillagui.socket
     # Restart (not just start/enable --now) so a ListenStream= change on
-    # upgrade — e.g. the #2319 loopback rebind — actually takes effect. A
-    # bare `start` is a no-op when the socket is already active from a
-    # prior install and would silently leave the old bind (0.0.0.0:5005)
-    # live until the next reboot: the same trap AGENTS.md documents for
-    # jasper-web.socket (PR #118). Not swallowed with `|| true` like the
+    # upgrade actually takes effect: a bare `start` is a no-op when the socket
+    # is already active from a prior install and would silently leave the old
+    # bind live until the next reboot. Not swallowed with `|| true` like the
     # wizard-socket loop's restart — a failed rebind here leaves a
-    # security-relevant posture unchanged (still LAN-reachable) and should
-    # abort the install loudly rather than continue past it silently.
+    # security-relevant posture unchanged and should abort the install loudly
+    # rather than continue past it silently.
     systemctl restart camillagui.socket
     echo "  CamillaGUI listening on 127.0.0.1:5005 via socket-activated proxy"
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
