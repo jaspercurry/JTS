@@ -23,7 +23,7 @@ from jasper.active_speaker.measurement_bass import bass_view
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.speaker_fit import _envelope_answer
 from jasper.audio_measurement.band_ladders import BAND_LADDERS, CROSSOVER_SNR_BANDS_HZ, SNR_BANDS_HZ
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.snr_policy import band_snr_verdicts, framed_ambient_band_report
 from jasper.cli.round_views import main

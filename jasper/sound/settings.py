@@ -42,7 +42,14 @@ from ..volume_floor import (
     normalize_volume_floor_db,
 )
 from jasper.camilla_config_contract import FilterSpec
-from .profile import SoundProfile, build_sound_filter_slots, load_profile, loudness_compensation_db
+from .profile import (
+    SoundProfile,
+    _coerce_bool,
+    _coerce_float,
+    build_sound_filter_slots,
+    load_profile,
+    loudness_compensation_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,30 +70,6 @@ SETTINGS_PATH = "/var/lib/jasper/sound_settings.json"
 # Bound on the manual headroom trim. ±12 dB mirrors the per-band EQ range;
 # more than 12 dB of global attenuation is volume control, not headroom.
 HEADROOM_TRIM_MAX_DB = 12.0
-
-
-def _coerce_float(value: Any, default: float) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return default
-    if out != out or out in (float("inf"), float("-inf")):  # NaN / inf
-        return default
-    return out
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in {"1", "true", "yes", "on"}:
-            return True
-        if token in {"0", "false", "no", "off"}:
-            return False
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
 
 
 @dataclass(frozen=True)

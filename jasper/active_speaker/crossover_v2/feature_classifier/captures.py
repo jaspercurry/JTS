@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 
 from jasper.audio_measurement.evidence_reasons import (
     CAPTURES_UNREADABLE,

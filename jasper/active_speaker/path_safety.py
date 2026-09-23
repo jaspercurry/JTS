@@ -15,15 +15,14 @@ path, then writes evidence for the startup-load gate.
 
 from __future__ import annotations
 
-import hashlib
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import sha256_file, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
+from jasper.paths import resolve_state_path
 
 from ._common import finite_float as _finite_float, issue as _issue, software_guard_needed
 from .calibration_level import MAX_TEST_LEVEL_DBFS
@@ -152,11 +151,7 @@ def _normalise_issue(raw: Any) -> dict[str, str]:
 def path_safety_evidence_path(path: str | Path | None = None) -> Path:
     """Return the configured path-safety evidence artifact path."""
 
-    return Path(
-        path
-        or os.environ.get(PATH_SAFETY_EVIDENCE_ENV)
-        or DEFAULT_PATH_SAFETY_EVIDENCE_PATH
-    )
+    return resolve_state_path(path, PATH_SAFETY_EVIDENCE_ENV, DEFAULT_PATH_SAFETY_EVIDENCE_PATH)
 
 
 def requirements_payload() -> dict[str, Any]:
@@ -293,11 +288,7 @@ def _file_sha256(path: Path | None) -> str | None:
     if path is None:
         return None
     try:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return sha256_file(path)
     except OSError:
         return None
 

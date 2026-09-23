@@ -25,7 +25,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 from .commission_ramp import ramp_state_path
-from .design_draft import DEFAULT_DESIGN_DRAFT_PATH, DESIGN_DRAFT_PATH_ENV
+from .design_draft import _design_draft_path
 from .measurement import measurement_state_path
 from .path_safety import path_safety_evidence_path
 from .staging import (
@@ -52,17 +52,11 @@ _STAGED_ANCHOR_ARTIFACT_ID = "staged_config"
 _STAGED_ANCHOR_LOCK_SOURCE = "active_speaker_reset"
 
 
-def _design_draft_state_path(path: str | Path | None = None) -> Path:
-    import os
-
-    return Path(path or os.environ.get(DESIGN_DRAFT_PATH_ENV) or DEFAULT_DESIGN_DRAFT_PATH)
-
-
 def active_speaker_setup_state_paths() -> dict[str, Path]:
     """Return reset-owned active-speaker setup/evidence JSON paths."""
 
     return {
-        "design_draft": _design_draft_state_path(),
+        "design_draft": _design_draft_path(),
         "staged_config": staged_metadata_path(),
         "path_safety": path_safety_evidence_path(),
         "startup_load": startup_load_state_path(),

@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     HARMONICS_ARTIFACT,
     build_crossover_evidence_packet,
 )
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.calibration import SUPPORTED_MODELS
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading

@@ -12,7 +12,6 @@ code must pass through before any sound-emitting action is added.
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from pathlib import Path
@@ -20,6 +19,7 @@ from typing import Any, Callable
 
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import parse_utc_iso
+from jasper.paths import resolve_state_path
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
@@ -48,10 +48,8 @@ def _now() -> float:
 
 
 def _state_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE")
-        or DEFAULT_STATE_PATH
+    return resolve_state_path(
+        path, "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", DEFAULT_STATE_PATH
     )
 
 

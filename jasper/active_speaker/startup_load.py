@@ -33,6 +33,8 @@ from .environment import (
     read_camilla_statefile_config_path,
 )
 from .path_safety import (
+    _normalise_issue,
+    _staged_config_path,
     _topology_blockers,
     evaluate_path_safety_evidence,
     software_guard_ready_for_startup,
@@ -56,16 +58,6 @@ STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
-
-
-def _normalise_issue(raw: Any) -> dict[str, str]:
-    if not isinstance(raw, dict):
-        return _issue("warning", "unknown_issue", "unknown issue")
-    return _issue(
-        str(raw.get("severity") or "warning"),
-        str(raw.get("code") or "unknown_issue"),
-        str(raw.get("message") or raw.get("code") or "unknown issue"),
-    )
 
 
 def _base_load_state(
@@ -181,14 +173,6 @@ def _calibration_at_floor(calibration_level: dict[str, Any]) -> bool:
     )
     floor = _level_value(calibration_level, "min_level_dbfs", MIN_TEST_LEVEL_DBFS)
     return requested <= floor + 1e-6
-
-
-def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
-    config = staged_config.get("config") if isinstance(staged_config, dict) else None
-    if not isinstance(config, dict):
-        return None
-    raw = config.get("path")
-    return Path(raw) if isinstance(raw, str) and raw.strip() else None
 
 
 def staged_topology_match_status(

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,6 +15,7 @@ from typing import Any, Mapping
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 
 from .attempts_loop import (
     FLOOR_BASES,
@@ -54,7 +54,7 @@ class ModelErrorStoreSnapshot:
 def model_error_state_path(path: str | Path | None = None) -> Path:
     """Explicit argument, then env override, then the production default."""
 
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 def _store_lock_path(path: Path) -> Path:

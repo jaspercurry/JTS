@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.round_captures import (
     doc_pose_key,
     select_capture,
 )
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
 
 PEAK_IDX = 480

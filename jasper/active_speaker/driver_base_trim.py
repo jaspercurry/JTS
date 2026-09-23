@@ -17,12 +17,12 @@ a migration, and there are no tolerant readers for older stored shapes.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json, fsync_directory
 from jasper.json_fields import finite_float as _finite, utc_now_iso as _utc_now
+from jasper.paths import resolve_state_path
 
 from ._common import require_sha256_hex
 from .level_trim import MAX_ATTENUATION_DB
@@ -95,7 +95,7 @@ class DriverBaseTrimError(ValueError):
 def base_trim_state_path(path: str | Path | None = None) -> Path:
     """Where the base trim lives: an explicit path, the env override, or the
     default. One resolver, so every surface probes the file the reader reads."""
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 def _chain_fingerprint(value: Any) -> str | None:

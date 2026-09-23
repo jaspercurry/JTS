@@ -25,7 +25,7 @@ import yaml
 
 from jasper.active_speaker.bench import bass_replay, render
 from jasper.active_speaker.bench.replay import replay_levels
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
 from jasper.cli.round_views import dsp_replay
 from tests.test_bass_extension_dynamic import _base_graph, _descriptor

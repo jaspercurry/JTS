@@ -32,6 +32,7 @@ from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 from jasper.sound.settings import saved_sound_layers
 from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for
 from jasper.active_speaker.rear_calibration import rear_stage_gain_name
@@ -113,9 +114,7 @@ class AuditionRefused(RuntimeError):
 def audition_state_path(path: str | Path | None = None) -> Path:
     """Resolve the audition state path (explicit arg > env override > default)."""
 
-    return Path(
-        path or os.environ.get(AUDITION_STATE_ENV) or DEFAULT_AUDITION_STATE_PATH
-    )
+    return resolve_state_path(path, AUDITION_STATE_ENV, DEFAULT_AUDITION_STATE_PATH)
 
 
 def read_audition_state(path: str | Path | None = None) -> dict[str, Any] | None:

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +19,7 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_ga
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float as strict_finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 
 from ._common import finite_float
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
@@ -193,7 +193,7 @@ class SeatLevelTarget:
 def seat_level_reference_state_path(path: str | Path | None = None) -> Path:
     """Where the reference lives: an explicit path, the env override, or the
     default. One resolver, so the doctor probes the same file the reader reads."""
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 _state_path = seat_level_reference_state_path

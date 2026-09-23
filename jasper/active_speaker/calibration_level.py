@@ -13,7 +13,6 @@ future microphone meter observations into coarse operator guidance.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from jasper.atomic_io import atomic_write_json
 from jasper.audio_measurement import mic_meter
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.paths import resolve_state_path
 
 from ._common import finite_float as _finite_float
 
@@ -36,7 +36,7 @@ TEST_LEVEL_STEP_DB = 1.0
 AUDIBLE_RAMP_STEP_DB = 10.0
 
 def _state_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 def _default_state_payload(path: Path) -> dict[str, Any]:

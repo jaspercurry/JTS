@@ -66,6 +66,7 @@ import numpy as np
 import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.json_fields import sha256_file
 
 PINNED_CAMILLADSP_VERSION = "v4.1.3"
 _VERSION_SUBSTRING = "4.1.3"
@@ -173,14 +174,10 @@ class BinaryIdentity:
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     try:
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
+        return sha256_file(path)
     except OSError as exc:
         raise RenderError(f"could not read {path} to hash it: {exc}") from exc
-    return digest.hexdigest()
 
 
 def _running_unit_exec_start_path(unit_name: str) -> str:

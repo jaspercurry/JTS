@@ -17,7 +17,7 @@ import yaml
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.active_speaker.crossover_v2 import round_captures
+from jasper.active_speaker.crossover_v2 import record_index, round_captures
 from jasper.active_speaker.crossover_v2.capture_prediction import (
     capture_prediction,
     compare_transfer,
@@ -279,17 +279,27 @@ def test_a_diagnostic_reads_each_record_and_hashes_each_audio_file_once(
         record.parent.mkdir(parents=True)
         record.write_text(json.dumps(document))
     reads, hashes = Counter(), Counter()
-    read_text, hash_file = Path.read_text, round_captures.sha256_file
+    read_text, load_mapping, hash_file = (
+        Path.read_text, record_index.read_json_mapping, round_captures.sha256_file,
+    )
 
     def read(path, *args, **kwargs):
         reads[path] += 1
         return read_text(path, *args, **kwargs)
+
+    def load(path):
+        # A canonical record loads through record_index's JSON-mapping owner
+        # (builtin `open`), never `Path.read_text`; count it on the same path
+        # key so the pin covers both loading routes.
+        reads[path] += 1
+        return load_mapping(path)
 
     def digest(path):
         hashes[path] += 1
         return hash_file(path)
 
     monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(record_index, "read_json_mapping", load)
     monkeypatch.setattr(round_captures, "sha256_file", digest)
     basis = read_diagnostic(diagnostic_round, "old", 7.0)
 
