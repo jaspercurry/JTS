@@ -179,17 +179,19 @@ def test_every_take_no_table_compares_is_listed_under_why(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("stamp", [{"phase": "lateral"}, {}], ids=["room_view", "speaker_view"])
 @pytest.mark.parametrize("gate,headline", [
     pytest.param({"gate_window_ms": 5.0, "trusted_floor_hz": 357.0}, (2.0, 1000.0, [357.0, 19700.0]),
                  id="gated_from_its_trusted_floor"),
     pytest.param({"gate_window_ms": None, "trusted_floor_hz": None}, (None, None, None), id="gate_failed"),
 ])
-def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline):
+def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline, stamp):
     """A seat take is banked ungated and through the reference gate. The
     ungated pair keeps the room and the sweep's low edge (54 dB at 22 Hz), and
     a gated pair below its own trusted floor is the same noise (9 dB at 295
     Hz): neither headlines. A series the gate could not window is still
-    labelled gated, so trust is the gate's own result, never the label."""
+    labelled gated, so trust is the gate's own result, never the label. The
+    speaker program's view stamps no ``phase``; its takes still compare."""
     round_dir = tmp_path / "r1"
     session_dir = round_dir / "bundle" / "sess1"
     full = np.array([22.0, 200.0, 295.0, 1000.0, 4000.0, 19700.0])
@@ -204,7 +206,7 @@ def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline
         ):
             series.append(FrequencySeries(
                 f"{take_id}:{window}", candidate, "measurement", tuple(freqs), tuple(magnitude),
-                details={"role": "summed", "phase": "lateral", "take_id": take_id,
+                details={"role": "summed", **stamp, "take_id": take_id,
                          "candidate_id": candidate, "window": window, **fields},
             ))
     view = build_frequency_view(FrequencyRun("room", "room", tuple(series)))

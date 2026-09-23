@@ -85,7 +85,8 @@ class _Read(NamedTuple):
 def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
     """Every lateral take by its own record, with the banked view's curves
     when the view holds any, else the record's. A take the view lacks reads
-    as having no curve."""
+    as having no curve. A view curve is matched by its take id alone: the
+    speaker program's view carries no ``phase`` (round_packet.write_round_packet)."""
     records = {
         document_capture_id(record) or Path(row.path).stem: (row, record)
         for row, record in measurement_documents(session_dir) if row.phase == PHASE_LATERAL
@@ -95,7 +96,7 @@ def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
         viewed: dict[str, list[Mapping[str, Any]]] = {}
         for curve in run.series:
             take_id = str(curve.details.get("take_id") or "")
-            if curve.details.get("phase") == PHASE_LATERAL and take_id in records:
+            if take_id in records:
                 viewed.setdefault(take_id, []).append(curve.to_dict())
         if viewed:
             for take_id, (row, record) in records.items():
