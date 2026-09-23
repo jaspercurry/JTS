@@ -16,6 +16,7 @@ from typing import Any, Literal, Mapping, NoReturn, TypeAlias
 
 from jasper.camilla_emit import fmt
 from jasper.camilla_config_contract import ensure_volume_limit_db
+from jasper.json_fields import finite_float
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US, DspPredecessor, NullWalkError
 
@@ -42,11 +43,9 @@ def _refuse(code: DelayGraphFailureCode, message: str) -> NoReturn:
 
 
 def _real_number(value: Any, *, code: DelayGraphFailureCode, field_name: str) -> float:
-    if type(value) not in {int, float}:
-        _refuse(code, f"{field_name} must be a real JSON number")
-    out = float(value)
-    if not math.isfinite(out):
-        _refuse(code, f"{field_name} must be finite")
+    out = finite_float(value)
+    if out is None:
+        _refuse(code, f"{field_name} must be a finite number")
     return out
 
 
@@ -186,9 +185,7 @@ def prove_static_delay_binding(
     :class:`DelayGraphProofError` (one of :data:`DelayGraphFailureCode`) on any
     mismatch; never silently accepts a graph it could not prove.
     """
-    if type(delay_us) not in {int, float} or not math.isfinite(float(delay_us)):
-        _refuse("candidate_invalid", "delay_us must be a finite number")
-    delay_us = float(delay_us)
+    delay_us = _real_number(delay_us, code="candidate_invalid", field_name="delay_us")
     if delay_us < 0.0 or delay_us > MAX_DSP_DELAY_US:
         _refuse("candidate_invalid", "delay_us is outside the DSP delay bound")
     if not isinstance(delay_filter_name, str) or not delay_filter_name.strip():

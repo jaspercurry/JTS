@@ -6,23 +6,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+from jasper.json_fields import finite_float
 
 SCHEMA_VERSION = 2
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _finite_number(value: object, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be a finite number")
-    try:
-        number = float(value)
-    except (OverflowError, ValueError) as exc:
-        raise ValueError(f"{field} must be a finite number") from exc
-    if not math.isfinite(number):
+    number = finite_float(value)
+    if number is None:
         raise ValueError(f"{field} must be a finite number")
     # JSON distinguishes -0.0 from 0.0 even though the safety policy does not.
     # Normalize it so equal numeric authority has one canonical fingerprint.

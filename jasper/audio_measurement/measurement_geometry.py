@@ -21,6 +21,7 @@ from typing import Any, Iterable, Mapping
 from .gating import ENTANGLEMENT_SOURCE_DECLARED, f_entanglement_floor_hz
 from .null_walk import DEFAULT_SOUND_SPEED_M_S
 from ..atomic_io import atomic_write_json
+from ..json_fields import finite_float
 
 DEFAULT_PATH = "/var/lib/jasper/measurement_geometry.json"
 
@@ -53,18 +54,11 @@ class GeometryFieldError(ValueError):
         self.field = field
 
 
-def _number(name: str, value: object) -> float:
-    """JSON booleans are not geometry measurements."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise GeometryFieldError(
-            name, f"{name} must be a number (got {value!r})"
-        )
-    return float(value)
-
-
 def _require_range(name: str, value: object, lo: float, hi: float, unit: str = "m") -> None:
-    number = _number(name, value)
-    if not math.isfinite(number) or not (lo <= number <= hi):
+    number = finite_float(value)
+    if number is None:
+        raise GeometryFieldError(name, f"{name} must be a finite number (got {value!r})")
+    if not (lo <= number <= hi):
         raise GeometryFieldError(
             name, f"{name} must be within [{lo:g}, {hi:g}] {unit} (got {number:g})"
         )

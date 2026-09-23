@@ -39,6 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.json_fields import finite_float
 from .driver_protection import (
     format_protection_hz,
     protection_highpass_floor_satisfied,
@@ -167,10 +168,8 @@ class CrossoverDeclarationChange:
 
 
 def _finite_positive(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) and number > 0 else None
+    number = finite_float(value)
+    return number if number is not None and number > 0 else None
 
 
 def preset_crossover_geometry(

@@ -326,6 +326,20 @@ def test_a_limiter_missing_its_soft_clip_flag_refuses() -> None:
         _derive(yaml.safe_dump(payload, sort_keys=False))
 
 
+@pytest.mark.parametrize(
+    "clip_limit",
+    [float("inf"), float("nan"), "-1.0", True, -(10**400)],
+    ids=["inf", "nan", "text", "bool", "huge_int"],
+)
+def test_a_clip_limit_that_is_not_a_finite_number_refuses(clip_limit) -> None:
+    payload = yaml.safe_load(_emit())
+    payload["filters"][driver_baseline_limiter_name("woofer")]["parameters"][
+        "clip_limit"
+    ] = clip_limit
+    with pytest.raises(EmitDerivationError):
+        _derive(yaml.safe_dump(payload, sort_keys=False))
+
+
 def test_the_emitter_ships_soft_clip_limiters() -> None:
     """The premise above is satisfied by the real emitter, not merely asserted."""
 

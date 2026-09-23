@@ -30,7 +30,7 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeake
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
-from jasper.json_fields import finite_float
+from jasper.json_fields import as_mapping, finite_float
 from jasper.output_topology import (
     OutputTopology, SpeakerChannel, SpeakerGroup, WAY_COUNT_BY_MAIN_MODE, unknown_output_hardware,
 )
@@ -107,12 +107,8 @@ def _request_schema(format_: dict[str, Any], kind: str, version: int,
     return schema
 
 
-def _mapping(raw: Any) -> Mapping[str, Any]:
-    return raw if isinstance(raw, Mapping) else {}
-
-
 def _preset(candidate: Mapping[str, Any], applied_profile: Mapping[str, Any]) -> ActiveSpeakerPreset | None:
-    for raw in (candidate.get("source_preset"), _mapping(applied_profile.get("recomposition_snapshot")).get("preset")):
+    for raw in (candidate.get("source_preset"), as_mapping(applied_profile.get("recomposition_snapshot")).get("preset")):
         try:
             return ActiveSpeakerPreset.from_mapping(raw)
         except (TypeError, ValueError, ActiveSpeakerConfigError):
@@ -123,10 +119,10 @@ def _preset(candidate: Mapping[str, Any], applied_profile: Mapping[str, Any]) ->
 def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
     """Resolve banked outputs without consulting the machine reading the round."""
     try:
-        return programs_for_topology(OutputTopology.from_mapping(_mapping(sources.get("draft")).get("topology")))
+        return programs_for_topology(OutputTopology.from_mapping(as_mapping(sources.get("draft")).get("topology")))
     except ValueError:
         pass
-    preset = _preset(_mapping(sources.get("candidate")), _mapping(sources.get("applied_profile")))
+    preset = _preset(as_mapping(sources.get("candidate")), as_mapping(sources.get("applied_profile")))
     groups: tuple[SpeakerGroup, ...] = ()
     if preset is not None:
         mode = next(mode for mode, count in WAY_COUNT_BY_MAIN_MODE.items() if count == preset.way_count)
@@ -147,31 +143,31 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     driver_format = driver.driver_prescription_response_format()
     alignment_format = alignment.alignment_prescription_response_format()
     topology_format = topology.topology_prescription_response_format()
-    safety = _mapping(design_draft_view(draft).get("driver_safety_profile"))
+    safety = as_mapping(design_draft_view(draft).get("driver_safety_profile"))
     passbands = driver.driver_passbands_from_safety_profile(safety)
     groups = manifest.get("sets")
     takes = [take for group in (groups if isinstance(groups, list) else [])
              if isinstance(group, Mapping) and isinstance(group.get("takes"), list)
              for take in group["takes"] if isinstance(take, Mapping) and take.get("selected")]
-    levels = [value for take in takes if (value := finite_float(_mapping(take.get("level")).get("level_db"))) is not None]
+    levels = [value for take in takes if (value := finite_float(as_mapping(take.get("level")).get("level_db"))) is not None]
     spl_margins = []
     if preset is not None:
         for take in takes:
-            level = _mapping(take.get("level"))
+            level = as_mapping(take.get("level"))
             spl = finite_float(level.get("loudest_half_second_db_spl"))
             if spl is not None:
                 spl_margins.append(max(0.0, preset.safety.max_commissioning_level_db_spl - spl - SPL_RAISE_MARGIN_DB))
     context = _branch_context(preset, {
-        role: {"gain_db": trim} for role, trim in _mapping(candidate.get("role_attenuations_db")).items()
+        role: {"gain_db": trim} for role, trim in as_mapping(candidate.get("role_attenuations_db")).items()
     }) if preset is not None else {role: ((), 0.0) for role in passbands}
     headroom = boost_headroom_by_role(
         branch_context=context,
-        linearization=linearization_filters_by_role(_mapping(candidate.get("linearization"))),
-        room_peqs=room_peqs_from_correction(_mapping(candidate.get("room_correction")), preset) if preset else (),
+        linearization=linearization_filters_by_role(as_mapping(candidate.get("linearization"))),
+        room_peqs=room_peqs_from_correction(as_mapping(candidate.get("room_correction")), preset) if preset else (),
         session_volume_db=max(levels) if levels and len(levels) == len(takes) else None,
         spl_headroom_db=min(spl_margins) if spl_margins else None,
     )
-    band = _mapping(_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
+    band = as_mapping(as_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
     corner = fc["fc_hz"] if fc else None
     delay = None

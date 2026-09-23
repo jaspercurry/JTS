@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import finite_float as strict_finite_float, utc_now_iso as _utc_now
+from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
-from ._common import finite_float
+from ._common import coerce_finite_float
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 
@@ -106,13 +106,13 @@ def measured_rung_admission(
 ) -> dict[str, Any]:
     bounds = []
     margin = max(tolerance_db, SPL_RAISE_MARGIN_DB)
-    levels = [strict_finite_float(observation.get("level_db")) for observation in observations]
+    levels = [finite_float(observation.get("level_db")) for observation in observations]
     lowest = min((level for level in levels if level is not None), default=None)
     for index, (observation, previous) in enumerate(zip(observations, levels), 1):
         spl = observation.get("spl") or {}
-        window = strict_finite_float(spl.get("max_window_db_spl"))
-        half_second = strict_finite_float(spl.get("loudest_half_second_db_spl"))
-        stop = strict_finite_float(spl.get("ceiling_db_spl"))
+        window = finite_float(spl.get("max_window_db_spl"))
+        half_second = finite_float(spl.get("loudest_half_second_db_spl"))
+        stop = finite_float(spl.get("ceiling_db_spl"))
         if previous is None or window is None or half_second is None or stop is None:
             raise RungMeasurementUnavailable([name for name, value in (
                 ("level_db", previous), ("max_window_db_spl", window),
@@ -349,9 +349,9 @@ def resolve_anchor_level(
     and their fingerprints serialize every ResolvedLevel field.
     """
     record = facts.record if facts is not None else load_seat_level_reference(state_path=state_path) or {}
-    anchor = finite_float(record.get("measured_db_spl"))
-    reference_volume_db = finite_float(record.get("reference_volume_db"))
-    target = finite_float((record.get("target") or {}).get("target_db_spl"))
+    anchor = coerce_finite_float(record.get("measured_db_spl"))
+    reference_volume_db = coerce_finite_float(record.get("reference_volume_db"))
+    target = coerce_finite_float((record.get("target") or {}).get("target_db_spl"))
     if (record.get("artifact_schema_version") != SCHEMA_VERSION
             or not record.get("session_id") or not record.get("leveled_at")
             or anchor is None or reference_volume_db is None or target is None
@@ -384,7 +384,7 @@ def resolve_anchor_level(
             "the calibration store, or re-run jasper-seat-level with the mic "
             "you will measure with",
         )
-    banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
+    banked_sens_factor_db = coerce_finite_float(banked.get("sens_factor_db"))
     identified = bool(banked_serial and sensitivity.serial)
     rebased = anchor
     if (banked_sens_factor_db is not None and sensitivity.sens_factor_db != banked_sens_factor_db

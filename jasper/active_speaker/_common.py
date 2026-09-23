@@ -94,14 +94,18 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
     }
 
 
-def finite_float(value: Any) -> float | None:
-    """Accept numeric strings and booleans."""
+def coerce_finite_float(value: Any) -> float | None:
+    """Accept numeric strings and booleans; ``json_fields.finite_float`` refuses both."""
 
     try:
         out = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
     return out if math.isfinite(out) else None
+
+
+# Removal condition: baseline_profile, crossover_contract and level_trim import coerce_finite_float.
+finite_float = coerce_finite_float
 
 
 def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:

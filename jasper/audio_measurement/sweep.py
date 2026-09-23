@@ -20,6 +20,7 @@ from typing import BinaryIO
 
 import numpy as np
 
+from jasper.json_fields import finite_float
 from .excitation import AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
 logger = logging.getLogger(__name__)
@@ -99,14 +100,10 @@ def synchronized_sweep_metadata(
     signal may be generated.
     """
 
-    if (
-        isinstance(amplitude_dbfs, bool)
-        or not isinstance(amplitude_dbfs, (int, float))
-        or not math.isfinite(float(amplitude_dbfs))
-        or float(amplitude_dbfs) > 0.0
-    ):
+    peak_dbfs = finite_float(amplitude_dbfs)
+    if peak_dbfs is None or peak_dbfs > 0.0:
         raise ValueError("amplitude_dbfs must be a finite non-positive number")
-    amplitude_dbfs = float(amplitude_dbfs)
+    amplitude_dbfs = peak_dbfs
     if f1 <= 0:
         raise ValueError(f"f1 must be positive, got {f1}")
     if f2 <= f1:

@@ -24,7 +24,7 @@ from jasper.json_fields import sha256_file, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from jasper.paths import resolve_state_path
 
-from ._common import finite_float as _finite_float, issue as _issue, software_guard_needed
+from ._common import coerce_finite_float, issue as _issue, software_guard_needed
 from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .driver_protection import (
     format_protection_hz,
@@ -538,8 +538,8 @@ def _tweeter_protection_floor_verdict(
                 "config again"
             ),
         )
-    floor_hz = _finite_float(config.get("tweeter_protection_floor_hz"))
-    crossover_hz = _finite_float(config.get("tweeter_crossover_highpass_hz"))
+    floor_hz = coerce_finite_float(config.get("tweeter_protection_floor_hz"))
+    crossover_hz = coerce_finite_float(config.get("tweeter_crossover_highpass_hz"))
     if protection_highpass_floor_satisfied(
         highpass_hz=crossover_hz,
         floor_hz=floor_hz,

@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from ._common import finite_float
+from ._common import coerce_finite_float
 
 PathLoader = Callable[[str], Awaitable[bool]]
 RunningConfigReader = Callable[[], Awaitable[str | None]]
@@ -143,7 +143,7 @@ def commissioning_spl_ceiling_db(topology: Any, *, preset: Any = None) -> float:
     """
 
     preset = resolve_capture_preset(topology) if preset is None else preset
-    ceiling = finite_float(preset.safety.max_commissioning_level_db_spl)
+    ceiling = coerce_finite_float(preset.safety.max_commissioning_level_db_spl)
     if ceiling is None:
         raise ValueError("the preset declares no finite max_commissioning_level_db_spl")
     return ceiling

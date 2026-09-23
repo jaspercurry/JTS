@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
+from .json_fields import as_mapping
 
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -25,10 +26,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 def _fanin_input_status(
@@ -65,7 +62,7 @@ def route_live_state_issues(
 
     issues: list[str] = []
 
-    direct_expected = _mapping_or_empty(
+    direct_expected = as_mapping(
         expected_identity.get("fanin_direct_config"),
     )
     if direct_expected:
@@ -138,7 +135,7 @@ def route_live_state_issues(
                         f"live_fanin_direct_mismatch:{lane}:buffer_alignment"
                     )
 
-    resampler_expected = _mapping_or_empty(
+    resampler_expected = as_mapping(
         expected_identity.get("fanin_resampler_config"),
     )
     if resampler_expected.get("enabled") is True:

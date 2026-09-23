@@ -21,7 +21,7 @@ from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import parse_utc_iso
 from jasper.paths import resolve_state_path
 
-from ._common import finite_float as _finite_float, issue as _issue
+from ._common import coerce_finite_float, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
@@ -161,7 +161,7 @@ def _normalise_quiet_start(raw: Any) -> dict[str, Any]:
         quiet["status"] = "floor_required"
         quiet["floor_audio_confirmed"] = False
     quiet["current_target"] = playback_target_signature(quiet.get("current_target"))
-    quiet["last_level_dbfs"] = _finite_float(quiet.get("last_level_dbfs"))
+    quiet["last_level_dbfs"] = coerce_finite_float(quiet.get("last_level_dbfs"))
     pending = quiet.get("pending_playback_id")
     quiet["pending_playback_id"] = str(pending) if pending else None
     if not isinstance(quiet.get("last_operator_result"), dict):
@@ -409,7 +409,7 @@ def _quiet_start_after_result(
         quiet["current_target"] = target_sig
 
     tone = result.get("tone") if isinstance(result.get("tone"), dict) else {}
-    level = _finite_float(tone.get("level_dbfs"))
+    level = coerce_finite_float(tone.get("level_dbfs"))
     if level is not None:
         quiet["last_level_dbfs"] = level
 

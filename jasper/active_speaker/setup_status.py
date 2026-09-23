@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from jasper.json_fields import as_mapping
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
 
@@ -58,11 +59,6 @@ def _grouped_active_runtime() -> bool:
     from jasper.multiroom.config import is_active_member, load_config
 
     return is_active_member(load_config())
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    """Return a read-only mapping view for optional artifact sections."""
-    return value if isinstance(value, Mapping) else {}
 
 
 def _idle_commissioning_summary() -> dict[str, Any]:
@@ -138,8 +134,8 @@ def _derive_commissioning_summary(
                 last_failure_code = str(code) if code else None
                 break
     elif profile is not None and bool(
-        _mapping(profile.get("permissions")).get("may_apply")
-        or _mapping(profile.get("permissions")).get("may_compile")
+        as_mapping(profile.get("permissions")).get("may_apply")
+        or as_mapping(profile.get("permissions")).get("may_compile")
     ):
         phase = "proposal_ready"
     else:
@@ -207,9 +203,9 @@ def _layer_a_filter_fields(config_text: str) -> dict[str, Any]:
     for name, definition in (
         filters.items() if isinstance(filters, Mapping) else ()
     ):
-        body = _mapping(definition)
+        body = as_mapping(definition)
         fields[f"{name}.type"] = body.get("type")
-        for key, value in _mapping(body.get("parameters")).items():
+        for key, value in as_mapping(body.get("parameters")).items():
             fields[f"{name}.{key}"] = value
     return fields
 
@@ -365,11 +361,11 @@ def read_active_speaker_setup_status(
                 "severity": "warning", "code": "setup_diagnostics_unavailable",
                 "message": f"speaker setup diagnostics could not be derived: {type(exc).__name__}",
             }]}
-        source = _mapping(profile.get("source"))
+        source = as_mapping(profile.get("source"))
         status["baseline_profile"] = {
             "status": profile.get("status"),
             "path": str(baseline_profile_state_path(baseline_state_path)),
-            "config_path": _mapping(profile.get("config")).get("path"),
+            "config_path": as_mapping(profile.get("config")).get("path"),
             "source_fingerprint": source.get("fingerprint"),
             "candidate_fingerprint": profile.get("candidate_fingerprint"),
             "provisional": bool(profile.get("provisional")),

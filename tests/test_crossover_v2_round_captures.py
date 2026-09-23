@@ -315,6 +315,18 @@ def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
     assert doc_pose_key(doc) == key
 
 
+@pytest.mark.parametrize(
+    "position_deg",
+    [float("inf"), float("nan"), "1.5", True, 10**400],
+    ids=["inf", "nan", "text", "bool", "huge_int"],
+)
+def test_a_pose_field_that_is_not_a_finite_number_keys_as_undeclared(
+    position_deg: object,
+) -> None:
+    doc = {"position_deg": position_deg, "vertical_deg": 0, "mark_distance_m": 1.0}
+    assert doc_pose_key(doc) == "azna_el+0.00_d+1.00"
+
+
 def test_window_view_keeps_one_capture_reference_and_exact_window_math(tmp_path):
     from jasper.active_speaker.crossover_v2 import gate_sweep
     from jasper.active_speaker.crossover_v2.window_view import window_view

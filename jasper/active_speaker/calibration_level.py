@@ -22,7 +22,7 @@ from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.paths import resolve_state_path
 
-from ._common import finite_float as _finite_float
+from ._common import coerce_finite_float
 
 SCHEMA_VERSION = 1
 CALIBRATION_LEVEL_KIND = "jts_active_speaker_calibration_level"
@@ -53,7 +53,7 @@ def _default_state_payload(path: Path) -> dict[str, Any]:
 def clamp_test_level_dbfs(value: Any) -> float:
     """Clamp an operator-requested test level to the commissioning envelope."""
 
-    out = _finite_float(value)
+    out = coerce_finite_float(value)
     if out is None:
         out = DEFAULT_TEST_LEVEL_DBFS
     return min(max(out, MIN_TEST_LEVEL_DBFS), MAX_TEST_LEVEL_DBFS)
@@ -213,7 +213,7 @@ def update_calibration_level_state(
     elif action_id == "raise":
         next_level = min(current + TEST_LEVEL_STEP_DB, MAX_TEST_LEVEL_DBFS)
     elif action_id in {"ramp", "raise_toward_audible", "audible_ramp"}:
-        requested = _finite_float(requested_level_dbfs)
+        requested = coerce_finite_float(requested_level_dbfs)
         requested = current + AUDIBLE_RAMP_STEP_DB if requested is None else requested
         if requested > current + AUDIBLE_RAMP_STEP_DB:
             next_level = current + AUDIBLE_RAMP_STEP_DB
@@ -228,7 +228,7 @@ def update_calibration_level_state(
         else:
             next_level = requested
     elif action_id == "lower":
-        requested = _finite_float(requested_level_dbfs)
+        requested = coerce_finite_float(requested_level_dbfs)
         if requested is None:
             next_level = max(current - TEST_LEVEL_STEP_DB, MIN_TEST_LEVEL_DBFS)
         else:
@@ -263,7 +263,7 @@ def update_calibration_level_state(
         "run_id": run_id,
         "prior_level_dbfs": current,
         "requested_level_dbfs": (
-            _finite_float(requested_level_dbfs)
+            coerce_finite_float(requested_level_dbfs)
             if requested_level_dbfs is not None else None
         ),
         "applied_delta_db": round(next_level - current, 3),
