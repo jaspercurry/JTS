@@ -33,7 +33,7 @@ from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
-from jasper.active_speaker.round_copy import PLACE_MICROPHONE
+from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -1226,6 +1226,30 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert facts["sweeps"] == sum(counts)
     timing_rows = [row for row in facts["pose_sweeps"][0] if row["kind"] == "summed_sweep"]
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
+
+
+async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatch, box):
+    """The ladder's last published facts count from the joined manifest that
+    ``wait`` reprints once banked, so the two "Measured" lines agree."""
+    joined = {"status": "complete", "reason": "", "level": {}, "runs": [], "honoured": {},
+              "sets": [{"takes": [{"take_id": "t1", "selected": True}, {"take_id": "t2", "selected": False}]}],
+              "not_measured": [{"pose": {"deg": 0}, "reason": "summed_sweep_heard"}] * 3}
+    packet = SimpleNamespace(runs={}, to_dict=lambda: joined, finish=AsyncMock(), update_schedule=AsyncMock())
+    monkeypatch.setattr(correction_run_host, "RoundPacket", lambda *_args: packet)
+    monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
+    monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(return_value=[]))
+    gate = AnsweredGate()
+    _, _, _, execute = correction_run_host.bind_run_door(
+        host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)),
+        production=FakeSeams(), conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
+        camilla_factory=lambda: box,
+        ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
+    )
+    await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
+    ended = gate.progress[-1]
+    assert (ended["takes"], ended["not_measured"]) == (1, 3)
+    assert round_lines(ended)[0] == coverage_lines({}, joined)[0]
 
 
 @pytest.mark.parametrize("site", ["transaction", "executor", "ladder"])

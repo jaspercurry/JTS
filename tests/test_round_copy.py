@@ -84,7 +84,7 @@ def test_ended_counts_use_selected_takes_once(kept, retakes):
              for n in range(kept + retakes)]
     manifest = {"sets": [{"takes": takes}, {"takes": takes}]}
     counts = take_counts(manifest)
-    assert counts == {"takes": kept, "retakes": retakes}
+    assert counts == {"takes": kept, "retakes": retakes, "not_measured": 0}
     lines = round_lines({"status": "complete", **counts})
     assert re.findall(r"\d+", lines[0]) == [str(kept), str(retakes)]
     assert coverage_lines(manifest, manifest)[0] == lines[0]

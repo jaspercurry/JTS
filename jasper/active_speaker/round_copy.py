@@ -85,9 +85,11 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
 
 
 def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
+    """The ended round's counts, from the manifest ``wait`` reprints once banked."""
     takes = [t for group in document.get("sets", ()) for t in group["takes"]]
     return {"takes": len({t["take_id"] for t in takes if t["selected"]}),
-            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1})}
+            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1}),
+            "not_measured": len(document.get("not_measured", ()))}
 
 
 def _count(n: int, noun: str) -> str:
