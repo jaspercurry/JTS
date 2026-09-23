@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.web import wake_corpus_setup
+from jasper.wake_corpus import capture_plan, recording_backend
 
 from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
@@ -26,7 +26,7 @@ _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 
 def test_list_sessions_empty_dir(tmp_path: Path) -> None:
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     assert b.list_sessions() == []
 
 
@@ -65,7 +65,7 @@ def test_list_sessions_returns_summaries_newest_first(
     _os.utime(md / "enroll_jasper_old.json", (now - 10, now - 10))
     _os.utime(md / "enroll_jasper_new.json", (now, now))
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     sessions = b.list_sessions()
     assert len(sessions) == 2
     assert sessions[0]["session_id"] == "new"  # newest first
@@ -81,7 +81,7 @@ def test_list_sessions_returns_summaries_newest_first(
 def test_list_sessions_marks_active(tmp_path: Path) -> None:
     """The session currently loaded in memory is flagged is_active so
     the UI can render the row differently (and disable Load)."""
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     b.start()
     try:
         b.begin_session("jasper")
@@ -108,7 +108,7 @@ def test_list_sessions_skips_corrupt_files(tmp_path: Path, bad_data: str) -> Non
     }))
     (md / "enroll_jasper_bad.json").write_text(bad_data)
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     sessions = b.list_sessions()
     assert len(sessions) == 1
     assert sessions[0]["session_id"] == "good"
@@ -137,7 +137,7 @@ def test_list_sessions_survives_delete_race_after_glob(
 
     monkeypatch.setattr(Path, "glob", fake_glob)
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     sessions = b.list_sessions()
     assert len(sessions) == 1
     assert sessions[0]["session_id"] == "good"
@@ -182,7 +182,7 @@ def test_load_session_refuses_during_recording(backend) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     try:
-        with pytest.raises(wake_corpus_setup.StateError):
+        with pytest.raises(recording_backend.StateError):
             backend.load_session("anything")
     finally:
         backend.stop_recording()
@@ -213,7 +213,7 @@ def test_session_transition_refuses_while_recording_start_is_reserved(
     assert entered.wait(timeout=2)
     try:
         with pytest.raises(
-            wake_corpus_setup.StateError,
+            recording_backend.StateError,
             match="recording or session transition in progress",
         ):
             if transition == "load":
@@ -250,19 +250,19 @@ def test_loaded_legacy_capture_plan_requires_rebuild_before_append(
     md = out / "metadata"
     md.mkdir(parents=True)
     (md / "enroll_jasper_legacy.json").write_text(json.dumps({
-        "metadata_schema_version": wake_corpus_setup.METADATA_SCHEMA_VERSION,
+        "metadata_schema_version": recording_backend.METADATA_SCHEMA_VERSION,
         "session_id": "legacy",
         "member": "jasper",
         "ports": {"on": 9876},
         "include_dtln": False,
         "enabled_legs": ["on"],
         "capture_plan": {
-            "schema_version": wake_corpus_setup.CAPTURE_PLAN_SCHEMA_VERSION,
+            "schema_version": capture_plan.CAPTURE_PLAN_SCHEMA_VERSION,
             "selected_legs": ["on"],
         },
         "clips": [],
     }))
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=out,
         ports={"on": 9876},
         max_duration_sec=10.0,
@@ -270,7 +270,7 @@ def test_loaded_legacy_capture_plan_requires_rebuild_before_append(
     b.start()
     try:
         b.load_session("legacy")
-        with pytest.raises(wake_corpus_setup.StateError, match="predates"):
+        with pytest.raises(recording_backend.StateError, match="predates"):
             b.start_recording("quiet", "near")
     finally:
         b.shutdown()
@@ -332,7 +332,7 @@ def test_unload_session_clears_state_but_keeps_metadata(
     sid = backend.session_id()
     md_dir = tmp_path / "out" / "metadata"
     md_path = md_dir / f"enroll_jasper_{sid}.json"
-    marker = md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER
+    marker = md_dir / recording_backend.ACTIVE_SESSION_MARKER
     assert md_path.is_file()
     assert marker.is_file()
 
@@ -351,7 +351,7 @@ def test_delete_session_refuses_during_recording(backend) -> None:
     backend.start_recording("quiet", "near")
     sid = backend.session_id()
     try:
-        with pytest.raises(wake_corpus_setup.StateError):
+        with pytest.raises(recording_backend.StateError):
             backend.delete_session(sid)
     finally:
         backend.stop_recording()

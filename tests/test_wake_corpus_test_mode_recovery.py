@@ -32,11 +32,10 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import bridge_session
-from jasper.web import wake_corpus_setup
+from jasper.wake_corpus import bridge_session, recording_backend
 
 
-def _make_backend(out: Path) -> wake_corpus_setup.RecordingBackend:
+def _make_backend(out: Path) -> recording_backend.RecordingBackend:
     """An unstarted backend rooted in a tmp dir.
 
     `_maybe_recover_stale_test_mode()` only reads markers + the in-memory
@@ -44,13 +43,13 @@ def _make_backend(out: Path) -> wake_corpus_setup.RecordingBackend:
     the asyncio loop nor real systemctl. Calling it directly isolates the
     recovery decision from thread + bridge-env machinery.
     """
-    return wake_corpus_setup.RecordingBackend(output_dir=out)
+    return recording_backend.RecordingBackend(output_dir=out)
 
 
 def _write_test_mode_marker(out: Path, *, age_sec: float) -> Path:
     md_dir = out / "metadata"
     md_dir.mkdir(parents=True, exist_ok=True)
-    marker = md_dir / wake_corpus_setup.TEST_MODE_MARKER
+    marker = md_dir / recording_backend.TEST_MODE_MARKER
     marker.write_text(json.dumps({"entered_at": "2026-06-09T00:00:00+00:00"}))
     mtime = time.time() - age_sec
     os.utime(marker, (mtime, mtime))
@@ -83,7 +82,7 @@ def test_stale_marker_recovers_voice_and_clears_marker(
     then remove the marker so it doesn't fire again."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
@@ -101,7 +100,7 @@ def test_fresh_marker_is_left_alone(
     still open and working — recovery must not touch voice."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC - 30,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC - 30,
     )
 
     b = _make_backend(out)
@@ -134,7 +133,7 @@ def test_active_session_blocks_teardown(
     under a live session, and the marker stays for a later attempt."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
@@ -154,7 +153,7 @@ def test_recording_in_progress_blocks_teardown(
     """A recording in flight must never be interrupted by recovery."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
@@ -173,7 +172,7 @@ def test_failed_restart_keeps_marker_for_retry(
     startup retries — and the failure must not crash the recorder."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
     )
     monkeypatch.setattr(
         bridge_session, "disable_bridge_corpus_outputs", lambda: False,
@@ -197,7 +196,7 @@ def test_start_runs_recovery(
     service on the next request actually triggers it end-to-end."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
@@ -214,7 +213,7 @@ def test_enter_exit_marker_round_trip(tmp_path: Path) -> None:
     removes it. Clearing when absent is a graceful no-op."""
     out = tmp_path / "out"
     b = _make_backend(out)
-    marker = out / "metadata" / wake_corpus_setup.TEST_MODE_MARKER
+    marker = out / "metadata" / recording_backend.TEST_MODE_MARKER
 
     b.note_test_mode_entered()
     assert marker.is_file()

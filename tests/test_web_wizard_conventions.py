@@ -66,7 +66,6 @@ _SHARED_JSON_OBJECT_READERS = {
     "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
     "wifi_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
     "sources_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
-    "wake_corpus_setup.py": ("_read_json", "max_bytes=_JSON_BODY_LIMIT"),
 }
 
 

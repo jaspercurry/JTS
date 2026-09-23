@@ -34,6 +34,7 @@ import pytest
 # fixture token drifts from what the test sends).
 TEST_CSRF_TOKEN = "test-token"
 
+from jasper import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.wake_corpus import runtime_probe
 from jasper.wake_corpus.capture_plan import PlanConformance
@@ -198,7 +199,7 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={
             "on": 9876,
@@ -213,7 +214,7 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
             "chip_aec_210": 9888,
             "xvf_raw0_webrtc_aec3": 9889,
             "xvf_raw0_dtln": 9890,
-            **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
+            **wake_ports.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
     )
@@ -245,7 +246,7 @@ def _use_tmp_bridge_env(
     system_env: str = "",
     corpus_env: str = "",
 ) -> tuple[Path, Path]:
-    """Point wake_corpus_setup's bridge env helpers at temp files."""
+    """Point runtime_probe's bridge env paths at temp files."""
     system_path = tmp_path / "jasper.env"
     bridge_path = tmp_path / "wake_corpus_bridge.env"
     if system_env:
@@ -335,7 +336,7 @@ def _mute_backend_fixture(monkeypatch, tmp_path: Path, mute_path: Path):
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={"on": 9876, "off": 9877, "dtln": 9878},
         max_duration_sec=10.0,

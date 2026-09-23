@@ -8,9 +8,9 @@ No asyncio; the only heavy import is
 NumPy (used for ``np.ndarray`` typing in ``build_capture_health`` and the
 buffer shapes the recorder passes in).
 
-This is the lower layer of the recorder: :mod:`recording_backend` imports
-the constants + functions it needs from here, and the thin
-``jasper.web.wake_corpus_setup`` HTTP adapter re-exports the public names.
+This is the lower layer of the recorder: :mod:`recording_backend` and the
+thin ``jasper.web.wake_corpus_setup`` HTTP adapter import the constants +
+functions they need from here.
 ``enter_corpus_test_mode`` / ``exit_corpus_test_mode`` couple to
 ``RecordingBackend`` only through the HTTP layer (enter/exit handlers) and
 through ``RecordingBackend._maybe_recover_stale_test_mode`` calling
@@ -51,43 +51,33 @@ from jasper.env_file import delete_env_file, read_env_file
 from . import runtime_probe
 # Both blocks carry names this module only re-exports: the thin
 # ``jasper.web.wake_corpus_setup`` HTTP adapter and ``session_store`` import
-# the recorder's whole public surface through here, so the statement-wide
-# noqa covers them alongside the names used below.
+# them through here, so the statement-wide noqa covers them alongside the
+# names used below.
 from .capture_plan import (  # noqa: F401
-    CAPTURE_PLAN_SCHEMA_VERSION,
     CAPTURE_PLAN_STATE_SESSION,
     WakeCorpusCapturePlan,
     build_capture_plan,
-    validate_active_capture_plan,
 )
 from .runtime_probe import (  # noqa: F401
     AEC3_SWEEP_LEGS,
-    AEC_MODE_PATH,
-    AUDIO_VALIDATION_ARTIFACT_PATH,
     BASE_LEGS,
-    BRIDGE_CORPUS_ENV_PATH,
     BRIDGE_CORPUS_OUTPUT_VARS,
     BRIDGE_OUTPUT_LABELS,
     BRIDGE_UNIT,
     CHIP_AEC_LEGS,
-    CHIP_AEC_PROFILE_BASE_LEGS,
     CORPUS_PROFILES,
     DEFAULT_CHIP_REF_BUFFER_FRAMES,
-    DEFAULT_CHIP_REF_PCM,
     DEFAULT_CHIP_REF_PERIOD_FRAMES,
     DEFAULT_CHIP_REF_SAMPLE_RATE,
-    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DEFAULT_USB_MIC_DEVICE,
     DTLN_LEG,
     LEG_LABELS,
     LEGACY_AEC3_SWEEP_LEGS,
     LEGS,
-    OUTPUTD_REF_UDP_PORT,
     OUTPUTD_REF_UDP_TARGET,
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
     RAW0_LEG,
-    SYSTEM_ENV_PATH,
     UNIT_STATE_TIMEOUT_SEC,
     USB_CORPUS_LEGS,
     USB_DTLN_LEG,
@@ -97,11 +87,9 @@ from .runtime_probe import (  # noqa: F401
     leg_detail,
     legacy_aec3_sweep_source as _legacy_aec3_sweep_source,
     missing_bridge_outputs_from_required,
-    read_bridge_stats_snapshot,
     required_bridge_outputs_for_request,
     session_aec3_sweep_source as _session_aec3_sweep_source,
     session_legs,
-    validation_artifact_summary as _validation_artifact_summary,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -638,7 +626,7 @@ def restart_unit(unit: str, timeout_sec: float = BRIDGE_RESTART_TIMEOUT_SEC) -> 
     _broker_restart_or_raise(unit, timeout_sec=timeout_sec)
 
 
-_BRIDGE_RESTART_ERRORS = (
+BRIDGE_RESTART_ERRORS = (
     subprocess.CalledProcessError,
     subprocess.TimeoutExpired,
     OSError,
@@ -747,7 +735,7 @@ def _write_env_and_restart_with_rollback(
         delete_env_file(env_path)
     try:
         restart()
-    except _BRIDGE_RESTART_ERRORS:
+    except BRIDGE_RESTART_ERRORS:
         if existed:
             write_env_file(
                 env_path, old_values, mode=0o644, owner=_BRIDGE_ENV_OWNER,
@@ -756,7 +744,7 @@ def _write_env_and_restart_with_rollback(
             delete_env_file(env_path)
         try:
             restart()
-        except _BRIDGE_RESTART_ERRORS as rollback_error:
+        except BRIDGE_RESTART_ERRORS as rollback_error:
             log_event(
                 logger,
                 "wake_corpus.bridge_rollback_restart_failed",
@@ -887,7 +875,7 @@ def disable_bridge_corpus_outputs() -> bool:
             restart_unit(OUTPUTD_UNIT)
             try:
                 restart_unit(AEC_INIT_UNIT)
-            except _BRIDGE_RESTART_ERRORS:
+            except BRIDGE_RESTART_ERRORS:
                 if not _aec_init_parked_for_commissioning():
                     raise
                 # The exit landed and the box is now on the production path,

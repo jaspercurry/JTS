@@ -12,6 +12,8 @@ import subprocess
 
 import pytest
 
+from jasper import aec_sweep
+from jasper.wake_corpus import runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
@@ -173,7 +175,7 @@ def test_html_has_aec3_sweep_toggle() -> None:
     assert 'id="include-aec3-sweep"' in html_text
     assert "AEC3 sweep" in html_text
     assert "include_aec3_sweep" in _controls_js()
-    for variant in wake_corpus_setup.AEC3_SWEEP_VARIANTS:
+    for variant in aec_sweep.AEC3_SWEEP_VARIANTS:
         # Both leg + label are serialized into the wake-corpus-config island.
         assert variant.leg in html_text
         assert variant.label in html_text
@@ -393,7 +395,7 @@ def test_html_playback_uses_leg_selector() -> None:
     assert 'import { createLegLabels } from "./labels.js";' in js
     assert "on: 'XVF WebRTC AEC3'" not in js
     # All base + sweep/legacy leg labels are injected via the config island.
-    for label in wake_corpus_setup.LEG_LABELS.values():
+    for label in runtime_probe.LEG_LABELS.values():
         assert label in html_text
     assert "aec3_variant_1" in html_text
     assert "aec3_variant_2" in html_text

@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from jasper import aec_sweep
+from jasper.cli import wake_enroll
 from jasper.env_file import read_env_file
-from jasper.wake_corpus import bridge_session, runtime_probe
+from jasper.wake_corpus import bridge_session, recording_backend, runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
@@ -145,7 +147,7 @@ def test_post_known_path_with_non_ascii_token_403s(running_server_port):
         (b"{", 1, "invalid JSON body", [1]),
         (b"\xff", 1, "invalid JSON body", [1]),
         (b"[]", 2, "body must be a JSON object", [2]),
-        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", 3, "incomplete body", [3]),
         (b"{}", "invalid", "invalid Content-Length", []),
         (b"{}", -1, "invalid body length", []),
         (b"{}", wake_corpus_setup._JSON_BODY_LIMIT + 1, "invalid body length", []),
@@ -249,7 +251,7 @@ def test_api_session_load_round_trip(backend, running_server_port: int) -> None:
     marker = (
         backend._output_dir  # noqa: SLF001
         / "metadata"
-        / wake_corpus_setup.ACTIVE_SESSION_MARKER
+        / recording_backend.ACTIVE_SESSION_MARKER
     )
     assert json.loads(marker.read_text())["session_id"] == first_id
 
@@ -369,7 +371,7 @@ def test_api_capture_plan_previews_selected_layers(
     conn.request(
         "POST", "/api/capture-plan",
         json.dumps({
-            "corpus_profile": wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+            "corpus_profile": runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
             "include_usb_mic": True,
             "include_usb_dtln": True,
             "include_xvf_raw0_dtln": True,
@@ -450,12 +452,12 @@ def test_api_status_includes_aec3_sweep(
         assert body["include_aec3_sweep"] is True
         assert body["include_usb_mic"] is True
         assert body["aec3_sweep_source"] == "usb"
-        assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+        assert body["aec3_sweep_variants"] == aec_sweep.variant_metadata(
             input_source="usb",
         )
         assert body["enabled_legs"] == [
             "on", "off", "ref", "usb_raw", "usb_webrtc",
-            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+            *runtime_probe.AEC3_SWEEP_LEGS,
         ]
     finally:
         conn.close()
@@ -535,7 +537,7 @@ def test_api_session_begin_accepts_aec3_sweep(
         assert body["aec3_sweep_source"] == "usb"
         assert body["enabled_legs"] == [
             "on", "off", "ref", "usb_raw", "usb_webrtc",
-            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+            *runtime_probe.AEC3_SWEEP_LEGS,
         ]
     finally:
         conn.close()
@@ -1092,7 +1094,7 @@ def test_voice_start_can_disable_bridge_outputs_first(
 
     monkeypatch.setattr(wake_corpus_setup, "manage_units", fake_manage)
     monkeypatch.setattr(
-        wake_corpus_setup.subprocess, "run",
+        runtime_probe.subprocess, "run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="active\n"),
     )
     conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
@@ -1107,7 +1109,7 @@ def test_voice_start_can_disable_bridge_outputs_first(
         assert resp.status == 200
         assert body["bridge_outputs"]["active"] is False
         assert restarts == ["restart"]
-        assert voice_calls == [((wake_corpus_setup.VOICE_UNIT,), "start")]
+        assert voice_calls == [((wake_enroll.VOICE_UNIT,), "start")]
     finally:
         conn.close()
 
