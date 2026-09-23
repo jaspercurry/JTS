@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +116,12 @@ def _write(
 def answer(view: str, *, out: Path | None = None, line: str, **fields: Any) -> int:
     """Print scalar results and an artifact pointer (ADR-0237)."""
     return answered(report_answer(view, out, **fields), line)
+
+
+def omitted_note(omitted: Iterable[Mapping[str, str]]) -> str:
+    """The human line's tail naming each take a view left out, when any was."""
+    ids = [entry["capture_id"] for entry in omitted]
+    return f" ({len(ids)} omitted: {', '.join(ids)})" if ids else ""
 
 
 def refused_by_name(

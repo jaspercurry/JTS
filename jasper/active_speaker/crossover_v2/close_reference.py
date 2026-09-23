@@ -611,9 +611,14 @@ def compare_rounds(
     geometry: DeclaredGeometry | None = None,
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
 ) -> dict[str, Any]:
-    """Two banked rounds in, one close-reference report out."""
-    far_capture = select_capture(far_round, capture_id=far_capture_id)
-    close_capture = select_capture(close_round, capture_id=close_capture_id)
+    """Two banked rounds in, one close-reference report out.
+
+    A chosen capture that fails its binding is left out and named, per round,
+    under ``omitted``.
+    """
+    omitted: dict[str, list[dict[str, str]]] = {"far": [], "close": []}
+    far_capture = select_capture(far_round, capture_id=far_capture_id, omitted=omitted["far"])
+    close_capture = select_capture(close_round, capture_id=close_capture_id, omitted=omitted["close"])
     if far_capture.sample_rate != close_capture.sample_rate:
         raise RoundCapturesRefused(
             REFUSE_RATE_MISMATCH,
@@ -640,6 +645,7 @@ def compare_rounds(
         "far": capture_row(far_capture) | {"round_dir": str(far_round)},
         "close": capture_row(close_capture) | {"round_dir": str(close_round)},
     }
+    report["omitted"] = omitted
     # The sidecar's own mark_distance_m is published beside the declared one
     # rather than silently overridden: today it is pinned to 1.0 for every
     # pose, and #3498 is where a per-row distance lands.

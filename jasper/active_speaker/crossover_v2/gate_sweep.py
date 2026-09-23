@@ -1155,17 +1155,23 @@ def sweep_round(
     ``at_hz`` names the bins the caller already cares about — the spec
     verdict's worst bin, typically, which is not in general the band's own
     deepest one. Each is read exactly as a band's worst bin is, null model
-    included, and reported under ``features``.
+    included, and reported under ``features``. A selected capture that fails
+    its binding is left out and named under ``omitted``.
 
     Raises :class:`RoundCapturesRefused` naming the missing input.
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
+    omitted: list[dict[str, str]] = []
     captures = discover_captures(Path(round_dir), select=lambda doc: (
         (take_ids is None or document_capture_id(doc) in take_ids)
         and (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
         and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
-    ))
-    grid, reads, sigma, axes = _prepare(captures, rungs)
+    ), omitted=omitted)
+    try:
+        grid, reads, sigma, axes = _prepare(captures, rungs)
+    except RoundCapturesRefused as exc:
+        exc.detail["omitted"] = omitted
+        raise
     cache: HostCurves = {}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1197,6 +1203,7 @@ def sweep_round(
             }
             for read in reads
         ],
+        "omitted": omitted,
         "ladder": "speaker_spec", "bands": [
             _band_result(reads, grid, sigma, axes, band, rungs_ms=rungs, cache=cache)
             for band in SPEC_BANDS

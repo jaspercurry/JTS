@@ -57,6 +57,7 @@ from ._common import (
     ARTIFACT_BY_VIEW,
     _write,
     answer,
+    omitted_note,
     refused_by_name,
     resolved_out,
 )
@@ -138,7 +139,8 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
     # the numbers behind both, are in the artifact.
     far_window = next(w for w in report["windows"] if w["name"] == WINDOW_FAR)
     return answer(
-        args.command, out=written,
+        args.command, out=written, omitted=report["omitted"],
+        captures={name: {"capture_id": row["capture_id"]} for name, row in report["captures"].items()},
         comparison_band_hz=report["validity"]["comparison_band_hz"],
         residual_lag_us=alignment["residual_lag_us"],
         alignment_confidence=alignment["confidence"],
@@ -156,7 +158,8 @@ def _compare(args: argparse.Namespace, diameter_m: float | None) -> int:
             }
             for window in report["windows"] for row in window["bands"]
         ],
-        line=f"close-reference -> {written or 'stdout'}",
+        line=f"close-reference -> {written or 'stdout'}"
+        + omitted_note(entry for entries in report["omitted"].values() for entry in entries),
     )
 
 

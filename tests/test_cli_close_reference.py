@@ -28,6 +28,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_CAPTURE_UNREADABLE,
     REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
     REFUSE_PROGRAM_UNMATCHED,
 )
@@ -56,8 +57,10 @@ def _ir(distance_m: float) -> np.ndarray:
     return ir
 
 
-def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> Path:
-    """A banked round holding one on-axis summed capture and its program.
+def _round(
+    root: Path, distance_m: float, *, take_ids: tuple[str, ...] = ("verify_01_a01",),
+) -> Path:
+    """A banked round holding one on-axis summed capture per take and its program.
 
     A narrow, short program: the comparison this suite drives is graded over
     the band the sidecar declares, and 0.4 s keeps the door's tests quick. It
@@ -70,11 +73,11 @@ def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> 
     program = np.asarray(sweep, dtype=np.float64)
     return bank_capture_round(
         root,
-        [_ir(distance_m)],
+        [_ir(distance_m)] * len(take_ids),
         program=0.9 * program / float(np.max(np.abs(program))),
         phase="verify",
-        capture_ids=[take_id],
-        positions_deg=[0.0],
+        capture_ids=take_ids,
+        positions_deg=[0.0] * len(take_ids),
         radiated_band_hz=(100.0, 8000.0),
     )
 
@@ -83,7 +86,7 @@ def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> 
 def rounds(tmp_path: Path) -> tuple[Path, Path]:
     return (
         _round(tmp_path / "far", 1.0),
-        _round(tmp_path / "close", 0.30, take_id="verify_02_a01"),
+        _round(tmp_path / "close", 0.30, take_ids=("verify_02_a01",)),
     )
 
 
@@ -214,6 +217,55 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
     assert payload["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    "front, twin, refuses",
+    [
+        ("sha", {}, False),
+        ("sha", {"pose_kind": "behind", "mark_distance_m": 0.1}, True),
+        ("sha", {"graph_fingerprint": "another-graph"}, True),
+        ("unreadable", {}, True),
+    ],
+    ids=["same-pose-repeat", "behind-pose", "other-graph", "front-record-unreadable"],
+)
+def test_a_bad_on_axis_take_is_replaced_only_by_its_same_pose_repeat(
+    tmp_path, capsys, front, twin, refuses
+):
+    """With no capture named, a failed front take is never swapped for another
+    pose on its 0/0 bearing: only its repeat at the same pose under the same
+    played graph stands in, and the answer names the take read and the take
+    left out. A record nothing can read has no pose to match."""
+    far = _round(tmp_path / "far", 1.0, take_ids=("verify_01_a01", "verify_01_a02"))
+    close = _round(tmp_path / "close", 0.30, take_ids=("verify_02_a01",))
+    summed = far / "bundle" / "b0" / "summed"
+    sidecar = summed / "summed_verify_01_a01.json"
+    if front == "sha":
+        doc = json.loads(sidecar.read_text())
+        doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
+        sidecar.write_text(json.dumps(doc))
+    else:
+        sidecar.write_text("{")
+    repeat = summed / "summed_verify_01_a02.json"
+    repeat.write_text(json.dumps({**json.loads(repeat.read_text()), **twin}))
+    out = tmp_path / "report.json"
+
+    code = main(_compare_argv((far, close), out))
+
+    payload = json.loads(capsys.readouterr().out)
+    reason = REFUSE_PROGRAM_UNMATCHED if front == "sha" else REFUSE_CAPTURE_UNREADABLE
+    omitted = [{"capture_id": "verify_01_a01" if front == "sha" else sidecar.stem,
+                "sidecar": sidecar.name, "reason": reason}]
+    if refuses:
+        assert (code, payload["reason"]) == (EXIT_REFUSED, reason)
+        assert json.loads(payload["detail"])["omitted"] == omitted
+        return
+    assert code == EXIT_OK
+    assert payload["omitted"] == {"far": omitted, "close": []}
+    assert payload["captures"] == {
+        "far": {"capture_id": "verify_01_a02"}, "close": {"capture_id": "verify_02_a01"},
+    }
+    assert json.loads(out.read_text())["close_reference"]["omitted"] == payload["omitted"]
 
 
 @pytest.mark.parametrize(
