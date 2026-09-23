@@ -41,6 +41,8 @@ use jasper_daemon::HELPER_STACK_BYTES;
 pub mod assistant_reference;
 pub mod loudness;
 
+pub use loudness::SAMPLE_RATE;
+
 /// Wire frames are interleaved stereo.
 pub const CHANNELS: u16 = 2;
 
