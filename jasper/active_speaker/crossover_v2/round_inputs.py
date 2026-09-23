@@ -119,6 +119,10 @@ def state_matches_capture(state: object, capture_id: str) -> bool:
 
 
 def _read_json_mapping(path: Path) -> dict[str, Any] | None:
+    # Deliberately NOT atomic_io.read_json_mapping: that owner opens via
+    # builtin open(), not Path.open, and
+    # test_prescription_contract.py::test_round_context_is_read_once
+    # instruments Path.open to pin each evidence file read exactly once.
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 
@@ -156,11 +157,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
 
 def _load(take: Path) -> Mapping[str, Any]:
     """One banked file's JSON, or empty when it is not readable."""
-    try:
-        document = json.loads(take.read_text())
-    except (OSError, ValueError):
-        return {}
-    return document if isinstance(document, dict) else {}
+    return read_json_mapping(take) or {}
 
 
 def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:

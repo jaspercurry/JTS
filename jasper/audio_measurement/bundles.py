@@ -21,7 +21,6 @@ needs may act on it.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -30,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
 
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
@@ -149,16 +149,6 @@ def _write_json_atomically(
     if file_mode is not None:
         tmp_path.chmod(file_mode)
     tmp_path.replace(path)
-
-
-def sha256_file(path: Path) -> str:
-    """Return the content identity of one artifact file."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:

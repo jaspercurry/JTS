@@ -21,7 +21,6 @@ re-asserted against the RUNNING graph, not just the file. Level bounds are
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -29,6 +28,7 @@ import yaml
 
 from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 
 from ._common import issue as _issue
 from .calibration_level import (
@@ -100,7 +100,7 @@ def next_ramp_gain_db(current_gain_db: float) -> float:
 
 
 def ramp_state_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(RAMP_STATE_ENV) or DEFAULT_RAMP_STATE_PATH)
+    return resolve_state_path(path, RAMP_STATE_ENV, DEFAULT_RAMP_STATE_PATH)
 
 
 def _ramp_base_state(path: Path) -> dict[str, Any]:

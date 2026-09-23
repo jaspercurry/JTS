@@ -92,7 +92,7 @@ def test_owner_claim_preserves_current_or_terminal_work(
 def test_failed_startup_claim_keeps_status_unavailable_until_successful_retry(
     repeat_path, legacy_record, monkeypatch
 ):
-    original = admission.atomic_write_text
+    original = admission.atomic_write_json
     events = []
     monkeypatch.setattr(
         admission, "log_event", lambda _logger, event, **fields: events.append((event, fields)),
@@ -101,13 +101,13 @@ def test_failed_startup_claim_keeps_status_unavailable_until_successful_retry(
     def fail(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(admission, "atomic_write_text", fail)
+    monkeypatch.setattr(admission, "atomic_write_json", fail)
     with pytest.raises(OSError):
         admission.claim_owner(path=repeat_path)
     assert json.loads(repeat_path.read_text(encoding="utf-8")) == legacy_record
     assert events == []
 
-    monkeypatch.setattr(admission, "atomic_write_text", original)
+    monkeypatch.setattr(admission, "atomic_write_json", original)
     admission.claim_owner(path=repeat_path)
 
     target = admission.claim_owner(path=repeat_path)["targets"]["mono:woofer"]

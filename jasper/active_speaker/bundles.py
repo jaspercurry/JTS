@@ -28,7 +28,6 @@ Two invariants keep ownership explicit:
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import os
 import shutil
@@ -39,9 +38,9 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.bundles import (
     BundleError,
+    _read_json,
     read_artifact_manifest,
     record_artifact,
-    sha256_file,
     write_json_artifact,
 )
 from jasper.audio_measurement.excitation_artifacts import (
@@ -51,8 +50,10 @@ from jasper.audio_measurement.excitation_artifacts import (
     create_admission_authority,
     open_admission_authority,
 )
+from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
+from jasper.paths import resolve_state_path
 
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
@@ -122,7 +123,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _default_sessions_dir() -> Path:
-    return Path(os.environ.get(SESSIONS_DIR_ENV) or DEFAULT_SESSIONS_DIR)
+    return resolve_state_path(None, SESSIONS_DIR_ENV, DEFAULT_SESSIONS_DIR)
 
 
 def sessions_dir() -> Path:
@@ -248,18 +249,6 @@ def _calibration_sha256(calibration_id: str) -> str | None:
 
 def _info_path(bundle_dir: Path) -> Path:
     return bundle_dir / "info.json"
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text())
-    except OSError as exc:
-        raise BundleError(f"could not read {path.name}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise BundleError(f"{path.name} is invalid JSON: {exc.msg}") from exc
-    if not isinstance(data, dict):
-        raise BundleError(f"{path.name} must be a JSON object")
-    return data
 
 
 def _read_info(bundle_dir: Path) -> dict[str, Any]:

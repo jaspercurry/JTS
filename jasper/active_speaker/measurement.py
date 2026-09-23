@@ -10,12 +10,11 @@ import json
 import hashlib
 import logging
 import math
-import os
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import (
@@ -24,6 +23,7 @@ from jasper.output_topology import (
     main_speaker_groups,
     topology_is_subless_passive_mains,
 )
+from jasper.paths import resolve_state_path
 
 from ._common import (
     finite_float as _finite_float,
@@ -51,7 +51,7 @@ MAX_DRIVER_RECORDS = 48
 
 
 def measurement_state_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 def _text(value: Any, *, max_chars: int = 240) -> str | None:
@@ -760,11 +760,7 @@ def confirmed_driver_roles(
 
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:
-    atomic_write_text(
-        path,
-        json.dumps(state, indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-    )
+    atomic_write_json(path, state, mode=0o640)
 
 
 _DURABLE_REPEAT_SUMMARY_KEYS = (

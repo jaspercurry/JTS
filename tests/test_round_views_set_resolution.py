@@ -22,7 +22,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from jasper.audio_measurement.bundles import sha256_file
+from jasper.json_fields import sha256_file
 from jasper.cli._report import render_report
 from jasper.cli.round_views import ARTIFACT_BY_VIEW, _FAMILIES, build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, VIEW_PURPOSES, resolve_set

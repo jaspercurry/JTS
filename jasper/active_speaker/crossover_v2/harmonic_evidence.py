@@ -24,8 +24,8 @@ from typing import Any
 import numpy as np
 
 from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
-from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.program import ExcitationProgram, KIND_COURTESY_TONE, write_program_wav
+from jasper.json_fields import sha256_file
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from .round_inputs import banked_round_of, round_inputs

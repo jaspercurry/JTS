@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -17,8 +16,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
 SCHEMA_VERSION = 1
@@ -36,7 +36,7 @@ _UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def state_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+    return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
 
 
 
@@ -147,11 +147,7 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _write(path: Path, state: Mapping[str, Any]) -> None:
-    atomic_write_text(
-        path,
-        json.dumps(dict(state), indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-    )
+    atomic_write_json(path, dict(state), mode=0o640)
 
 
 @contextmanager
