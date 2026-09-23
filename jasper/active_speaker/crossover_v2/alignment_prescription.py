@@ -6,16 +6,19 @@
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis import half_period_us
-from jasper.log_event import log_event
 from jasper.json_fields import finite_float
 
-from ._prescription_common import _read_artifacts
+from ._prescription_common import (
+    PRESCRIPTION_MALFORMED as _PRESCRIPTION_MALFORMED,
+    BlendPrescriptionRefused,
+    _finite_number,
+    _read_artifacts,
+)
 from .contracts import POLARITY_INVERT, POLARITY_KEEP
 
 __all__ = [
@@ -29,7 +32,6 @@ __all__ = [
     "AlignmentPrescription",
     "AlignmentPrescriptionRefused",
     "alignment_delay_search_bounds_us",
-    "alignment_prescription_from_mapping",
     "alignment_prescription_response_format",
     "read_alignment_prescription",
 ]
@@ -70,12 +72,6 @@ def alignment_delay_search_bounds_us(
     return lo_ms * 1000.0, hi_ms * 1000.0
 
 
-logger = logging.getLogger(__name__)
-
-#: Said when a durable read-back cannot be parsed — the one line this module
-#: emits, so an empty provenance slot stays distinguishable from a mangled one.
-PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_alignment_prescription_unreadable"
-
 #: The request-body key a prescription arrives under.
 ALIGNMENT_PRESCRIPTION_KEY = "alignment_prescription"
 
@@ -86,7 +82,7 @@ ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION = 1
 ALIGNMENT_PRESCRIPTION_KIND = "jts_crossover_alignment_prescription"
 
 #: The closed refusal vocabulary: a caller branches on a code, never on prose.
-ALIGNMENT_PRESCRIPTION_MALFORMED = "prescription_malformed"
+ALIGNMENT_PRESCRIPTION_MALFORMED = _PRESCRIPTION_MALFORMED
 PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 #: A way-1 speaker: no corner and no second driver, so nothing to align. Its
@@ -119,10 +115,11 @@ _PRESCRIPTION_FIELDS = frozenset({
     "basis_note",
     # Optional; absent is the automatic path.
     "polarity",
-    # Not supplied to the gate, accepted on the way back in so a durable block
-    # round-trips through this parser. A request that supplies them is
-    # harmless: the gate overwrites the first two with what it actually
-    # checked, and ``residual_us`` is a property, so the value is never read.
+    # Not required by the gate, but tolerated rather than refused as unknown:
+    # a request that echoes a receipt this gate already emitted is harmless,
+    # since the gate overwrites the first two with what it actually checked
+    # and ``residual_us``/``out_of_lobe`` are properties, so the values are
+    # never read.
     "checked_at_fc_hz",
     "lobe_us",
     "residual_us",
@@ -130,17 +127,9 @@ _PRESCRIPTION_FIELDS = frozenset({
 })
 
 
-class AlignmentPrescriptionRefused(ValueError):
-    """One prescription this module would not accept, and why.
-
-    ``reason`` is from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`, so the
-    classification travels with the raise.
-    """
-
-    def __init__(self, reason: str, detail: str) -> None:
-        super().__init__(detail)
-        self.reason = reason
-        self.detail = detail
+#: One refusal class for the whole prescription family (:mod:`._prescription_common`),
+#: so a caller's one ``except`` and the CLI's one handler cover every door.
+AlignmentPrescriptionRefused = BlendPrescriptionRefused
 
 
 @dataclass(frozen=True)
@@ -192,35 +181,8 @@ class AlignmentPrescription:
         }
 
 
-def _finite_number(value: Any, *, reason: str, field: str) -> float:
-    """One numeric field, strictly.
-
-    ``bool`` is refused explicitly (it is an ``int``, and ``float(True)`` is
-    ``1.0``); strings are refused because ``float("-450")`` succeeds.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AlignmentPrescriptionRefused(
-            reason, f"{field} must be a number, got {type(value).__name__}",
-        )
-    number = float(value)
-    if not math.isfinite(number):
-        raise AlignmentPrescriptionRefused(
-            reason, f"{field} must be finite, got {number!r}",
-        )
-    return number
-
-
-def _parse_prescription(
-    raw: Mapping[str, Any], *, read_back: bool = False,
-) -> AlignmentPrescription:
-    """The shape and the provenance, and NOT the bound.
-
-    Shared whole between the request gate and the durable read-back, so gate
-    policy is the only difference between them. Under ``read_back`` a record
-    naming NEITHER ``kind`` nor ``artifact_schema_version`` is the envelope-less
-    shape prior releases persisted, and reads as this build's own kind and
-    version 1; a record naming either field is refused normally.
-    """
+def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
+    """The shape and the provenance, and NOT the bound."""
     if not isinstance(raw, Mapping):
         raise AlignmentPrescriptionRefused(
             ALIGNMENT_PRESCRIPTION_MALFORMED,
@@ -232,23 +194,19 @@ def _parse_prescription(
             ALIGNMENT_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
-    pre_envelope = (
-        read_back and "kind" not in raw and "artifact_schema_version" not in raw
-    )
-    if not pre_envelope:
-        if raw.get("kind") != ALIGNMENT_PRESCRIPTION_KIND:
-            raise AlignmentPrescriptionRefused(
-                ALIGNMENT_PRESCRIPTION_MALFORMED,
-                f"a prescription must name kind={ALIGNMENT_PRESCRIPTION_KIND!r}, "
-                f"got {raw.get('kind')!r}",
-            )
-        version = raw.get("artifact_schema_version")
-        if version != ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION:
-            raise AlignmentPrescriptionRefused(
-                ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-                f"this build speaks alignment-prescription schema "
-                f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
-            )
+    if raw.get("kind") != ALIGNMENT_PRESCRIPTION_KIND:
+        raise AlignmentPrescriptionRefused(
+            ALIGNMENT_PRESCRIPTION_MALFORMED,
+            f"a prescription must name kind={ALIGNMENT_PRESCRIPTION_KIND!r}, "
+            f"got {raw.get('kind')!r}",
+        )
+    version = raw.get("artifact_schema_version")
+    if version != ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION:
+        raise AlignmentPrescriptionRefused(
+            ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+            f"this build speaks alignment-prescription schema "
+            f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
+        )
     if "delay_us" not in raw:
         raise AlignmentPrescriptionRefused(
             PRESCRIPTION_DELAY_INVALID, "a prescription must state delay_us",
@@ -331,30 +289,6 @@ def read_alignment_prescription(
             )
     return replace(prescription, checked_at_fc_hz=corner,
                    lobe_us=half_period_us(corner) if corner is not None else None)
-
-
-def alignment_prescription_from_mapping(
-    raw: Any,
-) -> AlignmentPrescription | None:
-    """A prescription read back out of this repository's own durable state.
-
-    Shape and provenance only — the bound has one owner, and it is the request
-    gate; re-applying it here could only refuse a round that really ran.
-    Anything unreadable is ``None`` plus one WARNING.
-    """
-    if raw is None:
-        return None
-    try:
-        return _parse_prescription(raw, read_back=True)
-    except AlignmentPrescriptionRefused as exc:
-        log_event(
-            logger,
-            PRESCRIPTION_UNREADABLE_EVENT,
-            level=logging.WARNING,
-            reason=exc.reason,
-            detail=exc.detail,
-        )
-        return None
 
 
 def alignment_prescription_response_format() -> dict[str, Any]:

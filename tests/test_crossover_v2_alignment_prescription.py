@@ -39,7 +39,6 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     PRESCRIPTION_POLARITY_INVALID,
     AlignmentPrescription,
     AlignmentPrescriptionRefused,
-    alignment_prescription_from_mapping,
     alignment_prescription_response_format,
     read_alignment_prescription,
 )
@@ -64,7 +63,7 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_audio_measurement_program_analysis import (
     SR,
@@ -219,7 +218,6 @@ def test_missing_or_unusable_context_is_disclosed(mutation, fc_hz):
     assert receipt["basis_artifacts"] == []
     assert receipt["basis_note"] == ""
     assert receipt["lobe_us"] == (half_period_us(FC_HZ) if fc_hz == FC_HZ else None)
-    assert alignment_prescription_from_mapping(receipt) == accepted
     assert {"prescription_out_of_lobe", "prescription_basis_invalid", "prescription_fc_unknown", "prescription_provenance_missing"}.isdisjoint(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS)
 
 
@@ -467,36 +465,8 @@ def test_no_prescription_reads_as_the_automatic_path():
 
 
 # --------------------------------------------------------------------------- #
-# 3. The durable read-back: same shape rules, deliberately not the bound
+# 3. Discoverability: the response format and the closed vocabulary
 # --------------------------------------------------------------------------- #
-
-
-def test_the_read_back_preserves_an_out_of_lobe_delay():
-    out_of_lobe = _arm(0.0)
-    assert _read(out_of_lobe, fc_hz=FC_HZ).to_dict()["out_of_lobe"] is True
-    recovered = alignment_prescription_from_mapping(out_of_lobe)
-    assert recovered is not None
-    assert recovered.delay_us == 0.0
-
-
-def test_the_read_back_still_refuses_a_mangled_record(caplog):
-    """A hand-edited state file must not become half a provenance."""
-    with caplog.at_level(logging.WARNING):
-        assert alignment_prescription_from_mapping(_arm(-450.0, delay_us="invalid")) is None
-    assert event_records(
-        caplog, "correction.crossover_v2_alignment_prescription_unreadable"
-    )
-    assert alignment_prescription_from_mapping(None) is None
-
-
-def test_a_prescription_round_trips_through_its_receipt_shape():
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    record = prescription.to_dict()
-    assert record["residual_us"] == pytest.approx(-44.3)
-    assert record["basis_artifacts"] == list(ARTIFACTS)
-    assert alignment_prescription_from_mapping(
-        {k: v for k, v in record.items() if k != "residual_us"}
-    ) == prescription
 
 
 def test_the_receipt_carries_kind_and_schema_version():
@@ -511,71 +481,6 @@ def test_the_receipt_carries_kind_and_schema_version():
     record = prescription.to_dict()
     assert record["kind"] == ALIGNMENT_PRESCRIPTION_KIND
     assert record["artifact_schema_version"] == ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION
-
-
-def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    """The tolerant-read rule every door in this family shares, for a record
-    that is genuinely unreadable rather than merely pre-envelope.
-
-    Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
-    ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
-    prescription``: ``None``, an unrecognised ``kind``, and a totally empty
-    mapping (missing ``delay_us``/``basis_delay_us`` too, so this is not the
-    retrofit case) all read as ``None`` rather than raising. See
-    ``test_a_pre_envelope_record_round_trips_through_the_read_back`` for the
-    shape that DOES carry a real prescription and DOES round-trip.
-    """
-    assert alignment_prescription_from_mapping(None) is None
-    assert alignment_prescription_from_mapping({"kind": "nope"}) is None
-    assert alignment_prescription_from_mapping({}) is None
-
-
-def test_a_pre_envelope_record_round_trips_through_the_read_back():
-    """The retrofit contract: durable state predates this envelope.
-
-    ``verify_priors.alignment_prescription`` is carried unconditionally
-    across a deploy (``correction_crossover_v2.persist_conductor_state``),
-    and #2662/#2773 shipped writing it days before this envelope existed, so
-    a live speaker can already hold a record naming neither ``kind`` nor
-    ``artifact_schema_version``. Refusing it would silently mis-grade a round
-    already in flight — see :func:`~jasper.active_speaker.crossover_v2.
-    alignment_prescription._parse_prescription`'s ``read_back`` paragraph.
-
-    Generated from a REAL accepted prescription's own ``to_dict()`` with the
-    two envelope keys removed, not hand-typed, so this is exactly the shape a
-    prior build wrote rather than a guess at it.
-    """
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    pre_envelope_record = prescription.to_dict()
-    del pre_envelope_record["kind"]
-    del pre_envelope_record["artifact_schema_version"]
-    recovered = alignment_prescription_from_mapping(pre_envelope_record)
-    assert recovered is not None
-    assert recovered.delay_us == prescription.delay_us
-    assert recovered.basis_delay_us == prescription.basis_delay_us
-    assert recovered.basis_artifacts == prescription.basis_artifacts
-
-
-@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
-def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
-    """EITHER field present, even correctly, with the other missing, is not
-    the wholly-absent shape the retrofit tolerates — it tried to speak the
-    envelope and got it wrong."""
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    record = prescription.to_dict()
-    other = "artifact_schema_version" if keep == "kind" else "kind"
-    del record[other]
-    assert alignment_prescription_from_mapping(record) is None
-
-
-def test_a_future_schema_version_still_refuses_even_on_read_back():
-    """The retrofit posture tolerates a wholly-absent envelope, never a
-    present-but-wrong one — a document naming a version this build does not
-    speak is refused under both the request gate and the durable read-back."""
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    record = prescription.to_dict()
-    record["artifact_schema_version"] = 2
-    assert alignment_prescription_from_mapping(record) is None
 
 
 def test_the_response_format_advertises_exactly_the_refusals_that_exist():
