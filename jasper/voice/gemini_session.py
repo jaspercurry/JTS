@@ -22,7 +22,7 @@ from ._supervisor import (
     request_planned_reopen,
     request_unplanned_reopen,
 )
-from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
+from .session import AudioOutChunk, TurnCapture
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,6 @@ class GeminiLiveTurn(BaseLiveTurn):
     ) -> None:
         super().__init__(conn, started_at)
         self._conn: GeminiLiveConnection = conn
-        self._session = getattr(conn, "_session", None)
         self._activity_end_sent = False
         self._tool_responses: list[types.FunctionResponse] = []
 
@@ -294,6 +293,7 @@ class GeminiLiveConnection(BaseLiveConnection):
 
     PROVIDER_NAME = "gemini"
     _logger = logger
+    _turn_class = GeminiLiveTurn
     # The watchdog below is a rotation this connection schedules, not a
     # failure: its first reconnect attempt skips the backoff wait.
     _watchdog_is_planned = True
@@ -352,43 +352,26 @@ class GeminiLiveConnection(BaseLiveConnection):
         self._drop_resumption_on_teardown = False
 
     # ------------------------------------------------------------------
-    # LiveConnection protocol
-    # ------------------------------------------------------------------
-
-    async def acquire_turn(self) -> LiveTurn:
-        await self._await_acquirable()
-
-        async with self._turn_lock:
-            if self._active_turn is not None:
-                raise RuntimeError(f"{self._log_tag} a turn is already active")
-            await await_connected(self)
-            now_loop = asyncio.get_event_loop().time()
-            turn = GeminiLiveTurn(self, started_at=now_loop)
-            # Used by GeminiLiveTurn for elapsed-ms logging.
-            turn._started_at_monotonic = _time.monotonic()
-            self._active_turn = turn
-            try:
-                sent = await self._send_realtime_input(turn, activity_start=types.ActivityStart())
-                if not sent or not self._owns_turn(turn):
-                    raise RuntimeError("Gemini session changed during turn acquisition")
-            except BaseException:  # noqa: BLE001
-                # The turn never started — roll the slot back, or every
-                # later acquire_turn() gets "a turn is already active"
-                # until a reconnect happens to clear it.
-                if self._active_turn is turn:
-                    self._active_turn = None
-                raise
-            async with self._state_lock:
-                if self._state is ConnectionState.CONNECTED:
-                    self._set_state(ConnectionState.IN_TURN)
-            log_event(
-                self._logger, "turn.started", provider=self.PROVIDER_NAME, level=logging.INFO,
-            )
-            return turn
-
-    # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
+
+    async def _begin_turn(self) -> GeminiLiveTurn:
+        # Wait before the turn goes active: a reconnect takes `_turn_lock`
+        # to clear an active turn, and this wait holds that lock.
+        await await_connected(self)
+        turn: GeminiLiveTurn = await super()._begin_turn()
+        try:
+            sent = await self._send_realtime_input(turn, activity_start=types.ActivityStart())
+            if not sent or not self._owns_turn(turn):
+                raise RuntimeError("Gemini session changed during turn acquisition")
+        except BaseException:  # noqa: BLE001
+            # The turn never started — roll the slot back, or every
+            # later acquire_turn() gets "a turn is already active"
+            # until a reconnect happens to clear it.
+            if self._active_turn is turn:
+                self._active_turn = None
+            raise
+        return turn
 
     async def _send_realtime_input(self, turn: GeminiLiveTurn, **kwargs) -> bool:
         async with self._send_lock:

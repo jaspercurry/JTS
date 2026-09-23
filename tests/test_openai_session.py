@@ -35,11 +35,11 @@ from jasper.voice._supervisor import (
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
-    ConnectionState,
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from jasper.voice.session import ConnectionState
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._live_turn_fake import drain_audio_chunks
 from tests._log_events import event_fields, event_records, leaked_lines
@@ -2506,7 +2506,7 @@ async def test_activity_meter_hooks_fire_on_turn_acquire_and_release():
         def mark_started(self) -> None:
             events.append("started")
 
-        def mark_ended(self) -> None:
+        def mark_ended(self, *, seconds=None) -> None:
             events.append("ended")
 
     conn.set_billable_activity_meter(_StubMeter())
@@ -3209,7 +3209,7 @@ async def test_reconnect_discards_ownership_and_late_release(pending_ack):
         def mark_started(self):
             meter_events.append("start")
 
-        def mark_ended(self):
+        def mark_ended(self, *, seconds=None):
             meter_events.append("end")
 
     conn.set_billable_activity_meter(Meter())

@@ -449,11 +449,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._session = None
         self._started = asyncio.Event()
         self._closed = asyncio.Event()
-        self._billable_activity_meter = None
         self._usage_recorder = None
-
-    def set_billable_activity_meter(self, meter) -> None:
-        self._billable_activity_meter = meter
 
     def set_background_usage_recorder(self, recorder) -> None:
         self._usage_recorder = recorder
@@ -525,8 +521,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             try:
                 async with asyncio.timeout(SESSION_OPEN_BUDGET_SEC):
                     turn = await self._open_session_for_turn()
-                if self._billable_activity_meter is not None:
-                    self._billable_activity_meter.mark_started()
+                self._mark_billable_activity_started()
                 self._set_state(ConnectionState.IN_TURN)
                 turn._sender = asyncio.create_task(turn._send_audio_stream())
                 turn._sender.add_done_callback(lambda task: turn._on_connection_lost() if not task.cancelled() and task.exception() else None)
@@ -672,10 +667,9 @@ class OpenAILiveConnection(BaseLiveConnection):
             )
         finally:
             turn = self._active_turn
-            if self._billable_activity_meter is not None:
-                self._billable_activity_meter.mark_ended(
-                    seconds=turn._seconds if turn and turn._finalized else None,
-                )
+            self._mark_billable_activity_ended(
+                seconds=turn._seconds if turn and turn._finalized else None,
+            )
             await self._teardown_session()
 
     async def _teardown_session(self) -> None:
