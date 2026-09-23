@@ -14,10 +14,9 @@ writes the file.
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
 BASELINE_PROFILE_STATE_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 DEFAULT_BASELINE_PROFILE_STATE_PATH = Path(
@@ -33,37 +32,35 @@ DEFAULT_COMMISSION_LOAD_STATE_PATH = Path(
 )
 BASELINE_CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 DEFAULT_BASELINE_CONFIG_PATH = CANONICAL_CAMILLA_CONFIG_DIR / "active_speaker_baseline.yml"
+AUDITION_STATE_ENV = "JASPER_ACTIVE_SPEAKER_AUDITION_STATE"
+DEFAULT_AUDITION_STATE_PATH = Path("/run/jasper-active-speaker/audition.json")
 #: The on-box campaign home: banked rounds, one directory each. A sibling of
 #: ``bundles.DEFAULT_SESSIONS_DIR`` rather than a child of it, so session
 #: retention (``bundles.enforce_retention``) never walks over a banked round.
 DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 
 
-def _resolved(path: str | Path | None, env: str, default: Path) -> Path:
-    return Path(path or os.environ.get(env) or default)
-
-
 def baseline_profile_state_path(path: str | Path | None = None) -> Path:
-    return _resolved(
+    return resolve_state_path(
         path, BASELINE_PROFILE_STATE_ENV, DEFAULT_BASELINE_PROFILE_STATE_PATH
     )
 
 
 def startup_load_state_path(path: str | Path | None = None) -> Path:
-    return _resolved(
+    return resolve_state_path(
         path, STARTUP_LOAD_STATE_ENV, DEFAULT_STARTUP_LOAD_STATE_PATH
     )
 
 
 def commission_load_state_path(path: str | Path | None = None) -> Path:
-    return _resolved(
+    return resolve_state_path(
         path, COMMISSION_LOAD_STATE_ENV, DEFAULT_COMMISSION_LOAD_STATE_PATH
     )
 
 
 
 def baseline_config_path(path: str | Path | None = None) -> Path:
-    return _resolved(path, BASELINE_CONFIG_PATH_ENV, DEFAULT_BASELINE_CONFIG_PATH)
+    return resolve_state_path(path, BASELINE_CONFIG_PATH_ENV, DEFAULT_BASELINE_CONFIG_PATH)
 
 
 def config_text_sha256(text: str) -> str:
@@ -75,3 +72,7 @@ def baseline_candidate_config_path(text: str, path: str | Path | None = None) ->
     target = baseline_config_path(path)
     sha256 = config_text_sha256(text)
     return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
+
+
+def audition_state_path(path: str | Path | None = None) -> Path:
+    return resolve_state_path(path, AUDITION_STATE_ENV, DEFAULT_AUDITION_STATE_PATH)

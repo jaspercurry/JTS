@@ -31,12 +31,13 @@ from jasper.active_speaker.audition import (
     AUDITION_LAYER_FULL,
     AuditionRefused,
     REFUSE_MEASUREMENT_ACTIVE,
-    audition_state_path,
     hold_audition,
     read_audition_state,
     start_audition,
     stop_audition,
 )
+from jasper.active_speaker.audition_claim import graph_replaced
+from jasper.active_speaker.state_paths import audition_state_path
 from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
@@ -909,7 +910,7 @@ def test_web_holder_ends_and_releases_idle_hold(compare_box, monkeypatch, cause)
                 newer = asyncio.run(audition.set_compare_state("on", cam=cam, trim_db=0.0))
             else:
                 cam.running = applied
-                audition.graph_replaced()
+                graph_replaced()
     finally:
         release.set()
         thread.join(5)

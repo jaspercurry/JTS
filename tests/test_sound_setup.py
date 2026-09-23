@@ -6009,7 +6009,7 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
     current = tmp_path / "sound_current.yml"
     current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     record = tmp_path / "audition.json"
-    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(record))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_AUDITION_STATE", str(record))
     record.write_text(json.dumps({"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
         "layer": "rear_compare", "state": "off", "token": "session", "owner_pid": 123,
         "deadline_at": 9999999999.0}))
