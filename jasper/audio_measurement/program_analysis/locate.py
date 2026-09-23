@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
 from scipy.signal import correlate, resample_poly
@@ -116,15 +117,22 @@ def _stimulus_shape(segment: ProgramSegment) -> tuple[float | None, float | None
     return (segment.f1_hz, segment.f2_hz, segment.n_samples)
 
 
+def _cached_stimulus(stimuli: dict[str, np.ndarray], segment: ProgramSegment) -> np.ndarray:
+    if segment.segment_id not in stimuli:
+        stimuli[segment.segment_id] = segment_stimulus(segment)
+    return stimuli[segment.segment_id]
+
+
+# One timeline reading: (witness presence, witness confidence, anchor segment, global offset).
+_Reading = tuple[float, float, ProgramSegment, int]
+
+
 def _score_anchor_witness(
     witness: ProgramSegment, candidates: list[ProgramSegment], capture: np.ndarray,
     sample_rate: int, arrival: int, stimuli: dict[str, np.ndarray],
-) -> tuple[tuple[float, float, ProgramSegment, int], tuple[float, float, ProgramSegment, int], bool]:
-    witness_stim = stimuli.get(witness.segment_id)
-    if witness_stim is None:
-        witness_stim = segment_stimulus(witness)
-        stimuli[witness.segment_id] = witness_stim
-    scored: list[tuple[float, float, ProgramSegment, int]] = []
+) -> tuple[_Reading, _Reading, bool]:
+    witness_stim = _cached_stimulus(stimuli, witness)
+    scored: list[_Reading] = []
     for seg in candidates:
         offset = arrival - seg.start_sample
         _located, confidence, presence = _locate_in_window(
@@ -147,6 +155,42 @@ def _score_anchor_witness(
         and best[0] < runner_up[0] * ANCHOR_DISCRIMINATION_RATIO
     )
     return best, runner_up, ambiguous
+
+
+def _witness_twinned(program: ExcitationProgram, witness: ProgramSegment, shift: int, sample_rate: int) -> bool:
+    """Whether a same-shape copy of ``witness`` sits one rival ``shift`` away (CHECK's pilot pairs, #2644).
+
+    Then the rival reading's witness window can land on a real stimulus that
+    correlates exactly like the witness, and only the witness-only guard applies.
+    """
+    search = SEGMENT_SEARCH_S * sample_rate
+    return any(
+        seg is not witness and seg.kind in STIMULUS_KINDS and _stimulus_shape(seg) == _stimulus_shape(witness)
+        and abs(abs(seg.start_sample - witness.start_sample) - abs(shift)) <= search
+        for seg in program.segments
+    )
+
+
+def _pair_presences(
+    capture: np.ndarray, stim: np.ndarray, best: _Reading, runner_up: _Reading, sample_rate: int,
+) -> tuple[float, float] | None:
+    """Each reading's schedule asked of the other reading's anchor segment.
+
+    Returns the presence of the runner-up's segment where the best reading
+    schedules it, then of the best's segment where the runner-up reading
+    schedules it; ``None`` when either window leaves the recording, since a slot
+    the capture never held is no evidence against a reading.
+    """
+    _, _, best_seg, best_offset = best
+    _, _, runner_up_seg, runner_up_offset = runner_up
+    slots = (best_offset + runner_up_seg.start_sample, runner_up_offset + best_seg.start_sample)
+    search = int(round(SEGMENT_SEARCH_S * sample_rate))
+    if min(slots) < search or max(slots) + best_seg.n_samples + search > capture.size:
+        return None
+    for_best, for_runner_up = (
+        _locate_in_window(capture, stim, slot, best_seg.n_samples, sample_rate=sample_rate)[2] for slot in slots
+    )
+    return for_best, for_runner_up
 
 
 def _resolve_anchor(
@@ -190,8 +234,15 @@ def _resolve_anchor(
     if a near-tie pair (both above the confidence floor, presence within
     :data:`ANCHOR_DISCRIMINATION_RATIO` of each other) separates far less
     than a genuine witness reading does, an argmax between them is a coin
-    flip. The returned evidence carries that ambiguity and whether the
-    witness corroborated the anchor at all.
+    flip. That holds where the schedule can put a copy of the witness in the
+    rival's window (CHECK's twin pilots, #2644). Where it cannot, the rival
+    window reads an empty window's floor, which a reverberant seat can bring
+    within the ratio of a present witness (#5632), so the anchor pair's own
+    schedule is scored jointly with it: each reading predicts where the
+    other's anchor segment plays, and the near-tie clears only when the
+    witness and the pair each separate the readings by the root of the ratio.
+    The returned evidence carries that ambiguity and whether the witness
+    corroborated the anchor at all.
 
     Branch programs try equally long witnesses in schedule order only on
     ambiguity; if none resolves it, the first witness's evidence stands.
@@ -235,6 +286,14 @@ def _resolve_anchor(
                 break
     best_presence, best_confidence, best_seg, best_offset = best
     runner_up_presence, runner_up, runner_up_seg, runner_up_offset = second
+    pair = None
+    if ambiguous and not _witness_twinned(program, witness, runner_up_offset - best_offset, sample_rate):
+        pair = _pair_presences(capture, _cached_stimulus(stimuli, first), best, second, sample_rate)
+        if pair is not None:
+            # Each by the root of the ratio on its own: two empty pilot slots (1-5x measured)
+            # or an unscheduled copy of the witness (about 2x) leave the take un-attributed.
+            root = math.sqrt(ANCHOR_DISCRIMINATION_RATIO)
+            ambiguous = not (best_presence >= runner_up_presence * root and pair[0] > pair[1] * root)
     assert witness.f1_hz is not None and witness.f2_hz is not None
     witness_stim = stimuli[witness.segment_id]
     # Filtering can prove the timeline but inflates empty-window presence,
@@ -267,6 +326,8 @@ def _resolve_anchor(
         candidates=len(candidates),
         presence=round(best_presence, 6),
         runner_up_presence=round(runner_up_presence, 6),
+        pair_presence=None if pair is None else round(pair[0], 6),
+        pair_runner_up_presence=None if pair is None else round(pair[1], 6),
         confidence=round(best_confidence, 4),
         runner_up=round(runner_up, 4),
         runner_up_anchor=runner_up_seg.segment_id,
@@ -283,6 +344,8 @@ def _resolve_anchor(
         confidence=float(best_confidence), corroborated=bool(corroborated),
         runner_up_presence=float(runner_up_presence), runner_up_confidence=float(runner_up),
         witnesses_tried=witnesses_tried,
+        pair_presence=None if pair is None else float(pair[0]),
+        pair_runner_up_presence=None if pair is None else float(pair[1]),
     )
 
 
@@ -364,18 +427,9 @@ def _resolve_sweep_anchor(
     scheduled = offset + witness.start_sample
     search_samples = max(round(SEGMENT_SEARCH_S * sample_rate),
                          witness.start_sample - first.start_sample - first.n_samples)
-    located, confidence, presence = _locate_in_window(
-        capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
-        search_samples=search_samples,
+    located, confidence, presence = _locate_sweep(
+        capture, stimulus, scheduled, witness, sample_rate=sample_rate, search_samples=search_samples,
     )
-    assert witness.f1_hz is not None and witness.f2_hz is not None
-    band_start = max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz)
-    if confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR and band_start < witness.f2_hz:
-        located, confidence, presence = _locate_in_window(
-            capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
-            band_hz=(band_start, witness.f2_hz),
-            search_samples=search_samples,
-        )
     residual_ms = (located - scheduled) / sample_rate * 1000.0
     found = confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     displaced = abs(residual_ms) > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
@@ -433,6 +487,23 @@ def _locate_in_window(
     return lo + int(res.lag_samples), float(res.confidence), float(res.peak)
 
 
+def _locate_sweep(
+    capture: np.ndarray, stim: np.ndarray, scheduled: int, sweep: ProgramSegment, *,
+    sample_rate: int, search_samples: int | None = None,
+) -> tuple[int, float, float]:
+    """:func:`_locate_in_window` for a sweep: full band, or above the room's modal
+    tails (:data:`WITNESS_BAND_FLOOR_HZ`) when only that view clears the locate floor."""
+    located = _locate_in_window(capture, stim, scheduled, sweep.n_samples,
+                                sample_rate=sample_rate, search_samples=search_samples)
+    assert sweep.f1_hz is not None and sweep.f2_hz is not None
+    band_start = max(WITNESS_BAND_FLOOR_HZ, sweep.f1_hz)
+    if located[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR or band_start >= sweep.f2_hz:
+        return located
+    banded = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate,
+                               band_hz=(band_start, sweep.f2_hz), search_samples=search_samples)
+    return banded if banded[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR else located
+
+
 def _locate_segments(
     program: ExcitationProgram,
     capture: np.ndarray,
@@ -445,15 +516,15 @@ def _locate_segments(
     for seg in program.segments:
         scheduled = global_offset + seg.start_sample
         if seg.kind in STIMULUS_KINDS:
-            stim = stimuli.get(seg.segment_id)
-            if stim is None:
-                stim = segment_stimulus(seg)
-                stimuli[seg.segment_id] = stim
+            stim = _cached_stimulus(stimuli, seg)
             # `presence` is the anchor arbitration's term, not this one's: every
             # gate on `SegmentLocation.confidence` is calibrated on the
             # peakedness margin, so recording the other would move all of them.
-            located, confidence, _presence = _locate_in_window(
-                capture, stim, scheduled, seg.n_samples, sample_rate=sample_rate,
+            # A summed sweep uses the sweep-witness rule, so a sweep the anchor heard is heard here (#5632).
+            located, confidence, _presence = (
+                _locate_sweep(capture, stim, scheduled, seg, sample_rate=sample_rate)
+                if seg.kind == KIND_SUMMED_SWEEP else
+                _locate_in_window(capture, stim, scheduled, seg.n_samples, sample_rate=sample_rate)
             )
             seg_samples = capture[located:located + seg.n_samples]
             out.append(SegmentLocation(

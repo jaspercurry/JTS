@@ -5,8 +5,9 @@
 """HTTP control surface for local and household-network clients.
 
 Stack: stdlib http.server (bounded ThreadingHTTPServer), pycamilladsp
-client, VolumeCoordinator (source-aware dispatch). The route tables live
-in `_make_handler`; `do_GET`/`do_POST` own dispatch in one place.
+client, VolumeCoordinator (source-aware dispatch). `_GET_ROUTES` /
+`_POST_ROUTES` are the route tables; `do_GET`/`do_POST` own dispatch in one
+place.
 
 - /state: cross-daemon JSON snapshot — voice / audio / renderers;
   consumable from the management UI, jasper-doctor, or `curl`.
@@ -51,15 +52,14 @@ from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
     debug_control,
     grouping_supervisor,
-    heal_supervisor,
     measurement_hold,
     shairport_supervisor,
     system_supervisor,
 )
 from ..install_profile import (
     STREAMBOX_INSTALL_PROFILE,
-    install_profile_allows_voice_brain,
-    normalize_install_profile,
+    Capability,
+    install_profile_has_capability,
     read_install_profile,
 )
 from . import control_token
@@ -78,46 +78,57 @@ from ..platform.uds import (
 logger = logging.getLogger(__name__)
 
 
-# Streambox is the restricted profile: these are the management + audio
-# actions every streambox owns. Capability-granted routes are added on
-# top by _control_route_allowed_for_install_profile, not listed here.
-_STREAMBOX_ALLOWED_GET_ROUTES = frozenset({
-    "/healthz",
-    "/volume",
-    "/debug",
-    "/grouping",
-    "/system/snapshot",
-    "/system/diagnostics",
-    "/source/state",
-    "/state",
-})
-_STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
-    "/volume/adjust",
-    "/volume/set",
-    "/grouping/set",
-    "/volume/mute",
-    "/debug",
-    "/usb-forensics",
-    "/system/reboot",
-    "/system/poweroff",
-    "/source/select",
-    "/system/audio-quality",
-    "/system/usb-latency",
-    "/system/restart/audio",
-    "/transport/next",
-    "/transport/previous",
-    "/transport/toggle",
-})
-# Routes a restricted profile earns from its CAPABILITY grant rather than
-# from its tier name. The local-mic/wake/AEC routes are deliberately
-# absent — they need Capability.WAKE_DETECTION, which a streambox is not
-# granted. See ADR-0217.
-_ASSISTANT_POST_ROUTES = frozenset({
-    "/session/start",
-    "/session/end",
-    "/cue/play",
-    "/system/restart/voice",
-})
+# Each route names its handler method and the Capability an install profile
+# must grant to be served it (None: every profile). The mic/AEC routes ride
+# WAKE_DETECTION, not ASSISTANT (ADR-0217).
+_GET_ROUTES: dict[str, tuple[str, Capability | None]] = {
+    "/healthz": ("_get_healthz", None),
+    "/volume": ("_get_volume", None),
+    "/mic": ("_get_mic", Capability.WAKE_DETECTION),
+    "/source/state": ("_get_source_state", None),
+    "/aec": ("_get_aec", Capability.WAKE_DETECTION),
+    "/aec/enhanced-aec": ("_get_enhanced_aec", Capability.WAKE_DETECTION),
+    "/debug": ("_get_debug", None),
+    "/state": ("_get_state", None),
+    "/measurement": ("_get_measurement", None),
+    "/grouping": ("_get_grouping", None),
+    "/system/snapshot": ("_get_system_snapshot", None),
+    "/system/diagnostics": ("_get_system_diagnostics", None),
+}
+_POST_ROUTES: dict[str, tuple[str, Capability | None]] = {
+    "/volume/adjust": ("_post_volume_adjust", None),
+    "/volume/set": ("_post_volume_set", None),
+    "/grouping/set": ("_post_grouping_set", None),
+    "/volume/mute": ("_post_volume_mute", None),
+    "/transport/toggle": ("_post_transport", None),
+    "/transport/next": ("_post_transport", None),
+    "/transport/previous": ("_post_transport", None),
+    "/source/select": ("_post_source_select", None),
+    "/session/start": ("_post_session", Capability.ASSISTANT),
+    "/session/end": ("_post_session", Capability.ASSISTANT),
+    "/cue/play": ("_post_cue_play", Capability.ASSISTANT),
+    "/mic/mute": ("_post_mic_mute", Capability.WAKE_DETECTION),
+    "/aec/leg": ("_post_aec_leg", Capability.WAKE_DETECTION),
+    "/aec/profile": ("_post_aec_profile", Capability.WAKE_DETECTION),
+    "/aec/usb-mic": ("_post_aec_usb_mic", Capability.WAKE_DETECTION),
+    "/aec/usb-mic-leg": ("_post_aec_usb_mic_leg", Capability.WAKE_DETECTION),
+    "/aec/threshold": ("_post_aec_threshold", Capability.WAKE_DETECTION),
+    "/aec/firmware/update": ("_post_aec_firmware_update", Capability.WAKE_DETECTION),
+    "/aec/enhanced-aec/install": (
+        "_post_enhanced_aec_install", Capability.WAKE_DETECTION,
+    ),
+    "/aec/commission": ("_post_aec_commission", Capability.WAKE_DETECTION),
+    "/debug": ("_post_debug", None),
+    "/usb-forensics": ("_post_usb_forensics", None),
+    "/system/audio-quality": ("_post_system_audio_quality", None),
+    "/system/usb-latency": ("_post_system_usb_latency", None),
+    "/measurement/hold": ("_post_measurement_hold", None),
+    "/measurement/release": ("_post_measurement_release", None),
+    "/system/restart/voice": ("_post_system_action", Capability.ASSISTANT),
+    "/system/restart/audio": ("_post_system_action", None),
+    "/system/reboot": ("_post_system_action", None),
+    "/system/poweroff": ("_post_system_action", None),
+}
 
 
 # The high-impact mutations the control token gates (SECURITY.md).
@@ -184,19 +195,12 @@ def _control_route_allowed_for_install_profile(
     method: str,
     path: str,
 ) -> bool:
-    role = normalize_install_profile(profile)
-    if role != STREAMBOX_INSTALL_PROFILE:
+    route = {"GET": _GET_ROUTES, "POST": _POST_ROUTES}.get(method, {}).get(path)
+    if route is None:
+        # Not a route for this method: dispatch 404s it after the other guards.
         return True
-    if method == "GET":
-        return path in _STREAMBOX_ALLOWED_GET_ROUTES
-    if method != "POST":
-        return False
-    if path in _STREAMBOX_ALLOWED_POST_ROUTES:
-        return True
-    return (
-        path in _ASSISTANT_POST_ROUTES
-        and install_profile_allows_voice_brain(profile)
-    )
+    _handler_name, requires = route
+    return requires is None or install_profile_has_capability(profile, requires)
 
 
 CONTROL_MAX_POST_BYTES = bounded_env_int(
@@ -627,10 +631,6 @@ def _make_handler(
 
         # --- routes ---
         #
-        # do_GET / do_POST own the dispatch via the _GET_ROUTES /
-        # _POST_ROUTES tables (path -> handler-method name) at the bottom of
-        # this class.
-        #
         # SECURITY ORDERING IS LOAD-BEARING: the management-read /
         # mutating-request guard runs FIRST, then install-profile route
         # scope, and the ordinary table lookup happens LAST. So an
@@ -644,10 +644,11 @@ def _make_handler(
                 return
             if not self._guard_install_profile_route():
                 return
-            handler_name = self._GET_ROUTES.get(self.path)
-            if handler_name is None:
+            route = _GET_ROUTES.get(self.path)
+            if route is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            handler_name, _requires = route
             getattr(self, handler_name)()
 
         def do_POST(self) -> None:  # noqa: N802
@@ -657,10 +658,11 @@ def _make_handler(
                 return
             if not self._guard_control_token():
                 return
-            handler_name = self._POST_ROUTES.get(self.path)
-            if handler_name is None:
+            route = _POST_ROUTES.get(self.path)
+            if route is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            handler_name, _requires = route
             getattr(self, handler_name)()
 
         def _guard_control_token(self) -> bool:
@@ -705,60 +707,6 @@ def _make_handler(
                 status=403,
             )
             return False
-
-        # --- route tables (path -> handler-method name) ---
-        # Keyed by exact path; method dispatch (do_GET vs do_POST)
-        # disambiguates the two '/debug' handlers. Several paths share one
-        # method that re-discriminates self.path internally (transport
-        # action, system action). The string keys keep the route literals
-        # greppable for the client/server contract test
-        # (tests/test_platform_control_client.py).
-        _GET_ROUTES = {
-            "/healthz": "_get_healthz",
-            "/volume": "_get_volume",
-            "/mic": "_get_mic",
-            "/source/state": "_get_source_state",
-            "/aec": "_get_aec",
-            "/aec/enhanced-aec": "_get_enhanced_aec",
-            "/debug": "_get_debug",
-            "/state": "_get_state",
-            "/measurement": "_get_measurement",
-            "/grouping": "_get_grouping",
-            "/system/snapshot": "_get_system_snapshot",
-            "/system/diagnostics": "_get_system_diagnostics",
-        }
-        _POST_ROUTES = {
-            "/volume/adjust": "_post_volume_adjust",
-            "/volume/set": "_post_volume_set",
-            "/grouping/set": "_post_grouping_set",
-            "/volume/mute": "_post_volume_mute",
-            "/transport/toggle": "_post_transport",
-            "/transport/next": "_post_transport",
-            "/transport/previous": "_post_transport",
-            "/source/select": "_post_source_select",
-            "/session/start": "_post_session",
-            "/session/end": "_post_session",
-            "/cue/play": "_post_cue_play",
-            "/mic/mute": "_post_mic_mute",
-            "/aec/leg": "_post_aec_leg",
-            "/aec/profile": "_post_aec_profile",
-            "/aec/usb-mic": "_post_aec_usb_mic",
-            "/aec/usb-mic-leg": "_post_aec_usb_mic_leg",
-            "/aec/threshold": "_post_aec_threshold",
-            "/aec/firmware/update": "_post_aec_firmware_update",
-            "/aec/enhanced-aec/install": "_post_enhanced_aec_install",
-            "/aec/commission": "_post_aec_commission",
-            "/debug": "_post_debug",
-            "/usb-forensics": "_post_usb_forensics",
-            "/system/audio-quality": "_post_system_audio_quality",
-            "/system/usb-latency": "_post_system_usb_latency",
-            "/measurement/hold": "_post_measurement_hold",
-            "/measurement/release": "_post_measurement_release",
-            "/system/restart/voice": "_post_system_action",
-            "/system/restart/audio": "_post_system_action",
-            "/system/reboot": "_post_system_action",
-            "/system/poweroff": "_post_system_action",
-        }
 
     return Handler
 
@@ -1051,13 +999,6 @@ def main(argv: list[str] | None = None) -> int:
     # Costs one grouping.env read per 30 s when solo. Off via
     # JASPER_GROUPING_SUPERVISOR=disabled.
     grouping_supervisor.start_supervisor()
-    # The two silences every unit state calls healthy: a dead audio path with
-    # every unit active, and a reachable voice daemon that has heard no wake
-    # word in a day. It observes only — it logs `event=heal.would_act` and
-    # calls nothing (ADR-0271).
-    heal_supervisor.start_supervisor(
-        audio_health_sampler, voice_socket_path=args.voice_socket,
-    )
     # Runtime debug toggle: clear an expired session left on disk, or re-arm
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.

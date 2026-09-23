@@ -78,7 +78,6 @@ _UNDECLARED_OUTPUT_CODES = frozenset({"output_absent", "output_backend_inactive"
 
 # The shared-path units whose restart interrupts every source, and the incident
 # key stem each one reports under (the stems `_likely_area` already classifies).
-# Public: `jasper.control.heal_supervisor` stands down when one is not active.
 RESTART_WATCH_UNITS = {
     FANIN_SERVICE: "path.fanin",
     CAMILLA_SERVICE: "path.camilla",

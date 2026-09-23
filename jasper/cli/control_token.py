@@ -31,11 +31,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import sys
+from html import escape
+from pathlib import Path
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_bytes, atomic_write_text
 from ..control import control_token
+
+# Baked by jasper.web.landing at install; rewritten here because jasper/cli may
+# not import jasper.web (tests/test_audio_measurement_boundary_ssot.py).
+LANDING_PAGE = Path("/usr/share/jasper-web/index.html")
+_TOKEN_META = re.compile(rb'<meta\s+name="jts-control-token"\s+content="([^"]*)"')
 
 
 def _write_token(token: str) -> None:
@@ -50,6 +58,35 @@ def _write_token(token: str) -> None:
     # rotation in /var/lib/jasper would otherwise create root:root 0640, which the
     # non-root jasper-control cannot read, silently failing the mandatory gate open.
     atomic_write_text(path, token + "\n", mode=0o640)
+
+
+def _update_landing(token: str) -> bool:
+    """Point the installed landing page's token meta at ``token`` ("" = off).
+
+    The installed page has no placeholder left to re-render from, so only the
+    meta's content changes; every other byte, the mode and the owner stay. A
+    miss is reported, never fatal: the token change itself already stands.
+    """
+    try:
+        page = LANDING_PAGE.read_bytes()
+        meta = _TOKEN_META.search(page)
+        if meta is None:
+            skipped = f"no jts-control-token meta in {LANDING_PAGE}"
+        else:
+            atomic_write_bytes(
+                LANDING_PAGE,
+                page[: meta.start(1)] + escape(token).encode() + page[meta.end(1) :],
+                preserve_target_stat=True,
+            )
+            return True
+    except OSError as e:
+        skipped = str(e)
+    print(
+        f"jasper-control-token: landing page not updated ({skipped}); "
+        "the next deploy re-renders it.",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _enable(force: bool) -> int:
@@ -75,9 +112,10 @@ def _enable(force: bool) -> int:
         print(f"jasper-control-token: could not write token: {e}", file=sys.stderr)
         return 1
     print(token)
+    other = "" if _update_landing(token) else "the other "
     print(
-        "control token written. Reload management pages or send it as the "
-        "X-JTS-Token header from curl/scripts.",
+        f"control token written. Reload {other}management pages or send it as "
+        "the X-JTS-Token header from curl/scripts.",
         file=sys.stderr,
     )
     return 0
@@ -118,6 +156,7 @@ def _disable() -> int:
     except OSError as e:
         print(f"jasper-control-token: could not remove token: {e}", file=sys.stderr)
         return 1
+    _update_landing("")
     print(
         "control token gate DISABLED until jasper-control starts and "
         "recreates it.",

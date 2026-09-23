@@ -58,10 +58,12 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   udev, CI, `importlib`/`getattr`).
 - **Tests:** pin externally observable behavior, one altitude per behavior.
   Never assert on source text or log/error prose — assert types, codes, and
-  structured fields. Prefer one parametrized/property test over an example
-  cluster. A bug fix gets one behavior pin, not a new test file. Delete a
-  test when its subject moves. Non-negotiable paths (list above) get heavy
-  tests; everything else gets tests where behavior can actually break.
+  structured fields. A test that reads source text stays only when it guards a
+  non-negotiable or a recurrence (ADR-0351 lists that locked set); delete any
+  other when it blocks a change. Prefer one parametrized/property test over an
+  example cluster. A bug fix gets one behavior pin, not a new test file.
+  Delete a test when its subject moves. Non-negotiable paths (list above) get
+  heavy tests; everything else gets tests where behavior can actually break.
 - **Comments:** only non-derivable constraints (units, ranges, timing,
   hardware quirks) and `why`-pointers (`See ADR-NNN`, an issue, a doc). No
   narration of what code does, no history, no dates/PR numbers, no text

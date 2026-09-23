@@ -304,7 +304,7 @@ Skip this phase if you're not in NYC (or Jersey City / Hoboken — Citi
 Bike covers those). The voice tools work without it; queries about
 "next train" / "next bus" / "Citi Bike situation" without
 configuration get a polite "transit isn't set up — visit
-`jts.local/transit` to configure it."
+`jts.local/assistant/transit/` to configure it."
 
 From any browser on the LAN:
 
@@ -347,7 +347,7 @@ owned; the systemd unit's `EnvironmentFile=` sources it).
 
 Skip if you don't run Home Assistant. Smart-home requests without
 configuration get a polite "smart-home isn't set up yet — visit
-`jts.local/ha` to enable it" with no model misroute.
+`jts.local/assistant/ha/` to enable it" with no model misroute.
 
 From any browser on the LAN:
 

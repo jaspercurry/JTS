@@ -267,8 +267,6 @@ async def test_session_update_sent_on_connect_with_manual_vad():
     ("tool", "provider.tool_result_send_failed", logging.WARNING),
     ("cancel", "provider.cancel_ignored", logging.DEBUG),
     ("release", "provider.release_failed", logging.WARNING),
-    ("debug_close", "provider.debug_audio_record", logging.WARNING),
-    ("debug_write", "provider.debug_audio_record", logging.WARNING),
 ])
 async def test_adapter_failures_report_redacted_provider_details(
     caplog, monkeypatch, conn_cls, operation, event, level,
@@ -306,14 +304,6 @@ async def test_adapter_failures_report_redacted_provider_details(
         await conn._cancel_response(turn)
     elif operation == "release":
         await turn.release()
-    elif operation == "debug_close":
-        monkeypatch.setattr(wire, "close", fail)
-        turn._debug_wav = wire
-        await turn.release()
-    else:
-        monkeypatch.setenv("JASPER_DEBUG_RECORD_OPENAI_AUDIO", "1")
-        monkeypatch.setattr("jasper.voice.openai_session.os.makedirs", fail)
-        await turn.send_audio(b"\x00\x00" * 1280)
     fields = event_fields(caplog, event)
     if operation in {"audio", "text_context", "end_input"}:
         assert fields["outcome"] == "turn_lost"

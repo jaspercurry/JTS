@@ -64,10 +64,11 @@ MAX_DRIFT_PPM = 500.0
 # also routes a failed sweep schedule to locate failure instead of a glitch retry.
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
-# How many TIMES more present the winning anchor hypothesis's witness must
-# be than its runner-up's before `_resolve_anchor` may call it RESOLVED. 50
-# sits near the geometric centre of the measured gap between
-# cannot-discriminate (1.07-12.4) and resolved (197+) anchors. PROVISIONAL.
+# How many TIMES more present the winning anchor hypothesis's evidence must
+# be than its runner-up's before `_resolve_anchor` may call it RESOLVED.
+# Cannot-discriminate readings measure 1.07-12.4 (CHECK's twin 3.5). The
+# witness alone separated 42-505x on 70 resolved jts3 VERIFY takes at 1 m but
+# 22-49x at seats (#5632), so a twin-free near-tie also scores the anchor pair.
 ANCHOR_DISCRIMINATION_RATIO = 50.0
 
 # Max residual, ms, between a located sweep and its scheduled slot:
@@ -899,6 +900,10 @@ class AnchorEvidence:
     runner_up_presence: float | None = None
     runner_up_confidence: float | None = None
     witnesses_tried: int | None = None
+    # A twin-free witness near-tie only: the runner-up's anchor segment where the best
+    # reading schedules it, and the best's where the runner-up reading schedules it.
+    pair_presence: float | None = None
+    pair_runner_up_presence: float | None = None
 
 
 @dataclass(frozen=True)

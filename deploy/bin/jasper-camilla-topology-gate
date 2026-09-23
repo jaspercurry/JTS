@@ -36,9 +36,8 @@
 # stamps whose digests differ refuse. This gate never writes a stamp — shell
 # cannot prove a graph, and a stamp it minted would be a proof nobody made.
 #
-# Refusal is visible on three surfaces: this journal line, the /run record the
-# `camilla statefile topology` doctor row reads, and jasper-control's heal
-# supervisor (which publishes restart-audio in /state.resilience.heal).
+# Refusal is visible on two surfaces: this journal line, and the /run record the
+# `camilla statefile topology` doctor row reads.
 #
 # REMOVE WHEN jasper-camilla no longer loads a persisted pointer at start —
 # a CamillaDSP started with its graph passed in, or a statefile the daemon
@@ -118,9 +117,9 @@ clear_record() {
     rm -f -- "$GATE_STATE" 2>/dev/null || true
 }
 
-# A record the doctor row and the heal supervisor read. Failing to write it does
-# NOT change the verdict below — the refusal still stands on the journal line —
-# but it does blind those two surfaces, so say so.
+# The record the doctor row reads. Failing to write it does NOT change the
+# verdict below — the refusal still stands on the journal line — but it blinds
+# the record's readers, so say so.
 write_record() {
     local tmp
     mkdir -p -- "$(dirname -- "$GATE_STATE")" 2>/dev/null || true

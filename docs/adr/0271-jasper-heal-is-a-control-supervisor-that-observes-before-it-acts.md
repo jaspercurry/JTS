@@ -1,7 +1,8 @@
 # ADR-0271: jasper-heal is a control supervisor that observes before it acts
 
 - **Date:** 2026-09-09
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0349](0349-jasper-heal-is-deleted.md)
 - **Context:** The box already repairs itself wherever systemd can see the
   fault: `Restart=`/`StartLimitAction=`, the bootloop guard,
   jasper-camilla-recover, the outputd failure reconciler
