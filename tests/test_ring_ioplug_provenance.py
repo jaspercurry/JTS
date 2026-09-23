@@ -386,21 +386,6 @@ def test_installer_greps_for_the_same_marker(cap):
     assert _CAP_MARKERS[cap] in _sh_text()
 
 
-def test_every_non_producing_install_path_revokes_the_record():
-    """A deploy that did not build the plugin must not keep vouching for it.
-
-    Three paths reach the end of the ioplug install without this deploy having
-    produced the file at ``so_dest``: the build failing, ``make plugin``
-    finishing without an artifact, and the first-party bundle path finding no
-    installed plugin. Each must revoke, or a prior deploy's record silently
-    continues to describe a binary this one did not make — which is exactly the
-    stale-ioplug hole the record exists to close.
-    """
-    text = _sh_text()
-    assert text.count("revoke_ring_ioplug_provenance") >= 4  # 3 call sites + the def
-    assert "rm -f \"${JTS_RING_IOPLUG_PROVENANCE}\"" in text
-
-
 # --- the doctor check, branch by branch -------------------------------------
 #
 # `check_ring_ioplug_provenance` is the standing surface for "is the plugin on

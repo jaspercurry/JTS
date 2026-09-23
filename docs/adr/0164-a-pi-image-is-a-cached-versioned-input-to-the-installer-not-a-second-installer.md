@@ -1,9 +1,8 @@
 # ADR-0164: A Pi image is a cached, versioned input to the installer, not a second installer
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (recorded when HANDOFF-pi-image-delivery.md was trimmed
-  to its operational spine; no `.img.xz` has been built yet — this is the rule
-  the first one must obey)
+- **Status:** Superseded by
+  [ADR-0348](0348-the-installer-builds-from-source-on-stock-pi-os.md)
 
 ## Context
 

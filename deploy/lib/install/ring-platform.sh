@@ -94,24 +94,6 @@ build_install_jts_ring_ioplug() {
     local cache_dir="/var/cache/jts-ring-ioplug-build"
     local so_dest="${JTS_RING_ALSA_PLUGIN_DIR}/${JTS_RING_IOPLUG_SO}"
 
-    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
-        prepare_first_party_runtime_bundle || return 1
-        if first_party_runtime_artifact_installed "jts-ring-ioplug"; then
-            echo "  jts_ring ioplug: using verified first-party ARM64 runtime bundle"
-            # The bundle path installs a plugin this deploy DID produce, so it
-            # gets a record like the source build does — capabilities read off
-            # the artifact, which is what makes the probe indifferent to how the
-            # binary arrived.
-            if [[ -f "${so_dest}" ]]; then
-                record_ring_ioplug_provenance \
-                    "${so_dest}" "$(sha256sum "${so_dest}" | awk '{print $1}')"
-            else
-                revoke_ring_ioplug_provenance
-            fi
-            return 0
-        fi
-    fi
-
     echo "  building jts_ring ALSA ioplug (C)..."
     mkdir -p "${cache_dir}"
     chown "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
