@@ -308,10 +308,6 @@ class AudioHealthSampler:
         except _MONITOR_ERRORS:
             logger.debug("audio health output-hardware probe failed", exc_info=True)
             output_hardware = None
-        if mux_status is None and isinstance(airplay.get("mux_status"), Mapping):
-            # Explicit fixture/injected observation seam; production AirPlay
-            # snapshots do not carry mux state and therefore still fail closed.
-            mux_status = dict(airplay["mux_status"])
         if self._service_probe is not None:
             try:
                 service_states = self._service_probe()

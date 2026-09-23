@@ -21,6 +21,7 @@ from .audio_health_fixtures import (
     _compose_camilla,
     _declared_topology,
     _live_parks,
+    _mux,
     _output_hardware,
     _outputd,
     _route,
@@ -44,6 +45,7 @@ def test_a_deaf_output_never_displaces_the_cause_that_produced_it() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
     assert stalled["signal_path"]["code"] == "path_stalled"
 
@@ -53,6 +55,7 @@ def test_a_deaf_output_never_displaces_the_cause_that_produced_it() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
     assert warming["signal_path"]["code"] != "output_deaf"
 
@@ -124,6 +127,10 @@ def _household_shapes() -> dict[str, dict]:
     def _compose_with(airplay, **kwargs) -> dict:
         kwargs.setdefault("outputd", _outputd())
         kwargs.setdefault("route", _route())
+        kwargs.setdefault(
+            "mux_status",
+            _mux(airplay.get("current", {}).get("fanin", {}).get("selected_input")),
+        )
         return compose_audio_health(
             airplay=airplay, issues=[], sampled_at=1000.0, **kwargs
         )
@@ -134,6 +141,7 @@ def _household_shapes() -> dict[str, dict]:
         sampler = AudioHealthSampler(
             airplay_sampler=_FakeAirPlay(list(airplay_snapshots)),
             outputd_probe=lambda: outputd.pop(0),
+            mux_probe=lambda: _mux(),
             route_probe=_route,
             time_fn=lambda: now[0],
         )
@@ -197,9 +205,7 @@ def _household_shapes() -> dict[str, dict]:
         "tts_queue_full": _compose_with(
             _airplay(**playing), outputd=_outputd(tts_pending_frames=96_000)
         ),
-        "activity_unknown": _compose_with(
-            _mutated(lambda ap: ap.pop("mux_status"), **playing)
-        ),
+        "activity_unknown": _compose_with(_airplay(**playing), mux_status=None),
         "camilla_stopped": _compose_camilla(_CAMILLA_CLEAN_STOP),
         "camilla_not_installed": _compose_camilla({
             "load_state": "not-found",
@@ -250,6 +256,7 @@ def _household_shapes() -> dict[str, dict]:
             route={"status": "unavailable", "low_latency_claim": False},
             issues=[],
             sampled_at=1000.0,
+            mux_status=_mux("usbsink"),
         ),
         "outputd_xrun_recovered": _second_tick(
             [_airplay(), _airplay()], [_outputd(), _outputd(dac_xruns=2)]

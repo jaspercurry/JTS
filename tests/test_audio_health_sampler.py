@@ -15,6 +15,7 @@ from .audio_health_fixtures import (
     _FakeAirPlay,
     _airplay,
     _declared_topology,
+    _mux,
     _outputd,
     _route,
 )
@@ -28,7 +29,7 @@ def test_sampler_freezes_host_pressure_onto_an_incident() -> None:
             _airplay(selected="usbsink", ladder="l0_locked"),
         ]),
         outputd_probe=lambda: _outputd(dac_xruns=1 if now[0] > 1000.0 else 0),
-        mux_probe=lambda: None,
+        mux_probe=lambda: _mux("usbsink"),
         route_probe=_route,
         system_probe=lambda: {
             "throttled_now": 0,
@@ -84,7 +85,6 @@ def test_mux_outage_is_unknown_and_preserves_the_observed_session() -> None:
         _airplay(selected="usbsink", ladder="l0_locked"),
         _airplay(selected="usbsink", ladder="l0_locked"),
     ]
-    snapshots[1].pop("mux_status")
     mux = [
         {"sources": {"usbsink": {"playing": True}}},
         None,
@@ -121,7 +121,6 @@ def test_mux_outage_preserves_ongoing_source_incident_identity() -> None:
         _airplay(selected="usbsink", ladder="l2_fallback")
         for _ in range(3)
     ]
-    snapshots[1].pop("mux_status")
     mux = [
         {"sources": {"usbsink": {"playing": True}}},
         None,
@@ -171,7 +170,6 @@ def test_mux_outage_preserves_ongoing_source_incident_identity() -> None:
 
 def test_confirmed_output_failure_outranks_mux_observability_gap() -> None:
     snapshot = _airplay(selected="usbsink", ladder="l0_locked")
-    snapshot.pop("mux_status")
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([snapshot]),
         outputd_probe=lambda: None,
@@ -328,6 +326,7 @@ def test_sampler_tracks_l2_to_l0_as_ongoing_then_recovered() -> None:
             _airplay(selected="usbsink", ladder="l0_locked"),
         ]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux("usbsink"),
         route_probe=route_probe,
         route_interval_sec=60.0,
         time_fn=lambda: now[0],
@@ -367,6 +366,7 @@ def test_sampler_records_live_output_and_tts_conditions() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
         outputd_probe=lambda: outputd.pop(0),
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         time_fn=lambda: now[0],
     )
@@ -414,6 +414,7 @@ def test_sampler_keeps_inactive_source_failure_out_of_incident_history() -> None
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay(), _airplay()]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         service_probe=lambda: states.pop(0),
         time_fn=lambda: now[0],
@@ -442,6 +443,7 @@ def test_sampler_turns_an_old_snapshot_unknown() -> None:
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay()]),
         outputd_probe=_outputd,
+        mux_probe=lambda: _mux(),
         route_probe=_route,
         sample_interval_sec=5.0,
         time_fn=lambda: now[0],
@@ -483,7 +485,9 @@ def test_sampler_turns_an_old_snapshot_unknown() -> None:
 def test_run_sleep_floor_bounds_the_tick_rate(
     monkeypatch, elapsed: float, expected_sleep: float,
 ) -> None:
-    sampler = AudioHealthSampler(sample_interval_sec=5.0, time_fn=lambda: 1000.0)
+    sampler = AudioHealthSampler(
+        sample_interval_sec=5.0, mux_probe=lambda: None, time_fn=lambda: 1000.0,
+    )
     monkeypatch.setattr(sampler, "_tick", lambda: None)
     monotonic_values = iter([0.0, elapsed])
     monkeypatch.setattr(

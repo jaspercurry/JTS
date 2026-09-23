@@ -9,7 +9,7 @@ import pytest
 from jasper.control import audio_signal_path
 from jasper.control.audio_health import compose_audio_health
 
-from .audio_health_fixtures import _airplay, _outputd, _route
+from .audio_health_fixtures import _airplay, _mux, _outputd, _route
 
 
 # --- mux activity truth -----------------------------------------------------
@@ -21,13 +21,15 @@ from .audio_health_fixtures import _airplay, _outputd, _route
 def test_selected_route_without_frame_progress_is_not_claimed_as_playback() -> None:
     airplay = _airplay(selected="spotify")
     airplay["current"]["fanin"]["inputs"]["spotify"]["frames_per_sec"] = 0.0
-    airplay["mux_status"]["sources"]["spotify"]["playing"] = False
+    mux = _mux("spotify")
+    mux["sources"]["spotify"]["playing"] = False
     health = compose_audio_health(
         airplay=airplay,
         outputd=_outputd(),
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=mux,
     )
 
     assert health["signal_path"]["status"] == "ok"
@@ -38,7 +40,8 @@ def test_selected_route_without_frame_progress_is_not_claimed_as_playback() -> N
 def test_mux_truth_gates_selected_spotify_and_bluetooth() -> None:
     for source_id in ("spotify", "bluetooth"):
         idle = _airplay(selected=source_id)
-        idle["mux_status"]["sources"][source_id]["playing"] = False
+        idle_mux = _mux(source_id)
+        idle_mux["sources"][source_id]["playing"] = False
         active = _airplay(selected=source_id)
 
         idle_health = compose_audio_health(
@@ -47,6 +50,7 @@ def test_mux_truth_gates_selected_spotify_and_bluetooth() -> None:
             route=_route(),
             issues=[],
             sampled_at=1000.0,
+            mux_status=idle_mux,
         )
         active_health = compose_audio_health(
             airplay=active,
@@ -54,6 +58,7 @@ def test_mux_truth_gates_selected_spotify_and_bluetooth() -> None:
             route=_route(),
             issues=[],
             sampled_at=1000.0,
+            mux_status=_mux(source_id),
         )
 
         assert idle_health["current_stream"] is None
@@ -62,7 +67,6 @@ def test_mux_truth_gates_selected_spotify_and_bluetooth() -> None:
 
 def test_missing_mux_status_fails_closed_instead_of_guessing_playback() -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    airplay.pop("mux_status")
 
     health = compose_audio_health(
         airplay=airplay,
@@ -70,6 +74,7 @@ def test_missing_mux_status_fails_closed_instead_of_guessing_playback() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=None,
     )
 
     assert health["overall"] == {
@@ -90,7 +95,8 @@ def test_free_running_airplay_requires_mux_canonical_playing_truth() -> None:
     # A phantom sender can leave MPRIS playing while mux's metadata gate
     # correctly decides that no audible AirPlay session exists.
     idle["current"]["mpris"]["playing"] = True
-    idle["mux_status"]["sources"]["airplay"]["playing"] = False
+    idle_mux = _mux("airplay")
+    idle_mux["sources"]["airplay"]["playing"] = False
     active = _airplay(selected="airplay")
 
     idle_health = compose_audio_health(
@@ -99,6 +105,7 @@ def test_free_running_airplay_requires_mux_canonical_playing_truth() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=idle_mux,
     )
     active_health = compose_audio_health(
         airplay=active,
@@ -106,6 +113,7 @@ def test_free_running_airplay_requires_mux_canonical_playing_truth() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("airplay"),
     )
 
     assert idle["current"]["fanin"]["inputs"]["airplay"]["frames_per_sec"] == 48000.0
@@ -116,7 +124,8 @@ def test_free_running_airplay_requires_mux_canonical_playing_truth() -> None:
 def test_free_running_usb_requires_mux_canonical_playing_truth() -> None:
     idle = _airplay(selected="usbsink", ladder="l0_locked")
     idle["current"]["fanin"]["inputs"]["usbsink"]["rms_dbfs"] = -80.0
-    idle["mux_status"]["sources"]["usbsink"]["playing"] = False
+    idle_mux = _mux("usbsink")
+    idle_mux["sources"]["usbsink"]["playing"] = False
     active = _airplay(selected="usbsink", ladder="l0_locked")
 
     idle_health = compose_audio_health(
@@ -125,6 +134,7 @@ def test_free_running_usb_requires_mux_canonical_playing_truth() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=idle_mux,
     )
     active_health = compose_audio_health(
         airplay=active,
@@ -132,6 +142,7 @@ def test_free_running_usb_requires_mux_canonical_playing_truth() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert idle["current"]["fanin"]["inputs"]["usbsink"]["frames_per_sec"] == 48000.0
@@ -148,6 +159,7 @@ def test_stale_or_inactive_outputd_is_not_reported_clean() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("spotify"),
     )
     inactive = compose_audio_health(
         airplay=_airplay(selected="spotify"),
@@ -155,6 +167,7 @@ def test_stale_or_inactive_outputd_is_not_reported_clean() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("spotify"),
     )
 
     assert stalled["signal_path"]["code"] == "output_stalled"
@@ -172,6 +185,7 @@ def test_selected_source_without_a_fanin_lane_is_a_continuity_issue() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["signal_path"]["status"] == "issue"
@@ -207,6 +221,7 @@ def test_ring_loss_and_stall_are_read_by_the_signal_path(
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["signal_path"]["code"] == code
@@ -225,6 +240,7 @@ def test_mixing_queue_is_derived_from_ring_occupancy(
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
     rows = {
         row["label"]: row["value"]
@@ -243,6 +259,7 @@ def test_mixing_queue_is_omitted_when_the_ring_is_unreported() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
     labels = [
         row["label"] for row in health["current_stream"]["latency"]["details"]
@@ -258,6 +275,7 @@ def test_idle_tts_queue_pressure_is_visible_in_overall_health() -> None:
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux(),
     )
 
     assert health["signal_path"]["status"] == "warn"
@@ -291,6 +309,7 @@ def test_tts_verdict_follows_the_deepest_armed_lane(
         route=_route(),
         issues=[],
         sampled_at=1000.0,
+        mux_status=_mux("usbsink"),
     )
 
     assert health["signal_path"]["code"] == code
