@@ -186,6 +186,24 @@ pub fn narrow_period_i24_le(samples: &[ProgramSample], out: &mut [u8]) -> Result
     Ok(())
 }
 
+/// Reinterpret an S16 slice as its little-endian wire bytes.
+///
+/// **Deliberately monomorphic in `i16`, and that is the point.** A
+/// type-adaptive helper whose body accepted `&[i32]` would emit TWICE the
+/// bytes — sending 2x-length datagrams to `jasper-aec-bridge` and writing 2x
+/// bytes to the chip-ref tee, silently, with every counter still reporting
+/// success. The signature is the guard: a spine slice does not compile here.
+/// `the_reference_datagram_is_exactly_one_s16_stereo_period` pins the resulting
+/// wire length.
+pub fn i16_bytes(samples: &[i16]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            samples.as_ptr() as *const u8,
+            std::mem::size_of_val(samples),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
     pub sample_rate: u32,

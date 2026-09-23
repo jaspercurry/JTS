@@ -2,17 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Fake transports for outputd unit tests and safe developer runs.
-//!
-//! `FakeAssistantSource` (renamed `AssistantSource`) and `FakeDacSink` used to
-//! live here too. Both are reachable from the real ALSA daemon path, not just
-//! tests/dev runs, so #1717 moved them to `assistant_source` — that misled a
-//! reader grepping for the assistant render path into skipping this file.
-//! `FakeContentSource` genuinely is test/dev-only: `OutputCore`'s daemon path
-//! (`run_alsa`) always calls `prepare_period_with_content`, which bypasses
-//! `self.content` entirely, so `read_period` below only ever executes from
-//! `OutputCore::step()` — the safe-developer-run backend (`main.rs::run_fake`)
-//! and unit tests.
+//! The content source `OutputCore::step` reads. Not test-only:
+//! `main.rs::run_fake` — the parked runtime `jasper-audio-hardware-reconcile`
+//! selects with `JASPER_OUTPUTD_BACKEND=fake` when it recognizes no output DAC
+//! — steps through it every period. `run_alsa` never reads it: it hands each
+//! period in through `OutputCore::prepare_period_with_content`.
 
 use std::collections::VecDeque;
 
