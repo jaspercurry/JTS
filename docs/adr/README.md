@@ -19,6 +19,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 | [0334](0334-the-repository-root-holds-only-entry-points-and-build-contracts.md) | The repository root holds only entry points and build contracts | accepted |
+| [0351](0351-a-source-scan-test-stays-only-with-a-non-negotiable-tie.md) | A source-scan test stays only with a non-negotiable or recurrence tie; the tied set is locked | accepted |
 
 ## Deploy, install & system
 
