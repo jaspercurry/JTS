@@ -47,6 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 from ..log_event import log_event
+from ..logging_setup import configure_logging
 from ..platform.systemd import no_hold
 
 from ._common import (
@@ -726,18 +727,6 @@ def _claim_crossover_state_owners() -> None:
         raise
 
 
-def _configure_logging() -> None:
-    """This wizard's own journal bootstrap — unredacted, one of the listed
-    gaps in ``tests/test_logging_setup.py``'s ``_ALLOWLIST``: the measurement
-    program's files adopt ``configure_logging`` together, not one at a time.
-    """
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-
 def _start(args, tracker) -> dict[str, Any]:
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
@@ -766,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         start=_start,
         detail=lambda args: f"hostname={args.hostname}",
-        configure=_configure_logging,
+        configure=configure_logging,
     )
 
 

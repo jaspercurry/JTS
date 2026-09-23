@@ -259,19 +259,6 @@ def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
 
 # ------------------------------------------------------------------- ratchet
 
-# The parked tuning zone (#4193 lane brief): these keep their own
-# `basicConfig` because no file in the measurement/tuning program is edited
-# without an owner-ticked row, and the tuning zone is frozen until #4138
-# merges. Their journals are NOT redacted yet — a listed file is a known
-# gap, not an endorsement.
-# Removal condition: adopt each of these when the tuning zone reopens
-# (#3769 wave 10) and #4138 has merged, emptying this set.
-_ALLOWLIST = frozenset({
-    "jasper/cli/active_speaker_emit_bench.py",
-    "jasper/web/correction_setup.py",
-})
-
-
 # The stdlib calls that put a handler where a jasper record reaches it.
 _BOOTSTRAP_CALLS = frozenset({"basicConfig", "dictConfig", "fileConfig"})
 
@@ -369,8 +356,7 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     Scans every Python tree that ships to the Pi — ``jasper/``, ``scripts/``,
     ``experiments/`` and ``deploy/`` — not just the product package.
 
-    Exact-match, so the allowlist cannot go stale either: a parked file that
-    adopts must leave the set in the same commit. Remove this ratchet when
+    Remove this ratchet when
     ``logging.basicConfig`` stops being how the tree installs its journal
     handler (a systemd ``JournalHandler``, say): the scanned shape would no
     longer be the bypass.
@@ -382,12 +368,8 @@ def test_configure_logging_is_the_only_logging_bootstrap():
         if path.name != "logging_setup.py"
         and _installs_its_own_handler(ast.parse(path.read_text()))
     }
-    assert offenders == _ALLOWLIST, (
-        "A logging bootstrap outside jasper/logging_setup.py must match the "
-        "parked tuning zone exactly.\n"
-        f"  new bypass(es): {sorted(offenders - _ALLOWLIST) or 'none'}\n"
-        f"  stale entr(ies): {sorted(_ALLOWLIST - offenders) or 'none'}\n"
+    assert not offenders, (
+        f"Logging bootstrap(s) outside jasper/logging_setup.py: {sorted(offenders)}. "
         "Call jasper.logging_setup.configure_logging instead — it is what "
-        "attaches the redacting filter to the journal handler — and drop the "
-        "file from _ALLOWLIST in the same commit."
+        "attaches the redacting filter to the journal handler."
     )
