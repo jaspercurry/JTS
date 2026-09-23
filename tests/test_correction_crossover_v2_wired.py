@@ -44,6 +44,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureStopped,
 )
+from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
 from jasper.audio_measurement.program import build_measure_program
@@ -73,7 +74,9 @@ from jasper.web.correction_runtime import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
-from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, plan_context
+from tests.crossover_v2_fixtures import (
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _verify_pilot, plan_context,
+)
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
@@ -958,7 +961,8 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
     anchor = None
     for index, readable in enumerate(responses):
         analysis = SimpleNamespace(program_id="sum", summed_response=(
-            SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz)) if readable else None))
+            SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz), gating=None, validity_floor_hz=None)
+            if readable else None))
         conductor._seams = replace(conductor._seams, analyze=lambda *a, **kw: analysis)
         record = {"take_id": f"sum-{index}", "index": 1, "program_phase": "entry_baseline", "graph_scope": "timing",
                   "position_deg": 0, "vertical_deg": 0, "graph_fingerprint": "played",
@@ -1184,6 +1188,24 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert type(record["gating_applied"]) is bool
     assert type(record["stimulus_dbfs"]) is float
     assert record["stimulus_dbfs"] == -30.0
+
+
+def test_executor_banks_the_capture_snr_the_packet_reads(tmp_path, monkeypatch):
+    record = bank_executor_take(tmp_path, monkeypatch, analysis_fields={
+        "pilot_snr_ok": True, "pilots": (replace(_verify_pilot(-20.0), snr_db=41.7),),
+        # The store refuses a non-finite number; an unmeasurable diagnostic must not cost the take.
+        "verify_tracking": {"rms_db": float("nan")},
+    })
+    assert record["diagnostic"]["rms_db"] is None
+    session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
+    block = build_crossover_evidence_packet(session)["capture_snr"]
+    assert (block["available"], block["n_captures"], block["n_takes_seen"]) == (True, 1, 1)
+    assert "status" not in block
+    assert block["captures"] == [{
+        "take_id": record["take_id"], "wav_sha256": record["wav_sha256"],
+        "stimulus_wav_sha256": "a" * 64, "phase": record["phase"],
+        "snr": {"pilot_ambient": "present", "pilot_snr_ok": True, "summed_pilot_snr_db": 41.7},
+    }]
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):

@@ -20,7 +20,7 @@ from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
-from jasper.active_speaker.crossover_v2.capture_provenance import enrich_capture_record
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, enrich_capture_record
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
@@ -62,8 +62,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
-        elif getattr(result, "branch_diagnostic", None):
-            fields = {**fields, "branch_diagnostic": result.branch_diagnostic}
+        else:
+            fields = {**fields, **analysis_blocks(result)}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),

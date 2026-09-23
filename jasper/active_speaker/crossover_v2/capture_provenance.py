@@ -10,7 +10,38 @@ from typing import Any, Mapping
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
+from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
+from jasper.json_fields import finite_float
 from .measure_spec import CANDIDATE_SCOPES
+
+
+def _finite(value: Any) -> Any:
+    """``value`` with every non-finite float nulled and every key kept.
+
+    The evidence store refuses a non-finite number, so one unmeasurable
+    diagnostic would cost the whole take; a dropped key would erase the
+    summary's deliberate difference between ``None`` and absent.
+    """
+    if isinstance(value, float):
+        return finite_float(value)
+    if isinstance(value, Mapping):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    return value
+
+
+def analysis_blocks(analysis: Any) -> dict[str, Any]:
+    """What one analysis leaves on its banked take, beside its provenance.
+
+    The evidence packet's ``capture_snr`` block publishes the SNR columns of
+    ``diagnostic``, and the distortion view gates its replay against it.
+    """
+    branch = getattr(analysis, "branch_diagnostic", None)
+    return {
+        "diagnostic": _finite(analysis_diagnostic_summary(analysis)),
+        **({"branch_diagnostic": branch} if branch else {}),
+    }
 
 
 def analysis_provenance(
@@ -37,6 +68,7 @@ def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> d
     side = record.get("side")
     provenance = record.get("provenance") or {}
     graph = provenance.get("graph") or {}
+    stimulus = provenance.get("stimulus")
     candidate = graph.get("speaker_candidate_id") or (
         record.get("candidate_id") if record.get("graph_scope") in CANDIDATE_SCOPES else None
     )
@@ -44,4 +76,6 @@ def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> d
         **record,
         "side": side if side in sides else sides[0] if len(sides) == 1 else None,
         **({"provenance": {**provenance, "graph": {**graph, "speaker_candidate_id": candidate}}} if graph else {}),
+        # The top-level sibling of ``wav_sha256`` the packet's per-capture rows read.
+        **({"stimulus_wav_sha256": stimulus.get("wav_sha256")} if stimulus else {}),
     }
