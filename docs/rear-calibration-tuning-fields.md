@@ -1,12 +1,11 @@
 # Rear calibration handoff — tuning fields
 
-Field-by-field reference for the `jts_rear_calibration` document
+What the fields of the `jts_rear_calibration` document mean
 (`jasper/active_speaker/rear_calibration.py`, `read_rear_calibration`).
 Decisions live in [ADR-0316](adr/0316-rear-woofer-outputs-have-a-physical-variant-identity.md),
 [ADR-0317](adr/0317-wall-placement-starts-at-the-cabinet-back.md),
 [ADR-0318](adr/0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md)
-and [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md) — this
-page only enumerates fields, units, and ranges taken from the validator.
+and [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
 Examples: [`docs/examples/rear_calibration_handoff.json`](examples/rear_calibration_handoff.json)
 (blank `acoustic_targets` skeleton) and
 [`docs/examples/rear_calibration_electrical_example.json`](examples/rear_calibration_electrical_example.json)
@@ -25,101 +24,30 @@ The branch filters themselves can be fitted from a target table, or re-fitted
 from measured front-alone and rear-alone responses, with
 [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — its
 `--help` carries the input shapes and the phase/sign conventions.
-`jasper-crossover-prescriber contract --section rear` prints this section's
-machine-readable schema and bounds.
 
-## Document header (both cases)
+## Fields and bounds
 
-| Field | Type / range |
-|---|---|
-| `kind` | must equal `"jts_rear_calibration"` |
-| `schema` | must equal `1` |
-| `case` | `"acoustic_targets"` or `"electrical_dsp"` |
-| `sample_rate_hz` | positive int; must match the DSP's selected rate |
-| `phase_convention` | must equal `"positive_delay_has_negative_phase"` |
-| `valid_band_hz` | `[low_hz, high_hz]`, `0 < low < high < sample_rate_hz/2`. Required for `acoustic_targets`; may be `null` only for `electrical_dsp` |
-| `assumptions` | list of strings, may be empty |
-| `included_stages.front` / `.rear` | each `null`, or a list drawn from `{crossover, driver_correction, boundary_correction, protection}` — stages already applied upstream of this document, so a composer does not double them. May be `null` for `acoustic_targets`; both sides must be non-`null` lists for `electrical_dsp` |
+`jasper-crossover-prescriber contract --section rear` prints every field, type
+and range a candidate may carry. The playbook's generated
+[Current bounds](tuning-playbook.md#current-bounds) block lists the same Rear
+rows. `read_rear_calibration` also reads the `acoustic_targets` case and the
+`fir` rear mode, which a candidate cannot carry; its code owns their fields.
 
-## Geometry
+The schema does not state these meanings:
 
-| Field | Type / range |
-|---|---|
-| `geometry.cabinet_back_wall_m` | `null`, or a number `>= 0` (metres); ADR-0317's perpendicular rear-panel-centre-to-wall distance |
-| `geometry.sources.front` / `.rear` | exactly these two keys present; values are not otherwise validated (free-form source identity/position) |
-| `geometry.details` | not validated (free-form: toe-in, cabinet depth, room dimensions, etc.) |
-
-## Conditions
-
-`conditions` is an arbitrary mapping — any keys, not otherwise validated.
-Use it for measurement setup notes (mic distance, ambient noise, dataset id).
-
-## Reference
-
-| Field | Type / range |
-|---|---|
-| `reference.quantity` | `acoustic_targets`: `"acoustic_motion"` or `"pressure_per_electrical_input"`. `electrical_dsp`: must equal `"electrical_filter_transfer"` |
-| `reference.units` | non-empty string, free text (e.g. `"m"`, `"linear output/input"`) |
-| `reference.level` | not validated (any JSON value, including `null`) |
-
-## Acoustic targets (`case == "acoustic_targets"` only)
-
-| Field | Type / range |
-|---|---|
-| `targets.frequency_hz` | list of >= 2 numbers, strictly increasing, each within `[valid_band_hz[0], valid_band_hz[1]]` |
-| `targets.front` / `.rear` | list of `[real, imaginary]` finite-number pairs, same length as `frequency_hz` |
-
-## Front chain, bass branch, cancellation branch (`case == "electrical_dsp"` only)
-
-`front`, `rear.bass`, and `rear.cancellation` are each a **chain**. Filters on
-all three chains may boost; the realised peak is charged to program headroom
-(ADR-0326).
-
-| Field | Type / range |
-|---|---|
-| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB for all chains. A rear weight above 1 is the same filter boost on both rear branches (ADR-0327), never front attenuation |
-| `inverted` | bool |
-| `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
-| `muted` | bool |
-| `filters` | list of filter entries, at most `MAX_FILTERS_PER_CHAIN` (`16`); see below |
-
-## Boundary filters
-
-| Field | Type / range |
-|---|---|
-| `boundary.front` / `.rear` | each a filter list (same schema as chain `filters`). `"boundary_correction"` cannot appear in `included_stages.<side>` while `boundary.<side>` is non-empty — declare it upstream-included, or here, never both |
-
-**Filter entries** (chain `filters` and `boundary.*`): `{type, parameters}`.
-
-| `type` | `parameters.type` (kind) | Required keys | Range |
-|---|---|---|---|
-| `Biquad` | `Highpass`, `Lowpass` | `type, freq, q` | `0 < freq < sample_rate_hz/2`; `0 < q <= MAX_RESONANT_Q` (`1.0`) |
-| `Biquad` | `Allpass` | `type, freq, q` | as above; `0 < q <= MAX_ALLPASS_Q` (`10.0`) |
-| `Biquad` | `Peaking` | `type, freq, q, gain` | as above; `q > 0`, uncapped; `gain` finite (dB), `<= MAX_CHAIN_BOOST_DB` (`+6`) |
-| `Biquad` | `Lowshelf`, `Highshelf` | `type, freq, q, gain` | as above; `0 < q <= MAX_RESONANT_Q` (`1.0`); `gain` finite (dB), `<= MAX_CHAIN_BOOST_DB` (`+6`) |
-| `BiquadCombo` | `ButterworthHighpass`, `ButterworthLowpass` | `type, freq, order` | `order` a positive int `<= MAX_COMBO_ORDER` (`8`) |
-| `BiquadCombo` | `LinkwitzRileyHighpass`, `LinkwitzRileyLowpass` | `type, freq, order` | `order` a positive **even** int `<= MAX_COMBO_ORDER` (`8`) |
-
-## FIR alternative (`rear.mode == "fir"`)
-
-| Field | Type / range |
-|---|---|
-| `rear.coefficients` | non-empty list of finite numbers |
-| `rear.sample_rate_hz` | int, must equal the document's own `sample_rate_hz` |
-| `rear.normalization` | must equal `"as_supplied"` — the compiler applies coefficients as given, no re-normalization |
-| `rear.added_latency_ms` | finite number `>= 0`; the FIR's own declared group delay. A composer aligning the full front/rear/tweeter graph must account for it — it is not added again |
-| `rear.sha256` | hex string; must equal `coefficient_sha256(rear.coefficients)` (SHA-256 over consecutive little-endian float64 values) |
-
-v1 note: the format and `compile_rear_stage` both accept `fir`, but ADR-0322
-refuses `rear.mode == "fir"` at the runtime-adopted candidate boundary; only
-`branches` compiles into the live graph today.
-
-## Common delay and mutes
-
-| Field | Type / range |
-|---|---|
-| `common_delay_ms` | finite number `>= 0`; added to all three declared cabinet outputs (front, rear branch(es), tweeter) when a negative relative rear delay must be realized. The compiler never emits a negative `Delay` |
-| `rear_muted` | bool; when `true`, the compiled stage's final rear output gain stage mutes the summed rear channel regardless of branch gains |
+- `included_stages.<side>` lists the stages already applied upstream of the
+  document, so a composer does not apply them twice.
+- `geometry.cabinet_back_wall_m` is ADR-0317's perpendicular distance from the
+  rear-panel centre to the wall.
+- `front.delay_ms` is relative to the stage input. A rear branch's `delay_ms`
+  is relative to the front reference.
+- `common_delay_ms` is added to all three declared cabinet outputs: front,
+  rear branches and tweeter.
+- `rear_muted: true` mutes the summed rear output, whatever the branch gains.
+- `conditions` is free-form. Use it for measurement setup notes.
+- In `fir` mode the coefficients replace both branches. `added_latency_ms` is
+  the FIR's own declared group delay. A composer that aligns the whole graph
+  must account for it; the compiler does not add it again.
 
 ## Phase convention
 

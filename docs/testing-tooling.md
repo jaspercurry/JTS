@@ -41,15 +41,8 @@ restate either.
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
-| Judge and compose a prescription document | [Crossover prescriber harness](#crossover-prescriber-harness) |
+| Run, read, prescribe or apply a speaker-tuning round | [Tuning tools](#tuning-tools) |
 | Fit or re-fit the cardioid rear branches of a `jts_rear_calibration` document | [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — usage, input shapes and conventions in `--help` |
-| Decide if a bump is a driver defect, interference, or the room | [Feature-classification instrument](#feature-classification-instrument) |
-| Grade a round's entry state, or compare seats and sessions | [Round-grading comparison views](#round-grading-comparison-views) |
-| State a capture walk at stated angles | [Inline measurement plans](#inline-measurement-plans) |
-| Have the lab turntable arm WALK a live session | [Lab-arm walk harness](#lab-arm-walk-harness) |
-| Run one whole crossover-v2 round from the laptop | [Run and retain a round](#run-and-retain-a-round) |
-| See whether a speaker ships a MEASURED per-driver level | [Measured driver base trim](#measured-driver-base-trim) |
-| Find the volume that measures a stated dB SPL at the seat | [Seat-SPL leveling](#seat-spl-leveling) |
 | Sweep for roadmap-dated phrasing that may have gone stale | [`scripts/tense-grep.sh`](../scripts/tense-grep.sh) — advisory, always exits 0; `--all` sweeps the whole repo |
 
 ---
@@ -729,306 +722,37 @@ CH340-attached turntable. Read the experiment's
 
 ## Crossover-v2 round banking
 
-```sh
-bash scripts/bank-crossover-round.sh <dest-dir>
-PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>   # explicit target
-```
-
-Pulls one crossover-v2 round's evidence off the Pi into a directory you name.
-`<dest-dir>` must not already exist non-empty. Targeting is
-[`scripts/_lib.sh`](../scripts/_lib.sh)'s contract, stated in that file.
-
-The first thing written, before any Pi round-trip, is `provenance.json` — the
-host and user actually banked, a UTC timestamp, and this script's own commit —
-so a banked tree names its own source even if every pull fails. It then pulls
-the newest session bundle, the flow state, the design draft, the applied
-baseline profile (`applied-profile.json` — what the speaker is PLAYING, which
-the flow state cannot say), the repeat floor, the declared rig geometry, a
-bounded journal window over the four units a round speaks through, and a power
-re-check. Every pull is best-effort and independently reported.
-
-Exit `0` pulled both the round bundle and the flow state; **`3` is
-incomplete** — the round's own identity failed to pull, and a bank that cannot
-say which round it banked is not a bank; `4` means `<dest-dir>` exists non-empty
-and nothing was pulled. Any other non-zero code is bash's own. Neither refusal
-ever deletes an already-pulled file.
-
-- **Before comparing LEVELS across banked takes**, read each one's `provenance`
-  block — the live fader, the held session volume, and which DSP graph the
-  capture went through. A CHECK/MEASURE capture and a summed one report the same
-  `config_path` while going through different transfer functions, so
-  `graph.kind` is the field that tells them apart.
-- **The speaker-side capture-dump ring is gone.** Every accepted capture's WAV
-  and provenance now ride the session bundle's own banked take records; corpora
-  banked before the removal keep their `dumps/` tree. The banker writes
-  `<bundle-dir>/ring` once; `classify-features` and `distortion` read it in either order.
+`bash scripts/bank-crossover-round.sh <dest-dir> [session-id]` pulls one
+round's evidence off the Pi into a new directory. The header of the script
+states its usage and exit codes.
 
 ---
 
-## Crossover prescriber harness
+## Tuning tools
 
-The [prescriber CLI](../jasper/cli/crossover_prescriber.py) reads local round evidence.
-It makes no model calls and needs no network.
+Each tuning CLI's `--help` owns its calls, flags and exit codes
+([ADR-0204](adr/0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md)).
+The generated tool menu in the [runbook](tuning-operator-runbook.md) lists every
+tuning CLI.
 
-```sh
-jasper-crossover-prescriber contract --round <round-dir>
-jasper-crossover-prescriber judge prescription.json --round <round-dir>
-jasper-crossover-prescriber compose prescription.json --round <round-dir>
-jasper-crossover-prescriber status <round-dir>
-```
-
-The [document owner](../jasper/active_speaker/crossover_v2/prescription_document.py)
-accepts driver, blend, alignment, topology, room and bass sections in one envelope.
-Omitted sections inherit from `base`; `{}` or `null` clears a layer. Topology cannot be cleared.
-Each section's judge keeps its own bounds; one invalid section refuses the whole document.
-`judge` previews the resolved layers and writes nothing. `compose` proves the whole graph,
-then banks one unmeasured candidate. Both report the fingerprint and each layer's source.
-Document answers use `ok`, `code`, `section`, `next_action` and `error`; refusal banks nothing.
-The bank record carries judged sections and evidence digests. `status` reads retained evidence.
-
----
-
-## Feature-classification instrument
-
-`jasper-round-views classify-features`
-([`jasper/cli/round_views/classify_features.py`](../jasper/cli/round_views/classify_features.py)
-over
-[`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier/__init__.py))
-answers the question a magnitude curve cannot: is that bump a **minimum-phase
-driver defect** (a filter is at least the right kind of tool), a
-**non-minimum-phase cancellation** (structurally the wrong one — a filter lowers
-the direct sound and its delayed copy together), or the **room**? It runs
-offline over captures a round already banked and files
-`feature_classification.json` into that round's own artifact directory, where
-the evidence packet reads it.
-
-```sh
-jasper-round-views classify-features <bundle-dir>
-jasper-round-views classify-features <bundle-dir> --walk-log logs/walk-1.jsonl
-jasper-round-views classify-features <bundle-dir> --at 1037 --at 4149
-```
-
-- The capture ring is scoped to this round by the bundle's own `session_id`, so
-  the instruments resolve the banked ring without a separate path flag
-  (see [Crossover-v2 round banking](#crossover-v2-round-banking)).
-- `--walk-log` gives the timing test repeated angles from a turntable trail;
-  `--at` classifies exactly those frequencies instead of detecting them.
-- **Known answers are pushed through the identical pipeline first**, on the
-  round's own IR: a minimum-phase peaking filter that must read flat, an
-  all-pass that must recover its group delay, a quiet delayed copy that must
-  ALSO read flat, and a loud one that must not. Failing one costs the PHASE
-  class and nothing else — every row reads `egd_verdict: ambiguous` beside
-  `controls_ok: false`, no row can reach `defect-*`, and `controls_disclosure`
-  says so in words.
-- **It refuses more often than it reports, and each refusal has a name:**
-  `classification_round_shape_inadmissible`,
-  `classification_captures_unreadable` (admissible shape, ring cannot hand it
-  over — the remedy is the ring or the bank step, not a different round),
-  `classification_no_admissible_captures`, `classification_program_missing`,
-  `classification_no_features_detected`. Every one carries a `captures` table
-  naming each take the ring listed with its admissibility reason.
-- **Every capture shape it reads is horizontal**, and that is a fact about the
-  instrument: a turntable swings at fixed height and radius and a position cloud
-  is a floor plan, so a floor or ceiling bounce is invariant to every position
-  it saw. It is disclosed once, in the evidence packet's `not_evaluated` block
-  as `vertical_plane_response`. The refusal record's own fields and each tool's
-  `--help` are the reference.
-
-Coverage is built on synthetic speakers whose answers are known before the
-instrument runs: `tests/test_crossover_v2_feature_classifier.py`.
-
----
-
-## Round-grading comparison views
-
-`jasper-round-views` ([`jasper/cli/round_views/`](../jasper/cli/round_views/),
-core in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views/__init__.py)):
-
-```sh
-# grade the state the round ENTERED on, from the write-once entry-baseline take,
-# through the same flat-spec evaluator a round grades its own result with
-jasper-round-views entry <round-dir>
-
-# each spec band's level and shape at every bearing of one set, against the
-# power mean of its 0°/0° takes; a raised take is its own row
-jasper-round-views directivity <round-dir> --set <set-id>
-
-# each driver's 0°/0° mark-take spread within and between rounds, on the fit
-# verdict's own statistic (ADR-0341)
-jasper-round-views repeat <round-dir> <round-dir> [<round-dir> ...]
-```
-
-- **Input shapes.** Every subcommand reads either a *banked round directory*
-  (what `scripts/bank-crossover-round.sh` produces) or a *live session bundle*
-  still on the speaker, told apart by
-  [`round_inputs`](../jasper/active_speaker/crossover_v2/round_inputs.py); a
-  live bundle borrows the speaker's flow state only when that state names the
-  same session.
-- **`entry` needs no cloud group, and that is what makes it reachable.** The
-  MEASURE stage banks the per-driver solos and the entry baseline and no
-  cloud, so it is the only round shape that produces an entry baseline.
-- **`directivity` and `repeat` read the run manifest's take curves** (ADR-0299)
-  and compare them as banked, unsmoothed, over the band every compared take
-  measured. Each answer names the takes it used.
-- Each subcommand writes its JSON beside a round by default —
-  `jasper-round-views inventory <round-dir>` names those artifacts, and the
-  subcommand that produces each one, from the CLI's own `ARTIFACT_BY_VIEW`, so
-  they are not enumerated here. On failure it publishes the shared refusal
-  record; that record's own fields and each tool's `--help` are the reference.
-
----
-
-## Inline measurement plans
-
-`jasper-round` resolves programs through
-[`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py)
-and posts the v3 plan directly to the daemon. No planner spool is involved.
-
-```sh
-jasper-round run --program speaker --dry-run
-jasper-round run --program speaker --poses 0,7,-7 --candidates base,fp1,fp2
-jasper-round placed --run <id>
-jasper-round status --run <id>
-jasper-round wait --run <id>
-```
-
-`run` returns the run id and link before a mover joins. `wait` banks the run
-and returns its manifest and bookkeeping results. A view that lacks an input
-is reported as unavailable. The program registry owns the per-program list.
-Use `--plan FILE` for an explicit v3 `AngleCaptureRequest.to_dict()` document.
-The run uses the same preflight for documents and CLI-built plans.
-
----
-
-## Lab-arm walk harness
-
-`jasper-round run --mover arm --attest-rig-clear --wait` starts the session,
-serves its position gate, and parks the arm before returning its wait answer.
-Run it on the speaker as root, in the foreground:
-
-```sh
-sudo -n /opt/jasper/.venv/bin/jasper-round run \
-    --poses 0 --mover arm --attest-rig-clear --wait
-```
-
-The person must check the full sweep path before making the explicit
-`--attest-rig-clear` statement. The flag is required for each arm round,
-including `trial`. A dry run needs neither `--wait` nor the statement; the CLI
-checks discovery without opening a session or serial link. No second process is
-needed. The command uses one Python interpreter with an arm thread and a
-separate wizard client. Both clients use the same `--base-url` and `--hostname`.
-The default address is loopback and needs no OS-user login to the wizard.
+- `jasper-round` runs and trials measurement plans, banks, lists and shows
+  rounds, and applies candidates. See `jasper-round --help`.
+- `jasper-round-views` reads the evidence of a banked round. See
+  `jasper-round-views --help`.
+- `jasper-crossover-prescriber` prints contracts, judges and composes
+  prescription documents, and reports where the speaker stands. See
+  `jasper-crossover-prescriber --help`.
+- `jasper-seat-level` finds the fader level that reads the target SPL at the
+  seat and banks it as the session gain. See `jasper-seat-level --help`.
+- `jasper-round run --mover arm` walks the lab turntable arm.
+  [`arm_walk.py`](../jasper/active_speaker/arm_walk.py) owns its loop and
+  safety checks.
 
 The adapter still runs as a subprocess at
 `/opt/jasper/experiments/usb-turntable/jts_turntable.py`. Root must be able to
 detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
 and sends `position-ready`. The adapter's confirmation flags come from the
 person's attestation; a power sign voids it.
-
-| Check | Effect |
-|---|---|
-| Power before each walk move | Current flags, since-boot flags, or an unreadable result stop the walk and trigger parking; the adapter also checks power for the park move |
-| ±45° envelope | Refuses a target outside the arm's range |
-| Park and verify on exit | Requests 0° and checks the offset magnitude |
-| `set-zero` unreachable | Only `detect`, `power`, `stop`, `position`, and `offset` are allowed |
-| Settle floor of 10 seconds | Checks both the configured and measured settle |
-
-Normal completion, a wait timeout, Ctrl-C, and `jasper-round stop --run <id>`
-from another shell all stop the arm thread and join it. The thread parks in
-`ArmWalk.run()`'s `finally`. Before joining, the caller waits for the park to
-finish; this avoids Python 3.12's interrupted-join fault. The budget covers an
-in-flight serve, park, adapter retries, HTTP calls, and settles. A second
-finish call returns the cached answer without waiting. If the budget expires,
-the command prints one unreadable answer with `arm_park_unconfirmed`; the
-non-daemon thread keeps the process alive until it finishes.
-A failed park is recorded, never reported as a verified return to zero.
-
-The wait answer includes `arm.exit` and `arm.summary`; a worker fault also
-includes its exception type in `arm.error_type`.
-On a refused or unreadable wait, those fields are in `detail.arm`.
-SIGINT, SIGTERM, and SIGHUP exit with `128 + signum` after cleanup. The first
-signal disarms the handlers so a second signal cannot interrupt parking.
-The `event=arm_walk.up` log includes `rig_clear_attested=true`. Read the
-`event=arm_walk.parked` row after the round; only `ok=true` proves the park.
-Progress is logged at INFO and failures at ERROR.
-
-`jasper-round run --mover arm --attest-rig-clear --wait` owns the arm, and the retired `jasper-angle-capture serve` stays only until that path is proven on hardware and is then deleted. Never start `serve` next to a waited arm round: two walkers would drive one arm.
-
----
-
-## Run and retain a round
-
-Use `jasper-round run` on the speaker, give the human its link, then
-`jasper-round wait --run <id>`. The wait answer names the banked round and
-manifest. Apply a chosen candidate with
-`jasper-round apply --expected-fingerprint <fp>`.
-
-[`bank-crossover-round.sh`](../scripts/bank-crossover-round.sh) remains the
-laptop pull tool for bundles, the journal window and throttling diagnostics.
-Its `SINCE` value sets the journal window. It retains partial evidence and
-reports each missing artifact.
-
----
-
-## Measured driver base trim
-
-**How much quieter must each driver be so the acoustic sum is level across every
-declared crossover?** There is no verb to run: the answer is banked by the apply
-itself. When a profile whose per-driver level match came from measurement is
-applied, `baseline_profile.persist_applied_baseline_profile` writes the trim to
-`/var/lib/jasper/active_speaker_driver_base_trim.json` — per-role trim, the
-groups it covers, the evidence that produced it, and the crossover declaration
-it was measured under. Applying a profile levelled on anything weaker (datasheet
-sensitivity gap, an operator pin, a preserved manual crossover) CLEARS the
-record, so the artifact only ever describes a level match the speaker is playing.
-
-- **It mints no estimator and no solver.** The trim is whatever the applied
-  profile resolved — a measured candidate's `role_attenuations_db`, or guided
-  per-driver captures through `level_trim.attenuation_from_group_deltas`.
-  `tests/test_active_speaker_driver_base_trim.py` fails if the artifact grows
-  band arithmetic of its own.
-- **Every trim is an attenuation and the maximum is exactly 0 dB**, so the
-  quietest driver is the reference. **Attenuation-only is enforced by refusal,
-  not by clamping** (`base_trim_not_attenuation`).
-- **What the profile does with it.** `baseline_profile._measured_level_trims` is
-  the single owner of "what is the measured per-role trim", preferring a banked
-  base trim over the guided captures; `level_match.source` says which produced
-  the number. The record names the declaration it was measured against, so a
-  speaker whose declaration has moved gets a `driver_base_trim_not_applied`
-  warning and keeps its safe existing trim. **Absent is normal.**
-- **Where it sits.** Commissioning runs *rough config at `/sound` → seat-level →
-  crossover candidates → driver linearization → room correction*. The apply
-  banks the trim, and only for a MEASURED crossover candidate, which is
-  necessarily downstream of seat-level. Declared per-driver figures no longer
-  bind seat-level's ceiling (see [Seat-SPL leveling](#seat-spl-leveling)).
-- **What it does not claim**: a magnitude answer only — never phase, delay or
-  polarity — and a single level, so thermal compression is out of frame.
-
-Coverage: `tests/test_active_speaker_driver_base_trim.py`,
-`tests/test_active_speaker_level_match.py`,
-`tests/test_active_speaker_baseline_profile.py`.
-
----
-
-## Seat SPL leveling
-
-Run `jasper-seat-level` once with the calibrated microphone at the session's
-first mark. It targets 75 ± 1 dB SPL, banks the gain, and restores household
-playback. Keep the gain for subsequent rounds so a DSP change's loudness effect
-remains visible. Confirm the microphone's capture control is at 100%, where
-its calibration sensitivity was measured.
-
-The verb plays the room/bass summed program sweep and reads the watch's
-loudest half-second (`loudest_half_second_db_spl`), shared with every take.
-It reads the same statistic in silence for the composed program's duration.
-Each upward step is at most 6 dB. Two consecutive sweeps in the target band,
-at one fader setting and within 0.5 dB of each other, complete the pass.
-The watch still checks every period RMS against the commissioning SPL stop.
-
-The result reports the reading trail and the measured restore outcome. A
-refusal banks nothing. The digital fader clamp and the independent SPL watch
-remain active. Tests: `test_auto_level.py`, `test_cli_seat_level.py`,
-`test_active_speaker_session_volume_plan.py`.
 
 ---
 

@@ -1,9 +1,8 @@
 # Measurement-loop doctrine
 
 The tuning toolbox lets an LLM choose experiments from measured evidence.
-The [runbook entry contract](tuning-operator-runbook.md#entry-contract) is the
-short starting point. The [methodology](tuning-methodology.md) is optional
-science guidance. Neither is a fixed campaign sequence.
+`jasper-crossover-prescriber status` gives the reading order in its
+`reading_order` field. No document in it is a fixed campaign sequence.
 
 ## 1. The loop
 

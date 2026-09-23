@@ -2,7 +2,8 @@
 
 ## How to read any round
 
-Read this first. The [runbook](tuning-operator-runbook.md) is the command
+`jasper-crossover-prescriber status` gives the reading order in its
+`reading_order` field. The [runbook](tuning-operator-runbook.md) is the command
 reference. The [methodology](tuning-methodology.md) explains the science.
 The [doctrine](measurement-loop-doctrine.md) defines roles and physical limits.
 
@@ -305,8 +306,11 @@ worth playing:
   hole of −11 to −13 dB near 134 Hz and a roughness (RMS against the
   curve's own one-octave trend, 80–350 Hz) of 5.6–5.8 dB; rear tunes cut
   that to −3 dB and 2.9 dB. A laptop measurement found that 37 % → 51 % of
-  the 100–350 Hz energy arrived within 20 ms. Mid-room, or with the mic
-  0.6–0.8 m away, the same tunes showed almost nothing: a near mic is a workshop tool. Roughness
+  the 100–350 Hz energy arrived within 20 ms. That is not the product's
+  figure: the product reads 90–250 Hz, early 0–10 ms against late 10–40 ms
+  (`band_ladders.LATE_ENERGY_BAND_HZ`, `seat_figures.EARLY_WINDOW_MS` and
+  `LATE_WINDOW_MS`). Mid-room, or with the mic 0.6–0.8 m away, the same tunes
+  showed almost nothing: a near mic is a workshop tool. Roughness
   repeated to ±0.2 dB over two hours, hole depth only to ±1.4 dB.
 
 The pattern is a spectrum, and the delay picks the point on it. The pattern
@@ -416,7 +420,7 @@ Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat
 rows, then `across_positions`: per-figure median, worst value and
 `worst_regression` against base. Keep missing-position reasons. Software never ranks.
 
-- Band levels (`band_levels`, reported as `bands`, ladder `rear_level`) are against
+- Band levels (`bands`, ladder `rear_level`) are against
   rear-muted over `band_ladders.LEVEL_BANDS_HZ`. Read level beside every shape.
 - `dip` is the front-wall hole only when front-wall geometry is declared:
   the band's `source` is `declared_geometry`, printed as `comparison.band_source`.
