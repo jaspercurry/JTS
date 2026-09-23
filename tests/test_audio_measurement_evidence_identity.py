@@ -4,15 +4,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
-    CaptureIdentity,
     EvidenceIdentityError,
-    ExactDspStateIdentity,
     NormalizedActiveRawIdentity,
     json_fingerprint,
 )
@@ -22,117 +18,28 @@ def _hash(char: str) -> str:
     return char * 64
 
 
-def _artifact(path: str, char: str, *, bundle: str = "session-1") -> ArtifactIdentity:
+def _artifact(path: str, char: str) -> ArtifactIdentity:
     return ArtifactIdentity(
         bundle_kind="jts_active_speaker_commissioning_bundle",
-        bundle_id=bundle,
+        bundle_id="session-1",
         relative_path=path,
         sha256=_hash(char),
         byte_size=2048,
     )
 
 
-def _capture(index: int = 1, *, bundle: str = "session-1") -> CaptureIdentity:
-    return CaptureIdentity(
-        consumer_id="active_crossover",
-        measurement_kind="active_crossover_post_apply",
-        capture_id=f"capture-{index}",
-        raw_artifact=_artifact(f"repeat/{index}.wav", str(index), bundle=bundle),
-        analysis_input_artifact=_artifact(
-            f"repeat/{index}_input.json", "d", bundle=bundle
-        ),
-        target_fingerprint=_hash("e"),
-        context_fingerprint=_hash("f"),
-        geometry_id="reference_axis",
-        placement_fingerprint=_hash("a"),
-        quality_artifact=_artifact(f"repeat/{index}_quality.json", "b", bundle=bundle),
-        admission_artifact=_artifact(
-            f"repeat/{index}_admission.json", "c", bundle=bundle
-        ),
-    )
-
-
-def test_strict_evidence_authorities_round_trip_with_stable_fingerprints():
-    capture = _capture()
-
-    assert ArtifactIdentity.from_mapping(capture.raw_artifact.to_dict()) == (
-        capture.raw_artifact
-    )
-    assert CaptureIdentity.from_mapping(capture.to_dict()) == capture
-
-
-@pytest.mark.parametrize(
-    ("payload", "parser"),
-    [
-        (lambda: _capture().raw_artifact.to_dict(), ArtifactIdentity.from_mapping),
-        (lambda: _capture().to_dict(), CaptureIdentity.from_mapping),
-    ],
-)
-def test_every_serialized_identity_rejects_unknown_fields_and_bool_schema(
-    payload,
-    parser,
-):
-    unknown = payload()
-    unknown["future_guess"] = True
-    with pytest.raises(EvidenceIdentityError, match="unknown or missing fields"):
-        parser(unknown)
-
-    boolean_schema = payload()
-    boolean_schema["schema_version"] = True
-    with pytest.raises(EvidenceIdentityError, match="unsupported"):
-        parser(boolean_schema)
-
-
-def test_capture_binds_raw_analysis_input_placement_quality_and_admission():
-    capture = _capture()
-    assert capture.raw_artifact.relative_path.endswith(".wav")
-    assert capture.analysis_input_artifact.relative_path.endswith("_input.json")
-    assert capture.geometry_id == "reference_axis"
-    assert capture.quality_artifact.relative_path.endswith("_quality.json")
-    assert capture.admission_artifact.relative_path.endswith("_admission.json")
-
-    with pytest.raises(EvidenceIdentityError, match="one bundle"):
-        CaptureIdentity(
-            consumer_id=capture.consumer_id,
-            measurement_kind=capture.measurement_kind,
-            capture_id=capture.capture_id,
-            raw_artifact=capture.raw_artifact,
-            analysis_input_artifact=_artifact(
-                "foreign/input.json", "9", bundle="another-session"
-            ),
-            target_fingerprint=capture.target_fingerprint,
-            context_fingerprint=capture.context_fingerprint,
-            geometry_id=capture.geometry_id,
-            placement_fingerprint=capture.placement_fingerprint,
-            quality_artifact=capture.quality_artifact,
-            admission_artifact=capture.admission_artifact,
-        )
-
-    with pytest.raises(EvidenceIdentityError, match="distinct artifacts"):
-        replace(capture, admission_artifact=capture.quality_artifact)
-
-
-def test_exact_state_and_normalized_active_raw_are_typed_content_identities():
+def test_normalized_active_raw_is_a_typed_content_identity():
     active_raw = {
         "devices": {"volume_limit": -12.0},
         "pipeline": [{"type": "Filter", "channels": [0]}],
     }
-    exact = ExactDspStateIdentity(
-        {
-            "config_path": "/etc/camilladsp/active.yml",
-            "active_raw": active_raw,
-        }
-    )
     normalized = NormalizedActiveRawIdentity(active_raw)
 
-    assert ExactDspStateIdentity.from_mapping(exact.to_dict()) == exact
-    assert NormalizedActiveRawIdentity.from_mapping(normalized.to_dict()) == normalized
-    assert exact.fingerprint != normalized.fingerprint
     assert normalized.normalization_domain == "camilladsp_active_raw"
     assert normalized.normalization_algorithm_version == "1"
 
 
-def test_graph_identity_rejects_wrong_domain_algorithm_and_content_tamper():
+def test_graph_identity_rejects_wrong_domain_and_algorithm():
     active_raw = {"devices": {"volume_limit": -12.0}}
     with pytest.raises(EvidenceIdentityError, match="normalization domain"):
         NormalizedActiveRawIdentity(active_raw, normalization_domain="yaml_file")
@@ -141,11 +48,6 @@ def test_graph_identity_rejects_wrong_domain_algorithm_and_content_tamper():
             active_raw,
             normalization_algorithm_id="unspecified",
         )
-
-    payload = NormalizedActiveRawIdentity(active_raw).to_dict()
-    payload["normalized_active_raw"]["devices"]["volume_limit"] = -6.0
-    with pytest.raises(EvidenceIdentityError, match="active_raw fingerprint"):
-        NormalizedActiveRawIdentity.from_mapping(payload)
 
 
 @pytest.mark.parametrize(

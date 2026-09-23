@@ -10,7 +10,6 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
 
 SCHEMA_VERSION = 2
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
@@ -78,46 +77,6 @@ def _with_fingerprint(payload: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
-def _read_fingerprinted_payload(
-    value: object,
-    *,
-    fields: frozenset[str],
-    artifact: str,
-    expected_fingerprint: str | None,
-) -> tuple[dict[str, object], str]:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
-        raise ValueError(f"{artifact} must be a mapping with string keys")
-    expected_fields = fields | {"fingerprint"}
-    if set(value) != expected_fields:
-        raise ValueError(
-            f"{artifact} fields do not match schema version {SCHEMA_VERSION}"
-        )
-    payload = {field: value[field] for field in fields}
-    declared = _required_fingerprint(
-        value["fingerprint"],
-        field=f"{artifact}.fingerprint",
-    )
-    if _content_fingerprint(payload) != declared:
-        raise ValueError(f"{artifact} fingerprint does not match its content")
-    if expected_fingerprint is not None:
-        expected = _required_fingerprint(
-            expected_fingerprint,
-            field=f"expected_{artifact}_fingerprint",
-        )
-        if declared != expected:
-            raise ValueError(f"{artifact} does not match the expected fingerprint")
-    return payload, declared
-
-
-def _require_schema(payload: Mapping[str, object], *, kind: str, artifact: str) -> None:
-    if type(payload.get("schema_version")) is not int or (
-        payload["schema_version"] != SCHEMA_VERSION
-    ):
-        raise ValueError(f"{artifact} has an unsupported schema version")
-    if payload.get("kind") != kind:
-        raise ValueError(f"{artifact} has an unexpected kind")
-
-
 @dataclass(frozen=True, slots=True)
 class FrequencyBand:
     """A closed positive-frequency interval.
@@ -144,27 +103,6 @@ class FrequencyBand:
 
     def to_dict(self) -> dict[str, float]:
         return {"lower_hz": self.lower_hz, "upper_hz": self.upper_hz}
-
-    @classmethod
-    def from_dict(cls, value: object) -> FrequencyBand:
-        if not isinstance(value, Mapping) or set(value) != {"lower_hz", "upper_hz"}:
-            raise ValueError("frequency band fields are invalid")
-        return cls(lower_hz=value["lower_hz"], upper_hz=value["upper_hz"])
-
-
-_REQUEST_FIELDS = frozenset(
-    {
-        "schema_version",
-        "kind",
-        "band",
-        "effective_peak_dbfs",
-        "duration_s",
-        "repeat_count",
-        "target_fingerprint",
-        "authority_fingerprint",
-        "excitation_plan_fingerprint",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,58 +166,6 @@ class ExcitationRequest:
 
     def to_dict(self) -> dict[str, object]:
         return _with_fingerprint(self._payload())
-
-    @classmethod
-    def from_dict(
-        cls,
-        value: object,
-        *,
-        expected_fingerprint: str | None = None,
-    ) -> ExcitationRequest:
-        payload, declared = _read_fingerprinted_payload(
-            value,
-            fields=_REQUEST_FIELDS,
-            artifact="excitation_request",
-            expected_fingerprint=expected_fingerprint,
-        )
-        _require_schema(
-            payload,
-            kind="jts_excitation_request",
-            artifact="excitation_request",
-        )
-        result = cls(
-            band=FrequencyBand.from_dict(payload["band"]),
-            effective_peak_dbfs=cast(float, payload["effective_peak_dbfs"]),
-            duration_s=cast(float, payload["duration_s"]),
-            repeat_count=cast(int, payload["repeat_count"]),
-            target_fingerprint=cast(str | None, payload["target_fingerprint"]),
-            authority_fingerprint=cast(
-                str | None,
-                payload["authority_fingerprint"],
-            ),
-            excitation_plan_fingerprint=cast(
-                str | None,
-                payload["excitation_plan_fingerprint"],
-            ),
-        )
-        if result.fingerprint != declared:
-            raise ValueError("excitation_request is not canonically normalized")
-        return result
-
-
-_LIMIT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "kind",
-        "permitted_band",
-        "maximum_effective_peak_dbfs",
-        "maximum_duration_s",
-        "maximum_repeat_count",
-        "target_fingerprint",
-        "protection_requirement_fingerprint",
-        "excitation_plan_fingerprint",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,43 +243,3 @@ class ExcitationLimits:
 
     def to_dict(self) -> dict[str, object]:
         return _with_fingerprint(self._payload())
-
-    @classmethod
-    def from_dict(
-        cls,
-        value: object,
-        *,
-        expected_fingerprint: str | None = None,
-    ) -> ExcitationLimits:
-        payload, declared = _read_fingerprinted_payload(
-            value,
-            fields=_LIMIT_FIELDS,
-            artifact="excitation_limits",
-            expected_fingerprint=expected_fingerprint,
-        )
-        _require_schema(
-            payload,
-            kind="jts_excitation_limits",
-            artifact="excitation_limits",
-        )
-        result = cls(
-            permitted_band=FrequencyBand.from_dict(payload["permitted_band"]),
-            maximum_effective_peak_dbfs=cast(
-                float,
-                payload["maximum_effective_peak_dbfs"],
-            ),
-            maximum_duration_s=cast(float, payload["maximum_duration_s"]),
-            maximum_repeat_count=cast(int, payload["maximum_repeat_count"]),
-            target_fingerprint=cast(str, payload["target_fingerprint"]),
-            protection_requirement_fingerprint=cast(
-                str,
-                payload["protection_requirement_fingerprint"],
-            ),
-            excitation_plan_fingerprint=cast(
-                str,
-                payload["excitation_plan_fingerprint"],
-            ),
-        )
-        if result.fingerprint != declared:
-            raise ValueError("excitation_limits are not canonically normalized")
-        return result

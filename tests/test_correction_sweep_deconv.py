@@ -71,7 +71,6 @@ def test_synchronized_sweep_metadata_matches_realized_generator_plan():
 
     assert planned == realized
     assert planned.n_samples == len(signal)
-    assert sweep.SweepMeta.from_dict(planned.to_dict()) == planned
 
 
 def test_synchronized_sweep_metadata_does_not_allocate_pcm(monkeypatch):

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frequency-response smoothing and resampling for the magnitude response display + filter
+"""Frequency-response smoothing for the magnitude response display + filter
 design. Power-mean (RMS-of-amplitude) smoothing, not dB-mean, which over-emphasizes deep nulls
 (Toole, *Sound Reproduction* 3rd ed. Ch. 4; Welti; REW and Acourate default to it too).
 """
@@ -226,46 +226,6 @@ def smooth_fractional_octave(
 
     # Clamp before log to avoid -inf for any all-zero windows.
     return 10.0 * np.log10(np.maximum(smoothed, 1e-12))
-
-
-def resample_log(
-    freqs: np.ndarray,
-    magnitude_db: np.ndarray,
-    *,
-    f_min: float = 20.0,
-    f_max: float = 20000.0,
-    n_points: int = 480,
-) -> tuple[np.ndarray, np.ndarray]:
-    """480 points across 20 Hz-20 kHz is roughly 1/48-octave — enough detail for the modal
-    range and tractable for a JSON payload to the iPhone."""
-    if n_points < 2:
-        raise ValueError(f"n_points must be ≥ 2, got {n_points}")
-    if f_max <= f_min:
-        raise ValueError(f"f_max ({f_max}) must be > f_min ({f_min})")
-
-    log_freqs = np.geomspace(f_min, f_max, n_points)
-    interp = np.interp(log_freqs, freqs, magnitude_db)
-    return log_freqs.astype(np.float64), interp.astype(np.float64)
-
-
-def normalize_to_band(
-    freqs: np.ndarray,
-    magnitude_db: np.ndarray,
-    *,
-    f_low: float = 200.0,
-    f_high: float = 1000.0,
-) -> np.ndarray:
-    """Shift so [f_low, f_high]'s average dB level is 0 — a measured response has arbitrary
-    absolute level (mic gain, speaker SPL, distance), and filter design cares about SHAPE.
-    Anchored at 200-1000 Hz, where speaker directivity is well-controlled and the iPhone-mic
-    compensation is most accurate."""
-    band = (freqs >= f_low) & (freqs <= f_high)
-    if not band.any():
-        # Fall back to the full-range mean; resample_log's range covers 20-20k so this is rare.
-        ref = float(np.mean(magnitude_db))
-    else:
-        ref = float(np.mean(magnitude_db[band]))
-    return (magnitude_db - ref).astype(np.float64)
 
 
 from typing import Mapping
