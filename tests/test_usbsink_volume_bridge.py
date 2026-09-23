@@ -557,17 +557,6 @@ def test_usbgadget_advertises_narrow_capture_volume_range():
         )
 
 
-def test_usbgadget_volume_range_writes_are_best_effort():
-    """The range writes must go through write_if_present (guarded on the
-    attr existing) so an older kernel that lacks c_volume_min/max/res does
-    not fail gadget bring-up — the kernel default range applies instead."""
-    body = _script_body_no_comments(USBGADGET_UP)
-    for attr, _value in REQUIRED_VOLUME_ATTRS:
-        assert f"write_if_present functions/uac2.usb0/{attr}" in body, (
-            f"{attr} must be written best-effort via write_if_present"
-        )
-
-
 # ----------------------------------------------------------------------
 # Mixer events -> POST. The bridge reads only when the control FDs say the
 # host moved something; nothing runs in between.

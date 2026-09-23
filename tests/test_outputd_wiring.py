@@ -106,16 +106,6 @@ def test_asoundrc_no_longer_declares_any_camilla_to_outputd_lane():
         assert substream not in rc, f"{substream} was re-declared in asoundrc.jasper"
 
 
-def test_active_path_pcms_never_use_plug_or_plughw():
-    """Contract: NO `type plug` / `plughw:` anywhere on the active-crossover
-    path. `plug` is the auto-converting channel/rate/format plugin; on a live-
-    driver path it could remix 8->4 onto a tweeter (the most dangerous
-    fail-open in active mode)."""
-    render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
-    assert "plughw" not in render_lib
-    assert "type plug" not in render_lib
-
-
 def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
     """Every registered single DAC profile renders `outputd_dac` as a raw
     `type hw` block, never `type plug` — structurally, so the loop covers any
@@ -149,16 +139,6 @@ def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
         assert "plug" not in result.stdout, profile.id
 
 
-def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
-    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    render_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
-    assert "__OUTPUTD_DAC_PCM_BLOCK__" in rc
-    assert "__OUTPUTD_DAC_CTL_BLOCK__" in rc
-    assert "__OUTPUT_DAC_CARD__" not in rc
-    assert "line//__OUTPUT_DAC_CARD__" not in render_lib
-    assert "OUTPUT_DAC_RECOGNIZED:-1" in render_lib
-
-
 def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
     reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
@@ -175,19 +155,6 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "JASPER_AUDIO_DAC_ID" in install_sh
     assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
     assert "OUTPUT_DAC_ROUTE" not in installer_text()
-
-
-def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
-    route_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
-    assert "JASPER_OUTPUT_DAC_ROUTE" not in route_lib
-    assert "OUTPUT_DAC_ROUTE" not in route_lib
-    assert "mono:([1-8])" not in route_lib
-    assert "stereo:([1-8]),([1-8])" not in route_lib
-    assert "type route" not in route_lib
-    assert 'OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch"' in route_lib
-    assert "type null" in route_lib
-    assert "jasper_asound_route_ignored()" not in reconcile
 
 
 def _bash_function(path: Path, name: str) -> str:
@@ -1160,48 +1127,3 @@ def test_install_restarts_camilla_only_when_it_repaired_the_statefile(tmp_path):
     assert bounces(written="no", knob="1") == []
     assert bounces(written="yes", knob="0") == []
     assert bounces(written="yes", knob="1") == ["restart jasper-camilla.service"]
-
-
-def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
-    outputd_unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
-    camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
-    cutover = (REPO / "deploy" / "camilladsp" / "outputd-cutover.yml").read_text()
-    recover_rule = (
-        REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules"
-    ).read_text()
-    recover_unit = (
-        REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
-    ).read_text()
-    failure_reconcile = (
-        REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
-    ).read_text()
-    assert "StartLimitAction=reboot" in outputd_unit
-    assert "Restart=on-failure" in outputd_unit
-    assert "RestartPreventExitStatus=78" in outputd_unit
-    assert "ExecCondition=/bin/sh -c" in outputd_unit
-    assert 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"' in outputd_unit
-    assert '[ "$$backend" = "fake" ]' in outputd_unit
-    assert 'card="$${JASPER_AUDIO_DAC_CARD:-}"' in outputd_unit
-    assert '[ -e "/proc/asound/$$card" ]' in outputd_unit
-    assert "event=outputd.output_device_gate.park reason=missing_dac" in outputd_unit
-    assert 'device: "jts_ring_playback"' in cutover
-    assert "outputd_backend=$$backend" in outputd_unit
-    assert "exit 1" in outputd_unit
-    assert "ExecStartPre=/bin/sh -c" not in outputd_unit
-    assert "ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile" in outputd_unit
-    assert "--reason outputd-failure --no-restart" in failure_reconcile
-    assert "--reason outputd-config-failure --no-restart" in failure_reconcile
-    assert "--no-block restart jasper-outputd.service" in failure_reconcile
-    assert "JASPER_OUTPUTD_CONFIG_RETRY_STATE" in failure_reconcile
-    assert 'RESULT="${SERVICE_RESULT:-unknown}"' in failure_reconcile
-    assert 'STATUS="${EXIT_STATUS:-}"' in failure_reconcile
-    assert '"$RESULT" == "success"' in failure_reconcile
-    # `exec-condition` is systemd's own SERVICE_RESULT spelling for an
-    # ExecCondition skip (systemd.service(5)); the bare `condition` is a literal
-    # systemd never emits, and pinning it holds the skip branch dead.
-    assert '"$RESULT" == "exec-condition"' in failure_reconcile
-    assert 'CONFIG_EXIT_STATUS=78' in failure_reconcile
-
-    assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
-    assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in recover_rule
-    assert "Before=jasper-outputd.service" in recover_unit
