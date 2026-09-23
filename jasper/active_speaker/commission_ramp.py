@@ -159,7 +159,7 @@ def effective_confirmed_roles(
     speaker_group_id: str,
     confirmed_roles: Iterable[str] | None = None,
 ) -> list[str]:
-    """Merge transient ramp memory with durable current-topology evidence."""
+    """Merge the ramp's remembered roles (same group only) with ``confirmed_roles``."""
 
     group = str(speaker_group_id or "").strip()
     ramp_group = str(ramp_state.get("speaker_group_id") or "").strip()
@@ -451,7 +451,6 @@ async def ramp_audible_step(
     validate: Callable[..., Any] | None = None,
     play_tone: ToneEmitter | None = None,
     auto_retry_pending: bool = False,
-    confirmed_roles: Iterable[str] | None = None,
     role_order_confirmed_roles: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
@@ -460,9 +459,8 @@ async def ramp_audible_step(
     emits no new audible level. On success the tri-state moves to
     ``floor_pending_operator``.
 
-    ``confirmed_roles`` is persisted ramp evidence; ``role_order_confirmed_roles``
-    is gate-only, satisfying ordering for a transient audition without recording
-    heard-driver evidence.
+    ``role_order_confirmed_roles`` is gate-only, satisfying ordering for a
+    transient audition without recording heard-driver evidence.
     """
     role = (role or "").strip().lower()
     group_id = (speaker_group_id or "").strip()
@@ -489,9 +487,7 @@ async def ramp_audible_step(
 
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
     ramp_confirmed_roles = effective_confirmed_roles(
-        ramp_state,
-        speaker_group_id=group_id,
-        confirmed_roles=confirmed_roles,
+        ramp_state, speaker_group_id=group_id,
     )
     gate_confirmed_roles = (
         ramp_confirmed_roles

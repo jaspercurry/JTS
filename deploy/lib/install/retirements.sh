@@ -93,6 +93,11 @@ JASPER_RETIRED_LEFTOVERS=(
     "file|${STATE_DIR}/airplay_mode.env|the retired AirPlay free-running toggle"
     # capture-entry anchor stash: its writer was deleted with the module (issue #4942 wave 0); drop this row once every box has installed a build past it
     "file|${STATE_DIR}/active_speaker_capture_entry.json|the retired capture-entry anchor stash"
+    # The per-driver check routes were its only writers and every reader is
+    # gone, so a box that ran those checks keeps its records with nothing left
+    # to read them.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|${STATE_DIR}/active_speaker_measurements.json|the retired driver-check record"
     # The dmix/fanin topology switcher and the device-name deriver, retired when
     # fan-in became the only supported renderer path. A stale installed copy is
     # what lets an operator reintroduce split-brain audio state by hand; the

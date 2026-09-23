@@ -63,7 +63,6 @@ def build_commissioning_view(
     *,
     design_draft: Mapping[str, Any] | None = None,
     crossover_preview: Mapping[str, Any] | None = None,
-    measurements: Mapping[str, Any] | None = None,
     commission: Mapping[str, Any] | None = None,
     startup_load: Mapping[str, Any] | None = None,
     baseline_profile: Mapping[str, Any] | None = None,
@@ -77,7 +76,6 @@ def build_commissioning_view(
     from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
-    summary = (measurements or {}).get("summary") or {}
     programs = programs_for_topology(topology) if programs is None else programs
     passive = PURPOSE_SPEAKER not in programs
     has_layout = bool(topology.speaker_groups)
@@ -129,10 +127,6 @@ def build_commissioning_view(
         status = "ready_to_save_profile" if review_ready else "blocked"
         action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready,
                   "endpoint": "./active-speaker/baseline-profile/save-and-apply", "method": "POST", "body": {}}
-    checks_complete = bool(summary.get("driver_checks_complete") or summary.get("driver_measurements_complete"))
-    checks = {"complete": checks_complete, "source": "measurements" if checks_complete else "missing",
-              "captured": int(summary.get("captured_driver_check_count") or summary.get("captured_driver_count") or 0),
-              "required": int(summary.get("required_driver_check_count") or summary.get("required_driver_count") or 0)}
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
         "steps": steps, "current_step": current, "next_action": action, "programs": programs,
@@ -149,7 +143,6 @@ def build_commissioning_view(
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
-        "driver_checks": checks,
         "test_level": dict((calibration_level or {}).get("test_signal") or {}),
         "runtime": {"commission": dict(commission or {}), "startup_load": dict(startup_load or {})},
     }
@@ -173,14 +166,12 @@ def load_commissioning_view(
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.startup_load import load_startup_load_state
 
     if topology is None:
         topology = load_output_topology()
     design_draft = load_design_draft(topology=topology)
     preview = build_crossover_preview(design_draft)
-    measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()
     applied = load_applied_baseline_profile_state()
     _, baseline = compile_commissioning_profile(
@@ -197,7 +188,6 @@ def load_commissioning_view(
         topology,
         design_draft=design_draft,
         crossover_preview=preview,
-        measurements=measurements,
         commission=commission,
         startup_load={"state": load_startup_load_state()},
         baseline_profile=baseline,

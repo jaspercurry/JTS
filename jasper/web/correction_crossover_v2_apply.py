@@ -19,7 +19,6 @@ from jasper.active_speaker.crossover_declaration import (
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
-from jasper.active_speaker.measurement import load_measurement_state
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
@@ -41,7 +40,6 @@ async def apply_candidate(
     from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
-    measurements: Mapping[str, Any] = {}
     async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
             if isinstance(candidate, str):
@@ -51,7 +49,6 @@ async def apply_candidate(
                 banked, selected = None, candidate
             topology = load_output_topology()
             draft = load_design_draft(topology=topology)
-            measurements = load_measurement_state(topology)
             incumbent = baseline_profile.load_applied_baseline_profile_state()
             declaration = load_tuning_declaration(topology, design_draft=draft)
             if selected is None and incumbent and incumbent.get("candidate_artifact_path"):
@@ -77,7 +74,7 @@ async def apply_candidate(
                                          issues=proof.issues)
             target = baseline_profile.baseline_candidate_config_path(text)
             prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
-                measurements=measurements, config_path=target, config_sha256=sha,
+                measurements={}, config_path=target, config_sha256=sha,
                 saved_timing=(incumbent or {}).get("timing"))
             prepared.update(issues=list(selected.analysis.get("issues") or []),
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
@@ -109,7 +106,7 @@ async def apply_candidate(
                         except Exception as exc:  # noqa: BLE001
                             update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
                             log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
-                result = await baseline_profile._baseline_apply_result(topology, profile, measurements, apply_state=applied)
+                result = await baseline_profile._baseline_apply_result(topology, profile, {}, apply_state=applied)
             log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
             return {**result, "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
         except (CandidateBankRefusal, CrossoverV2Refused, MeasurementGraphRefused,
@@ -117,13 +114,12 @@ async def apply_candidate(
             code = getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused"
             log_event(logger, "correction.crossover_v2_apply", status="blocked", code=code, candidate_fingerprint=expected)
             baseline_profile._commissioning_refusal(prepared, exc)
-            await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate=prepared, apply_state=None, rollback_target=None)
             if not from_saved_draft:
                 raise CrossoverV2Refused(str(exc), code=code, issues=getattr(exc, "issues", ())) from exc
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}
         except DspApplyError as exc:
             log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
-            result = await baseline_profile._baseline_apply_result(topology, prepared, measurements, apply_state=exc.state, error=exc)
+            result = await baseline_profile._baseline_apply_result(topology, prepared, {}, apply_state=exc.state, error=exc)
             return {**result, "issue": {"code": "apply_failed", "message": str(exc)}}
 
 

@@ -792,18 +792,6 @@ async def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     }
 
 
-def _active_speaker_confirmed_driver_roles(
-    topology: OutputTopology,
-    *,
-    group: str,
-) -> list[str]:
-    from jasper.active_speaker.measurement import confirmed_driver_roles
-
-    if not group:
-        return []
-    return confirmed_driver_roles(topology, speaker_group_id=group)
-
-
 async def _active_speaker_commission_ramp_abort_payload(
     *,
     camilla_factory: Callable[[], Any],
@@ -861,13 +849,6 @@ async def _active_speaker_commission_state_payload(
     group = str(
         target.get("speaker_group_id") or ramp.get("speaker_group_id") or ""
     ).strip()
-    durable_confirmed: list[str] = []
-    if group:
-        topology = load_output_topology()
-        durable_confirmed = _active_speaker_confirmed_driver_roles(
-            topology,
-            group=group,
-        )
     quiet = load_safe_playback_state().get("quiet_start") or {}
     stale = commission.get("status") == "stale"
     pending = None if stale else ramp.get("pending")
@@ -885,9 +866,7 @@ async def _active_speaker_commission_state_payload(
         },
         "ramp": {
             "confirmed_roles": effective_confirmed_roles(
-                ramp,
-                speaker_group_id=group,
-                confirmed_roles=durable_confirmed,
+                ramp, speaker_group_id=group,
             ),
             "pending": pending,
         },
@@ -941,24 +920,6 @@ async def _active_speaker_commissioning_view_payload(
         next_action=str((view.get("next_action") or {}).get("id")),
     )
     return view
-
-
-def _active_speaker_measurements_payload() -> dict[str, Any]:
-    """Return active-speaker measurement evidence for the saved topology."""
-
-    from jasper.active_speaker.measurement import load_measurement_state
-
-    topology = load_output_topology()
-    payload = load_measurement_state(topology)
-    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    log_event(
-        logger,
-        "sound.active_speaker_measurements",
-        status=str(payload.get("status")),
-        drivers="%s/%s"
-        % (summary.get("captured_driver_count"), summary.get("required_driver_count")),
-    )
-    return payload
 
 
 def _active_speaker_baseline_profile_payload(

@@ -96,7 +96,6 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_baseline_profile_payload,
     _active_speaker_crossover_preview_payload,
     _active_speaker_design_draft_payload,
-    _active_speaker_measurements_payload,
     _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,
 )
@@ -264,10 +263,6 @@ _GET_ROUTES = {
     "/active-speaker/crossover-preview": (
         "_active_speaker_crossover_preview_payload",
         "sound.active_speaker_crossover_preview",
-    ),
-    "/active-speaker/measurements": (
-        "_active_speaker_measurements_payload",
-        "sound.active_speaker_measurements",
     ),
     "/active-speaker/baseline-profile": (
         "_active_speaker_baseline_profile_payload",

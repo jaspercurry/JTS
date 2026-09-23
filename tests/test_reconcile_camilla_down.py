@@ -64,7 +64,6 @@ from jasper.sound.runtime import reconcile_current_dsp
 from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
-    _measurements,
 )
 from tests.active_speaker_fixtures import declare_applied_fixture
 from tests.sound_camilla_fixtures import FakeCamilla
@@ -191,7 +190,7 @@ def _roleful_box(tmp_path: Path, monkeypatch):
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements=_measurements(topology, tmp_path),
+        measurements={},
         write=True,
         config_path=config_dir / "active_speaker_baseline.yml",
     )

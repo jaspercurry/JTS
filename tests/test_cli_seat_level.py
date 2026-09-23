@@ -600,12 +600,11 @@ async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_b
 
 @pytest.mark.parametrize("outcome", ["applied", "apply_failed"])
 async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplog, commissioning_box, outcome):
-    from jasper.active_speaker import baseline_profile, bundles, measurement
-    from jasper.web import correction_crossover_v2_apply as apply_host
+    from jasper.active_speaker import baseline_profile
     from jasper.web import sound_active_speaker as web
     from tests._log_events import event_fields
 
-    topology, cam = commissioning_box
+    _, cam = commissioning_box
     if outcome == "apply_failed":
         first = await web._active_speaker_baseline_profile_apply_payload(camilla_factory=lambda: cam)
         assert first["status"] == "applied"
@@ -617,18 +616,11 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
             calls += 1
             return False if calls == 1 else await load(path, **kwargs)
         monkeypatch.setattr(cam, "set_config_file_path", fail_once)
-    bundle = bundles.open_bundle(topology, calibration_id="", sessions_dir=bundles.sessions_dir())
-    measurements = {"active_comparison_set": {"bundle_session_id": bundle["session_id"]}}
-    monkeypatch.setattr(measurement, "load_measurement_state", lambda _: measurements)
-    monkeypatch.setattr(apply_host, "load_measurement_state", lambda _: measurements)
     reviewed = web._active_speaker_baseline_profile_payload(write=True)
     caplog.clear()
     caplog.set_level("INFO", logger=baseline_profile.__name__)
     result = await web._active_speaker_baseline_profile_apply_payload(camilla_factory=lambda: cam)
     assert result["status"] == outcome
-    record = bundles._read_info(Path(bundle["bundle_dir"]))
-    assert record["state"] == ("applied" if outcome == "applied" else "failed")
-    assert record["apply"] == result["apply"]
     started = event_fields(caplog, "correction.crossover_apply_started")
     assert started["candidate_fingerprint"] == reviewed["candidate_fingerprint"]
     if outcome == "apply_failed":
@@ -639,7 +631,6 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
         assert baseline_profile.load_applied_baseline_profile_state() == previous
         rolled_back = event_fields(caplog, "correction.crossover_apply_rolled_back")
         assert rolled_back["rollback_attempted"] == rolled_back["rollback_succeeded"] == "true"
-        assert record["rollback_target"] == {"config_path": previous["config"]["path"]}
     else:
         succeeded = event_fields(caplog, "correction.crossover_apply_succeeded")
         assert succeeded["candidate_fingerprint"] == succeeded["applied_fingerprint"] == reviewed["candidate_fingerprint"]

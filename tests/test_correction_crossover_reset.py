@@ -19,7 +19,6 @@ _JOURNEY_ENVS = {
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission-ramp.json",
-    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
 }
 _KEPT_ENVS = {
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
@@ -46,7 +45,6 @@ def test_reset_measurement_journey_clears_journey_keeps_driver_and_applied_state
     assert sorted(result["cleared_ids"]) == [
         "commission_load",
         "commission_ramp",
-        "measurements",
         "path_safety",
         "staged_config",
     ]
@@ -71,13 +69,13 @@ def test_reset_measurement_journey_reports_actual_outcome_not_static_intent(
     as a full green clear (adversarial-review N1)."""
     _seed(monkeypatch, tmp_path)
     # Remove one journey file before the reset so it is already absent.
-    (tmp_path / _JOURNEY_ENVS["JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE"]).unlink()
+    (tmp_path / _JOURNEY_ENVS["JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE"]).unlink()
 
     result = backend.reset_measurement_journey()
 
     assert result["status"] == "cleared"  # already-absent is not an error
-    assert "measurements" not in result["cleared_ids"]
-    assert result["missing_ids"] == ["measurements"]
+    assert "commission_ramp" not in result["cleared_ids"]
+    assert result["missing_ids"] == ["commission_ramp"]
     assert result["error_ids"] == []
 
 
@@ -91,7 +89,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
             "status": "partial",
             "cleared_ids": ["commission_load"],
             "missing_ids": ["staged_config"],
-            "error_ids": ["measurements"],
+            "error_ids": ["path_safety"],
             "kept_ids": ["design_draft", "baseline_profile", "startup_load"],
         },
     )
@@ -116,7 +114,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
         "status": "partial",
         "cleared": ["commission_load"],
         "missing": ["staged_config"],
-        "errors": ["measurements"],
+        "errors": ["path_safety"],
         "kept": ["design_draft", "baseline_profile", "startup_load"],
     }
 

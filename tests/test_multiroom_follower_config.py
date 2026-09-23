@@ -28,7 +28,6 @@ from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology_store as output_topology_mod
@@ -42,7 +41,6 @@ from jasper.multiroom.config import GroupingConfig
 from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
-    _measurements,
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -119,7 +117,7 @@ class _FakeCamilla:
         return True
 
 
-def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview):
     from tests.active_speaker_fixtures import declared_graph_fixture
 
     monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
@@ -131,9 +129,6 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
         crossover_preview_mod, "build_crossover_preview", lambda *a, **k: preview
-    )
-    monkeypatch.setattr(
-        measurement_mod, "load_measurement_state", lambda *a, **k: measurements
     )
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_STATE_PATH", str(tmp_path / "follower_state.json"))
@@ -163,8 +158,7 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     real_write_stash = fc._write_stash
 
@@ -246,8 +240,7 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
@@ -266,8 +259,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     import jasper.active_speaker.camilla_yaml.pipeline as camilla_yaml
 
@@ -304,8 +296,7 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
@@ -337,8 +328,7 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     # ARM the box — the endpoint marker is the whole difference between this
@@ -841,8 +831,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     def _boom(*a, **k):
         raise OutputTopologyError("topology.json corrupt")

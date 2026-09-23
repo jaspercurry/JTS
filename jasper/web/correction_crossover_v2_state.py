@@ -367,14 +367,12 @@ def _resolve_measurement_level_trims(
     speaker would be levelled by.
 
     **No/unreadable evidence answers empty WITHOUT raising, and there is no
-    catch to dress a genuine fault up as no-evidence.** Both loaders fail soft
-    — an absent, unreadable or corrupt-but-readable document returns a status
-    dict, never a raise (``measurement._normalise_state`` and the preview
-    loader both narrow a non-mapping back to a base document) — and the
-    estimator is fail-closed, answering empty trims for every unusable-evidence
-    case. So a box with nothing to level by reaches the caller's
-    ``WALK_LEVEL_MATCH_NO_EVIDENCE`` refusal through the empty return, and NO
-    exception is expected here at all. There is therefore nothing to catch: an
+    catch to dress a genuine fault up as no-evidence.** The preview loader
+    fails soft — an absent, unreadable or corrupt-but-readable document returns
+    a status dict, never a raise — and the estimator is fail-closed, answering
+    empty trims for every unusable-evidence case. So a box with nothing to
+    level by reaches the caller's ``WALK_LEVEL_MATCH_NO_EVIDENCE`` refusal
+    through the empty return, and NO exception is expected here at all. There is therefore nothing to catch: an
     exception that does arise is a real fault in the derivation, and it
     propagates with its traceback pointing straight at this function rather
     than being swallowed and misread as "this box has not measured its trims".
@@ -384,14 +382,10 @@ def _resolve_measurement_level_trims(
     from jasper.active_speaker.baseline_profile import measured_level_trims
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
 
     draft = load_design_draft()
     trims, meta = measured_level_trims(
-        preset,
-        load_measurement_state(topology) or {},
-        build_crossover_preview(draft),
-        design_draft=draft,
+        preset, {}, build_crossover_preview(draft), design_draft=draft,
     )
     return (
         {str(role): float(db) for role, db in trims.items()},

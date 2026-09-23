@@ -170,14 +170,13 @@ def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):
 
 
 def _stub_evidence_loaders(monkeypatch):
-    """The two banked documents the owner is handed, stubbed to empty.
+    """The banked preview the owner is handed, stubbed to empty.
 
-    Their CONTENT is the owner's subject, not this seam's; what these tests pin
+    Its CONTENT is the owner's subject, not this seam's; what these tests pin
     is that this resolver asks that owner and carries its verdict.
     """
-    from jasper.active_speaker import crossover_preview, measurement
+    from jasper.active_speaker import crossover_preview
 
-    monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
     monkeypatch.setattr(
         crossover_preview, "build_crossover_preview", lambda *a, **k: {}
     )

@@ -88,7 +88,6 @@ def _real_active_applied_baseline(tmp_path):
     from tests.test_active_speaker_baseline_profile import (
         _draft,
         _dual_apple_topology,
-        _measurements,
     )
 
     topology = _dual_apple_topology()
@@ -96,7 +95,7 @@ def _real_active_applied_baseline(tmp_path):
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements=_measurements(topology, tmp_path),
+        measurements={},
         write=False,
         config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
     )

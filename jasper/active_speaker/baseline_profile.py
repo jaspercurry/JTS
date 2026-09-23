@@ -77,6 +77,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
+from .measurement import empty_driver_check_summary
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
@@ -346,7 +347,6 @@ def compile_commissioning_profile(
     """Review the applied candidate, or bootstrap from the declared crossover."""
     from .commissioning_experiment import commissioning_candidate  # lazy: candidate parts consumes baseline readers
     from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
-    from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration, MeasurementGraphRefused  # lazy: graph compilation imports baseline readers
     from .runtime_contract import classify_bass_extension_graph, GRAPH_APPROVED_ACTIVE_RUNTIME  # lazy: graph proof imports baseline state
     from jasper.sound.settings import saved_sound_layers  # lazy: household settings import baseline readers
@@ -371,7 +371,7 @@ def compile_commissioning_profile(
                                     preference_filters=preference_filters, output_trim_db=trim_db)
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
-            banked, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
+            banked, declaration=declaration, design_draft=draft, measurements={},
             config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
             saved_timing=(applied or {}).get("timing"),
         ))
@@ -516,18 +516,12 @@ def _source_payload(
     topology: OutputTopology,
     design_draft: Mapping[str, Any],
     crossover_preview: Mapping[str, Any],
-    measurements: Mapping[str, Any],
     *,
     measured_candidate_fingerprint: str | None = None,
     driver_protection: Mapping[str, Any] | None = None,
     candidate_graph_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fingerprint declaration and evidence inputs, not emitted bytes."""
-    measurement_summary = (
-        measurements.get("summary")
-        if isinstance(measurements.get("summary"), Mapping)
-        else {}
-    )
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
@@ -535,8 +529,10 @@ def _source_payload(
         "crossover_preview_fingerprint": crossover_preview_fingerprint(
             crossover_preview, design_draft
         ),
-        "measurements_updated_at": measurements.get("updated_at"),
-        "measurement_summary_fingerprint": _fingerprint(measurement_summary),
+        # Frozen at the retired driver-check record's no-record answer; see
+        # empty_driver_check_summary.
+        "measurements_updated_at": None,
+        "measurement_summary_fingerprint": _fingerprint(empty_driver_check_summary(topology)),
     }
     if measured_candidate_fingerprint is not None:
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
@@ -1681,7 +1677,7 @@ def prepare_applied_baseline_profile(
     if crossover_preview is None:
         crossover_preview = build_crossover_preview(design_draft)
     source = _source_payload(
-        declaration.topology, design_draft, crossover_preview, measurements,
+        declaration.topology, design_draft, crossover_preview,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
     source = {**source, **((provenance or {}).get("source") or {}),

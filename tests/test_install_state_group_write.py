@@ -113,10 +113,9 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
 
 def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
     """jasper-correction-web dropped from root to jasper-web, so the
-    state their root incarnation created must move with them: readable for the
-    files a writer atomically replaces, and OWNED for the SQLite ledger it
-    modifies in place ("attempt to write a readonly database" otherwise)."""
-    measurements = _mk(tmp_path / "active_speaker_measurements.json", 0o600)
+    state their root incarnation created must move with them: OWNED for the
+    SQLite ledger it modifies in place ("attempt to write a readonly database"
+    otherwise)."""
     tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
     # A capture tree a root measurement arm made with a bare mkdir under
     # UMask=0077 — 0700, which the dropped writer cannot even traverse.
@@ -125,7 +124,6 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
 
     _run_heal(tmp_path, stubs=JASPER_GROUP_STUBS)
 
-    assert _mode(measurements) == 0o640
     assert _mode(tuning_db) == 0o644
     assert tuning_db.stat().st_uid == os.getuid()  # the stubbed jasper-web uid
     # setgid so anything measured into it keeps inheriting group `jasper`.
