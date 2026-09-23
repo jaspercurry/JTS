@@ -440,8 +440,12 @@ def register_packs(
                     registry.tool_packs.pop(name, None)
             for name in pack_claimed_names:
                 claimed_names.discard(name)
-            logger.exception(
-                "event=tool_pack.build_failed pack=%s", pack.name,
+            log_event(
+                logger,
+                "tool_pack.build_failed",
+                pack=pack.name,
+                level=logging.ERROR,
+                exc_info=True,
             )
             outcomes.append(PackOutcome(pack.name, "failed", error=repr(e)))
             continue

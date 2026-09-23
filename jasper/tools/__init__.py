@@ -675,12 +675,12 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         # shipped tool is `async def` (blocking backends go through
         # asyncio.to_thread inside the tool); this flags stragglers before
         # they ship.
-        logger.warning(
-            "event=tool.sync_fn tool=%s — fn is not a coroutine function; "
-            "it runs inline on the event loop with no %.0fs dispatch "
-            "timeout. Make it `async def` and wrap blocking work in "
-            "asyncio.to_thread.",
-            declared, DEFAULT_TOOL_TIMEOUT_SEC,
+        log_event(
+            logger,
+            "tool.sync_fn",
+            tool=declared,
+            dispatch_timeout_sec=DEFAULT_TOOL_TIMEOUT_SEC,
+            level=logging.WARNING,
         )
     definition = ToolDefinition(
         name=declared,

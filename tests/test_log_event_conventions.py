@@ -84,7 +84,7 @@ _READER_PATHS = (
 )
 
 # Active-zone files an in-flight work-stream owns (the active-crossover / sound
-# UI, the LLM tool surfaces). They are intentionally NOT migrated here so this
+# UI). They are intentionally NOT migrated here so this
 # change doesn't churn files a parallel session is editing — they fold into
 # log_event when that work lands. Each maps to {"*"} (any event in the file is
 # exempt). `_ACTIVE_ZONE_PREFIXES` below bounds this list: a deferral can only
@@ -102,12 +102,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/active_speaker/commission_load.py": {"*"},
     "jasper/active_speaker/startup_load.py": {"*"},
     "jasper/sound/camilla_yaml.py": {"*"},
-    "jasper/tools/__init__.py": {"*"},
-    "jasper/tools/audio.py": {"*"},
-    "jasper/tools/bus.py": {"*"},
-    "jasper/tools/citibike.py": {"*"},
-    "jasper/tools/diagnostic.py": {"*"},
-    "jasper/tools/packs.py": {"*"},
 }
 
 # An active-zone deferral's path must start with one of these — the tripwire
@@ -116,7 +110,6 @@ DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
 # active-crossover-adjacent backend; listed explicitly above.)
 _ACTIVE_ZONE_PREFIXES = (
     "jasper/active_speaker/",
-    "jasper/tools/",
     "jasper/sound/",
 )
 
