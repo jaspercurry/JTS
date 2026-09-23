@@ -9,7 +9,7 @@
 pair rolls off like a 90 Hz, Q 0.6 alignment, and the native Loudness shelf
 (fixed 70 Hz corner) matches it at no setting. The owner wants the Linkwitz
 transform T from the pair's alignment (f0, Q0) to a target (ft, Qt) at full
-boost. The block must keep the volume taper (Loudness on `Aux1`, ADR-0287),
+boost. The block must keep the volume taper (the native Loudness on `Aux1`),
 the compressor with one reduction per cardioid pair (ADR-0335), the sub-bass
 roll-off, and the shared headroom charge (ADR-0257). Aux1's only readers in
 CamillaDSP v4.1.3 are `Volume` and `Loudness`, so no native filter scales an
@@ -22,7 +22,7 @@ arbitrary shape with the volume.
    bounds. The judge refuses a shape without `delta_highpass_hz`, a target
    at or above the source, and a transform whose delta zero,
    (f0² − ft²) / (f0/Q0 − ft/Qt), is not in (0, 20 kHz]. One `LowshelfFO`
-   cannot place that zero.
+   cannot place such a zero.
 2. The Loudness delta L − 1 stays the only volume-dependent element. A fixed
    stage on each formed delta, S = (T − 1) / (L_B − 1) at the full boost B,
    makes the full-boost response exactly T. The stage is a gain on the
@@ -48,12 +48,11 @@ Proof, jts3 (B = 20 dB, delta high-pass 15 Hz): the stage is −0.11 dB,
 86.15 Hz / −5.15 dB. The model differs from the analog closed form
 1 + HP·(T − 1) by 0.00014 dB at most, 5 Hz–20 kHz. Across 4,728 bounded
 descriptors (B from 1 to 20 dB, high-pass 10–19 Hz), the maximum is
-0.005 dB. The full-boost
-boost is +21.6 dB at 20 Hz, +20.5 at 25, +15.2 at 40, +9.3 at 63, +4.6 at
-100 and +1.9 at 160. At 25 Hz, the taper gives +20.5, +15.8, +10.8, +5.6 and
-+2.3 dB at 20, 15, 10, 5 and 2 dB below the reference. The reserve is
-21.7 dB. On an ideal 90 Hz, Q 0.6 woofer, the result is −3 dB at 22.7 Hz and
-within −2.0/+1.1 dB from 25 to 250 Hz.
+0.005 dB. The full-boost boost is +21.6 dB at 20 Hz, +20.5 at 25, +15.2 at
+40, +9.3 at 63, +4.6 at 100 and +1.9 at 160. At 25 Hz, the taper gives
++20.5, +15.8, +10.8, +5.6 and +2.3 dB at 20, 15, 10, 5 and 2 dB below the
+reference. The reserve is 21.7 dB. On an ideal 90 Hz, Q 0.6 woofer, the
+result is −3 dB at 22.7 Hz and within −2.0/+1.1 dB from 25 to 250 Hz.
 
 ## Consequences
 

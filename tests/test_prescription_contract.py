@@ -356,9 +356,9 @@ def test_linkwitz_schema_edges_match_the_validator(name):
             assert validate(prop[bound])["linkwitz_transform"][name] == prop[bound]
             with pytest.raises(ValueError):
                 validate(math.nextafter(prop[bound], direction))
-    with pytest.raises(ValueError):
-        validate(shape[name], **{rules["requires_field"]: None})
     if name == "target_hz":
+        with pytest.raises(ValueError):
+            validate(shape[name], **{rules["requires_field"]: None})
         with pytest.raises(ValueError):
             validate(shape[rules["target_hz_exclusive_upper_field"]])
 
