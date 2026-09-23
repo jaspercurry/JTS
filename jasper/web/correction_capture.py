@@ -32,9 +32,8 @@ from ..audio_measurement import household_mic
 from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_USER_STOPPED
 from ..log_event import log_event
 
-from ._common import refusal_envelope
 from . import correction_runtime
-from .correction_runtime import logger
+from .correction_runtime import logger, refusal_envelope
 
 
 # A pending plan holds no resources; only the active slot owns hardware and signals.

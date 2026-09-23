@@ -38,7 +38,7 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
 from jasper.web import correction_crossover_v2_volume as v2volume
-from jasper.web._common import refusal_envelope
+from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set

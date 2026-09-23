@@ -76,7 +76,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                 try:
                     context = resolve_conductor_context(status, require_banked_level=False)
                 except CrossoverV2Refused as exc:
-                    # Disclosed the way jasper.web._common.refusal_envelope
+                    # Disclosed the way jasper.web.correction_runtime.refusal_envelope
                     # renders one: ``str(exc)`` is the household sentence its
                     # raisers pass; some carry no code.
                     choice.update(code=exc.code or None, lines=[str(exc)])

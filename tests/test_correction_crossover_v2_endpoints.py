@@ -2249,7 +2249,7 @@ def test_prepare_refuses_when_volume_needs_recovery():
 
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
 def test_session_requires_an_inline_v3_plan(body):
-    from jasper.web._common import refusal_envelope
+    from jasper.web.correction_runtime import refusal_envelope
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
     envelope = refusal_envelope(caught.value)
@@ -6060,7 +6060,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         assert refused.value.code == code
         if fault == "graph":
             from jasper.active_speaker import runtime_contract
-            from jasper.web._common import refusal_envelope
+            from jasper.web.correction_runtime import refusal_envelope
 
             # The refusal names WHICH door refused: a bare code sent the
             # operator to read the graph by hand.

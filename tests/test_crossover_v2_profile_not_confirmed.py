@@ -44,7 +44,7 @@ from jasper.active_speaker.program_playback import (
 )
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web._common import refusal_envelope
+from jasper.web.correction_runtime import refusal_envelope
 
 def _admission(*refusals: ProgramAdmissionRefusal) -> ProgramAdmission:
     return ProgramAdmission(
