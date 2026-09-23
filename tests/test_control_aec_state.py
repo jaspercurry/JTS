@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io, enhanced_aec
+from jasper import atomic_io, enhanced_aec, wake_models
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,
@@ -358,10 +358,10 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
 def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
     wake_model_file, monkeypatch,
 ):
-    """The /wake model form and jasper-control sensitivity endpoint both
-    read-modify-write wake_model.env. If the model writer reads first and the
-    threshold writer lands before it publishes, the final file must still keep
-    both keys."""
+    """select_wake_model (the /assistant/wake/ form) and jasper-control's
+    sensitivity endpoint both read-modify-write wake_model.env. If the model
+    writer reads first and the threshold writer lands before it publishes, the
+    final file must still keep both keys."""
     real_atomic_write = atomic_io.atomic_write_text
     model_write_paused = threading.Event()
     release_model_write = threading.Event()
@@ -390,10 +390,8 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
 
     def write_model():
         try:
-            wake_setup.locked_update_env_file(
-                str(wake_model_file),
-                {"JASPER_WAKE_MODEL": "alexa"},
-                mode=0o644,
+            wake_models.select_wake_model(
+                "alexa", via="wizard", path=str(wake_model_file),
             )
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
@@ -405,6 +403,7 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
             errors.append(e)
 
     monkeypatch.setattr(atomic_io, "atomic_write_text", pausing_atomic_write)
+    monkeypatch.setattr(wake_models, "is_available", lambda entry: True)
     model_thread = threading.Thread(target=write_model)
     model_thread.start()
     assert model_write_paused.wait(timeout=2)

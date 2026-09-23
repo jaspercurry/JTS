@@ -4,8 +4,9 @@
 
 """HTTP routes and persistence for the voice setup wizard.
 
-Keys and provider settings retain their separate, single-writer files.
-Provider selection on GET only chooses the form; POST /save activates it.
+Keys and provider settings retain their separate files. Provider selection on
+GET only chooses the form; POST /save activates it through
+:func:`jasper.voice.provider_state.select_voice` (ADR-0350).
 """
 from __future__ import annotations
 
@@ -30,6 +31,10 @@ from jasper.voice.catalog import (
 from jasper.voice.provider_state import (
     KEYS_FILE,
     PROVIDER_FILE,
+    PROVIDER_FILE_MODE,
+    VOICE_PROVIDER_ENV_OWNER,
+    VoiceSelectionRefused,
+    select_voice,
 )
 from jasper.voice.model_discovery import (
     DEFAULT_CACHE_PATH,
@@ -45,8 +50,8 @@ from jasper.usage import (
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
 
-from ..atomic_io import atomic_write_json, write_env_file
-from ..env_file import delete_env_file, read_env_file
+from ..atomic_io import atomic_write_json, locked_transform_env_file
+from ..env_file import read_env_file
 from ..platform import systemd
 from ._common import (
     RESTART_CLAUSE,
@@ -75,6 +80,7 @@ from .voice_costs import (
 
 logger = logging.getLogger(__name__)
 
+# The keys file has no second front end (ADR-0350), so its header names this wizard.
 VOICE_ENV_OWNER = "JTS /assistant/voice wizard"
 
 
@@ -91,27 +97,35 @@ def _load_merged(cfg: dict[str, Any]) -> dict[str, str]:
     return merged
 
 
-def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
-    """Persist provider API keys to group-`jasper-secrets` ``keys_path``
-    and other settings to ``state_path``. Delete empty slices. Atomic via
-    ``write_env_file``; the setgid jasper-secrets dir gives keys_path its
-    narrowed group automatically. Raises OSError on write failure — the
-    callers wrap this to surface a flash + keep the daemon's last-good
-    config."""
-    secrets = {k: v for k, v in new.items() if k in _SECRET_KEY_ENVS}
-    rest = {k: v for k, v in new.items() if k not in _SECRET_KEY_ENVS}
-    if rest:
-        write_env_file(
-            cfg["state_path"], rest, mode=SECRET_ENV_MODE, owner=VOICE_ENV_OWNER,
-        )
-    else:
-        delete_env_file(cfg["state_path"])
-    if secrets:
-        write_env_file(
-            cfg["keys_path"], secrets, mode=SECRET_ENV_MODE, owner=VOICE_ENV_OWNER,
-        )
-    else:
-        delete_env_file(cfg["keys_path"])
+def _write_half(
+    cfg: dict[str, Any], before: dict[str, str], after: dict[str, str], *, secret: bool,
+) -> None:
+    """Apply the edit ``before`` → ``after`` (merged views) under one file's
+    lock: API keys to ``keys_path`` (``secret``), the rest to ``state_path``.
+    Another writer's key survives, a key in the other file moves to its own,
+    and an emptied file is deleted. Raises OSError; the callers flash it."""
+    ours = lambda key: (key in _SECRET_KEY_ENVS) is secret
+    changed = {k for k, v in after.items() if ours(k) and before.get(k) != v}
+    dropped = {k for k in before if ours(k) and k not in after}
+
+    def transform(fresh: dict[str, str]) -> dict[str, str] | None:
+        kept = {k: v for k, v in fresh.items() if ours(k) and k not in dropped}
+        added = {
+            k: v for k, v in after.items()
+            if ours(k) and (k in changed or k not in kept)
+        }
+        return {**kept, **added} or None
+
+    path, mode, owner = (
+        (cfg["keys_path"], SECRET_ENV_MODE, VOICE_ENV_OWNER) if secret
+        else (cfg["state_path"], PROVIDER_FILE_MODE, VOICE_PROVIDER_ENV_OWNER)
+    )
+    locked_transform_env_file(path, transform, mode=mode, owner=owner)
+
+
+def _write_split(cfg: dict[str, Any], before: dict[str, str], after: dict[str, str]) -> None:
+    _write_half(cfg, before, after, secret=True)
+    _write_half(cfg, before, after, secret=False)
 
 
 def _provider_label(provider_id: str) -> str:
@@ -193,19 +207,8 @@ def _apply_save(form: dict[str, str], current: dict[str, str]) -> tuple[dict[str
         new.update(submitted_settings(p, form))
 
     active = (form.get("active") or "").strip()
-    active_provider = provider_by_id(active)
-    if active_provider is None:
+    if provider_by_id(active) is None:
         return current, f"Unknown provider {active!r}."
-    has_key = bool(
-        new.get(active_provider.key_env)
-        or os.environ.get(active_provider.key_env)
-    )
-    if not has_key:
-        return current, (
-            f"{active_provider.label} has no API key configured "
-            f"yet. Paste a {active_provider.key_env} value before "
-            f"selecting it as active."
-        )
     new["JASPER_VOICE_PROVIDER"] = active
 
     # Drop any blank values we accidentally produced (e.g. user picks
@@ -279,14 +282,31 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         )
 
     def _save_provider_state(
-        form: dict[str, str],
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> tuple[dict[str, str] | None, str | None]:
         current = _load_merged(cfg)
         new, err = _apply_save(form, current)
         if err is not None:
             return None, err
+        provider = provider_by_id(new["JASPER_VOICE_PROVIDER"])
+        assert provider is not None  # _apply_save refused an unknown one
+        # select_voice writes these two; the halves below leave them as found.
+        selection = ("JASPER_VOICE_PROVIDER", provider.model_env)
+        settings = {k: v for k, v in new.items() if k not in selection}
+        settings.update((k, current[k]) for k in selection if k in current)
         try:
-            _write_split(cfg, new)
+            # Keys first, so select_voice finds a key this form brought; the
+            # rest after, so a refused selection saves no other setting.
+            _write_half(cfg, current, settings, secret=True)
+            select_voice(
+                provider.id, new.get(provider.model_env),
+                via="wizard", client=handler.address_string(),
+                path=cfg["state_path"], keys_path=cfg["keys_path"],
+                discovery_path=cfg["discovery_cache_path"],
+            )
+            _write_half(cfg, current, settings, secret=False)
+        except VoiceSelectionRefused as e:
+            return None, str(e)
         except OSError as e:
             logger.exception("could not write voice provider env file")
             return None, f"Could not save: {e}"
@@ -296,20 +316,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_save(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        new, err = _save_provider_state(form)
+        new, err = _save_provider_state(handler, form)
         if err is not None or new is None:
             _reject_save(handler, form, err or "Could not save.")
             return
         outcome = restart_voice_daemon()
         active = new.get("JASPER_VOICE_PROVIDER", "")
-        # The active provider (gemini/openai/grok) is the headline config
-        # change — not a secret. The API keys in `new` are never logged.
-        log_event(
-            logger,
-            "voice.save",
-            provider=active,
-            client=handler.address_string(),
-        )
         send_see_other(
             handler, "./",
             flash=f"Saved {_provider_label(active)}.{RESTART_CLAUSE[outcome]}",
@@ -319,7 +331,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_save_test(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        new, err = _save_provider_state(form)
+        new, err = _save_provider_state(handler, form)
         if err is not None or new is None:
             _reject_save(handler, form, err or "Could not save.")
             return
@@ -365,14 +377,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     level=logging.WARNING,
                 )
         clause = RESTART_CLAUSE[restart_voice_daemon()]
-        # Same save audit as _post_save — the "Save & Test" button is the
-        # other save path, so "voice provider saved" is logged either way.
-        log_event(
-            logger,
-            "voice.save",
-            provider=active,
-            client=handler.address_string(),
-        )
         if seed_error:
             send_see_other(
                 handler,
@@ -408,7 +412,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # _write_split deletes whichever file's slice is now empty —
             # clearing the last provider removes both state_path AND the
             # keys_path, so no stale key file lingers.
-            _write_split(cfg, new)
+            _write_split(cfg, current, new)
         except OSError as e:
             logger.exception("could not write voice provider env file")
             send_see_other(handler, f"./?provider={pid}", flash=f"Could not save: {e}")
@@ -501,7 +505,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # current came from _load_merged, so `new` still carries the API
             # keys; _write_split keeps them in keys_path rather than writing
             # them back into the broad state_path.
-            _write_split(cfg, new)
+            _write_split(cfg, current, new)
         except OSError as e:
             logger.exception("could not write spend-cap env settings")
             send_see_other(handler, _costs_location(form), flash=f"Could not save spend cap: {e}")

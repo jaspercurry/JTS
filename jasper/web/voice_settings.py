@@ -11,7 +11,7 @@ from jasper.voice.catalog import (
     ProviderCatalogEntry, default_model_id, default_voice_id, provider_by_id,
 )
 from jasper.voice.model_discovery import DiscoverySnapshot
-from jasper.voice.provider_state import resolve_active_provider
+from jasper.voice.provider_state import offered_models, resolve_active_provider
 
 from ._common import mask_secret, value_for_env
 
@@ -32,10 +32,11 @@ def model_options(
     provider: ProviderCatalogEntry, discovered: DiscoverySnapshot | None,
     current: str = "",
 ) -> dict[str, str]:
-    options = {model.id: model.display_label for model in provider.models}
-    if discovered:
-        for model_id in discovered.models:
-            options.setdefault(model_id, f"{model_id} (experimental; discovered)")
+    labels = {model.id: model.display_label for model in provider.models}
+    options = {
+        model_id: labels.get(model_id, f"{model_id} (experimental; discovered)")
+        for model_id in offered_models(provider, discovered)
+    }
     if current and current not in options:
         options = {current: f"{current} (custom; experimental)", **options}
     return options

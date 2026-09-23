@@ -141,8 +141,8 @@ def _imports_openwakeword(node: ast.AST) -> bool:
     string is not detectable here and none exists in-tree.
 
     `find_spec` is deliberately split. `find_spec("openwakeword")` locates a
-    *top-level* name and executes nothing, so it stays legal — jasper/web/
-    wake_setup.py relies on that to keep openWakeWord out of the page-render
+    *top-level* name and executes nothing, so it stays legal — jasper/
+    wake_models.py relies on that to keep openWakeWord out of the page-render
     path. `find_spec("openwakeword.model")` is a different operation: to find
     a submodule the import system must import the parent package first (a
     documented `importlib.util.find_spec` behaviour, measured here), which
@@ -368,7 +368,7 @@ def test_openwakeword_scanner_leaves_top_level_find_spec_legal(tmp_path: Path) -
     """`find_spec("openwakeword")` executes nothing, so it must not be flagged.
 
     This is the other half of the `find_spec` boundary and it is load-bearing,
-    not symmetry for its own sake: `jasper/web/wake_setup.py` locates bundled
+    not symmetry for its own sake: `jasper/wake_models.py` locates bundled
     model assets this way specifically to keep openWakeWord out of the
     socket-activated `jasper-web` render path. If this form were policed, the
     honest fix would be to import openWakeWord there — the opposite of what
