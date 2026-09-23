@@ -17,8 +17,7 @@ from jasper.control.airplay_health import (
     classify_journal_line,
 )
 from jasper.control.camilla_rate_storm import STORM_EXIT_DEBOUNCE_SEC, CamillaRateStorm
-from jasper.music_sources import MUSIC_SOURCE_SPECS
-from tests.status_socket_fixtures import JsonStatusSocket
+from jasper.control.fanin_view import FaninView
 
 
 def _fanin_status(
@@ -56,17 +55,18 @@ def _fanin_status(
     }
 
 
-def _sampler(**kwargs) -> AirPlayHealthSampler:
+def _sampler(*, fanin_probe=None, **kwargs) -> AirPlayHealthSampler:
     """Build a sampler isolated from live Pi maintenance markers.
 
     Warmup + connect-grace default OFF here so the classification tests
     below exercise steady-state behaviour at small clock values; the
     warmup / connect-grace suppression has its own dedicated tests.
+    ``fanin_probe`` feeds the composed :class:`FaninView`.
     """
     kwargs.setdefault("maintenance_suppress_path", None)
     kwargs.setdefault("warmup_sec", 0.0)
     kwargs.setdefault("connect_grace_sec", 0.0)
-    return AirPlayHealthSampler(**kwargs)
+    return AirPlayHealthSampler(fanin_view=FaninView(probe=fanin_probe), **kwargs)
 
 
 def test_camilla_probe_uses_bounded_controller_and_reads_device_config(
@@ -271,40 +271,6 @@ def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
     assert material["deficit_frames"] == 16
 
 
-def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
-    now = [1000.0]
-    statuses = [
-        _fanin_status(
-            airplay_frames=0,
-            airplay_xruns=7,
-            output_frames=0,
-        ),
-        _fanin_status(
-            airplay_frames=240000,
-            airplay_xruns=8,
-            output_frames=240000,
-        ),
-    ]
-
-    sampler = _sampler(
-        fanin_probe=lambda: statuses.pop(0),
-        journal_reader=lambda _unit, _since, _now: [],
-        mpris_probe=lambda: {"playing": True},
-        camilla_probe=lambda: None,
-        time_fn=lambda: now[0],
-    )
-
-    sampler._tick()
-    now[0] += 5.0
-    sampler._tick()
-
-    snap = sampler.snapshot()
-    assert snap["status"] == "issue"
-    assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
-    assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
-    assert snap["events"][-1]["type"] == "fanin_airplay_xrun"
-
-
 def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     tmp_path,
 ) -> None:
@@ -333,7 +299,7 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
         return [("shairport-sync", "recovering from a previous underrun")]
 
     sampler = AirPlayHealthSampler(
-        fanin_probe=lambda: statuses.pop(0),
+        fanin_view=FaninView(probe=lambda: statuses.pop(0)),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
@@ -387,7 +353,7 @@ def test_journal_scan_widens_after_no_airplay_session_for_5_minutes() -> None:
         return []
 
     sampler = AirPlayHealthSampler(
-        fanin_probe=lambda: _fanin_status(),
+        fanin_view=FaninView(probe=lambda: _fanin_status()),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
@@ -431,7 +397,7 @@ def test_journal_scan_returns_to_default_cadence_once_a_session_starts() -> None
         return []
 
     sampler = AirPlayHealthSampler(
-        fanin_probe=lambda: _fanin_status(),
+        fanin_view=FaninView(probe=lambda: _fanin_status()),
         journal_reader=journal,
         mpris_probe=lambda: dict(mpris),
         camilla_probe=lambda: None,
@@ -511,65 +477,6 @@ def test_idle_silence_at_full_rate_reads_inactive_not_ok() -> None:
     assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
     assert snap["status"] == "inactive"
     assert snap["reason"] == "AirPlay not currently streaming"
-
-
-def test_fanin_output_ring_and_tts_reach_the_composer() -> None:
-    """The shaped fan-in observation carries the output ring, its per-second
-    rates and the TTS lane; absent blocks stay None."""
-    now = [3000.0]
-    statuses = [
-        {
-            **_fanin_status(output_frames=0),
-            "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
-        },
-        {
-            **_fanin_status(output_frames=480000),
-            "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
-        },
-    ]
-    for status in statuses:
-        started = status["output"]["frames_written"] != 0
-        status["output"]["ring"] = {
-            "occupancy": 2,
-            "slots": 2,
-            "stall_active": False,
-            "full_waits": 810 if started else 0,
-            "stuck_reader_drops": 1 if started else 0,
-            "drop_no_reader": 1 if started else 0,
-        }
-
-    sampler = _sampler(
-        fanin_probe=lambda: statuses.pop(0),
-        journal_reader=lambda _u, _s, _n: [],
-        mpris_probe=lambda: {"playing": True},
-        camilla_probe=lambda: None,
-        time_fn=lambda: now[0],
-    )
-    sampler._tick()
-    now[0] += 5.0
-    sampler._tick()
-    output = sampler.snapshot()["current"]["fanin"]["output"]
-
-    assert output["ring"]["occupancy"] == 2
-    assert output["ring"]["full_waits_per_sec"] == 162.0
-    assert output["ring"]["drops_per_sec"] == 0.4
-    assert sampler.snapshot()["current"]["fanin"]["tts"]["enabled"] is True
-
-
-def test_fanin_ring_and_tts_absent_stay_none() -> None:
-    sampler = _sampler(
-        fanin_probe=lambda: _fanin_status(),
-        journal_reader=lambda _u, _s, _n: [],
-        mpris_probe=lambda: {"playing": False},
-        camilla_probe=lambda: None,
-        time_fn=lambda: 3000.0,
-    )
-    sampler._tick()
-    fanin = sampler.snapshot()["current"]["fanin"]
-
-    assert fanin["output"]["ring"] is None
-    assert fanin["inputs"]["airplay"]["xruns_per_sec"] is None
-    assert fanin["tts"] is None
 
 
 def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:
@@ -743,23 +650,6 @@ def test_default_journal_reader_fails_soft_when_journal_is_unavailable(
     assert AirPlayHealthSampler._read_journal_lines(("shairport-sync",), 1, 2) == []
 
 
-def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
-    # macOS caps AF_UNIX sun_path at 104 bytes; pytest's tmp_path nests
-    # ~123 bytes deep and overflows it (Linux allows 108 with a shorter
-    # CI tmp base, so this only bit on macOS). Bind under a short /tmp dir
-    # instead — matches the socket-path convention in test_control_server.py.
-    server = JsonStatusSocket(
-        {"ok": True},
-        name="control.sock",
-        accept_delay_seconds=0.35,
-    )
-    with server as socket_path:
-        assert AirPlayHealthSampler._read_fanin_status(str(socket_path)) == {
-            "ok": True,
-        }
-    assert server.requests == [b"STATUS\n"]
-
-
 def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
     # A reboot's content-xrun + AirPlay-resync settling must NOT flip the
     # dashboard straight to "issue: recent audio-path recovery event"
@@ -775,7 +665,7 @@ def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
         ),
     ]
     sampler = AirPlayHealthSampler(
-        fanin_probe=lambda: statuses.pop(0),
+        fanin_view=FaninView(probe=lambda: statuses.pop(0)),
         journal_reader=lambda _u, _s, _n: [
             ("shairport-sync", "recovering from a previous underrun"),
         ],
@@ -912,25 +802,6 @@ def _ring(**overrides) -> dict:
     }
     ring.update(overrides)
     return ring
-
-
-def test_ring_block_surfaces_empty_reads_rate_and_silent_ms() -> None:
-    now = [1000.0]
-    statuses = [
-        _fanin_status(selected_input="airplay", ring=_ring(empty_reads=1000)),
-        _fanin_status(selected_input="airplay", ring=_ring(empty_reads=1100)),
-    ]
-    sampler = _sampler(fanin_probe=lambda: statuses.pop(0), time_fn=lambda: now[0])
-
-    sampler._tick()
-    now[0] += 5.0
-    sampler._tick()
-
-    airplay_obs = sampler.snapshot()["current"]["fanin"]["inputs"]["airplay"]
-    assert airplay_obs["ring"]["empty_reads"] == 1100
-    assert airplay_obs["empty_reads_per_sec"] == 20.0
-    # 20 empty_reads/s * 256 slot_frames / 48000 Hz * 1000 = 106.67 ms/s.
-    assert airplay_obs["silent_ms_per_sec"] == 106.7
 
 
 def test_link_counters_read_iface_and_snmp_fields(tmp_path, monkeypatch) -> None:
@@ -1076,77 +947,3 @@ def test_receiver_is_none_when_pid_comm_does_not_match_shairport() -> None:
     sampler._tick()
 
     assert sampler.snapshot()["current"]["link"]["receiver"] is None
-
-
-def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> None:
-    now = [1000.0]
-    status = {
-        "input_buffer_frames": 4096,
-        "selected_input": "usbsink",
-        "inputs": [
-            {
-                "label": "usbsink",
-                "source": "direct",
-                "frames_read": 100,
-                "xrun_count": 2,
-                "rms_dbfs": -20.0,
-                "direct": {
-                    "health": "capturing",
-                    "stream_starts": 2,
-                    "stream_stops": 1,
-                    "buffer_frames": 768,
-                    "drain_avail": {"max": 516},
-                },
-                "resampler": {
-                    "health": "steady",
-                    "locked": True,
-                    "clamp_count": 7,
-                    "anti_windup_count": 2,
-                    "lock_count": 18,
-                    "unlock_count": 17,
-                    "fill_frames": 512,
-                    "target_fill_frames": 512,
-                    "held_target_frames": 1024,
-                    "decay": {"enabled": True, "floor_frames": 1024, "demand_ppm": 125.33},
-                },
-            }
-        ],
-        "output": {
-            "frames_written": 100,
-            "xrun_count": 0,
-            "snd_pcm_delay_frames": 864,
-            "snd_pcm_delay_ms": 18.0,
-        },
-        "watchdog": {"last_progress_age_ms": 0, "pings_skipped": 0},
-        "host_clock": {"enabled": True, "ladder": "l0_locked"},
-    }
-    sampler = _sampler(
-        fanin_probe=lambda: status,
-        journal_reader=lambda *_args: [],
-        mpris_probe=lambda: {"playing": False},
-        camilla_probe=lambda: None,
-        time_fn=lambda: now[0],
-    )
-
-    sampler.sample_once()
-    fanin = sampler.snapshot()["current"]["fanin"]
-    assert set(fanin["inputs"]) == {
-        spec.id.value for spec in MUSIC_SOURCE_SPECS
-    }
-    assert fanin["inputs"]["usbsink"]["health"] == "capturing"
-    assert fanin["inputs"]["usbsink"]["direct"]["drain_avail"]["max"] == 516
-    assert fanin["inputs"]["usbsink"]["resampler"]["unlock_count"] == 17
-    # The #3464 rail counters ride the curated view alongside the ratio.
-    assert fanin["inputs"]["usbsink"]["resampler"]["clamp_count"] == 7
-    assert fanin["inputs"]["usbsink"]["resampler"]["anti_windup_count"] == 2
-    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["enabled"] is True
-    # The decontamination gauge rides the wholesale decay deepcopy (#3466).
-    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
-    assert fanin["inputs"]["spotify"]["present"] is False
-    assert fanin["host_clock"]["ladder"] == "l0_locked"
-
-    status["inputs"][0]["frames_read"] += 48000
-    now[0] += 1.0
-    sampler.sample_once()
-    fanin = sampler.snapshot()["current"]["fanin"]
-    assert fanin["inputs"]["usbsink"]["frames_per_sec"] == 48000.0

@@ -27,7 +27,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from statistics import median
 from typing import Any
 
@@ -40,19 +40,13 @@ from jasper.control._health_fields import (
     _nonneg_rate,
     _read_int_file,
     _read_text_file,
-    _sum_or_none,
 )
 from jasper.control.camilla_rate_storm import (
     STORM_SAMPLE_INTERVAL_SEC,
     CamillaRateStorm,
 )
-from jasper.fanin.status import fanin_inputs_by_label
-from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.control.fanin_view import FaninView
 from jasper.service_units import JournalctlUnavailable, run_journalctl_json
-from jasper.platform.status_socket import (
-    FANIN_STATUS_SOCKET,
-    read_status_socket_or_none,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +82,6 @@ DEFAULT_WARMUP_SEC = 120.0
 # journal scan after a connect is covered.
 DEFAULT_CONNECT_GRACE_SEC = 45.0
 
-FANIN_TIMEOUT_SEC = 1.0
 SUBPROCESS_TIMEOUT_SEC = 2.0
 MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 
@@ -103,8 +96,6 @@ MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
 # lane was actually receiving frames.
 LINK_BASELINE_SAMPLES = 12
 LINK_HEALTHY_FRAMES_PER_SEC = 1000.0
-# Fallback mixer rate when fan-in STATUS omits output.sample_rate.
-DEFAULT_MIXER_RATE_HZ = 48000
 
 PROC_NET_WIRELESS_PATH = "/proc/net/wireless"
 PROC_NET_SNMP_PATH = "/proc/net/snmp"
@@ -407,7 +398,6 @@ class AirPlayHealthSampler:
         camilla_interval_sec: float = CAMILLA_INTERVAL_SEC,
         bucket_seconds: float = BUCKET_SECONDS,
         history_seconds: float = HISTORY_SECONDS,
-        fanin_probe: Callable[[], dict[str, Any] | None] | None = None,
         journal_reader: (
             Callable[[tuple[str, ...], float, float], list[tuple[str, str]]]
             | None
@@ -421,6 +411,7 @@ class AirPlayHealthSampler:
         maintenance_suppress_path: str | None = MAINTENANCE_SUPPRESS_UNTIL_PATH,
         warmup_sec: float = DEFAULT_WARMUP_SEC,
         connect_grace_sec: float = DEFAULT_CONNECT_GRACE_SEC,
+        fanin_view: FaninView | None = None,
         rate_storm: CamillaRateStorm | None = None,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
@@ -431,7 +422,6 @@ class AirPlayHealthSampler:
         self._camilla_interval = camilla_interval_sec
         self._bucket_seconds = bucket_seconds
         self._history_points = max(1, int(math.ceil(history_seconds / bucket_seconds)))
-        self._fanin_probe = fanin_probe or self._read_fanin_status
         self._journal_reader = journal_reader or self._read_journal_lines
         self._mpris_probe = mpris_probe or self._read_airplay_mpris
         self._camilla_probe = camilla_probe or (
@@ -452,12 +442,12 @@ class AirPlayHealthSampler:
         self._last_airplay_active_at = self._started_at
         self._warmup_active = warmup_sec > 0.0
         self._suppressed_reason: str | None = None
+        self._fanin = fanin_view or FaninView()
         self._rate_storm = rate_storm or CamillaRateStorm()
 
         self._lock = threading.Lock()
         self._buckets: deque[dict[str, Any]] = deque(maxlen=self._history_points)
         self._events: deque[dict[str, Any]] = deque(maxlen=EVENT_RING_SIZE)
-        self._current_fanin: dict[str, Any] | None = None
         self._current_mpris: dict[str, Any] | None = None
         self._current_camilla: dict[str, Any] | None = None
         self._current_link: dict[str, Any] | None = None
@@ -473,7 +463,6 @@ class AirPlayHealthSampler:
         self._camilla_journal_since = self._time()
         self._last_mpris_sample_at = 0.0
         self._last_camilla_sample_at = 0.0
-        self._last_fanin_counts: dict[str, Any] | None = None
         self._last_link_counts: dict[str, Any] | None = None
         self._last_receiver_counts: dict[str, Any] | None = None
         # Per-session healthy-tick baseline (reset on lane detach, an
@@ -492,9 +481,10 @@ class AirPlayHealthSampler:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            fanin = self._fanin.current
             summary_5m = self._summary_locked(5 * 60.0)
             summary_30m = self._summary_locked(30 * 60.0)
-            status, reason = self._status_locked(summary_5m, summary_30m)
+            status, reason = self._status_locked(fanin, summary_5m, summary_30m)
             return {
                 "last_sample_at": self._last_sample_at,
                 "maintenance_suppressed": self._maintenance_suppressed,
@@ -505,7 +495,7 @@ class AirPlayHealthSampler:
                 "status": status,
                 "reason": reason,
                 "current": {
-                    "fanin": copy.deepcopy(self._current_fanin),
+                    "fanin": copy.deepcopy(fanin),
                     "mpris": copy.deepcopy(self._current_mpris),
                     "camilla": copy.deepcopy(self._current_camilla),
                     "link": copy.deepcopy(self._current_link),
@@ -526,8 +516,10 @@ class AirPlayHealthSampler:
             and now < self._connect_grace_until
         )
         self._ensure_bucket(now)
-        self._sample_fanin(
-            now, suppress_events=(suppress_base or in_connect_grace),
+        self._fanin.sample(
+            now,
+            record_event=self._record_event,
+            suppress_events=(suppress_base or in_connect_grace),
         )
         self._sample_link(now)
 
@@ -628,345 +620,6 @@ class AirPlayHealthSampler:
         """
         return self.airplay_streaming() is True
 
-    def _sample_fanin(self, now: float, *, suppress_events: bool = False) -> None:
-        status = self._fanin_probe()
-        if not isinstance(status, dict):
-            with self._lock:
-                self._current_fanin = None
-            return
-
-        inputs_by_label = fanin_inputs_by_label(status)
-        airplay = inputs_by_label.get("airplay")
-        output = status.get("output") if isinstance(status.get("output"), dict) else {}
-        watchdog = (
-            status.get("watchdog")
-            if isinstance(status.get("watchdog"), dict) else {}
-        )
-
-        airplay_frames = _as_int(airplay.get("frames_read")) if airplay else 0
-        airplay_xruns = _as_int(airplay.get("xrun_count")) if airplay else 0
-        output_frames = _as_int(output.get("frames_written"))
-        output_ring = (
-            output.get("ring") if isinstance(output.get("ring"), dict) else None
-        )
-        output_full_waits = (
-            _as_int_or_none(output_ring.get("full_waits"))
-            if output_ring is not None else None
-        )
-        # The ring's two loss counters, summed: both mean "a period the reader
-        # never took". An absent counter stays None — "not observed", not zero.
-        output_ring_drops = (
-            _sum_or_none(output_ring, ("stuck_reader_drops", "drop_no_reader"))
-            if output_ring is not None else None
-        )
-
-        prev = self._last_fanin_counts
-        airplay_rate: float | None = None
-        output_rate: float | None = None
-        full_waits_rate: float | None = None
-        ring_drops_rate: float | None = None
-        input_rates: dict[str, float | None] = {
-            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
-        }
-        input_empty_reads_rates: dict[str, float | None] = {
-            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
-        }
-        input_xrun_rates: dict[str, float | None] = {
-            spec.id.value: None for spec in MUSIC_SOURCE_SPECS
-        }
-        input_frames = {
-            spec.id.value: (
-                _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
-                if spec.fanin_label in inputs_by_label else 0
-            )
-            for spec in MUSIC_SOURCE_SPECS
-        }
-        input_xruns = {
-            spec.id.value: (
-                _as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
-                if spec.fanin_label in inputs_by_label else 0
-            )
-            for spec in MUSIC_SOURCE_SPECS
-        }
-        # empty_reads only exists on a ring-armed lane's optional "ring"
-        # block (U3/P6, rust/jasper-fanin/src/state.rs); None on an unarmed
-        # lane, never 0.
-        input_empty_reads: dict[str, int | None] = {}
-        for spec in MUSIC_SOURCE_SPECS:
-            lane = inputs_by_label.get(spec.fanin_label)
-            ring_block = lane.get("ring") if isinstance(lane, dict) else None
-            input_empty_reads[spec.id.value] = (
-                _as_int_or_none(ring_block.get("empty_reads"))
-                if isinstance(ring_block, dict) else None
-            )
-        if prev is not None:
-            dt = max(0.001, now - float(prev.get("ts", now)))
-            prev_airplay_frames = _as_int(prev.get("airplay_frames"))
-            prev_output_frames = _as_int(prev.get("output_frames"))
-            if airplay_frames >= prev_airplay_frames:
-                airplay_rate = (airplay_frames - prev_airplay_frames) / dt
-            if output_frames >= prev_output_frames:
-                output_rate = (output_frames - prev_output_frames) / dt
-            previous_inputs = prev.get("input_frames")
-            if isinstance(previous_inputs, Mapping):
-                for source_id, frames in input_frames.items():
-                    previous_frames = _as_int(previous_inputs.get(source_id))
-                    if frames >= previous_frames:
-                        input_rates[source_id] = (frames - previous_frames) / dt
-            previous_empty_reads = prev.get("input_empty_reads")
-            if isinstance(previous_empty_reads, Mapping):
-                for source_id, empty_reads in input_empty_reads.items():
-                    input_empty_reads_rates[source_id] = _nonneg_rate(
-                        empty_reads, previous_empty_reads.get(source_id), dt,
-                    )
-            previous_input_xruns = prev.get("input_xruns")
-            if isinstance(previous_input_xruns, Mapping):
-                for source_id, xruns in input_xruns.items():
-                    input_xrun_rates[source_id] = _nonneg_rate(
-                        xruns, previous_input_xruns.get(source_id), dt,
-                    )
-
-            airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
-            full_waits_rate = _nonneg_rate(
-                output_full_waits, prev.get("output_full_waits"), dt,
-            )
-            ring_drops_rate = _nonneg_rate(
-                output_ring_drops, prev.get("output_ring_drops"), dt,
-            )
-            if airplay_delta > 0 and not suppress_events:
-                self._record_event(
-                    now,
-                    {
-                        "type": "fanin_airplay_xrun",
-                        "subsystem": "fanin",
-                        "severity": "issue",
-                        "title": "AirPlay fan-in xrun",
-                        "detail": f"input recovered {airplay_delta} xrun(s)",
-                    },
-                    count=airplay_delta,
-                )
-
-        self._last_fanin_counts = {
-            "ts": now,
-            "airplay_frames": airplay_frames,
-            "airplay_xruns": airplay_xruns,
-            "output_frames": output_frames,
-            "output_full_waits": output_full_waits,
-            "output_ring_drops": output_ring_drops,
-            "input_frames": input_frames,
-            "input_xruns": input_xruns,
-            "input_empty_reads": input_empty_reads,
-        }
-
-        input_buffer_frames = _as_int(status.get("input_buffer_frames"))
-        mixer_rate_hz = _as_int(output.get("sample_rate")) or DEFAULT_MIXER_RATE_HZ
-        # Fixed-shape, source-neutral observations for the outer audio-health
-        # composer. Keep only what explains health; /state retains the full
-        # fan-in STATUS for deep debugging. Every declared source gets a slot,
-        # even when its lane is absent, so adding a source extends the existing
-        # metadata seam rather than another dashboard conditional.
-        input_observations: dict[str, dict[str, Any]] = {}
-        for spec in MUSIC_SOURCE_SPECS:
-            entry = inputs_by_label.get(spec.fanin_label)
-            resampler = (
-                entry.get("resampler")
-                if isinstance(entry, dict)
-                and isinstance(entry.get("resampler"), dict)
-                else None
-            )
-            direct = (
-                entry.get("direct")
-                if isinstance(entry, dict)
-                and isinstance(entry.get("direct"), dict)
-                else None
-            )
-            ring = (
-                entry.get("ring")
-                if isinstance(entry, dict) and isinstance(entry.get("ring"), dict)
-                else None
-            )
-            slot_frames = (
-                _as_int_or_none(ring.get("slot_frames")) if ring is not None else None
-            )
-            empty_reads_rate = input_empty_reads_rates[spec.id.value]
-            input_observations[spec.id.value] = {
-                "label": spec.fanin_label,
-                "present": isinstance(entry, dict),
-                "source": entry.get("source") if isinstance(entry, dict) else None,
-                "frames_read": (
-                    _as_int(entry.get("frames_read"))
-                    if isinstance(entry, dict) else 0
-                ),
-                "frames_per_sec": (
-                    round(input_rates[spec.id.value], 1)
-                    if input_rates[spec.id.value] is not None else None
-                ),
-                "empty_reads_per_sec": (
-                    round(empty_reads_rate, 1)
-                    if empty_reads_rate is not None else None
-                ),
-                "silent_ms_per_sec": (
-                    round(
-                        empty_reads_rate * slot_frames / mixer_rate_hz * 1000.0,
-                        1,
-                    )
-                    if empty_reads_rate is not None and slot_frames else None
-                ),
-                "xrun_count": (
-                    _as_int(entry.get("xrun_count"))
-                    if isinstance(entry, dict) else 0
-                ),
-                "xruns_per_sec": (
-                    round(input_xrun_rates[spec.id.value], 3)
-                    if input_xrun_rates[spec.id.value] is not None else None
-                ),
-                "rms_dbfs": (
-                    _as_float(entry.get("rms_dbfs"))
-                    if isinstance(entry, dict) else None
-                ),
-                "muted": (
-                    entry.get("muted")
-                    if isinstance(entry, dict)
-                    and isinstance(entry.get("muted"), bool)
-                    else None
-                ),
-                "health": direct.get("health") if direct is not None else None,
-                "direct": (
-                    {
-                        key: direct.get(key)
-                        for key in (
-                            "present",
-                            "health",
-                            "streaming",
-                            "stream_starts",
-                            "stream_stops",
-                            "retries",
-                            "reopen_pending",
-                            "reopens",
-                            "card_gen_reopens",
-                            "period_frames",
-                            "buffer_frames",
-                            "drain_avail",
-                        )
-                        if key in direct
-                    }
-                    if direct is not None else None
-                ),
-                "resampler": (
-                    {
-                        key: resampler.get(key)
-                        for key in (
-                            "health",
-                            "locked",
-                            "input_frames",
-                            "output_frames",
-                            "silence_frames",
-                            "overrun_frames",
-                            "ratio_ppm",
-                            # Inner-controller rail counters (#3464): the
-                            # "ratio is railing" signal the ratio_ppm gauge
-                            # alone only shows if polled at the right moment.
-                            "clamp_count",
-                            "anti_windup_count",
-                            "lock_count",
-                            "unlock_count",
-                            "fill_frames",
-                            "target_fill_frames",
-                            "held_target_frames",
-                            "decay",
-                        )
-                        if key in resampler
-                    }
-                    if resampler is not None else None
-                ),
-                "ring": (
-                    {
-                        key: ring.get(key)
-                        for key in (
-                            "attached",
-                            "detach_reason",
-                            "writer_alive",
-                            "writer_pid",
-                            "occupancy",
-                            "empty_reads",
-                            "startup_empty_reads",
-                            "epoch_resets",
-                            "slot_frames",
-                            "n_slots",
-                        )
-                        if key in ring
-                    }
-                    if ring is not None else None
-                ),
-            }
-        # Ring A back-pressure: `occupancy` counts SLOTS (not frames), and
-        # `full_waits` climbs once per publish that had to wait for a live
-        # reader to drain one -- the "running too tight" signal (issue #4124).
-        ring_observation: dict[str, Any] | None = None
-        if output_ring is not None:
-            ring_observation = {
-                key: output_ring.get(key)
-                for key in (
-                    "occupancy",
-                    "slots",
-                    "published",
-                    "full_waits",
-                    "stuck_reader_drops",
-                    "drop_no_reader",
-                    "stall_active",
-                    "last_stall_ms",
-                )
-                if key in output_ring
-            }
-            ring_observation["full_waits_per_sec"] = (
-                round(full_waits_rate, 2) if full_waits_rate is not None else None
-            )
-            ring_observation["drops_per_sec"] = (
-                round(ring_drops_rate, 3) if ring_drops_rate is not None else None
-            )
-        current = {
-            "available": True,
-            "input_buffer_frames": input_buffer_frames,
-            "selected_input": status.get("selected_input"),
-            "inputs": input_observations,
-            "host_clock": (
-                copy.deepcopy(status.get("host_clock"))
-                if isinstance(status.get("host_clock"), dict)
-                else None
-            ),
-            "airplay": {
-                "present": airplay is not None,
-                "frames_read": airplay_frames,
-                "frames_per_sec": (
-                    round(airplay_rate, 1)
-                    if airplay_rate is not None else None
-                ),
-                "xrun_count": airplay_xruns,
-            },
-            "output": {
-                "frames_written": output_frames,
-                "frames_per_sec": (
-                    round(output_rate, 1)
-                    if output_rate is not None else None
-                ),
-                "sample_rate": _as_int(output.get("sample_rate")),
-                "period_frames": _as_int(output.get("period_frames")),
-                "ring": ring_observation,
-            },
-            "watchdog": {
-                "last_progress_age_ms": _as_int(
-                    watchdog.get("last_progress_age_ms"),
-                ),
-                "pings_skipped": _as_int(watchdog.get("pings_skipped")),
-            },
-            "tts": (
-                copy.deepcopy(status.get("tts"))
-                if isinstance(status.get("tts"), dict) else None
-            ),
-        }
-        with self._lock:
-            self._current_fanin = current
-
     def _sample_link(self, now: float) -> None:
         """Attribution-only signals: wireless link rate + the shairport
         receiver's own /proc counters. Pure reads, no subprocess (ADR-0226);
@@ -1007,7 +660,7 @@ class AirPlayHealthSampler:
             "tcp_in_segs": tcp_in,
         }
 
-        fanin = self._current_fanin if isinstance(self._current_fanin, dict) else {}
+        fanin = self._fanin.current or {}
         selected = fanin.get("selected_input")
         inputs = fanin.get("inputs") if isinstance(fanin.get("inputs"), dict) else {}
         airplay_input = (
@@ -1177,7 +830,7 @@ class AirPlayHealthSampler:
             self._last_shairport_scan_at = now
 
     def _active_source_hint(self) -> str | None:
-        fanin = self._current_fanin if isinstance(self._current_fanin, dict) else {}
+        fanin = self._fanin.current or {}
         selected = fanin.get("selected_input")
         if selected:
             return str(selected)
@@ -1256,10 +909,10 @@ class AirPlayHealthSampler:
 
     def _status_locked(
         self,
+        fanin: dict[str, Any] | None,
         summary_5m: dict[str, int],
         summary_30m: dict[str, int],
     ) -> tuple[str, str]:
-        fanin = self._current_fanin
         if fanin is None:
             return "unknown", "fan-in status unavailable"
 
@@ -1324,17 +977,6 @@ class AirPlayHealthSampler:
         ):
             return "watch", "recent non-fatal audio-path warning"
         return "ok", "AirPlay path clean"
-
-    @staticmethod
-    def _read_fanin_status(
-        socket_path: str = FANIN_STATUS_SOCKET,
-        timeout_sec: float = FANIN_TIMEOUT_SEC,
-    ) -> dict[str, Any] | None:
-        return read_status_socket_or_none(
-            socket_path,
-            timeout=timeout_sec,
-            event="airplay_health.fanin_status_unavailable",
-        )
 
     @staticmethod
     def _read_journal_lines(

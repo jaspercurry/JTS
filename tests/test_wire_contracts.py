@@ -185,8 +185,8 @@ def _emits_path(tree: dict, path: tuple[str, ...]) -> bool:
 # ---------------------------------------------------------------------------
 
 FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
-    # AirPlayHealthSampler._sample_fanin
-    "jasper/control/airplay_health.py": {
+    # FaninView.sample
+    "jasper/control/fanin_view.py": {
         "inputs", "label", "frames_read", "xrun_count",
         "output", "frames_written", "sample_rate", "period_frames",
         "input_buffer_frames", "selected_input",
