@@ -7,8 +7,8 @@
 Three pieces here, all load-bearing:
 
 - A Python version guard (module-level) that fires before any collection
-  so a wrong-version venv errors with a clear fix message instead of a
-  TypeError deep in jasper/peering/ (which uses 3.10+ dataclass slots=).
+  so a venv below the `requires-python` floor (ADR-0347) errors with a
+  clear fix message instead of running an interpreter CI never tests.
 
 - A module-level `socketserver` shutdown-latency shim (see below), which
   has to run before any fixture starts a throwaway HTTP server.
@@ -33,10 +33,10 @@ import sys
 
 import pytest
 
-if sys.version_info < (3, 11):
+if sys.version_info < (3, 13):
     have = ".".join(str(n) for n in sys.version_info[:3])
     raise RuntimeError(
-        f"JTS requires Python >=3.11; you're on {have}. "
+        f"JTS requires Python >=3.13; you're on {have}. "
         f"`requires-python` in pyproject.toml only enforces at "
         f"`pip install` time, not at venv creation, so a wrong-version "
         f"venv silently happens (most often on macOS where the default "
@@ -103,10 +103,9 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 # one already passing poll_interval) were together ~23% of LOCAL suite
 # runtime, and a local full-suite A/B moved 483 s -> 346 s at -n 4.
 #
-# The CI gain is smaller, and the reason matters. Measured on the merge
-# commit: py3.11 350 s, py3.13 358 s, py3.12 375 s, against a 428-431 s
-# baseline. `ci` waits on ALL THREE matrix legs, so the gate improves by the
-# SLOWEST leg: 375 s, i.e. about -12%, not the -28% the local A/B suggests.
+# The CI gain is smaller, and the reason matters. Measured on CI (py3.13):
+# 358 s against a 428-431 s baseline, i.e. about -17%, not the -28% the
+# local A/B suggests.
 #
 # Fewer cores recover LESS of this, not more. On a 10-core box with -n 4
 # there are idle cores, so a worker parked in select() is pure added wall
