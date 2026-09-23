@@ -195,6 +195,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0251](0251-jasper-control-parks-on-a-bind-failure.md) | jasper-control parks on a bind failure instead of rebooting the box | accepted |
 | [0270](0270-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
 | [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | accepted |
+| [0350](0350-agents-change-settings-through-the-owner-function-and-jasper-settings.md) | Agents change settings through the owner function and `jasper-settings` | accepted |
 
 ## Web & UI
 
