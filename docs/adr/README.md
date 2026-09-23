@@ -27,7 +27,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0105](0105-each-speaker-derives-its-own-usb-subnet.md) | Each speaker derives its own USB /30 from its CPU serial | accepted |
 | [0145](0145-remote-updates-stay-a-laptop-deploy.md) | Remote updates stay a laptop deploy | accepted |
 | [0163](0163-installer-builds-run-the-inverse-of-the-audio-daemon-memory-policy.md) | Installer builds run the inverse of the audio-daemon memory policy | accepted |
-| [0164](0164-a-pi-image-is-a-cached-versioned-input-to-the-installer-not-a-second-installer.md) | A Pi image is a cached, versioned input to the installer, not a second installer | accepted |
+| [0164](0164-a-pi-image-is-a-cached-versioned-input-to-the-installer-not-a-second-installer.md) | A Pi image is a cached, versioned input to the installer, not a second installer | superseded by 0348 |
 | [0172](0172-full-a-b-install-generations-stay-deferred.md) | Full A-B install generations stay deferred | accepted |
 | [0173](0173-post-deploy-health-is-surfaced-never-gating.md) | Post-deploy health is surfaced, never gating | accepted |
 | [0174](0174-install-window-oom-kills-are-surfaced-not-gated.md) | Install-window OOM kills are surfaced, not gated | accepted |
@@ -39,6 +39,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0248](0248-post-deploy-health-gates-the-deploy.md) | Post-deploy health gates the deploy | accepted |
 | [0252](0252-the-python-tree-publishes-from-a-staging-path.md) | The Python tree publishes from a staging path | accepted |
 | [0315](0315-hardware-tier-and-direct-updates.md) | Hardware tier and direct updates | accepted |
+| [0348](0348-the-installer-builds-from-source-on-stock-pi-os.md) | The installer builds from source on stock Pi OS; no prebuilt image or runtime bundle | accepted |
 
 ## Audio path & output (ring/fanin/outputd/DAC)
 
