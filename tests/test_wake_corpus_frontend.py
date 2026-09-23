@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from html.parser import HTMLParser
 
 import pytest
 
@@ -68,13 +69,77 @@ def test_html_count_guidance_matches_two_session_protocol() -> None:
 
 
 def test_html_delete_button_uses_trash_icon() -> None:
-    """Delete button is small + uses a trash icon (was previously
-    wide text 'delete', which overlapped the audio player). The clip rows
-    are rendered by the behaviour module, so assert against it."""
-    js = _module_js()
-    # The icon character + the icon class
-    assert "🗑" in js
-    assert '"danger icon"' in js
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    script = r"""
+import { loadEsm, repoPath } from './tests/js/_loader.mjs';
+import { element } from './tests/js/_dom.mjs';
+const nodes = new Map();
+const button = { dataset: { id: 'dummy-clip' } };
+let row, confirmed = false;
+globalThis.document = {
+  getElementById: (id) => {
+    if (!nodes.has(id)) nodes.set(id, { ...element(id), prepend(el) { row = el; } });
+    return nodes.get(id);
+  },
+  createElement: () => ({ querySelector: (selector) => selector === 'button' ? button : null }),
+};
+const requests = [];
+let clips = [{ clip_id: 'dummy-clip', seq: 1, condition: 'quiet', distance: 'near', duration_sec: 1, files: {} }];
+globalThis.fetch = async (path, opts) => {
+  requests.push([opts.method, path]);
+  if (opts.method === 'DELETE') clips = [];
+  return { ok: true, json: async () => ({ clips, sessions: [] }) };
+};
+globalThis.__confirm = async () => confirmed;
+const { refreshClips } = await loadEsm(repoPath('deploy/assets/wake-corpus/js/main.js'), {
+  stripImports: true, guardNoImports: true,
+  prelude: 'const jsonHeaders = () => ({}); const jtsConfirm = globalThis.__confirm; const createLegLabels = () => ({});',
+  truncateBefore: "\n$('session-begin').onclick", exportNames: ['refreshClips'],
+});
+await refreshClips();
+const markup = row.innerHTML;
+await button.onclick({ target: button });
+const cancelled = requests.slice();
+confirmed = true;
+await button.onclick({ target: button });
+console.log(JSON.stringify({ markup, cancelled, requests }));
+"""
+    proc = subprocess.run(
+        [_NODE, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+
+    class ButtonParser(HTMLParser):
+        attrs: dict[str, str | None] = {}
+        text = ""
+        in_button = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "button":
+                self.attrs = dict(attrs)
+                self.in_button = True
+
+        def handle_data(self, data):
+            if self.in_button:
+                self.text += data
+
+        def handle_endtag(self, tag):
+            if tag == "button":
+                self.in_button = False
+
+    parser = ButtonParser()
+    parser.feed(result["markup"])
+    assert set(parser.attrs["class"].split()) == {"btn", "btn--danger", "icon"}
+    assert parser.attrs["data-id"] == "dummy-clip"
+    assert parser.text == "🗑"
+    assert result["cancelled"] == [["GET", "api/clips"]]
+    assert result["requests"] == [
+        ["GET", "api/clips"], ["DELETE", "api/clip/dummy-clip"],
+        ["GET", "api/clips"], ["GET", "api/sessions"],
+    ]
 
 
 def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
