@@ -60,16 +60,13 @@ def refusal_envelope(
 ) -> dict[str, Any]:
     """Carry an exception or an explicit code and message through one envelope."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (  # lazy: numpy import cost
-        CrossoverV2Refused, REASON_INTERNAL_ERROR, refusal_copy_for,
+        CrossoverV2Refused, refusal_copy_for,
     )
     from jasper.active_speaker.program_failure import classify_program_failure  # lazy: numpy import cost
-    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError  # lazy: measurement service import cost
 
     if exc is not None:
         code = getattr(exc, "code", None) or getattr(exc, "reason", None)
-        if isinstance(exc, CrossoverV2LocalSeamError):
-            code = REASON_INTERNAL_ERROR
-        elif not code:
+        if not code:
             classified = classify_program_failure(exc)
             code = classified[0] if classified else None
         if isinstance(exc, CrossoverV2Refused) or not code:
