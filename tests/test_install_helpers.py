@@ -1223,18 +1223,6 @@ def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     assert streambox_pip_upgrade_pos < streambox_retire_pos
 
 
-def test_active_speaker_tone_artifacts_are_writable_by_web_service():
-    """The /sound/ combined-test path writes bounded WAV artifacts as jasper-web."""
-
-    text = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
-        encoding="utf-8"
-    )
-    assert (
-        'install -d -m 2770 -o root -g jasper '
-        '"${STATE_DIR}/active_speaker_tone_artifacts"'
-    ) in text
-
-
 def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     """Fresh installs must not write stale empty Spotify overrides; an
     already-seeded box is swept by the retirement table's env rows

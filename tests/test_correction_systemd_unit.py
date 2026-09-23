@@ -75,7 +75,6 @@ def test_install_sh_creates_correction_state_dirs():
         "/var/lib/jasper/active_speaker_captures",
         "/var/lib/jasper/active_speaker_sweeps",
         "/var/lib/jasper/active_speaker_stimuli",
-        "/var/lib/jasper/active_speaker_tone_artifacts",
     ]:
         assert path in body
 

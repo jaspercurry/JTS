@@ -125,7 +125,7 @@ heal_shared_state_modes() {
         # ".<record>.lock" name; only the LOCKS widen to write, the records
         # stay group-READ (published that way by their own atomic writers).
         "l:0660:${STATE_DIR}/active_speaker_repeat_admission.json"
-        # The capture/sweep/tone trees the measurement daemon and /sound/
+        # The capture/sweep trees the measurement daemon and /sound/
         # commissioning arms share. install.sh's install_camilladsp() now
         # creates these at install time (2770 group `jasper`, matching their
         # /var/lib/jasper/correction siblings); this heal stays for boxes
@@ -138,7 +138,6 @@ heal_shared_state_modes() {
         "d:2770:${STATE_DIR}/active_speaker_captures"
         "d:2770:${STATE_DIR}/active_speaker_sweeps"
         "d:2770:${STATE_DIR}/active_speaker_stimuli"
-        "d:2770:${STATE_DIR}/active_speaker_tone_artifacts"
     )
     # The tuning spend ledger is SQLite and is still summed into household
     # spend (jasper.usage.household_usage_reader); a root-owned file left by
