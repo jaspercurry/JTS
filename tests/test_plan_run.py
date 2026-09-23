@@ -18,7 +18,9 @@ import pytest
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
-from jasper.active_speaker.measurement_programs import run_program, program as measurement_program
+from jasper.active_speaker.measurement_programs import (
+    MeasurementProgram, ProgramPose, run_program, program as measurement_program,
+)
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
@@ -746,6 +748,29 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
                == (scope, "summed", (0,), 0) for capture in baseline)
     assert all(capture.spec.graph_scope == ("drivers" if regime == "per_driver" else "candidate")
                for capture in captures[-repeats:])
+
+
+def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes():
+    """Each pose plays its own driver alone, the gate asks for the microphone
+    at every pose (the front and rear woofer at one distance included), and
+    every take banks as reference evidence at its driver (ADR-0354)."""
+    layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
+    program = MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
+        purpose="reference", regime="near_field")
+    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_program(program).to_dict())))
+    captures = plan_run.prepare_plan_captures(request)
+    gate = AnsweredGate()
+
+    result, fakes = asyncio.run(_run_gated(request, gate=gate, captures=captures,
+                                           assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept")))
+
+    assert [(c.spec.graph_scope, c.spec.branch_target_ids, c.spec.regime, c.spec.program_phase) for c in captures] == [
+        ("drivers", (driver,), "near_field", "lateral") for driver, _ in layout]
+    assert result.status == "complete"
+    assert len(gate.grants) == result.mic_moves == len(layout)
+    assert [(take["measurement_purpose"], take["pose_driver"], take["mark_distance_m"]) for take in fakes.banked] == [
+        ("reference", driver, mm / 1000) for driver, mm in layout]
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [

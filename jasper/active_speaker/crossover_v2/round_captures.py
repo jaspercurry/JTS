@@ -75,6 +75,7 @@ class PoseCapture:
     peak_idx: int
     pose_kind: str = POSE_KIND_BEARING
     seat_offset_m: tuple[float, ...] | None = None
+    pose_driver: str = ""
     candidate_id: str = ""
     graph_fingerprint: str = ""
     capture_sha256: str = ""
@@ -96,7 +97,7 @@ class PoseCapture:
         """The FULL declared pose. Never a seat index (#3503)."""
         return _pose_key(
             self.azimuth_deg, self.vertical_deg, self.mark_distance_m,
-            self.pose_kind, self.seat_offset_m,
+            self.pose_kind, self.seat_offset_m, self.pose_driver,
         )
 
 
@@ -111,7 +112,13 @@ def doc_pose_key(doc: Mapping[str, Any]) -> str:
         finite_float(doc.get("vertical_deg")),
         finite_float(doc.get("mark_distance_m")),
         *_doc_pose_category(doc),
+        _doc_pose_driver(doc),
     )
+
+
+def _doc_pose_driver(doc: Mapping[str, Any]) -> str:
+    driver = doc.get("pose_driver")
+    return driver if isinstance(driver, str) else ""
 
 
 def _doc_pose_category(doc: Mapping[str, Any]) -> tuple[str, tuple[float, ...] | None]:
@@ -136,6 +143,7 @@ def _pose_key(
     mark_distance_m: float | None,
     kind: str = POSE_KIND_BEARING,
     seat_offset_m: tuple[float, ...] | None = None,
+    driver: str = "",
 ) -> str:
     key = "az{}_el{}_d{}".format(
         _pose_field(azimuth_deg), _pose_field(vertical_deg), _pose_field(mark_distance_m)
@@ -145,6 +153,9 @@ def _pose_key(
         key = f"{kind}_{key}"
     if seat_offset_m is not None:
         key += "_r{}_f{}_u{}".format(*(_pose_field(v) for v in seat_offset_m))
+    # The base key rounds distance to the centimetre; a driver's pose keys its millimetres (ADR-0354).
+    if driver:
+        key += f"_{driver}_{'na' if mark_distance_m is None else f'{mark_distance_m * 1000:g}'}mm"
     return key
 
 
@@ -410,6 +421,7 @@ def _bind_record(
             peak_idx=int(np.argmax(np.abs(ir))),
             pose_kind=pose_kind,
             seat_offset_m=seat_offset_m,
+            pose_driver=_doc_pose_driver(doc),
             candidate_id=str(doc.get("candidate_id") or ""),
             graph_fingerprint=played_graph_fingerprint(doc),
             capture_sha256=capture_sha,

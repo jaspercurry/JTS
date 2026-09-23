@@ -125,6 +125,10 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
+# A reference take may also be one driver near its cone (ADR-0354).
+_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
+#: Farthest a reference near-field pose sits from the dust cap (ADR-0354).
+NEAR_FIELD_MAX_DISTANCE_M = 0.1
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 
 
@@ -185,6 +189,22 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     if regime not in supported:
         raise ValueError(f"{resolved} measurements require one of {supported}, got {regime!r}")
     return resolved
+
+
+def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind: str,
+                          distance_m: float | None) -> str:
+    """The one driver a pose plays, a measurement target id (ADR-0354): a pose
+    names one exactly when it is a reference near-field pose, and then sits
+    close, within :data:`NEAR_FIELD_MAX_DISTANCE_M` of the dust cap."""
+    if not isinstance(driver, str):
+        raise ValueError(f"a pose driver is a measurement target id, got {driver!r}")
+    if bool(driver) != (purpose == PURPOSE_REFERENCE and regime == REGIME_NEAR_FIELD):
+        raise ValueError(f"a pose names its driver exactly when it is a {PURPOSE_REFERENCE} "
+                         f"{REGIME_NEAR_FIELD} pose")
+    if driver and not (kind == POSE_KIND_CLOSE and distance_m is not None
+                       and distance_m <= NEAR_FIELD_MAX_DISTANCE_M):
+        raise ValueError(f"a driver's pose is a close pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m")
+    return driver
 
 
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
@@ -257,9 +277,13 @@ def pose_place(
     elevation_deg: int,
     distance_m: float | None,
     seat_offset_m: tuple[float, float, float] | None,
+    driver: str = "",
 ) -> tuple[object, ...]:
-    """What distinguishes one microphone position from another."""
-    return (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
+    """What distinguishes one microphone position from another; a pose at a
+    driver is also that driver's, so the front and rear woofer at one distance
+    are two placements."""
+    place = (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
+    return (*place, driver) if driver else place
 
 
 @dataclass(frozen=True)
@@ -273,6 +297,10 @@ class ProgramPose:
     seat_offset_m: tuple[float, float, float] | None = None
     headline: str = ""
     detail: str = ""
+    #: The one driver this pose plays and sits at, a measurement target id
+    #: (``woofer``, ``woofer:rear``); empty when the pose plays the program's own
+    #: scope (:func:`validated_pose_driver`).
+    driver: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "azimuth_deg", validated_angle(self.azimuth_deg))
@@ -289,7 +317,7 @@ class ProgramPose:
     def place(self) -> tuple[object, ...]:
         return pose_place(
             self.kind, self.azimuth_deg, self.elevation_deg,
-            self.distance_m, self.seat_offset_m,
+            self.distance_m, self.seat_offset_m, self.driver,
         )
 
 
@@ -318,6 +346,9 @@ class MeasurementProgram:
                 raise ValueError("co_purposes must be distinct from each other and the primary purpose")
             validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
+        for pose in self.poses:
+            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose,
+                                  kind=pose.kind, distance_m=pose.distance_m)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")

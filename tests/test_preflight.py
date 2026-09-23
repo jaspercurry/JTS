@@ -124,6 +124,18 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
         assert report.issues == ()
 
 
+@pytest.mark.parametrize("declared,missing", [(("woofer", "tweeter"), ("woofer:rear",)),
+                                              (("woofer", "woofer:rear", "tweeter"), ())])
+def test_preflight_refuses_a_near_field_driver_the_speaker_does_not_declare(declared, missing):
+    plan = AngleCaptureRequest(tuple(
+        AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference", driver=driver)
+        for driver in ("woofer", "woofer:rear")))
+    report = preflight(plan, ready_facts(plan, declared_target_ids=declared))
+    assert report.blocking is bool(missing)
+    assert [(issue.code, issue.evidence["missing_target_ids"]) for issue in report.issues] == (
+        [(REASON_WALK_BRANCH_PAIR_UNDECLARED, missing)] if missing else [])
+
+
 @pytest.mark.parametrize("layout", ["active_3_way", "cardioid", "active_2_way"],
                          ids=["three_way_active", "cardioid", "two_way_active"])
 def test_preflight_per_driver_layout(layout):

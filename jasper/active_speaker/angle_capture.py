@@ -61,6 +61,7 @@ from .measurement_programs import (
     resolved_measurement_purpose,
     validated_branch_pair,
     validated_capture_purpose,
+    validated_pose_driver,
     pose_place,
     validated_pose,
     validated_angle,
@@ -232,7 +233,8 @@ class AngleStop:
     ``distance_m`` and ``seat_offset_m`` are the pose's category and where it
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     ``branch_pair`` is which two targets a ``branches`` stop excites
-    (:data:`~.measurement_programs.BRANCH_PAIRS`).
+    (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
+    a near-field stop plays alone (ADR-0354).
     """
 
     angle_deg: int
@@ -247,6 +249,7 @@ class AngleStop:
     detail: str = ""
     stimulus: Mapping[str, Any] | None = None
     branch_pair: str = BRANCH_PAIR_DRIVERS
+    driver: str = ""
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -260,6 +263,8 @@ class AngleStop:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
             validated_branch_pair(self.branch_pair, self.regime)
+            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose,
+                                  kind=self.kind, distance_m=distance)
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
@@ -267,14 +272,15 @@ class AngleStop:
 
     @property
     def plays_summed(self) -> bool:
-        """Whether this stop plays a summed graph (the scope a summed sweep rides)."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
+        """Whether this stop plays a summed graph (the scope a summed sweep
+        rides); a stop naming its driver plays that driver alone instead."""
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD) and not self.driver
 
     @property
     def place(self) -> tuple[object, ...]:
         return pose_place(
             self.kind, self.angle_deg, self.elevation_deg,
-            self.distance_m, self.seat_offset_m,
+            self.distance_m, self.seat_offset_m, self.driver,
         )
 
 
@@ -797,7 +803,8 @@ def request_for_program(
             for pose in program.poses
             for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
                 AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
-                          purpose=program.purpose),))
+                          kind=pose.kind, distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
+                          purpose=program.purpose, driver=pose.driver),))
             for _ in range(1 if room_sweep and stop.plays_summed else pose.repeats)
             for candidate in (candidates or (BASE_CANDIDATE,))
         ),
@@ -895,7 +902,8 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
             distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m,
         )
         pose = replace(pose, purpose=stop.purpose, preserve_text=bool(stop.headline or stop.detail),
-                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail)
+                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail,
+                       driver=stop.driver)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,

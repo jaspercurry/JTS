@@ -18,6 +18,8 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
+from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
@@ -401,6 +403,39 @@ def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, support
     else:
         with pytest.raises(ValueError):
             mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime)
+
+
+def _program_with(purpose, regime, kind, distance_m, driver):
+    return mp.MeasurementProgram("t", "t", (mp.ProgramPose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
+                                 purpose=purpose, regime=regime)
+
+
+def _stop_with(purpose, regime, kind, distance_m, driver):
+    return ac.AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose=purpose, driver=driver)
+
+
+@pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
+@pytest.mark.parametrize("purpose,regime,kind,distance_m,driver,accepted", [
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.1, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.015, "woofer", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.3, "", True),
+    (mp.PURPOSE_BASS, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
+    (mp.PURPOSE_BASS, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.03, "", True),
+])
+def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
+    door, refusal, purpose, regime, kind, distance_m, driver, accepted,
+) -> None:
+    """Every door a pose enters through judges its driver the same way
+    (ADR-0354): a program row or layout, and a stop in a hand-written plan."""
+    if accepted:
+        door(purpose, regime, kind, distance_m, driver)
+    else:
+        with pytest.raises(refusal):
+            door(purpose, regime, kind, distance_m, driver)
 
 
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:

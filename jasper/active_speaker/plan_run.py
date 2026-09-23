@@ -39,6 +39,7 @@ from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, po
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
+from .crossover_v2.contracts import REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
@@ -163,6 +164,8 @@ def prepare_plan_captures(
             spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
                            vertical_deg=stop.elevation_deg,
                            pose_prompts=(resolved[offset // request.repeats].prompt.text,))
+            if stop.driver:
+                spec = replace(spec, branch_target_ids=(stop.driver,), regime=MEASURE_REGIME_NEAR_FIELD)
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
         )), offset % request.repeats + 1))
@@ -197,7 +200,8 @@ class _Work:
 
 def _pose(stop: Any) -> dict[str, Any]:
     return {"kind": stop.kind, "deg": stop.angle_deg, "elevation_deg": stop.elevation_deg,
-            "distance_m": stop.distance_m, "place": stop.place, "seat_offset_m": stop.seat_offset_m}
+            "distance_m": stop.distance_m, "place": stop.place, "seat_offset_m": stop.seat_offset_m,
+            **({"driver": stop.driver} if stop.driver else {})}
 
 
 def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:

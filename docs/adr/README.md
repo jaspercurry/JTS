@@ -238,14 +238,14 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0182](0182-the-verify-pilot-transfer-ceiling-rests-on-one-clean-session.md) | The VERIFY pilot-transfer ceiling rests on one clean multi-attempt session | accepted |
 | [0183](0183-the-verify-repeat-floor-is-twice-a-measured-consecutive-pair-p95.md) | The VERIFY repeat floor is twice a measured consecutive-pair p95 | accepted |
 | [0188](0188-wired-first-measurement-relay-parked.md) | Wired-first measurement; relay parked | §§2–3 superseded by 0222, §1 amended by 0296 |
-| [0192](0192-the-campaign-is-the-validation.md) | The campaign is the validation | accepted |
+| [0192](0192-the-campaign-is-the-validation.md) | The campaign is the validation | §3 superseded in part by 0354 |
 | [0193](0193-the-audition-door-is-a-runtime-only-swap.md) | The audition door is a runtime-only swap | accepted |
 | [0194](0194-the-flat-spec-frame-and-its-ceiling.md) | The flat-spec reference is the low-mid band, and the graded ceiling follows the microphone | accepted |
 | [0195](0195-a-rebuild-that-knows-less-is-not-a-supersede.md) | A rebuild that knows less is not a supersede | superseded by 0312 |
 | [0196](0196-the-commissioning-record-read-path-takes-no-lock.md) | The commissioning record's read path takes no lock, and says what it found | superseded by 0288 |
 | [0197](0197-the-commissioning-capture-stack-is-deleted.md) | The commissioning capture stack is deleted | superseded by 0288 |
 | [0198](0198-the-unwired-engine-verb-half-is-deleted.md) | The unwired engine verb half is deleted | accepted |
-| [0200](0200-the-measurement-toolbox-is-microphone-only.md) | The measurement toolbox is microphone-only | accepted |
+| [0200](0200-the-measurement-toolbox-is-microphone-only.md) | The measurement toolbox is microphone-only | point 3 amended by 0354 |
 | [0201](0201-fdw-stays-out-of-the-correction-path-funded-as-diagnostic-evidence.md) | FDW stays out of the correction path; funded as diagnostic evidence | accepted |
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
@@ -266,12 +266,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
 | [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265, §1 superseded by 0303 |
-| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | amended by 0277, 0278 |
+| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | amended by 0277, 0278, 0354 |
 | [0277](0277-the-seat-cloud-adds-eleven-positions-without-renaming-saved-cubes.md) | The seat cloud adds eleven positions without renaming saved cubes | accepted |
 | [0263](0263-a-ring-ended-camilladsp-graph-takes-the-ring-geometry.md) | A ring-ended CamillaDSP graph takes the ring geometry | accepted |
 | [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
-| [0278](0278-measurement-purpose-is-independent-of-position.md) | Measurement purpose is independent of position | accepted |
+| [0278](0278-measurement-purpose-is-independent-of-position.md) | Measurement purpose is independent of position | amended by 0354 |
 | [0272](0272-the-decay-snap-lever-is-removed-so-the-cushion-hold-is-not-hardware-provable.md) | The DECAY_SNAP lever is removed, so the cushion hold is not hardware-provable | accepted |
 | [0283](0283-camilladsp-starts-only-on-a-graph-proved-against-its-own-topology.md) | CamillaDSP starts only on a graph proved against its own topology | amended by 0349 |
 | [0284](0284-audits-are-frozen-reports-and-issues-are-the-ledger.md) | Audits are frozen reports; issues are the ledger | accepted |
@@ -332,3 +332,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0356](0356-a-views-artifact-is-a-file.md) | A view's artifact is a file: `--out -` is retired; depth on demand is reading the `out` path the answer names | accepted |
 | [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
 | [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |
+| [0354](0354-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | accepted |

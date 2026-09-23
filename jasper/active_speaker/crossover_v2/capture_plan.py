@@ -223,11 +223,13 @@ class CloudPositionPrompt:
     seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
     preserve_text: bool = False
+    #: The one driver a near-field row sits at and plays (ADR-0354).
+    driver: str = ""
 
     @property
     def place(self) -> tuple[object, ...]:
         return pose_place(self.kind, position_angle_deg(self), position_elevation_deg(self),
-                          self.distance_m, self.seat_offset_m)
+                          self.distance_m, self.seat_offset_m, self.driver)
 
     @property
     def wide(self) -> bool:
