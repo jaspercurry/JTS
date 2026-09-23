@@ -24,7 +24,7 @@
      `jts_speaker_take_impulses`, depending on the capture WAV), and indexes
      them on the take record under `impulses` (`jts_take_impulses/1`). A
      failed write costs only the saved copy and logs
-     `active_speaker.take_impulses_not_saved`; the WAV stays.
+     `correction.take_impulses_not_saved`; the WAV stays.
   3. `round_captures` reads a take's kept impulse first, for any role the take
      recorded, and needs no program file to do it. A take banked before this
      keeps the old routes.

@@ -53,7 +53,7 @@ def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> di
         block = write_take_impulses(Path(bundle_dir), take_id, analysis,
                                     recording=getattr(answer, "wav_path", None) or None)
     except (OSError, BundleError) as exc:
-        log_event(logger, "active_speaker.take_impulses_not_saved", level=logging.WARNING,
+        log_event(logger, "correction.take_impulses_not_saved", level=logging.WARNING,
                   take_id=take_id, error_type=type(exc).__name__)
         return {}
     return {IMPULSES_KEY: block} if block else {}
