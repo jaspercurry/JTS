@@ -12,15 +12,13 @@ import pytest
 
 from jasper.music_sources import Source
 from jasper.volume_curve import percent_to_db
-from jasper.volume_diagnostics import read_diagnostics
 from jasper.volume_handoff import VolumeHandoff
 from jasper.volume_persistence import VolumePersistence
 from jasper.volume_state import VolumeState
 
 
 @pytest.fixture
-def carrier(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(tmp_path / "volume_policy.json"))
+def carrier(tmp_path):
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = SimpleNamespace(db=0.0, muted=False, set_calls=[], mute_calls=[])
 
@@ -240,25 +238,17 @@ async def test_guard_settle_bounds_continuous_catchdown(carrier, monkeypatch):
     assert cam.set_calls == pytest.approx([percent_to_db(n) for n in (90, 80, 70, 60)])
 
 
-@pytest.mark.parametrize("source", [Source.SPOTIFY, Source.BLUETOOTH])
 @pytest.mark.parametrize("guard_ok", [True, False])
-async def test_push_failure_records_only_confirmed_guards(carrier, source, guard_ok):
+async def test_push_failure_returns_guard_result(carrier, guard_ok):
     owner, _, persistence = carrier
     persistence.save_now(-7.5)
     owner._set_camilla_db.side_effect = None
     owner._set_camilla_db.return_value = guard_ok
 
     assert await owner.guard_camilla_after_push_failure(
-        source, 25, context="test_push", reason="push_write_failed",
+        25, context="test_push",
         warning_prefix="push failed", guarded_warning_suffix="; guarded",
     ) is guard_ok
     owner._set_camilla_db.assert_awaited_once_with(
         percent_to_db(25), context="test_push", persist=True,
     )
-    diagnostics = read_diagnostics()
-    if guard_ok:
-        assert diagnostics["push_guard"]["active"] is True
-        assert diagnostics["push_guard"]["source"] == source.value
-        assert diagnostics["push_guard"]["previous_db"] == -7.5
-    else:
-        assert "push_guard" not in diagnostics
