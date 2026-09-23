@@ -1424,6 +1424,7 @@ def test_prepare_refuses_when_volume_needs_recovery():
             _inline_body(), status={}, run_async=None, camilla_factory=None
         )
     assert excinfo.value.code == refusal_copy.REASON_VOLUME_UNRESOLVED
+    assert correction_runtime.refusal_envelope(excinfo.value)["next_action"]["id"] == "recover_volume"
 
 
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
@@ -1484,6 +1485,7 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         v2host.prepare_v2_session(_inline_body(), status={}, run_async=None, camilla_factory=None)
     assert refused.value.code == "driver_protection_invalid"
+    assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
 def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():

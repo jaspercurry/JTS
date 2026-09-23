@@ -625,6 +625,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
         "JTS could not confirm the listening volume was restored. Recover the "
         "safe volume before continuing.",
+        next_action={"id": "recover_volume", "label": "Recover safe listening volume",
+                     "href": "/sound/speaker/crossover/"},
+    ),
+    "driver_protection_invalid": ReasonSpec(
+        "driver_protection_invalid", TEMPLATE_HARD_STOP, 0, "",
+        "The driver protection confirmed in speaker setup cannot be used for "
+        "this measurement. Review the driver limits, then measure again.",
+        next_action={"id": "review_safety_limits", "label": "Review driver limits",
+                     "href": "/sound/speaker/#driver-safety-issues"},
     ),
     "program_admission_refused": ReasonSpec(
         "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",
