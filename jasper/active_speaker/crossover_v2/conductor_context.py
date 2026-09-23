@@ -46,7 +46,7 @@ def driver_spacing_source(draft: Mapping[str, Any]) -> str:
     return "unknown" if declared_driver_spacing_m(draft) is None else "declared"
 
 
-def conductor_status() -> dict[str, Any]:
+def conductor_status(*, setup: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The live status :func:`resolve_conductor_context` reads.
 
     Its three keys — ``targets``, ``setup`` and ``active`` — derived once here,
@@ -58,6 +58,8 @@ def conductor_status() -> dict[str, Any]:
     ``active_2_way`` / ``active_3_way`` groups have: a subless
     ``full_range_passive`` speaker carries a driver target too, so counting
     those would flip the flag wrongly.
+
+    ``setup`` is a setup report the caller already holds; ``None`` reads it.
     """
     from jasper.active_speaker import web_measurement
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
@@ -67,7 +69,7 @@ def conductor_status() -> dict[str, Any]:
     payload["active"] = bool(
         targets.get("summed") if isinstance(targets, Mapping) else None
     )
-    payload["setup"] = read_active_speaker_setup_status()
+    payload["setup"] = read_active_speaker_setup_status() if setup is None else setup
     return payload
 
 

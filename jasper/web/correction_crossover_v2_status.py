@@ -56,13 +56,15 @@ def rollback_candidate(state: Mapping[str, Any] | None, *,
     return None
 
 
-def crossover_v2_status_block() -> dict[str, Any] | None:
+def crossover_v2_status_block(*, controllability: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The ``status["crossover_v2"]`` block.
 
     ``needs_recovery`` comes from the SessionVolumePlan (the W2 gate ruling:
     key on ``needs_recovery``, never ``unresolved_volume_safety`` alone — a
     crash-hydrated active plan surfaces no unresolved payload but still needs
     draining before a new session).
+
+    ``controllability`` is a ledger the caller already read; ``None`` reads it.
     """
     state = v2state.load_v2_state()
     session_id = (state or {}).get("session_id")
@@ -119,7 +121,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         #
         # Disclosure. Nothing reads it back: no adoption row, refusal or
         # prescription consumes it, and this module writes nothing.
-        "controllability": _controllability_status(),
+        "controllability": _controllability_status() if controllability is None else controllability,
     }
     block["post_apply_grade"] = v2grade._post_apply_grade(block,
         spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}, applied_profile=applied_profile))

@@ -385,6 +385,77 @@ def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery
         assert calls == ["recover", "prepare"]
         assert plan.needs_recovery
 
+_RUN = {"kind": "crossover_v2:session", "session_id": "wired-live"}
+
+
+def _capture(monkeypatch, status):
+    """Put a crossover run in the slot at ``status``; return the flow's view of it."""
+    monkeypatch.setattr(correction_capture, "_pending_capture", None)
+    monkeypatch.setattr(correction_capture, "_capture_slot", None if status is None else {**_RUN, "status": status})
+    return correction_capture._get_capture_slot_for("crossover_v2:")
+
+
+def _spy_slow_reads(monkeypatch, tmp_path):
+    """Log the crossover status answer's slow reads; each read answers with its call ordinal."""
+    from jasper.active_speaker import controllability_ledger, setup_status
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_crossover_v2_state as v2state
+
+    calls: list[str] = []
+    applied = {"config": {"sha256": "a" * 64}, "source": {"measured_candidate_fingerprint": "fp"}}
+
+    def read(name, answer):
+        def spy(*_args, **_kwargs):
+            calls.append(name)
+            return {**answer, "read": len(calls)}
+        return spy
+
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+    monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(backend, "_run_snapshot", None)
+    monkeypatch.setattr(backend, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", read("setup", {"active": False}))
+    monkeypatch.setattr(backend, "latest_banked_rounds", read("rounds", {}))
+    monkeypatch.setattr(controllability_ledger, "read_controllability_ledger", read("ledger", {"rounds": []}))
+    return calls, applied
+
+
+@pytest.mark.parametrize("status", ["starting", "awaiting_capture", "stopping"])
+def test_a_live_capture_reuses_its_first_status_answer_until_an_apply(monkeypatch, tmp_path, status):
+    """#5632 F1: the microphone reader shares this process, so a live run's
+    polls must not recompile graphs or rescan the banks."""
+    from jasper.web import correction_crossover_flow as flow
+
+    calls, applied = _spy_slow_reads(monkeypatch, tmp_path)
+    idle, _ = flow.handle_status(capture=_capture(monkeypatch, None))
+    capture = _capture(monkeypatch, status)
+    first, _ = flow.handle_status(capture=capture)
+    calls.clear()
+    again, _ = flow.handle_status(capture=capture)
+    envelope, _ = flow.handle_envelope(capture=capture)
+    assert calls == []
+    assert set(again) == set(idle)
+    assert (idle["snapshot_at"], first["snapshot_at"], again["snapshot_at"]) == (None, None, first["generated_at"])
+    assert [again[key] for key in ("setup", "timing")] == [first[key] for key in ("setup", "timing")]
+    assert again["crossover_v2"]["controllability"] == first["crossover_v2"]["controllability"]
+    assert envelope["capture"]["session_id"] == _RUN["session_id"]
+    applied["config"] = {"sha256": "b" * 64}
+    assert flow.handle_status(capture=capture)[0]["snapshot_at"] is None
+    assert calls == ["setup", "rounds", "ledger"]
+
+
+@pytest.mark.parametrize("status", [None, "complete", "stopped", "failed"])
+def test_status_outside_a_live_capture_reads_every_slow_block_fresh(monkeypatch, tmp_path, status):
+    from jasper.web import correction_crossover_flow as flow
+
+    calls, _ = _spy_slow_reads(monkeypatch, tmp_path)
+    capture = _capture(monkeypatch, status)
+    answers = [flow.handle_status(capture=capture)[0] for _ in range(2)]
+    assert calls == ["setup", "rounds", "ledger"] * 2
+    assert [(answer["snapshot_at"], answer["setup"]["read"], answer["crossover_v2"]["controllability"]["read"])
+            for answer in answers] == [(None, 1, 3), (None, 4, 6)]
+
 def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
     kind = "crossover_sweep:driver"
