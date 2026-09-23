@@ -478,6 +478,8 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
 
 @pytest.mark.parametrize("resolution,flags,program,mover", [
     ({"driver": "document", "room": "base"}, (), "speaker/mark", "human"),
+    ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "arm"),
+    ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "arm"),
     ({"alignment": "cleared"}, (), "speaker/mark", "human"),
     ({"bass": "document"}, ("--mover", "human"), "bass/nearfield", "human"),
     ({"room": "document"}, ("--mover", "arm"), "room/arm", "arm"),

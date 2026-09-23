@@ -117,8 +117,11 @@ below for when to include it. A refusal names the crossed bound; correct that fi
 
 Trial the whole document with two or three candidates: the fitted totals and
 one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
-`base` is also allowed. The trial plays them at the mark (`speaker/mark`).
-Read `jasper-round-views candidates <round-dir>` and its `candidates.json`: each pose has pairwise deltas per role. `window` is present
+`base` is also allowed. A document that states only speaker sections trials at
+the mark (`speaker/mark`); with a room, bass or rear section it trials that
+program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
+Read `jasper-round-views candidates <round-dir>` and
+its `candidates.json`: each pose has pairwise deltas per role. `window` is present
 only when reading the frequency view. `level_offset_db` is median A minus median B on A's grid;
 `mean_abs_db`, `max_abs_db`, `max_abs_hz`, and `rms_db` describe the remaining
 shape difference over `band_hz`, with `bins` giving the count. Base keeps its
