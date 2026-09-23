@@ -22,7 +22,7 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _service_state_failure,
-    _systemctl_unavailable_result,
+    systemctl_unavailable_result,
 )
 from .audio_runtime_fanin import (
     _ASOUND_CONF_PATH,
@@ -959,7 +959,7 @@ def check_aec_clock_drift() -> CheckResult:
     label = "AEC clock drift"
     state = evidence.unit_state(OUTPUTD_SERVICE)
     if state is None:
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     if state.get("load_state") == "not-found" or state.get(
         "unit_file_state"
     ) not in ("enabled", "enabled-runtime"):

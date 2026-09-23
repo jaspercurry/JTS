@@ -5,7 +5,7 @@
 """Unit tests for jasper.multiroom.reconcile.
 
 The reconciler's decision (`plan`), the argv builders, and the args
-assembly (`_assemble_args`) are PURE, total functions — no subprocess, no
+assembly (`assemble_args`) are PURE, total functions — no subprocess, no
 systemctl, no clock. These tests drive them with synthetic GroupingConfigs
 and assert on the returned ReconcilePlan / argv list / env-key values. The
 args-file writer (`_write_args_file`) is exercised against a tmp path, and
@@ -75,7 +75,7 @@ from jasper.multiroom.reconcile_plan import (
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,
-    _assemble_args,
+    assemble_args,
     desired_snapfifo_path,
     plan,
     snapclient_argv,
@@ -340,7 +340,7 @@ def test_snapclient_argv_follower_passes_stable_mdns_host_verbatim():
 # ---------- snapclient_argv(): the player device ----------------------------
 #
 # `player_alsa_device` is the only player form. Both bonded shapes name an SHM
-# ring PCM here and differ only in WHICH one (see _assemble_args); unset is the
+# ring PCM here and differ only in WHICH one (see assemble_args); unset is the
 # bare command.
 
 
@@ -369,7 +369,7 @@ def test_snapclient_argv_names_the_device_through_the_alsa_player():
     assert argv[argv.index("--player") + 1] == "alsa"
 
 
-# ---------- _assemble_args(): pure derivation of the two env keys ----------
+# ---------- assemble_args(): pure derivation of the two env keys ----------
 #
 # These mirror the snap*_argv tests but assert on the env-key VALUES the
 # units read (argv[0] stripped, space-joined), still without any I/O.
@@ -381,12 +381,12 @@ CLIENT_KEY = "JASPER_SNAPCLIENT_ARGS"
 
 def test_assemble_args_returns_both_keys_always():
     for cfg in (_disabled(), _invalid(), _leader(), _follower()):
-        d = _assemble_args(cfg)
+        d = assemble_args(cfg)
         assert set(d) == {SERVER_KEY, CLIENT_KEY}
 
 
 def test_assemble_args_leader_sets_both_keys():
-    d = _assemble_args(_leader())
+    d = assemble_args(_leader())
     assert d[SERVER_KEY]  # non-empty
     assert d[CLIENT_KEY]  # non-empty
 
@@ -394,7 +394,7 @@ def test_assemble_args_leader_sets_both_keys():
 def test_assemble_args_leader_strips_binary_name_from_server():
     """The persisted value is argv AFTER argv[0] — the binary is already
     in the unit's ExecStart, so it must not be duplicated."""
-    d = _assemble_args(_leader())
+    d = assemble_args(_leader())
     # snapserver_argv[0] == "snapserver"; the joined value must NOT start
     # with the binary token.
     assert not d[SERVER_KEY].split()[0] == "snapserver"
@@ -402,7 +402,7 @@ def test_assemble_args_leader_strips_binary_name_from_server():
 
 
 def test_assemble_args_leader_strips_binary_name_from_client():
-    d = _assemble_args(_leader())
+    d = assemble_args(_leader())
     assert not d[CLIENT_KEY].split()[0] == "snapclient"
     # A DUMB member's client (the default, active_endpoint=False) is the
     # dac-content RETURN ring form. NOT "always": an active-speaker endpoint
@@ -414,13 +414,13 @@ def test_assemble_args_leader_strips_binary_name_from_client():
 
 
 def test_assemble_args_leader_server_carries_the_fifo_source():
-    d = _assemble_args(_leader())
+    d = assemble_args(_leader())
     assert SNAPFIFO in d[SERVER_KEY]
     assert "pipe://" in d[SERVER_KEY]
 
 
 def test_assemble_args_follower_server_empty_client_set():
-    d = _assemble_args(_follower(leader_addr="192.168.1.50"))
+    d = assemble_args(_follower(leader_addr="192.168.1.50"))
     assert d[SERVER_KEY] == ""  # a follower runs no server
     assert d[CLIENT_KEY]  # but does run a client
     assert "--host 192.168.1.50" in d[CLIENT_KEY]
@@ -444,7 +444,7 @@ def test_assemble_args_client_names_one_ring_per_shape(
     Layer A in the bonded path. Each shape names its own ring and never the
     other's — swapping them would silence the box. Neither is the raw DAC, which
     outputd owns."""
-    d = _assemble_args(_follower(), active_endpoint=active_endpoint)
+    d = assemble_args(_follower(), active_endpoint=active_endpoint)
     assert d[SERVER_KEY] == ""  # a follower runs no server
     assert f"--soundcard {ring} --player alsa" in d[CLIENT_KEY]
     assert other_ring not in d[CLIENT_KEY]
@@ -471,7 +471,6 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
 def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     """Reset and active-layout save both close a bonded passive DAC bypass."""
     from jasper.multiroom.grouping_env import outputd_grouping_env
-    from jasper.multiroom.reconcile_plan import _assemble_args
 
     bonded = _follower()
     period = DAC_CONTENT_RING_PERIOD_FRAMES
@@ -491,8 +490,8 @@ def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     assert dac_content_lane_marker_armed(allowed)
     assert after_reset[DAC_CONTENT_LANE_ENV] == ""
     assert after_active_save[DAC_CONTENT_LANE_ENV] == ""
-    assert _assemble_args(bonded)[CLIENT_KEY]
-    assert _assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
+    assert assemble_args(bonded)[CLIENT_KEY]
+    assert assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
 
 
 def _passive_channel(role: str, index: int, **extra) -> dict:
@@ -602,7 +601,7 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
 
 
 def test_assemble_args_disabled_clears_both():
-    d = _assemble_args(_disabled())
+    d = assemble_args(_disabled())
     assert d[SERVER_KEY] == ""
     assert d[CLIENT_KEY] == ""
 
@@ -610,13 +609,13 @@ def test_assemble_args_disabled_clears_both():
 def test_assemble_args_invalid_clears_both():
     """Fail-safe: an enabled-but-broken bond derives empty args so a
     started unit can never pick up stale values."""
-    d = _assemble_args(_invalid())
+    d = assemble_args(_invalid())
     assert d[SERVER_KEY] == ""
     assert d[CLIENT_KEY] == ""
 
 
 def test_assemble_args_codec_and_buffer_flow_into_server():
-    d = _assemble_args(_leader(codec="opus", buffer_ms=750))
+    d = assemble_args(_leader(codec="opus", buffer_ms=750))
     assert "codec=opus" in d[SERVER_KEY]
     assert "--stream.buffer 750" in d[SERVER_KEY]
     # The inert source-URL param must not be re-introduced.
@@ -3143,7 +3142,6 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     """
 
     from jasper.multiroom.grouping_env import outputd_grouping_env
-    from jasper.multiroom.reconcile_plan import _assemble_args
 
     period = int(
         resolve_outputd_period_setting(
@@ -3171,7 +3169,7 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     # DISABLED cfg `fall_back_to_solo` installs, which is why the argv flips
     # with the marker rather than independently of it.
     bonded = cfg if fits else dataclasses.replace(cfg, enabled=False)
-    client = _assemble_args(bonded)[CLIENT_KEY]
+    client = assemble_args(bonded)[CLIENT_KEY]
     assert (DAC_CONTENT_RING_PCM in client) is fits
 
 

@@ -194,7 +194,7 @@ def _fake_ss(*lines: str, returncode: int = 0):
     ],
 )
 def test_camillagui_loopback_verdicts(monkeypatch, rows, status, reason):
-    monkeypatch.setattr(doctor_web, "_run", _fake_ss(*rows))
+    monkeypatch.setattr(doctor_web, "run", _fake_ss(*rows))
 
     r = doctor_web.check_camillagui_loopback()
 
@@ -220,7 +220,7 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
     def raises(cmd, timeout=5.0):
         raise failure
 
-    monkeypatch.setattr(doctor_web, "_run", raises)
+    monkeypatch.setattr(doctor_web, "run", raises)
 
     result = doctor_web.check_camillagui_loopback()
     assert result.status == "skipped"
@@ -228,7 +228,7 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
 
 
 def test_camillagui_loopback_skips_when_ss_exits_nonzero(monkeypatch):
-    monkeypatch.setattr(doctor_web, "_run", _fake_ss(returncode=1))
+    monkeypatch.setattr(doctor_web, "run", _fake_ss(returncode=1))
 
     result = doctor_web.check_camillagui_loopback()
     assert result.status == "skipped"

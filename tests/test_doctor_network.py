@@ -67,7 +67,7 @@ def _completed(
 
 
 def _nmcli_active_run(stdout: str):
-    """Build a fake `_run` returning ``stdout`` for any nmcli invocation.
+    """Build a fake `run` returning ``stdout`` for any nmcli invocation.
 
     Records the argv it was called with so tests can assert the field
     order requested from nmcli."""
@@ -87,7 +87,7 @@ def test_active_wifi_connection_requests_the_colon_safe_field_order(monkeypatch)
     contains its own colon. The parse itself is pinned on the shared function
     (tests/test_wifi_guardian_persistence.py)."""
     fake_run = _nmcli_active_run("802-11-wireless:wlan0:Home\\:2.4G\n")
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
     assert doctor_network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
     assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
@@ -99,7 +99,7 @@ def test_active_wifi_connection_nonzero_returncode(monkeypatch):
     def fake_run(argv, *a, **kw):
         return _completed(argv, returncode=1)
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
     assert doctor_network._active_wifi_connection("nmcli") == (None, None)
 
 
@@ -116,7 +116,7 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
             stderr="boom" if returncode else "",
         )
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
 
 # ---------------------------------------------------- check_wifi_guardian
@@ -133,7 +133,7 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
 
 
 def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
-    """Synthesize a CompletedProcess for `_run` to return."""
+    """Synthesize a CompletedProcess for `run` to return."""
     return _completed(
         ["nmcli"],
         returncode=returncode,
@@ -142,11 +142,11 @@ def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
 
 
 def _patch_doctor_nmcli(monkeypatch, response_stack):
-    """Patch shutil.which to return a path and doctor_network._run to return
+    """Patch shutil.which to return a path and doctor_network.run to return
     the next CompletedProcess in response_stack for each call.
 
     Each entry can be either a string (treated as stdout, rc=0) or
-    a CompletedProcess. The check makes 0-2 _run() calls depending
+    a CompletedProcess. The check makes 0-2 run() calls depending
     on the path; over-long stacks are fine, under-long stacks fail
     the call with returncode=1.
     """
@@ -166,7 +166,7 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
             return _mock_nmcli_proc(stdout=r)
         return r
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
 
 def test_check_wifi_guardian_registered_in_sync_checks():
@@ -199,7 +199,7 @@ def test_check_avahi_jasper_control_ok_on_partial_timeout(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
     r = doctor_network.check_avahi_jasper_control()
 
@@ -230,7 +230,7 @@ def test_check_avahi_jasper_control_fails_on_timeout_without_service(
     def fake_run(cmd, timeout=5.0):
         raise subprocess.TimeoutExpired(cmd, timeout, output="")
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
     r = doctor_network.check_avahi_jasper_control()
 
@@ -259,7 +259,7 @@ def _patch_avahi_resolve(
         stdout, returncode = resolve
         return _completed(cmd, returncode=returncode, stdout=stdout)
 
-    monkeypatch.setattr(doctor_network, "_run", fake_run)
+    monkeypatch.setattr(doctor_network, "run", fake_run)
 
 
 @pytest.mark.parametrize(
@@ -495,17 +495,17 @@ def test_usbnet_address_plan_pending_migration_is_ok(monkeypatch, tmp_path):
 
 
 def _stub_run(monkeypatch, table):
-    """Route doctor_network._run calls through a {tuple(cmd_prefix): CompletedProcess}
+    """Route doctor_network.run calls through a {tuple(cmd_prefix): CompletedProcess}
     lookup by first-two-args prefix match, falling back to a returncode=1
     failure for anything unexpected (so a missing stub fails loudly)."""
 
-    def _run(cmd, timeout=5.0):
+    def run(cmd, timeout=5.0):
         for prefix, result in table.items():
             if tuple(cmd[: len(prefix)]) == prefix:
                 return result
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unstubbed call")
 
-    monkeypatch.setattr(doctor_network, "_run", _run)
+    monkeypatch.setattr(doctor_network, "run", run)
 
 
 # ----------------------------------------------------------------------

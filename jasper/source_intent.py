@@ -24,7 +24,6 @@ from typing import Any
 
 from jasper.atomic_io import (
     advisory_file_lock,
-    atomic_write_text,
     locked_update_env_file,
     read_regular_bytes_nofollow,
 )
@@ -51,7 +50,6 @@ _INTENT_FILE_MODE = 0o660
 
 IntentWriter = Callable[[str, Mapping[str, str]], None]
 ReconcileKicker = Callable[[], Mapping[str, Any]]
-StatusWriter = Callable[[str, Mapping[str, Any]], None]
 
 
 def _env_slug(value: str) -> str:
@@ -93,7 +91,7 @@ def _valid_keys() -> dict[str, Source]:
     }
 
 
-def _read_intent(env_path: str) -> str:
+def read_intent(env_path: str) -> str:
     try:
         data = read_regular_bytes_nofollow(
             env_path,
@@ -118,7 +116,7 @@ class _IntentProblem:
     value: str = ""
 
 
-def _parse_source_intents(
+def parse_source_intents(
     text: str,
 ) -> tuple[dict[Source, bool], tuple[_IntentProblem, ...]]:
     """Parse defaults plus overrides without acting on malformed entries."""
@@ -178,7 +176,7 @@ def read_source_intents(
 ) -> dict[Source, bool]:
     """Read the strict desired-state map, filling absent keys from defaults."""
 
-    intents, problems = _parse_source_intents(_read_intent(env_path))
+    intents, problems = parse_source_intents(read_intent(env_path))
     if problems:
         raise RuntimeError("; ".join(problem.message for problem in problems))
     return intents
@@ -197,7 +195,7 @@ def source_intent_enabled(
     :func:`read_source_intents`, which remains strict for every problem.
     """
 
-    intents, problems = _parse_source_intents(_read_intent(env_path))
+    intents, problems = parse_source_intents(read_intent(env_path))
     relevant = [problem for problem in problems if problem.source == source]
     if relevant:
         raise RuntimeError("; ".join(problem.message for problem in relevant))
@@ -343,46 +341,8 @@ def _failed_siblings(sources: Mapping[str, Any], source: Source) -> str:
     return "; ".join(failures)[:300]
 
 
-def _default_write_status(path: str, payload: Mapping[str, Any]) -> None:
-    """Atomically publish the root-owned, world-readable completion fact."""
-
-    atomic_write_text(
-        path,
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        mode=0o644,
-    )
-
-
-def _intent_fingerprint(text: str) -> str:
+def intent_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _publish_reconcile_status(
-    *,
-    path: str | None,
-    intent_fingerprint: str,
-    outcomes: Mapping[str, Mapping[str, str]],
-    writer: StatusWriter | None,
-) -> bool:
-    if path is None:
-        return True
-    payload: Mapping[str, Any] = {
-        "completed_monotonic_ns": time.monotonic_ns(),
-        "intent_fingerprint": intent_fingerprint,
-        "sources": dict(outcomes),
-    }
-    try:
-        (writer or _default_write_status)(path, payload)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        log_event(
-            logger,
-            "source_intent.status_write_failed",
-            path=path,
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return False
-    return True
 
 
 _INTENT_ENV_OWNER = "JTS /sources intent control"
@@ -453,7 +413,7 @@ def request_source_intent(
             request_started_ns = time.monotonic_ns()
             write(env_path, {key: value})
             try:
-                fingerprint = _intent_fingerprint(_read_intent(env_path))
+                fingerprint = intent_fingerprint(read_intent(env_path))
             except RuntimeError as exc:
                 log_event(
                     logger,

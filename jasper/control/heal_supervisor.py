@@ -38,7 +38,7 @@ from jasper.service_units import (
 from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from ..platform.uds import voice_socket_command
 from . import camilla_topology_gate_state
-from ._health_fields import _mapping
+from ._health_fields import mapping
 from .supervisor_runtime import (
     run_supervisor_loop,
     snapshot_or_disabled,
@@ -148,7 +148,7 @@ def decide(
         return None
     if code in SILENT_CODES and not warmup:
         return Verdict(CASE_SILENT, code, ACTION_RESTART_AUDIO, code)
-    last_wake = _seconds(_mapping(voice).get("last_wake_at"))
+    last_wake = _seconds(mapping(voice).get("last_wake_at"))
     if (
         profile_expects_wake
         and voice is not None
@@ -243,7 +243,7 @@ class HealSupervisor:
 
     async def _tick(self) -> None:
         now = time.time()
-        signal = _mapping(self.audio_health().get("signal_path"))
+        signal = mapping(self.audio_health().get("signal_path"))
         code = str(signal.get("code") or "") if signal.get("status") == "issue" else ""
         warmup = self.warmup_active()
         units = await asyncio.to_thread(read_audio_path_units)
@@ -276,14 +276,14 @@ class HealSupervisor:
         if posture == self._observed:
             return
         self._observed = posture
-        last_wake = _seconds(_mapping(voice).get("last_wake_at"))
+        last_wake = _seconds(mapping(voice).get("last_wake_at"))
         log_event(
             logger, "heal.observed",
             code=code or "-",
             warmup=warmup,
             guards_ok=guards_ok,
             wake_age="-" if last_wake is None else f"{now - last_wake:.0f}s",
-            mic_muted=bool(_mapping(voice).get("mic_muted")),
+            mic_muted=bool(mapping(voice).get("mic_muted")),
             voice_reachable=voice is not None,
             case=verdict.case if verdict else "-",
         )
@@ -317,10 +317,10 @@ class HealSupervisor:
 
     def audio_health(self) -> Mapping[str, Any]:
         """The resident sampler's current snapshot; `{}` when it has none."""
-        return _mapping(None if self._sampler is None else self._sampler.snapshot())
+        return mapping(None if self._sampler is None else self._sampler.snapshot())
 
     def warmup_active(self) -> bool:
-        sampler = _mapping(_mapping(self.audio_health().get("technical")).get("sampler"))
+        sampler = mapping(mapping(self.audio_health().get("technical")).get("sampler"))
         return bool(sampler.get("warmup_active"))
 
     async def gate_refused(self) -> bool:

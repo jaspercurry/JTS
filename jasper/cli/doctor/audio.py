@@ -31,7 +31,7 @@ from ._shared import (
     REASON_TOPOLOGY_UNREADABLE,
     CheckResult,
     _parked_follower_result,
-    _run,
+    run,
 )
 from ...service_units import JASPER_VOICE_SERVICE
 
@@ -120,7 +120,7 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
         return CheckResult(
             label, "fail", f"{kind} not in PATH", reason=REASON_ALSA_TOOL_MISSING,
         )
-    proc = _run([bin_path, "-L"])
+    proc = run([bin_path, "-L"])
     if name in proc.stdout:
         return CheckResult(label, "ok", f"CARD={name}")
     return CheckResult(
@@ -162,7 +162,7 @@ def _check_arecord_l_card_device(card: int, device: int) -> bool:
     bin_path = shutil.which("arecord")
     if bin_path is None:
         return False
-    proc = _run([bin_path, "-l"])
+    proc = run([bin_path, "-l"])
     for line in proc.stdout.splitlines():
         m = _ARECORD_L_LINE_RE.match(line)
         if m and int(m.group(1)) == card and int(m.group(2)) == device:
@@ -285,7 +285,7 @@ def check_loopback() -> CheckResult:
     `deploy/modprobe.d/snd-aloop.conf` (and is cross-referenced from
     `deploy/alsa/asoundrc.jasper`).
     """
-    proc = _run(["aplay", "-L"])
+    proc = run(["aplay", "-L"])
     if "CARD=Loopback" in proc.stdout:
         return CheckResult("snd-aloop", "ok", "CARD=Loopback present")
     return CheckResult(
@@ -747,7 +747,7 @@ def check_apple_dongle_audio() -> CheckResult:
         APPLE_USB_C_DONGLE_DEVICE_ID if dac_id == "unknown" else dac_id
     )
     usb_ids = profile.usb_ids if profile is not None else ()
-    p = _run(["lsusb"])
+    p = run(["lsusb"])
     usb_count = sum(
         len(re.findall(re.escape(usb_id), p.stdout, re.IGNORECASE))
         for usb_id in usb_ids
@@ -804,7 +804,7 @@ def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
     """
 
     if control.target_percent is not None:
-        probe = _run(["amixer", "-c", card_id, "sget", control.name])
+        probe = run(["amixer", "-c", card_id, "sget", control.name])
         if probe.returncode != 0:
             return f"{card_id}:{control.name}=unreadable"
         percents = _AMIXER_PERCENT_RE.findall(probe.stdout)
@@ -818,7 +818,7 @@ def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
         if control.unmute and "[off]" in probe.stdout:
             return f"{card_id}:{control.name}=muted"
         return None
-    probe = _run(["amixer", "-c", card_id, "cget", f"name={control.name}"])
+    probe = run(["amixer", "-c", card_id, "cget", f"name={control.name}"])
     if probe.returncode != 0:
         return f"{card_id}:{control.name}=unreadable"
     match = _CGET_VALUE_RE.search(probe.stdout)

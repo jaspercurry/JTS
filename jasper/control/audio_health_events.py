@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _as_int, _finite_number, _mapping, _nonnegative_counter
-from ._health_sources import _SOURCE_LABELS
+from ._health_fields import _as_int, _finite_number, mapping, _nonnegative_counter
+from ._health_sources import SOURCE_LABELS
 from .audio_incidents import issue_row
 
 
@@ -146,9 +146,9 @@ def record_counter_events(
     points: list[
         tuple[dict[str, Any], float, int, Mapping[str, Any] | None, float | None]
     ] = []
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    watchdog = _mapping(fanin.get("watchdog"))
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    watchdog = mapping(fanin.get("watchdog"))
     pings_skipped = _as_int(watchdog.get("pings_skipped"))
     if baselines.fanin_pings_skipped is not None:
         skipped_delta = pings_skipped - baselines.fanin_pings_skipped
@@ -175,12 +175,12 @@ def record_counter_events(
                 None,
             ))
     baselines.fanin_pings_skipped = pings_skipped
-    inputs = _mapping(fanin.get("inputs"))
+    inputs = mapping(fanin.get("inputs"))
     input_counts = {
-        source_id: _as_int(_mapping(observation).get("xrun_count"))
+        source_id: _as_int(mapping(observation).get("xrun_count"))
         for source_id, observation in inputs.items()
         if isinstance(source_id, str)
-        and bool(_mapping(observation).get("present"))
+        and bool(mapping(observation).get("present"))
     }
     if baselines.input_xruns is not None:
         for source_id, count in input_counts.items():
@@ -199,7 +199,7 @@ def record_counter_events(
                         source_id=source_id,
                         impact="continuity",
                         severity="issue",
-                        title=f"{_SOURCE_LABELS.get(source_id, source_id)} input recovered",
+                        title=f"{SOURCE_LABELS.get(source_id, source_id)} input recovered",
                         detail=f"The input recovered {delta} interruption(s).",
                     ),
                     now,
@@ -209,12 +209,12 @@ def record_counter_events(
                 ))
     baselines.input_xruns = input_counts
 
-    usb_input = _mapping(inputs.get(Source.USBSINK.value))
+    usb_input = mapping(inputs.get(Source.USBSINK.value))
     unlocks = _nonnegative_counter(
-        _mapping(usb_input.get("resampler")).get("unlock_count")
+        mapping(usb_input.get("resampler")).get("unlock_count")
     )
     stream_stops = _nonnegative_counter(
-        _mapping(usb_input.get("direct")).get("stream_stops")
+        mapping(usb_input.get("direct")).get("stream_stops")
     )
     if unlocks is None or stream_stops is None:
         baselines.usb_buffer_counts = None
@@ -254,7 +254,7 @@ def record_counter_events(
     # that failed and recovered would otherwise read as a restart burst.
     restarts = {
         unit: _nonnegative_counter(
-            _mapping(service_states.get(unit)).get("n_restarts"),
+            mapping(service_states.get(unit)).get("n_restarts"),
         )
         for unit in restart_watch_units
     }
@@ -289,10 +289,10 @@ def record_counter_events(
         baselines.outputd_xruns = None
         baselines.outputd_clipped = None
         return points, None, True
-    outputd_map = _mapping(outputd)
+    outputd_map = mapping(outputd)
     clipping_issue: dict[str, Any] | None = None
     clipped_samples = _nonnegative_counter(
-        _mapping(outputd_map.get("mix")).get("clipped_samples"),
+        mapping(outputd_map.get("mix")).get("clipped_samples"),
     )
     preserve_clipping = False
     if clipped_samples is None:
@@ -321,8 +321,8 @@ def record_counter_events(
             preserve_clipping = True
         baselines.outputd_clipped = clipped_samples
     outputd_counts = {
-        "content": _as_int(_mapping(outputd_map.get("content")).get("xrun_count")),
-        "dac": _as_int(_mapping(outputd_map.get("dac")).get("xrun_count")),
+        "content": _as_int(mapping(outputd_map.get("content")).get("xrun_count")),
+        "dac": _as_int(mapping(outputd_map.get("dac")).get("xrun_count")),
     }
     if baselines.outputd_xruns is not None:
         for stage, count in outputd_counts.items():

@@ -701,7 +701,7 @@ def test_probe_ok_on_zero_exit(monkeypatch, tmp_path):
     _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio_runtime_ring.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(
-        audio_runtime_ring, "_run",
+        audio_runtime_ring, "run",
         lambda cmd, timeout=5.0: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
     ok, detail = audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
@@ -712,7 +712,7 @@ def test_probe_reports_stderr_on_nonzero_exit(monkeypatch, tmp_path):
     _stage_ring_conf(monkeypatch, tmp_path)
     monkeypatch.setattr(audio_runtime_ring.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(
-        audio_runtime_ring, "_run",
+        audio_runtime_ring, "run",
         lambda cmd, timeout=5.0: SimpleNamespace(
             returncode=1, stdout="", stderr="ALSA lib: Unknown PCM jts_ring_playback"
         ),
@@ -740,7 +740,7 @@ def test_probe_fails_closed_when_conf_wire_is_indeterminate(monkeypatch, tmp_pat
         raise AssertionError("probe ran with an indeterminate wire")
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _must_not_be_called)
+        audio_runtime_ring, "run", _must_not_be_called)
     ok, detail = audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
     assert ok is False
     assert "indeterminate" in detail
@@ -754,7 +754,7 @@ def test_probe_reports_hang_on_timeout(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(cmd, timeout)
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _timeout)
+        audio_runtime_ring, "run", _timeout)
     ok, detail = audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
     assert ok is False
     assert "hung" in detail
@@ -770,7 +770,7 @@ def test_probe_uses_devnull_for_capture_and_devzero_for_playback(monkeypatch, tm
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _capture_cmd)
+        audio_runtime_ring, "run", _capture_cmd)
 
     audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
     assert seen["cmd"][0] == "arecord"
@@ -809,7 +809,7 @@ def _probe_that_creates_the_ring(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _run_creates)
+        audio_runtime_ring, "run", _run_creates)
     # Derived from the module's own PCM table so a new ring cannot leave this
     # helper silently covering a subset of what the probe actually opens.
     return {
@@ -880,7 +880,7 @@ def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=1, stdout="", stderr="some open error")
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _run_creates_then_fails)
+        audio_runtime_ring, "run", _run_creates_then_fails)
     ok, _ = audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
     assert ok is False
     assert not ring.exists(), "residue left behind after a failed probe"
@@ -959,7 +959,7 @@ def test_probe_sources_the_conf_declared_wire_not_the_resolver(monkeypatch, tmp_
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        audio_runtime_ring, "_run", _capture_cmd)
+        audio_runtime_ring, "run", _capture_cmd)
 
     audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
     audio_runtime_ring._jts_ring_pcm_resolves("jts_ring_playback", "aplay")

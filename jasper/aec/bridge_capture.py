@@ -10,7 +10,7 @@ queues `_aec_loop` drains. Capture geometry, the resampler choice the USB
 card's rate forces, and the queue-drop accounting for both cards sit behind
 this one surface.
 
-The process-wide `_BridgeStats` these threads count into arrives as an
+The process-wide `BridgeStats` these threads count into arrives as an
 argument, the way the reference transport takes its own, and the shutdown
 signal and the device settings arrive from the caller that owns them.
 """
@@ -29,7 +29,7 @@ from jasper.log_event import log_event
 from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
-    _BridgeStats,
+    BridgeStats,
     logger,
 )
 from ..mics import xvf3800 as _mic_profile
@@ -74,7 +74,7 @@ def mic_thread(
     *,
     mic_device: str,
     capture_latency: str,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     shutdown: threading.Event,
 ) -> None:
     """Capture 16 kHz 6-ch from the XVF chip, pluck channel
@@ -192,7 +192,7 @@ def usb_mic_thread(
     *,
     usb_mic_device: str,
     usb_mic_rate: int,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     shutdown: threading.Event,
 ) -> None:
     """Capture optional cheap-USB-mic audio for corpus-only legs.

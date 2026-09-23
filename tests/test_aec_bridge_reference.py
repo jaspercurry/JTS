@@ -24,7 +24,7 @@ from jasper.aec.bridge_reference import (
     ReferenceFrameBatch,
     enqueue_reference_frames,
 )
-from jasper.aec.bridge_telemetry import DropLogDebouncer, _BridgeStats
+from jasper.aec.bridge_telemetry import DropLogDebouncer, BridgeStats
 from tests._aec_bridge_helpers import IDENTITY
 
 
@@ -46,7 +46,7 @@ def test_reference_enqueue_counts_and_debounces_full_queue(
 ):
     monkeypatch.setattr(bridge_reference.time, "monotonic", lambda: 10.0)
     caplog.set_level(logging.WARNING, logger="jasper.aec_bridge")
-    stats = _BridgeStats(IDENTITY)
+    stats = BridgeStats(IDENTITY)
     frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     batch = ReferenceFrameBatch(
         frames=(frame, frame, frame),
@@ -80,7 +80,7 @@ def test_reference_input_age_advances_and_new_input_resets(monkeypatch):
     monkeypatch.setattr(
         bridge_reference.time, "monotonic", lambda: clock,
     )
-    stats = _BridgeStats(IDENTITY)
+    stats = BridgeStats(IDENTITY)
     stats.reset(
         reference_source="outputd_udp",
         reference_endpoint="127.0.0.1:9891",

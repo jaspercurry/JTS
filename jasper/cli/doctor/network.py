@@ -35,7 +35,7 @@ from jasper.net.wifi_guardian_persistence import (
 from . import web
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import REASON_HOSTNAME_UNREADABLE, CheckResult, _run
+from ._shared import REASON_HOSTNAME_UNREADABLE, CheckResult, run
 
 REASON_REGDOM_PROBE_FAILED = "regdom_probe_failed"
 REASON_REGDOM_UNPARSEABLE = "regdom_unparseable"
@@ -171,7 +171,7 @@ def _cached_nmcli_active(nmcli: str) -> subprocess.CompletedProcess:
     active-connection table, so one process serves all three per run."""
     return evidence.get(
         "nmcli_active",
-        lambda: _run(
+        lambda: run(
             [nmcli, "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS,
              "connection", "show", "--active"],
             timeout=5,
@@ -201,7 +201,7 @@ def check_wifi_regdom() -> CheckResult:
     is valid. Actual scan suppression is detected by `/wifi/scan` from
     scan failures and kernel `Scanning suppressed: status (4)` logs,
     then repaired via `wifi_scan_repair`."""
-    proc = _run(["iw", "reg", "get"], timeout=5)
+    proc = run(["iw", "reg", "get"], timeout=5)
     if proc.returncode != 0:
         return CheckResult(
             "WiFi reg domain", "skipped",
@@ -284,7 +284,7 @@ def check_wifi_guardian() -> CheckResult:
 
     active_ssid: str | None = None
     if active_name:
-        ssid_proc = _run(
+        ssid_proc = run(
             [nmcli, "-t", "-f", "802-11-wireless.ssid",
              "connection", "show", active_name],
             timeout=5,
@@ -374,7 +374,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
     if device is None:
         device = "wlan0"
 
-    method_proc = _run(
+    method_proc = run(
         [nmcli, "-g", "ipv6.method", "connection", "show", profile],
         timeout=5,
     )
@@ -397,7 +397,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
             reason=REASON_IPV6_METHOD_DISABLED,
         )
 
-    addr_proc = _run(["ip", "-6", "addr", "show", "dev", device, "scope", "link"], timeout=5)
+    addr_proc = run(["ip", "-6", "addr", "show", "dev", device, "scope", "link"], timeout=5)
     if "inet6 fe80:" not in addr_proc.stdout:
         quoted_device = shlex.quote(device)
         return CheckResult(
@@ -507,7 +507,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
     jasper-control is up.
     """
     label = "hostname ↔ avahi consistency"
-    sys_hostname = _run(["hostname", "-s"]).stdout.strip()
+    sys_hostname = run(["hostname", "-s"]).stdout.strip()
     if not sys_hostname:
         return CheckResult(
             label, "skipped", "could not read system hostname",
@@ -521,7 +521,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
             reason=REASON_AVAHI_RESOLVE_MISSING,
         )
     # -4: IPv4 only. Output is one line: `<hostname>.local <IP>`.
-    proc = _run([bin_path, "-4", f"{sys_hostname}.local"], timeout=4.0)
+    proc = run([bin_path, "-4", f"{sys_hostname}.local"], timeout=4.0)
     if proc.returncode != 0:
         # Don't fail — check_avahi_daemon already reports the root
         # cause if the daemon isn't running.
@@ -541,7 +541,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
         )
     resolved_ip = parts[1]
     # `hostname -I` prints space-separated IPs for all up interfaces.
-    own_ips = set(_run(["hostname", "-I"]).stdout.split())
+    own_ips = set(run(["hostname", "-I"]).stdout.split())
     if resolved_ip in own_ips:
         return CheckResult(
             label, "ok",
@@ -573,7 +573,7 @@ def check_avahi_jasper_control() -> CheckResult:
             reason=REASON_AVAHI_BROWSE_MISSING,
         )
     try:
-        proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+        proc = run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
     except subprocess.TimeoutExpired as e:
         stdout = e.stdout or ""
         if isinstance(stdout, bytes):
@@ -875,7 +875,7 @@ def check_usbnet_interface() -> CheckResult:
             "down until it composes.",
             reason=REASON_USBNET_BIND_FAILED,
         )
-    addr_proc = _run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
+    addr_proc = run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
     if addr_proc.returncode != 0:
         return CheckResult(
             label, "warn",

@@ -17,8 +17,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _as_int, _detail, _duration_label, _finite_number, _mapping
-from ._health_sources import _SOURCE_LABELS
+from ._health_fields import _as_int, _detail, _duration_label, _finite_number, mapping
+from ._health_sources import SOURCE_LABELS
 
 
 def _incident_impact(issue: Mapping[str, Any]) -> str:
@@ -42,8 +42,8 @@ _LIKELY_AREA_BY_VERDICT = {
 def _likely_area(issue: Mapping[str, Any]) -> str:
     key = str(issue.get("key") or "")
     if key == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
-        attribution = _mapping(
-            _mapping(_mapping(issue.get("context")).get("started")).get(
+        attribution = mapping(
+            mapping(mapping(issue.get("context")).get("started")).get(
                 "attribution",
             ),
         )
@@ -60,15 +60,15 @@ def _likely_area(issue: Mapping[str, Any]) -> str:
         return "USB host timing"
     source_id = issue.get("source_id")
     if isinstance(source_id, str):
-        return f"{_SOURCE_LABELS.get(source_id, source_id)} source"
+        return f"{SOURCE_LABELS.get(source_id, source_id)} source"
     return "Audio monitoring"
 
 
 def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
-    context = _mapping(_mapping(issue.get("context")).get("started"))
+    context = mapping(mapping(issue.get("context")).get("started"))
     if issue.get("key") == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
-        attribution_details = _mapping(context.get("attribution")).get("details")
+        attribution_details = mapping(context.get("attribution")).get("details")
         if isinstance(attribution_details, list):
             evidence.extend(
                 _detail(str(row["label"]), str(row["value"]))
@@ -77,19 +77,19 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
             )
     if context.get("clock_mode"):
         evidence.append(_detail("Clock mode", context["clock_mode"]))
-    input_context = _mapping(context.get("input"))
+    input_context = mapping(context.get("input"))
     if _finite_number(input_context.get("rms_dbfs")) is not None:
         evidence.append(_detail(
             "Input level",
             f"{float(input_context['rms_dbfs']):.1f} dBFS",
         ))
-    output_context = _mapping(context.get("output"))
+    output_context = mapping(context.get("output"))
     if _finite_number(output_context.get("snd_pcm_delay_ms")) is not None:
         evidence.append(_detail(
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
-    host = _mapping(context.get("host"))
+    host = mapping(context.get("host"))
     # `throttled_history` never clears within a boot, so it must not be
     # rendered as a live condition (jasper/control/system_metrics.py).
     if _as_int(host.get("throttled_now")):

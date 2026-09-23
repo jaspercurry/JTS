@@ -162,7 +162,7 @@ def test_check_grouping_snapcast_version_verdicts(
         "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
     if run is not None:
-        monkeypatch.setattr(grouping, "_run", run)
+        monkeypatch.setattr(grouping, "run", run)
 
     r = grouping.check_grouping_snapcast_version()
 
@@ -178,7 +178,7 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         grouping,
-        "_run",
+        "run",
         _probe(
             stdout="snapclient v0.31.0\n",
             stderr="ALSA lib pcm.c:1234:(some_fn) something 9.9.9\n",
@@ -294,7 +294,7 @@ def test_check_grouping_leader_pipe_folds_in_airplay_latency_fit(
 
 def _active_leader_topology(monkeypatch, tmp_path):
     """An ACTIVE-LEADER context: a roleful/protected output topology plus a
-    bonded-leader grouping config. Leaves `grouping._run` patchable."""
+    bonded-leader grouping config. Leaves `grouping.run` patchable."""
     import jasper.multiroom.config as mr_config
     from tests.test_active_speaker_runtime_contract import _active_topology
 
@@ -372,7 +372,7 @@ def test_check_crossover_unit_active_leader_verdicts(
     )
     monkeypatch.setattr(
         grouping,
-        "_run",
+        "run",
         lambda argv, *a, **kw: SimpleNamespace(
             returncode=returncode, stdout="", stderr=""
         ),

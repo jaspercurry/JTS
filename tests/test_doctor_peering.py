@@ -88,7 +88,7 @@ def test_check_peering_discovery_finds_siblings_excluding_self(
 ):
     monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor.peering._run",
+        "jasper.cli.doctor.peering.run",
         lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": output})(),
     )
     if local_peer_id is not None:
@@ -115,7 +115,7 @@ def test_check_peering_discovery_warns_without_avahi_browse(monkeypatch):
 def test_check_peering_discovery_warns_on_browse_failure(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor.peering._run",
+        "jasper.cli.doctor.peering.run",
         lambda *a, **kw: type("P", (), {"returncode": 1, "stdout": ""})(),
     )
 

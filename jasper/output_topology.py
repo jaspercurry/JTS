@@ -1066,64 +1066,6 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
     )
 
 
-def _dual_apple_clock_issues(
-    hardware: OutputHardware,
-) -> list[dict[str, str]]:
-    issues: list[dict[str, str]] = []
-    child_devices = hardware.child_devices
-    if len(child_devices) != 2:
-        issues.append(_issue(
-            "blocker",
-            "dual_apple_children_required",
-            "measured dual-Apple topology requires exactly two child DACs",
-        ))
-    child_serials: list[str] = []
-    mapped_outputs: list[int] = []
-    for child in child_devices:
-        if child.device_id != APPLE_USB_C_DONGLE_DEVICE_ID:
-            issues.append(_issue(
-                "blocker",
-                "dual_apple_child_device_required",
-                f"{child.child_id} is {child.device_id}, not "
-                f"{APPLE_USB_C_DONGLE_DEVICE_ID}",
-            ))
-        if not child.serial:
-            issues.append(_issue(
-                "blocker",
-                "dual_apple_child_serial_required",
-                f"{child.child_id} is missing a serial for stable pinning",
-            ))
-        else:
-            child_serials.append(child.serial)
-        if len(child.physical_output_indexes) != 2:
-            issues.append(_issue(
-                "blocker",
-                "dual_apple_child_output_pair_required",
-                f"{child.child_id} must own exactly two physical outputs",
-            ))
-        mapped_outputs.extend(child.physical_output_indexes)
-    if len(child_serials) == 2 and len(set(child_serials)) != 2:
-        issues.append(_issue(
-            "blocker",
-            "dual_apple_child_serials_not_unique",
-            "measured dual-Apple topology requires two unique child DAC serials",
-        ))
-    if child_devices and sorted(mapped_outputs) != list(range(4)):
-        issues.append(_issue(
-            "blocker",
-            "dual_apple_output_map_invalid",
-            "dual-Apple child outputs must cover physical outputs 1-4 exactly once",
-        ))
-    if hardware.physical_output_count != 4:
-        issues.append(_issue(
-            "blocker",
-            "dual_apple_physical_output_count",
-            "dual-Apple topology requires exactly four physical outputs",
-        ))
-
-    return issues
-
-
 @dataclass(frozen=True)
 class OutputLayout:
     """Resolved active-output route for a saved topology.

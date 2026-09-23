@@ -18,7 +18,7 @@ from ._health_fields import DIAGNOSTICS_REMEDY, RESTART_REMEDY
 _LABEL_TO_SOURCE = {
     spec.fanin_label: spec.id.value for spec in MUSIC_SOURCE_SPECS
 }
-_SOURCE_LABELS = {
+SOURCE_LABELS = {
     spec.id.value: spec.display_name for spec in MUSIC_SOURCE_SPECS
 }
 _SOURCE_HEALTH_UNITS = {

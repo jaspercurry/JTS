@@ -394,7 +394,7 @@ def _stage_bridge_windows(monkeypatch, entries: list[dict]) -> None:
     stats = _reference_input_stats(rms_entries=entries)
     monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    monkeypatch.setattr(aec, "_run", _no_subprocess)
+    monkeypatch.setattr(aec, "run", _no_subprocess)
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
     monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: stats)
     monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
@@ -807,7 +807,7 @@ def _install_reference_health_check_fakes(
         fake_outputd_status,
     )
 
-    monkeypatch.setattr(aec, "_run", _no_subprocess)
+    monkeypatch.setattr(aec, "run", _no_subprocess)
     return calls
 
 
@@ -1360,7 +1360,7 @@ def test_check_dtln_skips_when_journal_unreadable(monkeypatch, tmp_path: Path):
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
-        aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
+        aec, "run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
     )
 
     r = aec.check_aec_bridge_dtln_engine()
@@ -1993,7 +1993,7 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
     def _fake_run(cmd, **kwargs):
         raise AssertionError(f"unexpected subprocess: {cmd}")
 
-    monkeypatch.setattr(aec, "_run", _fake_run)
+    monkeypatch.setattr(aec, "run", _fake_run)
 
     r = aec.check_aec_bridge_dtln_engine()
 

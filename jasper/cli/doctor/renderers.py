@@ -31,8 +31,8 @@ from ._shared import (
     _exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
-    _run,
-    _systemctl_unavailable_result,
+    run,
+    systemctl_unavailable_result,
 )
 
 REASON_SOURCE_OFF = "source_off"
@@ -146,7 +146,7 @@ def _bluetoothctl_show() -> subprocess.CompletedProcess | Exception:
     needs to react to (or re-raise) a particular exception type gets it back
     as a value instead of losing it to a swallowed first call."""
     try:
-        return _run(["bluetoothctl", "show"])
+        return run(["bluetoothctl", "show"])
     except (OSError, subprocess.SubprocessError) as exc:
         return exc
 
@@ -328,7 +328,7 @@ def check_shairport_sync_ap2() -> CheckResult:
             "binary not found. Source-build per deploy/debian-stack/README.md",
             reason=REASON_SHAIRPORT_BINARY_MISSING,
         )
-    p = _run(["shairport-sync", "-V"])
+    p = run(["shairport-sync", "-V"])
     out = (p.stdout + p.stderr).strip().split("\n")[0]
     if "AirPlay2" not in out:
         return CheckResult(
@@ -415,7 +415,7 @@ def check_airplay_advert_resolves() -> CheckResult:
             "verify the advert resolves.",
             reason=REASON_AIRPLAY_ADVERT_BROWSE_MISSING,
         )
-    sys_hostname = _run(["hostname", "-s"]).stdout.strip()
+    sys_hostname = run(["hostname", "-s"]).stdout.strip()
     if not sys_hostname:
         return CheckResult(
             label, "skipped", "could not read system hostname",
@@ -426,7 +426,7 @@ def check_airplay_advert_resolves() -> CheckResult:
         # avahi's own resolver timeout is 5 s per stale peer record, so a
         # healthy run can take that long; stdout is pipe-buffered, so a kill
         # on timeout would lose it.
-        stdout = _run([bin_path, "-rtp", "_airplay._tcp"], timeout=12.0).stdout
+        stdout = run([bin_path, "-rtp", "_airplay._tcp"], timeout=12.0).stdout
     except subprocess.TimeoutExpired as e:
         stdout = e.stdout or ""
         if isinstance(stdout, bytes):
@@ -451,7 +451,7 @@ def check_jasper_mux() -> CheckResult:
         return parked
     unit_state = evidence.unit_state("jasper-mux.service")
     if unit_state is None:
-        return _systemctl_unavailable_result("jasper-mux")
+        return systemctl_unavailable_result("jasper-mux")
     state = unit_state.get("active_state") or "unknown"
     if state == "active":
         return CheckResult(
@@ -516,7 +516,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
     unit_state = evidence.unit_state("bt-agent.service")
     if unit_state is None:
-        return _systemctl_unavailable_result("Bluetooth pairing policy")
+        return systemctl_unavailable_result("Bluetooth pairing policy")
     active = unit_state.get("active_state") or ""
     sub = unit_state.get("sub_state") or ""
     if active != "active" or sub != "running":
@@ -529,7 +529,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     # ExecStart isn't in the batched roster read's property set.
     exec_starts = evidence.unit_property("ExecStart", ("bt-agent.service",))
     if exec_starts is None:
-        return _systemctl_unavailable_result("Bluetooth pairing policy")
+        return systemctl_unavailable_result("Bluetooth pairing policy")
     exec_start = exec_starts[0]
     if expected_exec not in exec_start:
         return CheckResult(
@@ -1102,7 +1102,7 @@ def _probe_open_as_user(
     if user:
         cmd = ["sudo", "-n", "-u", user, *cmd]
     try:
-        r = _run(cmd, timeout=float(_PROBE_TIMEOUT_SEC) + 2.0)
+        r = run(cmd, timeout=float(_PROBE_TIMEOUT_SEC) + 2.0)
     # OSError, not just FileNotFoundError: a fork hitting ENOMEM on a 1 GB Pi
     # must fail this renderer, not crash the check.
     except (OSError, subprocess.TimeoutExpired) as e:

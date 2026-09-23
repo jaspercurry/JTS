@@ -14,7 +14,7 @@ the bond it is. This module owns what that transport IS — its ALSA PCM name, i
 ring file, the conf.d block that declares it, and the wire both ends have to
 agree on.
 
-**Its writer is** ``jasper.multiroom.reconcile_plan._assemble_args`` (the member's
+**Its writer is** ``jasper.multiroom.reconcile_plan.assemble_args`` (the member's
 snapclient ``--soundcard``) **and its arm is**
 ``jasper.multiroom.reconcile.outputd_grouping_env`` (the bare
 :data:`DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
