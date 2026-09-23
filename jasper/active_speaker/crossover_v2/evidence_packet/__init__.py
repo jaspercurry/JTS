@@ -75,14 +75,11 @@ from .positions import (
 from .readers import (
     PACKET_KIND,
     PACKET_SCHEMA_VERSION,
-    PacketSchemaUnsupported,
     _fingerprint,
     packet_driver_passbands_hz,
     packet_feature_classifications,
-    packet_incumbent_linearization,
     packet_positional_evidence,
     packet_region_band_hz,
-    validate_packet,
 )
 from .uncertainty import (
     REPEAT_FLOOR_UNMEASURED,
@@ -101,7 +98,6 @@ __all__ = [
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
     "OPERATOR_NOTES_BLOCK",
-    "validate_packet",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
     "RING_SIDECAR_GLOB",
@@ -109,13 +105,11 @@ __all__ = [
     "build_crossover_evidence_packet",
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
-    "packet_incumbent_linearization",
     "packet_positional_evidence",
     "packet_region_band_hz",
     "round_artifact_dir",
     "round_program_dir",
     "applied_profile_source",
-    "PacketSchemaUnsupported",
     "REPEAT_FLOOR_UNMEASURED",
     "REPEAT_FLOOR_UNREADABLE",
     "REPEAT_FLOOR_UNUSABLE",
@@ -234,8 +228,8 @@ def _entry_baseline_block(
 
     The receipt names this capture but carries no curve, so this block is the
     durable copy — the flow state file's arrays are rewritten by the next
-    persist. With it, ``verification.evaluate_benefit`` can be re-run over a
-    banked round by an analysis that did not exist when it was captured.
+    persist. With it, a before/after comparison can be re-run over a banked
+    round by an analysis that did not exist when it was captured.
 
     A round with no readable take is an ordinary reported absence: retention is
     fail-soft and never costs the household a retake.
@@ -424,8 +418,8 @@ def _not_evaluated(
         })
     if gate_numbers_reason:
         # Names both numbers rather than only the reflection time: they are
-        # banked together by ``spatial.cloud_position_record`` and
-        # ``capture_dispatch._gate_record``, and they go missing together.
+        # banked together by ``spatial.cloud_position_record``, and they go
+        # missing together.
         entries.append({
             "field": "positions[].gate_reflection_delay_ms",
             "reason": gate_numbers_reason,

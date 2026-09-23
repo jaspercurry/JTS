@@ -60,17 +60,13 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
-from jasper.active_speaker.crossover_v2 import (
-    planning,
-    position_cycle,
-)
+from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.audio_measurement.evidence_reasons import (
     REASON_TOO_FEW_SEATS,
     REASON_CROSS_SEAT_SPREAD_OVERFLOW,
     REASON_NO_CURVE_GRID,
 )
 from jasper.sound.profile import EVALUABLE_Q_MAX
-from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
 from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,
@@ -407,8 +403,7 @@ def test_the_ladders_tau_is_converted_and_the_arrivals_is_not(tmp_path):
     ``arrival_tau_us`` still carries whatever a sub-minimum cluster held on a
     ``no_corroborating_arrivals`` refusal, so a distance built from it could be
     published out of evidence the gate itself declined. The ladder's tau exists
-    only after a frequency-domain fit and a time-domain arrival agreed within
-    ``LADDER_ARRIVAL_TOLERANCE``.
+    only after a frequency-domain fit and a time-domain arrival agreed.
 
     The two differ by the measured ~7 % here, so this discriminates rather than
     restating the field name.
@@ -540,8 +535,7 @@ def test_a_round_whose_gate_survives_as_prose_says_so_about_itself(packet):
 def test_the_verify_gates_own_numbers_close_the_row_too(tmp_path):
     """Either carrier answers, because they are one fact about two captures.
 
-    ``verify.gate`` is ``_gate_record``'s dict and always spells both keys once
-    the writer shipped; a position row is filtered by an allowlist that drops a
+    ``verify.gate`` always spells both keys once the writer shipped; a position row is filtered by an allowlist that drops a
     null. So a round with a verify capture and no usable position numbers still
     banks them, and the honesty entry must not fire.
     """
@@ -1501,9 +1495,8 @@ def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
 
     ``spatial_combine`` owns ``sigma_db`` (cross-position spread of a band's
     POWER LEVEL) and ``max_sigma_db`` (worst single bin in a band). Neither is
-    this. Both are banked — in ``candidate.json``'s ``exclusion_evidence``, for
-    the ``cloud_measure`` group — so the words are live elsewhere in the tree
-    and pinned here as NOT reused, rather than as merely absent today.
+    this. Both are ``BandSpread`` fields, so the words are live elsewhere in the
+    tree and pinned here as NOT reused, rather than as merely absent today.
     """
     block = _sigma_block(tmp_path)
 
@@ -1515,22 +1508,6 @@ def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
     assert {"sigma_db", "max_sigma_db"} <= set(
         BandSpread.__dataclass_fields__
     )
-    # …and the shape that actually banks them, so "they live elsewhere in the
-    # tree" is asserted against the writer rather than believed.
-    banked = planning.exclusion_evidence_json(
-        CloudFitEvidence(
-            excluded_bands_hz=(),
-            band_spread=(
-                BandSpread(
-                    center_hz=1000.0, f_lo=707.0, f_hi=1414.0,
-                    sigma_db=0.5, max_sigma_db=2.0, n_bins=40,
-                ),
-            ),
-            n_positions=4,
-        ),
-        cloud_result={},
-    )
-    assert {"sigma_db", "max_sigma_db"} <= set(banked["band_spread"][0])
 
 
 # --------------------------------------------------------------------------- #

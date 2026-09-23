@@ -33,14 +33,10 @@ __all__ = [
     "role_transfers",
     "configured_crossover_transfers",
     "candidate_required_band_hz",
-    "measure_sweep_bounds",
     "measure_sweep_durations_s",
     "check_priors",
     "measure_priors",
     "lateral_priors",
-    "verify_priors",
-    "cloud_priors",
-    "entry_baseline_priors",
 ]
 
 
@@ -65,8 +61,8 @@ def configured_crossover_transfers(
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
     """``(response_by_role, polarity_sign_by_role)`` for the committed crossover.
 
-    ONE derivation, two phases: MEASURE consumes it as §4.2's ``C_c``, VERIFY as
-    the candidate's design target for the summed response (R18, #1868).
+    ONE derivation, two readers: MEASURE consumes it as §4.2's ``C_c``, the
+    summed-alignment reference as the graph's design target (R18, #1868).
     """
     return (
         role_transfers(sections_by_role(source_preset.crossover_regions)),
@@ -110,24 +106,6 @@ def _sweep_branches(
         except KeyError:
             break
     return tuple(branches)
-
-
-def measure_sweep_bounds(
-    measure_program: "ExcitationProgram | None",
-) -> tuple[float, float] | None:
-    """The band EVERY MEASURE branch was excited over, or ``None``.
-
-    Read off the COMPOSED MEASURE program rather than derived from Fc (§5.6).
-    On a pair that is the upper branch's sweep floor and the lower branch's
-    sweep ceiling; on a 1-way main, the solo sweep's own band.
-    """
-    branches = _sweep_branches(measure_program)
-    if not branches:
-        return None
-    lo, hi = branches[-1].f1_hz, branches[0].f2_hz
-    if lo is None or hi is None:
-        return None
-    return float(lo), float(hi)
 
 
 def measure_sweep_durations_s(
@@ -231,60 +209,3 @@ def lateral_priors(*, fc_hz: float | None, ambient_report: Any) -> MeasurementPr
     as a per-pose trim/delay/polarity solve.
     """
     return MeasurementPriors(crossover_fc_hz=fc_hz, ambient_report=ambient_report)
-
-
-def verify_priors(
-    *,
-    fc_hz: float | None,
-    source_preset: Any,
-    predicted_sum: Any,
-    sweep_bounds: tuple[float, float] | None,
-) -> MeasurementPriors:
-    """VERIFY's priors — the tracking comparison, and the absolute claim.
-
-    The candidate's own crossover rides along for the ABSOLUTE claim (R18,
-    #1868), UNGUARDED by ``measurement_protection`` unlike :func:`measure_priors`
-    — here it IS the design target. Safe only while the de-embedding
-    (``_compose_configured_path_ir``) stays reachable from ``_analyze_measure``
-    alone.
-    """
-    configured_response, configured_polarity = configured_crossover_transfers(
-        source_preset
-    )
-    return MeasurementPriors(
-        crossover_fc_hz=fc_hz,
-        predicted_sum=predicted_sum,
-        measure_excited_band_hz=sweep_bounds,
-        configured_crossover_response_by_role=configured_response,
-        configured_polarity_sign_by_role=configured_polarity,
-    )
-
-
-def cloud_priors(*, fc_hz: float | None) -> MeasurementPriors:
-    """Priors for a position-group capture — deliberately WITHOUT ``predicted_sum``.
-
-    The mic is OFF the design axis by construction, so measured-vs-predicted
-    divergence there is the spatial variation the cloud exists to sample, not a
-    tracking error; withholding the prior leaves ``analysis.verify_tracking``
-    ``None``. The candidate's crossover transfers are withheld for the same
-    reason (R18, #1868): an off-axis crossover-region ABSOLUTE claim would grade
-    the crossover's own lobing as a realization defect. Do not thread either
-    back in.
-    """
-    return MeasurementPriors(crossover_fc_hz=fc_hz)
-
-
-def entry_baseline_priors(*, fc_hz: float | None) -> MeasurementPriors:
-    """Priors for #2291's pre-apply capture — :func:`cloud_priors`' two
-    withholdings, for a different reason.
-
-    ``crossover_fc_hz`` is kept: it is the session's declared crossover, not a
-    claim about this capture. Nothing is applied when this capture is taken, so
-    ``predicted_sum`` (and with it ``measure_excited_band_hz``, which only
-    clamps the tracking band) would grade the ENTRY graph against the
-    CANDIDATE's model; withholding leaves ``analysis.verify_tracking`` ``None``,
-    which ``verification.evaluate_realization`` reads as UNAVAILABLE, not as a
-    pass. The configured-crossover maps are withheld for the same reason (R18,
-    #1868). Do not thread the withheld priors back in.
-    """
-    return MeasurementPriors(crossover_fc_hz=fc_hz)

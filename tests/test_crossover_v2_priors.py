@@ -42,39 +42,6 @@ PROTECTION = sections_by_role(PRESET.crossover_regions)
 # 1. the withholdings
 
 
-@pytest.mark.parametrize(
-    ("factory", "why"),
-    [
-        (priors.entry_baseline_priors,
-         "nothing is applied yet, so there is no prediction to track"),
-        (priors.cloud_priors,
-         "the mic is off the design axis, so divergence is what is being sampled"),
-    ],
-    ids=["entry_baseline", "cloud"],
-)
-def test_the_captures_that_cannot_support_a_tracking_claim_are_told_nothing(
-    factory, why,
-):
-    """No ``predicted_sum`` means ``verify_tracking`` stays ``None``.
-
-    That ``None`` is what
-    :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
-    reads as UNAVAILABLE rather than as a pass, so the whole honesty of both
-    verdicts rests on this field being absent.
-    """
-    got = factory(fc_hz=FC_HZ)
-
-    assert got.predicted_sum is None, why
-    # …and the R18 absolute-claim pair, dropped for the same shape of reason.
-    assert got.configured_crossover_response_by_role is None
-    assert got.configured_polarity_sign_by_role is None
-    # The band clamp exists only for a tracking comparison there is none of.
-    assert got.measure_excited_band_hz is None
-    # Fc is KEPT: it is the session's declaration, not a claim about this
-    # capture, and the analyzer places its bands with it.
-    assert got.crossover_fc_hz == FC_HZ
-
-
 def test_a_lateral_pose_is_analyzed_as_M_and_keeps_the_room_floor():
     """§4.2's composition is per-candidate and offline; a pose must not bake it.
 
@@ -151,24 +118,6 @@ def test_the_configured_path_priors_are_all_present_or_all_absent():
     assert all(v is None for v in absent), absent
 
 
-def test_verify_carries_the_design_target_unguarded_by_protection():
-    """VERIFY's absolute claim (R18) does not need ``P``, unlike MEASURE's.
-
-    MEASURE wants the configured crossover only as the ``C_c`` half of a
-    de-embedding that cannot run without the protection filter. For VERIFY the
-    configured crossover IS the design target, so it rides regardless — and that
-    asymmetry is a decision, not an oversight.
-    """
-    got = priors.verify_priors(
-        fc_hz=FC_HZ, source_preset=PRESET, predicted_sum=None,
-        sweep_bounds=None,
-    )
-
-    assert got.configured_crossover_response_by_role is not None
-    assert got.configured_polarity_sign_by_role is not None
-    assert got.measurement_protection_response_by_role is None
-
-
 # 2b. the candidate-required union has ONE owner
 
 
@@ -219,35 +168,6 @@ def test_measure_priors_asks_the_owner_rather_than_re_spelling_it():
 
 
 # 3. the sweep bounds are MEASURED, not derived
-
-
-def test_the_sweep_bounds_come_off_the_composed_program():
-    """ "What did this session sweep" has one answer, and it is the program's.
-
-    Deriving them from Fc instead would bound the tracking comparison and R17's
-    scoring band by a number nothing was excited at.
-    """
-    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-    from tests.crossover_v2_fixtures import CAPS, SESSION_VOLUME_DB, _roles
-
-    program = SessionExcitation(
-        roles=tuple(_roles()), caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
-        sweep_duration_limits_s={},
-    ).measure_program({"woofer": -32.0, "tweeter": -38.0})
-
-    bounds = priors.measure_sweep_bounds(program)
-    assert bounds is not None
-    lo, hi = bounds
-
-    assert lo == program.segment("sweep_t").f1_hz
-    assert hi == program.segment("sweep_w").f2_hz
-    # Not the corner, and not a derivation from it.
-    assert lo != FC_HZ and hi != FC_HZ
-
-
-def test_no_composed_program_means_no_bounds_rather_than_a_guess():
-    assert priors.measure_sweep_bounds(None) is None
 
 
 def test_the_sweep_durations_come_off_the_composed_program_and_reflect_a_fit():
@@ -336,24 +256,6 @@ def _wired_conductor(**kwargs):
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=FakeSeams().seams(), driver_spacing_m=0.15, **kwargs,
     )
-
-
-def test_verify_is_handed_the_prediction_the_tracking_comparison_needs():
-    """The dead-input class, pinned before it happens again.
-
-    ``verify_tracking`` is the ONLY input
-    :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
-    grades "did the graph do what its filters commanded" from, and the analyzer
-    computes it only when it is handed ``predicted_sum``. Blanking this one
-    argument would leave every VERIFY's realization verdict UNAVAILABLE — the
-    same shape as #2323's dead ``boosted`` read, which sat green for a phase.
-    A mutation that did exactly that survived 351 tests in the two suites that
-    look most likely to catch it.
-    """
-    sentinel = ("freqs", "db")
-    conductor = _wired_conductor(measure_predicted_sum=sentinel)
-
-    assert conductor._verify_priors().predicted_sum is sentinel
 
 
 def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():

@@ -13,7 +13,6 @@ from typing import Any, Iterable, Literal, Mapping
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 
-from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
 logger = logging.getLogger(__name__)
@@ -58,13 +57,11 @@ REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
-REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_CAPTURE_OVERRUN = LOST_AT_CAPTURE_OVERRUN
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
-REASON_CAPTURE_TIMEOUT = "capture_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # #2059: a plan-shape request the household's link/client sent that this build
@@ -146,15 +143,6 @@ REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 # raises MeasurementWindowError), so an enumerated except list is how failures
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
-REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
-# The SAME out-of-tolerance observation, once a second graded attempt has shown
-# it REPEATS. When consecutive attempts agree inside the instrument's own
-# repeat floor the mismatch is a FINDING about the speaker, and every further
-# retry re-measures the same applied graph into the same answer. Terminal
-# (budget 0, so ``NON_RETRIABLE_CODES``), on the same "deterministic ⇒
-# terminal" rule the two codes above state. Renders through the SAME
-# ``verify_fail`` template as its siblings — one more parameterization of that
-# screen, not a new screen.
 # §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
 # reflection forced a shorter gate than MEASURE's, so the overlay difference is
 # not evidence about driver alignment.
@@ -163,16 +151,9 @@ REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
 # attempts, not the speaker going out of tolerance.
 REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # The applied result tracks the model but does NOT meet the candidate's own
-# crossover target through the handoff — the case
-# ``REASON_VERIFY_OUT_OF_TOLERANCE`` structurally cannot catch, since it grades
-# measured-vs-model and a defect present in BOTH sides cancels.
+# crossover target through the handoff — a defect present in both the
+# measurement and the model cancels out of a measured-vs-model grade.
 REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
-# The measured delay is one physics rules out for this geometry — a GCC
-# estimator returning a CONFIDENTLY WRONG lag, observed on hardware at −631 us
-# against a declared [50, 300] us search bound. The confidence half of the code
-# this replaced is provenance rather than a gate
-# (``docs/measurement-loop-doctrine.md`` §4) and rides the receipt.
-REASON_DELAY_IMPLAUSIBLE = "delay_implausible"
 # The apply transaction came back blocked or raised.
 # ``_persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
@@ -198,14 +179,9 @@ REASON_ARM_HOST_STUCK = "arm_host_stuck"
 REASON_POSITION_HOLD_EXPIRED = "position_hold_expired"
 REASON_POSITION_TARGET_MISSING = "position_target_missing"
 REASON_SESSION_CEILING_EXPIRED = "session_ceiling_expired"
-# The geometry-locked retake asks for a pose PAST the walk — 75 cm out, and on
-# its second rung 75 cm out AND above mark height. No GATED session can serve
-# it: an external positioner swings on one horizontal axis at a fixed radius.
-REASON_GEOMETRY_RETAKE_UNREACHABLE = "geometry_retake_unreachable"
-# The pre-apply cloud closed with `spatial_combine.assess_geometry` reporting
-# `locked` — every position's echo estimate landed on the same tau, so the
-# nulls are not moving and spatial averaging cannot fill them. Not a bad
-# capture. The group asks for that position again from a wider spot, at most
+# The pre-apply cloud closed with its geometry `locked` — every position's
+# echo estimate landed on the same tau, so the nulls are not moving and
+# spatial averaging cannot fill them. Not a bad capture. The group asks for that position again from a wider spot, at most
 # ``GEOMETRY_RETRY_POSITIONS`` times, then proceeds with the verdict recorded
 # rather than blocking on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
@@ -591,14 +567,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         ),
         capture_quality=True,
     ),
-    REASON_MEASURE_GAIN_ADJUSTED: _retriable_reason(
-        REASON_MEASURE_GAIN_ADJUSTED, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "The driver needs a clearer timing measurement.",
-            "JTS will keep this take and measure once more at a higher test level.",
-        ),
-        auto_retry=True,
-    ),
     REASON_CLIPPED: _retriable_reason(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy(
@@ -652,11 +620,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             LOCATE_RETRY_ACTION,
         ),
         capture_quality=True,
-    ),
-    REASON_CAPTURE_TIMEOUT: ReasonSpec(
-        REASON_CAPTURE_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        "The measurement link timed out. Start over from this page to measure "
-        "again — the quick microphone check runs first.",
     ),
     REASON_VOLUME_UNRESOLVED: ReasonSpec(
         REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
@@ -987,13 +950,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "wired_capture_failed": "The microphone could not complete the recording.",
         "program_not_composed": "The speaker could not prepare the test signal.",
     }.items()},
-    REASON_VERIFY_OUT_OF_TOLERANCE: _retriable_reason(
-        REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2,
-        RetryableReasonCopy(
-            "The result didn't quite match the prediction.",
-            "Try again.",
-        ),
-    ),
     REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
         REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
         # Says what was measured, no diagnosis — a handoff dip can be
@@ -1031,19 +987,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Try again — if it repeats, re-measure.",
         ),
     ),
-    REASON_DELAY_IMPLAUSIBLE: _retriable_reason(
-        REASON_DELAY_IMPLAUSIBLE, TEMPLATE_FIX_AND_RETRY, 1,
-        # Names what was measured and no cause (ADR-0002 corollary 2): a lag
-        # outside the search window is consistent with the locator latching
-        # wrong, with something moving mid-sweep, and with a mispositioned
-        # microphone, and this capture separated none of them.
-        RetryableReasonCopy(
-            "The delay JTS measured between the drivers isn't one this "
-            "speaker's geometry can produce.",
-            "Measure again — if it repeats, check that nothing moved during "
-            "the sweep.",
-        ),
-    ),
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
@@ -1078,13 +1021,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The whole measurement ran out of time while it was still waiting for "
         "the microphone to reach a position. Start over from this page once "
         "the microphone can be moved through the walk more quickly.",
-    ),
-    REASON_GEOMETRY_RETAKE_UNREACHABLE: ReasonSpec(
-        REASON_GEOMETRY_RETAKE_UNREACHABLE, TEMPLATE_SESSION_RESTART, 0, "",
-        "The room needs the microphone measured from a wider spot, and from "
-        "above the mark, than this measurement can ask for. Run a Full "
-        "measurement that prompts each spot on screen, and walk those spots by "
-        "hand, to finish tuning this speaker.",
     ),
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
@@ -1134,20 +1070,6 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items()
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
-
-#: The capture-consuming ladders' refusal KINDS, mapped to the codes whose
-#: copy the household reads. A mapping rather than an identity because two
-#: kinds do NOT share their code's name: a glitched timeline renders as
-#: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
-#: Completeness is checked — see
-#: ``test_every_screen_kind_has_a_household_sentence``.
-SCREEN_KIND_REASONS: dict[str, str] = {
-    _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
-    _spatial.SCREEN_PILOT_LEVEL_COLLAPSE: REASON_PILOT_LEVEL_COLLAPSE,
-    _spatial.SCREEN_LINEARITY_FAILED: REASON_AGC_BEHAVIORAL_FAIL,
-    _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
-    _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
-}
 
 
 def reason_message(
@@ -1211,12 +1133,7 @@ def reason_diagnosis(
     return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
 
 
-# Conditions no extra attempt can clear. A rejection carrying one rides out as
-# a TERMINAL capture verdict at the settle
-# (:data:`~.admission.SETTLE_CONDITION_NOT_RETRIABLE`), so the phone renders
-# its terminal screen instead of a "Try again" the next begin would refuse.
-# ``assess_begin``'s ``REFUSE_NON_RETRIABLE`` is the BACKSTOP for a begin that
-# reaches a settled slot anyway, not the ordinary path.
+# Conditions no extra attempt can clear.
 NON_RETRIABLE_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items() if spec.retry_budget == 0
 )

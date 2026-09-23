@@ -1223,7 +1223,7 @@ together. Design rationale:
   per-position assembly underneath and does not change. The
   gated-IR reconstruction those functions perform is validated against
   the S0 corpus by
-  [`tests/test_crossover_v2_cloud_geometry_corpus.py`](../../tests/test_crossover_v2_cloud_geometry_corpus.py)
+  `tests/test_crossover_v2_cloud_geometry_corpus.py`
   (`JTS_FLAT_LIN_S0`-gated), not asserted.
 
   **Landed as shipped (2026-07-26).** `_close_cloud_group` calls

@@ -30,33 +30,19 @@ pin its absence. It is narrowed, not abolished: a defect inside 250 Hz–2 kHz
 still drags its own frame, which is why the attribution reading below is
 still the one to trust.
 
-That reading is what no frame choice can move — each band's own level, its
-own ripple measured from that level, and the step between two bands' levels
-(:func:`spec_band_tilt`). The reference cancels in that subtraction, which
-:func:`test_the_tilt_is_the_same_number_under_every_candidate_frame` proves
-by evaluating the same curve under five candidate reference bands including
-the two Q-E names.
+That reading is each band's own level and its own ripple measured from that
+level.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-import jasper.active_speaker.flat_spec as flat_spec
 from jasper.active_speaker.crossover_envelope_v2 import _flatness_lines_from_block
-from jasper.active_speaker.crossover_v2.verification import (
-    _flatness_tilt_log_field,
-)
 from jasper.active_speaker.flat_spec import (
-    NO_BAND_TILT,
     REFERENCE_BAND_HZ,
     SPEC_BANDS,
-    BandResult,
-    BandTilt,
-    FlatSpecReport,
     evaluate_flat_spec,
-    spec_band_tilt,
-    spec_flatness_gauge,
 )
 
 # --------------------------------------------------------------------------- #
@@ -168,7 +154,6 @@ def _verdict_tuple(name: str) -> tuple:
         if candidate != name:
             continue
         report = evaluate_flat_spec(freqs, curve, mask)
-        gauge = spec_flatness_gauge(report)
         return (
             report.reference_db,
             tuple(
@@ -180,11 +165,6 @@ def _verdict_tuple(name: str) -> tuple:
                 for b in report.bands
             ),
             report.overall_within_target,
-            (
-                gauge.max_db, gauge.max_hz, gauge.max_band_hz, gauge.tolerance_db,
-                gauge.rms_db, gauge.n_bins, gauge.n_excluded,
-                gauge.evaluable, gauge.passed,
-            ),
         )
     raise KeyError(name)
 
@@ -193,13 +173,13 @@ def _verdict_tuple(name: str) -> tuple:
 #
 # Originally captured from ``origin/main`` at commit 0620206b2 — BEFORE the
 # #1857 attribution split was added — to prove the split itself moved no
-# graded number (the split only ADDS level_deviation_db / max_ripple_db /
-# spec_band_tilt beside the existing verdict fields; it does not touch how
-# any of those fields is computed).
+# graded number (the split only ADDS per-band attribution fields beside the
+# existing verdict fields; it does not touch how any of those fields is
+# computed).
 #
 # RE-FROZEN here at the low-mid-anchored reference (REFERENCE_BAND_HZ is now
 # 250-2000 Hz, the low-mid band alone) because the #1857 Q-E anchor ruling
-# deliberately moved reference_db and every deviation/gauge figure stated
+# deliberately moved reference_db and every deviation figure stated
 # against it. This corpus no longer proves "the split moved nothing" — that
 # claim is no longer even true, by design — it is the new post-anchor
 # baseline these figures must not silently drift from next. Layout per
@@ -208,31 +188,29 @@ def _verdict_tuple(name: str) -> tuple:
 #   (reference_db,
 #    ((f_lo, f_hi, tolerance, max_dev_db, max_dev_hz, rms_dev_db,
 #      n_bins, n_excluded, evaluable, within_target), ... one per SPEC_BANDS entry),
-#    overall_within_target,
-#    (gauge max_db, max_hz, max_band_hz, tolerance_db, rms_db,
-#     n_bins, n_excluded, evaluable, passed))
+#    overall_within_target)
 #
 # Regenerating these is a deliberate act, not a refresh: a diff here now
 # means either the reference anchor moved again or some other graded number
 # changed outside that anchor move — both worth a second look before
 # re-freezing, not a routine refresh.
 VERDICT_GOLDEN = {
-    'axis_stops_short': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.994427827256799, 170, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 0, 0, False, None)), False, (-5.103105106528449, 3398.4375, (2000.0, 8000.0), 2.0, 4.1605087474364035, 245, 0, True, False)),
-    'dark_top_octave_only': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, -6.0, 8015.625, 6.0, 341, 0, True, False)), False, (-6.0, 8015.625, (8000.0, 16000.0), 2.5, 4.274091382136927, 672, 0, True, False)),
-    'dark_tweeter_12db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -12.10310510652845, 3398.4375, 11.986124621825292, 256, 0, True, False), (8000.0, 16000.0, 2.5, -12.10311653175323, 9656.25, 12.015206096796618, 341, 0, True, False)), False, (-12.10311653175323, 9656.25, (8000.0, 16000.0), 2.5, 11.313162702025483, 672, 0, True, False)),
-    'dark_tweeter_2db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -2.1031051065284494, 3398.4375, 1.987015122554602, 256, 0, True, False), (8000.0, 16000.0, 2.5, -2.103116531753231, 9656.25, 2.0162547236713406, 341, 0, True, True)), False, (-2.103116531753231, 9656.25, (8000.0, 16000.0), 2.5, 1.888792406459498, 672, 0, True, False)),
-    'dark_tweeter_5db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False, (-5.103116531753232, 9656.25, (8000.0, 16000.0), 2.5, 4.71564638464755, 672, 0, True, False)),
-    'dark_tweeter_8db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -8.10310510652845, 3398.4375, 7.98621322710959, 256, 0, True, False), (8000.0, 16000.0, 2.5, -8.10311653175323, 9656.25, 8.015311583050902, 341, 0, True, False)), False, (-8.10311653175323, 9656.25, (8000.0, 16000.0), 2.5, 7.54308798330971, 672, 0, True, False)),
-    'dark_tweeter_log_axis': (0.0002833196066221251, ((250.0, 2000.0, 1.5, -0.10028245787727585, 1125.7947113244718, 0.07062941361235431, 164, 0, True, True), (2000.0, 8000.0, 2.0, -5.100271613603885, 3197.741083509517, 4.9964385566508405, 109, 0, True, False), (8000.0, 16000.0, 2.5, -5.100222934625859, 9082.959738844835, 5.012209138855512, 54, 0, True, False)), False, (-5.100271613603885, 3197.741083509517, (2000.0, 8000.0), 2.0, 3.5316561032700684, 327, 0, True, False)),
-    'dark_tweeter_masked_seam': (-0.00964318900577819, ((250.0, 2000.0, 1.5, 0.10963451937468245, 703.125, 0.06994885070515466, 75, 12, True, True), (2000.0, 8000.0, 2.0, -5.090345149146884, 3398.4375, 4.973614104331515, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.0903565743716666, 9656.25, 5.002742449969888, 341, 0, True, False)), False, (-5.0903565743716666, 9656.25, (8000.0, 16000.0), 2.5, 4.746177553912168, 660, 12, True, False)),
-    'dark_woofer_5db': (-4.9968832316242136, ((250.0, 2000.0, 1.5, -0.10307469552854442, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, 5.096882542116833, 5718.75, 5.0144751520368125, 256, 0, True, False), (8000.0, 16000.0, 2.5, 5.0961673211590135, 15984.375, 4.985514718089483, 341, 0, True, False)), False, (5.096882542116833, 5718.75, (2000.0, 8000.0), 2.0, 4.7108605644020125, 672, 0, True, False)),
-    'flat': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.0, 8015.625, 0.0, 341, 0, True, True)), True, (0.0, 257.8125, (250.0, 2000.0), 1.5, 0.0, 672, 0, True, True)),
-    'notch_in_woofer': (-0.207335367776472, ((250.0, 2000.0, 1.5, -8.792664632223527, 703.125, 2.0405749193954117, 75, 0, True, False), (2000.0, 8000.0, 2.0, 0.207335367776472, 2015.625, 0.20733536777647202, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.207335367776472, 8015.625, 0.207335367776472, 341, 0, True, True)), False, (-8.792664632223527, 703.125, (250.0, 2000.0), 1.5, 0.7091659242966525, 672, 0, True, False)),
-    'proud_woofer_5db': (5.003116768375787, ((250.0, 2000.0, 1.5, -0.10307469552854531, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False, (-5.103116531753232, 9656.25, (8000.0, 16000.0), 2.5, 4.71564638464755, 672, 0, True, False)),
-    'ripple_only_3db': (0.7635972996861808, ((250.0, 2000.0, 1.5, -3.7577740999920923, 1289.0625, 2.2225226268002554, 75, 0, True, False), (2000.0, 8000.0, 2.0, -3.76344342621477, 5250.0, 2.2326506826706978, 256, 0, True, False), (8000.0, 16000.0, 2.5, -3.7635542567163256, 10546.875, 2.2361701296391443, 341, 0, True, False)), False, (-3.7635542567163256, 10546.875, (8000.0, 16000.0), 2.5, 2.233310103224225, 672, 0, True, False)),
-    'tilt_droop': (-6.1204960385236635, ((250.0, 2000.0, 1.5, 5.960128499827886, 257.8125, 3.0306464441113223, 75, 0, True, False), (2000.0, 8000.0, 2.0, -11.936211826183387, 7992.1875, 9.35645258607748, 256, 0, True, False), (8000.0, 16000.0, 2.5, -15.548571774151162, 15984.375, 13.992606849353518, 341, 0, True, False)), False, (-15.548571774151162, 15984.375, (8000.0, 16000.0), 2.5, 11.564090988049113, 672, 0, True, False)),
-    'top_band_unevaluable': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 341, 341, False, None)), False, (-5.103105106528449, 3398.4375, (2000.0, 8000.0), 2.0, 4.3853432253912805, 331, 341, True, False)),
-    'woofer_bump_at_tolerance': (0.0945174670053415, ((250.0, 2000.0, 1.5, 1.4054825329946585, 421.875, 0.3373584990010644, 75, 0, True, True), (2000.0, 8000.0, 2.0, -0.0945174670053415, 2015.625, 0.0945174670053415, 256, 0, True, True), (8000.0, 16000.0, 2.5, -0.0945174670053415, 8015.625, 0.0945174670053415, 341, 0, True, True)), True, (1.4054825329946585, 421.875, (250.0, 2000.0), 1.5, 0.14366139634972677, 672, 0, True, True)),
+    'axis_stops_short': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.994427827256799, 170, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 0, 0, False, None)), False),
+    'dark_top_octave_only': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, -6.0, 8015.625, 6.0, 341, 0, True, False)), False),
+    'dark_tweeter_12db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -12.10310510652845, 3398.4375, 11.986124621825292, 256, 0, True, False), (8000.0, 16000.0, 2.5, -12.10311653175323, 9656.25, 12.015206096796618, 341, 0, True, False)), False),
+    'dark_tweeter_2db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -2.1031051065284494, 3398.4375, 1.987015122554602, 256, 0, True, False), (8000.0, 16000.0, 2.5, -2.103116531753231, 9656.25, 2.0162547236713406, 341, 0, True, True)), False),
+    'dark_tweeter_5db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False),
+    'dark_tweeter_8db': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -8.10310510652845, 3398.4375, 7.98621322710959, 256, 0, True, False), (8000.0, 16000.0, 2.5, -8.10311653175323, 9656.25, 8.015311583050902, 341, 0, True, False)), False),
+    'dark_tweeter_log_axis': (0.0002833196066221251, ((250.0, 2000.0, 1.5, -0.10028245787727585, 1125.7947113244718, 0.07062941361235431, 164, 0, True, True), (2000.0, 8000.0, 2.0, -5.100271613603885, 3197.741083509517, 4.9964385566508405, 109, 0, True, False), (8000.0, 16000.0, 2.5, -5.100222934625859, 9082.959738844835, 5.012209138855512, 54, 0, True, False)), False),
+    'dark_tweeter_masked_seam': (-0.00964318900577819, ((250.0, 2000.0, 1.5, 0.10963451937468245, 703.125, 0.06994885070515466, 75, 12, True, True), (2000.0, 8000.0, 2.0, -5.090345149146884, 3398.4375, 4.973614104331515, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.0903565743716666, 9656.25, 5.002742449969888, 341, 0, True, False)), False),
+    'dark_woofer_5db': (-4.9968832316242136, ((250.0, 2000.0, 1.5, -0.10307469552854442, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, 5.096882542116833, 5718.75, 5.0144751520368125, 256, 0, True, False), (8000.0, 16000.0, 2.5, 5.0961673211590135, 15984.375, 4.985514718089483, 341, 0, True, False)), False),
+    'flat': (0.0, ((250.0, 2000.0, 1.5, 0.0, 257.8125, 0.0, 75, 0, True, True), (2000.0, 8000.0, 2.0, 0.0, 2015.625, 0.0, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.0, 8015.625, 0.0, 341, 0, True, True)), True),
+    'notch_in_woofer': (-0.207335367776472, ((250.0, 2000.0, 1.5, -8.792664632223527, 703.125, 2.0405749193954117, 75, 0, True, False), (2000.0, 8000.0, 2.0, 0.207335367776472, 2015.625, 0.20733536777647202, 256, 0, True, True), (8000.0, 16000.0, 2.5, 0.207335367776472, 8015.625, 0.207335367776472, 341, 0, True, True)), False),
+    'proud_woofer_5db': (5.003116768375787, ((250.0, 2000.0, 1.5, -0.10307469552854531, 1195.3125, 0.07085285231905393, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, -5.103116531753232, 9656.25, 5.015501115746909, 341, 0, True, False)), False),
+    'ripple_only_3db': (0.7635972996861808, ((250.0, 2000.0, 1.5, -3.7577740999920923, 1289.0625, 2.2225226268002554, 75, 0, True, False), (2000.0, 8000.0, 2.0, -3.76344342621477, 5250.0, 2.2326506826706978, 256, 0, True, False), (8000.0, 16000.0, 2.5, -3.7635542567163256, 10546.875, 2.2361701296391443, 341, 0, True, False)), False),
+    'tilt_droop': (-6.1204960385236635, ((250.0, 2000.0, 1.5, 5.960128499827886, 257.8125, 3.0306464441113223, 75, 0, True, False), (2000.0, 8000.0, 2.0, -11.936211826183387, 7992.1875, 9.35645258607748, 256, 0, True, False), (8000.0, 16000.0, 2.5, -15.548571774151162, 15984.375, 13.992606849353518, 341, 0, True, False)), False),
+    'top_band_unevaluable': (0.0031167683757870484, ((250.0, 2000.0, 1.5, -0.10307469552854474, 1195.3125, 0.07085285231905392, 75, 0, True, True), (2000.0, 8000.0, 2.0, -5.103105106528449, 3398.4375, 4.986372970713325, 256, 0, True, False), (8000.0, 16000.0, 2.5, None, None, None, 341, 341, False, None)), False),
+    'woofer_bump_at_tolerance': (0.0945174670053415, ((250.0, 2000.0, 1.5, 1.4054825329946585, 421.875, 0.3373584990010644, 75, 0, True, True), (2000.0, 8000.0, 2.0, -0.0945174670053415, 2015.625, 0.0945174670053415, 256, 0, True, True), (8000.0, 16000.0, 2.5, -0.0945174670053415, 8015.625, 0.0945174670053415, 341, 0, True, True)), True),
 }
 
 # The frozen dB figures are compared to this, not to bit equality: a numpy
@@ -241,19 +219,6 @@ VERDICT_GOLDEN = {
 # fields (passed / evaluable / counts / the frequency axis values) are
 # compared exactly, because nothing about them is a rounding artefact.
 _VERDICT_TOLERANCE_DB = 1e-12
-
-# The candidate reference frames #1857's Q-E weighs, plus three more, so the
-# frame-invariance claim is tested across a span rather than one alternative.
-# 250-2000 is what ships today (the Q-E ruling); 250-8000 was the
-# pre-ruling default and stays in the span as an alternative the
-# invariance proof must also hold under.
-_CANDIDATE_FRAMES_HZ = (
-    (250.0, 2000.0),
-    (250.0, 8000.0),
-    (2000.0, 8000.0),
-    (250.0, 16000.0),
-    (300.0, 6000.0),
-)
 
 
 def _power_mean_db(values_db: np.ndarray) -> float:
@@ -268,8 +233,8 @@ def _power_mean_db(values_db: np.ndarray) -> float:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_pointer_names_the_band_that_is_actually_dark():
-    """#1857's shape, against the low-mid anchor: the pointer blames the
+def test_the_bands_that_are_actually_dark_are_the_ones_that_fail():
+    """#1857's shape, against the low-mid anchor: the verdict blames the
     driver that is down.
 
     This test used to assert the OPPOSITE — that the shipped pointer named
@@ -281,15 +246,10 @@ def test_the_pointer_names_the_band_that_is_actually_dark():
     """
     curve = _dark_tweeter(5.0)
     report = evaluate_flat_spec(_FREQS_HZ, curve)
-    gauge = spec_flatness_gauge(report)
     woofer, mid, top = report.bands
 
-    # The pointer names a band that is genuinely 5 dB down, not the woofer.
-    assert gauge.max_band_hz == (8000.0, 16000.0)
-    assert gauge.max_db == pytest.approx(-5.1031, abs=5e-4)
-
-    # ...and the two dark bands are the ones that fail, while the flat
-    # woofer band passes.
+    # The two dark bands are the ones that fail, while the flat woofer band
+    # passes.
     assert woofer.within_target is True
     assert mid.within_target is False and top.within_target is False
 
@@ -310,8 +270,7 @@ def test_darkening_only_the_tweeter_leaves_the_untouched_woofers_number_alone():
     This is the #1857 mechanism inverted. It used to grow monotonically with
     a deficit somewhere else entirely, because the shared reference moved;
     the low-mid frame contains no band above 2 kHz, so nothing above 2 kHz
-    can move it. The tilt tracked the tweeter's ACTUAL deficit before and
-    still does — it was frame-free then and is frame-free now.
+    can move it.
     """
     woofer_slice = _FREQS_HZ < 2000.0
     baseline = _dark_tweeter(0.0)
@@ -324,10 +283,7 @@ def test_darkening_only_the_tweeter_leaves_the_untouched_woofers_number_alone():
         report = evaluate_flat_spec(_FREQS_HZ, curve)
         reported.append(report.bands[0].max_deviation_db)
         references.append(report.reference_db)
-        # The frame-free reading tracks the real deficit, within the ripple.
-        tilt = spec_band_tilt(report)
-        assert tilt.step_db == pytest.approx(depth_db, abs=0.25)
-        # ...and the woofer band never fails for someone else's deficit.
+        # The woofer band never fails for someone else's deficit.
         assert report.bands[0].within_target is True
 
     # Byte-identical, not merely "close": the reference is pooled over bins
@@ -356,10 +312,8 @@ def test_no_graded_number_moved_on_any_corpus_shape(shape):
     again: a diff here means some verdict moved, and the change under review
     should say why.
     """
-    expected_reference_db, expected_bands, expected_overall, expected_gauge = (
-        VERDICT_GOLDEN[shape]
-    )
-    reference_db, bands, overall_within_target, gauge = _verdict_tuple(shape)
+    expected_reference_db, expected_bands, expected_overall = VERDICT_GOLDEN[shape]
+    reference_db, bands, overall_within_target = _verdict_tuple(shape)
 
     assert reference_db == pytest.approx(
         expected_reference_db, abs=_VERDICT_TOLERANCE_DB
@@ -379,18 +333,6 @@ def test_no_graded_number_moved_on_any_corpus_shape(shape):
                 assert band[index] == pytest.approx(
                     expected[index], abs=_VERDICT_TOLERANCE_DB
                 )
-    assert (gauge[2], gauge[3], gauge[5], gauge[6], gauge[7], gauge[8]) == (
-        expected_gauge[2], expected_gauge[3], expected_gauge[5],
-        expected_gauge[6], expected_gauge[7], expected_gauge[8],
-    )
-    assert gauge[1] == expected_gauge[1], "max_hz"
-    for index in (0, 4):
-        if expected_gauge[index] is None:
-            assert gauge[index] is None
-        else:
-            assert gauge[index] == pytest.approx(
-                expected_gauge[index], abs=_VERDICT_TOLERANCE_DB
-            )
 
 
 def test_the_corpus_covers_both_verdicts_and_every_band_outcome():
@@ -409,56 +351,6 @@ def test_the_corpus_covers_both_verdicts_and_every_band_outcome():
 # --------------------------------------------------------------------------- #
 # the frame-free attribution
 # --------------------------------------------------------------------------- #
-
-
-def test_the_tilt_is_the_same_number_under_every_candidate_frame(monkeypatch):
-    """``step_db`` and ``max_ripple_db`` do not move when the reference band
-    does — which is the whole reason they can ship while Q-E is open.
-
-    The positive control rides in the same loop: ``max_deviation_db`` DOES
-    move, by dB, across the same frames. Without it this test could pass on
-    an evaluator that ignored ``REFERENCE_BAND_HZ`` entirely.
-    """
-    curve = _dark_tweeter(5.0)
-    steps: list[float] = []
-    ripples: list[tuple[float | None, ...]] = []
-    deviations: list[float] = []
-    for frame in _CANDIDATE_FRAMES_HZ:
-        monkeypatch.setattr(flat_spec, "REFERENCE_BAND_HZ", frame)
-        report = evaluate_flat_spec(_FREQS_HZ, curve)
-        steps.append(spec_band_tilt(report).step_db)
-        ripples.append(tuple(band.max_ripple_db for band in report.bands))
-        deviations.append(report.bands[0].max_deviation_db)
-
-    assert max(steps) - min(steps) < 1e-12
-    assert len(set(ripples)) == 1, "ripple is bit-identical, not merely close"
-    # Positive control: the graded number really is frame-dependent.
-    assert max(deviations) - min(deviations) > 3.0
-
-
-def test_the_tilt_names_the_step_the_dark_tweeter_actually_has():
-    curve = _dark_tweeter(5.0)
-    tilt = spec_band_tilt(evaluate_flat_spec(_FREQS_HZ, curve))
-
-    assert tilt.evaluable is True
-    assert tilt.n_bands == 3
-    assert tilt.step_db == pytest.approx(5.0, abs=0.05)
-    assert tilt.high_band_hz == (250.0, 2000.0)
-    assert tilt.low_band_hz == (8000.0, 16000.0)
-    assert tilt.step_db >= 0.0
-
-
-def test_the_tilt_finds_a_dark_low_band_too():
-    """The mirror case, and the one that separates a MAGNITUDE step from a
-    signed one: here the largest level difference is negative in SPEC_BANDS
-    walk order, so a tilt built on ``level_a - level_b`` would pick the two
-    bands that agree and report ~0 dB while a 5 dB step sat right there.
-    """
-    tilt = spec_band_tilt(evaluate_flat_spec(_FREQS_HZ, _dark_woofer(5.0)))
-
-    assert tilt.step_db == pytest.approx(5.0, abs=0.05)
-    assert tilt.low_band_hz == (250.0, 2000.0)
-    assert tilt.high_band_hz in ((2000.0, 8000.0), (8000.0, 16000.0))
 
 
 def test_the_band_level_is_a_power_mean_not_a_dB_average():
@@ -492,92 +384,6 @@ def test_the_band_level_is_a_power_mean_not_a_dB_average():
     assert separated >= 2
 
 
-def test_the_tilt_is_zero_when_the_bands_sit_level():
-    """Ripple alone is not a tilt: a curve that wobbles ±3 dB inside every
-    band but has no level step must not read as one."""
-    tilt = spec_band_tilt(
-        evaluate_flat_spec(_FREQS_HZ, _ripple(_FREQS_HZ, 3.0, 9.0))
-    )
-    assert tilt.evaluable is True
-    assert tilt.step_db < 0.6
-
-
-def test_the_tilt_needs_two_bands_and_never_fabricates_a_step():
-    """One band cannot tilt against itself — ``None``, not ``0.0``."""
-    band = BandResult(
-        f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
-        max_deviation_db=1.0, max_deviation_hz=400.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
-        level_deviation_db=1.0, max_ripple_db=0.0, max_ripple_hz=400.0,
-    )
-    tilt = spec_band_tilt(
-        FlatSpecReport(
-            reference_db=-30.0, bands=(band,), overall_within_target=True,
-            excluded_intervals=(), best_effort_above_hz=16000.0,
-            smoothing_fraction=3,
-        )
-    )
-    assert tilt.evaluable is False
-    assert tilt.step_db is None
-    assert tilt.high_band_hz is None and tilt.low_band_hz is None
-    assert tilt.n_bands == 1
-
-
-def test_a_band_with_no_measured_level_is_skipped_not_defaulted_to_zero():
-    """A report from before the split (or hand-built) carries
-    ``level_deviation_db=None``. Treating that as 0 dB would manufacture a
-    step against whatever the other bands measured — the exact false reading
-    the tilt exists to expose."""
-    levelled = BandResult(
-        f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
-        max_deviation_db=1.0, max_deviation_hz=400.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
-        level_deviation_db=4.0, max_ripple_db=0.0, max_ripple_hz=400.0,
-    )
-    legacy = BandResult(
-        f_lo_hz=2000.0, f_hi_hz=8000.0, tolerance_db=2.0,
-        max_deviation_db=1.0, max_deviation_hz=3000.0, rms_deviation_db=0.5,
-        n_bins=10, n_excluded=0, evaluable=True, within_target=True,
-    )
-    tilt = spec_band_tilt(
-        FlatSpecReport(
-            reference_db=-30.0, bands=(levelled, legacy), overall_within_target=True,
-            excluded_intervals=(), best_effort_above_hz=16000.0,
-            smoothing_fraction=3,
-        )
-    )
-    assert tilt.evaluable is False
-    assert tilt.n_bands == 1
-    assert tilt.step_db is None
-
-
-def test_an_exact_tie_between_pairs_resolves_to_the_lowest_pair():
-    """Deterministic, and the same tie rule ``spec_flatness_gauge`` uses:
-    an ordered walk with a strict ``>``, so the first pair wins."""
-    def _band(lo, hi, level_db):
-        return BandResult(
-            f_lo_hz=lo, f_hi_hz=hi, tolerance_db=1.5,
-            max_deviation_db=level_db, max_deviation_hz=lo, rms_deviation_db=0.0,
-            n_bins=10, n_excluded=0, evaluable=True, within_target=True,
-            level_deviation_db=level_db, max_ripple_db=0.0, max_ripple_hz=lo,
-        )
-
-    # Levels 2, 0, -2: |2-0| = |0-(-2)| = 2, and |2-(-2)| = 4 is the winner;
-    # drop the outer pair by making it tie with the first instead.
-    tilt = spec_band_tilt(
-        FlatSpecReport(
-            reference_db=0.0,
-            bands=(_band(250.0, 2000.0, 2.0), _band(2000.0, 8000.0, 0.0),
-                   _band(8000.0, 16000.0, 2.0)),
-            overall_within_target=True, excluded_intervals=(),
-            best_effort_above_hz=16000.0, smoothing_fraction=3,
-        )
-    )
-    assert tilt.step_db == pytest.approx(2.0)
-    assert tilt.high_band_hz == (250.0, 2000.0)
-    assert tilt.low_band_hz == (2000.0, 8000.0)
-
-
 def test_the_split_adds_up_bin_for_bin():
     """``deviation_i == ripple_i + level_deviation_db`` at the bin the ripple
     pointer names — the identity that makes the split an explanation of the
@@ -604,91 +410,19 @@ def test_the_split_adds_up_bin_for_bin():
         assert abs(band.max_deviation_db) >= abs(band.level_deviation_db) - 1e-12
 
 
-def test_the_gauge_carries_the_pointed_bands_own_split():
-    """Lifted from the band the pointer named, never recomputed."""
-    report = evaluate_flat_spec(_FREQS_HZ, _dark_tweeter(5.0))
-    gauge = spec_flatness_gauge(report)
-    worst = next(
-        band for band in report.bands
-        if (band.f_lo_hz, band.f_hi_hz) == gauge.max_band_hz
-    )
-    assert gauge.max_band_level_deviation_db == worst.level_deviation_db
-    assert gauge.max_band_ripple_db == worst.max_ripple_db
-    assert gauge.tilt == spec_band_tilt(report)
-
-
-def test_an_ungradeable_report_reports_no_split_rather_than_zero():
-    """A report whose every band is unevaluable: the gauge's split is
-    ``None``, not ``0.0``, and the tilt is unevaluable with an honest
-    ``n_bands``.
-
-    Hand-built for the reason :func:`spec_convergence_residual`'s own guard
-    documents: :data:`REFERENCE_BAND_HZ` is exactly ``SPEC_BANDS[0]`` union
-    ``SPEC_BANDS[1]``, so an :func:`evaluate_flat_spec` call that did not
-    raise on an empty reference band always leaves a gradeable bin behind.
-    This state arrives from persistence, not from the evaluator.
-    """
-    def _unevaluable(lo, hi, tolerance_db):
-        return BandResult(
-            f_lo_hz=lo, f_hi_hz=hi, tolerance_db=tolerance_db,
-            max_deviation_db=None, max_deviation_hz=None, rms_deviation_db=None,
-            n_bins=12, n_excluded=12, evaluable=False, within_target=None,
-        )
-
-    gauge = spec_flatness_gauge(
-        FlatSpecReport(
-            reference_db=-30.0,
-            bands=tuple(_unevaluable(*band) for band in SPEC_BANDS),
-            overall_within_target=False, excluded_intervals=(),
-            best_effort_above_hz=16000.0, smoothing_fraction=3,
-        )
-    )
-    assert gauge.evaluable is False
-    assert gauge.max_band_level_deviation_db is None
-    assert gauge.max_band_ripple_db is None
-    assert gauge.tilt.evaluable is False
-    assert gauge.tilt.step_db is None
-    assert gauge.tilt.n_bands == 0
-
-
-def test_the_no_tilt_default_is_a_null_object_not_a_reading():
-    assert NO_BAND_TILT == BandTilt(
-        step_db=None, high_band_hz=None, low_band_hz=None,
-        n_bands=0, evaluable=False,
-    )
-    bare = spec_flatness_gauge(
-        FlatSpecReport(
-            reference_db=0.0, bands=(), overall_within_target=False,
-            excluded_intervals=(), best_effort_above_hz=16000.0,
-            smoothing_fraction=3,
-        )
-    )
-    assert bare.tilt == NO_BAND_TILT
-    assert bare.to_dict()["tilt"]["step_db"] is None
-
-
-def test_the_gauge_dict_is_json_safe_and_carries_the_tilt():
-    import json
-
-    payload = spec_flatness_gauge(
-        evaluate_flat_spec(_FREQS_HZ, _dark_tweeter(5.0))
-    ).to_dict()
-    assert set(payload["tilt"]) == {
-        "step_db", "high_band_hz", "low_band_hz", "n_bands", "evaluable",
-    }
-    assert payload["tilt"]["high_band_hz"] == [250.0, 2000.0]
-    json.loads(json.dumps(payload))
-
-
 # --------------------------------------------------------------------------- #
 # the surfaces that render it
 # --------------------------------------------------------------------------- #
 
 
+#: Persisted flatness blocks, as the retired cloud gauge banked them for
+#: ``_dark_tweeter(5.0)`` and for a flat curve on this module's axis.
+_DARK_TWEETER_5DB_BLOCK = {'max_db': -5.103116531753232, 'max_hz': 9656.25, 'max_band_hz': [8000.0, 16000.0], 'reference_band_hz': [250.0, 2000.0], 'tolerance_db': 2.5, 'max_band_level_deviation_db': -5.01440917662902, 'max_band_ripple_db': 0.11057649778803302, 'rms_db': 4.71564638464755, 'n_bins': 672, 'n_excluded': 0, 'evaluable': True, 'passed': False, 'tilt': {'step_db': 5.01440917662902, 'high_band_hz': [250.0, 2000.0], 'low_band_hz': [8000.0, 16000.0], 'n_bands': 3, 'evaluable': True}}
+_FLAT_BLOCK = {'max_db': 0.0, 'max_hz': 257.8125, 'max_band_hz': [250.0, 2000.0], 'reference_band_hz': [250.0, 2000.0], 'tolerance_db': 1.5, 'max_band_level_deviation_db': 0.0, 'max_band_ripple_db': 0.0, 'rms_db': 0.0, 'n_bins': 672, 'n_excluded': 0, 'evaluable': True, 'passed': True, 'tilt': {'step_db': 0.0, 'high_band_hz': [250.0, 2000.0], 'low_band_hz': [2000.0, 8000.0], 'n_bands': 3, 'evaluable': True}}
+
+
 def test_the_household_lines_say_the_band_is_flat_and_names_the_real_step():
-    block = spec_flatness_gauge(
-        evaluate_flat_spec(_FREQS_HZ, _dark_tweeter(5.0))
-    ).to_dict()
+    block = dict(_DARK_TWEETER_5DB_BLOCK)
     lines = _flatness_lines_from_block(block)
     rendered = " | ".join(lines)
 
@@ -707,9 +441,7 @@ def test_the_household_lines_say_the_band_is_flat_and_names_the_real_step():
 def test_a_block_from_an_older_build_renders_neither_attribution_line():
     """Absent keys mean absent lines — never a line built around a missing
     half, and never a fabricated zero."""
-    block = spec_flatness_gauge(
-        evaluate_flat_spec(_FREQS_HZ, _dark_tweeter(5.0))
-    ).to_dict()
+    block = dict(_DARK_TWEETER_5DB_BLOCK)
     legacy = {
         key: value for key, value in block.items()
         if key not in ("tilt", "max_band_level_deviation_db", "max_band_ripple_db")
@@ -723,47 +455,13 @@ def test_a_block_from_an_older_build_renders_neither_attribution_line():
 def test_a_level_tilt_renders_no_direction_it_cannot_show():
     """At 0.00 dB the printed step supports no ordering, so the "sits above"
     clause is dropped rather than asserting one."""
-    block = spec_flatness_gauge(
-        evaluate_flat_spec(_FREQS_HZ, np.zeros_like(_FREQS_HZ))
-    ).to_dict()
+    block = dict(_FLAT_BLOCK)
     line = next(
         line for line in _flatness_lines_from_block(block)
         if "band levels differ by" in line
     )
     assert line.endswith("a reading no reference choice moves")
     assert "sits above" not in line
-
-
-def test_the_journal_carries_the_frame_free_step():
-    block = spec_flatness_gauge(
-        evaluate_flat_spec(_FREQS_HZ, _dark_tweeter(5.0))
-    ).to_dict()
-    assert _flatness_tilt_log_field(block) == "5.01dB:250-2000Hz>8000-16000Hz"
-    # logfmt safety: one token, nothing that needs quoting.
-    assert " " not in _flatness_tilt_log_field(block)
-
-
-@pytest.mark.parametrize(
-    "block",
-    [
-        None,
-        {},
-        {"tilt": None},
-        {"tilt": {"evaluable": False, "step_db": None}},
-        # A complete, well-formed payload that the tilt itself says is not
-        # evaluable: the token must obey that flag, not the numbers beside it.
-        {"tilt": {"evaluable": False, "step_db": 5.0,
-                  "high_band_hz": [250.0, 2000.0], "low_band_hz": [2000.0, 8000.0]}},
-        {"tilt": {"evaluable": True, "step_db": None,
-                  "high_band_hz": [250.0, 2000.0], "low_band_hz": [2000.0, 8000.0]}},
-        {"tilt": {"evaluable": True, "step_db": 5.0, "high_band_hz": [250.0],
-                  "low_band_hz": [2000.0, 8000.0]}},
-        {"tilt": {"evaluable": True, "step_db": True,
-                  "high_band_hz": [250.0, 2000.0], "low_band_hz": [2000.0, 8000.0]}},
-    ],
-)
-def test_the_journal_field_is_empty_rather_than_fabricated(block):
-    assert _flatness_tilt_log_field(block) == ""
 
 
 def test_module_constants_still_describe_the_shipped_frame():

@@ -14,13 +14,10 @@ module only decides whether a produced finding is well-formed.
 **Two vocabularies, one artifact** (§3.1). ``mechanism`` is *internal*
 taxonomy: it names physics, it may name hardware, and it appears on
 ops/forensic surfaces. ``household_copy`` stays **phenomenon-level and
-hardware-noun-free**, because the prohibition it inherits is explicit — the
-shipped ``_null_classification_copy`` docstring says of its own two branches
-that "No hardware noun appears here … naming one would be the device-taxonomy
-guess this program forbids in shipped copy". Attribution does not overturn
-that, so this module refuses a household string that names one. Whether
-household copy may ever become more specific is **Q-F**, gated on P4-class
-adjudication, not on this schema.
+hardware-noun-free**: naming a hardware part would be the device-taxonomy guess
+this program forbids in shipped copy, so this module refuses a household string
+that names one. Whether household copy may ever become more specific is
+**Q-F**, gated on P4-class adjudication, not on this schema.
 
 **Findings are optional evidence artifacts** (§3.4). Nothing is gated on a
 structured attribution verdict existing; a session with no findings behaves
@@ -435,8 +432,7 @@ def _validated_household_copy(value: Any) -> str:
     Three checks, each a rule stated elsewhere in the plan rather than a
     style preference:
 
-    * **No hardware noun.** §3.1, inheriting the shipped
-      ``_null_classification_copy`` prohibition verbatim.
+    * **No hardware noun.** §3.1.
     * **No snake_case token.** Internal slugs (``position_invariant``,
       ``document_as_physics``) leaking into a household sentence is the same
       two-vocabularies failure one layer down.

@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.json_fields import finite_float as _finite
-from jasper.log_event import log_event
 
+from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
 from .journey import GROUP_PHASES, PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
@@ -79,7 +79,6 @@ __all__ = [
     "attempt_history_from_state",
     "build_conductor_state",
     "candidate_summary",
-    "verify_measured_curve_from_state",
 ]
 
 
@@ -164,48 +163,6 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
         "freqs_hz": [float(f) for f in grid],
         "magnitude_db": [float(m) for m in curve_db],
     }
-
-
-def verify_measured_curve_from_state(
-    state: Mapping[str, Any] | None,
-) -> tuple[Any, Any, Any] | None:
-    """The persisted VERIFY curve pair, ready to re-grade (#2522).
-
-    The read side of ``verify_priors.verify_measured``. With the persisted
-    ``commanded_delta`` and the ``delta_probe`` record's own
-    ``requested_band_hz`` / ``expected_offset_db``, that is everything a
-    laptop-side re-grade needs.
-
-    ``None`` for every case that means "no measured curve to grade", length
-    disagreement included: three arrays that are not one curve would otherwise
-    reach the classifier as a grid mismatch instead of an absence.
-    """
-    import numpy as np
-
-    priors = (state or {}).get("verify_priors")
-    record = priors.get("verify_measured") if isinstance(priors, Mapping) else None
-    if not isinstance(record, Mapping):
-        return None
-    freqs = record.get("freqs_hz")
-    measured = record.get("measured_db")
-    predicted = record.get("predicted_db")
-    if not freqs or not measured or not predicted:
-        return None
-    if not (len(freqs) == len(measured) == len(predicted)):
-        log_event(
-            logger,
-            "correction.crossover_v2_verify_measured_malformed",
-            level=logging.WARNING,
-            n_freqs=len(freqs),
-            n_measured=len(measured),
-            n_predicted=len(predicted),
-        )
-        return None
-    return (
-        np.asarray(freqs, dtype=float),
-        np.asarray(measured, dtype=float),
-        np.asarray(predicted, dtype=float),
-    )
 
 
 def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
@@ -381,8 +338,8 @@ def _candidate_pinned_trims(
 ) -> dict[str, dict[str, float | None]]:
     """Each pinned role's shipped trim, the value it displaced, and the gap.
 
-    Read off the candidate, where ``build_candidate`` already stamped
-    ``trim_pinned`` and ``displaced_trim_db``, rather than asked of the session.
+    Read off the candidate's ``trim_pinned`` and ``displaced_trim_db``, rather
+    than asked of the session.
 
     The program-analysis ``trim_db`` is deliberately NOT read: on the fitted
     lane it is the pre-commit number, a different value from the
@@ -626,10 +583,5 @@ def build_conductor_state(
             else None
         )
     state["round_receipt"] = prior.get("round_receipt")
-    from .coordinator import (  # lazy: grading stack import cost
-        ROUND_ORDINAL_EPOCH_STATE_KEY,
-        round_ordinal_epoch_from_state,
-    )
-
     state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
     return ConductorState(state, False)

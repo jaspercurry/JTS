@@ -138,8 +138,7 @@ NEAR_FLOOR_RATIO = 1.25
 # captures/gating-experiments-20260731 §4).
 #
 # SIZES NO WINDOW, and no refusal rule reads it. It bounds one verdict (#2551): the flat spec's
-# band clamps grade above it, via
-# :func:`jasper.audio_measurement.room_limits.cloud_trusted_floor_hz`.
+# band clamps grade above it.
 TRUSTED_FLOOR_MULTIPLIER = 2.5
 
 # --- asymmetric-cost classification ledger ---------------------------------

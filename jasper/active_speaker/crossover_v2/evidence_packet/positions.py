@@ -31,9 +31,9 @@ _POSITION_FIELDS = (
     "index",
     "attempt",
     "role",
-    # WHERE the capture was taken, copied through from the same
-    # ``_RECORD_FIELDS`` join every other per-position scalar rides;
-    # :func:`_angle_deg_block` is conditional on what the rows actually carry.
+    # WHERE the capture was taken, copied through with every other
+    # per-position scalar; :func:`_angle_deg_block` is conditional on what the
+    # rows actually carry.
     "position_deg",
     "position_axis",
     # The elevation half of the same WHERE, orthogonal to the bearing: a seat
@@ -80,10 +80,8 @@ def _ordinal(value: Any) -> int:
         return 0
 
 #: Decimal places the cross-seat spread is published to. Four, matching the
-#: member curves it is taken over
-#: (:func:`~jasper.attribution.position_evidence._sample_onto`): more digits
-#: than its own inputs would be false precision, and this document is
-#: content-fingerprinted.
+#: member curves it is taken over: more digits than its own inputs would be
+#: false precision, and this document is content-fingerprinted.
 _SIGMA_DECIMALS = 4
 
 #: The cross-seat spread, declared as the enrichment rule requires. Entry

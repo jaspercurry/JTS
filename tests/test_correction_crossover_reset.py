@@ -145,7 +145,7 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
             "accepted_phases": ["check", "measure"],
             "applied": False,
             "candidate": {"fingerprint": "fp"},
-            "failure": {"code": "capture_timeout"},
+            "failure": {"code": "position_hold_expired"},
         })
         assert v2state.load_v2_state() is not None
         _reset_scaffold(monkeypatch)
@@ -176,7 +176,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
             "applied": True,
             "candidate": {"fingerprint": "fp-new"},
             "verify": {"outcome": "fail"},
-            "failure": {"code": "verify_out_of_tolerance"},
+            "failure": {"code": "verify_crossover_region"},
             "gain_plan_db": {"woofer": -6.0},
             "previous_candidate_fingerprint": "fp-prior",
         })

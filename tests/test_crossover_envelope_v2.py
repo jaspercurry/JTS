@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     reason_message,
     verify_inconclusive_message,
 )
-from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
+from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.round_copy import RUN_ENDED, round_lines
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
@@ -206,9 +206,9 @@ def test_timing_status_lines(profile, round_, expected):
 
 @pytest.mark.parametrize("fault, action_id, target", [
     ("agc_behavioral_fail", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
-    ("capture_timeout", "restart_session", "/sound/speaker/crossover/reset"),
+    ("position_hold_expired", "restart_session", "/sound/speaker/crossover/reset"),
     ("clipped", None, None),
-    ("verify_out_of_tolerance", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
+    ("verify_crossover_region", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
 ])
 def test_failure_templates_preserve_their_own_actions(fault, action_id, target):
     env = build_crossover_envelope_v2({
@@ -322,8 +322,8 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
 def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
     flatness = {
         "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
-        # The frame the deviation is stated against (#1857) — production's
-        # ``spec_flatness_gauge`` always emits it, so the fixtures do too.
+        # The frame the deviation is stated against (#1857) — every banked
+        # gauge carries it, so the fixtures do too.
         "reference_band_hz": [250.0, 8000.0],
         "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
         "evaluable": True, "passed": False,
@@ -354,57 +354,21 @@ def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block(
     assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
 
 
+def test_state_projection_does_not_inherit_the_per_position_block() -> None:
+    """``compact_cloud_status`` is a shape-scoped projection: a consumer that
+    reads ``cloud`` alone (the doctor) must never have to parse or skip
+    curve-shaped data. Members on the pipeline result must not leak into it."""
+    pipeline = {"available": True, "spec": {}, "positions": [{"curve": {"freqs_hz": [1.0]}}]}
+    compact = compact_cloud_status({PHASE_CLOUD_VERIFY: {"pipeline": pipeline, "geometry": {}}})
+
+    assert compact is not None
+    assert "positions" not in (compact.get(PHASE_CLOUD_VERIFY) or {})
+
+
 @pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_CLOUD_VERIFY])
 def test_compact_cloud_status_never_fabricates_a_required_count(phase):
     result = compact_cloud_status({phase: {"geometry": {}, "pipeline": {}}})
     assert result[phase]["positions_required"] is None
-
-
-def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
-    """A REAL ``evaluate_flat_spec`` report reproducing #1857's mechanism —
-    reproduced from the actual evaluator, not asserted by fiat.
-
-    A narrow +3 dB peak sits in the woofer band; the tweeter band is
-    uniformly ~6 dB dark across its ENTIRE passband (no peak, no texture,
-    just a whole-band offset); the top band is flat.
-
-    This shape is #1857's misattribution class. While the reference was
-    pooled across the woofer+tweeter bands the tweeter's own darkness
-    dragged that reference down, and the woofer's narrow (and much smaller)
-    peak read a LARGER deviation from it than the tweeter's own uniform
-    darkness did. The frame is now the low-mid band alone (ADR-0194), which
-    no part of the tweeter band is inside, so the same shape charges each
-    band its own deviation — kept here because a shape that USED to
-    mis-point is the one worth still rendering the disclosure for.
-    """
-    n = 1000
-    woofer_freqs = np.linspace(250.0, 1999.0, n)
-    tweeter_freqs = np.linspace(2000.0, 7999.0, n)
-    top_freqs = np.linspace(8000.0, 15999.0, n)
-    freqs = np.concatenate([woofer_freqs, tweeter_freqs, top_freqs])
-
-    woofer_curve = np.zeros(n)
-    woofer_curve[n // 2] = 3.0  # one narrow +3 dB peak, otherwise flat
-    tweeter_curve = np.full(n, -6.0)  # uniformly dark, the WHOLE band
-    top_curve = np.zeros(n)
-    curve = np.concatenate([woofer_curve, tweeter_curve, top_curve])
-
-    order = np.argsort(freqs)
-    freqs, curve = freqs[order], curve[order]
-
-    report = evaluate_flat_spec(freqs, curve, None)
-    gauge = spec_flatness_gauge(report)
-    pipeline = {
-        "available": True,
-        "spec": report.to_dict(),
-        "flatness": gauge.to_dict(),
-        "merged_excluded_bands_hz": [],
-        "validity_floor_hz": None,
-    }
-    compact = compact_cloud_status({phase: {"geometry": {}, "pipeline": pipeline}})
-    return compact[phase], report, gauge
-
-
 
 
 def test_per_band_lines_uniformly_flat_shows_no_alarm():

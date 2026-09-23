@@ -247,25 +247,10 @@ def test_a_pose_replays_the_anchors_own_program_object():
     assert PHASE_LATERAL not in programs.SUMMED_SWEEP_PHASES
 
 
-# the screens run BEFORE the curves are built (#2291 Phase 5a-iv)
-#
-# ``_consume_lateral_pose`` screens first and only then resamples each driver
-# response onto the shared basis. That order is not a style choice:
 # ``lateral_pose_curve`` indexes its input's own frequency axis
 # (``freqs[left]`` after a ``searchsorted``/``clip``), so a degenerate response
 # with an EMPTY axis is an ``IndexError`` rather than a zero-length curve —
 # measured, not inferred: ``index -2 is out of bounds for axis 0 with size 0``.
-#
-# Hoisting the build above the ladder — which is what folding the two-curve
-# count into ``spatial.lateral_pose_screens`` would require — turns a household
-# retry screen into a terminal ``internal_error`` for exactly the captures the
-# ladder exists to reject.
-#
-# **The inversion was invisible, re-derived rather than quoted** (2026-08-11):
-# applied to `_consume_lateral_pose` with the three tests below DESELECTED, the
-# 16 crossover-reaching suites came back 891 passed / 11 skipped / 5 deselected,
-# exit 0. Two independent reviewers reached the same conclusion from a smaller
-# set. With the tests below in place the same inversion fails 3.
 
 
 def _empty_axis_response(role: str):
@@ -289,13 +274,8 @@ def _empty_axis_response(role: str):
 
 
 def test_the_resampler_really_does_raise_on_an_empty_axis():
-    """The premise, asserted rather than assumed.
-
-    The pin below is only meaningful if building a curve from this response
-    genuinely raises. If ``lateral_pose_curve`` ever grows a guard of its own,
-    this fails first and says so — rather than leaving the ordering test passing
-    for a reason that no longer exists.
-    """
+    """Building a curve from an empty-axis response raises rather than
+    returning a zero-length curve."""
     with pytest.raises(IndexError):
         pose_curve.lateral_pose_curve(_empty_axis_response("woofer"), (100.0, 20000.0))
 

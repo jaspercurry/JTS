@@ -13,29 +13,15 @@ just as happily when the guard is deleted and the type accepts everything.
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2.contracts import CandidateFcDisagreementError, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import (
-    PLAN_REFUSAL_REASONS,
-    PROPOSAL_FINGERPRINT_KINDS,
-    AdoptionDecision,
-    AdoptionOutcome,
-    BenefitStatus,
     CandidateAcousticContext,
-    CaptureValidity,
     CrossoverV2ContractError,
-    InterventionProposal,
-    PlanRefusal,
-    RealizationStatus,
     ResponseCurve,
-    RoundReceipt,
-    SpecStatus,
-    TrimStrategy,
-    VerificationResult,
 )
 
 FC = 1648.7
@@ -50,41 +36,6 @@ def _sections(fc: float = FC) -> dict[str, tuple[CrossoverSection, ...]]:
 
 def _context(fc: float = FC) -> CandidateAcousticContext:
     return CandidateAcousticContext(fc_hz=fc, sections_by_role=_sections(fc))
-
-
-class _Candidate:
-    """The narrow surface the proposal reads off a MeasuredCrossoverCandidate."""
-
-    def __init__(self, fingerprint: str = "a" * 64, program_id: str = "prog-1") -> None:
-        self.fingerprint = fingerprint
-        self.program_id = program_id
-        self.linearization: dict[str, object] = {}
-        self.linearization_outcome = "fitted"
-        self.exclusion_evidence: dict[str, object] = {}
-
-
-def _proposal(**overrides: object) -> InterventionProposal:
-    kwargs: dict[str, object] = {
-        "candidate": _Candidate(),
-        "context": _context(),
-        "evidence_identities": {"session_id": "cap_1"},
-        "predicted_response_before": ([100.0, 200.0], [-1.0, -2.0]),
-        "predicted_response_after": ([100.0, 200.0], [-0.5, -1.5]),
-        "predicted_spec_before": {"overall_within_target": False},
-        "predicted_spec_after": {"overall_within_target": True},
-        "commanded_delta": ([100.0, 200.0], [0.5, 0.5]),
-        "trim_strategy": TrimStrategy.RESOLVED_COMMITTED_AFTER_SANITY_DRIFT,
-        "trim_rationale": "drifted, committed anyway",
-        "anchored_trim_db": {"tweeter": -6.713},
-        "alternative_trim_db": {"tweeter": -13.01298},
-        "realized_branch_level": {"difference_db": -1.6},
-        "linearization_filters": {"tweeter": [{"gain_db": -2.0}]},
-        "excluded_regions": {"bands_hz": [[4000.0, 5000.0]]},
-        "accountability": {"banked": True},
-        "diagnostic_findings": [{"mechanism": "baffle_step"}],
-    }
-    kwargs.update(overrides)
-    return InterventionProposal(**kwargs)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
@@ -230,352 +181,15 @@ def test_a_curve_refuses_non_finite_points_and_ragged_pairs():
     assert ResponseCurve([100.0, 200.0], [-1.0, -2.0]).db == (-1.0, -2.0)
 
 
-def test_a_curve_pair_is_normalized_but_none_passes_through():
-    assert ResponseCurve.from_pair(None, field_name="x") is None
-    curve = ResponseCurve.from_pair(([1.0], [2.0]), field_name="x")
-    assert curve is not None and curve.hz == (1.0,)
-    with pytest.raises(CrossoverV2ContractError, match="freqs_hz, db"):
-        ResponseCurve.from_pair(object(), field_name="x")
-
-
 # --------------------------------------------------------------------------
-# InterventionProposal
+# the schema version
 # --------------------------------------------------------------------------
-
-
-def test_a_proposal_reads_its_corner_from_its_context():
-    proposal = _proposal()
-    assert proposal.fc_hz == FC == proposal.context.fc_hz
-    assert proposal.candidate_fingerprint == "a" * 64
-
-
-def test_a_proposal_needs_a_candidate_and_a_real_context():
-    with pytest.raises(CrossoverV2ContractError, match="measured candidate"):
-        _proposal(candidate=None)
-    with pytest.raises(CrossoverV2ContractError, match="CandidateAcousticContext"):
-        _proposal(context={"fc_hz": FC})
-    with pytest.raises(CrossoverV2ContractError, match="TrimStrategy"):
-        _proposal(trim_strategy="anchored_committed")
-
-
-def test_a_proposal_is_immutable_and_copies_the_mappings_it_was_handed():
-    filters = {"tweeter": [{"gain_db": -2.0}]}
-    proposal = _proposal(linearization_filters=filters)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        proposal.trim_rationale = "changed"  # type: ignore[misc]
-    filters["woofer"] = []
-    assert "woofer" not in proposal.linearization_filters
-
-
-def test_a_proposal_detaches_the_nested_containers_it_was_handed_too():
-    """The copy is DEEP — a shallow one leaves the fingerprint describing a
-    different object than the report does (#2307 gate note N1).
-
-    The top-level guard above passed while nested mutation still reached in:
-    ``dict(value)`` copies the outer mapping and shares every inner one. Since
-    :attr:`InterventionProposal.fingerprint` is taken once at construction, a
-    caller mutating an inner dict afterwards produced a proposal whose digest
-    no longer covered its own contents — the exact divergence these contracts
-    exist to make impossible.
-    """
-    inner = {"gain_db": -2.0}
-    band = [100.0, 200.0]
-    filters = {"tweeter": {"filters": [inner], "band_hz": band}}
-    proposal = _proposal(linearization_filters=filters)
-    fingerprint = proposal.fingerprint
-
-    inner["gain_db"] = -40.0
-    band.append(300.0)
-    filters["tweeter"]["reason"] = "tampered"
-
-    held = proposal.linearization_filters["tweeter"]
-    assert held["filters"][0]["gain_db"] == -2.0
-    assert list(held["band_hz"]) == [100.0, 200.0]
-    assert "reason" not in held
-    # A list stays a list: the shared fingerprinter refuses a tuple, so
-    # detaching must not change the type the digest sees.
-    assert type(held["band_hz"]) is list
-    # And the digest still describes what the object holds.
-    assert proposal.fingerprint == fingerprint
-    assert _proposal(linearization_filters=proposal.linearization_filters).fingerprint == (
-        fingerprint
-    )
-
-
-def test_the_proposal_fingerprint_is_deterministic_across_key_ordering():
-    forward = _proposal(
-        evidence_identities={"session_id": "cap_1", "program_id": "p"},
-        predicted_spec_after={"overall_within_target": True, "reference_db": -31.367},
-    )
-    shuffled = _proposal(
-        evidence_identities={"program_id": "p", "session_id": "cap_1"},
-        predicted_spec_after={"reference_db": -31.367, "overall_within_target": True},
-    )
-    assert forward.fingerprint == shuffled.fingerprint
-
-
-# Every committed input/value, and the change that must move the digest.
-_COMMITTED_FIELD_MUTATIONS: tuple[tuple[str, object], ...] = (
-    ("candidate", _Candidate(fingerprint="b" * 64)),
-    ("context", _context(fc=1700.0)),
-    ("evidence_identities", {"session_id": "cap_2"}),
-    ("predicted_response_before", ([100.0, 200.0], [-1.0, -2.5])),
-    ("predicted_response_after", ([100.0, 200.0], [-0.5, -1.6])),
-    ("predicted_spec_before", {"overall_within_target": True}),
-    ("predicted_spec_after", {"overall_within_target": False}),
-    ("commanded_delta", ([100.0, 200.0], [0.5, 0.6])),
-    ("trim_strategy", TrimStrategy.ANCHORED_COMMITTED_AFTER_SANITY_DRIFT),
-    ("trim_rationale", "a different rationale"),
-    ("anchored_trim_db", {"tweeter": -6.714}),
-    ("alternative_trim_db", {"tweeter": -13.013}),
-    ("realized_branch_level", {"difference_db": -1.7}),
-    ("linearization_filters", {"tweeter": [{"gain_db": -2.5}]}),
-    ("excluded_regions", {"bands_hz": [[4000.0, 5100.0]]}),
-    ("accountability", {"banked": False}),
-    ("diagnostic_findings", [{"mechanism": "horn_cd"}]),
-)
-
-
-@pytest.mark.parametrize(
-    "field_name,mutated",
-    _COMMITTED_FIELD_MUTATIONS,
-    ids=[name for name, _ in _COMMITTED_FIELD_MUTATIONS],
-)
-def test_changing_any_committed_value_changes_the_proposal_fingerprint(
-    field_name, mutated
-):
-    """#2291: "a proposal fingerprint covering every committed input/value".
-
-    Parametrized across the whole field list rather than spot-checked, because
-    a digest that silently omits one field is indistinguishable from a correct
-    one until the field that matters is the one that changed.
-    """
-    assert _proposal().fingerprint != _proposal(**{field_name: mutated}).fingerprint
-
-
-def test_the_parametrized_mutation_set_covers_every_constructor_field():
-    """The guard above is only as complete as its list — so pin the list.
-
-    A field added to :class:`InterventionProposal` without a mutation case
-    would otherwise join the contract untested.
-    """
-    import inspect
-
-    covered = {name for name, _ in _COMMITTED_FIELD_MUTATIONS}
-    declared = set(inspect.signature(InterventionProposal.__init__).parameters)
-    declared -= {"self"}
-    assert declared == covered
-
-
-def test_a_proposal_round_trips_its_declared_fingerprint():
-    proposal = _proposal()
-    payload = proposal.to_dict()
-    assert payload["fingerprint"] == proposal.fingerprint
-    assert payload["kind"] == "jts_crossover_v2_intervention_proposal"
-    assert payload["schema_version"] == SCHEMA_VERSION
 
 
 def test_the_schema_version_is_pinned_to_its_value():
-    """The VALUE, not just the constant — which is what makes it a version.
-
-    Reading ``SCHEMA_VERSION`` above proves the payload and the constant agree;
-    it cannot notice the constant moving. The receipt key-set guard catches a
-    new KEY, so between them the only unguarded change was the version itself
-    — and this field exists precisely because it sat at 1 through three shape
-    changes and a reader could not tell two shapes apart by it.
-
-    """
+    """The VALUE, not just the constant — which is what makes it a version."""
 
     assert SCHEMA_VERSION == 3
-
-
-# --------------------------------------------------------------------------
-# PlanRefusal
-# --------------------------------------------------------------------------
-
-
-def test_a_refusal_reason_comes_from_the_closed_set():
-    refusal = PlanRefusal(reason="contract_invalid", detail="why")
-    assert refusal.to_dict()["reason"] == "contract_invalid"
-    assert "contract_invalid" in PLAN_REFUSAL_REASONS
-    with pytest.raises(CrossoverV2ContractError, match="unknown plan refusal"):
-        PlanRefusal(reason="something_went_wrong")
-
-
-# --------------------------------------------------------------------------
-# VerificationResult — four independent answers
-# --------------------------------------------------------------------------
-
-
-def _verification(**overrides) -> VerificationResult:
-    kwargs = {
-        "capture_validity": CaptureValidity.USABLE,
-        "realization": RealizationStatus.MATCHED,
-        "benefit": BenefitStatus.IMPROVED,
-        "spec": SpecStatus.FAILED,
-        "reason": "",
-    }
-    kwargs.update(overrides)
-    return VerificationResult(**kwargs)  # type: ignore[arg-type]
-
-
-def test_realized_and_improved_but_out_of_spec_is_a_legal_result():
-    """#2291's named valid first pass. It must fit in the data model."""
-
-    result = _verification()
-    assert result.benefit is BenefitStatus.IMPROVED
-    assert result.spec is SpecStatus.FAILED
-
-
-def test_a_model_tracking_pass_can_coexist_with_a_measured_regression():
-    """The 2026-08-10 shape: realization matched, the speaker got worse.
-
-    The type must be able to say both at once, or the honest verdict has
-    nowhere to live.
-    """
-    result = _verification(benefit=BenefitStatus.REGRESSED)
-    assert result.realization is RealizationStatus.MATCHED
-    assert result.benefit is BenefitStatus.REGRESSED
-
-
-def test_an_unusable_capture_cannot_report_graded_answers():
-    for field_name, value in (
-        ("realization", RealizationStatus.MATCHED),
-        ("benefit", BenefitStatus.IMPROVED),
-        ("spec", SpecStatus.PASSED),
-    ):
-        kwargs = {
-            "capture_validity": CaptureValidity.UNUSABLE,
-            "realization": RealizationStatus.UNAVAILABLE,
-            "benefit": BenefitStatus.INDETERMINATE,
-            "spec": SpecStatus.UNEVALUABLE,
-            "reason": "clipped",
-            field_name: value,
-        }
-        with pytest.raises(CrossoverV2ContractError, match="unusable capture"):
-            VerificationResult(**kwargs)  # type: ignore[arg-type]
-
-
-def test_an_unusable_capture_must_say_why_but_otherwise_constructs():
-    with pytest.raises(CrossoverV2ContractError, match="must state a reason"):
-        _verification(
-            capture_validity=CaptureValidity.UNUSABLE,
-            realization=RealizationStatus.UNAVAILABLE,
-            benefit=BenefitStatus.INDETERMINATE,
-            spec=SpecStatus.UNEVALUABLE,
-            reason="",
-        )
-    ok = _verification(
-        capture_validity=CaptureValidity.UNUSABLE,
-        realization=RealizationStatus.UNAVAILABLE,
-        benefit=BenefitStatus.INDETERMINATE,
-        spec=SpecStatus.UNEVALUABLE,
-        reason="clipped",
-    )
-    assert ok.to_dict()["capture_validity"] == "unusable"
-
-
-# --------------------------------------------------------------------------
-# AdoptionDecision / RoundReceipt
-# --------------------------------------------------------------------------
-
-
-def test_keep_needs_no_reason_but_every_other_outcome_does():
-    assert AdoptionDecision(outcome=AdoptionOutcome.KEEP).reason == ""
-    for outcome in (
-        AdoptionOutcome.RESTORE,
-        AdoptionOutcome.KEEP_FOR_ITERATION,
-        AdoptionOutcome.RECOVERY_REQUIRED,
-    ):
-        with pytest.raises(CrossoverV2ContractError, match="must state a reason"):
-            AdoptionDecision(outcome=outcome, reason="   ")
-        assert AdoptionDecision(outcome=outcome, reason="measured regression")
-
-
-def _receipt(**overrides) -> RoundReceipt:
-    kwargs = {
-        "round_id": "round-1",
-        "entry_graph_fingerprint": "c" * 64,
-        "proposal_fingerprint": "d" * 64,
-        "proposal_fingerprint_kind": "intervention_proposal",
-        "verification": _verification(),
-        "adoption": AdoptionDecision(outcome=AdoptionOutcome.KEEP),
-        "created_at": "2026-08-10T00:00:00Z",
-    }
-    kwargs.update(overrides)
-    return RoundReceipt(**kwargs)  # type: ignore[arg-type]
-
-
-def test_a_receipt_must_say_what_its_proposal_fingerprint_identifies():
-    """#2392's migration story, enforced where it can still be caught.
-
-    ``proposal_fingerprint`` fed on a candidate identity before #2392 and on
-    :attr:`InterventionProposal.fingerprint` after it, and the two are the same
-    shape — a 64-hex SHA-256 — so nothing about the value distinguishes them.
-    The receipt therefore has to SAY which, from a closed set, and a receipt
-    that cannot must not be constructible: it is a write-once artifact, so this
-    constructor is the last place a mislabel is still cheap.
-    """
-    for kind in sorted(PROPOSAL_FINGERPRINT_KINDS):
-        assert _receipt(proposal_fingerprint_kind=kind).proposal_fingerprint_kind == kind
-    with pytest.raises(CrossoverV2ContractError, match="proposal fingerprint kind"):
-        _receipt(proposal_fingerprint_kind="proposal")
-    with pytest.raises(CrossoverV2ContractError, match="proposal_fingerprint_kind"):
-        _receipt(proposal_fingerprint_kind="  ")
-
-
-def test_the_kind_reaches_the_payload_and_moves_the_receipt_fingerprint():
-    """Two receipts identical but for the regime that wrote them differ.
-
-    The whole point of the marker is that a later reader can tell them apart;
-    if it rode outside the digest, a receipt could be relabelled after the fact
-    without its fingerprint noticing.
-    """
-    proposal = _receipt(proposal_fingerprint_kind="intervention_proposal")
-    candidate = _receipt(proposal_fingerprint_kind="candidate")
-    assert proposal.to_dict()["proposal_fingerprint_kind"] == "intervention_proposal"
-    assert candidate.to_dict()["proposal_fingerprint_kind"] == "candidate"
-    assert proposal.fingerprint != candidate.fingerprint
-
-
-def test_the_receipt_payload_covers_every_constructor_field():
-    """A field added to :class:`RoundReceipt` without reaching the digest.
-
-    The sibling guard :func:`test_the_parametrized_mutation_set_covers_every_
-    constructor_field` does this for :class:`InterventionProposal`; the receipt
-    had none, which is how #2392's new field could have been added as a value
-    the fingerprint did not cover. ``self`` is not a field; ``fingerprint`` is
-    the digest itself and is added by ``to_dict`` rather than ``_core``.
-    """
-    import inspect
-
-    declared = set(inspect.signature(RoundReceipt.__init__).parameters) - {"self"}
-    assert declared <= set(_receipt().to_dict())
-
-
-def test_a_receipt_binds_its_round_and_fingerprints():
-    receipt = _receipt()
-    payload = receipt.to_dict()
-    assert payload["kind"] == "jts_crossover_v2_round_receipt"
-    assert payload["fingerprint"] == receipt.fingerprint
-    assert payload["adoption"]["outcome"] == "keep"
-
-
-
-
-def test_a_receipt_fingerprint_tracks_its_adoption_and_verification():
-    base = _receipt().fingerprint
-    assert (
-        _receipt(
-            adoption=AdoptionDecision(
-                outcome=AdoptionOutcome.RESTORE, reason="regressed"
-            )
-        ).fingerprint
-        != base
-    )
-    assert (
-        _receipt(verification=_verification(spec=SpecStatus.PASSED)).fingerprint != base
-    )
 
 
 # --------------------------------------------------------------------------
@@ -583,41 +197,7 @@ def test_a_receipt_fingerprint_tracks_its_adoption_and_verification():
 # --------------------------------------------------------------------------
 
 
-def test_no_trim_strategy_says_rejected_while_meaning_committed():
-    """The contradiction that shipped on 2026-08-10, pinned as a rule.
-
-    ``linearization_outcome="trim_rejected"`` recorded a −13.013 dB trim that
-    was committed. Any member whose name claims a rejection must not also
-    claim a commitment, and no member may use the word at all while a pair was
-    in fact committed.
-    """
-    for member in TrimStrategy:
-        if "committed" in member.value:
-            assert "reject" not in member.value, member
-
-
 def test_the_refusal_reason_travels_by_TYPE_not_by_the_exceptions_prose():
     disagreement = CandidateFcDisagreementError("wording that no test owns")
     assert disagreement.refusal_reason == "candidate_fc_disagreement"
     assert CrossoverV2ContractError("anything").refusal_reason == "contract_invalid"
-
-
-
-def test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere():
-    assert not hasattr(TrimStrategy, "COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT")
-    assert "committed_pair_unrecorded_after_sanity_drift" not in {
-        member.value for member in TrimStrategy
-    }
-
-    root = Path(__file__).resolve().parent.parent
-    stale = []
-    for path in list((root / "jasper").rglob("*.py")) + list(
-        (root / "tests").rglob("*.py")
-    ):
-        if path.resolve() == Path(__file__).resolve():
-            continue  # this test names it in order to bury it
-        if "COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT" in path.read_text(
-            encoding="utf-8"
-        ):
-            stale.append(str(path.relative_to(root)))
-    assert stale == [], f"deleted member still referenced in {stale}"

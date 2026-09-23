@@ -54,7 +54,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
@@ -72,7 +71,6 @@ from jasper.audio_measurement.program_analysis import (
     RoleGainSolve,
     SegmentLocation,
     _verify_capture_integrity,
-    predicted_branch_sum,
     solve_branch_trims,
 )
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
@@ -351,7 +349,6 @@ class FakeSeams:
     apply_done: bool = False
     apply_failed_code: str = ""
     rollback_available: Any = None
-    banked_findings: list = field(default_factory=list)
     applied_boosts: bool = False
     applied_profile_state: Any = None
 
@@ -375,7 +372,6 @@ class FakeSeams:
             records=V2RecordPublishers(
                 check=lambda plan, ambient: self.published_checks.append(plan),
                 candidate=self.published_candidates.append,
-                findings=self.banked_findings.append,
             ),
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
@@ -543,12 +539,6 @@ def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
     )
 
 
-def _snr_analysis(*pilots: PilotObservation) -> ProgramAnalysis:
-    return ProgramAnalysis(
-        phase="measure", program_id="p", locations=(), pilots=pilots,
-    )
-
-
 def _dummy_program():
     from jasper.audio_measurement.program import build_check_program
 
@@ -578,53 +568,6 @@ def _pilot_obs(
         channel_map_cross_rise_db=cross_rise_db,
         delta_implausible=delta_implausible, mic_meter_status=mic_meter_status,
     )
-
-
-def _driver_response_diag(
-    role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
-    snr_db: float | None = None, snr_verdict: str | None = None,
-    snr_band: str | None = "mid",
-    floor_source: str = gating.FLOOR_MEASURED,
-) -> DriverResponse:
-    freqs = np.linspace(100.0, 20000.0, 64)
-    snr = (
-        {
-            "worst_relevant": {
-                "band_id": snr_band,
-                "estimated_snr_db": snr_db,
-                "verdict": snr_verdict,
-            }
-        }
-        if snr_db is not None else None
-    )
-    return DriverResponse(
-        role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
-        complex_tf=np.ones(64, dtype=complex),
-        gating={
-            "applied": True, "window_ms": window_ms, "floor_source": floor_source,
-        },
-        snr=snr, validity_floor_hz=floor_hz,
-    )
-
-
-def _gate_block(
-    *,
-    direct_peak_ms: float = 10.40,
-    first_reflection_ms: float = 15.73,
-    rms_db: float | None = 2.59,
-    floor_source: str = gating.FLOOR_MEASURED,
-) -> dict:
-    delta = None if rms_db is None else {
-        "rms_db": rms_db, "max_db": 6.1, "eval_band_hz": [357.0, 20000.0],
-    }
-    return {
-        "applied": True,
-        "window_ms": 5.33,
-        "floor_source": floor_source,
-        "direct_peak_ms": direct_peak_ms,
-        "first_reflection_ms": first_reflection_ms,
-        "pre_post_gate_delta": delta,
-    }
 
 
 def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
@@ -714,68 +657,6 @@ def _solve_fixture_raw_trim(
 
 
 _FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
-
-
-def _fixture_raw_predicted_sum(
-    *, woofer_db=None, tweeter_db=None, trim_db=None,
-) -> tuple[np.ndarray, np.ndarray]:
-    if woofer_db is None or tweeter_db is None:
-        default_woofer_db, default_tweeter_db = _fixture_branch_db()
-        woofer_db = default_woofer_db if woofer_db is None else woofer_db
-        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
-    if trim_db is None:
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    summed = predicted_branch_sum(
-        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
-        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
-        float(trim_db.get("woofer", 0.0)), float(trim_db.get("tweeter", 0.0)), 1,
-    )
-    return (
-        _LINEARIZABLE_FREQS_HZ,
-        20.0 * np.log10(np.maximum(np.abs(summed), 1e-12)),
-    )
-
-
-def _eligible_measure_analysis(
-    program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
-    woofer_db=None, tweeter_db=None, trim_db=None, trim_band_average_db=None,
-) -> ProgramAnalysis:
-    default_woofer_db, default_tweeter_db = _fixture_branch_db()
-    if woofer_db is None:
-        woofer_db = default_woofer_db
-    if tweeter_db is None:
-        tweeter_db = default_tweeter_db
-    if trim_db is None:
-        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
-    if trim_band_average_db is None:
-        trim_band_average_db = dict(trim_db)
-    return ProgramAnalysis(
-        phase="measure",
-        program_id=program.program_id,
-        locations=(
-            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"), _loc("sweep_t_rep"),
-        ),
-        drift=DriftEstimate(
-            epsilon_ppm=5.0,
-            max_residual_samples=0.1, glitch_detected=False,
-        ),
-        mic_tier=mic_tier,
-        driver_responses=(
-            _linearizable_response("woofer", woofer_db, n_repeats=woofer_repeats),
-            _linearizable_response("tweeter", tweeter_db, n_repeats=tweeter_repeats),
-        ),
-        alignment=_alignment(),
-        candidate=CrossoverCandidate(
-            trim_db=trim_db, polarity="normal", delay_us=150.0,
-            predicted_ripple_db=0.8, confidence=0.8,
-            trim_band_average_db=trim_band_average_db,
-        ),
-        linearity_ok=True,
-        predicted_sum=_fixture_raw_predicted_sum(
-            woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
-        ),
-        glitch_detected=False,
-    )
 
 
 def _way1_measure_analysis(program) -> ProgramAnalysis:
@@ -976,10 +857,6 @@ class FakeCam:
     async def set_volume_db(self, db: float, *, best_effort: bool = False) -> bool:
         self.volume_db = float(db)
         return True
-
-
-def _flow_seams(conductor: Any) -> Any:
-    return conductor._seams
 
 
 _TWO_WAY_GROUP = [{

@@ -20,7 +20,7 @@ from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_c
 from .baseline_profile import (
     load_applied_baseline_profile_state,
 )
-from .crossover_v2.planning import alignment_to_candidate_fields
+from .crossover_v2.alignment_prescription import alignment_to_candidate_fields
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .crossover_v2.topology_prescription import apply_topology_pin
 from .crossover_preview import build_crossover_preview

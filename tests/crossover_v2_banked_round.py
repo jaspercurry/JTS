@@ -30,13 +30,9 @@ No round carries both a prediction basis and a measured VERIFY sum, which is
 issue #3482's root fact; no round carries both an entry baseline and a graded
 spec, which is #3478's.
 
-**The cloud group is deliberately absent from BOTH.** Stage 2 banks one, but
-no reader these suites pin opens it, and the only way to build a
-``cloud_verify.json`` from its own writer is
-``spatial.assemble_cloud_group_result`` over a combiner result built from live
-captures. A hand-typed cloud payload here would be the one part of this
-fixture that could drift, so the readers that need one keep the payload
-builder that already lives with them.
+**The cloud group is deliberately absent from BOTH.** No current run writes
+one, so the readers that need a ``cloud_verify.json`` keep the payload builder
+that already lives with them.
 
 Measure and verify fixtures carry no WAVs. Seat fixtures retain captures for
 the room analyzer; room statistics tests supply documents at its output.

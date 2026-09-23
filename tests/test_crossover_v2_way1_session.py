@@ -16,6 +16,7 @@ from __future__ import annotations
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 import shlex
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,12 @@ from jasper.active_speaker import (
     commission_wiring,
     crossover_v2_flow,
 )
+from jasper.active_speaker.branch_chain import branch_headroom_db
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
+from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
+from jasper.active_speaker.crossover_v2.planning import analysis_json
+from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.crossover_v2.contracts import (
     LINEARIZATION_OUTCOME_SINGLE_BRANCH,
 )
@@ -148,29 +154,6 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
     assert verdict.fault is None
     assert analysis.phase == PHASE_MEASURE
     assert (analysis.alignment, analysis.measure_pair_not_evaluated) == (None, MEASURE_PAIR_SINGLE_DRIVER)
-def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
-    """Driven through the same ``_build_candidate`` the 2-way walk uses."""
-    conductor = _way1_conductor(
-        FakeSeams(),
-        index_phase_map=_way1_index_phase_map(),
-        gain_plan_db={"full_range": -11.0},
-    )
-    analysis = _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
-
-    candidate, state = _way1_candidate(conductor, analysis)
-
-    assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
-    assert candidate.linearization_outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
-    assert candidate.role_attenuations_db == {"full_range": 0.0}
-    assert set(candidate.linearization) == {"full_range"}
-    assert candidate.linearization["full_range"]["filters"]
-    # Every inter-driver verdict is absent, not defaulted.
-    assert state.realized_level_match is None
-    assert state.level_consistency is None
-    assert state.trim_band_estimate_db == {}
-    assert state.polish_delta_db == {}
-    assert candidate.alignment.delay_us is None
-    assert candidate.alignment.polarity is None
 
 
 def test_the_one_way_preset_emits_a_protected_neutral_program_graph():
@@ -213,10 +196,9 @@ def _way1_ready_to_apply_payload(tmp_path):
         gain_plan_db={"full_range": -11.0},
         source_preset=commission_wiring.resolve_capture_preset(topology),
     )
-    candidate, state = _way1_candidate(conductor,
+    candidate = _way1_candidate(conductor,
         _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
     )
-    assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
 
     return prepare_candidate(candidate, topology, tmp_path / "active_speaker_baseline.yml")
 
@@ -300,14 +282,21 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
 
 
 def _way1_candidate(conductor, analysis):
-    from functools import partial
-    from jasper.active_speaker.crossover_v2 import planning, intervention
-
-    plan = partial(planning.plan_for_candidate, preset=conductor.source_preset,
-        program_for_phase=conductor.program_for_phase, roles=("full_range",),
-        driver_class_by_role={}, fit_budget_by_role={},
-        plan_linearization=intervention.plan_linearization, journal=lambda _: None)
-    return planning.build_candidate(analysis, analysis.candidate, None,
-        source_preset=conductor.source_preset, roles=("full_range",), plan=plan,
-        exclusion_evidence=partial(planning.exclusion_evidence_json, cloud_result={}),
-        journal=lambda _: None, blend_correction=())
+    """The solo's fit, charged into its own chain, at a fixed 0 dB: a lone
+    branch has no pair to trim."""
+    (response,) = analysis.driver_responses
+    sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
+    fit = fit_branches(
+        [DriverEvidence("full_range", response, (sweep.f1_hz, sweep.f2_hz))],
+        mic_tiers={"full_range": str(analysis.mic_tier)},
+        vocabulary=FitVocabulary(allow_boost=True), sections={},
+    ).fits["full_range"]
+    charge_db = branch_headroom_db([f.to_dict() for f in fit.filters])
+    return MeasuredCrossoverCandidate(
+        program_id=analysis.program_id,
+        analysis=analysis_json(analysis),
+        source_preset=conductor.source_preset,
+        role_attenuations_db={"full_range": 0.0},
+        linearization={"full_range": replace(fit, headroom_cost_db=charge_db).to_dict()},
+        linearization_outcome=LINEARIZATION_OUTCOME_SINGLE_BRANCH,
+    )

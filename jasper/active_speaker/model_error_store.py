@@ -220,12 +220,6 @@ def store_snapshot(path: str | Path | None = None) -> ModelErrorStoreSnapshot:
     )
 
 
-def stored_floor(path: str | Path | None = None) -> FloorStats | None:
-    """The adopted floor, or ``None`` when this speaker has never adopted one."""
-
-    return store_snapshot(path).floor
-
-
 def _optional_float(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None

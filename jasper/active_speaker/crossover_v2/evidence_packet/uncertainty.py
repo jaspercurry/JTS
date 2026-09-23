@@ -152,9 +152,9 @@ _POSITION_GATE_NUMBER_FIELDS = frozenset({
     "gate_reflection_delay_ms",
 })
 
-#: The same two facts as :data:`_POSITION_GATE_NUMBER_FIELDS`, as
-#: :func:`~.capture_dispatch._gate_record` spells them inside ``verify.gate``:
-#: the ``gate_`` prefix is dropped because the block is already the gate.
+#: The same two facts as :data:`_POSITION_GATE_NUMBER_FIELDS`, as the
+#: persisted ``verify.gate`` block spells them: the ``gate_`` prefix is dropped
+#: because the block is already the gate.
 _VERIFY_GATE_NUMBER_FIELDS = frozenset({
     "moved_rms_db",
     "reflection_delay_ms",
@@ -194,9 +194,7 @@ def _gate_numbers_reason(
 
     The sentence names both readings because the two carriers have different
     absence rules: ``verify.gate`` always spells both keys, null or not, while
-    a position row is filtered by
-    :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`, which drops a
-    ``None``. So it states what is checkable and names ``gate_floor_source`` as
+    a banked position row drops a ``None``. So it states what is checkable and names ``gate_floor_source`` as
     the field separating "banked before the writers existed" from "every
     capture was ungateable".
 
@@ -233,8 +231,7 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
     the same registry and still carries whatever a sub-minimum cluster held on
     a ``no_corroborating_arrivals`` refusal, so a distance built from it could
     be published from evidence the gate refused. The ladder's tau exists only
-    after a frequency-domain and a time-domain estimator agreed within
-    :data:`~jasper.audio_measurement.interference_nulls.LADDER_ARRIVAL_TOLERANCE`.
+    after a frequency-domain and a time-domain estimator agreed.
 
     Refuses BY NAME rather than publishing a zero: ``tau_ladder_us`` is 0.0
     when no ladder was fitted, and 0.0 metres would put the reflector at the

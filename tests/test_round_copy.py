@@ -26,7 +26,7 @@ def test_round_verdict(facts, expected):
 
 
 @pytest.mark.parametrize("reason", sorted(CAPTURE_QUALITY_REFUSAL_CODES | {
-    "channel_map_mismatch", "clipped", "measure_gain_adjusted",
+    "channel_map_mismatch", "clipped",
 }))
 def test_retake_uses_registry_words_without_codes(reason):
     line, = round_lines({"retake_pose": 2, "retake_measurement": 1, "retake_reason": reason})

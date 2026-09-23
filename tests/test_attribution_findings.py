@@ -7,8 +7,8 @@
 Pins the acceptance items ``docs/historical/attribution-stage-plan.md`` §7 assigns to
 WO-1 that are about *shape* rather than *storage* — the schema test, the
 golden round-trip, the stable cross-store session identity, and the plan rules
-the excluded-band promotion path is bound by. Storage, retention, and the
-per-position evidence live in ``tests/test_attribution_persistence.py``.
+the excluded-band promotion path is bound by. Storage and retention live in
+``tests/test_attribution_persistence.py``.
 """
 
 from __future__ import annotations
@@ -35,9 +35,6 @@ from jasper.attribution.findings import (
     FindingError,
     FindingSet,
 )
-from jasper.active_speaker.crossover_v2.intervention import (
-    REALIZED_LEVEL_SUSPECT_REASON,
-)
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,
@@ -47,11 +44,8 @@ from jasper.attribution.mechanisms import (
     mechanism_spec,
 )
 from jasper.attribution.promotion import (
-    LEVEL_FRAME_HOUSEHOLD_COPY,
     PRODUCED_BY,
-    REALIZED_LEVEL_HOUSEHOLD_COPY,
     promote_carve_outs,
-    promote_level_frame_disagreement,
 )
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
@@ -62,7 +56,7 @@ from jasper.attribution.session_identity import (
     read_session_identity,
     stamp_session_identity,
 )
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields
 
 _SESSION = SessionIdentity(
     session_id="7f54494228cc",
@@ -220,11 +214,8 @@ def test_an_unsure_finding_must_recommend_a_probe() -> None:
     ],
 )
 def test_household_copy_stays_phenomenon_level(copy: str, fragment: str) -> None:
-    """§3.1's two-vocabularies rule, inherited verbatim from the shipped
-    ``_null_classification_copy`` prohibition: "No hardware noun appears here
-    … naming one would be the device-taxonomy guess this program forbids in
-    shipped copy". ``mechanism`` may name hardware; ``household_copy`` may
-    not."""
+    """§3.1's two-vocabularies rule: ``mechanism`` may name hardware;
+    ``household_copy`` may not."""
 
     with pytest.raises(FindingError, match=fragment):
         _finding(household_copy=copy)
@@ -624,7 +615,7 @@ def test_a_correctly_unattributable_record_is_skipped_silently(
 
 
 def test_a_straddling_null_becomes_one_finding_not_two() -> None:
-    """``carve_outs_by_band`` lists a null under every spec band it overlaps —
+    """The persisted carve-out structure lists a null under every spec band it overlaps —
     correct for disclosure, since it removes bins from both — but a
     straddling null is one physical feature."""
 
@@ -681,497 +672,6 @@ def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
     )
     with pytest.raises(FindingError):
         FindingSet(session=_SESSION, produced_by=PRODUCED_BY, findings=(stray,))
-
-
-# --------------------------------------------------------------------------- #
-# The level-frame promotion path (#1866 frame-gate ruling, 2026-07-30)
-# --------------------------------------------------------------------------- #
-
-
-def _level_frame_record(**overrides: object) -> dict:
-    """A banked record in the shape
-    ``crossover_v2.accountability.accountability_record`` emits.
-
-    Numbers are the conductor fixture's own, measured in
-    ``tests/test_crossover_v2_conductor.py`` on a woofer carrying an extra
-    -1.6 dB/octave of passband tilt — the synthetic stand-in for the
-    2026-07-30 field session (3.2307 dB frame, realized -0.247, both recorded
-    on #1870 and not replayable in-repo).
-
-    This is the ESTIMATOR shape: the two estimates disagree and the realized
-    check PASSES (-0.828 dB, inside 3.0). ``_realized_only_record`` below is
-    its sibling for the other condition the record can now carry.
-    """
-
-    record = {
-        "f_lo_hz": 150.0,
-        "f_hi_hz": 5844.7,
-        "level_match_axis": "design_axis_0deg",
-        "estimator_worst_delta_db": 3.209,
-        "estimator_tolerance_db": 3.0,
-        "reason": "level_definitions_differ",
-        "realized_difference_db": -0.828,
-        "realized_tolerance_db": 3.0,
-        "realized_level_w_db": 0.213,
-        "realized_level_t_db": -0.615,
-        "core_level_db_woofer": 3.276,
-        "core_band_lo_hz_woofer": 150.0,
-        "core_band_hi_hz_woofer": 1255.8,
-        "radiating_band_lo_hz_woofer": 0.0,
-        "radiating_band_hi_hz_woofer": 1282.3,
-        "trim_band_average_db_woofer": -0.067,
-        "estimator_delta_db_woofer": 0.0,
-        "core_level_db_tweeter": 0.0,
-        "core_band_lo_hz_tweeter": 2020.0,
-        "core_band_hi_hz_tweeter": 5844.7,
-        "radiating_band_lo_hz_tweeter": 1996.4,
-        "radiating_band_hi_hz_tweeter": None,
-        "trim_band_average_db_tweeter": 0.0,
-        "estimator_delta_db_tweeter": 3.209,
-    }
-    record.update(overrides)
-    return record
-
-
-def _level_frame_finding(**overrides: object):
-    return promote_level_frame_disagreement(
-        _level_frame_record(**overrides), session=_SESSION, cites=(_CITE,)
-    )
-
-
-def _realized_only_record(**overrides: object) -> dict:
-    """The record ``accountability_record`` builds when ONLY the realized check
-    fires — the shape the realized-level demotion (doctrine deviation (i))
-    made reachable, and the one that used to be a refusal instead.
-
-    Derived from the estimator fixture by making it true of the other
-    condition rather than by inventing a second table: the estimator pair is
-    dropped (they AGREED, so ``level_consistency`` contributes nothing and its
-    two keys are absent), the reason is the realized sibling, and the realized
-    difference is the ~9 dB the 2026-07-27 dark-tweeter profile measured — the
-    case ``refusal_copy``'s deleted row was written for.
-    """
-
-    record = _level_frame_record()
-    for key in ("estimator_worst_delta_db", "estimator_tolerance_db"):
-        record.pop(key)
-    for role in ("woofer", "tweeter"):
-        record.pop(f"estimator_delta_db_{role}")
-    record.update(
-        reason=REALIZED_LEVEL_SUSPECT_REASON,
-        realized_difference_db=-9.0,
-        realized_level_w_db=0.213,
-        realized_level_t_db=-8.787,
-        polish_delta_db_woofer=0.0,
-        polish_delta_db_tweeter=0.0,
-    )
-    record.update(overrides)
-    return record
-
-
-def _realized_only_finding(**overrides: object):
-    return promote_level_frame_disagreement(
-        _realized_only_record(**overrides), session=_SESSION, cites=(_CITE,)
-    )
-
-
-def test_a_realized_level_mismatch_is_promoted_as_its_own_condition() -> None:
-    """**The blocker this test exists for.** The producer was widened to bank a
-    realized-only record; its only production reader was not, so every such
-    record rendered the ESTIMATOR finding — a household sentence that is false
-    in all three of its claims here, routed to the wrong fix class.
-
-    What must be true instead: the promoter reads the record's own ``reason``
-    and nothing else, and a realized-only record gets ``eq`` — §4 M7's own
-    split, ``eq`` "when a driver's level is genuinely low" against ``refit``
-    "when the level error is upstream in the fit's own frame". The frame is not
-    in dispute here; the pair that would ship is simply not level.
-    """
-
-    finding = _realized_only_finding()
-    assert finding is not None
-    assert finding.mechanism == MECHANISM_LEVEL_FRAME
-    assert finding.fix_class == "eq"
-    # …and the definition arm still routes the other way, so this is a branch
-    # and not a flip. All three classes are declared on M7: `eq` for this arm,
-    # `document_as_physics` for the definition gap S8 explained, and `refit`
-    # kept because §4 M7 declares it and a genuine upstream frame error can
-    # still occur — the definition gap just stopped being an instance of one.
-    assert _level_frame_finding().fix_class == "document_as_physics"
-    assert set(mechanism_spec(MECHANISM_LEVEL_FRAME).fix_classes) == {
-        "eq", "refit", "document_as_physics",
-    }
-
-
-def test_the_realized_household_copy_is_true_and_still_recommends() -> None:
-    """Doctrine §3: a defect outside §4's closed list "discloses **and
-    recommends a next action**". The demotion removed the stop; it must not
-    also have removed the recommendation.
-
-    Three things are asserted, each one a clause of the estimator sentence that
-    is FALSE about this record:
-
-    * it does not claim two cross-checks disagreed — they agreed, which is why
-      this reason won;
-    * it does not reassure that "nothing was guessed at", which is exactly the
-      thing that is wrong;
-    * it does not send the household to re-run the room pass, which does not
-      address a sensitivity figure or a pad.
-
-    And the recommendation the deleted ``refusal_copy`` row carried — "Re-check
-    the driver details — sensitivity and any resistor pad — in speaker setup,
-    then measure again" — survives, minus the two things about it that stopped
-    being true: the speaker is NOT left alone (the round proceeds), and the
-    hardware nouns cannot pass ``Finding``'s own validator.
-    """
-
-    finding = _realized_only_finding()
-    assert finding.household_copy == REALIZED_LEVEL_HOUSEHOLD_COPY
-    assert finding.household_copy != LEVEL_FRAME_HOUSEHOLD_COPY
-    lowered = REALIZED_LEVEL_HOUSEHOLD_COPY.lower()
-
-    for false_clause in (
-        "cross-check", "cross check", "nothing was guessed",
-        "room pass", "left your speaker alone", "left alone",
-    ):
-        assert false_clause not in lowered, false_clause
-    # The recommendation, in the two words that make it actionable.
-    assert "sensitivity" in lowered
-    assert "pad" in lowered
-    assert "measure again" in lowered
-    # It must not claim the tuning was applied — the candidate is a PROPOSAL at
-    # the moment this is minted, same rule as the sibling copy.
-    for banned in ("applied", "was kept", "your speaker now", "phone"):
-        assert banned not in lowered, banned
-    # …and it must not claim the pair WAS measured at those levels. The check
-    # reads the fit's MODEL of the emission — the measured per-branch responses
-    # through the modelled correction — not a capture of the applied tuning,
-    # which is the delta probe's job after an apply that has not happened. The
-    # deleted refusal's "would not have ended up at matching levels" is the
-    # tense this instrument earns, and the copy keeps it.
-    assert "would not end up" in lowered
-    for overclaim in (
-        "measured on", "we measured", "confirmed", "verified", "proved",
-        "independent",
-    ):
-        assert overclaim not in lowered, overclaim
-    # §3.1's contract holds on the new string too, enforced by the validator
-    # rather than by this list: a round-trip reconstructs it unchanged.
-    assert Finding.from_mapping(finding.to_dict()).household_copy == (
-        REALIZED_LEVEL_HOUSEHOLD_COPY
-    )
-    # Short enough to read on a review screen (IA over copy) — the same bar
-    # its sibling is held to, even though this one also carries a
-    # recommendation and that one does not.
-    assert len(REALIZED_LEVEL_HOUSEHOLD_COPY) < 260
-
-
-def test_the_realized_finding_is_unsure_for_its_own_reason() -> None:
-    """The tier is the same as the estimator arm's and the argument is not.
-
-    ``realized_branch_level_match``'s own docstring says it is "One estimator,
-    not a second opinion" — the same power-band average over the same halves
-    that set the trim — so none of the estimator arm's rival-span artifacts
-    apply. What is unsure is the CAUSE: the levels are read off the emission
-    the fit MODELS, not off a post-apply capture, and nothing here separates a
-    wrong sensitivity or pad value from an error in the fit's own frame.
-
-    ``unsure`` obliges a recommended probe (§3.2), and this finding carries
-    M7's two raisers rather than claiming a probe ran.
-    """
-
-    finding = _realized_only_finding()
-    assert finding.confidence == "unsure"
-    assert finding.probes_run == ()
-    assert finding.probes_recommended == ("P5", "P7")
-
-
-def test_the_realized_evidence_rides_and_the_estimator_keys_are_named() -> None:
-    """Every non-band key is evidence, and the two instruments' keys are told
-    apart by name rather than by a reader's memory.
-
-    A realized-only record carries no estimator pair at all, so a bare
-    ``worst_delta_db`` beside ``reason=realized_levels_disagree`` would be a
-    number from the OTHER instrument wearing an unqualified name. The producer
-    prefixes them; this pins that a reader of the finding sees the prefix.
-    """
-
-    evidence = _realized_only_finding().evidence
-    assert evidence["reason"] == REALIZED_LEVEL_SUSPECT_REASON
-    assert evidence["realized_difference_db"] == -9.0
-    assert evidence["realized_tolerance_db"] == 3.0
-    assert evidence["realized_level_w_db"] == 0.213
-    assert evidence["realized_level_t_db"] == -8.787
-    # The attribution that says how much of the mismatch the MEASURE ripple
-    # polish could explain. Zero here, which is the reader's cue to look
-    # elsewhere — the disclosure's whole job.
-    assert evidence["polish_delta_db_tweeter"] == 0.0
-    assert evidence["polish_delta_db_woofer"] == 0.0
-    # No estimator keys on THIS fixture, which models the session that
-    # produced no consistency verdict at all. A realized-only record whose
-    # estimators ran and AGREED still carries them — prefixed — which is what
-    # makes the prefix load-bearing rather than cosmetic; the producer's own
-    # test covers that shape.
-    assert not [key for key in evidence if key.startswith("estimator_")]
-    # …and on the estimator record they are present, PREFIXED.
-    estimator_evidence = _level_frame_finding().evidence
-    assert estimator_evidence["estimator_worst_delta_db"] == 3.209
-    assert estimator_evidence["estimator_tolerance_db"] == 3.0
-    assert "worst_delta_db" not in estimator_evidence
-    assert "tolerance_db" not in estimator_evidence
-
-
-def test_the_estimator_reason_still_owns_the_copy_when_both_conditions_fire(
-) -> None:
-    """The producer writes ONE reason and the estimator condition wins it. This
-    pins that the promoter follows that ordering rather than re-deriving which
-    condition fired from the numbers.
-
-    Why the estimator sentence is still TRUE here, and not merely the one the
-    precedence happens to pick: two instruments that disagree about the frame
-    make the realized read downstream of a suspect frame, so "this room pass is
-    worth re-running" is the right first move and acting on a setup value is
-    not. Re-deriving the realized verdict here to append a second sentence is
-    what the promoter's own "re-decides nothing" rule forbids.
-    """
-
-    both = _level_frame_record(realized_difference_db=-9.0)
-    finding = promote_level_frame_disagreement(
-        both, session=_SESSION, cites=(_CITE,)
-    )
-    assert finding is not None
-    assert finding.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
-    assert finding.fix_class == "document_as_physics"
-    # Nothing is lost to the precedence: the realized numbers still ride.
-    assert finding.evidence["realized_difference_db"] == -9.0
-    assert finding.evidence["estimator_worst_delta_db"] == 3.209
-
-
-def test_a_banked_frame_disagreement_becomes_an_m7_finding() -> None:
-    """The owner's 2026-07-30 ruling on #1866, as an artifact: a frame
-    disagreement that the realized-level check's PASS allows to proceed is
-    banked rather than refused, and what is banked is an M7-class finding
-    carrying the numbers.
-
-    ``document_as_physics``, and NOT ``refit``. This arm routed ``refit``
-    while the two numbers were read as competing estimates of one frame, on
-    the argument that a disagreement between them is upstream of every trim
-    derived from them. Ruling S8 established they were never estimates of one
-    quantity — the handover level and the passband average measure different
-    things, and on a sloped horn they legitimately differ by many dB — so
-    there is nothing to re-solve. The routing has to agree with the household
-    sentence, which asks for nothing.
-    """
-
-    finding = _level_frame_finding()
-    assert finding is not None
-    assert finding.mechanism == MECHANISM_LEVEL_FRAME
-    assert finding.fix_class == "document_as_physics"
-    assert finding.band_hz == (150.0, 5844.7)
-
-
-def test_the_banked_finding_carries_all_three_instruments() -> None:
-    """The evidence conventions the ruling names — "both estimator levels +
-    both bands" — plus the tiebreaker that decided the session.
-
-    A reader of this finding is being asked to believe a session proceeded
-    past a gate that would have stopped it, so all three level instruments
-    ride: the fit's per-driver median, the trim solve's per-driver
-    level-match term, and the realized check. Banking only the two that
-    disagreed would record the argument and drop the evidence that settled
-    it.
-    """
-
-    evidence = _level_frame_finding().evidence
-    # Estimator 1 (the fit's median) and estimator 2 (the trim solve's
-    # level-match term), per role.
-    assert evidence["core_level_db_woofer"] == 3.276
-    assert evidence["core_level_db_tweeter"] == 0.0
-    assert evidence["trim_band_average_db_woofer"] == -0.067
-    assert evidence["trim_band_average_db_tweeter"] == 0.0
-    # Both bands, per role: the span the median was actually taken over, and
-    # the radiating bound it was asked for (#1929's disclosure pair).
-    assert evidence["core_band_lo_hz_woofer"] == 150.0
-    assert evidence["core_band_hi_hz_woofer"] == 1255.8
-    assert evidence["radiating_band_lo_hz_woofer"] == 0.0
-    assert evidence["radiating_band_hi_hz_woofer"] == 1282.3
-    assert evidence["core_band_lo_hz_tweeter"] == 2020.0
-    assert evidence["core_band_hi_hz_tweeter"] == 5844.7
-    assert evidence["radiating_band_lo_hz_tweeter"] == 1996.4
-    # A high-pass branch radiates to infinity; ``None`` says so and survives
-    # JSON, where ``inf`` does not.
-    assert evidence["radiating_band_hi_hz_tweeter"] is None
-    # WHICH axis every level above was read on. Without it the numbers are
-    # unplaceable: on-axis, listening-window and power-response ratios differ
-    # wherever beaming and horn directivity mismatch, and there is no single
-    # correct level to assume (Toole). It rides unconditionally, so a reader of
-    # ANY banked level finding can recover the frame.
-    from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
-
-    assert evidence["level_match_axis"] == LEVEL_MATCH_AXIS
-    # The disagreement and its tolerance, both PREFIXED with the instrument
-    # they belong to, plus the realized check — which passes on this record and
-    # so is not why it was banked.
-    assert evidence["estimator_worst_delta_db"] == 3.209
-    assert evidence["estimator_tolerance_db"] == 3.0
-    assert evidence["realized_difference_db"] == -0.828
-    assert evidence["realized_tolerance_db"] == 3.0
-
-
-def test_the_banked_finding_says_what_the_session_did_about_it() -> None:
-    """#2599, in the artifact the household's own findings file is minted from.
-
-    A reader of this finding is being told the two per-driver estimators
-    disagreed. Since #2609 that disagreement changes NOTHING about the tune —
-    the pair is anchored on the raw measured trim either way — so what the
-    record has to carry is the disagreement itself, per role, and the reason
-    code that names it. There is no action and no dB cost to report, which is
-    why the ``frame_exclusion_reason`` / ``anchor_delta_db_*`` pair this test
-    used to assert is gone rather than left reading zero.
-    """
-
-    evidence = _level_frame_finding().evidence
-
-    assert evidence["reason"] == "level_definitions_differ"
-    assert evidence["estimator_delta_db_tweeter"] == 3.209
-    assert evidence["estimator_delta_db_woofer"] == 0.0
-
-
-def test_the_banked_finding_stays_unsure_and_claims_no_probe() -> None:
-    """Why ``unsure`` is the honest tier and not a cautious one.
-
-    THAT the two estimators disagreed is measured; that the disagreement is a
-    real inter-driver level error is not, because the shipped gate's own
-    residual produces this exact signature on a healthy speaker — a pair
-    identical by construction reads 0.910 dB apart, and ordinary woofer
-    passband tilt adds roughly 1.33 dB per dB/octave (both measured in
-    ``tests/test_crossover_v2_conductor.py``). A single session cannot
-    separate "the drivers really sit that far apart" from "these two
-    estimators read different spans of a curve that is not flat in the same
-    way over both".
-
-    ``probes_run`` is empty for the same reason: the evidence is the flow's
-    own instruments, none of which is a §5 primitive, and naming one would be
-    the cheapest possible way to launder a model-derived number into
-    probe-adjudicated standing.
-    """
-
-    finding = _level_frame_finding()
-    assert finding.confidence == "unsure"
-    assert finding.probes_run == ()
-    assert finding.probes_recommended == ("P5", "P7")
-    # §3.2's rule, which this finding must not be the exception to: an
-    # ``unsure`` finding always carries the probe that would raise it.
-    assert set(finding.probes_recommended) <= set(PROBES)
-
-
-def test_the_banked_finding_s_household_copy_obeys_the_conventions() -> None:
-    """§3.1's two-vocabularies contract, applied to the one sentence this
-    path mints.
-
-    It is minted rather than copied — unlike the carve-out path, the frame
-    gate had no shipped sentence for a session that PROCEEDS. So the
-    prohibition has to bite on a new string, and it does: ``Finding`` itself
-    rejects a hardware noun, an internal slug, or a mechanism id, so a future
-    edit reaching for "woofer" fails at construction rather than in front of a
-    household. (Its realized-level sibling is held to the same bar, one test
-    up, where the noun ban is what forced the deleted refusal's wording to be
-    carried over rather than pasted.)
-    """
-
-    finding = _level_frame_finding()
-    assert finding.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
-    # The three checks, run against the shipped string rather than a fixture
-    # of it — this is the copy that will render.
-    assert Finding.from_mapping(finding.to_dict()).household_copy == (
-        LEVEL_FRAME_HOUSEHOLD_COPY
-    )
-    # It says what happened and no more. In particular it must NOT claim the
-    # tuning was applied: the candidate is a PROPOSAL at the moment this is
-    # minted, and the apply is a separate household action (two-stage split).
-    lowered = LEVEL_FRAME_HOUSEHOLD_COPY.lower()
-    assert "applied" not in lowered
-    assert "phone" not in lowered
-    for banned in ("was kept", "we have applied", "your speaker now"):
-        assert banned not in lowered
-    # …and it must not claim the check was INDEPENDENT. It is
-    # ``realized_branch_level_match``, whose own docstring says "One estimator,
-    # not a second opinion" — the same power-band average over the same halves
-    # that set the trim, re-read on the pair about to ship. It is independent
-    # of the fit's median and it is non-vacuous, but "an independent check"
-    # invites a household to read it as a second opinion that settled which
-    # measurement was right, and nothing in the session did that. Simple copy
-    # is allowed; false copy is not.
-    for overclaim in ("independent", "confirmed", "verified", "proved"):
-        assert overclaim not in lowered, overclaim
-    # Short enough to read on a review screen (IA over copy).
-    assert len(LEVEL_FRAME_HOUSEHOLD_COPY) < 260
-
-
-def test_the_banked_finding_re_decides_nothing() -> None:
-    """The flow owns the decision; this path owns the translation.
-
-    There is no threshold here, no comparison of the disagreement against the
-    tolerance, and no re-reading of the realized check — all three are the
-    gate's, and duplicating any of them would be the second computation of one
-    verdict §3.1 forbids. A record that says the estimators agreed, or that
-    the realized check failed, is still promoted verbatim: it could only have
-    arrived from a gate that decided to bank it, and second-guessing that here
-    would make two owners for one ruling.
-
-    ``reason`` is the ONE field it does read, and reading it is not
-    re-deciding: the producer already wrote which condition fired, and choosing
-    the sentence for a condition somebody else decided is exactly the
-    translation this path is for. What it must never do is compare
-    ``realized_difference_db`` against ``realized_tolerance_db`` itself, which
-    is what the second half of this test pins.
-    """
-
-    contradictory = _level_frame_finding(
-        estimator_worst_delta_db=0.1, realized_difference_db=99.0
-    )
-    assert contradictory is not None
-    assert contradictory.evidence["estimator_worst_delta_db"] == 0.1
-    assert contradictory.evidence["realized_difference_db"] == 99.0
-    # A realized number far past its own tolerance does not move the copy or
-    # the routing on an ESTIMATOR record: only ``reason`` does that. If the
-    # promoter ever re-derived the realized verdict, this record — whose
-    # realized error is 99 dB — would flip, and it must not.
-    assert contradictory.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
-    assert contradictory.fix_class == "document_as_physics"
-    # …and symmetrically, a realized-only record whose realized error is INSIDE
-    # tolerance still gets the realized treatment, because its reason says so.
-    inside = _realized_only_finding(realized_difference_db=-0.1)
-    assert inside is not None
-    assert inside.household_copy == REALIZED_LEVEL_HOUSEHOLD_COPY
-    assert inside.fix_class == "eq"
-
-
-def test_a_malformed_banked_record_is_refused_loudly_not_raised(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A findings failure must not cost a session the gate already decided
-    may proceed (§3.4: findings are *optional* evidence artifacts). So the
-    promoter returns ``None`` rather than raising — but never silently: the
-    reason is named on its own event, because a diagnosis that vanished is
-    indistinguishable from one that was never attempted.
-    """
-
-    caplog.set_level(logging.WARNING, logger="jasper.attribution.promotion")
-    assert _level_frame_finding(f_hi_hz=None) is None
-    fields = event_fields(caplog, "attribution.level_frame_promotion_refused")
-    assert "no usable band" in fields["error"]
-
-    caplog.clear()
-    # A non-finite evidence value is the other reachable shape: ``Finding``
-    # refuses it, and the refusal is reported rather than swallowed.
-    assert _level_frame_finding(disagreement_db=float("nan")) is None
-    assert event_records(caplog, "attribution.level_frame_promotion_refused")
-
-    # Not a mapping at all — the seam's own degenerate input.
-    assert promote_level_frame_disagreement(
-        None, session=_SESSION, cites=(_CITE,)
-    ) is None
 
 
 def test_m7_is_registered_with_no_detector_and_says_why() -> None:

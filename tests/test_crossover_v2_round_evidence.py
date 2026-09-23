@@ -2,22 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The two measurements one correction round compares (#2291 Phase 3c).
+"""One summed capture reduced for comparison, and the entry baseline a round
+records (#2291 Phase 3c).
 
-:mod:`jasper.active_speaker.crossover_v2.round_evidence` sits between a
-capture and a verdict: it reduces one summed at-the-mark
-:class:`~jasper.audio_measurement.program_analysis.ProgramAnalysis` to one side
-of the before/after benefit comparison, and it makes the ONE assembly decision
-:func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
-explicitly leaves to its caller — which exclusion mask both sides are graded
-on.
-
-So these tests are about three things, and deliberately not about verdicts
-(``tests/test_crossover_v2_verification.py`` owns those):
+These tests pin three things:
 
 1. the reduction is the SHIPPED owners' arithmetic, not a second copy;
-2. the mask is a UNION applied to BOTH sides, and comparability failures are
-   passed through rather than papered over;
+2. an entry baseline rehydrates only from a record this build wrote;
 3. :data:`~jasper.active_speaker.crossover_v2.round_evidence.MEASURED_BENEFIT_MARGIN_DB`
    is a FORK of ``material_improvement_db``, not an alias — the whole point of
    #2291's ledger item N8 is that the two must be free to move apart.
@@ -25,51 +16,16 @@ So these tests are about three things, and deliberately not about verdicts
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import round_evidence
-from jasper.active_speaker.crossover_v2.blend_correction import BLEND_NO_INCUMBENT
-from jasper.active_speaker.crossover_v2.contracts import (
-    ADOPTION_ROW_KEEP,
-    ADOPTION_ROW_KEEP_FOR_ITERATION,
-    ADOPTION_ROW_KEEP_ITERATING,
-    ADOPTION_ROW_RESTORE_FAILED,
-    ADOPTION_ROW_RESTORE_REGRESSION,
-    ADOPTION_ROW_RESTORE_UNSAFE,
-    ADOPTION_ROW_RESTORE_UNTRUSTED,
-    AdoptionOutcome,
-    BenefitStatus,
-    CaptureValidity,
-    EvidenceTrust,
-    QualityStatus,
-    RealizationStatus,
-    SpecStatus,
-)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     BENEFIT_CURVE_MAX_BINS,
-    MEASURED_BENEFIT_MARGIN_DB,
     EntryBaseline,
-    MeasuredResponse,
-    benefit_comparands,
     measured_response_from_analysis,
-)
-from jasper.active_speaker.crossover_v2.verification import (
-    BENEFIT_BASELINE_UNAVAILABLE,
-    BENEFIT_GRID_MISMATCH,
-    BENEFIT_NO_REGION_BAND,
-    BENEFIT_POST_UNAVAILABLE,
-    BENEFIT_PROGRAM_MISMATCH,
-    evaluate_benefit,
-    pooled_residual,
-)
-from jasper.audio_measurement.program_analysis import (
-    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-    ABSOLUTE_NO_TRUSTED_BAND,
 )
 
 _MARK = "design_axis_mark"
@@ -125,11 +81,7 @@ def _analysis(
 def test_the_curve_is_the_shipped_decimate_then_smooth_not_a_second_copy():
     """Asserted against the owners themselves, so a drifted copy cannot pass.
 
-    ``spec_report_for_predicted_sum`` puts one curve in front of
-    ``evaluate_flat_spec`` with exactly these two steps in exactly this order,
-    and doing it differently here would grade the round's two captures on a
-    different curve from every other spec-graded curve in the subsystem. The
-    expected value is computed by CALLING those owners rather than by baking
+    The expected value is computed by CALLING those owners rather than by baking
     numbers, so the pin follows them if they change and fails if this module
     stops using them.
     """
@@ -160,9 +112,9 @@ def test_the_program_id_and_mark_ride_through_unchanged():
     """Comparability's two identity fields are carried, never re-derived.
 
     ``program_id`` equality is the whole comparability check
-    (``MeasurementComparand``'s docstring: a SHA-256 over the excitation
-    schedule, so equal ids are a cryptographic guarantee of same program AND
-    same level). A reducer that minted its own id would make that guarantee
+    (:class:`~jasper.audio_measurement.program.ExcitationProgram`: a content
+    hash over the schedule, so equal ids are a cryptographic guarantee of same
+    program AND same level). A reducer that minted its own id would make that guarantee
     meaningless.
     """
     reduced = measured_response_from_analysis(
@@ -195,20 +147,10 @@ def test_an_unreducible_capture_is_none_never_a_raise(analysis):
     assert measured_response_from_analysis(analysis, reference_mark=_MARK) is None
 
 
-def test_a_curve_too_narrow_to_grade_still_reduces_and_the_evaluator_says_so():
-    """The reducer reduces; it does not grade, and it does not pre-judge.
-
-    A two-bin curve reaches no spec band, so there is no pooled residual to
-    difference — but that is the EVALUATOR's answer
-    (:data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_RESIDUAL_UNEVALUABLE`),
-    not a reason for the reducer to withhold the capture. Keeping the two
-    responsibilities apart is why "unevaluable" arrives with a reason instead
-    of as a missing side.
-    """
-    from jasper.active_speaker.crossover_v2.verification import (
-        BENEFIT_RESIDUAL_UNEVALUABLE,
-    )
-
+def test_a_curve_too_narrow_to_grade_still_reduces():
+    """The reducer reduces; it does not grade, and it does not pre-judge. A
+    two-bin curve reaches no spec band, but that is a grader's answer, not a
+    reason for the reducer to withhold the capture."""
     reduced = measured_response_from_analysis(
         _analysis(
             freqs=np.array([100.0, 200.0]), magnitude_db=np.array([0.0, 1.0])
@@ -216,12 +158,6 @@ def test_a_curve_too_narrow_to_grade_still_reduces_and_the_evaluator_says_so():
         reference_mark=_MARK,
     )
     assert reduced is not None
-
-    baseline, post = benefit_comparands(baseline=reduced, post=reduced)
-    verdict = evaluate_benefit(entry_baseline=baseline, post=post, margin_db=0.5)
-
-    assert verdict.status is BenefitStatus.INDETERMINATE
-    assert verdict.reason == BENEFIT_RESIDUAL_UNEVALUABLE
 
 
 # --------------------------------------------------------------------------- #
@@ -303,153 +239,8 @@ def test_a_floor_that_is_not_a_finite_number_screens_nothing(floor):
 
 
 # --------------------------------------------------------------------------- #
-# 3. the one assembly decision — a shared mask
-# --------------------------------------------------------------------------- #
-
-
-def _measured(program_id: str, hz, db, excluded) -> MeasuredResponse:
-    from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
-
-    return MeasuredResponse(
-        program_id=program_id,
-        reference_mark=_MARK,
-        curve=ResponseCurve(hz, db),
-        excluded=tuple(excluded),
-    )
-
-
-def test_the_two_sides_are_graded_on_the_union_of_their_screens():
-    """Union, applied to BOTH — the decision the evaluator delegates here.
-
-    Equal masks mean equal graded bins by construction, so the residual cannot
-    fall merely because the honesty screen grew. Asserted as the union of two
-    DIFFERENT single-bin screens, which an intersection (or either side's own
-    mask carried through unchanged) cannot satisfy.
-    """
-    hz, db = [100.0, 200.0, 300.0], [0.0, 1.0, 2.0]
-    baseline = _measured("p", hz, db, [True, False, False])
-    post = _measured("p", hz, db, [False, True, False])
-
-    got_baseline, got_post = benefit_comparands(baseline=baseline, post=post)
-
-    assert got_baseline is not None and got_post is not None
-    assert got_baseline.exclusion_mask == (True, True, False)
-    assert got_post.exclusion_mask == (True, True, False)
-
-
-def test_a_grid_disagreement_leaves_each_side_on_its_own_screen():
-    """Comparability is the evaluator's answer, never manufactured here.
-
-    A caller that quietly interpolated one side onto the other's grid would be
-    inventing the comparability the round exists to check, and the verdict
-    would read as a measurement instead of an assumption.
-
-    The discriminating assertion is on the MASKS, not on the verdict: the
-    evaluator checks grids before masks, so it reports
-    ``incomparable_frequency_grid`` whether or not this function unioned
-    anything — a verdict-only assertion would pass for a version that had
-    quietly merged two incomparable screens. Two DIFFERENT single-bin screens
-    that each survive unchanged is what only the pass-through does.
-    """
-    baseline = _measured("p", [100.0, 200.0], [0.0, 0.0], [True, False])
-    post = _measured("p", [100.0, 250.0], [0.0, 0.0], [False, True])
-
-    got_baseline, got_post = benefit_comparands(baseline=baseline, post=post)
-
-    assert got_baseline is not None and got_post is not None
-    assert got_baseline.exclusion_mask == (True, False)
-    assert got_post.exclusion_mask == (False, True)
-    assert got_baseline.curve.hz != got_post.curve.hz
-    verdict = evaluate_benefit(
-        entry_baseline=got_baseline, post=got_post, margin_db=0.5
-    )
-    assert verdict.status is BenefitStatus.INDETERMINATE
-    assert verdict.reason == BENEFIT_GRID_MISMATCH
-
-
-def test_grids_of_different_lengths_do_not_raise_on_the_way_to_the_verdict():
-    """The strict zip is only safe because the grid check runs first.
-
-    ``zip(..., strict=True)`` is deliberate — silently truncating one side's
-    mask is the class of bug this whole module exists to prevent — but it
-    means a length disagreement that reached it would be a ``ValueError``
-    escaping into a household verdict. The grid guard is what keeps it out of
-    reach, and this is the pin on that ordering.
-    """
-    baseline = _measured("p", [100.0, 200.0], [0.0, 0.0], [False, False])
-    post = _measured("p", [100.0, 200.0, 300.0], [0.0, 0.0, 0.0], [False] * 3)
-
-    got_baseline, got_post = benefit_comparands(baseline=baseline, post=post)
-    verdict = evaluate_benefit(
-        entry_baseline=got_baseline, post=got_post, margin_db=0.5
-    )
-
-    assert verdict.reason == BENEFIT_GRID_MISMATCH
-
-
-def test_a_program_disagreement_is_named_by_the_evaluator_not_hidden():
-    """The 2026-08-10 shape: a "before" that was never the same question."""
-    hz, db = [100.0, 200.0], [0.0, 0.0]
-    baseline = _measured("prog-old", hz, db, [False, False])
-    post = _measured("prog-new", hz, db, [False, False])
-
-    got_baseline, got_post = benefit_comparands(baseline=baseline, post=post)
-    verdict = evaluate_benefit(
-        entry_baseline=got_baseline, post=got_post, margin_db=0.5
-    )
-
-    assert verdict.status is BenefitStatus.INDETERMINATE
-    assert verdict.reason == BENEFIT_PROGRAM_MISMATCH
-
-
-@pytest.mark.parametrize(
-    ("drop", "reason"),
-    [("baseline", BENEFIT_BASELINE_UNAVAILABLE), ("post", BENEFIT_POST_UNAVAILABLE)],
-)
-def test_a_missing_side_is_indeterminate_and_says_which_side(drop, reason):
-    hz, db = [100.0, 200.0], [0.0, 0.0]
-    present = _measured("p", hz, db, [False, False])
-
-    got_baseline, got_post = benefit_comparands(
-        baseline=None if drop == "baseline" else present,
-        post=None if drop == "post" else present,
-    )
-    verdict = evaluate_benefit(
-        entry_baseline=got_baseline, post=got_post, margin_db=0.5
-    )
-
-    assert verdict.status is BenefitStatus.INDETERMINATE
-    assert verdict.reason == reason
-
-
-# --------------------------------------------------------------------------- #
 # 4. the persisted entry baseline
 # --------------------------------------------------------------------------- #
-
-
-def test_the_entry_baseline_round_trips_through_the_durable_shape():
-    """It crosses the stage bridge as JSON; nothing may be lost on the way.
-
-    Every field, exhaustively — a partial round-trip is how a curve arrives in
-    stage 2 with its mask silently reset to all-false, which would grade the
-    two captures over different bins while looking comparable.
-    """
-    reduced = measured_response_from_analysis(
-        _analysis(validity_floor_hz=300.0), reference_mark=_MARK
-    )
-    assert reduced is not None
-    original = EntryBaseline.from_measurement(
-        reduced,
-        graph_fingerprint="graph-fp",
-        captured_at="2026-08-11T00:00:00Z",
-        artifact_ref="entry_baseline_a01",
-    )
-
-    rehydrated = EntryBaseline.from_dict(original.to_dict())
-
-    assert rehydrated == original
-    assert rehydrated is not None
-    assert rehydrated.as_measurement() == reduced
 
 
 def _complete_record(**overrides) -> dict:
@@ -522,6 +313,30 @@ def test_anything_this_build_did_not_write_rehydrates_as_no_baseline(record):
     assert EntryBaseline.from_dict(record) is None
 
 
+def test_the_entry_baseline_round_trips_through_the_durable_shape():
+    """It crosses the stage bridge as JSON; nothing may be lost on the way.
+
+    Every field, exhaustively — a partial round-trip is how a curve arrives in
+    stage 2 with its mask silently reset to all-false, which would grade the
+    two captures over different bins while looking comparable.
+    """
+    reduced = measured_response_from_analysis(
+        _analysis(validity_floor_hz=300.0), reference_mark=_MARK
+    )
+    assert reduced is not None
+    original = EntryBaseline.from_measurement(
+        reduced,
+        graph_fingerprint="graph-fp",
+        captured_at="2026-08-11T00:00:00Z",
+        artifact_ref="entry_baseline_a01",
+    )
+
+    rehydrated = EntryBaseline.from_dict(original.to_dict())
+
+    assert rehydrated == original
+    assert rehydrated is not None
+
+
 # --------------------------------------------------------------------------- #
 # 5. the margin is a fork, not an alias (#2291 ledger item N8)
 # --------------------------------------------------------------------------- #
@@ -581,564 +396,3 @@ def test_the_benefit_margin_is_a_literal_this_module_owns_not_a_borrowed_one():
         f"the margin's module must not import {borrowed & imported} — "
         "the two constants have to stay free to move apart"
     )
-
-
-
-
-# --------------------------------------------------------------------------- #
-# 6. the round, composed — evaluate_round and the receipt
-# --------------------------------------------------------------------------- #
-
-
-def _integrity(*, failed=(), not_evaluated=()):
-    """A CaptureIntegrity-shaped double: the two properties the rule reads."""
-    return SimpleNamespace(failed=tuple(failed), not_evaluated=tuple(not_evaluated))
-
-
-def _post(*, tracking_db=1.0, integrity=..., program_id="prog-a"):
-    """A post-apply VERIFY analysis double."""
-    hz = _grid()
-    db = np.sin(np.log10(np.maximum(hz, 1.0)) * 5.0)
-    return SimpleNamespace(
-        program_id=program_id,
-        summed_response=SimpleNamespace(
-            freqs_hz=hz, magnitude_db=db, validity_floor_hz=None
-        ),
-        capture_integrity=_integrity() if integrity is ... else integrity,
-        verify_tracking={"max_db_notch_excluded": tracking_db},
-    )
-
-
-def _flatter(analysis, *, factor: float):
-    """The same capture with its deviation scaled — flatter below 1.0.
-
-    Scaling the deviation is what moves the pooled residual; a constant offset
-    would not, because the evaluator normalizes each curve to its own
-    reference band. So the improved/regressed fixtures below differ in the
-    quantity actually being graded, not in level.
-    """
-    hz = np.asarray(analysis.summed_response.freqs_hz, dtype=float)
-    db = np.asarray(analysis.summed_response.magnitude_db, dtype=float) * factor
-    return SimpleNamespace(
-        program_id=analysis.program_id,
-        summed_response=SimpleNamespace(
-            freqs_hz=hz, magnitude_db=db, validity_floor_hz=None
-        ),
-        capture_integrity=analysis.capture_integrity,
-        verify_tracking=analysis.verify_tracking,
-    )
-
-
-def _baseline_from(analysis, *, graph_fingerprint="entry-graph") -> EntryBaseline:
-    reduced = measured_response_from_analysis(analysis, reference_mark=_MARK)
-    assert reduced is not None
-    return EntryBaseline.from_measurement(
-        reduced,
-        graph_fingerprint=graph_fingerprint,
-        captured_at="2026-08-11T00:00:00Z",
-        artifact_ref="entry_baseline_a01",
-    )
-
-
-def _round(post, baseline, **overrides):
-    kwargs = {
-        "post_analysis": post,
-        "entry_baseline": baseline,
-        "spec_report": None,
-        "tracking": getattr(post, "verify_tracking", None),
-        "realization_tolerance_db": 1.5,
-        "reference_mark": _MARK,
-        "boosted": False,
-        "rollback_available": True,
-    }
-    kwargs.update(overrides)
-    return round_evidence.evaluate_round(**kwargs)
-
-
-def test_an_unusable_capture_short_circuits_and_the_other_three_say_why():
-    """Not computed and discarded — not computed at all.
-
-    ``verification_result`` already collapses the statuses, so a version that
-    graded all four and then overwrote three would produce the same CONTRACT.
-    What it would not produce is honest LOGGING: the discarded verdicts would
-    still be carrying numbers, and the journal would show a benefit that no
-    usable capture supports. The reason strings are the discriminator.
-    """
-    from jasper.active_speaker.crossover_v2.verification import (
-        CAPTURE_INTEGRITY_FAILED,
-    )
-
-    post = _post(integrity=_integrity(failed=("glitch",)))
-    evaluation = _round(post, _baseline_from(_post()))
-
-    assert evaluation.capture.reason == CAPTURE_INTEGRITY_FAILED
-    assert evaluation.realization.reason == CAPTURE_INTEGRITY_FAILED
-    assert evaluation.benefit.reason == CAPTURE_INTEGRITY_FAILED
-    assert evaluation.spec.reason == CAPTURE_INTEGRITY_FAILED
-    assert evaluation.post_residual_db is None
-    assert evaluation.adoption.outcome is not AdoptionOutcome.KEEP
-
-
-def test_a_model_tracking_pass_does_not_override_a_measured_regression():
-    """The 2026-08-10 shape, end to end through the composition.
-
-    Tracking well inside its 1.5 dB tolerance, and a speaker that measurably
-    got worse. The shipped build called that passed; the table calls it a
-    restore, and this asserts the composition really routes both statuses in
-    rather than short-circuiting on the tracking answer.
-    """
-
-    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
-    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
-
-    evaluation = _round(worse_post, flat_baseline)
-
-    assert evaluation.realization.status is RealizationStatus.MATCHED
-    assert evaluation.benefit.status is BenefitStatus.REGRESSED
-    assert evaluation.adoption.outcome is AdoptionOutcome.RESTORE
-
-
-def _failing_spec_report(analysis):
-    from jasper.active_speaker.flat_spec import evaluate_flat_spec
-
-    hz = np.asarray(analysis.summed_response.freqs_hz, dtype=float)
-    report = evaluate_flat_spec(
-        hz,
-        np.asarray(analysis.summed_response.magnitude_db, dtype=float) * 8.0,
-        np.zeros(hz.size, dtype=bool),
-    )
-    assert report.overall_within_target is False
-    return report
-
-
-def test_realized_and_improved_keeps_even_with_a_failing_spec():
-    """"Improved and still out of spec" is a valid keep — #2160's boundary.
-
-    The post-cloud spec verdict is wired in as an ANSWER, not a gate. If it
-    were a gate, a first pass that honestly moved the speaker forward would be
-    thrown away for not being perfect.
-
-    #2537 left this cell exactly where it was — a realized, improved round is
-    still a plain ``KEEP`` — and put the failing band on the receipt as the next
-    round's target beside it.
-
-    **AMENDED BY #2602.** The graph is still kept, which is the whole claim of
-    this test and of #2160's boundary. What changed is that this round no
-    longer *ends the series*: the report it failed against still measures real
-    tilt and ripple, so the fourth axis says a flatter result is reachable and
-    the round lands on row 6 instead of row 1. The assertion is written as
-    "keeps, and specifically keeps-while-iterating" rather than loosened to
-    "some keeping outcome", so a regression that stopped iterating here would
-    still fail.
-    """
-
-    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
-    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
-
-    evaluation = _round(
-        better_post, rough_baseline, spec_report=_failing_spec_report(better_post)
-    )
-
-    assert evaluation.benefit.status is BenefitStatus.IMPROVED
-    assert evaluation.spec.status is SpecStatus.FAILED
-    assert evaluation.quality.status is QualityStatus.PASSED
-    assert evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
-    assert evaluation.adoption.row == ADOPTION_ROW_KEEP_ITERATING
-    assert any(
-        target.startswith("spec:")
-        for target in evaluation.quality.evidence["targets"]
-    )
-
-
-def test_the_pooled_residual_survives_a_round_with_no_comparable_baseline():
-    """The round's own pooled number and the benefit verdict are different
-    questions: the residual grades one measurement, the verdict differences
-    two. So a round with no "before" still records a number of its own while
-    its verdict is indeterminate, and the journal line says both.
-
-    (This used to claim the residual feeds the attempts ledger. It does not —
-    #2433; see ``RoundEvaluation.post_residual_db``'s own docstring for where
-    the ledger's grade comes from.)
-    """
-    evaluation = _round(_post(), None)
-
-    assert evaluation.benefit.status is BenefitStatus.INDETERMINATE
-    assert evaluation.benefit.reason == BENEFIT_BASELINE_UNAVAILABLE
-    assert evaluation.post_residual_db is not None
-    assert evaluation.post_residual_bins is not None
-    assert evaluation.post_residual_db > 0.0
-
-
-def test_the_rounds_residual_is_the_union_masked_number_the_benefit_axis_graded():
-    """The field is fed the comparand the benefit axis graded — union mask and
-    all — not the post capture's own screen.
-
-    There is one reduction with one owner now
-    (``verification.pooled_residual``), so "the two computations agree" is no
-    longer a claim a test could falsify. The WIRING still is: ``evaluate_round``
-    picks which comparand to hand that owner, and handing it the un-unioned
-    post would grade the round's own number on a different denominator from the
-    verdict printed beside it in the journal line.
-
-    So the two masks are made to DIFFER — the baseline carries a validity floor
-    the post does not — and the expectation is computed by calling the owners
-    rather than baked. The previous fixture could not tell the two apart: both
-    sides set ``validity_floor_hz=None``, so the union degenerated to the post's
-    own mask and the un-unioned comparand passed just as well.
-    """
-    flatter = _flatter(_post(), factor=3.0)
-    flatter.summed_response.validity_floor_hz = 800.0
-    baseline = _baseline_from(flatter)
-    post = _post()
-
-    evaluation = _round(post, baseline)
-
-    reduced = measured_response_from_analysis(post, reference_mark=_MARK)
-    assert reduced is not None
-    _, union_side = benefit_comparands(
-        baseline=baseline.as_measurement(), post=reduced
-    )
-    # The no-baseline arm IS the un-unioned post comparand, so the losing
-    # candidate is the same function's other answer rather than a hand-built
-    # double.
-    _, post_only_side = benefit_comparands(baseline=None, post=reduced)
-    assert union_side is not None and post_only_side is not None
-    union = pooled_residual(union_side)
-    post_only = pooled_residual(post_only_side)
-    assert union is not None and post_only is not None
-    # Without this the fixture is toothless and both candidates pass.
-    assert union != post_only
-
-    assert evaluation.post_residual_db == pytest.approx(union[0])
-    assert evaluation.post_residual_bins == union[1]
-    assert evaluation.benefit.evidence["post_residual_db"] == pytest.approx(
-        union[0]
-    )
-    assert evaluation.benefit.evidence["n_bins"] == union[1]
-
-
-POST_RESIDUAL_FIELD_READERS = frozenset({
-    "jasper/active_speaker/crossover_v2/coordinator.py::_log_round",
-    "jasper/active_speaker/crossover_v2/round_evidence.py::RoundEvaluation.to_dict",
-})
-
-
-def _post_residual_field_reads() -> set[str]:
-    """Attribute reads only — the same-named evidence KEYS (``region_benefit``'s
-    region-masked one, ``evaluate_benefit``'s pooled one) are subscripts of a
-    dict and are deliberately invisible here."""
-    repo_root = Path(__file__).resolve().parents[1]
-    fields = {"post_residual_db", "post_residual_bins"}
-    found: set[str] = set()
-
-    def walk(node, scope: list[str], relative: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(
-                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            ):
-                walk(child, [*scope, child.name], relative)
-                continue
-            if isinstance(child, ast.Attribute) and child.attr in fields:
-                found.add(f"{relative}::{'.'.join(scope) or '<module>'}")
-            walk(child, scope, relative)
-
-    for path in sorted((repo_root / "jasper").rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        # Substring pre-filter, not a second rule: a file whose text does not
-        # contain the name cannot parse to an attribute access on it, and
-        # parsing every module instead costs ~25x the wall time.
-        if "post_residual" not in source:
-            continue
-        relative = path.relative_to(repo_root).as_posix()
-        walk(ast.parse(source), [], relative)
-    return found
-
-
-def test_the_pooled_residual_is_read_only_by_the_rounds_journal():
-    """#2433: the field's "readership is the journal line, and that is the
-    whole list" is a claim about the call graph, so it gets a detector rather
-    than a sentence. Two-sided: a new reader fails, and so does a stale entry
-    here once its site goes — a claim nothing can falsify is how the ledger
-    sentence this PR corrects survived being wrong."""
-    assert _post_residual_field_reads() == POST_RESIDUAL_FIELD_READERS
-
-
-def test_a_restore_the_host_cannot_perform_escalates_it_never_keeps():
-    """No anchor plus a restore verdict is ``recovery_required``, loudly."""
-
-    flat_baseline = _baseline_from(_flatter(_post(), factor=0.2))
-    worse_post = _flatter(_post(tracking_db=0.4), factor=2.0)
-
-    evaluation = _round(worse_post, flat_baseline, rollback_available=False)
-
-    assert evaluation.benefit.status is BenefitStatus.REGRESSED
-    assert evaluation.adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-    assert evaluation.adoption.reason.startswith(
-        "restore_required_without_rollback_anchor"
-    )
-
-
-def test_a_failed_restore_outranks_every_other_answer():
-
-    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
-    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
-
-    evaluation = _round(better_post, rough_baseline, restore_failed=True)
-
-    # The evidence says keep; the speaker is in neither graph, so it does not.
-    assert evaluation.benefit.status is BenefitStatus.IMPROVED
-    assert evaluation.adoption.outcome is AdoptionOutcome.RECOVERY_REQUIRED
-
-
-def test_an_unprovable_benefit_keeps_the_measured_graph_boosted_or_not():
-    """#2537's correction, at the composed-round level.
-
-    This test used to pin the opposite: a round with no comparable baseline
-    RESTORED when the intervention carried a boost and asked the household when
-    it did not. That is the rule that threw away the 2026-08-15 JTS3 cycle-4
-    candidate — a usable capture, a tracked realization, a measured pooled
-    residual of 0.915 dB, reverted to a state nobody had measured.
-
-    An unprovable benefit is now a QUALITY unknown: the applied state WAS
-    measured, so it stays and the missing comparison becomes a target. The
-    boost modifier is invisible here because the evidence is trusted; it
-    survives only on the untrusted row (pinned in
-    ``tests/test_crossover_v2_verification.py``).
-    """
-
-    post = _post()
-
-    boosted = _round(post, None, boosted=True)
-    cut_only = _round(post, None, boosted=False)
-
-    assert boosted.benefit.status is BenefitStatus.INDETERMINATE
-    assert boosted.trust.status is EvidenceTrust.TRUSTED
-    assert boosted.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
-    assert boosted.adoption.row == ADOPTION_ROW_KEEP_FOR_ITERATION
-    # Boosted and cut-only agree completely: the modifier reads nothing here.
-    assert cut_only.adoption == boosted.adoption
-    assert any(
-        target.startswith("benefit:")
-        for target in boosted.quality.evidence["targets"]
-    )
-
-
-def test_an_unusable_capture_still_fails_a_boost_closed():
-    """The one place ``unproven_boost_failed_closed`` survives (#2537).
-
-    With no usable capture there is no measurement of the applied state at all,
-    so the pre-#2537 sentence still holds verbatim: a boost whose benefit we
-    cannot show is energy we put into a driver and cannot justify.
-    """
-
-    unusable = _post(integrity=_integrity(failed=("clipped_run",)))
-    boosted = _round(unusable, None, boosted=True)
-
-    assert boosted.capture.status is CaptureValidity.UNUSABLE
-    assert boosted.trust.status is EvidenceTrust.UNTRUSTED
-    assert boosted.adoption.outcome is AdoptionOutcome.RESTORE
-
-
-def test_the_spec_answer_never_changes_whether_the_graph_is_kept():
-    """Spec is "any" in every row of the issue's table; pinned by permutation.
-
-    #2160's wire adds an answer to the receipt. If it ever adds a gate, that
-    is a table change with evidence attached — and this test is what makes
-    that a deliberate act rather than a quiet one.
-
-    **AMENDED BY #2602, and narrowed to the half that is actually the
-    invariant.** This used to assert ``len(outcomes) == 1`` and
-    ``len(rows) == 1``. It cannot, now, and the reason is the ruling itself:
-    the fourth axis reads the post-apply report's measured tilt and ripple to
-    decide whether another round is worth running, so a report with 2 dB of
-    tilt left and a report that is already flat MUST reach different rows.
-    Demanding one row would be demanding that the series cannot iterate toward
-    flat, which is the behaviour #2602 exists to add.
-
-    What was always the point of the pin — and what is asserted below,
-    unweakened — is that **spec cannot take a graph off a speaker**. Every
-    permutation still lands on a keeping outcome, none restores, and none
-    escalates. That is the "improved and still out of spec is an honest first
-    pass" guarantee, and it does not depend on the row being constant.
-
-    Two further protections stay in force, neither of them this test's:
-
-    * The spec VERDICT still moves nothing. ``evaluate_round_quality``'s own
-      permutation pin (``test_the_spec_verdict_never_moves_the_quality_STATUS``,
-      in the verification suite) is untouched — ``decide_adoption`` never reads
-      a ``SpecStatus``, and the fourth axis reads measured dB rather than a
-      pass/fail against a tolerance row.
-    * #2537's second reason for the pin — that spec numbers were computed with
-      no intersection against the session's trusted floor, so a decision keyed
-      on them would inherit a gate-length term — **was a precondition, and it
-      has since been met.** #2551 landed that intersection (``BandResult``
-      carries ``graded_lo_hz``; ``FlatSpecReport`` carries
-      ``trusted_floor_hz``), which is what makes an axis reading these numbers
-      admissible now and would not have then.
-    """
-    from jasper.active_speaker.flat_spec import evaluate_flat_spec
-
-    rough_baseline = _baseline_from(_flatter(_post(), factor=6.0))
-    better_post = _flatter(_post(tracking_db=0.4), factor=1.0)
-    hz = np.asarray(better_post.summed_response.freqs_hz, dtype=float)
-    reports = [
-        None,
-        _failing_spec_report(better_post),
-        evaluate_flat_spec(hz, np.zeros(hz.size), np.zeros(hz.size, dtype=bool)),
-    ]
-
-    evaluations = [
-        _round(better_post, rough_baseline, spec_report=report)
-        for report in reports
-    ]
-    outcomes = {evaluation.adoption.outcome for evaluation in evaluations}
-    rows = {evaluation.adoption.row for evaluation in evaluations}
-    statuses = {evaluation.spec.status for evaluation in evaluations}
-
-    assert outcomes <= {
-        AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION
-    }, "spec must never take the graph off the speaker"
-    assert not rows & {
-        ADOPTION_ROW_RESTORE_UNSAFE,
-        ADOPTION_ROW_RESTORE_UNTRUSTED,
-        ADOPTION_ROW_RESTORE_REGRESSION,
-        ADOPTION_ROW_RESTORE_FAILED,
-    }, "…nor route a permutation onto a restoring row"
-    assert len(statuses) == 3, "…while still producing three different answers"
-    # And the rows that DO differ differ only in whether another round runs —
-    # both of them keep. Without this, "outcomes are all keeping" could be
-    # satisfied by a table that had quietly stopped distinguishing them.
-    assert rows <= {ADOPTION_ROW_KEEP, ADOPTION_ROW_KEEP_ITERATING}
-    # Not inert, though: it reaches the receipt as a target for the next round.
-    failing = next(
-        evaluation for evaluation in evaluations
-        if evaluation.spec.status is SpecStatus.FAILED
-    )
-    assert any(
-        target.startswith("spec:")
-        for target in failing.quality.evidence["targets"]
-    )
-
-
-def _receipt_kwargs(evaluation, baseline, **overrides):
-    kwargs = dict(
-        round_id="cap_round_1",
-        evaluation=evaluation,
-        entry_baseline=baseline,
-        entry_graph_fingerprint="entry-graph",
-        rollback_anchor={"candidate_fingerprint": "anchor-fp"},
-        proposal_fingerprint="proposal-fp",
-        proposal_fingerprint_kind="intervention_proposal",
-        applied_graph_fingerprint="applied-fp",
-        post_measurement={"program_id": "prog-a"},
-        advice=None,
-        evidence_identities={"commanded_delta": "delta-fp"},
-        created_at="2026-08-11T00:05:00Z",
-    )
-    kwargs.update(overrides)
-    return kwargs
-
-
-def test_the_receipt_carries_the_baselines_identity_not_its_curve():
-    """A receipt is a record, not a second copy of the measurement.
-
-    The curve already has two owners that outlive this record (the retained
-    capture and the durable ``verify_priors``). Copying it here would make the
-    receipt large and tie its fingerprint to a decimation choice.
-    """
-    baseline = _baseline_from(_post())
-    evaluation = _round(_post(), baseline)
-
-    receipt = round_evidence.build_round_receipt(
-        **_receipt_kwargs(evaluation, baseline)
-    )
-
-    assert receipt.entry_baseline["program_id"] == baseline.program_id
-    assert receipt.entry_baseline["artifact_ref"] == "entry_baseline_a01"
-    assert receipt.entry_baseline["n_bins"] == len(baseline.curve.hz)
-    assert "freqs_hz" not in receipt.entry_baseline
-    assert "magnitude_db" not in receipt.entry_baseline
-    assert receipt.verification is evaluation.result
-    assert receipt.adoption is evaluation.adoption
-    assert receipt.fingerprint
-
-
-def test_the_receipt_fingerprint_moves_when_a_committed_value_moves():
-    """Otherwise it is a checksum of nothing in particular."""
-    baseline = _baseline_from(_post())
-    evaluation = _round(_post(), baseline)
-    base = _receipt_kwargs(evaluation, baseline)
-
-    reference = round_evidence.build_round_receipt(**base).fingerprint
-    assert round_evidence.build_round_receipt(**base).fingerprint == reference
-
-    for field, changed in (
-        ("round_id", "cap_round_2"),
-        ("entry_graph_fingerprint", "other-graph"),
-        ("proposal_fingerprint", "other-proposal"),
-        # #2392: the SAME digest under the other regime is a different receipt.
-        # Without this row the marker could ride outside the fingerprint and a
-        # banked receipt could be relabelled without its digest noticing.
-        ("proposal_fingerprint_kind", "candidate"),
-        ("applied_graph_fingerprint", "other-applied"),
-        ("rollback_anchor", {"candidate_fingerprint": "other-anchor"}),
-        ("post_measurement", {"program_id": "prog-b"}),
-        ("evidence_identities", {"commanded_delta": "other-delta"}),
-        ("created_at", "2026-08-11T00:06:00Z"),
-    ):
-        moved = _receipt_kwargs(evaluation, baseline, **{field: changed})
-        assert (
-            round_evidence.build_round_receipt(**moved).fingerprint != reference
-        ), f"{field} is committed and must reach the fingerprint"
-
-
-def test_the_margin_is_positive_and_the_evaluator_accepts_it():
-    """A margin the evaluator would refuse is a margin nothing can use.
-
-    ``evaluate_benefit`` validates ``margin_db`` through the contracts
-    module's positive-dB rule, so this both pins the sign and proves the two
-    modules agree about what a margin is.
-    """
-    side = measured_response_from_analysis(_analysis(), reference_mark=_MARK)
-    assert side is not None
-    baseline, post = benefit_comparands(baseline=side, post=side)
-
-    verdict = evaluate_benefit(
-        entry_baseline=baseline, post=post, margin_db=MEASURED_BENEFIT_MARGIN_DB
-    )
-
-    assert MEASURED_BENEFIT_MARGIN_DB > 0.0
-    # The same capture on both sides: exactly zero improvement, which is
-    # inside any positive margin — so the round declines to claim a change it
-    # did not measure, and the margin it declined against is disclosed.
-    assert verdict.status is BenefitStatus.INDETERMINATE
-    assert verdict.evidence["improvement_db"] == pytest.approx(0.0)
-    assert verdict.evidence["margin_db"] == pytest.approx(MEASURED_BENEFIT_MARGIN_DB)
-
-
-@pytest.mark.parametrize(
-    ("reason", "blend_reason", "benefit_reason"),
-    [
-        (ABSOLUTE_NO_CROSSOVER_TOPOLOGY, ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-         ABSOLUTE_NO_CROSSOVER_TOPOLOGY),
-        (ABSOLUTE_NO_TRUSTED_BAND, BLEND_NO_INCUMBENT, BENEFIT_NO_REGION_BAND),
-    ],
-    ids=["no_crossover_at_all", "region_not_established"],
-)
-def test_the_two_bandless_rounds_are_told_apart_by_both_region_blocks(
-    reason, blend_reason, benefit_reason,
-):
-    """A 1-way main HAS no crossover; a 2-way round can fail to establish one.
-
-    Both leave the band absent, and one slug may not cover both: one remedy is
-    to re-measure, the other is that nothing is wrong and never will be.
-    """
-    post = _post()
-    post.verify_absolute = {"not_evaluated": reason}
-
-    evaluation = _round(post, _baseline_from(_post()))
-
-    assert evaluation.blend.reason == blend_reason
-    assert evaluation.blend.band_hz is None
-    assert evaluation.region_benefit.reason == benefit_reason
-    assert evaluation.region_benefit.status is BenefitStatus.INDETERMINATE

@@ -148,12 +148,6 @@ TIMING_NEEDS_MEASUREMENT = "needs_measurement"
 TIMING_SAVED = "saved"
 TIMING_AUTHORED = "authored"
 TIMING_ESTIMATE = "estimate"
-#: Commitments an explicit prescription produced; read by
-#: crossover_v2.coordinator._round_measurements as the prescription's ``committed`` bit.
-ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-})
 #: Commitments where the flat-sum objective chose the POLARITY — necessary but
 #: not sufficient for :attr:`AlignmentPairSelection.polarity_agrees_with_sum`,
 #: which checks :attr:`~AlignmentPairSelection.polarity_pinned` first.
@@ -189,9 +183,8 @@ RIPPLE_TRIM_MAX_DB = 0.0
 RIPPLE_TRIM_MIN_DB = -60.0
 
 # How far the two branches' realized levels (mirrored +/-1-octave
-# half-bands about Fc) may sit apart after the committed trim before being
-# REPORTED as mislevelled — a DISCLOSURE, not a gate
-# (crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB). Floor: five
+# half-bands about Fc) may sit apart after the committed trim and still count
+# as level matched. Floor: five
 # archived JTS3 cdhorn captures agree to 0.51-1.30 dB. Ceiling: an
 # inter-branch error reaches flat_spec.SPEC_BANDS[1]'s 2.0 dB tolerance at
 # ~2.0 dB, so 2-3 dB errors are spec failures this does not flag.
@@ -958,9 +951,6 @@ class ProgramAnalysis:
     # MEASURE-predicted summed magnitude at the candidate's COMMITTED trim
     # and delay, handed to VERIFY as `MeasurementPriors.predicted_sum` so
     # VERIFY's pass is |measured - predicted| <= +/-1.5 dB (design §5.2).
-    # Quality is graded separately:
-    # `crossover_v2.diagnostics.spec_report_for_predicted_sum` and
-    # `CrossoverCandidate.predicted_ripple_db`.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     # Set by MEASURE from `drift.glitch_detected`, by VERIFY from
     # `capture_integrity.glitched` — a one-bit projection of the record that owns the fact.

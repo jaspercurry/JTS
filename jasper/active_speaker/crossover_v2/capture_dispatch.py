@@ -6,16 +6,13 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Mapping
 
-from jasper.audio_measurement import gate_disclosure
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
-    channel_map_isolation_db,
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
@@ -297,28 +294,6 @@ def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     return bool(_clipped_stimulus_peaks(analysis))
 
 
-def ripple_reservation_due(
-    *,
-    predicted_ripple_db: float,
-    has_alignment: bool,
-    disclosure_threshold_db: float,
-) -> bool:
-    """Does this accepted MEASURE owe the household a ripple reservation?
-
-    **This decides a disclosure, never a refusal.** See ADR-0002. A predicted
-    ripple above the threshold says the two branches sum less coherently in
-    this room than the calibration corpus did; the capture is still accepted,
-    and what changes is what the household is TOLD.
-
-    The caller establishes that a candidate EXISTS; this owns the other half of
-    the shipped skip — without an alignment estimate there is no reservation to
-    make.
-    """
-    if not has_alignment:
-        return False
-    return predicted_ripple_db > disclosure_threshold_db
-
-
 def _unanchored_sweep_roles(analysis: ProgramAnalysis) -> frozenset[str | None]:
     """Sweep roles a branch program's leading pilot pair does NOT anchor.
 
@@ -376,150 +351,6 @@ def _gate_window_ms(response: Any) -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
-def _gate_floor_source(response: Any) -> str | None:
-    """WHY ``_gate_window_ms`` is what it is — travels beside it everywhere.
-
-    ``gating.FLOOR_MEASURED`` = a reflection onset was found and the window stops
-    at it; ``gating.FLOOR_SEARCH_BOUND`` = the search reached
-    ``gating.SEARCH_T_MAX_MS`` without finding one and the window was CAPPED
-    there. Both print as the same ``gate_window_ms`` number, and a whole corpus
-    was the second state while every consumer read it as the first (#1966).
-    ``None`` is an ungateable capture, never a guess.
-    """
-    if response is None:
-        return None
-    source = response.gating.get("floor_source") if response.gating else None
-    return str(source) if isinstance(source, str) else None
-
-
-def _gate_trusted_band_hz(response: Any) -> tuple[float, float] | None:
-    """The band this capture's own gate says it can be judged over (#2521).
-
-    Read, never derived here: the band POLICY has one owner,
-    ``gate_disclosure.evaluation_band_hz``, called with this capture's TRUSTED
-    floor (``2.5/T``) and the band its stimulus actually radiated. This function
-    only picks that pair off the typed record.
-
-    ``None`` for an ungateable capture, a capture whose program declared no sweep
-    bounds, or an empty intersection — that is the finding. A caller must NOT
-    substitute the raw grid edges: doing exactly that is what let the delta probe
-    grade 22,480 Hz on a capture trusted only to 20,000 (#2521).
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    return gate_disclosure.build_gate_disclosure(response.gating).delta_band_hz
-
-
-def _gate_disclosure(response: Any) -> str | None:
-    """``_gate_floor_source`` and its floors, rendered as one sentence.
-
-    Rendered, never composed here: the copy has a single writer,
-    ``gate_disclosure.describe_gate``, so the per-position evidence file and the
-    retained-capture sidecar cannot describe one gate two different ways.
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    return gate_disclosure.describe_gate(response.gating)
-
-
-def _gate_moved_rms_db(response: Any) -> float | None:
-    """How far the gate moved the response's SHAPE, in dB RMS.
-
-    The number :func:`_gate_disclosure`'s sentence already narrates, taken off
-    the same typed record rather than re-derived, so the digits in the prose and
-    in the field cannot disagree. Only interpretable beside
-    ``gate_floor_source``: a small delta means "genuinely clean" on a measured
-    bound and "nothing was proven" on a ceiling-capped one.
-
-    ``None`` when no delta could be priced at all — an ungateable capture, or one
-    whose program declared no radiated band.
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    return gate_disclosure.build_gate_disclosure(response.gating).delta_rms_db
-
-
-def _gate_reflection_delay_ms(response: Any) -> float | None:
-    """The first reflection's arrival AFTER the direct one, in ms.
-
-    The physical quantity, and deliberately NOT the gating block's own
-    ``first_reflection_ms``, which is an absolute time inside the analysed IR and
-    an artifact of the deconvolution window's origin.
-
-    ``None`` when either side is unknown, and ALSO the honest answer on a capture
-    whose window was capped at the search ceiling: nothing was found, so there is
-    no arrival to time.
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    return gate_disclosure.build_gate_disclosure(response.gating).reflection_delay_ms
-
-
-def _gate_entanglement_floor(
-    response: Any, *, declared_first_bounce_s: float | None = None
-) -> tuple[float | None, str]:
-    """``(floor_hz, source)`` — the ROOM's floor at this capture, with provenance.
-
-    Read off the same typed record as every other gate fact, so a position row
-    and the sentence beside it cannot state two different floors.
-    ``declared_first_bounce_s`` is the operator's rig geometry evaluated at THIS
-    capture's own distance, and is only reached when the gate measured no
-    reflection to time (#3502).
-
-    A capture with no gating block still has a room: the floor survives an
-    ungateable capture, because the geometry that sets it is the rig's rather
-    than the window's. ``(None, unknown)`` is the honest — and ordinary — pair
-    when nothing was declared and nothing was measured.
-    """
-    d = gate_disclosure.build_gate_disclosure(
-        getattr(response, "gating", None),
-        declared_first_bounce_s=declared_first_bounce_s,
-    )
-    return d.entanglement_floor_hz, d.entanglement_floor_source
-
-
-def _gate_record(
-    response: Any, *, declared_first_bounce_s: float | None = None
-) -> dict[str, Any] | None:
-    """The gate reduced to the facts that leave this capture, or ``None``.
-
-    Every field is :mod:`~jasper.audio_measurement.gate_disclosure`'s own
-    derivation, taken off ONE typed record built here at compose time; none is
-    re-derived downstream. ``reflection_measured`` is ``gated_anything``, the
-    single owner of "may this record claim reflections were removed".
-
-    **A reduction, not the block.** What travels to the wizard's durable state is
-    these derived facts rather than the gating fragment itself, so the state file
-    takes no dependency on :mod:`~jasper.audio_measurement.gating`'s schema —
-    that schema is versioned and moves. A response with no gating block yields
-    ``None``: no screen invents a gate that was never applied.
-
-    The two numbers exist so a READER of the banked round does not have to parse
-    the sentence to get them; a screen still reads only
-    ``disclosure`` and ``reflection_measured``.
-    """
-    if response is None or not getattr(response, "gating", None):
-        return None
-    typed = gate_disclosure.build_gate_disclosure(
-        response.gating, declared_first_bounce_s=declared_first_bounce_s
-    )
-    return {
-        "disclosure": gate_disclosure.render_gate(typed),
-        "reflection_measured": typed.gated_anything,
-        "moved_rms_db": typed.delta_rms_db,
-        "reflection_delay_ms": typed.reflection_delay_ms,
-        "entanglement_floor_hz": typed.entanglement_floor_hz,
-        "entanglement_floor_source": typed.entanglement_floor_source,
-    }
-
-
-def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
-    for pilot in analysis.pilots:
-        if pilot.role == role:
-            return pilot
-    return None
-
-
 def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     """Per-role pilot transfer: captured hi level minus the programmed hi gain.
 
@@ -547,50 +378,6 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
         pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
         for pilot in analysis.pilots
         if pilot.programmed_hi_gain_db is not None
-    }
-
-
-def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | bool | None]:
-    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe.
-
-    Channel-map publishes BOTH raw rises AND the isolation ratio derived from
-    them. The ratio is what the CROSS verdict is decided on
-    (``CHANNEL_MAP_MIN_ISOLATION_DB``), so a refusal has to name it; the raws
-    stay so an operator can see which half of the ratio moved. The ratio comes
-    from ``channel_map_isolation_db`` — the same function the verdict used.
-
-    ``delta_implausible`` (#2647) rides along per pilot: the aggregate on the
-    check-diag line says the finding fired, this says which driver's delta
-    was the one no real wiring could produce.
-    """
-    if pilot is None:
-        return {
-            "snr_db": None,
-            "captured_delta_db": None,
-            "programmed_delta_db": None,
-            "channel_map_target_rise_db": None,
-            "channel_map_cross_rise_db": None,
-            "channel_map_isolation_db": None,
-            "delta_implausible": None,
-        }
-    snr_db = pilot.snr_db
-    target_rise = pilot.channel_map_target_rise_db
-    cross_rise = pilot.channel_map_cross_rise_db
-    isolation = channel_map_isolation_db(target_rise, cross_rise)
-    return {
-        "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
-        "captured_delta_db": round(float(pilot.captured_delta_db), 3),
-        "programmed_delta_db": round(float(pilot.programmed_delta_db), 3),
-        "channel_map_target_rise_db": (
-            round(target_rise, 3) if target_rise is not None else None
-        ),
-        "channel_map_cross_rise_db": (
-            round(cross_rise, 3) if cross_rise is not None else None
-        ),
-        "channel_map_isolation_db": (
-            round(isolation, 3) if isolation is not None else None
-        ),
-        "delta_implausible": bool(pilot.delta_implausible),
     }
 
 

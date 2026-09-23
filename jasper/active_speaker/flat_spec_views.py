@@ -187,10 +187,6 @@ def log_pooled_residual(report: FlatSpecReport) -> LogPooledResidual:
 @dataclass(frozen=True)
 class PositionCurve:
     """One cloud position's own analysed magnitude curve, ready to re-read.
-    Deliberately NOT
-    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` —
-    that requires a uniform linear grid, sample rate and optional IR, none
-    of which an already-smoothed log-spaced curve needs.
 
     ``role`` is the cloud's own vocabulary (``onax``/``offax``/``xovr``),
     read off the record, never re-derived. ``smoothing_fraction`` is
@@ -454,8 +450,7 @@ def role_split_flatness(
 
 
 def _power_mean_across(stack_db: np.ndarray) -> np.ndarray:
-    """Per-column power (energy) mean across rows of a dB matrix — the
-    same reduction ``combine_positions`` applies across positions. Distinct
+    """Per-column power (energy) mean across rows of a dB matrix. Distinct
     from ``series_stats.power_mean_db``, which pools one curve across
     FREQUENCY to a scalar; this pools curves across POSITIONS to a curve.
     """

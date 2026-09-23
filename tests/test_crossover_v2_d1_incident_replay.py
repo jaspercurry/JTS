@@ -33,10 +33,9 @@ is therefore on a QUANTITY or on a decision that quantity drives, never on the
 decimated width.
 
 **What this file pins, in both directions.** That the repaired rule reads the
-same curves as no finding and lets r2 take the row it earned; that the SAME
-curves with real undeclared energy added still refuse; and that the model error
-the old rule was reading is still measured, still on the record, and now lands
-on the axis that says what the next round should fix.
+same curves as no finding; that the SAME curves with real undeclared energy
+added still trip it; and that the model error the old rule was reading is
+still measured and still on the record.
 """
 from __future__ import annotations
 
@@ -46,23 +45,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.contracts import (
-    EvidenceTrust,
-    IterationHeadroom,
-    QualityStatus,
-    SafetyStatus,
-)
-from jasper.active_speaker.crossover_v2.verification import (
-    ADOPTION_ROW_RESTORE_UNSAFE,
-    ADOPTION_UNPROVEN,
-    HEADROOM_REACHABLE,
-    QUALITY_MODEL_DEPARTURE,
-    SAFETY_BOOST_OVER_DECLARED_BOUND,
-    TRUST_MEASURED,
-    Verdict,
-    decide_adoption,
-    evaluate_applied_safety,
-)
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_TOLERANCE_LOW_DB,
     VERDICT_MATCHED,
@@ -116,8 +98,8 @@ def _round(tag: str) -> dict:
         "predicted": predicted,
         "commanded": commanded,
         "declared": arr("declared_transfer_db"),
-        # The two curves the round reconstructs, by its own arithmetic
-        # (``delta_probe_run.run_delta_probe`` / ``.entry_delta_db``).
+        # The two curves the round reconstructed, each against the same
+        # prediction.
         "realized": (measured - predicted) + commanded,
         "entry": (arr("entry_baseline_db") - predicted) + commanded,
         "offset": float(data["expected_offset_db"]),
@@ -142,23 +124,6 @@ def _probe(tag: str, *, measured_delta_db=None):
         expected_offset_db=r["offset"],
         entry_delta_db=r["entry"],
         declared_transfer_db=r["declared"],
-    )
-
-
-def _adoption(safety):
-    """The other three axes exactly as the round's own ``round_graded`` line.
-
-    ``spec=failed trust=trusted safety=? quality=missed headroom=reachable`` —
-    both rounds, verbatim. Only the safety axis differs between them, which is
-    the diagnosis's central claim and what makes this a one-variable test.
-    """
-    return decide_adoption(
-        trust=Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
-        safety=safety,
-        quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
-        headroom=Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, {}),
-        boosted=True,
-        rollback_available=True,
     )
 
 
@@ -312,40 +277,26 @@ def test_the_pre_fix_quantity_trips_and_the_repaired_one_does_not():
     assert freqs[_at(freqs, 16_914.9)] > 10_000.0
 
 
-def test_round_2_grades_safe_and_takes_the_row_round_1b_took():
-    """The payoff, through the shipped table.
-
-    The two rounds' ``round_graded`` axis lines differed on exactly one axis:
-    ``safety=safe`` for r1b, ``safety=unsafe`` for r2. Everything else — spec
-    failed, trust trusted, quality missed, headroom reachable — was identical.
-    So flipping the one axis the diagnosis shows was measuring the wrong
-    quantity has to put r2 on r1b's row, and it does.
-    """
-    rows = {}
+def test_neither_round_reads_as_undeclared_energy():
+    """The repaired probe on both rounds of the series: anchored, and no boost
+    over its declared bound anywhere — the shipped receipt restored r2 as
+    ``row3_unsafe`` on the pre-fix quantity."""
     for tag in ("r1b", "r2"):
         probe = _probe(tag)
-        safety = evaluate_applied_safety(probe=probe, integrity=None)
-        assert safety.status is SafetyStatus.SAFE, tag
-        assert safety.evidence["safety_anchored"] is True, tag
+        assert probe.safety_anchored is True, tag
         assert probe.boost_over_declared_bound is False, tag
         assert probe.realized_louder_than_commanded is False, tag
-        rows[tag] = _adoption(safety)
-
-    assert rows["r2"].row == rows["r1b"].row == "row2_trusted_safe_missed"
-    assert rows["r2"].outcome.value == "keep_for_iteration"
-    # The receipt the shipped round actually wrote, for contrast.
-    assert _round("r2")["shipped"]["adoption_row"] == ADOPTION_ROW_RESTORE_UNSAFE
+    assert _round("r2")["shipped"]["adoption_row"] == "row3_unsafe"
 
 
-def test_the_same_round_with_real_undeclared_energy_still_comes_off():
+def test_the_same_round_with_real_undeclared_energy_still_trips_the_probe():
     """The fail-closed control, and it is the same curves plus one real change.
 
     +4 dB added to the POST-apply capture from 4 kHz up — energy the speaker
     delivered and the graph never declared, with the model, the entry capture
-    and every commanded curve untouched. A rule that answered "no finding"
-    above has to answer "restore" here, or it is not a safety rule; and the
-    amount it reports has to be the round's own worst anchored excess PLUS the
-    4 dB exactly, not that plus a model error it has confused for energy.
+    and every commanded curve untouched. The amount the probe reports has to be
+    the round's own worst anchored excess PLUS the 4 dB exactly, not that plus
+    a model error it has confused for energy.
     """
     freqs = _round("r2")["freqs"]
     hot = np.where(freqs >= 4_000.0, 4.0, 0.0)
@@ -357,17 +308,9 @@ def test_the_same_round_with_real_undeclared_energy_still_comes_off():
     assert probe.boost_overshoot_octaves >= 1.0
     assert probe.realized_louder_than_commanded is True
 
-    safety = evaluate_applied_safety(probe=probe, integrity=None)
-    assert safety.status is SafetyStatus.UNSAFE
-    assert safety.reason == SAFETY_BOOST_OVER_DECLARED_BOUND
-    decision = _adoption(safety)
-    assert decision.row == ADOPTION_ROW_RESTORE_UNSAFE
-    assert decision.outcome.value == "restore"
-
     # The other hazard door agrees, which is what a genuine level rise looks
     # like: the quiet bins moved too (r2's own quiet core is 5.5-6.8 kHz), so
-    # the residual reads +3.07 dB against its 1.5 dB tolerance. The reason
-    # string names the boost door because that one is checked first.
+    # the residual reads +3.07 dB against its 1.5 dB tolerance.
     assert probe.residual_offset_db == pytest.approx(3.066, abs=5e-3)
 
     # The control that makes the pair a measurement: the ONLY difference between
@@ -375,44 +318,15 @@ def test_the_same_round_with_real_undeclared_energy_still_comes_off():
     assert _probe("r2").boost_over_declared_bound is False
 
 
-def test_the_model_error_is_still_measured_and_reaches_the_next_round():
-    """Nothing was deleted — it moved to the axis that says what to fix.
-
-    The +3.9 dB blend-region departure is a real defect: the two-branch model
-    places its crossover summation loss near 1400 Hz where this speaker's is
-    near 1650. Keeping it as a hard stop cost the series its best round; losing
-    it entirely would cost the next round the pointer.
-    """
-    from jasper.active_speaker.crossover_v2.contracts import SpecStatus
-    from jasper.active_speaker.crossover_v2.verification import (
-        RealizationStatus,
-        BenefitStatus,
-        evaluate_round_quality,
-    )
-
+def test_the_model_error_is_still_measured():
+    """The +3.9 dB blend-region departure is a real defect: the two-branch
+    model places its crossover summation loss near 1400 Hz where this speaker's
+    is near 1650. It stays measured and on the record."""
     probe = _probe("r2")
     assert probe.verdict == VERDICT_MATCHED
     assert probe.model_departure_over_tolerance is True
     assert probe.max_signed_error_db == pytest.approx(3.891, abs=5e-3)
-
-    quality = evaluate_round_quality(
-        realization=Verdict(RealizationStatus.MATCHED, "tracked", {}),
-        benefit=Verdict(BenefitStatus.INDETERMINATE, "unproven", {}),
-        spec=Verdict(SpecStatus.FAILED, "band_out_of_tolerance", {}),
-        probe=probe,
-        spec_report=None,
-    )
-    # It is a TARGET, and a target moves no status.
-    assert quality.status is QualityStatus.MISSED
-    target = next(
-        t for t in quality.evidence["targets"]
-        if t.startswith(f"{QUALITY_MODEL_DEPARTURE}:")
-    )
-    assert "3.89dB" in target
-    # The frequency the AMOUNT was measured at, which is not always the one
-    # ``worst_hz`` names — see the next test. Here they coincide.
     assert probe.max_signed_error_hz == pytest.approx(OVERSHOOT_HZ, abs=1.0)
-    assert f"@{OVERSHOOT_HZ:.0f}Hz" in target
 
 
 def test_the_departures_own_frequency_is_not_the_worst_absolute_errors():

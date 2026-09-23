@@ -44,16 +44,7 @@ from jasper.active_speaker.flat_spec import (
     spec_convergence_residual,
 )
 from jasper.audio_measurement import gating
-from jasper.audio_measurement.interference_nulls import identify_interference_nulls
-from jasper.audio_measurement.spatial_combine import (
-    combine_positions,
-    merged_true_intervals,
-)
-from tests._flat_lin_corpus import (
-    S0_MAIN,
-    requires_s0_curves,
-    s0_position_captures,
-)
+from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # --------------------------------------------------------------------------- #
 # fixtures / helpers
@@ -781,8 +772,7 @@ def test_non_ascending_freqs_raise_value_error():
     """S3 -- required, not assumed. The merged exclusion intervals treat
     index adjacency as frequency adjacency, which is only true on a sorted
     axis; a descending or duplicated axis is a caller bug worth hearing
-    about, not a plausible-looking report. Mirrors
-    ``spatial_combine._validate_capture``'s strictly-increasing check.
+    about, not a plausible-looking report.
     """
     descending = _FREQS_HZ[::-1].copy()
     with pytest.raises(ValueError, match="strictly increasing"):
@@ -937,10 +927,6 @@ def test_the_trusted_floor_raises_the_reference_bands_lower_edge_too():
 
     assert unclamped.reference_band_hz == REFERENCE_BAND_HZ
     assert clamped.reference_band_hz == (700.0, REFERENCE_BAND_HZ[1])
-    # And the gauge names the frame that was USED, not the module constant.
-    assert flat_spec.spec_flatness_gauge(clamped).reference_band_hz == (
-        700.0, REFERENCE_BAND_HZ[1]
-    )
 
 
 def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():
@@ -1237,93 +1223,6 @@ def test_convergence_residual_ignores_the_best_effort_region():
     assert spec_convergence_residual(
         evaluate_flat_spec(_FREQS_HZ, loud_top)
     ) == spec_convergence_residual(evaluate_flat_spec(_FREQS_HZ, quiet_top))
-
-
-@requires_s0_curves
-def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
-    """The S0 reading, and the reason the counts are part of the record.
-
-    Measured on the S0 main leg's ten-position combined spec curve
-    (1/3-octave, the curve the plan grades). Three maskings of the SAME
-    curve -- the speaker never changed:
-
-      mask                     residual    bins    excluded
-      none                     6.4961 dB   10752          0
-      power-vs-median screen   6.8226 dB   10616        136
-      screen + null registry   5.7705 dB    7678       3074
-
-    Adding the registry drops the residual by 1.05 dB while removing 2938
-    bins from the denominator. Read alone that looks like convergence; read
-    with the counts it is visibly the 8-16 kHz band losing 54 % of its bins.
-    A loop that watched only ``rms_db`` would call that progress.
-
-    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
-    ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin
-    era". Every column moved a little and the LESSON did not move at all,
-    which is what this test is for: the residual still falls by ~0.9 dB while
-    the denominator loses ~2900 bins, so the drop is still the mask growing
-    rather than the speaker improving.
-
-    RE-PINNED AGAIN when ``REFERENCE_BAND_HZ`` narrowed from 250 Hz-8 kHz to
-    250 Hz-2 kHz, the low-mid band alone (#1857): all three rows rose,
-    because the reference no longer sits among the whole graded span --
-    only the low-mid band -- so the other two bands now read further from
-    it. The BIN COUNTS in every row are exactly what they were:
-    ``REFERENCE_BAND_HZ`` picks which bins define the zero, not which bins
-    are in a spec band. The registry's drop is now ~1.05 dB rather than
-    ~0.87 dB, and the lesson holds just as hard -- the denominator still
-    loses the same ~2900 bins.
-
-    The last row is also the exactness check: the reassembled figure matches
-    a direct from-the-arrays recomputation to 1e-12 relative.
-    """
-    combined, registry = s0_combined
-    freqs, spec = combined.freqs_hz, combined.power_mean_spec_db
-
-    readings = {}
-    for label, mask in (
-        ("none", None),
-        ("screen", combined.excluded),
-        ("screen_plus_registry", combined.excluded | registry.excluded),
-    ):
-        readings[label] = spec_convergence_residual(
-            evaluate_flat_spec(freqs, spec, mask)
-        )
-
-    assert readings["none"].rms_db == pytest.approx(6.4961, abs=0.002)
-    assert readings["none"].n_bins == 10_752
-    assert readings["none"].n_excluded == 0
-
-    assert readings["screen"].rms_db == pytest.approx(6.8226, abs=0.002)
-    assert readings["screen"].n_bins == 10_616
-    assert readings["screen"].n_excluded == 136
-
-    both = readings["screen_plus_registry"]
-    assert both.rms_db == pytest.approx(5.7705, abs=0.002)
-    assert both.n_bins == 7678
-    assert both.n_excluded == 3074
-    assert readings["screen"].rms_db - both.rms_db == pytest.approx(1.05, abs=0.02)
-
-    # Exactness of the per-band reassembly, against the arrays directly.
-    mask = combined.excluded | registry.excluded
-    report = evaluate_flat_spec(freqs, spec, mask)
-    in_spec = np.zeros_like(freqs, dtype=bool)
-    for f_lo, f_hi, _tolerance in SPEC_BANDS:
-        in_spec |= (freqs >= f_lo) & (freqs < f_hi)
-    selected = in_spec & ~mask
-    direct = float(
-        np.sqrt(np.mean((spec[selected] - report.reference_db) ** 2))
-    )
-    assert both.rms_db == pytest.approx(direct, rel=1e-12)
-    assert both.n_bins == int(selected.sum())
-
-
-@pytest.fixture(scope="module")
-def s0_combined():
-    """The S0 main-leg cloud and its null registry, built once."""
-    combined = combine_positions(s0_position_captures(S0_MAIN))
-    # The band the S0 report grades the 8-16 kHz family in (REPORT.md Q1/Q2).
-    return combined, identify_interference_nulls(combined, band_hz=(5000.0, 19_000.0))
 
 
 # --------------------------------------------------------------------------- #

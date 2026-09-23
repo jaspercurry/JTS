@@ -27,7 +27,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.branch_chain import crossover_response_complex, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
@@ -142,31 +141,6 @@ def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
     assert restored[0].sitting_id == ""
 
 
-def test_an_implausible_delay_never_renders_mic_placement_advice():
-    """The copy separation the confidence demotion required (#2085's shape).
-
-    Both rungs shared ``low_alignment_confidence`` until the burn-down, so the
-    ONE sentence behind it — "Place the microphone about 1 m in front of the
-    speaker at tweeter height" — was rendered for a confidently-WRONG delay
-    too. That is the #2085 pathology exactly: a household whose microphone was
-    never the problem, told to move it. Demoting the confidence rung without
-    splitting the kinds would have left this rejection holding that sentence as
-    its only voice.
-
-    Pinned on the CONTENT, not on the code, because the defect was what the
-    household read. The physics sentence must name the delay and must not
-    instruct a mic move; and no live registry row may carry the retired code.
-    """
-    spec = REASON_REGISTRY["delay_implausible"]
-    household = f"{spec.message} {spec.banner}".lower()
-    assert "delay" in household
-    for mic_advice in ("place the microphone", "tweeter height", "1 m in front"):
-        assert mic_advice not in household, mic_advice
-    # The retired code is gone from the registry, so nothing can route back to
-    # the shared sentence.
-    assert "low_alignment_confidence" not in REASON_REGISTRY
-
-
 #
 # These four tests pinned the OPPOSITE behaviour until the owner's 2026-08-03
 # ruling (#2087): crossing the threshold refused the capture and reused
@@ -214,13 +188,7 @@ def test_measure_priors_carry_the_applied_alignment_and_no_other_phase_does(
 
     applied = c.measure_priors().applied_alignment
     assert applied is not None and applied.delay_us == pytest.approx(59.6)
-    for factory in (
-        c.check_priors,
-        c._verify_priors,
-        c._cloud_priors,
-        c.lateral_priors,
-        c._entry_baseline_priors,
-    ):
+    for factory in (c.check_priors, c.lateral_priors):
         assert factory().applied_alignment is None, factory.__name__
 
 

@@ -43,7 +43,6 @@ from .model import (
     logger,
     SummedAlignmentReference,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
     RIPPLE_TRIM_MIN_DB,
@@ -764,10 +763,7 @@ def solve_branch_trims(
     traces are equal at Fc and each sits -6 dB against the summed target
     (the Linkwitz-Riley unity condition). The linear-frequency power mean
     over the mirrored +/-1-octave halves IS that consensus statistic —
-    NOT passband-average sensitivity
-    (:func:`~jasper.active_speaker.linearization_fit.driver_core_level_db`
-    is a different, legitimately-differing starting estimate for horn
-    attenuation, disclosed rather than reconciled).
+    NOT passband-average sensitivity.
 
     Two constraints on the statistic: with LR4 the level-error sensitivity
     concentrates AT Fc, so +/-1-octave is right; and where woofer/horn
@@ -798,88 +794,6 @@ def solve_branch_trims(
     )
     target = min(level_w, level_t)  # attenuate the louder branch
     return target - level_w, target - level_t, level_w, level_t
-
-
-@dataclass(frozen=True)
-class RealizedLevelMatch:
-    """What the two branches ACTUALLY hand off at, once the trim is applied.
-
-    ``difference_db`` is ``level_t_db - level_w_db``: the signed inter-driver
-    level error, whose design intent is **zero**. Sign is kept because "the
-    tweeter is 9 dB down" and "the tweeter is 9 dB up" are opposite defects and
-    a bare magnitude hides which one shipped.
-
-    ``matched`` is ``abs(difference_db) <= tolerance_db``. It is the verdict; it
-    is not advice.
-    """
-
-    level_w_db: float
-    level_t_db: float
-    difference_db: float
-    tolerance_db: float
-    matched: bool
-    woofer_band_hz: tuple[float, float]
-    tweeter_band_hz: tuple[float, float]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "level_w_db": self.level_w_db,
-            "level_t_db": self.level_t_db,
-            "difference_db": self.difference_db,
-            "tolerance_db": self.tolerance_db,
-            "matched": self.matched,
-            "woofer_band_hz": list(self.woofer_band_hz),
-            "tweeter_band_hz": list(self.tweeter_band_hz),
-        }
-
-
-def realized_branch_level_match(
-    freqs: np.ndarray,
-    W: np.ndarray,
-    T: np.ndarray,
-    fc_hz: float,
-    *,
-    trim_w_db: float,
-    trim_t_db: float,
-    woofer_span_hz: tuple[float, float] | None = None,
-    tweeter_span_hz: tuple[float, float] | None = None,
-    tolerance_db: float = REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-) -> RealizedLevelMatch:
-    """Each branch's REALIZED power-band level, on its own side of Fc, after
-    the committed trim — and whether the two agree.
-
-    The assertion nothing else in the chain makes: no other comparator
-    compares the two drivers' realized handoff levels to each other (the
-    gap a ~9 dB-dark tweeter walked through). ``W``/``T`` are the branch
-    transfer functions AS EMITTED (linearized on the v2 path);
-    ``trim_*_db`` are applied here and re-read, grading the committed
-    decision rather than re-litigating it.
-
-    Reuses :func:`solve_branch_trims`'s own estimator (same bands, same
-    average) rather than a rival check, inheriting its known +0.54 dB
-    systematic rather than adding an unknown one. Raises ``ValueError``
-    through the same surface as the trim solve it wraps — never a guessed
-    verdict.
-    """
-    g_w = 10.0 ** (float(trim_w_db) / 20.0)
-    g_t = 10.0 ** (float(trim_t_db) / 20.0)
-    _residual_w, _residual_t, level_w, level_t = solve_branch_trims(
-        freqs, W * g_w, T * g_t, fc_hz,
-        woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
-    )
-    woofer_band, tweeter_band = branch_level_bands_hz(
-        fc_hz, woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
-    )
-    difference = float(level_t - level_w)
-    return RealizedLevelMatch(
-        level_w_db=float(level_w),
-        level_t_db=float(level_t),
-        difference_db=difference,
-        tolerance_db=float(tolerance_db),
-        matched=abs(difference) <= float(tolerance_db),
-        woofer_band_hz=woofer_band,
-        tweeter_band_hz=tweeter_band,
-    )
 
 
 def ripple_at_trim(

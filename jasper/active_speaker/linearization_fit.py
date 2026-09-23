@@ -446,7 +446,7 @@ class LinearizationFit:
     # LEVEL this driver's correction removed from its own reference (core)
     # band, POSITIVE dB — MEASURED before-vs-after power-domain average over
     # ``_core_or_fallback_mask``. The SSOT for the AUDIBLE-BAND give-back;
-    # does NOT place the trim (``plan_linearization`` anchors on
+    # does NOT place the trim (``resolve_trims_after_fit`` anchors on
     # ``branch_level_bands_hz`` instead — using this one shipped the jts3
     # horn tweeter 3.67 dB hot, 2026-08-19). 0.0 when no filters emitted.
     correction_giveback_db: float = 0.0
@@ -719,12 +719,10 @@ def _core_level_mask(
 ) -> np.ndarray:
     """The bins a core-level median runs over: the core mask, narrowed to
     ``radiating_band_hz``, widened back to :data:`_MIN_LEVEL_BAND_OCTAVES`
-    if that narrowing left less band than a median can be taken over. THE
-    one implementation — :func:`driver_core_level_db` and
-    :func:`core_level_band_hz` both bottom out here. An EMPTY intersection
-    falls back to the whole core mask (a three-way mid squeezed between two
-    crossovers has no radiating band); :func:`core_level_band_hz` discloses
-    when this happened.
+    if that narrowing left less band than a median can be taken over. An
+    EMPTY intersection falls back to the whole core mask (a three-way mid
+    squeezed between two crossovers has no radiating band);
+    :func:`core_level_band_hz` discloses when this happened.
     """
     core = _core_or_fallback_mask(envelope, envelope_mask)
     if radiating_band_hz is None:
@@ -773,55 +771,15 @@ def _target_and_plateau_db(
     return float(np.median(band)), float(np.max(band))
 
 
-def driver_core_level_db(
-    primary: DriverResponse, envelope: EnvelopeCurve,
-    *, radiating_band_hz: tuple[float, float] | None = None,
-) -> float | None:
-    """One driver's own PASSBAND level — the starting estimate, not the
-    level fact. Runs :func:`fit_driver_linearization`'s own resample ->
-    ladder-smooth -> core-mask -> median chain, exposed separately because
-    it is read across ALL drivers before any one is fitted.
-
-    Demoted and kept (ruling S8): "Level-matched" means matched acoustic
-    output through the HANDOVER REGION (``solve_branch_trims``'s power mean
-    over mirrored +/-1-octave halves about Fc), a different quantity from
-    this passband-average sensitivity — on a sloped horn they legitimately
-    differ by many dB, disclosed and never reconciled. Does not place the
-    trim pair; since #2609 nothing derived from it does.
-
-    ``radiating_band_hz`` (#1929) narrows the median to where this driver's
-    crossover leaves it radiating; ``None`` is the pre-#1929 whole-core-mask
-    median byte for byte. Subject to :func:`_core_level_mask`'s width floor;
-    :func:`core_level_band_hz` reports which way that went. The band
-    matters because the core mask's declared ``measurement_band_hz``
-    routinely reaches past Fc, and a MEDIAN (rank statistic) lets a
-    stopband bin count as much as a passband one (2026-07-30 JTS3: a woofer
-    read 3.4 dB away from the trim solve for exactly this reason).
-
-    Returns ``None`` — not a number — when the envelope allows correction
-    nowhere: UNKNOWN, not a placeholder that would move every other driver.
-    """
-    grid_hz = envelope.freqs_hz
-    smoothed_db = ladder_smooth(
-        grid_hz, np.interp(grid_hz, primary.freqs_hz, primary.magnitude_db)
-    )
-    envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
-    if not envelope_mask.any():
-        return None
-    return _target_and_plateau_db(
-        smoothed_db, _core_level_mask(envelope, envelope_mask, radiating_band_hz),
-    )[0]
-
-
 def core_level_band_hz(
     envelope: EnvelopeCurve, *,
     radiating_band_hz: tuple[float, float] | None = None,
 ) -> tuple[float, float] | None:
-    """The span :func:`driver_core_level_db` ACTUALLY reads its median over,
-    for the same arguments — ``None`` when it would return ``None``. Lets a
-    caller disclose the realized band rather than the bound it asked for; a
-    difference wider than a bin means :func:`_core_level_mask`'s width
-    floor fired, a sub-bin one is grid quantization.
+    """The span a core-level median ACTUALLY runs over — ``None`` when the
+    envelope allows correction nowhere. Lets a caller disclose the realized
+    band rather than the bound it asked for; a difference wider than a bin
+    means :func:`_core_level_mask`'s width floor fired, a sub-bin one is grid
+    quantization.
     """
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
@@ -1392,9 +1350,8 @@ def _boost_exclusion_verdicts(
     """Split ``boosts`` into the ones AIMED at an excluded band and the rest.
 
     Per filter, intrinsic, relative — read once against its OWN transfer
-    function, no ordering, no "drop until it fits" (the arbitrary-ordering
-    hazard ``interference_nulls.EXCLUSION_CAP_FRACTION`` warns about). The
-    criterion is the filter's own half-gain bandwidth (scale-free: a +1 dB
+    function, no ordering, no "drop until it fits" (that would be an arbitrary
+    ordering presented as a measurement). The criterion is the filter's own half-gain bandwidth (scale-free: a +1 dB
     bell centred in the band goes, an +11.67 dB bell 0.7 octaves away is
     spill and stays). Not an absolute dB threshold — one calibrated for the
     stopband guard refused 94.4% of randomized multi-dip fits when tried

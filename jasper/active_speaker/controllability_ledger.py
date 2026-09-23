@@ -10,8 +10,7 @@ It is the door onto two blocks of each ``round_receipt.json``, passed through
 in the shape the writers banked them:
 
 * ``round_measurements.realization.bands`` — the delta probe's own per-band
-  rows, ``{band_hz, n_bins, ratio, graded}``, banked by
-  :func:`~jasper.active_speaker.crossover_v2.coordinator._round_measurements`.
+  rows, ``{band_hz, n_bins, ratio, graded}``.
   ``ratio`` is the fitted realized/commanded slope; ``None`` where the probe
   had too few bins to fit one.
 * ``round_axes.quality.evidence.spec_bands`` beside ``verification.spec`` —

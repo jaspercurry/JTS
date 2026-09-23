@@ -66,15 +66,12 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/active_speaker/crossover_v2_flow.py",
     "jasper/active_speaker/crossover_v2/refusal_copy.py",
     # Two homes for household copy wave 3 moved OUT of the flow above. Without
-    # these rows the sweep would still pass and would cover neither: the group
-    # close's geometry guidance, null-classification sentences and carve-out
-    # disclosure, and the prompt table — the largest single block of household
-    # copy this flow has.
+    # these rows the sweep would still pass and would cover neither: the
+    # geometry guidance and the prompt table — the largest single block of
+    # household copy this flow has.
     "jasper/active_speaker/crossover_v2/spatial/__init__.py",
-    "jasper/active_speaker/crossover_v2/spatial/screens.py",
     "jasper/active_speaker/crossover_v2/spatial/group_floor.py",
     "jasper/active_speaker/crossover_v2/spatial/records.py",
-    "jasper/active_speaker/crossover_v2/spatial/boost_exclusion.py",
     "jasper/active_speaker/crossover_v2/spatial/cloud_group.py",
     "jasper/active_speaker/crossover_v2/spatial/carve_out_copy.py",
     "jasper/active_speaker/crossover_v2/capture_plan.py",

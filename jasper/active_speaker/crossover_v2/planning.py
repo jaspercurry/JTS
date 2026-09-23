@@ -2,119 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build one measured candidate and expose its analysis evidence."""
+"""A measured candidate's analysis evidence and the applied profile's timing record."""
 
 from __future__ import annotations
 
-import logging
 import math
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from dataclasses import asdict
+from typing import Any, Mapping
 
-from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK,
-    ProgramAnalysis,
-    polarity_label,
-)
-from jasper.log_event import log_event
+from jasper.audio_measurement.program_analysis import ProgramAnalysis, polarity_label
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, TIMING_NEEDS_MEASUREMENT
 from jasper.active_speaker.baseline_profile import PROVENANCE_MEASURED, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_SET_BY_USER
 
-from ..measured_crossover_candidate import MeasuredCrossoverAlignment, MeasuredCrossoverCandidate
-from ..branch_chain import CrossoverSection, sections_by_role
-from .alignment_prescription import AlignmentPrescription
-from .candidates import CloudFitEvidence, LinearizationState
-from .contracts import CandidateAcousticContext, POLARITY_INVERT, POLARITY_KEEP, detached_json
-from .intervention import (
-    LINEARIZATION_MIN_PAIRED_OCCURRENCES,
-    driver_response_by_role,
-    request_from_analysis,
-)
-from .plan_assembly import LinearizationPlan, TrimDecision
-from .journey import PHASE_CLOUD_MEASURE, PHASE_MEASURE
-
-#: Reached for in exactly one place, :func:`build_candidate`'s journal guard.
-logger = logging.getLogger(__name__)
-
 __all__ = [
-    "EVENT_FIT_FAILED",
-    "EVENT_FIT_FAILED_JOURNAL_DROPPED",
-    "FailureRecord",
-    "alignment_to_candidate_fields",
     "analysis_json",
     "applied_profile_timing",
-    "build_candidate",
-    "exclusion_evidence_json",
-    "ineligible_reason",
-    "plan_for_candidate",
 ]
-
-EVENT_FIT_FAILED = "correction.crossover_v2_linearization_fit_failed"
-
-EVENT_FIT_FAILED_JOURNAL_DROPPED = (
-    "correction.crossover_v2_linearization_fit_journal_dropped"
-)
-
-_JOURNAL_ERRORS = (
-    ArithmeticError,
-    AttributeError,
-    IndexError,
-    KeyError,
-    OSError,
-    RuntimeError,
-    TypeError,
-    ValueError,
-)
-
-
-@dataclass(frozen=True)
-class FailureRecord:
-    """One log line this module would have emitted from inside an ``except``.
-
-    ``logging`` resolves ``exc_info=True`` against ``sys.exc_info()`` at
-    LogRecord-creation time, so a record emitted after the handler exits would
-    render no traceback. Carrying the live exception makes the deferred
-    emission identical: ``logging`` expands a ``BaseException`` to
-    ``(type(e), e, e.__traceback__)``.
-    """
-
-    event: str
-    fields: Mapping[str, Any]
-    level: int = logging.WARNING
-    #: The caught exception, or ``None`` for a record with no stack to carry.
-    exc_info: BaseException | None = field(default=None, repr=False)
-
-
-def alignment_to_candidate_fields(
-    analysis: ProgramAnalysis | Mapping[str, Any] | AlignmentPrescription, *, roles: Sequence[str],
-) -> tuple[float | None, str | None, str | None]:
-    """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
-
-    Sign contract (design §5.6.5): ``analysis.delay_us`` is
-    ``(D_woofer − D_tweeter)``, so positive ⇒ the TWEETER branch is delayed,
-    negative ⇒ the woofer is. ``MeasuredCrossoverAlignment`` wants a
-    non-negative magnitude plus the delayed role, so the sign folds into the
-    role choice. ``(None, None, None)`` when no alignment is trustworthy or
-    there is a lone branch — the candidate falls back to a trims-only apply.
-    """
-    if isinstance(analysis, Mapping):
-        if analysis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT:
-            return None, None, None
-        status, delay, measured_polarity = (analysis.get(key) for key in ("alignment_status", "delay_us", "polarity"))
-    elif isinstance(analysis, AlignmentPrescription):
-        status, delay = ALIGNMENT_OK, analysis.delay_us
-        polarity = analysis.polarity
-    else:
-        if getattr(getattr(analysis, "candidate", None), "timing_verdict", None) == TIMING_NEEDS_MEASUREMENT:
-            return None, None, None
-        est = analysis.alignment
-        status, delay, measured_polarity = (est.status, est.delay_us, est.polarity) if est else (None, None, None)
-    if not isinstance(analysis, AlignmentPrescription):
-        polarity = POLARITY_INVERT if measured_polarity == "inverted" else POLARITY_KEEP
-    if status != ALIGNMENT_OK or delay is None or len(roles) < 2:
-        return None, None, None
-    delay_us = float(delay)
-    return abs(delay_us), roles[1] if delay_us >= 0 else roles[0], polarity
 
 
 def applied_profile_timing(applied_profile: Mapping[str, Any] | None) -> AppliedAlignment | None:
@@ -131,9 +34,7 @@ def applied_profile_timing(applied_profile: Mapping[str, Any] | None) -> Applied
     return AppliedAlignment(float(delay), record["polarity"], record["provenance"], record.get("measured"))
 
 
-def analysis_json(
-    analysis: ProgramAnalysis, trim: TrimDecision | None = None,
-) -> dict[str, Any]:
+def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
     """Scalar evidence for the measured candidate fingerprint (ADR-0237)."""
     drift = analysis.drift
     align = analysis.alignment
@@ -161,10 +62,7 @@ def analysis_json(
         "gcc_delay_us": (round(align.seed_delay_us if align.seed_delay_us is not None else align.delay_us, 3)
                          if align else None),
         "refinement_delta_us": round(align.delay_us - seed, 3) if align and seed is not None else None,
-        "trim_decision": detached_json({
-            **asdict(trim), "strategy": trim.strategy.value,
-            "outcome": trim.outcome, "committed_side": trim.committed_side,
-        }) if trim is not None else None,
+        "trim_decision": None,
         "polarity": align.polarity if align else None,
         "alignment_objective": cand.alignment_objective if cand else None,
         **{key: getattr(cand, key, None) for key in (
@@ -221,279 +119,3 @@ def analysis_json(
         ),
         "snap_found": bool(cand.snap_found) if cand else None,
     }
-
-
-def ineligible_reason(
-    analysis: ProgramAnalysis, *, roles: Sequence[str],
-) -> str | None:
-    """HARD GATE for the Layer-1a fit path, as a named reason or ``None``.
-
-    Eligible means a reference-tier mic AND every driver paired
-    N >= :data:`~.intervention.LINEARIZATION_MIN_PAIRED_OCCURRENCES` in-capture
-    occurrences. Anything else falls back to the plain trims-only candidate.
-    """
-    if analysis.mic_tier != "reference":
-        return "ineligible_mic_tier"
-    for role in roles:
-        response = driver_response_by_role(analysis, role)
-        if (
-            response is None
-            or 1 + len(response.repeat_responses)
-            < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        ):
-            return "ineligible_repeats"
-    return None
-
-
-def exclusion_evidence_json(
-    cloud: CloudFitEvidence, *, cloud_result: Mapping[str, Any],
-) -> dict[str, Any]:
-    """The fit's cloud inputs, as the candidate's exclusion reason of record.
-
-    Enough that a reader holding only ``candidate.json`` can re-derive
-    ``spatial_exclusion_limit`` and ``position_spread_db``.
-    ``cloud_result`` must be read by the caller at CALL time: only its CURRENT
-    value describes the cloud retained at confirm, since a retake re-closes the
-    group (#1872). ``cloud_measure.json``'s own copy can lag it — the evidence
-    store's ``records.cloud`` write is a per-phase singleton, and that gap is
-    accepted (forensic artifact vs. product). ``validity_floor_hz`` and
-    ``gated_spec_curve`` (#1787) ride here for the room layer, not the fit;
-    the curve adds roughly 15-20 KB of JSON per candidate (<=512 points), so
-    decimate at this boundary rather than dropping the field if it grows.
-    """
-    registry = cloud_result.get("null_registry")
-    floor = cloud_result.get("validity_floor_hz")
-    curve = cloud_result.get("curve")
-    return {
-        "phase": PHASE_CLOUD_MEASURE,
-        "excluded_bands_hz": [list(band) for band in cloud.excluded_bands_hz],
-        "n_positions": cloud.n_positions,
-        "band_spread": [
-            {
-                "center_hz": float(band.center_hz),
-                "f_lo": float(band.f_lo),
-                "f_hi": float(band.f_hi),
-                "sigma_db": float(band.sigma_db),
-                "max_sigma_db": float(band.max_sigma_db),
-                "n_bins": int(band.n_bins),
-            }
-            for band in cloud.band_spread
-        ],
-        "null_registry": dict(registry) if isinstance(registry, Mapping) else {},
-        # ``None`` is "the floor is unverified", never "the floor is 0 Hz".
-        "validity_floor_hz": (
-            float(floor)
-            if isinstance(floor, (int, float)) and math.isfinite(float(floor))
-            else None
-        ),
-        "gated_spec_curve": (
-            {
-                "freqs_hz": [float(v) for v in curve.get("freqs_hz", ())],
-                "magnitude_db": [float(v) for v in curve.get("magnitude_db", ())],
-            }
-            if isinstance(curve, Mapping)
-            else {}
-        ),
-    }
-
-
-def _sections_for_candidate(
-    candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None,
-    preset: Any,
-) -> dict[str, tuple[CrossoverSection, ...]]:
-    """Role -> the Linkwitz-Riley sections THIS candidate's branch runs through.
-
-    ``candidate_sections`` when a caller overrides, the preset's own crossover
-    regions otherwise. One derivation because two consumers must describe the
-    same emitted graph: the planner bounds its fit band and charges its
-    headroom with it, and :func:`build_candidate` charges a PRESCRIBED branch's
-    disclosure with it (#2759).
-    """
-    if candidate_sections is not None:
-        return {role: tuple(regions) for role, regions in candidate_sections.items()}
-    return sections_by_role(getattr(preset, "crossover_regions", ()) or ())
-
-
-def plan_for_candidate(
-    analysis: ProgramAnalysis,
-    cand: Any,
-    cloud: CloudFitEvidence | None,
-    *,
-    candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    preset: Any,
-    program_for_phase: Callable[[str], Any],
-    roles: Sequence[str],
-    driver_class_by_role: Mapping[str, str],
-    plan_linearization: Callable[..., LinearizationPlan],
-    journal: Callable[[Any], None] | None = None,
-    fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
-) -> LinearizationPlan:
-    """Assemble ONE candidate's planner request and run the pure planner.
-
-    The corner comes from the sections this candidate is realized with; the
-    session's ``_fc_hz`` is not read and cannot be reached from here. A split
-    or empty section set raises (``CandidateFcDisagreementError`` /
-    ``NoCrossoverSectionsError``, both ``ValueError`` subclasses), which
-    :func:`build_candidate`'s SF2 arm degrades to the trims-only lane.
-
-    Only called after :func:`ineligible_reason` returns ``None``; the planner
-    assumes eligibility. ``program_for_phase`` is injected rather than resolved
-    by the caller because it can raise (before the CHECK gain solve there is no
-    MEASURE program) and must do so AFTER the section set has been judged.
-    ``plan_linearization`` is injected and deliberately NOT imported here, so
-    a substitution of the flow module's own name still binds (#2354). The
-    ``journal_dropped`` notice on the returned plan is the HOST's to say: it
-    reports on the journal port, so it cannot be routed through it.
-    """
-    context = CandidateAcousticContext.for_candidate(
-        _sections_for_candidate(candidate_sections, preset), roles=roles,
-    )
-    measure_program = program_for_phase(PHASE_MEASURE)
-    # The MEASURE program keeps its ``_w``/``_t`` segment spelling whatever the
-    # roles are called, and a 1-way program carries only the first.
-    excited_band_hz: dict[str, tuple[float, float]] = {}
-    for role, segment_id in zip(roles, ("sweep_w", "sweep_t")):
-        segment = measure_program.segment(segment_id)
-        # ``f1_hz``/``f2_hz`` are ``float | None`` on the general segment shape;
-        # ``__post_init__`` guarantees neither is None on a KIND_SWEEP stimulus.
-        assert segment.f1_hz is not None and segment.f2_hz is not None
-        excited_band_hz[role] = (segment.f1_hz, segment.f2_hz)
-    request = request_from_analysis(
-        analysis, cand,
-        context=context,
-        roles=roles,
-        excited_band_hz=excited_band_hz,
-        driver_class_by_role=driver_class_by_role,
-        fit_budget_by_role=fit_budget_by_role,
-        cloud=cloud,
-    )
-    return plan_linearization(request, journal=journal)
-
-
-def build_candidate(
-    analysis: ProgramAnalysis,
-    cand: Any,
-    cloud: CloudFitEvidence | None = None,
-    *,
-    candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    source_preset: Any,
-    roles: Sequence[str],
-    plan: Callable[..., LinearizationPlan],
-    exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
-    journal: Callable[[Any], None],
-    blend_correction: Sequence[Mapping[str, Any]] = (),
-) -> tuple[Any, LinearizationState]:
-    """Build one candidate, and return what its linearization produced.
-
-    The state is RETURNED, never stashed, so it can only describe the candidate
-    returned beside it. ``cand`` is ``analysis.candidate``, passed rather than
-    re-read; ``None`` is legal for exactly one shape, a 1-way main.
-
-    ``plan``, ``exclusion_evidence`` and ``journal`` are ports. ``journal`` is
-    REQUIRED (#2361) and stays safe when it raises — see the guard below.
-    """
-    delay_us, delay_role, polarity = alignment_to_candidate_fields(
-        analysis, roles=roles,
-    )
-    alignment = (
-        MeasuredCrossoverAlignment(
-            delay_us=delay_us, delay_role=delay_role, polarity=polarity,
-        )
-        if delay_role is not None
-        else MeasuredCrossoverAlignment()
-    )
-
-    # ``cand`` is ``None`` on a 1-way main, whose lone branch's attenuation is
-    # a fixed 0 dB rather than a solved one.
-    role_attenuations_db: Mapping[str, float] = (
-        {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
-    )
-    linearization: Mapping[str, Any] = {}
-    fit_plan: LinearizationPlan | None = None
-    ineligible = ineligible_reason(analysis, roles=roles)
-    state = LinearizationState(outcome=ineligible or "")
-    if ineligible is None:
-        try:
-            fit = plan(
-                analysis, cand, cloud, candidate_sections=candidate_sections,
-            )
-        except (
-            ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
-            KeyError, IndexError,
-        ) as exc:
-            # SF2: the fit path is strictly additive — an eligible speaker
-            # with a bug in the fit engine degrades EXACTLY to the ineligible
-            # path rather than failing the whole MEASURE accept. That covers
-            # the planner's own typed refusals too (``NoCrossoverSectionsError``
-            # / ``CandidateFcDisagreementError``, both ``ValueError``): nothing
-            # gets fitted toward a corner the candidate does not describe.
-            #
-            # Disclosed HERE, inside the handler, carrying the exception —
-            # see :class:`FailureRecord` for why a later record renders no
-            # traceback. The port call is guarded in turn (#2361): the
-            # candidate must not be lost because its own disclosure broke, and
-            # there is no return slot to carry the drop, so it goes out this
-            # module's own logger.
-            try:
-                journal(FailureRecord(
-                    EVENT_FIT_FAILED,
-                    {"reason": type(exc).__name__},
-                    logging.WARNING,
-                    exc,
-                ))
-            except _JOURNAL_ERRORS as port_exc:
-                log_event(
-                    logger, EVENT_FIT_FAILED_JOURNAL_DROPPED,
-                    level=logging.WARNING,
-                    dropped_event=EVENT_FIT_FAILED,
-                    reason=type(port_exc).__name__,
-                    exc_info=True,
-                )
-            role_attenuations_db = (
-                {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
-            )
-            linearization = {}
-            # A fit that raised part-way may hold a partial verdict, and none
-            # of it survives: a fresh state IS that clearing, the linearized
-            # VERIFY prior included.
-            state = LinearizationState(outcome="fit_failed")
-        else:
-            role_attenuations_db = dict(fit.role_attenuations_db)
-            linearization = dict(fit.linearization)
-            state = LinearizationState.from_plan(fit)
-            fit_plan = fit
-
-    evidence = analysis_json(analysis, None if fit_plan is None else fit_plan.trim)
-    trim_decision: Mapping[str, Any] = {}
-    decision = evidence["trim_decision"]
-    if state.trim_strategy is not None and decision is not None:
-        trim_decision = {
-            key: decision[key] for key in ("strategy", "committed_side", "anchor_drift_db")
-        }
-
-    return MeasuredCrossoverCandidate(
-        program_id=analysis.program_id,
-        analysis=evidence,
-        source_preset=source_preset,
-        role_attenuations_db=role_attenuations_db,
-        alignment=alignment,
-        linearization=linearization,
-        # Empty whenever no cloud evidence reached the fit, the failed fit
-        # included: a record of what the envelope consumed must not ride a
-        # candidate whose corrections came from the trims-only fallback.
-        exclusion_evidence=(
-            exclusion_evidence(cloud)
-            if cloud is not None and linearization
-            else {}
-        ),
-        # Stamped verbatim from this build's own returned state, never
-        # re-derived, so the candidate and the state beside it cannot describe
-        # different builds.
-        linearization_outcome=state.outcome,
-        trim_decision=trim_decision,
-        # Carried VERBATIM from what the previous round's summed evidence
-        # prescribed: the solve happens at that round's tail, and a second
-        # derivation here would be a second owner of a filter that reaches
-        # hardware. Empty on the first round of a series.
-        blend_correction=[dict(entry) for entry in blend_correction],
-    ), state

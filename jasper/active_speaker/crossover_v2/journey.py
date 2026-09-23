@@ -45,7 +45,7 @@ PHASE_LATERAL = "lateral"
 # routes ``program_for_phase`` to the very same ``_verify_program`` object, so
 # this capture and VERIFY's share a ``program_id`` — a SHA-256 over the whole
 # excitation schedule including every segment's gain — and that equality IS the
-# comparability check ``verification.evaluate_benefit`` runs. Deliberately NOT a
+# comparability check. Deliberately NOT a
 # :data:`GROUP_PHASES` member: one capture at one mark, not a walk.
 PHASE_ENTRY_BASELINE = "entry_baseline"
 # Measured, awaiting an explicit candidate decision; nothing has been applied.
@@ -293,11 +293,6 @@ class CommissionJourney:
 # stage capabilities — one declaration per commission stage
 # --------------------------------------------------------------------------- #
 
-#: The seams a stage may or may not bind, and the priors a stage may need handed
-#: to it. Slugs rather than an enum: they are journal vocabulary first.
-CAPABILITY_FINDINGS = "findings"
-
-
 @dataclass(frozen=True)
 class V2StageCapabilities:
     """The seams a measurement session provides and the inputs it declares."""
@@ -307,10 +302,7 @@ class V2StageCapabilities:
     requires: frozenset[str] = frozenset()
 
 
-STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(
-    stage="measure",
-    provides=frozenset({CAPABILITY_FINDINGS}),
-)
+STAGE_MEASURE_CAPABILITIES = V2StageCapabilities(stage="measure", provides=frozenset())
 
 @dataclass(frozen=True)
 class StageOpening:

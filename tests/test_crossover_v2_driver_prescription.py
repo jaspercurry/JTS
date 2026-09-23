@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
-from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
+from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES, boost_headroom_by_role
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.baseline_profile import (
@@ -46,7 +46,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     driver_max_q_for_gain,
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
-    driver_prescription_route,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
 )
@@ -54,8 +53,8 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
-    packet_incumbent_linearization,
 )
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import _mapping
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
@@ -239,6 +238,79 @@ def _speaker(
 @pytest.fixture
 def packet(tmp_path: Path) -> dict[str, Any]:
     return _speaker(tmp_path)
+
+
+def packet_incumbent_linearization(
+    packet: Any,
+) -> dict[str, tuple[dict[str, Any], ...]] | None:
+    """The per-driver correction the graph is already carrying, or ``None``.
+
+    A reader rather than an attribute access: the packet owns its own layout.
+
+    ``None`` ("this packet does not say") and ``{}`` ("it says the graph
+    carries none") are DIFFERENT and both callers must keep them apart — a
+    document that replaces a role it cannot see is the defect this reader
+    exists to expose.
+
+    Strict, and it fails the WHOLE map rather than a filter: a partial read
+    would understate the displacement, the one direction this number must never
+    err in. Permitted biquad types are the emitter's own
+    ``camilla_yaml.LINEARIZATION_BIQUAD_TYPES``, consumed rather than restated.
+
+    Entries come back in the reduced ``{biquad_type, freq, q, gain}`` shape
+    :func:`~jasper.active_speaker.branch_chain.chain_response` takes.
+    """
+
+    if not isinstance(packet, dict):
+        return None
+    block = _mapping(packet.get("incumbent")).get("linearization")
+    if not isinstance(block, dict):
+        return None
+    roles = block.get("from_applied_profile")
+    if not isinstance(roles, dict):
+        return None
+    # The builder writes an ``_absence`` here when no profile reached it, and
+    # that shape is checked by name rather than inferred from its contents —
+    # ``_incumbent_record``'s rule, for the same reason: an absence and a role
+    # map are both dicts, and telling them apart by duck-typing would make a
+    # banked role called ``status`` change the answer.
+    if roles.get("status") == "not_evaluated":
+        return None
+    out: dict[str, tuple[dict[str, Any], ...]] = {}
+    for role, filters in roles.items():
+        if not isinstance(role, str) or not role.strip():
+            return None
+        if isinstance(filters, (str, bytes)) or not isinstance(filters, list):
+            return None
+        entries: list[dict[str, Any]] = []
+        for entry in filters:
+            if not isinstance(entry, dict):
+                return None
+            if entry.get("biquad_type") not in LINEARIZATION_BIQUAD_TYPES:
+                return None
+            # Real numbers, NOT anything ``float()`` will coerce, and ``bool``
+            # excluded because it is an ``int`` subclass — the same test
+            # ``blend_filters_from_mapping`` applies, for the same reason: this
+            # system writes floats, so a string here is by definition a record
+            # something else wrote.
+            numbers: list[float] = []
+            for value in (entry.get("freq"), entry.get("q"), entry.get("gain")):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return None
+                numbers.append(float(value))
+            freq, q, gain = numbers
+            if not all(map(math.isfinite, numbers)):
+                return None
+            if freq <= 0.0 or q <= 0.0:
+                return None
+            entries.append({
+                "biquad_type": str(entry["biquad_type"]),
+                "freq": freq,
+                "q": q,
+                "gain": gain,
+            })
+        out[role.strip()] = tuple(entries)
+    return out
 
 
 BRANCH_CONTEXT = {"woofer": ((), 0.0), "tweeter": ((), -9.52)}
@@ -1880,7 +1952,9 @@ def test_a_boost_is_admitted_on_the_horizontal_records_own_evidence(tmp_path):
 
     assert gated.filters[0]["gain"] == 2.0
     assert gated.classification_basis[0].verdict.freq_hz == hz
-    assert driver_prescription_route(gated) == LINEARIZATION_CANDIDATE_FIELD
+    assert set(driver_prescription_to_candidate_fields(gated, fitted=None)) == {
+        LINEARIZATION_CANDIDATE_FIELD,
+    }
 
 
 def test_the_depthless_record_still_vouches_for_a_boost_on_its_own_dip(tmp_path):
@@ -2194,7 +2268,7 @@ def test_the_knee_ruling_does_not_reach_tonights_targets(tmp_path, freq):
 def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
     """A prescription built directly has no classification basis and routes anyway.
 
-    ``driver_prescription_route`` used to restate ``_check_classification``'s bar
+    The route used to restate ``_check_classification``'s bar
     as a property of the SEAM, so an unvouched boost could not populate the
     candidate field however the object was constructed. The 2026-08-23 ruling
     made that bar a disclosure, and a seam-level restatement of a removed
@@ -2212,8 +2286,8 @@ def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
         passbands_hz=accepted.passbands_hz,
     )
 
-    assert driver_prescription_route(boost) == LINEARIZATION_CANDIDATE_FIELD
     fields = driver_prescription_to_candidate_fields(boost, fitted=None)
+    assert set(fields) == {LINEARIZATION_CANDIDATE_FIELD}
     assert fields[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["filters"][0][
         "gain"
     ] == 2.0
@@ -2255,7 +2329,6 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 
     assert prescription.prescription_class == "cut"
     assert prescription.composed_boost_db == 0.0
-    assert driver_prescription_route(prescription) == LINEARIZATION_CANDIDATE_FIELD
     assert driver_prescription_to_candidate_fields(prescription, fitted=None) == {
         LINEARIZATION_CANDIDATE_FIELD: {
             "tweeter": {
