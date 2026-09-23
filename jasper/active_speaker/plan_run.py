@@ -33,9 +33,7 @@ from .angle_capture import (
     candidate_identity, design_axis_spec, resolve_request, stop_specs,
 )
 from .commission_wiring import commissioning_spl_ceiling_db
-from .crossover_v2.admission import (
-    MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts,
-)
+from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
@@ -56,10 +54,6 @@ from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOS
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
 from .round_copy import PLACE_MICROPHONE, take_counts
-
-from jasper.audio_measurement.calibration import resolve_mic_sensitivity
-from jasper.audio_measurement.household_mic import resolved_household_sensitivity
-from .seat_level_reference import AnchorFacts, LevelUnresolved, ResolvedLevel, load_seat_level_reference, resolve_anchor_level
 
 logger = logging.getLogger(__name__)
 _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
@@ -111,20 +105,6 @@ def spl_watch(
         )
     channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
     return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
-
-
-def measurement_spl_watch(
-    *, topology: Any, preset: Any, device: Any,
-    mic_serial: str | None = None,
-) -> tuple[WiredSplMonitor, str, ResolvedLevel]:
-    sensitivity = (resolve_mic_sensitivity(mic_serial=mic_serial) if mic_serial
-                   else resolved_household_sensitivity(device))
-    monitor, note = spl_watch(topology=topology, preset=preset, sensitivity=sensitivity, device=device)
-    try:
-        level, _rebase = resolve_anchor_level(facts=AnchorFacts(load_seat_level_reference() or {}, sensitivity))
-    except LevelUnresolved as exc:
-        raise LateralWalkRefused(exc.reason, exc.detail) from exc
-    return monitor, note, level
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
@@ -386,32 +366,6 @@ async def run_plan(
                       clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
 
 
-async def run_specs(
-    specs: Sequence[MeasureSpec], *, session: TuningSession, manifest: RunManifest,
-    analyze: Analyze, aborts: Mapping[type[BaseException], str],
-    signals: RunSignals | None = None, spl_monitor: str = "",
-    clock: Callable[[], float] = time.monotonic,
-    gain_ceiling_db: Mapping[str, float] | None = None,
-    assessor: Callable[..., TakeVerdict] | None = None,
-) -> RunManifest:
-    manifest.request_fingerprint = json_fingerprint({"specs": [s.to_dict() for s in specs]})
-    manifest.spl_monitor = spl_monitor
-    stop = SimpleNamespace(kind="bearing", angle_deg=(specs[0].positions or (0,))[0],
-                           elevation_deg=specs[0].vertical_deg, distance_m=None,
-                           place=None, seat_offset_m=None, candidate_id="", purpose=PURPOSE_SPEAKER)
-    pose = _pose(stop)
-    manifest.asked = {"poses": [pose], "candidates": [s.candidate_id or "base" for s in specs],
-                      "mover": "fixed",
-                      "level": {"reference_volume_db": session.measurement_level_db}, "repeats": 1}
-    manifest.planned = [_planned_row(i, 1, SimpleNamespace(**{**vars(stop), "candidate_id": spec.candidate_id}))
-                        for i, spec in enumerate(specs, 1)]
-    work = [_Work(spec, stop, 0, i, len(specs), None)
-            for i, (spec, stop) in enumerate(zip(specs, manifest.planned), 1)]
-    return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=None,
-                      aborts=aborts, signals=signals or RunSignals(), retries=MAX_EXTRA_ATTEMPTS_PER_POSITION,
-                      clock=clock, gain_ceiling_db=gain_ceiling_db, assessor=assessor)
-
-
 class _Control(Exception):
     pass
 
@@ -576,7 +530,6 @@ async def _run(
                 finally:
                     playback_observer.reset(token)
                 manifest.detail = next((s.detail for s in outcome.stimuli if s.detail), "")
-                manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):

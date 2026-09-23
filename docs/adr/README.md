@@ -274,7 +274,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0286](0286-installation-context-guides-bass-trials.md) | Installation context guides bass trials | accepted |
 | [0287](0287-native-bass-range-is-not-a-driver-limit.md) | Native bass range is not a driver limit | accepted |
 | [0288](0288-the-v1-commissioning-lane-is-deleted.md) | The v1 commissioning lane is deleted | accepted |
-| [0296](0296-one-executor-lives-in-the-daemon.md) | One executor lives in the daemon; every mover is a client of one gate | accepted |
+| [0296](0296-one-executor-lives-in-the-daemon.md) | One executor lives in the daemon; every mover is a client of one gate | `jasper-measure` paragraph superseded by 0342 |
 | [0297](0297-the-plan-is-posted-in-the-run-body.md) | The plan is posted in the run body; the staged spool is deleted | accepted |
 | [0298](0298-tiers-and-stages-retire.md) | Tiers and stages retire; the program registry is the only pose vocabulary | accepted |
 | [0299](0299-one-evidence-manifest-per-run.md) | One evidence manifest per run, written by the executor | accepted |
@@ -315,3 +315,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
+| [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |

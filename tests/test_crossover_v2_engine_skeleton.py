@@ -12,6 +12,7 @@ refuses to BANK without ever refusing to play.
 from __future__ import annotations
 
 import asyncio
+import json
 from itertools import count
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -22,7 +23,7 @@ from jasper.active_speaker.driver_acoustics import CAPTURE_GEOMETRIES
 from jasper.active_speaker.volume_latch import READBACK_TOLERANCE_DB
 from jasper.audio_measurement.program_analysis import polarity_label
 
-from jasper.active_speaker.crossover_v2 import spatial
+from jasper.active_speaker.crossover_v2 import measure_spec, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     DESIGN_AXIS_DEG,
     DRIVER_ROLE_TWEETER,
@@ -392,6 +393,32 @@ def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
     """
     with pytest.raises(ValueError):
         MeasureSpec(**kwargs)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {},
+    {"graph_scope": "candidate", "candidate_id": "baseline-room", "sweep_band_hz": (20.0, 20_000.0),
+     "sweep_s": 1.5, "level_ladder_dbfs": (-12.0,)},
+    {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER,
+     "delayed_role": DRIVER_ROLE_WOOFER, "delay_us": 120.0, "positions": (-30,),
+     "pose_prompts": ("stand left",), "candidate_id": "null_a1"},
+])
+def test_a_spec_survives_its_own_json_shape_unchanged(kwargs: dict) -> None:
+    """``MeasureSpec`` owns the document a plan's ``template`` is written in, so
+    every field it has round-trips through JSON: a field added to the class
+    travels without a second reader learning its name.
+    """
+    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **kwargs)
+    document = json.loads(json.dumps(spec.to_dict()))
+
+    assert MeasureSpec.from_mapping(document) == spec
+
+
+def test_every_measure_spec_field_is_read_back_by_exactly_one_rule() -> None:
+    groups = (measure_spec._TRIMMED_STRINGS, measure_spec._ARRAYS,
+              measure_spec._NUMBERS, measure_spec._PASSTHROUGH)
+    assert frozenset().union(*groups) == measure_spec._FIELD_NAMES
+    assert sum(len(group) for group in groups) == len(measure_spec._FIELD_NAMES)
 
 
 @pytest.mark.parametrize("elevation", [0, 7, -22])

@@ -21,7 +21,6 @@ from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
-from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
@@ -32,8 +31,6 @@ from tests.crossover_v2_fixtures import (
     FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
     _snr_pilot, plan_context,
 )
-from jasper.cli.measure import _ran
-from tests.engine_twin import FakeSeams as EngineSeams, open_session
 from tests.test_plan_run import AnsweredGate, _run_gated, _walk
 
 PHASES = ("check", "measure", "verify")
@@ -439,44 +436,6 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     assert level.get("alignment_snr_residual_shortfall_db") == (after if capped_by else None)
     assert pair["snr"]["woofer"]["verdict"] == ("ok" if after == 0 else "insufficient")
     assert conductor._measure_gain_ceiling_db == GAINS
-
-
-@pytest.mark.parametrize("stop,cap,raise_db,capped_by", [(80, -8, 3, "spl_stop"), (85, -8, 8, None), (85, -42.89, 4, "driver_cap")])
-async def test_measure_cli_retries_with_declared_caps_and_each_takes_spl(stop, cap, raise_db, capped_by):
-    conductor = _conductor(FakeSeams(), driver_caps_dbfs={"woofer": cap, "tweeter": -33.2})
-    excitation = replace(conductor._excitation, session_volume_db=-16.9)
-    box = SimpleNamespace(caps_dbfs=excitation.caps_dbfs, session_volume_db=excitation.session_volume_db,
-                          preset=replace(conductor._preset, safety=replace(conductor._preset.safety, max_commissioning_level_db_spl=stop)))
-    fakes = EngineSeams()
-    fakes.volume.proven_db = box.session_volume_db
-    manifest = RunManifest("cli", fakes.records)
-
-    async def bank(record):
-        rung = fakes.play.rungs[-1]
-        program = excitation.measure_program(dict.fromkeys(GAINS, -30 if rung is None else rung))
-        return await manifest.bank({**record, "program": program.to_dict(), "capture_integrity": {"spl": {
-            "max_window_db_spl": 74 + program.segment("sweep_w").gain_db + 30, "ceiling_db_spl": 85}}})
-
-    def analyze(record, record_id):
-        gain = ExcitationProgram.from_dict(record["program"]).segment("sweep_w").gain_db
-        band = snr_policy.band_snr_verdicts(
-            decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41 + gain + 30}],
-            noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
-            relevant_hz=(1000, 4000), model=DRIVER,
-        )
-        return _analysis(driver_responses=(replace(_driver_response("woofer", 8), snr={"alignment": band}),))
-
-    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure", positions=(20,))
-    async with open_session(replace(fakes, records=SimpleNamespace(bank=bank)),
-                            measurement_level_db=box.session_volume_db, allocate_take_id=manifest.allocate_take_id) as (session, _):
-        result = await _ran(session, (spec,), spl_monitor="wired", manifest=manifest, analyze=analyze, box=box)
-    assert result.status == "complete"
-    assert fakes.play.rungs == [None, pytest.approx(-30 + raise_db)]
-    last = next(take for take in result.takes if take["attempt"] == 2 and take["role"] == "woofer")
-    level = last["alignment"]["woofer"]
-    assert level["alignment_level_db"] == pytest.approx(-30 + raise_db)
-    assert level["alignment_snr_shortfall_db"] == {"before": 6, "after": pytest.approx(max(0, 6 - raise_db))}
-    assert level.get("alignment_level_capped_by") == capped_by
 
 
 @pytest.mark.parametrize("phase", PHASES)

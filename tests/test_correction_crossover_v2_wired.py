@@ -36,7 +36,6 @@ from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
 from tests.test_active_speaker_measurement_door import box as box
-from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
@@ -73,7 +72,7 @@ from jasper.web._common import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _check_analysis, _conductor, plan_context
+from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, plan_context
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000

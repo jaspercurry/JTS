@@ -16,7 +16,6 @@ from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, stubbed_capabilities
-from jasper.cli.measure import _bind_compose
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
@@ -149,22 +148,14 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
 
 
 @pytest.mark.parametrize("size", ["axis", "nearfield"])
-def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, size):
-    topology, safety, targets, excitation = bass_fixture
+def test_bass_capture_program_agrees_across_surfaces(bass_fixture, size):
+    _, safety, targets, excitation = bass_fixture
     row = program("bass", size)
     request = request_for_program(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     played = compose_plan_program(SimpleNamespace(_excitation=excitation), capture.spec, None, context=context)
-    box = SimpleNamespace(topology=topology, safety_profile=safety, role_targets=targets,
-                          roles_bands=excitation.roles, caps_dbfs=excitation.caps_dbfs,
-                          session_volume_db=excitation.session_volume_db, fc_hz=excitation.fc_hz,
-                          sweep_duration_limits_s=excitation.sweep_duration_limits_s, declared_sensitivities={})
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
-                        lambda **kw: kw["program_for_spec"])
-    compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
-                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None, level_reference_yaml="reference"))
-    assert compose(capture.spec, None).program_id == played.program_id
+    assert round(played.total_samples / played.sample_rate_hz * 1000) == 20199
     plan = build_inline_session_spec(
         [(capture.spec, capture.resolved(request).prompt, "trial")],
         roles_bands=excitation.roles, fc_hz=excitation.fc_hz, safety_profile=safety, role_targets=targets,

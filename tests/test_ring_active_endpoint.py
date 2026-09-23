@@ -1993,8 +1993,8 @@ def _crossover_v2_program_site(
     **The guard follows the site rather than dying with it**, twice now. Wave 6b
     moved the emit out of the per-stimulus body into the session's one
     measurement graph; the door PR moved it again, out of the web host's closure
-    and into ``active_speaker.measurement_emit``, where the wizard and the
-    ``jasper-measure`` door reach the SAME one. There is exactly one forwarding
+    and into ``active_speaker.measurement_emit``, where every measurement door
+    reaches the SAME one. There is exactly one forwarding
     site left, so this drives it directly — no host, no transport, no
     monkeypatching of either. MS-1's blast radius is unchanged and still the
     widest of the seven: a half-derived device block poisons every stimulus of

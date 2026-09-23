@@ -39,9 +39,8 @@ from jasper.active_speaker.session_volume_plan import (
 )
 from jasper.volume_owner import VolumeOwner, install_volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.crossover_v2_fixtures import _preset
+from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
 from tests._async_wait import wait_signalled
-from tests.test_cli_measure import HOUSEHOLD_DB, FakeCam
 
 ENTRY_CONFIG = "entry.yml"
 VOLUME_STATE = "session_volume.json"
