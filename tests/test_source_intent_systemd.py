@@ -616,7 +616,7 @@ def test_bluetooth_adapter_udev_rule_re_triggers_source_intent_reconcile() -> No
     )
     assert 'ACTION=="add"' in run_line
     assert 'SUBSYSTEM=="bluetooth"' in run_line
-    assert 'DEVTYPE=="host"' in run_line
+    assert 'ENV{DEVTYPE}=="host"' in run_line
     assert 'ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"' in run_line
     assert "99-jasper-bluetooth-adapter.rules" in installer_text()
 
@@ -666,4 +666,4 @@ def test_bluetooth_adapter_udev_rule_matches_the_observed_hci0_uevent() -> None:
         if "SYSTEMD_WANTS" in line and not line.lstrip().startswith("#")
     )
     assert f'SUBSYSTEM=="{observed["SUBSYSTEM"]}"' in run_line
-    assert f'DEVTYPE=="{observed["DEVTYPE"]}"' in run_line
+    assert f'ENV{{DEVTYPE}}=="{observed["DEVTYPE"]}"' in run_line
