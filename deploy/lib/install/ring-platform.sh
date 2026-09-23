@@ -49,7 +49,7 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 #
 # Degrade-to-warn contract (campaign risk #5): a build failure MUST NOT
 # fail the install, and this is deliberately the OPPOSITE of
-# build_install_rust_daemon's required=1 fatal path. The ring is load-bearing
+# build_install_rust_daemon's fatal path. The ring is load-bearing
 # on every box (ADR-0100 — it is the only transport), so the reason is no
 # longer "nothing uses it" — it is that
 # an aborted install is the one outcome a box cannot deploy its way out of.
@@ -110,15 +110,6 @@ build_install_jts_ring_ioplug() {
             fi
             return 0
         fi
-    fi
-
-    if [[ ! -d "${src_dir}" ]]; then
-        # A branch predating the ioplug source. Non-fatal: the ring
-        # platform simply is not available; doctor warns. Any .so still at
-        # so_dest is from an earlier deploy and this one cannot vouch for it.
-        echo "  jts_ring ioplug source missing at ${src_dir}; skipping ring platform build (ring stays unavailable)"
-        revoke_ring_ioplug_provenance
-        return 0
     fi
 
     echo "  building jts_ring ALSA ioplug (C)..."

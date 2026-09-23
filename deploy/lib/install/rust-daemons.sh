@@ -11,7 +11,6 @@
 
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
-OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
 
 rust_build_memtotal_kb() {
     local meminfo="${JASPER_RUST_MEMINFO_FILE:-/proc/meminfo}"
@@ -98,29 +97,13 @@ rust_build_cache_reset_if_stale_format() {
 
 build_install_rust_daemon() {
     local name="$1"
-    local required="$2"
-    local src_dir="${REPO_DIR}/rust/${name}"
-    local cache_dir="${3:-/var/cache/jasper-rust-build}"
+    local cache_dir="${2:-/var/cache/jasper-rust-build}"
     local bin_dest="/opt/jasper/bin/${name}"
-    local missing_source_message="${name} source missing"
-    local required_reason="This tree requires ${name} as part of the audio runtime."
 
     if [[ "${name}" == "jasper-fanin" ]]; then
         bin_dest="${FANIN_BIN}"
     elif [[ "${name}" == "jasper-outputd" ]]; then
         bin_dest="${OUTPUTD_BIN}"
-        missing_source_message="${OUTPUTD_SOURCE_MISSING_ERROR}"
-        required_reason="This tree requires jasper-outputd as the final output owner."
-    fi
-
-    if [[ ! -d "${src_dir}" ]]; then
-        if [[ "${required}" == "1" ]]; then
-            echo "  ${missing_source_message} at ${src_dir}" >&2
-            echo "  ${required_reason}" >&2
-            return 1
-        fi
-        echo "  ${missing_source_message} at ${src_dir}; skipping build"
-        return 0
     fi
 
     echo "  building ${name} (Rust daemon)..."
@@ -171,10 +154,7 @@ build_install_jasper_fanin() {
             return 0
         fi
     fi
-    # Fan-in is the production renderer topology; older experimental
-    # branches may not carry rust/jasper-fanin, so absence remains a
-    # non-fatal skip for compatibility with that historical shape.
-    build_install_rust_daemon "jasper-fanin" "0"
+    build_install_rust_daemon "jasper-fanin"
 }
 
 build_install_jasper_outputd() {
@@ -185,6 +165,5 @@ build_install_jasper_outputd() {
             return 0
         fi
     fi
-    # outputd is the mainline final-output owner and is required.
-    build_install_rust_daemon "jasper-outputd" "1"
+    build_install_rust_daemon "jasper-outputd"
 }
