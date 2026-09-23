@@ -7,8 +7,8 @@
 These pin the artifact's own envelope: what the apply seam may bank, what the
 reader refuses, and the remediation an operator sees when the declaration has
 moved under a banked trim. The seam that WRITES it lives in
-``test_active_speaker_baseline_profile.py``; the profile's preference for this
-record over the guided captures lives in ``test_active_speaker_level_match.py``.
+``test_active_speaker_baseline_profile.py``; the resolver that answers from
+this record lives in ``test_active_speaker_level_match.py``.
 """
 from __future__ import annotations
 
@@ -146,12 +146,11 @@ def test_a_positive_trim_is_refused_and_never_banked_as_a_boost(tmp_path: Path):
     """Attenuation-only BY CONSTRUCTION, and refused rather than clamped.
 
     No path reaching this writer can produce a positive per-role trim — both
-    measured-candidate types refuse one at construction and
-    ``attenuation_from_group_deltas`` normalizes its maximum to exactly 0 dB —
-    so a positive value is a fault, and clamping it would bank a trim no
-    measurement produced. Downstream, the reverse-null door's branch-gap depth
-    ceiling and the per-role caps argument must stay two independent legs; a
-    banked positive trim would couple them.
+    measured-candidate types refuse one at construction — so a positive value
+    is a fault, and clamping it would bank a trim no measurement produced.
+    Downstream, the reverse-null door's branch-gap depth ceiling and the
+    per-role caps argument must stay two independent legs; a banked positive
+    trim would couple them.
     """
     state = _bank(tmp_path)  # a good record is already on disk
     with pytest.raises(dbt.DriverBaseTrimError) as excinfo:
@@ -229,7 +228,7 @@ def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
     assert meta["declaration_fingerprint"] == "a" * 64
     assert meta["speaker_group_ids"] == ["mono"]
     # Derivable from `speaker_group_ids` by construction (post-#3388); the
-    # one caller (`baseline_profile._measured_level_trims`) already computes
+    # one caller (`baseline_profile.measured_level_trims`) already computes
     # its own count rather than reading this one.
     assert "groups_total" not in meta
     assert meta["trim_source"] == "strict_measured_candidate"

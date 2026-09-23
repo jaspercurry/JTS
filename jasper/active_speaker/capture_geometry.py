@@ -5,19 +5,13 @@
 """Comparison-critical microphone placement for active-crossover captures.
 
 Per-driver levels are comparable only within the same server-proven microphone
-geometry. This module owns that small contract for capture copy, durable evidence,
-and level-lock identity. It records an operator attestation, not a measured
+geometry. This module owns that small contract: the placement policies and the
+capture copy an operator attests to. That is an attestation, not a measured
 distance; near-field and reference-axis locks must never substitute for one
 another.
 """
 
 from __future__ import annotations
-
-import hashlib
-import json
-import math
-import re
-from typing import Any, Mapping
 
 DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
 # Deliberately a new policy id: evidence captured under the old
@@ -27,33 +21,7 @@ DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
 # alignment evidence.
 SUMMED_PLACEMENT_POLICY_ID = "summed_reference_axis_v1"
 REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
-COMPARISON_SET_SCHEMA_VERSION = 2
-PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
-
-# Capture protocol versions carrying the acknowledgement machinery a placement
-# proof depends on. Protocol 1 has none, so it is excluded; 2 and 3 authenticate
-# the SAME acknowledgement through the SAME
-# validate_capture_acknowledgement/on_armed choreography.
-#
-# **2 stays even though the Pi no longer EMITS it.** This reads a version
-# stamped into PERSISTED evidence by whatever page wrote the proof --
-# the proof records the PAGE's `capture_protocol_version`,
-# and the published build 20260712.3 advertised 2. Dropping 2 here would
-# retroactively invalidate every proof captured against that page (repeat
-# admission, crossover readiness, replay), so a persisted proof IS a deployed
-# artifact even though protocol 2 is no longer emitted.
-#
-# Explicit allowlist, never a `>=` floor: a future protocol must be a
-# deliberate addition here once its acknowledgement choreography is confirmed
-# equivalent -- never a silent pass-through.
-#
-# The literals are duplicated rather than imported on purpose:
-# crossover_v2.sweep_spec imports THIS module for its policy ids and
-# acknowledgement labels, so importing it back would invert that dependency.
-# Containment of its CAPTURE_PROTOCOL_VERSION is pinned by
-# tests/test_active_speaker_capture_geometry.py.
-PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
 # Capture geometry is speaker policy, never browser input.
 DRIVER_CAPTURE_GEOMETRY_BY_POLICY = {
@@ -102,170 +70,4 @@ def summed_acknowledgement_label() -> str:
         "The microphone is on the tweeter axis, level with the centre of the "
         "tweeter or horn mouth, and I will not move it or the speaker between "
         "the normal- and reverse-polarity combined-driver measurements."
-    )
-
-
-_COMPARISON_SET_CORE_KEYS = (
-    "schema_version",
-    "comparison_set_id",
-    "created_at",
-    "topology_id",
-    "profile_context_id",
-    "setup_sha256",
-    "device_sha256",
-    "calibration_id",
-    "driver_level_locks",
-)
-
-
-def comparison_set_fingerprint(value: Mapping[str, Any]) -> str:
-    """Fingerprint every immutable comparison-critical field."""
-
-    core = {key: value.get(key) for key in _COMPARISON_SET_CORE_KEYS}
-    raw = json.dumps(core, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _driver_level_lock_valid(target_id: Any, value: Any) -> bool:
-    if not isinstance(target_id, str) or not target_id or not isinstance(value, Mapping):
-        return False
-    numeric = (
-        tone_frequency := value.get("tone_frequency_hz"),
-        value.get("tone_peak_dbfs"),
-        value.get("commissioning_gain_db"),
-        value.get("locked_main_volume_db"),
-    )
-    return bool(
-        value.get("target_id") == target_id
-        and isinstance(value.get("speaker_group_id"), str)
-        and value.get("speaker_group_id")
-        and isinstance(value.get("role"), str)
-        and value.get("role")
-        and target_id
-        == f"{value.get('speaker_group_id')}:{str(value.get('role')).lower()}"
-        and all(
-            isinstance(item, (int, float))
-            and not isinstance(item, bool)
-            and math.isfinite(float(item))
-            for item in numeric
-        )
-        and isinstance(tone_frequency, (int, float))
-        and not isinstance(tone_frequency, bool)
-        and float(tone_frequency) > 0
-    )
-
-
-def comparison_set_valid(value: Any) -> bool:
-    """Whether a schema-v2 per-driver comparison binding is intact."""
-
-    if not isinstance(value, Mapping):
-        return False
-    locks = value.get("driver_level_locks")
-    return bool(
-        value.get("schema_version") == COMPARISON_SET_SCHEMA_VERSION
-        and isinstance(value.get("comparison_set_id"), str)
-        and re.fullmatch(r"[0-9a-f]{32}", value["comparison_set_id"])
-        and isinstance(value.get("created_at"), str)
-        and value.get("created_at")
-        and isinstance(value.get("topology_id"), str)
-        and value.get("topology_id")
-        and isinstance(value.get("fingerprint"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"])
-        and isinstance(value.get("profile_context_id"), str)
-        and value.get("profile_context_id")
-        and isinstance(value.get("setup_sha256"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", value["setup_sha256"])
-        and isinstance(value.get("device_sha256"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", value["device_sha256"])
-        and isinstance(value.get("calibration_id"), str)
-        and isinstance(locks, Mapping)
-        and bool(locks)
-        and all(_driver_level_lock_valid(key, lock) for key, lock in locks.items())
-        and value.get("fingerprint") == comparison_set_fingerprint(value)
-    )
-
-
-def capture_proof_valid(
-    record: Mapping[str, Any] | None,
-    active_comparison_set: Mapping[str, Any] | None,
-    *,
-    policy_id: str,
-    role: str,
-    speaker_group_id: str,
-    target_fingerprint: str = "",
-) -> bool:
-    """Whether one acoustic record belongs to the active comparable set."""
-
-    if (
-        not isinstance(record, Mapping)
-        or not isinstance(active_comparison_set, Mapping)
-        or not comparison_set_valid(active_comparison_set)
-    ):
-        return False
-    proof = record.get("placement_proof")
-    if not isinstance(proof, Mapping):
-        return False
-    expected_target = target_fingerprint or str(
-        record.get("target_fingerprint") or ""
-    )
-    return bool(
-        placement_proof_shape_valid(
-            proof,
-            policy_id=policy_id,
-            role=role,
-            speaker_group_id=speaker_group_id,
-            target_fingerprint=expected_target,
-        )
-        and proof.get("comparison_set_id")
-        == active_comparison_set.get("comparison_set_id")
-        and proof.get("comparison_set_fingerprint")
-        == active_comparison_set.get("fingerprint")
-    )
-
-
-def placement_proof_shape_valid(
-    proof: Mapping[str, Any] | None,
-    *,
-    policy_id: str,
-    role: str,
-    speaker_group_id: str,
-    target_fingerprint: str,
-) -> bool:
-    """Whether one proof is complete before authoritative-set comparison.
-
-    Capture session and acknowledgement identities prove each individual arm,
-    but are intentionally not stationary-repeat identity: the product creates
-    a fresh capture session for each repeat. Comparison/target/group/role are the
-    cross-repeat binding and are checked separately by the aggregator.
-    """
-
-    return bool(
-        isinstance(proof, Mapping)
-        and isinstance(speaker_group_id, str)
-        and bool(speaker_group_id)
-        and isinstance(role, str)
-        and bool(role)
-        and re.fullmatch(r"[0-9a-f]{64}", target_fingerprint)
-        and proof.get("schema_version") == PLACEMENT_PROOF_SCHEMA_VERSION
-        and proof.get("policy_id") == policy_id
-        and proof.get("accepted") is True
-        and proof.get("confirmation_source") == "capture_begin"
-        and isinstance(proof.get("acknowledgement_binding_sha256"), str)
-        and re.fullmatch(
-            r"[0-9a-f]{64}",
-            proof["acknowledgement_binding_sha256"],
-        )
-        and isinstance(proof.get("capture_session_id"), str)
-        and proof.get("capture_session_id")
-        and proof.get("capture_protocol_version")
-        in PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS
-        and isinstance(proof.get("capture_page_build"), str)
-        and re.fullmatch(r"[0-9]{8}\.[0-9]+", proof["capture_page_build"])
-        and proof.get("speaker_group_id") == speaker_group_id
-        and proof.get("role") == role
-        and proof.get("target_fingerprint") == target_fingerprint
-        and isinstance(proof.get("comparison_set_id"), str)
-        and re.fullmatch(r"[0-9a-f]{32}", proof["comparison_set_id"])
-        and isinstance(proof.get("comparison_set_fingerprint"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", proof["comparison_set_fingerprint"])
     )

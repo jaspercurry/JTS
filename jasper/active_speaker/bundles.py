@@ -12,8 +12,8 @@ fields, retention policy and core-artifact list) lives here.
 
 Two invariants keep ownership explicit:
 
-- **Split authority.** Capture, proposal and apply payloads in ``info.json`` are
-  a fail-soft forensic mirror, never reconstructed into measurement or candidate
+- **Split authority.** Capture payloads in ``info.json`` are a fail-soft
+  forensic mirror, never reconstructed into measurement or candidate
   authority. A FRESH bundle directory additionally owns Shared's exact admission
   marker; a missing or historical marker refuses audible production work.
   Nothing in ``measurement.py`` imports this module.
@@ -443,13 +443,6 @@ def open_bundle(
         "captures": [],
         "summed_captures": [],
         "repeat_progress": {},
-        "proposal": None,
-        "previous_values": None,
-        "proposed_values": None,
-        "corrections_provenance": None,
-        "compile_validation": None,
-        "apply": None,
-        "rollback_target": None,
         "verification": None,
     }
     ensure_directory_mode(bundle_dir)
@@ -878,75 +871,6 @@ def record_repeat_progress(
     return entry
 
 
-def _plain(value: Any) -> dict[str, Any] | None:
-    return dict(value) if isinstance(value, Mapping) else None
-
-
-@_fail_soft("record_apply")
-def record_apply(
-    bundle_dir: Path,
-    *,
-    candidate: Mapping[str, Any],
-    apply_state: Mapping[str, Any] | None,
-    rollback_target: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Record one apply attempt (success, failure, or refusal) into the bundle.
-
-    Success is ``apply_state`` truthy AND ``candidate["status"] == "applied"``;
-    anything else records ``state = "failed"`` — a refused apply never reached
-    the DSP transaction, but the attempt is still evidence.
-    """
-
-    info = _read_info(bundle_dir)
-    fingerprints = dict(info.get("fingerprints") or {})
-    source = candidate.get("source")
-    source_fingerprint = (
-        source.get("fingerprint") if isinstance(source, Mapping) else None
-    )
-    if not fingerprints.get("graph_fingerprint") and source_fingerprint:
-        fingerprints["graph_fingerprint"] = source_fingerprint
-
-    success = bool(apply_state) and candidate.get("status") == "applied"
-    updated = {
-        **info,
-        "fingerprints": fingerprints,
-        "proposal": _plain(candidate.get("proposal")),
-        "previous_values": _plain(candidate.get("previous_values")),
-        "proposed_values": _plain(candidate.get("proposed_values")),
-        "corrections_provenance": _plain(candidate.get("corrections_provenance")),
-        "compile_validation": _plain(candidate.get("validation")),
-        "apply": _plain(apply_state),
-        "rollback_target": _plain(rollback_target),
-        "state": "applied" if success else "failed",
-        "updated_at": time.time(),
-    }
-    _write_info(bundle_dir, updated)
-    write_json_artifact(
-        bundle_dir,
-        "proposal.json",
-        dict(candidate),
-        kind="candidate_profile",
-        sensitivity="derived",
-        recomputable=True,
-        generated_by="active_speaker.bundles",
-        schema_version=BUNDLE_SCHEMA_VERSION,
-        file_mode=BUNDLE_FILE_MODE,
-    )
-    if apply_state is not None:
-        write_json_artifact(
-            bundle_dir,
-            "apply.json",
-            dict(apply_state),
-            kind="apply_transaction",
-            sensitivity="derived",
-            recomputable=False,
-            generated_by="active_speaker.bundles",
-            schema_version=BUNDLE_SCHEMA_VERSION,
-            file_mode=BUNDLE_FILE_MODE,
-        )
-    return updated
-
-
 def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     """Return ``info.json`` plus derived counts/sizes for one bundle.
 
@@ -961,8 +885,6 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     info["bundle_size_bytes"] = _bundle_byte_size(bundle_dir)
     info["capture_count"] = len(info.get("captures") or [])
     info["summed_capture_count"] = len(info.get("summed_captures") or [])
-    info["has_proposal"] = (bundle_dir / "proposal.json").exists()
-    info["has_apply"] = (bundle_dir / "apply.json").exists()
     manifest_path = bundle_dir / "artifact_manifest.json"
     info["has_artifact_manifest"] = manifest_path.exists()
     if manifest_path.exists():

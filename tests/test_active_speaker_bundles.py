@@ -158,17 +158,7 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     assert info["captures"] == []
     assert info["summed_captures"] == []
     assert info["repeat_progress"] == {}
-    for reserved in (
-        "proposal",
-        "previous_values",
-        "proposed_values",
-        "corrections_provenance",
-        "compile_validation",
-        "apply",
-        "rollback_target",
-        "verification",
-    ):
-        assert info[reserved] is None
+    assert info["verification"] is None
 
     # Persisted to disk, not just returned in-memory.
     on_disk = bundles._read_info(Path(info["bundle_dir"]))
@@ -610,106 +600,6 @@ def test_append_capture_is_fail_soft_when_info_json_is_missing(
     assert fields["op"] == "append_capture"
     # The WAV copy ran to completion before the info.json step failed.
     assert list(bundle_dir.glob("captures/*.wav"))
-
-
-# --------------------------------------------------------------------------
-# record_apply
-# --------------------------------------------------------------------------
-
-
-def _candidate(*, status: str = "applied", fingerprint: str = "cand-fp") -> dict:
-    return {
-        "status": status,
-        "source": {"fingerprint": fingerprint, "topology_fingerprint": "topo-fp"},
-        "proposal": {"note": "example"},
-        "corrections_provenance": {
-            "woofer": {
-                "gain_db": "measured",
-                "delay_ms": "manual",
-                "inverted": "manual",
-            }
-        },
-        "validation": {"status": "valid", "ok_to_apply": True},
-    }
-
-
-def test_record_apply_marks_applied_on_success(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    candidate = _candidate(status="applied")
-    apply_state = {"result": "ok", "op_id": "abc"}
-
-    updated = bundles.record_apply(
-        bundle_dir,
-        candidate=candidate,
-        apply_state=apply_state,
-        rollback_target={"config_path": "/prior/config.yml"},
-    )
-
-    assert updated["state"] == "applied"
-    assert updated["fingerprints"]["graph_fingerprint"] == "cand-fp"
-    assert updated["proposal"] == {"note": "example"}
-    assert updated["corrections_provenance"] == candidate["corrections_provenance"]
-    assert updated["compile_validation"] == candidate["validation"]
-    assert updated["apply"] == apply_state
-    assert updated["rollback_target"] == {"config_path": "/prior/config.yml"}
-    assert (bundle_dir / "proposal.json").is_file()
-    assert (bundle_dir / "apply.json").is_file()
-
-
-def test_record_apply_marks_failed_when_apply_state_missing(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    candidate = _candidate(status="blocked")
-
-    updated = bundles.record_apply(
-        bundle_dir, candidate=candidate, apply_state=None, rollback_target=None
-    )
-
-    assert updated["state"] == "failed"
-    assert updated["apply"] is None
-    assert (bundle_dir / "proposal.json").is_file()
-    assert not (bundle_dir / "apply.json").exists()
-
-
-def test_record_apply_marks_failed_when_status_not_applied(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    candidate = _candidate(status="apply_failed")
-    apply_state = {"result": "load_failed"}
-
-    updated = bundles.record_apply(
-        bundle_dir, candidate=candidate, apply_state=apply_state, rollback_target=None
-    )
-
-    assert updated["state"] == "failed"
-    assert updated["apply"] == apply_state
-
-
-def test_record_apply_never_overwrites_an_existing_graph_fingerprint(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    bundles.record_apply(
-        bundle_dir,
-        candidate=_candidate(status="applied", fingerprint="first-fp"),
-        apply_state={"result": "ok"},
-        rollback_target=None,
-    )
-
-    updated = bundles.record_apply(
-        bundle_dir,
-        candidate=_candidate(status="applied", fingerprint="second-fp"),
-        apply_state={"result": "ok"},
-        rollback_target=None,
-    )
-
-    assert updated["fingerprints"]["graph_fingerprint"] == "first-fp"
 
 
 # --------------------------------------------------------------------------

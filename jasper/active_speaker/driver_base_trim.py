@@ -7,7 +7,7 @@
 The relative level a driver needs so the acoustic sum is level across every
 declared crossover, replacing the datasheet-sensitivity estimate. One writer
 (``baseline_profile.persist_applied_baseline_profile``), one reader
-(``baseline_profile._measured_level_trims``); absent is normal. No estimator
+(``baseline_profile.measured_level_trims``); absent is normal. No estimator
 and no solver live here. A trim is degenerate with the correction chain it was
 co-fitted with, so the record names that chain and the declaration it was
 measured against; a moved declaration is a loud refusal with a fallback, never
@@ -38,12 +38,6 @@ STATUS_APPLIED = "applied"
 STATUS_DECLARATION_CHANGED = "declaration_changed"
 STATUS_ROLES_CHANGED = "roles_changed"
 STATUS_UNUSABLE = "unusable"
-#: The record validated, but guided captures newer than its ``measured_at``
-#: answered instead (ruling S20: the newest measurement wins). Stamped by the
-#: resolver, never by :func:`banked_base_trims`. Not in
-#: :data:`REFUSED_STATUSES`: the re-measure a refusal would demand already
-#: happened.
-STATUS_SUPERSEDED = "superseded"
 
 #: A trim was banked and this speaker is NOT using it. ``absent`` is not one of
 #: them: a box that never measured is the ordinary case, while every member here
@@ -248,10 +242,9 @@ def write_base_trim(
     module cannot read) is banked as no frame, which refuses a comparison.
 
     ``measured_at`` is WHEN THE EVIDENCE WAS MEASURED (the newest capture that
-    fed the trim), not when this record was written: the S20 supersede compares
-    capture times against it, so a write time would let a re-persist of a frozen
-    candidate re-date old evidence past newer captures. Minted as now only when
-    the caller has no dated evidence at all.
+    fed the trim), not when this record was written, so a re-persist of a frozen
+    candidate never re-dates old evidence. Minted as now only when the caller
+    has no dated evidence at all.
 
     Attenuation-only by construction and REFUSED rather than clamped: no path
     reaching this writer can legitimately produce a positive per-role trim, so a

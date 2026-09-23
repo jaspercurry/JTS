@@ -302,7 +302,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     preview = build_crossover_preview(draft)
     applied = declared_profile_fixture(
         topology, design_draft=draft,
-        measurements={}, write=True,
+        write=True,
          config_path=tmp_path / "solo.yml",
     )
     assert applied["permissions"]["may_apply"]

@@ -43,8 +43,7 @@ SCHEMA_VERSION = 1
 # schema above: additive fields stay schema-compatible while a choreography
 # change does not. A mismatch is a loud incompatibility, never a negotiated
 # downgrade. It does NOT encode whether a session is session-spanning — that is
-# carried by `capture_plan` presence alone. Persisted placement proofs may carry
-# an older value (see active_speaker.capture_geometry).
+# carried by `capture_plan` presence alone.
 CAPTURE_PROTOCOL_VERSION = 3
 
 

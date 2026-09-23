@@ -43,7 +43,7 @@ def compile_applied_tune(
     text = measurement_emit.compile_tuning_graph(tune.declaration, candidate=tune.banked.candidate,
         preference_filters=preference_filters, output_trim_db=output_trim_db)
     prepared = baseline_profile.prepare_applied_baseline_profile(tune.banked, declaration=tune.declaration,
-        design_draft=tune.draft, measurements={}, provenance=tune.applied)
+        design_draft=tune.draft, provenance=tune.applied)
     proof = runtime_contract.classify_bass_extension_graph(tune.declaration.topology, evidence_source="desired",
         graph_text=text, applied_baseline_state=prepared)
     if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:

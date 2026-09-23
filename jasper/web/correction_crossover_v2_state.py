@@ -359,12 +359,9 @@ def _resolve_measurement_level_trims(
     ``({}, "")`` for a spec that asks for none — the ordinary walk, which pays
     nothing: no statefile is read and no preview is loaded.
 
-    The precedence is NOT decided here.
-    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` is the
-    one owner of which evidence source wins, and this function
-    hands it the same two inputs the applied profile's own build hands it, so
-    the graph a measurement plays through is levelled by the same evidence the
-    speaker would be levelled by.
+    The answer is NOT decided here:
+    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` owns
+    it, and this function only loads the declaration that answer is keyed to.
 
     **No/unreadable evidence answers empty WITHOUT raising, and there is no
     catch to dress a genuine fault up as no-evidence.** The preview loader
@@ -385,7 +382,7 @@ def _resolve_measurement_level_trims(
 
     draft = load_design_draft()
     trims, meta = measured_level_trims(
-        preset, {}, build_crossover_preview(draft), design_draft=draft,
+        preset, build_crossover_preview(draft), design_draft=draft,
     )
     return (
         {str(role): float(db) for role, db in trims.items()},

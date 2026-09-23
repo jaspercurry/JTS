@@ -503,7 +503,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         paths["staged_metadata_path"].write_text(json.dumps(_staged_metadata(topology, startup)))
     artifact = tmp_path / "baseline.yml"
     applied = prepare_applied_baseline_profile(
-        banked, declaration=declaration, design_draft=draft, measurements={}, config_path=artifact,
+        banked, declaration=declaration, design_draft=draft, config_path=artifact,
     )
     applied["status"] = "applied"
     paths["applied_baseline_path"].write_text(json.dumps(applied))

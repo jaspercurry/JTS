@@ -95,7 +95,6 @@ def _real_active_applied_baseline(tmp_path):
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements={},
         write=False,
         config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
     )
