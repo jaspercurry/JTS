@@ -21,7 +21,6 @@ from .crossover_v2.round_inputs import ROOM_ARTIFACT, RoundInputs, banked_round_
 TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
 TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
-TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
 TAKES_FAR_AND_CLOSE = (
     "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
@@ -55,7 +54,6 @@ class ViewArtifact(NamedTuple):
     @property
     def per_set(self) -> bool: return "<set-id>" in self.takes
 
-#: ``repeat-floor`` publishes to ``--install`` or ``--out``, not beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "inventory": ViewArtifact("inventory.json", TAKES_SET, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.inventory"),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
@@ -63,15 +61,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
     "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass"),
     "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,)),
-    "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER, purposes=(PURPOSE_SPEAKER,)),
-    "per-seat": ViewArtifact("per_seat.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
     "candidates": ViewArtifact("candidates.json"),
-    "agreement": ViewArtifact("agreement.json", (TAKES_THIS_ROUND, "--include", "agreement"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "co-metrics": ViewArtifact("audibility_co_metrics.json", (TAKES_THIS_ROUND, "--include", "co-metrics"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,)),
-    "cloud-binding": ViewArtifact("cloud_binding.json", purposes=(PURPOSE_SPEAKER,)),
-    "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency"),
@@ -99,7 +91,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
         purposes=(PURPOSE_SPEAKER,),
     ),
-    "findings": ViewArtifact("findings.json"),
     "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), grades_against_base=True, builder="round_bookkeeping.room_grade", packet="room"),
     # The banker writes this index; inventory reports its presence.
     "position-cycle": ViewArtifact(
@@ -115,7 +106,6 @@ PACKET_FAMILIES = tuple(dict.fromkeys(row.packet for row in map(ARTIFACT_BY_VIEW
 
 VIEW_PURPOSES = {
     **{name.split()[0]: spec.purposes for name, spec in ARTIFACT_BY_VIEW.items()},
-    "repeat-floor": (),
     "speaker-fit": (PURPOSE_SPEAKER,),
 }
 

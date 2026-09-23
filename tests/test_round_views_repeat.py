@@ -12,7 +12,7 @@ import pytest
 from jasper.active_speaker.attempts_loop import percentile
 from jasper.active_speaker.repeat_floor import pairwise_abs_deltas
 from jasper.cli import round_views
-from jasper.cli.round_views.repeat import REFUSE_NO_SHARED_MARK_SET
+from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
@@ -154,7 +154,7 @@ def test_repeat_compares_each_drivers_mark_takes_within_and_between_rounds(tmp_p
     code = round_views.main(["repeat", *roots])
     answer = json.loads(capsys.readouterr().out)
     if drivers is None:
-        assert (code, answer["reason"]) == (round_views.EXIT_REFUSED, REFUSE_NO_SHARED_MARK_SET)
+        assert (code, answer["reason"]) == (round_views.EXIT_REFUSED, REASON_NO_SHARED_MARK_TAKES)
         return
     assert code == round_views.EXIT_OK
     assert answer["rounds"] == roots

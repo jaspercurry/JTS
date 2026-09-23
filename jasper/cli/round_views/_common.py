@@ -177,7 +177,3 @@ def add_rungs_ms_argument(
         metavar="MS", help=f"gate ladder, in milliseconds (default: {shipped})",
     )
 
-
-def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--norm-lo", type=float, default=400.0, help="normalisation band low edge, Hz (default 400)")
-    parser.add_argument("--norm-hi", type=float, default=8000.0, help="normalisation band high edge, Hz (default 8000)")

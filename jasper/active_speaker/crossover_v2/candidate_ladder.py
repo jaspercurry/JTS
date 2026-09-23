@@ -139,10 +139,8 @@ def _deviation(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]
 
 
 def _own_deviation(curve: _Curve, band_hz: tuple[float, float]) -> dict[str, Any] | None:
-    """This candidate's curve as its deviation from its OWN median level, which
-    is the basis :func:`~.round_views.per_seat_curves` puts curves on and for
-    the same reason: a level difference between two applied graphs must not
-    read as a shape one."""
+    """This candidate's curve as its deviation from its OWN median level: a
+    level difference between two applied graphs must not read as a shape one."""
     mask = (curve.freqs_hz >= band_hz[0]) & (curve.freqs_hz <= band_hz[1])
     if not np.any(mask):
         return None

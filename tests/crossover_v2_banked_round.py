@@ -45,10 +45,8 @@ no reader these suites pin opens it, and the only way to build a
 ``cloud_verify.json`` from its own writer is
 ``spatial.assemble_cloud_group_result`` over a combiner result built from live
 captures. A hand-typed cloud payload here would be the one part of this
-fixture that could drift, so the position-graded views keep the payload
-builder that already lives with them. :func:`bank_cloud_echo_band` is the one
-exception and stays one: it banks that group's echo BAND and nothing else of
-it, for the readers that ask only which band the null detector ran on.
+fixture that could drift, so the readers that need one keep the payload
+builder that already lives with them.
 
 Measure and verify fixtures carry no WAVs. Seat fixtures retain captures for
 the room analyzer; room statistics tests supply documents at its output.
@@ -105,24 +103,16 @@ from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import (
-    CLOUD_EVIDENCE_KIND,
     BankedRecordStore,
 )
-from jasper.attribution.closed_sets import CONFIDENCE_LIKELY, PROBE_POSITION_VARIANCE
-from jasper.attribution.findings import Finding, FindingSet
-from jasper.attribution.mechanisms import MECHANISM_BOUNDARY_SBIR
-from jasper.attribution.promotion import PRODUCED_BY
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
     SessionIdentity,
 )
-from jasper.attribution.storage import bundle_evidence_ref
 
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -135,8 +125,6 @@ __all__ = [
     "SOLO_BAND_HZ",
     "SOLO_GRID_HZ",
     "VERIFY_GRID_HZ",
-    "bank_cloud_echo_band",
-    "bank_findings",
     "bank_measure_round",
     "bank_seat_round",
     "bank_verify_round",
@@ -540,75 +528,6 @@ def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
             aliases={ALIAS_CAPTURE_SESSION_ID: _CAPTURE_SESSION_ID},
         ),
     )
-
-
-def bank_findings(
-    round_dir: Path,
-    *,
-    phase: str = PHASE_CLOUD_VERIFY,
-    band_hz: tuple[float, float] = (5000.0, 7000.0),
-) -> str:
-    """One phase's finding set, into a round the callers above already banked.
-
-    Through the attribution route of the same store the takes went through,
-    so the set lands where :func:`~jasper.attribution.storage.read_finding_set`
-    looks for it. The finding cites the round's FIRST banked take because it
-    must cite a real bundle artifact — every citation is re-resolved and
-    re-hashed on read, so an invented locator would refuse. Returns the set's
-    ``produced_by``, so a reader asserts the producer rather than a literal.
-    """
-    store, identity = _reopen(round_dir)
-    row, *_rest = bundle_measurements(store.evidence.bundle_dir)
-    finding_set = FindingSet(
-        session=identity,
-        produced_by=PRODUCED_BY,
-        findings=(
-            Finding(
-                mechanism=MECHANISM_BOUNDARY_SBIR,
-                band_hz=band_hz,
-                evidence={"classification": "position_variant"},
-                confidence=CONFIDENCE_LIKELY,
-                fix_class="physical",
-                household_copy=(
-                    "A narrow dip here comes and goes as you move, so it is "
-                    "about where it is being listened to from."
-                ),
-                probes_run=(PROBE_POSITION_VARIANCE,),
-                # The path the STORE reads, which is the take id under the
-                # store's own artifact namespace.
-                cites=(bundle_evidence_ref(
-                    store.evidence.identify_artifact(
-                        f"{EVIDENCE_ROOT}/artifacts/{row.path}"
-                    ),
-                    identity,
-                ),),
-            ),
-        ),
-    )
-    _bank(store, {**finding_set.to_dict(), "phase": phase})
-    return PRODUCED_BY
-
-
-def bank_cloud_echo_band(
-    round_dir: Path,
-    *,
-    band_hz: tuple[float, float],
-    source: str = "declared",
-    phase: str = PHASE_CLOUD_VERIFY,
-) -> None:
-    """The band a cloud group resolved for its null detector, and nothing else.
-
-    Through the store's own cloud route, so it lands where the group's readers
-    glob for it. Two keys only, for the reason the module docstring gives:
-    the rest of that payload has one builder and it needs live captures.
-    """
-    store, _identity = _reopen(round_dir)
-    _bank(store, {
-        "kind": CLOUD_EVIDENCE_KIND,
-        "phase": phase,
-        "echo_band_hz": [float(band_hz[0]), float(band_hz[1])],
-        "echo_band_provenance": {"source": source},
-    })
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None):

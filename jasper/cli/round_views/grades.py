@@ -2,29 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The grading verbs: the state a round entered on, a round frozen to a
-baseline's per-position references, and comparison to a frozen baseline.
+"""``entry <round-dir>`` — grade the state the round ENTERED on, from the
+entry-baseline take it banked, through the shipped flat-spec evaluator.
 
-* ``entry <round-dir>`` — grade the state the round ENTERED on, from the
-  entry-baseline take it banked, through the shipped flat-spec evaluator.
-  The one table nothing else prints: a fresh box's declarations-derived
-  config is the first round's entry state, and until this door it could only
-  be graded by hand. Writes ``entry_state_grade.json``. A round that banked
-  no gradeable take says so with a named reason and still exits ``0`` — that
-  is an answer, not an unreadable round.
-* ``frozen <baseline-dir> <target-dir>`` — grade ``target`` shipped AND
-  frozen to ``baseline``'s per-position reference levels. Writes
-  ``frozen_reference.json`` for the TARGET round.
+The one table nothing else prints: a fresh box's declarations-derived config is
+the first round's entry state, and until this door it could only be graded by
+hand. Writes ``entry_state_grade.json``. A round that banked no gradeable take
+says so with a named reason and still exits ``0`` — that is an answer, not an
+unreadable round.
 """
 
 from __future__ import annotations
 
 import argparse
 
-from jasper.active_speaker.crossover_v2.round_views import (
-    entry_state_grade,
-    frozen_reference_grade,
-)
+from jasper.active_speaker.crossover_v2.round_views import entry_state_grade
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -76,34 +68,8 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     )
 
 
-def _cmd_frozen(args: argparse.Namespace) -> int:
-    baseline = _load_round(args.baseline_dir)
-    target = _load_round(args.target_dir)
-    result = frozen_reference_grade(baseline, target)
-    written = _write(result.to_dict(), args.out, _view_out(args, target))
-    return answer(
-        args.command, out=written, shipped=result.shipped, frozen=result.frozen,
-        line=(
-            f"frozen-reference: shipped={result.shipped} frozen={result.frozen}"
-            f"{f' -> {written}' if written else ''}"
-        ),
-    )
-
-
 def add_parser(sub: argparse._SubParsersAction) -> None:
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
     entry.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     entry.add_argument("--out", default=None, help="write the result here")
     entry.set_defaults(func=_cmd_entry)
-
-    frozen = sub.add_parser("frozen", help="grade a round shipped and frozen to a baseline's reference")
-    frozen.add_argument(
-        "baseline_dir", metavar="<baseline-round-dir>",
-        help=f"{_ROUND_DIR_HELP} to freeze the reference from",
-    )
-    frozen.add_argument(
-        "target_dir", metavar="<target-round-dir>",
-        help=f"{_ROUND_DIR_HELP} to grade",
-    )
-    frozen.add_argument("--out", default=None, help="write the result here")
-    frozen.set_defaults(func=_cmd_frozen)

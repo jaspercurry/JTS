@@ -321,10 +321,9 @@ def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
         },
     }
 
-#: Why the repeat floor is not available: never measured, a file that is not
+#: Why the repeat floor is not available: never banked, a file that is not
 #: a readable record, or a record whose aggregate row cannot yield thresholds.
-#: Three different errands (run E2 / re-copy the file / re-bank it), so the
-#: packet names which rather than one shared reason.
+#: The packet names which rather than one shared reason.
 REPEAT_FLOOR_UNMEASURED = "unmeasured"
 
 REPEAT_FLOOR_UNREADABLE = "unreadable"
@@ -352,16 +351,14 @@ def _repeat_floor_component(
     if record is None and read_reason == "source_absent":
         return _unmeasured_repeat_floor(
             REPEAT_FLOOR_UNMEASURED,
-            "unmeasured -- no banked repeat floor; calibration experiment "
-            "E2 (N touched-nothing fixed-pose repeat rounds through "
-            "jasper-round-views repeat-floor; "
-            "Calibration experiments)",
+            "unmeasured -- no banked repeat floor (calibration experiment E2); "
+            "jasper-round-views repeat reads mark-take spread within and "
+            "between rounds (ADR-0341)",
         )
     if record is None:
         return _unmeasured_repeat_floor(
             REPEAT_FLOOR_UNREADABLE,
-            f"banked repeat floor could not be read ({read_reason}); re-copy "
-            "it, or re-bank it with jasper-round-views repeat-floor",
+            f"banked repeat floor could not be read ({read_reason}); re-copy it",
         )
     thresholds = stopping_thresholds(record)
     if thresholds is None:
@@ -369,18 +366,14 @@ def _repeat_floor_component(
             REPEAT_FLOOR_UNUSABLE,
             f"banked repeat floor carries no usable {record.get('aggregate_metric')} "
             "row (a finite, positive pairwise_abs_delta_p95_db and a finite "
-            "pairwise_abs_delta_median_db); re-bank it with "
-            "jasper-round-views repeat-floor",
+            "pairwise_abs_delta_median_db)",
         )
     rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
     return {
         "kind": UNCERTAINTY_RANDOM,
         "available": True,
         "absence": None,
-        "source": (
-            "repeat-floor.json (jts_active_speaker_repeat_floor, written by "
-            "jasper-round-views repeat-floor)"
-        ),
+        "source": "repeat-floor.json (jts_active_speaker_repeat_floor)",
         "n_repeats": record.get("n_repeats"),
         "measured_at": record.get("measured_at"),
         "bundle_session_ids": [row.get("bundle_session_id") for row in rows],

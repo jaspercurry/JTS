@@ -64,8 +64,8 @@ __all__ = [
 #: The view families, in the order their subcommands are offered; the runbook's
 #: generated tool menu renders that order (ADR-0204).
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
-    "grades", "repeat", "candidates", "seats", "directivity", "cloud_binding", "sweeps",
-    "frequency", "distortion", "dsp_replay", "classify_features", "findings", "close_reference",
+    "grades", "repeat", "candidates", "directivity", "sweeps",
+    "frequency", "distortion", "dsp_replay", "classify_features", "close_reference",
     "delay", "room", "room_grade", "bass", "rear", "inventory", "speaker_fit",
 ))
 
@@ -74,40 +74,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Read measured round evidence, including repeat --set spread across takes. "
-            "Answers use stdout; detailed reports use files."
+            "Read measured round evidence, including off-axis directivity and mark-take "
+            "repeat spread within and between rounds. Answers use stdout; detailed reports use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "WHEN NOT TO USE\n"
-            "  - frozen/repeat-floor need MULTIPLE round directories\n"
-            "    (a baseline plus a target, or two-or-more rounds).\n"
-            "\n"
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
-            "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
-            "  jasper-round-views sweep captures/.../session-1/round-3 --scope verdict\n"
+            "  jasper-round-views directivity captures/.../round-3 --set <set-id>\n"
+            "  jasper-round-views repeat captures/.../round-2 captures/.../round-3\n"
             "\n"
             "OPTIONAL MODEL-ERROR FLOOR (Python)\n"
             "  jasper.active_speaker.model_error_store.adopt_floor(floor, path=...)\n"
-            "  accepts FloorStats for prediction-tracking error. This is distinct\n"
-            "  from the pooled-response repeat-floor metric. Use only when useful;\n"
-            "  it neither installs that repeat floor nor requires another campaign.\n"
+            "  accepts FloorStats for prediction-tracking error. Use only when\n"
+            "  useful; it does not require another campaign.\n"
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- result available or a coverage gap reported;\n"
             "     inspect outcome/reason and coverage in the JSON answer.\n"
             "  1  EXIT_REFUSED -- the round read, and the view itself\n"
-            "     declined to grade it (a round with no cloud group, a\n"
-            "     repeat floor from a single round)\n"
+            "     declined to grade it (a set with no 0°/0° take, rounds\n"
+            "     that share no driver's mark takes)\n"
             "  2  EXIT_UNREADABLE -- the round or source could not be\n"
             "     read into a comparable view\n"
             "  3  EXIT_WRITE_FAILED -- graded, but the destination could\n"
             "     not be written\n"
             "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
-            "     same record as JSON on stdout. With --include, each result\n"
-            "     keeps its own outcome/detail path; failures leave good siblings\n"
-            "     visible and the command returns the highest failed stage code."
+            "     same record as JSON on stdout."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

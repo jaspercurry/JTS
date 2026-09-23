@@ -20,7 +20,7 @@ can have another cause. Driver class is context, not a diagnosis by itself.
 | Mic calibration and capture gain | Take calibration record | SPL and magnitude interpretation |
 | Gate window | Per-take gate disclosure | Frequency range the capture can resolve |
 | Rig geometry | `jasper-declare-geometry set|show` | Reflection-path estimate and its source |
-| Repeat floor | Banked `repeat-floor.json` | Random measurement uncertainty |
+| Repeat spread | The round's own mark takes (ADR-0341) | Random measurement uncertainty |
 
 Geometry is useful when available: speaker acoustic-centre height, mic height,
 distance, and optional ceiling height. `jasper-declare-geometry --help` lists
@@ -45,7 +45,7 @@ its calibration cannot be established.
 Inspect take validity, channel mapping, timeline anchor, clipping, level, and
 calibration before reading acoustic differences. An invalid capture is an error,
 not a poor speaker result. A repeated coordinate can price the noise floor of a
-comparison. `repeat-floor` banks that analysis for later rounds.
+comparison. `jasper-round-views repeat` reads it within and between rounds.
 
 Keep uncertainty kinds distinct:
 
@@ -84,7 +84,7 @@ to sneak in a new corner with old protection limits.
 
 For a different base design, consider declared protection first, then off-axis
 response and driver spacing. Directivity is how output changes with angle.
-`per-seat <round-dir> --include directivity` compares measured coverage.
+`directivity <round-dir> --set <set-id>` compares each bearing with 0°/0°.
 Missing vertical poses cannot establish vertical behavior. Use the round's
 speed of sound for wavelength and path delay. Geometry estimates guide tests;
 they are not acoustic proof or a veto on safe experiments.
@@ -189,9 +189,8 @@ not solve the target problem.
 filters address shape. Read `graded_lo_hz` and `graded_hi_hz`, not nominal band
 edges. `evaluable=false` means not graded, never passed.
 
-`per-seat <round-dir> --include co-metrics` compares on-axis and off-axis
-smoothness; it is advisory. Label predictions, measurements, and interpretation.
-If several parts changed together, their individual causes are unresolved.
+Label predictions, measurements, and interpretation. If several parts changed
+together, their individual causes are unresolved.
 
 ## 8. Voicing and listening
 

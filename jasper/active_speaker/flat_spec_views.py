@@ -649,7 +649,7 @@ def directivity_table(
     row, never resampled. No ``reference_role`` position leaves the table
     ``evaluable=False`` with every position still listed (UNSAMPLED, never
     an implied flat reference).
-    Consumed by ``jasper-round-views per-seat <round-dir> --include directivity``.
+    Consumed by ``jasper-round-views directivity``.
     """
     reference = [p for p in positions if p.role == reference_role]
     if not reference:

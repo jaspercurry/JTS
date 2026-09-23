@@ -494,7 +494,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
             if view["view"] == "inventory":
                 inventory = json.loads(Path(view["out"]).read_text())
                 assert {row["view"] for row in inventory["artifacts"] if row["present"]} >= {"room", "rear"}
-                assert {row["view"] for row in inventory["artifacts"]} >= {"room", "room-grade", "per-seat"}
+                assert {row["view"] for row in inventory["artifacts"]} >= {"room", "room-grade"}
 
 
 @pytest.mark.parametrize("purpose,view", [

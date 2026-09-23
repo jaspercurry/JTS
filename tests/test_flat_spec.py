@@ -498,8 +498,7 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "room_entangled_below_hz",
             # The gate ladder's read at THIS band's own worst bin -- room or
             # speaker. Stamped afterwards by a reader holding the round's
-            # captures (`round_views.spec_with_gate_sensitivity`), so this
-            # module always emits them as None.
+            # captures, so this module always emits them as None.
             "gate_sensitivity_db",
             "sigma_growth_ratio",
             "n_valid_rungs",

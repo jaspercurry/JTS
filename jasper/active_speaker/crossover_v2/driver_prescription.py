@@ -133,7 +133,7 @@ DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 #: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
 
-#: Key names; the door, the candidate stamp and ``round_views`` all read these.
+#: Key names; the door and the candidate stamp read these.
 EXPECTED_DELTA_FIELD = "expected_delta_db"
 DECLARED_TILT_FIELD = "declared_tilt_db_per_octave"
 
@@ -384,9 +384,9 @@ class DriverPrescription:
     pinned_trim_db: tuple[tuple[str, float], ...] = ()
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
-    #: Predicted move in ``jasper-round-views frozen``'s pooled per-role RMS
-    #: deviation, dB, negative for flatter. ``None`` is not pre-registered,
-    #: never a predicted zero. Read by no gate (doctrine §1).
+    #: Predicted move in the pooled per-role RMS deviation, dB, negative for
+    #: flatter. ``None`` is not pre-registered, never a predicted zero. Read by
+    #: no gate (doctrine §1).
     expected_delta_db: float | None = None
     #: The declared voicing tilt, dB/octave, negative for a downward in-room
     #: tilt (methodology §8). Read by no gate.
@@ -1254,8 +1254,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "measurement of this round"
             ),
             EXPECTED_DELTA_FIELD: (
-                "PRE-REGISTER the move you expect in `jasper-round-views "
-                "frozen`'s pooled per-role RMS deviation: dB, negative for "
+                "PRE-REGISTER the move you expect in the pooled per-role RMS "
+                "deviation: dB, negative for "
                 f"flatter, at most {EXPECTED_DELTA_BOUND_DB:g}. It gates nothing"
             ),
             DECLARED_TILT_FIELD: (

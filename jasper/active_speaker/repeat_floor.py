@@ -11,7 +11,6 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any, Mapping, Sequence
 
-from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float
 
 from .attempts_loop import FloorStats, percentile
@@ -20,11 +19,6 @@ from jasper.json_fields import utc_now_iso as _utc_now
 SCHEMA_VERSION = 1
 REPEAT_FLOOR_KIND = "jts_active_speaker_repeat_floor"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_floor.json")
-
-#: The metric a floor is ABOUT: ``spec_convergence_residual``'s own pooled
-#: number, which is what the tournament reads. Named here rather than in the
-#: round views so the writer, the CLI and the packet all spell it once.
-SHIPPED_POOL_METRIC = "shipped_linear_pool_db"
 
 
 def _state_path(path: str | Path | None) -> Path:
@@ -46,17 +40,13 @@ def sample_spread(values: Sequence[float]) -> dict[str, float] | None:
 
 
 def derive_repeat_floor(
-    result: Any = None, *, rounds: Sequence[Mapping[str, Any]],
-    samples: Mapping[str, Sequence[float]] | None = None,
+    *, samples: Mapping[str, Sequence[float]], rounds: Sequence[Mapping[str, Any]],
     units: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Round metrics or per-take samples, with one provenance row per observation.
+    """Per-take samples, with one provenance row per observation.
 
     Existing dB columns stay unchanged; non-dB metrics carry their native unit.
     """
-    round_axis = samples is None
-    if samples is None:
-        samples = {metric.name: list(metric.values.values()) for metric in result.metrics}
     metrics = {}
     for name, values in samples.items():
         if any(finite_float(value) is None for value in values):
@@ -73,24 +63,15 @@ def derive_repeat_floor(
             f"pairwise_abs_delta_median_{unit}": percentile(deltas, 50.0),
             **({"unit": unit} if unit != "db" else {}),
         }
-    if not metrics or (round_axis and SHIPPED_POOL_METRIC not in metrics):
+    if not metrics:
         raise ValueError("a repeat floor needs at least two observations of its metric")
     return {
         "artifact_schema_version": SCHEMA_VERSION, "kind": REPEAT_FLOOR_KIND,
         "measured_at": _utc_now(),
-        "n_repeats": len(result.round_labels) if round_axis else len(rounds),
-        "aggregate_metric": SHIPPED_POOL_METRIC if round_axis else None,
+        "n_repeats": len(rounds), "aggregate_metric": None,
         "rounds": [dict(row) for row in rounds], "metrics": metrics,
         "note": "touched-nothing fixed-pose repeats; random error only (ADR-0202)",
     }
-
-
-def write_repeat_floor(
-    payload: Mapping[str, Any], *, state_path: str | Path | None = None
-) -> dict[str, Any]:
-    record = dict(payload)
-    atomic_write_json(_state_path(state_path), record)
-    return record
 
 
 def load_repeat_floor(

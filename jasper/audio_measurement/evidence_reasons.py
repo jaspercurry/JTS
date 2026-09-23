@@ -22,18 +22,6 @@ CAPTURE_WAV_MISSING = "wav_missing"
 CLASSIFICATION_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CLASSIFICATION_POSITION_DEPENDENT = "position_dependent"
 CLASSIFICATION_POSITION_INVARIANT = "position_invariant"
-CLOUD_BINDING_CLOUD_EVIDENCE_UNREADABLE = "cloud_exclusion_evidence_unreadable"
-CLOUD_BINDING_ENTRY_INCOMPLETE = "banked_fit_entry_names_no_tier_or_driver_class"
-CLOUD_BINDING_FIT_INPUTS_NOT_BANKED = "fit_inputs_not_banked"
-CLOUD_BINDING_NOT_A_PAIR = "fit_roles_not_a_pair"
-CLOUD_BINDING_NOT_FITTED = "round_linearization_was_prescribed_not_fitted"
-CLOUD_BINDING_NO_CLOUD_EVIDENCE = "round_banked_no_cloud_exclusion_evidence"
-CLOUD_BINDING_NO_FIT = "round_banked_no_linearization_fit"
-CLOUD_BINDING_REFIT_DRIFTED = "refit_does_not_reproduce_the_banked_fit"
-NOT_SWEPT_BAND_NOT_EVALUABLE = "not_swept_band_not_evaluable"
-NOT_SWEPT_BIN_OFF_ANALYSIS_GRID = "not_swept_bin_outside_analysis_grid"
-NOT_SWEPT_CAPTURES_UNREADABLE = "not_swept_captures_unreadable"
-NOT_SWEPT_SINGLE_POSE = "not_swept_single_pose"
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 PROGRAM_MISSING = "classification_program_missing"
@@ -57,6 +45,7 @@ REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
 REASON_NO_REPEATS = "too_few_repeats"
 REASON_NO_ROW = "no_row"
+REASON_NO_SHARED_MARK_TAKES = "no_shared_mark_takes"
 REASON_REFUSED = "round_views_refused"
 REASON_R_DISAGREEMENT = "r_disagreement"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
@@ -113,18 +102,6 @@ EVIDENCE_REASONS = MappingProxyType({
     CLASSIFICATION_INSUFFICIENT_EVIDENCE: "The measured evidence does not support an interference classification.",
     CLASSIFICATION_POSITION_DEPENDENT: "An identified ladder rung does not meet the required position-presence fraction.",
     CLASSIFICATION_POSITION_INVARIANT: "Every identified ladder rung meets the required position-presence fraction.",
-    CLOUD_BINDING_CLOUD_EVIDENCE_UNREADABLE: "The banked cloud exclusion evidence is malformed.",
-    CLOUD_BINDING_ENTRY_INCOMPLETE: "The banked fit entry names no known microphone tier or driver class.",
-    CLOUD_BINDING_FIT_INPUTS_NOT_BANKED: "The banked curves cannot reconstruct the original fit inputs.",
-    CLOUD_BINDING_NOT_A_PAIR: "The fit roles do not form the branch pair required for the comparison.",
-    CLOUD_BINDING_NOT_FITTED: "The round prescribed its linearization instead of fitting it.",
-    CLOUD_BINDING_NO_CLOUD_EVIDENCE: "The fit has no banked cloud exclusion evidence.",
-    CLOUD_BINDING_NO_FIT: "The round banked no linearization fit to compare.",
-    CLOUD_BINDING_REFIT_DRIFTED: "The refit with all inputs does not reproduce the banked fit within tolerance.",
-    NOT_SWEPT_BAND_NOT_EVALUABLE: "The band could not be evaluated, so the gate ladder did not run.",
-    NOT_SWEPT_BIN_OFF_ANALYSIS_GRID: "The requested frequency bin falls outside the gate analysis grid.",
-    NOT_SWEPT_CAPTURES_UNREADABLE: "The gate ladder could not read the required capture curves.",
-    NOT_SWEPT_SINGLE_POSE: "The gate ladder could not run because only one pose was available.",
     NO_ADMISSIBLE_CAPTURES: "No readable capture in the ring can be attributed to this round.",
     NO_FEATURES_DETECTED: "No pooled-response feature exceeds the measured capture-to-capture scatter.",
     PROGRAM_MISSING: "No banked program matches the stimulus bytes recorded by the round captures.",
@@ -148,6 +125,7 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
     REASON_NO_REPEATS: "Fewer than two usable repeats are available to measure repeat spread.",
     REASON_NO_ROW: "This position has no measured row.",
+    REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing compares between rounds.",
     REASON_REFUSED: "The requested round view refused the available evidence.",
     REASON_R_DISAGREEMENT: "The reflection strength inferred from null depths disagrees with the arrival envelope.",
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",

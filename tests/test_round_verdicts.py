@@ -9,7 +9,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
-from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
+from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
 from jasper.active_speaker.round_verdicts import round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
@@ -57,7 +57,7 @@ def test_feature_variance_direction(cv, count, total, gain, classification):
 def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks):
     if unit:
         floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 99]}, units={"residual": unit})
-        write_repeat_floor({**floor, "aggregate_metric": "residual"}, state_path=tmp_path / "repeat-floor.json")
+        (tmp_path / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual"}))
     pose = {"kind": "bearing", "deg": 0, "elevation_deg": 0}
     groups = []
     for role, band, level in (

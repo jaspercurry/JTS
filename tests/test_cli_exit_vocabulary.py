@@ -244,7 +244,6 @@ def test_document_failures_use_the_shared_contract(module_name, verb, tmp_path, 
 #: belongs in the artifact the answer names, never in the answer.
 MAX_ANSWER_ARRAY = 16
 
-_NO_CLOUD_GROUP = "the fixture banks no cloud group: no positions, no graded spec"
 _NO_CAPTURES = "the fixture banks no WAVs, so no capture ring and no summed takes"
 
 
@@ -290,13 +289,9 @@ def _repeat_argv(round_: _FixtureRound) -> list[str]:
 #: cannot feed, why not.
 _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "entry": lambda r: ["entry", str(r.measured)],
-    "frozen": _NO_CLOUD_GROUP,
-    "per-seat": _NO_CLOUD_GROUP,
     "repeat": _repeat_argv,
-    "repeat-floor": _NO_CLOUD_GROUP,
     "candidates": lambda r: ["candidates", str(r.measured)],
     "directivity": _directivity_argv,
-    "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "sweep": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
@@ -308,7 +303,6 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "dsp-replay": _NO_CAPTURES,
     "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
-    "findings": lambda r: ["findings", str(r.measured)],
     "room-grade": _room_grade_argv,
     "close-reference": _NO_CAPTURES,
     "room": lambda r: ["room", str(r.seat)],
