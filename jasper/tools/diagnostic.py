@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..log_event import log_event
 from . import tool
 
 if TYPE_CHECKING:
@@ -142,11 +143,12 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
                 "flagged_event_id": "",
             }
 
-        logger.info(
-            "event=flag.recorded flagged=%s flag_action=%s reason=%r",
-            result["flagged_event_id"],
-            result["flag_action_event_id"],
-            reason,
+        log_event(
+            logger,
+            "flag.recorded",
+            flagged=result["flagged_event_id"],
+            flag_action=result["flag_action_event_id"],
+            reason=reason,
         )
         # Tier C: the user flagged an issue the daemon may not have logged
         # as a WARNING, so dump the recent DEBUG context (voice's flight
