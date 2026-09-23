@@ -109,6 +109,12 @@ def mark_takes(selected: SetTakes, role: str | None) -> list[Mapping[str, Any]]:
     return [take for take in selected.on_axis if take.get("phase") == "measure" and take.get("role") == role]
 
 
+def common_measured_band(takes: Sequence[Mapping[str, Any]]) -> list[float] | None:
+    """The band every take measured, so each spread speaks for one span."""
+    bands = [measured[2] for take in takes if (measured := measured_curve_band(take.get("curve") or {}))]
+    return [max(lo for lo, _ in bands), min(hi for _, hi in bands)] if bands else None
+
+
 def held_pairs(takes: Sequence[Mapping[str, Any]]) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
     """Every unordered pair held at one placement of one run (ADR-0341)."""
     placements: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}

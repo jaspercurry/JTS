@@ -9,8 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker.attempts_loop import percentile
-from jasper.active_speaker.repeat_floor import pairwise_abs_deltas
 from jasper.cli import round_views
 from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.active_speaker import plan_run
@@ -63,9 +61,10 @@ def test_repeat_spreads_selected_take_values_and_their_mark_pairs(repeated_round
     assert all(set(metrics) == {"trim_db"} for metrics in result["roles"].values())
     for metrics in [result["take"], *result["roles"].values()]:
         for summary in metrics.values():
+            a, b = summary["values"]
             assert summary["n"] == 2
-            assert summary["spread"] == pytest.approx(percentile(pairwise_abs_deltas(summary["values"]), 95))
-            assert summary["median"] == pytest.approx(percentile(summary["values"], 50))
+            assert summary["spread"] == pytest.approx(abs(a - b))
+            assert summary["median"] == pytest.approx((a + b) / 2)
     assert result["floor"]["n_repeats"] == 2
     assert result["floor"]["metrics"]["tweeter_trim_db"]["pairwise_abs_delta_p95_db"] == pytest.approx(
         result["roles"]["tweeter"]["trim_db"]["spread"])
@@ -131,7 +130,7 @@ def test_repeat_spreads_all_takes(repeated_round, capsys):
     result = json.loads(capsys.readouterr().out)
     summary = result["take"]["delay_us"]
     assert summary == {"values": [100.0, 101.0, 150.0], "median": 101.0,
-                       "spread": percentile(pairwise_abs_deltas([100.0, 101.0, 150.0]), 95), "n": 3}
+                       "spread": pytest.approx(49.9), "n": 3}
     assert result["floor"]["n_repeats"] == 3
     assert result["mark_pairs"]["n_pairs"] == 3
 
