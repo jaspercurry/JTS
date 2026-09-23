@@ -33,9 +33,8 @@ TAKES_FAR_AND_CLOSE = (
 class ViewArtifact(NamedTuple):
     """One artifact, the command that makes it, and where it lands.
 
-    ``in_artifact_dir`` marks the views the evidence PACKET reads: those file
-    into the round's own artifact directory, the only path that reader looks
-    at, rather than beside the round where an operator reads the rest.
+    ``in_artifact_dir`` marks an artifact the round's own evidence holds; every
+    view files beside the round instead, never inside its evidence.
     ``producer`` overrides the command; otherwise the key names the subcommand.
     ``bookkeeping`` names the purposes whose round publishes this view by
     itself, in :data:`BOOKKEEPING_ORDER`, through ``builder`` — this package's
@@ -88,13 +87,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": ViewArtifact(
-        HARMONICS_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
-        purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/1",
-    ),
+    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/1"),
     "classify-features": ViewArtifact(
-        CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
-        purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
+        CLASSIFICATION_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
     ),
     "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), grades_against_base=True, builder="round_bookkeeping.room_grade", packet="room", schema="jts_room_grade/1"),
     # The banker writes this index; inventory reports its presence.

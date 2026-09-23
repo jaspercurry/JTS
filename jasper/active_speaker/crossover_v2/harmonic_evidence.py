@@ -1111,7 +1111,7 @@ def read_bundle_harmonics(
     band_overrides: Mapping[str, tuple[float, float]],
     *,
     calibration_path: Path | None = None,
-) -> tuple[Path, dict[str, Any]]:
+) -> dict[str, Any]:
     """Read the bank's capture ring and its matching saved inputs."""
     inputs = round_inputs(banked_round_of(bank_dir) or bank_dir)
     bundle_dir = inputs.session_dir
@@ -1123,11 +1123,10 @@ def read_bundle_harmonics(
     state = json.loads(inputs.state_path.read_text())
     if not isinstance(state, dict):
         raise HarmonicEvidenceRefused(STATE_UNREADABLE, {})
-    artifact = read_round_harmonics(
+    return read_round_harmonics(
         round_dir, bundle_dir / CAPTURE_RING_DIR, state,
         band_overrides,
         session_id=bundle_session_id(bundle_dir),
         calibration_text=calibration_path.read_text() if calibration_path else None,
         applied_profile_path=inputs.applied_profile_path,
     )
-    return round_dir, artifact

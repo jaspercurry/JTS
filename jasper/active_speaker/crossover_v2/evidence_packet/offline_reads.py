@@ -18,20 +18,18 @@ from ..feature_classification import (
 )
 from ..journey import PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from ..prescription_contract import CONTRACT_COMMAND
+from ..round_inputs import RoundInputs, view_path
 
-#: Where a round's banked feature classification lives, if one was banked.
-#: One name shared by the instrument that writes it (:mod:`.feature_classifier`
-#: via ``jasper-round-views classify-features``), this packet, and the gate
-#: that acts on
-#: it. No stage of a round writes it automatically — it is an offline run — so
-#: its absence is an ordinary reported ``source_absent``.
+#: The ``jasper-round-views classify-features`` artifact
+#: (:mod:`.feature_classifier`): one name shared by that view, this packet, and
+#: the gate that acts on it. No stage of a round writes it — it is an offline
+#: view — so its absence is an ordinary reported ``source_absent``.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
-#: The round's banked harmonic-distortion reading, beside the classification.
-#: Same posture as :data:`CLASSIFICATION_ARTIFACT`; written offline by
-#: ``jasper-round-views distortion`` over :mod:`.harmonic_evidence`. Defined HERE
-#: rather than in that module because it imports this one (for
-#: :data:`RING_SIDECAR_GLOB`): the packet owns the names of what it reads.
+#: The ``jasper-round-views distortion`` artifact (:mod:`.harmonic_evidence`),
+#: same posture. Defined HERE rather than in that module because it imports
+#: this one (for :data:`RING_SIDECAR_GLOB`): the packet owns the names of what
+#: it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
 #: The three phases a finding set is banked under, each at its own
@@ -334,6 +332,27 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
             "and lab_rows[] is the artifact's own working behind it; the gate "
             "reads only the first"
         ),
+    }
+
+
+def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
+    """The classification and H2/H3 views, read where every view files its
+    artifact: beside the round, never inside its evidence.
+
+    A round banked while these two views still wrote into its evidence
+    (``round_dir``) carries their files there, which
+    ``legacy_view_files_in_evidence`` discloses; that copy answers here until a
+    view run beside the round replaces it.
+    """
+    legacy, reads = False, {}
+    for name in (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT):
+        filed, beside = round_dir / name, view_path(inputs, name)
+        legacy = legacy or filed.exists()
+        reads[name] = _read_json(filed if filed.exists() and not beside.exists() else beside)
+    return {
+        "legacy_view_files_in_evidence": legacy,
+        "feature_classification": _classification_block(*reads[CLASSIFICATION_ARTIFACT]),
+        "harmonics": _harmonics_block(*reads[HARMONICS_ARTIFACT]),
     }
 
 

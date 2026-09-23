@@ -54,7 +54,7 @@ __all__ = [
     'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
-    'round_inputs', 'contract_sources', 'prescription_sources', 'default_out',
+    'round_inputs', 'contract_sources', 'prescription_sources', 'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
@@ -328,15 +328,17 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | N
     return root / name if root else Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
+def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path:
+    """Where a view of this round files ``name`` (:func:`default_out`), for a reader holding only its inputs."""
+    return default_out(inputs, banked_round_of(inputs.session_dir) or inputs.session_dir, name, set_id)
+
+
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
     inputs = round_ if isinstance(round_, RoundInputs) else round_inputs(round_)
-    session_dir = inputs.session_dir
-    artifact_dir, reason = round_artifact_dir(session_dir)
+    artifact_dir, reason = round_artifact_dir(inputs.session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
-    room = _read_json_mapping(default_out(
-        inputs, banked_round_of(session_dir) or session_dir, ROOM_ARTIFACT, set_id,
-    )) or {}
+    room = _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})

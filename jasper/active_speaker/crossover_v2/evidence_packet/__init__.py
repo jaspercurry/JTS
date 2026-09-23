@@ -4,8 +4,9 @@
 
 """One round's banked evidence, gathered into one document a reader can answer.
 
-Grades nothing and writes nothing. Its one impurity is reading JSON files
-under a directory: no clock, no network, no CamillaDSP handle, no session. It
+Grades nothing and writes nothing. Its one impurity is reading JSON files —
+the round's own, and the views filed beside it (:data:`DERIVED_VIEWS`, which
+the fingerprint skips): no clock, no network, no CamillaDSP handle, no session. It
 DERIVES exactly two things — :func:`_cross_seat_sigma_block`'s per-bin spread
 across seats, and :func:`_reflections_block`'s tau-to-path-length multiply.
 
@@ -45,6 +46,7 @@ from ..round_inputs import (
     RoundInputs,
     contract_sources,
     round_artifact_dir,
+    round_inputs,
     state_matches_capture,
 )
 from .incumbent import (
@@ -60,6 +62,7 @@ from .offline_reads import (
     _absence,
     _classification_block,
     _copy_allowed,
+    _derived_views_block,
     _findings_block,
     _harmonics_block,
     _mapping,
@@ -73,6 +76,7 @@ from .positions import (
     _positions_block,
 )
 from .readers import (
+    DERIVED_VIEWS,
     PACKET_KIND,
     PACKET_SCHEMA_VERSION,
     _fingerprint,
@@ -94,6 +98,7 @@ from .uncertainty import (
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
+    "DERIVED_VIEWS",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -550,8 +555,14 @@ def build_crossover_evidence_packet(
     if round_dir is None:
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
+    inputs = round_context or round_inputs(session_dir)
+
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
+    # Only a round banked while views wrote into its evidence carries these;
+    # they stay in its fingerprint, the one its candidates were judged against.
+    # Consumers read DERIVED_VIEWS. Drop both reads (moving every fingerprint
+    # once) when no such round matters.
     classification_raw, classification_reason = _read_json(
         round_dir / CLASSIFICATION_ARTIFACT
     )
@@ -599,7 +610,7 @@ def build_crossover_evidence_packet(
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
     crossover_region, no_crossover = _region_block(receipt, receipt_reason)
-    sources = {**contract_sources(round_context or session_dir), "draft": _mapping(draft_raw),
+    sources = {**contract_sources(inputs), "draft": _mapping(draft_raw),
                "receipt": receipt, "applied_profile": applied_profile or {}}
 
     packet: dict[str, Any] = {
@@ -723,6 +734,7 @@ def build_crossover_evidence_packet(
             no_crossover=no_crossover,
         ),
         "contracts": contract_digests(prescription_contracts(programs=contract_programs(sources), **sources)),
+        DERIVED_VIEWS: _derived_views_block(round_dir, inputs),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

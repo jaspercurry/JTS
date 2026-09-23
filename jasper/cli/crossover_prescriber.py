@@ -23,7 +23,7 @@ from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescript
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
+    DERIVED_VIEWS, CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
     packet_feature_classifications, packet_region_band_hz,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
@@ -382,11 +382,11 @@ def _degree_list(block: dict[str, Any], key: str) -> list[int]:
 def _banked_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """The round, and the two banked bounds a prescription of either class needs.
+    """The round, and the two bounds a prescription of either class reads.
 
-    The region and the classified features ride inside the banked section: they
-    are facts about this round's evidence and absent for the same reasons the
-    round is. ``walk`` is the exception — ``lateral_poses`` is filled by
+    The region (this round's evidence) and the classified features (the
+    classification view filed beside it) ride inside the banked section.
+    ``walk`` has its own availability — ``lateral_poses`` is filled by
     ACCEPTED takes while ``available`` needs a ``round_receipt.json``, so a
     measurement-only angle walk banks poses and no receipt.
     """
@@ -408,7 +408,7 @@ def _banked_section(
         "reason": (
             None
             if verdicts
-            else _reason(_block(packet, "feature_classification"), packet_error)
+            else _reason(_block(_block(packet, DERIVED_VIEWS), "feature_classification"), packet_error)
         ),
     }
     lateral = _block(packet, "lateral_poses")
@@ -526,15 +526,6 @@ def _next_commands(
     # the same evidence this verb just could not.
     if session_dir and not packet_error:
         commands.append(shlex.join(["jasper-round-views", "inventory", session_dir]))
-        banked = sections["banked"]
-        if banked["available"] and not banked["classification"]["available"]:
-            try:
-                bundle = str(round_inputs(Path(session_dir)).session_dir)
-            except (CrossoverEvidencePacketError, OSError):
-                bundle = session_dir
-            commands.append(
-                shlex.join(["jasper-round-views", "classify-features", bundle])
-            )
         commands.append(shlex.join([
             PROG, "contract", "--round", session_dir,
         ]))

@@ -56,7 +56,10 @@ from tests.test_active_speaker_measured_crossover_candidate import (
 )
 from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_candidate_republish import _publish
-from tests.test_crossover_v2_driver_prescription import _draft, _document as driver_document
+from tests.test_crossover_v2_driver_prescription import (
+    WOOFER_FEATURE_HZ, _classification, _draft, _document as driver_document,
+)
+from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from tests.test_crossover_v2_room_prescription import _room_median, _document as room_document, MEDIAN_SHA256, NULL_HZ
 
 
@@ -626,6 +629,26 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     assert child.analysis["evidence"]["prescriptions"] == preview["sections"]
     assert child.analysis["room_source"]["prescription_sha256"] == prescription_sha256(contract_json(preview["sections"]["room"]).encode())
     assert len(banked_candidates(root=bank)) == 2
+
+
+def test_a_candidate_bound_to_a_round_with_view_files_in_its_evidence_keeps_its_packet(base, bank, tmp_path, capsys, round_bank):
+    """A round banked while classify-features wrote into its evidence: the gate
+    still reads that classification, and a later run of the view, beside the
+    round, moves neither the packet nor the candidate bound to it."""
+    round_dir, session = round_bank
+    (session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY" / CLASSIFICATION_ARTIFACT).write_text(
+        json.dumps(_classification()))
+    args = crossover_prescriber.build_parser().parse_args(["status", str(round_dir)])
+    packet = crossover_prescriber._load_packet(args)
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document(base.fingerprint, {"driver": driver_document(
+        [{"role": "woofer", "biquad_type": "Peaking", "freq": WOOFER_FEATURE_HZ, "q": 1, "gain": -2}], packet)})))
+    assert crossover_prescriber.main(["compose", str(path), "--round", str(round_dir), "--root", str(bank)]) == 0
+    fingerprint = json.loads(capsys.readouterr().out)["candidate_fingerprint"]
+    (round_dir / CLASSIFICATION_ARTIFACT).write_text(json.dumps(_classification([])))
+    child = find_banked_candidate(fingerprint, root=bank).candidate
+    assert child.analysis["evidence"]["packet_fingerprint"] == crossover_prescriber._load_packet(args)["packet_fingerprint"]
+    assert child.analysis["evidence"]["prescriptions"]["driver"]["classification_basis"]
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), 10 ** 400])

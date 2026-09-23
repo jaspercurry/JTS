@@ -6,11 +6,10 @@
 
 * ``classify-features <bundle-dir>`` — classify one banked
   round's spectral features, known-answer controls first, and file
-  ``feature_classification.json`` into the round's own artifact directory,
-  where the evidence packet reads it. ``<bundle-dir>`` is a commissioning
-  bundle; the round inside it and the ``<phase>_program.wav`` files its
-  captures bind to are resolved by the rules the packet's own reader uses, so
-  the verdict cannot land where that reader does not look. Offline: nothing is
+  ``feature_classification.json`` beside the round, never inside its
+  evidence. ``<bundle-dir>`` is a commissioning bundle; the round inside it
+  and the ``<phase>_program.wav`` files its captures bind to are resolved by
+  the rules the packet's own reader uses. Offline: nothing is
   re-measured and no capture is re-taken. The answer names
   ``classifiable_band_hz`` — the span a verdict can be about the SPEAKER
   rather than about the band edge — on success as well as in the refusal.
@@ -52,6 +51,7 @@ from ._common import (
     add_rungs_ms_argument,
     answer,
     refused_by_name,
+    resolved_out,
     subject,
 )
 
@@ -119,7 +119,7 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
         )
 
     spec = ARTIFACT_BY_VIEW[args.command]
-    written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
+    written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)
     measurement = artifact["measurement"]
     # The floor the refusal already carries, published on SUCCESS too: what
     # this instrument can be asked about is knowable before a run rather than

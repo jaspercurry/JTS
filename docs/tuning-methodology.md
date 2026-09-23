@@ -142,8 +142,9 @@ different candidates and then claim their full configurations were compared.
 
 Is this a speaker feature the filter can control? `classify-features`,
 `jasper-round-views sweep --scope round|take`, `close-reference`, and
-`distortion` give distinct evidence. Run useful views before freezing the
-prescription packet. Unavailable classification is not a negative verdict.
+`distortion` give distinct evidence. Run useful views before writing the
+prescription; a view files beside the round and never changes the evidence
+the prescription answers. Unavailable classification is not a negative verdict.
 
 | Observation | Useful interpretation or next test |
 |---|---|

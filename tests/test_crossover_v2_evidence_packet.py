@@ -21,12 +21,16 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    CLASSIFICATION_ARTIFACT,
+    DERIVED_VIEWS,
+    HARMONICS_ARTIFACT,
     NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
     REPEAT_FLOOR_UNUSABLE,
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
+    packet_feature_classifications,
     round_artifact_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
@@ -52,21 +56,47 @@ from jasper.active_speaker.repeat_floor import (
 )
 
 from tests.test_crossover_v2_blend_prescription import _bundle
+from tests.test_crossover_v2_driver_prescription import _classification
+from tests.test_crossover_v2_harmonic_evidence import _artifact as _harmonics
 
 
-@pytest.mark.parametrize("overrides, digest", [
-    ({}, "561759cfc685e99279062e8c005a8ac8fc997f812ac1f6cf2ee4aedadde9457e"),
+@pytest.mark.parametrize("overrides, digest, fingerprint", [
+    ({}, "4b6bea71a483e89d8cacdf0ed38c18af257908ec2020afa49a383e07122b83a1",
+     "f0ad2c2c08fd01a5b869cd004214af507fea6e4171e81ac646647e4e2f1c8d39"),
     ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "22f06c9f6873dc9431c3ec6c884ca9eb4a4b1dece34d738f8a524eb1d2968897"),
+    }}, "5834a2dd05151f768a0cdd62edd1fab8602c43d0d0854863b591449da5a1bc49",
+     "ba3877188929533fa5b6936f6dcca625f969e342f65348a52128e5964b34c0dd"),
     ({"cloud_over": {"positions": {}}},
-     "2b7c770b825b5b4f71e1d224ad9984cca9ce8beef663147b59809dc0ace0f818"),
+     "14a4cd3d8f0826447712851805a24586607a59b1daecf8f789ce73e392243673",
+     "05092f74062a9ad10262df974e6ebd5a4bfe6eb3930b2f784d3de0d5b1a4fcd6"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
-def test_packet_json_bytes(tmp_path, overrides, digest):
+def test_packet_json_bytes(tmp_path, overrides, digest, fingerprint):
     # A plain-box packet carries no rear contract (report H R3).
     session, _ = _bundle(tmp_path, **overrides)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == digest
+    assert packet["packet_fingerprint"] == fingerprint
+
+
+def test_a_round_that_filed_view_outputs_in_its_evidence_keeps_its_fingerprint(tmp_path):
+    """Views once wrote their outputs into the round's evidence, and a
+    candidate judged then bound the packet those files were part of. That
+    round keeps that fingerprint (pinned from the code that filed them), and
+    the gate still reads its classification."""
+    session, _ = _bundle(tmp_path)
+    round_dir, _ = round_artifact_dir(session)
+    assert round_dir is not None
+    (round_dir / CLASSIFICATION_ARTIFACT).write_text(json.dumps(_classification()))
+    (round_dir / HARMONICS_ARTIFACT).write_text(json.dumps(_harmonics()))
+
+    packet = build_crossover_evidence_packet(session)
+
+    assert packet["packet_fingerprint"] == "9dc546698f78c1d53f120ac87ea3895983b9fb3da662c0114abc37b6516a61ae"
+    views = packet[DERIVED_VIEWS]
+    assert views["legacy_view_files_in_evidence"] is True
+    assert views["harmonics"]["available"] is True
+    assert len(packet_feature_classifications(packet) or ()) == len(_classification()["rows"])
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):

@@ -203,8 +203,7 @@ def load_round_captures(
 ) -> tuple[RoundCapture, ...]:
     """Bind one round's banked captures to the programs that produced them.
 
-    ``round_dir`` is the round's own artifact directory, where the
-    ``<phase>_program.wav`` files live and where the verdict is filed.
+    ``round_dir`` is where the round's ``<phase>_program.wav`` files live.
     ``dumps_dir`` is the banked capture ring's root: sidecar JSON beside its
     WAV, found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` —
     :func:`~.harmonic_evidence.read_round_harmonics` reads the same ring

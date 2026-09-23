@@ -37,6 +37,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_captures,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    DERIVED_VIEWS,
     HARMONICS_ARTIFACT,
     build_crossover_evidence_packet,
 )
@@ -1577,18 +1578,35 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     shutil.rmtree(session)
     (tmp_path / "applied-profile.json").unlink()
     inputs = round_inputs(bank.path)
-    before = {p.relative_to(inputs.session_dir): p.read_bytes()
-              for p in (inputs.session_dir / "ring").rglob("*") if p.is_file()}
+
+    def evidence() -> tuple[dict[Path, bytes], dict[str, Any]]:
+        files = {p.relative_to(inputs.session_dir): p.read_bytes()
+                 for p in inputs.session_dir.rglob("*") if p.is_file()}
+        return files, build_crossover_evidence_packet(inputs.session_dir, round_context=inputs)
+
+    before, packet = evidence()
     assert {json.loads(raw)["setup_calibration_id"] for path, raw in before.items()
-            if path.suffix == ".json"} == {calibration_id}
+            if path.parts[0] == "ring" and path.suffix == ".json"} == {calibration_id}
     commands = [first, "classify-features" if first == "distortion" else "distortion"]
+    out = {}
     for command in commands:
         flags = ["--at", str(RESONANCE_HZ)] if command == "classify-features" else ["--calibration", str(calibration)]
         assert main([command, str(bank.path), *flags]) == 0
-        assert json.loads(capsys.readouterr().out)["view"] == command
-    output = inputs.session_dir / artifacts.relative_to(session)
-    harmonic = json.loads((output / "harmonic_distortion.json").read_text())
-    feature_result = json.loads((output / "feature_classification.json").read_text())
+        answer = json.loads(capsys.readouterr().out)
+        assert answer["view"] == command
+        out[command] = Path(answer["out"])
+    # A view is a function of the takes: it files beside the round, and the
+    # round's evidence and the fingerprint a prescription answers stay put.
+    after, cited = evidence()
+    assert {path.parent for path in out.values()} == {bank.path}
+    assert after == before
+    assert cited["packet_fingerprint"] == packet["packet_fingerprint"]
+    harmonic = json.loads(out["distortion"].read_text())
+    feature_result = json.loads(out["classify-features"].read_text())
+    views = cited[DERIVED_VIEWS]
+    assert views["legacy_view_files_in_evidence"] is False
+    assert views["harmonics"]["n_roles"] == len(harmonic["roles"])
+    assert views["feature_classification"]["n_rows_banked"] == len(feature_result["rows"])
     assert harmonic["captures"]["n_read"] == 1
     assert harmonic["calibration"] == {
         "applied": True, "sign_convention": convention,
@@ -1597,5 +1615,3 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     assert {row["role"] for row in harmonic["roles"]} == {"woofer", "tweeter"}
     assert feature_result["measurement"]["n_captures"] == 1
     assert feature_result["timing_scatter"]["available"] is False
-    assert before == {p.relative_to(inputs.session_dir): p.read_bytes()
-                      for p in (inputs.session_dir / "ring").rglob("*") if p.is_file()}

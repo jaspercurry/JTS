@@ -7,8 +7,8 @@
 * ``distortion <bundle-dir>`` — H2/H3
   out of a banked round's MEASURE captures, relative to the fundamental, at
   the drive each capture used. ``<bundle-dir>`` is a commissioning bundle,
-  and its round is resolved by the rule the evidence packet's reader uses, so
-  ``harmonic_distortion.json`` cannot land where that reader does not look.
+  and ``harmonic_distortion.json`` lands beside its round, never inside its
+  evidence.
 """
 
 from __future__ import annotations
@@ -29,12 +29,13 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
+    resolved_out,
     round_inputs,
     subject,
 )
 
 def _cmd_distortion(args: argparse.Namespace) -> int:
-    round_dir, artifact = stage(
+    artifact = stage(
         EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_bundle_harmonics,
         args.bundle_dir,
         {
@@ -54,9 +55,7 @@ def _cmd_distortion(args: argparse.Namespace) -> int:
         if block["sweep"]["read_band_hz"] not in read_bands:
             read_bands.append(block["sweep"]["read_band_hz"])
     spec = ARTIFACT_BY_VIEW[args.command]
-    # The bundle's own round directory, never `default_out`: this reading is
-    # filed where the packet reader looks for it, and that is a banked tree.
-    written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
+    written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)
     return answer(
         args.command, schema=spec.schema, subject=read,
         parameters={"band_hz": band_hz,

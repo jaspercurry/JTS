@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNR
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_measure_round
@@ -300,11 +301,11 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
         "jasper-round wait --run '<run-id>'"
     )
 
-    # A view the evidence packet reads is read back where THAT reader looks —
-    # inside the round's own artifact directory, never beside the round.
-    assert rows["harmonic_distortion.json"]["path"] == str(
-        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
-        / "harmonic_distortion.json"
+    # Every view files beside the round, the ones the evidence packet cites
+    # too; only the executor's run manifest sits inside the round's evidence.
+    assert rows["harmonic_distortion.json"]["path"] == str(round_dir / "harmonic_distortion.json")
+    assert rows[RUN_MANIFEST_FILENAME]["path"] == str(
+        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1" / RUN_MANIFEST_FILENAME
     )
 
 
