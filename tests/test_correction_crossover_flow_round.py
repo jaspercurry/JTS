@@ -3,6 +3,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, measurement_view, plan_run
@@ -10,6 +12,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     REASON_MEASUREMENT_TARGETS_MISSING,
     CrossoverV2Refused,
+    refusal_copy_for,
 )
 from jasper.web import correction_crossover_flow as flow
 from jasper.active_speaker.measurement_programs import available_programs
@@ -132,3 +135,20 @@ def test_every_pose_hold_reaches_the_page_with_its_placement_words(monkeypatch):
     pending = envelope["pending"]
     assert (pending["prompt"], pending["mover"], pending["degrees"]) == (hold["prompt"], "human", 0)
     assert pending["actions"][0] == hold["actions"][0]
+
+
+@pytest.mark.parametrize("mover, action, held, names_release", [
+    ("human", "fix_and_retake", True, True),
+    ("human", "fix_and_retake", False, False),
+    ("arm", "fix_and_retake", True, False),
+    ("human", "retake_same", True, False),
+])
+def test_a_retake_names_its_release_only_while_it_waits_for_one(mover, action, held, names_release):
+    """#5632 F9: after ``anchor_ambiguous`` the page said "Taking it again." while it waited for a click."""
+    release = "Microphone is at the seat"
+    hold = {"mover": mover, "actions": [{"id": "position_ready", "label": release}] if mover == "human" else []}
+    facts = {"mover": mover, "retake_pose": 2, "retake_measurement": 5,
+             "retake_reason": "anchor_ambiguous", "retake_action": action}
+    line = measurement_view.round_status({"run": facts, **({"position_pending": hold} if held else {})})[0]
+    assert refusal_copy_for("anchor_ambiguous")[0] in line
+    assert (release in line) is names_release

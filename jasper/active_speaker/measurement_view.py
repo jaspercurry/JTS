@@ -18,7 +18,7 @@ def round_status(capture: Mapping[str, Any]) -> list[str]:
         if lines:
             return lines
         facts = {**facts, "packet_error": "packet_unreadable"}
-    return round_lines(facts, pending=bool(capture.get("position_pending") or capture.get("join")))
+    return round_lines(facts, pending=capture.get("position_pending") or capture.get("join") or {})
 
 
 def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture: bool = True) -> dict[str, Any]:

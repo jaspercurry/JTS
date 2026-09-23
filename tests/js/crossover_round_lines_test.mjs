@@ -6,13 +6,14 @@ import {CROSSOVER_IDS, crossoverMainModule} from './_dom.mjs';
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 const posted = [], requested = [];
+let postResponse = {};
 const action = {id: 'run_program', label: 'server label', endpoint: '/server/run', body: {plan: {program: 'tournament/full'}}};
 const choice = {id: 'tournament/full', label: 'tournament/full', default: true, lines: ['server summary'], action};
 let env = {capture: null, round_choices: [choice], round_lines: []};
 const {elements, render, refresh} = await crossoverMainModule({
   ids: [...CROSSOVER_IDS, ...['lines', 'choice', 'select', 'summary', 'start'].map(id => `crossover-round-${id}`)],
   extraStubs: {window: {location: {search: '?program=rear'}},
-    getJSON: async url => {requested.push(url); return env;}, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return {};},
+    getJSON: async url => {requested.push(url); return env;}, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return postResponse;},
     renderCloud: () => {}, redrawCloudChart: () => {}},
   exportNames: ['render', 'refresh'],
 });
@@ -55,10 +56,27 @@ assert.deepEqual(elements.get('crossover-walk-action').children, []);
 assert.deepEqual(elements.get('crossover-action').children.map(n => n.textContent), hold.actions.map(a => a.label));
 render(env);
 assert.equal(elements.get('crossover-walk').hidden, true);
+// A take's acknowledgement ends with the take: a hold waiting for a person, or
+// the round ending, clears it, and a stop never reads as a start (#5632 F9).
+const status = elements.get('capture-status');
+const playing = env;
+render({...playing, pending: hold});
+postResponse = {released: {index: 2}};
+await elements.get('crossover-action').children[0].click();
+assert.equal(status.textContent, 'Measurement started.');
+render({...playing, pending: hold});
+assert.equal(status.textContent, '');
+const reset = {id: 'reset_round', label: 'Reset the round', endpoint: '/cancel', body: {}};
+render({...playing, pending: {actions: [...playing.pending.actions, reset]}});
+postResponse = {capture: {status: 'stopping'}};
+await elements.get('crossover-action').children[1].click();
+assert.equal(status.textContent, 'Updated.');
+render({...playing, busy: false, pending: null});
+assert.equal(status.textContent, '');
 render({...env, busy: false, pending: null, next_action: action});
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
 for (const reason of ['no_repeats', 'insufficient_positions', 'insufficient_agreement_seats', 'unknown_analysis_reason']) {
   render({...env, round_lines: [reason]});
   assert.deepEqual(elements.get('crossover-round-lines').children.map(n => n.textContent), [reason]);
 }
-console.log(JSON.stringify({ok: true, passed: 14}));
+console.log(JSON.stringify({ok: true, passed: 23}));

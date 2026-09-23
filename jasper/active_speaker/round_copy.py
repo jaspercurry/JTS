@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
+from .movers import MOVER_ARM
 
 CHOOSE_PROGRAM = "Start a measurement round when you are ready."
 RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
@@ -39,7 +40,8 @@ def round_verdict(facts: Mapping[str, Any], verdict: str) -> str:
     return "" if facts.get("poses") and not facts.get("status") else verdict
 
 
-def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]:
+def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool = False) -> list[str]:
+    """``pending`` is the open placement hold, or whether one is open."""
     from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
 
     lines = []
@@ -62,12 +64,16 @@ def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]
             lines.append("Keep the microphone still until the tone stops.")
         else:
             lines += [pose_line(facts), "Preparing this pose's measurements."]
-    if facts.get("retake_reason") == "operator":
-        lines.append(f"Pose {facts['retake_pose']}: you asked to redo this pose.")
-    elif facts.get("retake_reason"):
-        reason = refusal_copy_for(facts["retake_reason"])[0]
-        louder = " louder" if facts.get("retake_action") == "retake_louder" else ""
-        lines.append(f"Pose {facts['retake_pose']}, measurement {facts['retake_measurement']}: {reason} Taking it again{louder}.")
+    if reason := facts.get("retake_reason"):
+        action = facts.get("retake_action")
+        line = (f"Pose {facts['retake_pose']}: you asked to redo this pose." if reason == "operator" else
+                f"Pose {facts['retake_pose']}, measurement {facts['retake_measurement']}: {refusal_copy_for(reason)[0]}")
+        if pending and action == "fix_and_retake" and facts.get("mover") != MOVER_ARM:
+            release = (pending.get("actions") or [{}])[0].get("label") if isinstance(pending, Mapping) else None
+            line += f" Press “{release}” to take it again." if release else " Confirm the microphone is in place to take it again."
+        elif reason != "operator":
+            line += f" Taking it again{' louder' if action == 'retake_louder' else ''}."
+        lines.append(line)
     if facts.get("level_raise_dbfs") is not None:
         lines.append(f"Raising the measurement level to {facts['level_raise_dbfs']:g} dBFS.")
     return lines + ([PLACE_MICROPHONE] if pending and not facts.get("pose") else [])

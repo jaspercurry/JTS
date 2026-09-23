@@ -49,6 +49,9 @@ const els = {
 
 let envelope = null;
 let busy = false;
+// The status line acknowledges a take ('Measurement started.'): stale once the
+// page waits for a person again or nothing is live (#5632 F9).
+let takeAcknowledged = false;
 let stopInFlight = false;
 let refreshInFlight = null;
 let refreshQueued = false;
@@ -90,9 +93,10 @@ function el(tag, attrs = {}, children = []) {
 // had to go find the control themselves — one navigation plus one click, for a
 // refusal whose exact remedy the server already named. The server sends it in
 // the 400 body (`next_action`), from the same registry entry the hard-stop
-// screen would have read. `render()` never touches this element, so the control
-// survives the refresh that follows a failed action.
+// screen would have read. `render()` clears only a take's acknowledgement, so
+// the control survives the refresh that follows a failed action.
 function setStatus(message, tone = '', action = null) {
+  takeAcknowledged = false;
   els.status.dataset.tone = tone;
   const href = (action && action.href) || '';
   if (!href) {
@@ -403,6 +407,10 @@ function captureIsActive(capture) {
   return Boolean(capture && CAPTURE_IN_FLIGHT.has(capture.status));
 }
 
+function sessionBusy(env) {
+  return captureIsActive(env.capture) || Boolean(env.busy);
+}
+
 // Keep the action row stable across polls so a tap cannot lose its target.
 let lastActionRowKey = null;
 
@@ -418,7 +426,7 @@ function actionRowKey(primary, alternates, note, timing) {
 // One gate for every render and action completion prevents competing capture controls.
 function renderActionRow(env) {
   if (!env) return;
-  const captureActive = captureIsActive(env.capture) || env.busy;
+  const captureActive = sessionBusy(env);
   // A live capture suppresses new actions unless the envelope marks them
   // show_during_capture; the same rule applies to primary and alternate actions.
   const showPrimary = !captureActive
@@ -456,6 +464,7 @@ function screenOwnsLiveControl(env) {
 
 function render(env) {
   envelope = env;
+  if (takeAcknowledged && (humanHold(env.capture, env.pending) || !sessionBusy(env))) setStatus('');
   els.verdict.textContent = env.verdict_text || '';
   renderRound(env);
   renderApplied(env.applied);
@@ -472,7 +481,7 @@ function render(env) {
     round: env.pending,
   });
   renderActionRow(env);
-  schedulePoll(captureIsActive(env.capture) || env.busy || passive ? POLL_MS : null);
+  schedulePoll(sessionBusy(env) || passive ? POLL_MS : null);
 }
 
 async function stopCapture() {
@@ -507,7 +516,7 @@ async function runAction(action, button) {
   let captureStarted = false;
   try {
     const response = await postJSON(action.endpoint, action.body || {});
-    captureStarted = captureIsActive(response && response.capture);
+    captureStarted = CAPTURE_STOPPABLE.has(response?.capture?.status);
     if (captureStarted) {
       if (els.roundChoice) els.roundChoice.hidden = true;
       renderCapture(response.capture);
@@ -517,7 +526,9 @@ async function runAction(action, button) {
       renderActionRow({capture: response.capture, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    setStatus(captureStarted ? 'Measurement started.' : 'Updated.', 'ok');
+    const takeStarted = captureStarted || Boolean(response?.released);
+    setStatus(takeStarted ? 'Measurement started.' : 'Updated.', 'ok');
+    takeAcknowledged = takeStarted || sessionBusy(envelope);
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
