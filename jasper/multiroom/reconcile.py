@@ -2,17 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Multiroom grouping reconciler — pure plan + thin systemctl entrypoint.
+"""Multiroom grouping reconciler — the root oneshot.
 
-Single writer of the snapcast unit state. Reads the wizard-owned GroupingConfig
-(``jasper.multiroom.config``) and decides which units run; an enabled-but-INVALID
-config runs neither (never bring up a broken bond).
+Single writer of the snapcast unit state. ``main()`` is the ordered systemd
+ExecStart entrypoint: reads the wizard-owned GroupingConfig
+(``jasper.multiroom.config``), applies the pure plan from
+``jasper.multiroom.reconcile_plan``, and drives the real systemctl/CamillaDSP
+convergence. An enabled-but-INVALID config runs neither unit (never bring up
+a broken bond).
 
 After its role/data-plane work lands it hands the role to the canonical source
 coordinator. Grouping never starts or stops source resources itself.
 
-``plan`` and the argv builders are PURE and total. jasper-grouping-reconcile.service
-is Type=oneshot — there is no resident process here.
+jasper-grouping-reconcile.service is Type=oneshot — there is no resident
+process here.
 """
 
 from __future__ import annotations
@@ -68,14 +71,16 @@ from .grouping_env import (
     LANE_REFUSED_PERIOD,
     LaneDecision,
     airplay_grouping_env,
+    box_outputd_period_frames,
     member_lane_decision,
+    output_topology_state,
     outputd_grouping_env,
     voice_grouping_env,
 )
 from .reconcile_plan import (
     ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
     ARGS_FILE,
-    SNAPFIFO,
+    SNAPFIFO as SNAPFIFO,  # re-exported: jasper.active_speaker.runtime_contract imports it from here
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,
@@ -84,7 +89,6 @@ from .reconcile_plan import (
 )
 from .tts_route import VOICE_PARK_ENV
 from ..logging_setup import configure_logging
-from jasper.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -225,19 +229,6 @@ class _PcmHandleProbeResult:
         return self.state == "unknown"
 
 
-def desired_snapfifo_path(cfg: GroupingConfig) -> str:
-    """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this role
-    needs no producer. PURE.
-
-    Only a VALID LEADER hosts the synchronised stream. Drives the runtime-health
-    derive: a leader whose active CamillaDSP config does not write the pipe is
-    degraded.
-    """
-    if cfg.enabled and cfg.error is None and cfg.role == "leader":
-        return SNAPFIFO
-    return ""
-
-
 @dataclass(frozen=True)
 class RoleDecision:
     """The pre-apply role/permission decision for one reconcile pass.
@@ -352,88 +343,6 @@ def decide_role(
 # I/O entrypoint. Everything above is pure; everything below does real
 # systemctl calls. Keep that boundary crisp.
 # ============================================================
-
-
-def output_topology_state() -> tuple[bool | None, bool]:
-    """Return ACTIVE classification and permission for direct flat output.
-
-    ``None`` preserves load/parse uncertainty for hardware-sensitive callers;
-    they must not guess passive because that could bypass crossover protection.
-    Both answers come from the same topology read.
-    """
-    try:
-        from jasper.active_speaker.playback_route import (
-            active_playback_route_capability,
-        )  # lazy: import cost — jasper.active_speaker is a named-heavy import under ADR-0226
-        from jasper.active_speaker.runtime_contract import (
-            classify_output_contract,
-            topology_allows_flat_dac_graph,
-        )  # lazy: import cost — same active_speaker tree; its own SNAPFIFO import back into this module is lazy for the same reason
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
-
-        topology = load_output_topology_strict()
-        active = active_playback_route_capability(topology).active_group_count > 0
-        flat_allowed = topology_allows_flat_dac_graph(
-            classify_output_contract(topology)
-        )
-        return active, flat_allowed
-    except ImportError:
-        return None, False  # ORDER IS LOAD-BEARING: binds OutputTopologyError.
-    except OutputTopologyError as e:
-        log_event(
-            logger,
-            "multiroom.reconcile.active_speaker_probe_failed",
-            error=e,
-            level=logging.WARNING,
-        )
-        return None, False
-
-
-def is_active_speaker_box() -> bool:
-    """True when this speaker's saved output topology declares active 2-/3-way
-    main groups. Splits the ACTIVE-follower path (CamillaDSP runs Layer A in the
-    bonded path) from the DUMB-follower path (outputd ChannelPick).
-
-    TOTAL + fail-soft: any load/parse failure resolves to ``False`` (treat as
-    passive → the safe dumb-follower path). Commissioning READINESS is NOT
-    checked here — a box that declares active groups but is not yet commissioned
-    still takes the active path, where the follower apply fail-closes rather than
-    silently degrading to a full-range dumb follower. Boolean consumers fail-soft
-    unknown to ``False``; the reconciler reads :func:`output_topology_state`
-    directly and blocks graph transitions on unknown."""
-    return output_topology_state()[0] is True
-
-
-def box_outputd_period_frames() -> int | None:
-    """The outputd period THIS box will LOAD, or ``None`` if unresolved.
-
-    :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
-    plan's policy resolver: the slot gate has to match the value outputd's own
-    ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
-    and the two differ exactly where guessing is fatal (a DAC floor of 128 with
-    a stale 1024 still in ``outputd.env``; an operator ``jasper.env`` value the
-    reconciler has not applied).
-
-    Fail-soft to ``None``, which
-    :func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable` reads
-    as "do not arm": a wrong guess parks outputd and the speaker goes silent.
-
-    Lazy import for the reason the rest of this module's
-    ``jasper.audio_runtime_plan`` uses are lazy: that module is imported at
-    module level by :mod:`jasper.multiroom.active_leader_config`.
-    """
-    try:
-        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
-
-        return outputd_period_frames_as_loaded()
-    except Exception as e:  # noqa: BLE001 - an unresolved period must not raise
-        log_event(
-            logger,
-            "multiroom.reconcile.outputd_period_unresolved",
-            error=e,
-            level=logging.WARNING,
-        )
-        return None
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:

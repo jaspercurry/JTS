@@ -56,6 +56,22 @@ _SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
 _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
 
+# ---------- The leader's music-producer predicate ----------
+
+
+def desired_snapfifo_path(cfg: GroupingConfig) -> str:
+    """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this role
+    needs no producer. PURE.
+
+    Only a VALID LEADER hosts the synchronised stream. Drives the runtime-health
+    derive: a leader whose active CamillaDSP config does not write the pipe is
+    degraded.
+    """
+    if cfg.enabled and cfg.error is None and cfg.role == "leader":
+        return SNAPFIFO
+    return ""
+
+
 # ---------- Plan types ----------
 
 

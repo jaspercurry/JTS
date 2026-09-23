@@ -206,9 +206,9 @@ def _stub_active_box(monkeypatch, active: bool):
     The check imports it function-locally, so patching the owning module is what
     the call resolves.
     """
-    import jasper.multiroom.reconcile as mr
+    import jasper.multiroom.grouping_env as ge
 
-    monkeypatch.setattr(mr, "is_active_speaker_box", lambda: active)
+    monkeypatch.setattr(ge, "is_active_speaker_box", lambda: active)
 
 
 def test_doctor_check_skips_when_no_local_camilla_is_in_the_chain(monkeypatch):
@@ -493,20 +493,20 @@ def _channel_pick_check(
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
     if env_text is not None:
         env_path.write_text(env_text)
-    import jasper.multiroom.reconcile as recmod
+    import jasper.multiroom.grouping_env as gemod
     monkeypatch.setattr(
         "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE",
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
     monkeypatch.setattr(
-        recmod,
+        gemod,
         "output_topology_state",
         lambda: topology_state or (active_box, not active_box),
     )
     # This box's outputd runs the return ring's slot, so the fourth arming gate
     # passes and the check's subject is the lane env. The mismatching box is
     # test_channel_pick_check_names_a_period_the_return_ring_cannot_carry.
-    monkeypatch.setattr(recmod, "box_outputd_period_frames", lambda: period)
+    monkeypatch.setattr(gemod, "box_outputd_period_frames", lambda: period)
     return groupmod.check_grouping_channel_pick()
 
 
@@ -729,7 +729,7 @@ def _tts_lane_check(
 ):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
-    import jasper.multiroom.reconcile as recmod
+    import jasper.multiroom.grouping_env as gemod
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
     voice_path = "/nonexistent/grouping-voice.env"
     outputd_path = "/nonexistent/grouping-outputd.env"
@@ -761,7 +761,7 @@ def _tts_lane_check(
         lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
     )
     monkeypatch.setattr(
-        recmod, "output_topology_state", lambda: (active_box, not active_box)
+        gemod, "output_topology_state", lambda: (active_box, not active_box)
     )
     return groupmod.check_grouping_tts_lane()
 

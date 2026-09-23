@@ -2,19 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The lane arming rule, and the per-service env derived from a resolved
-``GroupingConfig``. PURE.
+"""The lane arming rule, the per-service env derived from a resolved
+``GroupingConfig``, and the read-side box-state probes that feed both.
+
+The arming rule and env derivation are PURE. The box-state probes below do
+real I/O (the saved output topology, outputd's loaded env) and are fail-soft.
 
 Split out of ``jasper.multiroom.reconcile`` (the single writer of these env
-files); this module holds the derivation, never the write.
+files, and the root oneshot); this module holds the derivation and the
+reads, never the write.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .. import tts_routing as _tts_routing
 from ..env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from ..fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+from ..log_event import log_event
 from . import config
 from .config import GroupingConfig
 from .dac_content_ring import (
@@ -24,6 +30,9 @@ from .dac_content_ring import (
     dac_content_ring_servable,
 )
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
+from jasper.output_topology import OutputTopologyError
+
+logger = logging.getLogger(__name__)
 
 OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
@@ -229,3 +238,86 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     if config.is_active_leader(cfg):
         return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
     return {}
+
+
+# ---------- box-state read probes (I/O, fail-soft — NOT pure) ----------
+
+
+def output_topology_state() -> tuple[bool | None, bool]:
+    """Return ACTIVE classification and permission for direct flat output.
+
+    ``None`` preserves load/parse uncertainty for hardware-sensitive callers;
+    they must not guess passive because that could bypass crossover protection.
+    Both answers come from the same topology read.
+    """
+    try:
+        from jasper.active_speaker.playback_route import (
+            active_playback_route_capability,
+        )  # lazy: import cost — jasper.active_speaker is a named-heavy import under ADR-0226
+        from jasper.active_speaker.runtime_contract import (
+            classify_output_contract,
+            topology_allows_flat_dac_graph,
+        )  # lazy: import cost — same active_speaker tree; its own SNAPFIFO import back into jasper.multiroom.reconcile is lazy for the same reason
+        from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
+
+        topology = load_output_topology_strict()
+        active = active_playback_route_capability(topology).active_group_count > 0
+        flat_allowed = topology_allows_flat_dac_graph(
+            classify_output_contract(topology)
+        )
+        return active, flat_allowed
+    except ImportError:
+        return None, False  # ORDER IS LOAD-BEARING: binds OutputTopologyError.
+    except OutputTopologyError as e:
+        log_event(
+            logger,
+            "multiroom.grouping_env.active_speaker_probe_failed",
+            error=e,
+            level=logging.WARNING,
+        )
+        return None, False
+
+
+def is_active_speaker_box() -> bool:
+    """True when this speaker's saved output topology declares active 2-/3-way
+    main groups. Splits the ACTIVE-follower path (CamillaDSP runs Layer A in the
+    bonded path) from the DUMB-follower path (outputd ChannelPick).
+
+    TOTAL + fail-soft: any load/parse failure resolves to ``False`` (treat as
+    passive → the safe dumb-follower path). Commissioning READINESS is NOT
+    checked here — a box that declares active groups but is not yet commissioned
+    still takes the active path, where the follower apply fail-closes rather than
+    silently degrading to a full-range dumb follower. Boolean consumers fail-soft
+    unknown to ``False``; the reconciler reads :func:`output_topology_state`
+    directly and blocks graph transitions on unknown."""
+    return output_topology_state()[0] is True
+
+
+def box_outputd_period_frames() -> int | None:
+    """The outputd period THIS box will LOAD, or ``None`` if unresolved.
+
+    :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
+    plan's policy resolver: the slot gate has to match the value outputd's own
+    ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
+    and the two differ exactly where guessing is fatal (a DAC floor of 128 with
+    a stale 1024 still in ``outputd.env``; an operator ``jasper.env`` value the
+    reconciler has not applied).
+
+    Fail-soft to ``None``, which
+    :func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable` reads
+    as "do not arm": a wrong guess parks outputd and the speaker goes silent.
+
+    Lazy import: same ADR-0226 import-cost tree as the topology probes above.
+    """
+    try:
+        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
+
+        return outputd_period_frames_as_loaded()
+    except Exception as e:  # noqa: BLE001 - an unresolved period must not raise
+        log_event(
+            logger,
+            "multiroom.grouping_env.outputd_period_unresolved",
+            error=e,
+            level=logging.WARNING,
+        )
+        return None

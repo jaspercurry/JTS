@@ -50,10 +50,9 @@ from .config import SNAP_STREAM_ID, GroupingConfig
 from .effective_role import read_effective_role_status
 from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 
-# `.reconcile` is imported inside the two bonded-only branches below, never
-# here: every box imports this module to build /state, but only a bonded one
-# needs the reconciler's plan, and jasper-control would otherwise carry that
-# oneshot for the life of the process (#3697).
+# `.reconcile_plan` is imported inside the two bonded-only branches below,
+# never here: every box imports this module to build /state, but only a
+# bonded one needs the reconciler's plan / producer predicate.
 
 # How long to wait on the `systemctl is-active` probe before giving up
 # and reporting "unknown". Bounded so a wedged systemd can't stall the
@@ -398,8 +397,7 @@ def _derive_runtime_health(
     if cfg.error is not None:
         return {"health": "invalid", "detail": cfg.error, "units": {}}
 
-    from .reconcile import desired_snapfifo_path  # lazy: import cost on solo boxes
-    from .reconcile_plan import plan  # lazy: import cost on solo boxes
+    from .reconcile_plan import desired_snapfifo_path, plan  # lazy: import cost on solo boxes
 
     expected = {it.unit: it.desired for it in plan(cfg).intents}
     units: dict[str, dict[str, str]] = {}

@@ -498,7 +498,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     form, so a warn here means that apply failed — check its journal)."""
     from ...active_speaker.environment import camilla_statefile_path
     from ...multiroom.config import is_active_member
-    from ...multiroom.reconcile import is_active_speaker_box
+    from ...multiroom.grouping_env import is_active_speaker_box
     from .correction import (
         REASON_CAMILLA_CONFIG_MISSING,
         REASON_CAMILLA_CONFIG_UNREADABLE,
@@ -755,10 +755,8 @@ def check_grouping_channel_pick() -> CheckResult:
         LANE_REFUSED_ACTIVE_ENDPOINT,
         LANE_REFUSED_FLAT_OUTPUT_DENIED,
         LANE_REFUSED_PERIOD,
-        member_lane_decision,
-    )
-    from ...multiroom.reconcile import (
         box_outputd_period_frames,
+        member_lane_decision,
         output_topology_state,
     )
 
@@ -882,7 +880,7 @@ def check_grouping_tts_lane() -> CheckResult:
     # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
     from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
-    from ...multiroom.reconcile import output_topology_state
+    from ...multiroom.grouping_env import output_topology_state
     from ...multiroom.tts_route import (
         VOICE_PARK_ENV,
         expected_grouping_tts_route,
