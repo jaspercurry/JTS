@@ -22,8 +22,7 @@ def test_verify_level_shift_copy_is_true_on_both_surfaces():
     )
     # The retired routing: it commanded the retry the phone cannot win.
     assert "re-verify" not in message.lower()
-    # The visible primary is named, not undermined — the sibling
-    # ``verify_out_of_tolerance`` names its primary too.
+    # The visible primary is named, not undermined.
     assert "Try again" in message
     # …and the escalation is conditional on the retry repeating, never
     # presented as the only way forward.

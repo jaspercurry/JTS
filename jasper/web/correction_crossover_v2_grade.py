@@ -40,7 +40,7 @@ GRADE_SCOPE_SPATIAL = "spatial"
 
 #: The post-apply SPATIAL grade's own state (#2160). ``overall_within_target`` is a
 #: bool and therefore cannot distinguish "graded and failed" from "could not be
-#: graded at all" — :attr:`~jasper.active_speaker.flat_spec.SpecFlatness.passed`
+#: graded at all" — the gauge's ``passed``
 #: is ``False`` for an unmeasurable spectrum too, by its own "will not report a
 #: clean bill of health for a spectrum it could not fully measure" rule. This
 #: field carries the distinction the verdict key structurally cannot.

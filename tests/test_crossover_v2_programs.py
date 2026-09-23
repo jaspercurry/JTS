@@ -18,10 +18,9 @@ pin, in the order a reviewer should read them:
    under test pins nothing.
 2. **The identity invariant** — the COMPARED pair (VERIFY and the entry
    baseline) gets the *same object*, not an equal one, and each position group
-   gets one object of its own.  #2291's before→after benefit verdict is checked
-   by ``program_id`` equality; a copy that merely compared equal today would be
-   a latent ``BENEFIT_PROGRAM_MISMATCH`` the moment composition picked up any
-   per-call state.
+   gets one object of its own.  #2291's before→after comparison is keyed by
+   ``program_id`` equality; a copy that merely compared equal today would break
+   that key the moment composition picked up any per-call state.
 3. **The courtesy-prelude rule** (#1677, trimmed 2026-08-18) — the prelude
    announces a SESSION, not a capture, so it rides the phases that open one and
    the entry baseline that must stay identical to stage 2's anchor.  Pinned
@@ -382,12 +381,9 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
 def test_the_compared_pair_gets_the_same_object():
     """``is``, not ``==``. The whole of #2291's comparability rests on it.
 
-    ``program_id`` equality is what
-    :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
-    checks before it will compare a before against an after — and what
-    ``_delta_probe`` asks of its entry anchor before it will subtract one — and
-    the reason that equality holds is that the entry baseline and VERIFY are
-    handed one object. Asserting equal ids instead would keep passing under a
+    ``program_id`` equality is what a before→after comparison checks before it
+    will compare a before against an after, and the reason that equality holds
+    is that the entry baseline and VERIFY are handed one object. Asserting equal ids instead would keep passing under a
     composer that returned a fresh-but-equal program today and drifted tomorrow.
     """
     c = _conductor(CAPS)
@@ -495,8 +491,8 @@ def test_the_entry_baseline_is_announced_because_its_twin_is():
 
     Stage 1's last capture carries the prelude for one reason: its program
     object is stage 2's anchor, and that equality is #2291's before→after
-    comparison and the delta probe's anchor check. A rule that dropped it here
-    would grade every round ``BENEFIT_PROGRAM_MISMATCH``.
+    comparison. A rule that dropped it here would leave every round's before
+    and after incomparable.
     """
     c = _conductor(CAPS)
 

@@ -847,11 +847,8 @@ def _full_range_draft() -> dict[str, Any]:
 
 
 def _rebank_round_as_no_crossover(session: Path) -> None:
-    """Re-bank one bundle's round as the round a 1-way main banks — through the
-    production solver, so it cannot state a shape no round produces."""
-    from jasper.active_speaker.crossover_v2.blend_correction import (
-        solve_blend_correction,
-    )
+    """Re-bank one bundle's round with the blend block a 1-way main's round
+    banked: no region, and the no-crossover reason."""
     from jasper.active_speaker.crossover_v2.round_inputs import (
         round_artifact_dir,
     )
@@ -863,10 +860,10 @@ def _rebank_round_as_no_crossover(session: Path) -> None:
     assert round_dir is not None
     path = round_dir / "round_receipt.json"
     receipt = json.loads(path.read_text())
-    receipt["round_measurements"]["blend"] = solve_blend_correction(
-        graded=None, band_hz=None, incumbent=(),
-        no_crossover_reason=ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-    ).to_dict()
+    receipt["round_measurements"]["blend"] = {
+        "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY, "band_hz": None,
+        "commanded": [], "incumbent": [], "damping": 0.7, "realized": None,
+    }
     path.write_text(json.dumps(receipt))
 
 

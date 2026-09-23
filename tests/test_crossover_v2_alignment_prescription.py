@@ -4,7 +4,7 @@
 
 """Covers the request gate (shape, provenance, and the one derivation of the
 bound), the aligner's commitment of a prescribed delay, the single-owner claim
-end to end into the emitted graph and its proof, the round receipt's
+end to end into the emitted graph and its proof, the receipt's
 provenance, and — the control that matters most — that a session with no
 prescription selects exactly what it selected before.
 
@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
-from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_NO_CROSSOVER_REGION,
     ALIGNMENT_PRESCRIPTION_KEY,
@@ -54,7 +52,6 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_OK,
     AlignmentEstimate,
     MeasurementPriors,
@@ -1019,59 +1016,15 @@ def test_a_prescribed_arm_is_proved_by_the_ordinary_derivation():
 # --------------------------------------------------------------------------- #
 
 
-#: The minimal usable VERIFY analysis ``run_round`` grades, mirroring
-#: ``tests/test_crossover_v2_round_wiring.py``'s own direct-round harness.
-_USABLE_ANALYSIS = SimpleNamespace(
-    capture_integrity=SimpleNamespace(failed=(), not_evaluated=()),
-    verify_tracking={"max_db_notch_excluded": 0.1, "n_bins": 10},
-    summed_response=None,
-    program_id="prog-1",
-)
-
-
-def _evidence_for(prescription, objective=ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION):
-    return coordinator.RoundEvidence(
-        session_id="cap_direct",
-
-        post_analysis=_USABLE_ANALYSIS,
-        entry_baseline=None,
-        spec_report=None,
-        proposal_fingerprint="a" * 64,
-        commanded_delta_present=False,
-        realization_tolerance_db=1.0,
-        reference_mark="design_axis",
-        proposal_fingerprint_kind="candidate",
-        candidate_fingerprint="b" * 64,
-        delta_probe=None,
-        round_ordinal=1,
-        previous_objectives=None,
-        alignment_prescription=prescription,
-        alignment_objective=objective,
-    )
-
-
-def _evaluation_stub():
-    """The two attributes ``_round_measurements`` reads, and nothing else."""
-    return type("_E", (), {"blend": None, "region_benefit": None})()
-
-
-def _round_measurements_for(prescription, **kwargs):
-    return coordinator._round_measurements(
-        _evidence_for(prescription, **kwargs), _evaluation_stub(),
-    )
-
-
-def test_an_adopted_arms_receipt_names_what_its_timing_rests_on():
-    """The adoption record has to carry the provenance, not just the number."""
+def test_the_receipt_names_what_its_timing_rests_on():
+    """The receipt has to carry the provenance, not just the number."""
     prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    banked = _round_measurements_for(prescription)["alignment_prescription"]
+    banked = prescription.to_dict()
     assert banked["delay_us"] == -450.0
     assert banked["basis_delay_us"] == BASIS_US
     assert banked["residual_us"] == pytest.approx(-44.3)
     assert banked["basis_artifacts"] == list(ARTIFACTS)
     assert "n=33" in banked["basis_note"]
-    assert banked["objective"] == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert banked["committed"] is True
     # …and what the residual was checked against, so a reader is not left
     # guessing which corner's lobe 44.3 µs cleared.
     assert banked["checked_at_fc_hz"] == pytest.approx(FC_HZ)
@@ -1093,75 +1046,11 @@ def test_a_pinned_arms_receipt_banks_the_basin_in_the_operators_own_words(word):
     ``test_a_pinned_basin_survives_the_gate_as_a_word_and_a_sign`` owns.
     """
     prescription = _read(_arm(-450.0, polarity=word), fc_hz=FC_HZ)
-    banked = _round_measurements_for(prescription)["alignment_prescription"]
+    banked = prescription.to_dict()
 
     assert banked["polarity"] == word
     # The pin does not change what the candidate asked of the timing.
     assert banked["delay_us"] == -450.0
-    assert banked["committed"] is True
-
-
-@pytest.mark.parametrize(
-    ("objective", "committed"),
-    [
-        (ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION, True),
-        (ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, True),
-        (ALIGNMENT_ESTIMATED_FLAT_SUM, False),
-        # No candidate committed at all is a THIRD answer, not a "no".
-        ("", None),
-    ],
-)
-def test_the_receipt_says_whether_the_arm_actually_ran(objective, committed):
-    """A candidate's provenance without its outcome can credit a round that
-    never measured the candidate.
-
-    The rail is reachable, not theoretical: an ``ALIGNMENT_OK`` estimate whose
-    band holds no scorable bin makes ``_select_alignment_pair`` return ``None``,
-    and the seed — the estimator's own lobe-hopping answer — is committed while
-    the round still carries the prescription's name. A grader reading only the
-    prescription would call that "the candidate measured better".
-    """
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    banked = _round_measurements_for(
-        prescription, objective=objective,
-    )["alignment_prescription"]
-    assert banked["objective"] == objective
-    assert banked["committed"] is committed
-
-
-def test_an_ordinary_round_banks_no_prescription_block():
-    """Absence and presence each mean exactly one thing on a receipt."""
-    assert "alignment_prescription" not in _round_measurements_for(None)
-
-
-def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
-    """It rides with the MEASUREMENTS, never in the round identity.
-
-    ``_round_identity`` is the instruction channel the next round reads back as
-    its incumbent. A prescription there is how a candidate gets re-run
-    without being asked for — each candidate of a delay sweep is prescribed
-    explicitly.
-    """
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    published: list[dict] = []
-    decision = coordinator.run_round(
-        _evidence_for(prescription),
-        coordinator.RoundPorts(
-            rollback_available=None,
-            applied_boosts=(lambda: False),
-            entry_graph_fingerprint=(lambda: "graph-1"),
-            publish_round_receipt=(lambda payload: published.append(dict(payload))
-                                   or "f" * 64),
-        ),
-    )
-    # The banked receipt names the basis…
-    assert len(published) == 1
-    banked = published[0]["round_measurements"]["alignment_prescription"]
-    assert banked["basis_delay_us"] == BASIS_US
-    # …and the identity the NEXT round reads back carries no prescription at
-    # all, so no candidate can be re-run without being asked for. Asserted
-    # over the built mapping, not over a docstring.
-    assert "alignment_prescription" not in repr(decision.receipt_identity)
 
 
 def test_the_record_is_frozen():

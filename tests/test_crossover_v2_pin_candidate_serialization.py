@@ -4,12 +4,10 @@
 
 """Issue #2291 Phase 0 — preserved-behavior pins for candidate serialization.
 
-The strangler migration in #2291 rebuilds the intervention planner around an
-immutable ``InterventionProposal`` that carries a complete
-:class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`.
-The candidate's own serialization is one of the "strong bones" the issue lists
-as preserve-don't-replace, so these pins state the round-trip and identity
-properties the new planner has to keep producing.
+The serialization of
+:class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
+is one of the "strong bones" #2291 lists as preserve-don't-replace, so these
+pins state its round-trip and identity properties.
 
 **Scope: only the gaps.** ``tests/test_active_speaker_measured_crossover_candidate.py``
 already pins the field-level story thoroughly — every alignment refusal, the
@@ -203,9 +201,7 @@ def test_a_fully_populated_candidate_round_trips_through_from_mapping():
 
     The existing per-field round trips each vary a single optional field over
     an otherwise-default candidate. This is the shape an actual session emits
-    — alignment, linearization, outcome, and exclusion evidence together —
-    and it is the shape the new ``InterventionProposal`` has to be able to
-    carry and re-emit unchanged.
+    — alignment, linearization, outcome, and exclusion evidence together.
     """
 
     candidate = _fully_populated()

@@ -643,8 +643,8 @@ def test_a_request_cannot_forge_the_stamped_fields():
     ],
 )
 def test_every_refusal_carries_a_reason_from_the_closed_set(raw):
-    """By type and code, never by prose — the rule ``PLAN_REFUSAL_REASONS``
-    sets. A caller must be able to branch without reading a message."""
+    """By type and code, never by prose. A caller must be able to branch
+    without reading a message."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(raw)
     assert excinfo.value.reason in TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS

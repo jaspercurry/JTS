@@ -927,10 +927,6 @@ def test_the_trusted_floor_raises_the_reference_bands_lower_edge_too():
 
     assert unclamped.reference_band_hz == REFERENCE_BAND_HZ
     assert clamped.reference_band_hz == (700.0, REFERENCE_BAND_HZ[1])
-    # And the gauge names the frame that was USED, not the module constant.
-    assert flat_spec.spec_flatness_gauge(clamped).reference_band_hz == (
-        700.0, REFERENCE_BAND_HZ[1]
-    )
 
 
 def test_a_band_wholly_outside_the_trusted_range_is_unevaluable_never_failed():

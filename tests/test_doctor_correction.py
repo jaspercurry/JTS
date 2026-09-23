@@ -434,7 +434,7 @@ def _verify_cloud(*, passed, flatness):
             id="spatial-failed",
         ),
         # passed=False with evaluable=False means "could not be measured", not
-        # "failed" — SpecFlatness.passed's own read-it-with-evaluable rule.
+        # "failed".
         # The cloud reason still wins the row's reason on this WARN.
         pytest.param(
             _v2_applied_state(

@@ -42,6 +42,7 @@ from jasper.active_speaker.delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
     SPATIAL_COST_UNAVAILABLE,
+    SpatialCost,
     VERDICT_FRAME_MISMATCH,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
     VERDICT_LEVEL_MISMATCH,
@@ -51,12 +52,10 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_UNAVAILABLE,
     boost_overshoot,
     classify_delta_probe,
-    evaluate_spatial_cost,
     graded_command_floor_db,
     interquartile_band_hz,
     louder_than_commanded,
     advice_deferral,
-    spatial_cost_from_group_spreads,
     widest_exceedance_octaves,
 )
 
@@ -511,56 +510,17 @@ def test_widest_exceedance_of_nothing_is_zero():
 # --------------------------------------------------------------------------- #
 
 
-class _Band:
-    def __init__(self, center_hz: float, sigma_db: float) -> None:
-        self.center_hz = center_hz
-        self.sigma_db = sigma_db
-
-
-def test_spatial_cost_flags_a_widened_spread():
-    before = [_Band(1000.0, 1.0), _Band(2000.0, 1.2)]
-    after = [_Band(1000.0, 1.1), _Band(2000.0, 3.0)]
-    cost = evaluate_spatial_cost(before, after)
-    assert cost.available is True
-    assert cost.widened is True
-    assert cost.worst_center_hz == 2000.0
-    assert cost.worst_widening_db == pytest.approx(1.8)
-
-
-def test_spatial_cost_accepts_a_narrowed_spread():
-    """A correction that makes the room MORE even is the good outcome, and
-    must never read as costly."""
-    before = [_Band(1000.0, 3.0)]
-    after = [_Band(1000.0, 1.0)]
-    cost = evaluate_spatial_cost(before, after)
-    assert cost.widened is False
-    assert cost.worst_widening_db == pytest.approx(-2.0)
-
-
-def test_spatial_cost_pairs_bands_by_centre_and_skips_unmatched():
-    before = [_Band(1000.0, 1.0)]
-    after = [_Band(1000.0, 1.1), _Band(8000.0, 9.0)]
-    cost = evaluate_spatial_cost(before, after)
-    assert cost.n_bands == 1
-    assert cost.widened is False
-
-
-def test_spatial_cost_is_unavailable_without_both_groups():
-    assert evaluate_spatial_cost([], [_Band(1000.0, 1.0)]).available is False
-    assert spatial_cost_from_group_spreads(None, None).available is False
-    assert spatial_cost_from_group_spreads(
-        {"band_spread": []}, {"band_spread": [{"center_hz": 1.0, "sigma_db": 1.0}]},
-    ).available is False
-
-
-def test_spatial_cost_reads_json_round_tripped_bands():
-    cost = spatial_cost_from_group_spreads(
-        {"band_spread": [{"center_hz": 1000.0, "sigma_db": 1.0}]},
-        {"band_spread": [{"center_hz": 1000.0, "sigma_db": 4.0}]},
+def _spread_widened_by(widening_db: float) -> SpatialCost:
+    """The spatial evidence for one octave band whose cross-position spread
+    grew by ``widening_db`` across the apply."""
+    return SpatialCost(
+        available=True,
+        widened=widening_db > DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
+        worst_center_hz=1000.0,
+        worst_widening_db=widening_db,
+        tolerance_db=DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
+        n_bands=1,
     )
-    assert cost.available is True
-    assert cost.widened is True
-    assert cost.tolerance_db == DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB
 
 
 def test_a_matched_mark_with_a_widened_room_is_spatially_costly():
@@ -569,9 +529,7 @@ def test_a_matched_mark_with_a_widened_room_is_spatially_costly():
     commanded = _commanded_lift()
     probe = classify_delta_probe(
         _GRID_HZ, commanded, commanded, band_hz=_band(),
-        spatial=evaluate_spatial_cost(
-            [_Band(1000.0, 1.0)], [_Band(1000.0, 4.0)],
-        ),
+        spatial=_spread_widened_by(3.0),
     )
     assert probe.verdict == VERDICT_SPATIALLY_COSTLY
     assert probe.reason == "cross_position_spread_widened"
@@ -587,12 +545,29 @@ def test_a_chain_defect_outranks_the_spatial_arm():
     realized = commanded + np.where(_GRID_HZ > 6_000.0, 4.0, -4.0)
     probe = classify_delta_probe(
         _GRID_HZ, realized, commanded, band_hz=_band(),
-        spatial=evaluate_spatial_cost(
-            [_Band(1000.0, 1.0)], [_Band(1000.0, 9.0)],
-        ),
+        spatial=_spread_widened_by(8.0),
     )
     assert probe.verdict == VERDICT_MODEL_ERROR
     assert probe.spatial.widened is True  # recorded, not the verdict
+
+
+def test_a_spatially_costly_verdict_is_reached_without_the_frame_gate():
+    """A map that matches at the mark and widened the room still rolls back,
+    and it does so from ahead of the frame gate — so a fitted frame, of any
+    size, is irrelevant to it."""
+    commanded = _commanded_lift()
+    # Matched at the mark AND carrying a real quiet-bin frame, so the frame is
+    # genuinely fitted and genuinely non-zero at the moment this verdict is
+    # returned — a fixture with no frame could not tell the two orderings apart.
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded - 0.2 * np.log2(_GRID_HZ / 1_000.0), commanded,
+        band_hz=_band(),
+        spatial=_spread_widened_by(2.0),
+    )
+    assert probe.verdict == VERDICT_SPATIALLY_COSTLY
+    assert probe.advises_against_keep is True
+    assert probe.frame.fitted is True
+    assert probe.frame.tilt_db_per_octave == pytest.approx(-0.2, abs=1e-6)
 
 
 def test_an_unavailable_spatial_arm_cannot_produce_a_costly_verdict():
@@ -1176,31 +1151,6 @@ def test_the_frame_gate_can_only_narrow_a_finding():
         probe = classify_delta_probe(_GRID_HZ, realized, cmd, band_hz=_band())
         if probe.advises_against_keep:
             assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
-
-
-def test_a_spatially_costly_verdict_is_reached_without_the_frame_gate():
-    """The boundary above, exercised rather than only described.
-
-    A map that matches at the mark and widened the room still rolls back, and it
-    does so from ahead of the frame gate — so a fitted frame, of any size, is
-    irrelevant to it. Pinned so "the gate guards every rollback" can never be
-    read into the narrowing property.
-    """
-    commanded = _commanded_lift()
-    # Matched at the mark AND carrying a real quiet-bin frame, so the frame is
-    # genuinely fitted and genuinely non-zero at the moment this verdict is
-    # returned — a fixture with no frame could not tell the two orderings apart.
-    probe = classify_delta_probe(
-        _GRID_HZ, commanded - 0.2 * np.log2(_GRID_HZ / 1_000.0), commanded,
-        band_hz=_band(),
-        spatial=evaluate_spatial_cost(
-            [_Band(1_000.0, 1.0)], [_Band(1_000.0, 3.0)],
-        ),
-    )
-    assert probe.verdict == VERDICT_SPATIALLY_COSTLY
-    assert probe.advises_against_keep is True
-    assert probe.frame.fitted is True
-    assert probe.frame.tilt_db_per_octave == pytest.approx(-0.2, abs=1e-6)
 
 
 def test_the_frames_offset_term_is_the_residual_offset_it_already_reported():

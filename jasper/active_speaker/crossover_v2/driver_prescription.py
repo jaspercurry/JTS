@@ -98,7 +98,6 @@ __all__ = [
     "driver_max_q_for_gain",
     "driver_passbands_from_safety_profile",
     "driver_prescription_response_format",
-    "driver_prescription_route",
     "driver_prescription_to_candidate_fields",
     "read_driver_prescription",
 ]
@@ -1113,13 +1112,7 @@ def read_driver_prescription(
         expected_delta_db=expected_delta_db,
         declared_tilt_db_per_octave=declared_tilt,
     )
-    driver_prescription_route(prescription)
     return prescription
-
-
-def driver_prescription_route(prescription: DriverPrescription) -> str:
-    """The role-keyed linearization seam shared with the fitter."""
-    return LINEARIZATION_CANDIDATE_FIELD
 
 
 def driver_prescription_to_candidate_fields(
@@ -1154,7 +1147,7 @@ def driver_prescription_to_candidate_fields(
     """
     if prescription is None:
         return {}
-    field = driver_prescription_route(prescription)
+    field = LINEARIZATION_CANDIDATE_FIELD
     if not prescription.filters:
         return {field: {}}
     merged: dict[str, Any] = {

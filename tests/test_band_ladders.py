@@ -13,7 +13,6 @@ from jasper.active_speaker.bench.bass_replay import bass_replay_levels
 from jasper.active_speaker.bench.replay import replay_levels
 from jasper.active_speaker.bass_level_evidence import bass_level_evidence
 from jasper.active_speaker.crossover_v2 import rear_preview, rear_views
-from jasper.active_speaker.crossover_v2.verification import evaluate_spec
 from jasper.active_speaker.crossover_v2.room_grade import grade_room_median, read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import SeatTake
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
@@ -84,7 +83,6 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
     ("flat_spec", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("log_pooled", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("directivity", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
-    ("spec_verdict", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("gate_sweep", "speaker_spec", "bands", ("band_hz",)),
     ("close_reference", "speaker_spec", "bands", ("nominal_band_hz",)),
     ("ambient", "snr", "bands", ("band_hz",)),
@@ -139,7 +137,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload = grade_room_median(median).to_dict()
         bounds = (float(median.freqs_hz[0]), *expected, median.ceiling_hz)
         expected = tuple(zip(bounds, bounds[1:]))
-    elif builder in ("flat_spec", "log_pooled", "directivity", "spec_verdict"):
+    elif builder in ("flat_spec", "log_pooled", "directivity"):
         grid = np.geomspace(250, 20000, 600)
         zero = np.zeros_like(grid)
         report = evaluate_flat_spec(grid, zero, np.zeros(grid.shape, dtype=bool))
@@ -147,11 +145,9 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             payload = report.to_dict()
         elif builder == "log_pooled":
             payload = log_pooled_residual(report).to_dict()
-        elif builder == "directivity":
+        else:
             payload = directivity_table(report, (_position("axis", "axis", grid, zero),),
                                         reference_role="axis").rows[0].to_dict()
-        else:
-            payload = evaluate_spec(report).evidence
     elif builder == "gate_sweep":
         payload = request.getfixturevalue("direct_only_report")
     elif builder == "gate_sweep_cli":

@@ -29,12 +29,6 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.active_speaker.crossover_v2.contracts import CaptureValidity
-from jasper.active_speaker.crossover_v2.verification import (
-    CAPTURE_INTEGRITY_CLEAN,
-    CAPTURE_INTEGRITY_FAILED,
-    evaluate_capture_validity,
-)
 from jasper.audio_measurement.frame_ledger import (
     LOST_AT_ENCODER_TO_HOST,
     LOST_AT_CAPTURE_OVERRUN,
@@ -308,10 +302,6 @@ def test_a_reported_capture_gap_makes_the_capture_unusable():
     assert integrity.failed == (INTEGRITY_CHECK_CAPTURE_OVERRUN,)
     # The one-bit projection every durable position record already carries.
     assert res.glitch_detected is True
-    verdict = evaluate_capture_validity(integrity)
-    assert verdict.status is CaptureValidity.UNUSABLE
-    assert verdict.reason == CAPTURE_INTEGRITY_FAILED
-    assert INTEGRITY_CHECK_CAPTURE_OVERRUN in verdict.evidence["failed"]
 
 
 def test_frames_that_never_arrived_make_the_capture_unusable():
@@ -322,8 +312,6 @@ def test_frames_that_never_arrived_make_the_capture_unusable():
     integrity = res.capture_integrity
     assert integrity is not None
     assert integrity.failed == (INTEGRITY_CHECK_FRAME_LEDGER,)
-    verdict = evaluate_capture_validity(integrity)
-    assert verdict.status is CaptureValidity.UNUSABLE
     assert res.frame_ledger.lost_at == (LOST_AT_ENCODER_TO_HOST,)
 
 
@@ -338,7 +326,6 @@ def test_a_balanced_report_passes_both_checks_and_stays_usable():
     assert statuses[INTEGRITY_CHECK_CAPTURE_OVERRUN] == INTEGRITY_PASS
     assert statuses[INTEGRITY_CHECK_FRAME_LEDGER] == INTEGRITY_PASS
     assert integrity.failed == ()
-    assert evaluate_capture_validity(integrity).reason == CAPTURE_INTEGRITY_CLEAN
 
 
 def test_a_page_that_reports_nothing_is_not_refused_for_it():
@@ -356,7 +343,7 @@ def test_a_page_that_reports_nothing_is_not_refused_for_it():
     reasons = {c.name: c.reason for c in integrity.checks}
     assert reasons[INTEGRITY_CHECK_CAPTURE_OVERRUN]
     assert reasons[INTEGRITY_CHECK_FRAME_LEDGER]
-    assert evaluate_capture_validity(integrity).status is CaptureValidity.USABLE
+    assert integrity.failed == ()
 
 
 def test_the_frame_checks_are_asked_before_any_signal_question():

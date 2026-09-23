@@ -228,8 +228,8 @@ def _entry_baseline_block(
 
     The receipt names this capture but carries no curve, so this block is the
     durable copy — the flow state file's arrays are rewritten by the next
-    persist. With it, ``verification.evaluate_benefit`` can be re-run over a
-    banked round by an analysis that did not exist when it was captured.
+    persist. With it, a before/after comparison can be re-run over a banked
+    round by an analysis that did not exist when it was captured.
 
     A round with no readable take is an ordinary reported absence: retention is
     fail-soft and never costs the household a retake.

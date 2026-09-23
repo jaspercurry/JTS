@@ -251,7 +251,7 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     """The spec-facing flatness disclosure — "how flat is the speaker".
 
-    Reads the cloud group's spec gauge — ``spec_flatness_gauge`` of the same
+    Reads the cloud group's persisted spec gauge — a reading of the same
     ``evaluate_flat_spec`` report ``/state``, the doctor check and the bundle
     artifact read — copied through :func:`compact_cloud_status` below, so the
     number here and the number in the report are the same bytes.
@@ -277,7 +277,7 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     if not flatness:
         return _flatness_unavailable_line(block)
     if not flatness.get("evaluable"):
-        # The gauge ran and could not measure — read ``SpecFlatness.passed`` with
+        # The gauge ran and could not measure — read ``passed`` with
         # ``evaluable``. Never render this as a pass or a fail. The carve-out
         # lines ride along because in this state they ARE the explanation.
         return [

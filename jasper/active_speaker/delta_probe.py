@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -88,8 +88,8 @@ DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
 })
 
-#: What band ratios grade realized against — the COMMANDED delta, vs.
-#: ``verification.REALIZATION_COMPARAND`` (an absolute claim).
+#: What band ratios grade realized against — the COMMANDED delta, not the
+#: applied candidate's predicted sum (an absolute claim).
 REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 
 
@@ -239,50 +239,6 @@ SPATIAL_COST_UNAVAILABLE = SpatialCost(
     worst_widening_db=0.0, tolerance_db=DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
     n_bands=0,
 )
-
-
-def evaluate_spatial_cost(
-    before: Sequence[Any],
-    after: Sequence[Any],
-    *,
-    tolerance_db: float = DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
-) -> SpatialCost:
-    """Compare two clouds' per-octave level spread, before vs after the apply.
-
-    ``before``/``after`` are BandSpread sequences paired by ``center_hz``.
-    Uses ``sigma_db`` (per-position BAND LEVEL spread), not
-    ``max_sigma_db``, which rides comb nulls unrelated to correction.
-    """
-    before_by_center = {
-        round(float(b.center_hz), 3): float(b.sigma_db)
-        for b in before
-        if math.isfinite(float(b.sigma_db))
-    }
-    worst_center_hz = 0.0
-    worst_widening_db = -math.inf
-    n_bands = 0
-    for band in after:
-        sigma_after = float(band.sigma_db)
-        if not math.isfinite(sigma_after):
-            continue
-        key = round(float(band.center_hz), 3)
-        if key not in before_by_center:
-            continue
-        n_bands += 1
-        widening = sigma_after - before_by_center[key]
-        if widening > worst_widening_db:
-            worst_widening_db = widening
-            worst_center_hz = float(band.center_hz)
-    if n_bands == 0:
-        return SPATIAL_COST_UNAVAILABLE
-    return SpatialCost(
-        available=True,
-        widened=worst_widening_db > tolerance_db,
-        worst_center_hz=worst_center_hz,
-        worst_widening_db=float(worst_widening_db),
-        tolerance_db=float(tolerance_db),
-        n_bands=n_bands,
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1162,48 +1118,6 @@ def classify_delta_probe(
     )
 
 
-def spatial_cost_from_group_spreads(
-    before: Mapping[str, Any] | None, after: Mapping[str, Any] | None,
-) -> SpatialCost:
-    """Adapter: two cloud-group result mappings → a :class:`SpatialCost`.
-
-    Reads the ``"band_spread"`` list each group publishes (plain dicts after
-    a JSON round-trip, or ``BandSpread`` objects in-process). Absent or
-    short spreads degrade to :data:`SPATIAL_COST_UNAVAILABLE` rather than
-    raising.
-    """
-
-    def _bands(group: Mapping[str, Any] | None) -> list[Any]:
-        if not isinstance(group, Mapping):
-            return []
-        raw = group.get("band_spread")
-        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-            return []
-        out: list[Any] = []
-        for entry in raw:
-            if isinstance(entry, Mapping):
-                center = entry.get("center_hz")
-                sigma = entry.get("sigma_db")
-                if isinstance(center, (int, float)) and isinstance(sigma, (int, float)):
-                    out.append(_PlainBand(float(center), float(sigma)))
-            elif hasattr(entry, "center_hz") and hasattr(entry, "sigma_db"):
-                out.append(entry)
-        return out
-
-    before_bands, after_bands = _bands(before), _bands(after)
-    if not before_bands or not after_bands:
-        return SPATIAL_COST_UNAVAILABLE
-    return evaluate_spatial_cost(before_bands, after_bands)
-
-
-@dataclass(frozen=True)
-class _PlainBand:
-    """The two fields :func:`evaluate_spatial_cost` reads, off a JSON dict."""
-
-    center_hz: float
-    sigma_db: float
-
-
 __all__ = [
     "DELTA_PROBE_BAND_ABOVE_CEILING",
     "DELTA_PROBE_BAND_CROSSOVER",
@@ -1240,11 +1154,9 @@ __all__ = [
     "VERDICT_UNAVAILABLE",
     "boost_overshoot",
     "classify_delta_probe",
-    "evaluate_spatial_cost",
     "graded_command_floor_db",
     "interquartile_band_hz",
     "louder_than_commanded",
     "advice_deferral",
-    "spatial_cost_from_group_spreads",
     "widest_exceedance_octaves",
 ]

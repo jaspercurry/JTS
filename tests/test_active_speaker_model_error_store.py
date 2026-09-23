@@ -34,7 +34,6 @@ from jasper.active_speaker.model_error_store import (
     model_error_state_path,
     record_model_error,
     store_snapshot,
-    stored_floor,
 )
 from tests._log_events import event_fields, event_records
 
@@ -78,7 +77,7 @@ def test_missing_file_reads_as_an_empty_store(tmp_path):
 def test_floor_round_trips_through_the_store(tmp_path):
     path = tmp_path / "store.json"
     adopt_floor(_floor(), path=path)
-    restored = stored_floor(path)
+    restored = store_snapshot(path).floor
     assert restored is not None
     assert restored.metric == METRIC
     assert restored.basis == FLOOR_BASIS_MEASURED
@@ -102,7 +101,7 @@ def test_a_floor_adopted_across_sittings_does_not_narrow_on_reload(tmp_path):
         ),
         path=path,
     )
-    restored = stored_floor(path)
+    restored = store_snapshot(path).floor
     assert restored is not None
     assert restored.scope == FLOOR_SCOPE_ACROSS_SITTINGS
 
@@ -117,7 +116,7 @@ def test_a_floor_written_before_2081_reloads_as_the_narrow_scope(tmp_path):
     del raw["floor"]["scope"]
     path.write_text(json.dumps(raw))
 
-    restored = stored_floor(path)
+    restored = store_snapshot(path).floor
     assert restored is not None
     assert restored.scope == FLOOR_SCOPE_WITHIN_SITTING
 
@@ -134,7 +133,7 @@ def test_a_floor_whose_scope_is_unreadable_is_dropped_rather_than_guessed(
     raw["floor"]["scope"] = "whenever_you_like"
     path.write_text(json.dumps(raw))
 
-    assert stored_floor(path) is None
+    assert store_snapshot(path).floor is None
 
 
 def test_a_policy_bar_floor_round_trips_without_growing_a_fake_p95(tmp_path):
@@ -148,7 +147,7 @@ def test_a_policy_bar_floor_round_trips_without_growing_a_fake_p95(tmp_path):
         ),
         path=path,
     )
-    restored = stored_floor(path)
+    restored = store_snapshot(path).floor
     assert restored is not None
     assert restored.basis == FLOOR_BASIS_POLICY
     assert restored.p95_db is None
@@ -165,7 +164,7 @@ def test_adopting_a_floor_replaces_rather_than_merges(tmp_path):
         ),
         path=path,
     )
-    restored = stored_floor(path)
+    restored = store_snapshot(path).floor
     assert restored is not None
     assert restored.metric == "other_metric"
     assert restored.p95_db is None
@@ -477,7 +476,7 @@ def test_an_unusable_stored_floor_is_dropped_not_half_trusted(
         encoding="utf-8",
     )
     assert load_state(path)["floor"] is None
-    assert stored_floor(path) is None
+    assert store_snapshot(path).floor is None
 
 
 def test_writes_are_atomic_and_leave_no_temp_files(tmp_path):

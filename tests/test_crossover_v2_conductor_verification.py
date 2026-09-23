@@ -7,16 +7,12 @@
 from __future__ import annotations
 
 import pytest
-from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
 )
 
 from jasper.active_speaker.crossover_v2.contracts import CLAIM_NOT_EVALUATED
-from jasper.active_speaker.crossover_v2.verification import (
-    verify_absolute_tolerance_db,
-)
 from tests.crossover_v2_fixtures import (
     FakeSeams,
     _absolute,
@@ -99,18 +95,29 @@ def test_measure_priors_carry_no_ambient_when_check_never_ran():
 # tweeter is swept from Fc.
 
 
+#: The claims a persisted VERIFY carried for each capture below.
+_GRADED_ABSOLUTE_CLAIM = {
+    "status": "pass", "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
+    "max_db": 1.503, "rms_db": 0.7515, "worst_db": -1.503, "worst_hz": 1700.0,
+}
+_UNGRADED_ABSOLUTE_CLAIM = {
+    "status": CLAIM_NOT_EVALUATED, "reason": "no_trusted_crossover_region",
+}
+
+
 @pytest.mark.parametrize(
-    ("verify_absolute", "badged"),
+    ("verify_absolute", "absolute_claim", "badged"),
     [
-        pytest.param(_absolute(1.503), True, id="absolute_graded"),
+        pytest.param(_absolute(1.503), _GRADED_ABSOLUTE_CLAIM, True, id="absolute_graded"),
         pytest.param(
-            {"not_evaluated": "no_trusted_crossover_region"}, False,
-            id="nothing_graded",
+            {"not_evaluated": "no_trusted_crossover_region"}, _UNGRADED_ABSOLUTE_CLAIM,
+            False, id="nothing_graded",
         ),
     ],
 )
 def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
     verify_absolute,
+    absolute_claim,
     badged,
 ):
     """The corner of the pin above: a capture that graded NOTHING.
@@ -130,11 +137,16 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
     """
     from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE, GRADE_MARK_VERIFIED, _post_apply_grade
 
-    from jasper.active_speaker.crossover_v2 import verification, capture_dispatch
+    from jasper.active_speaker.crossover_v2 import capture_dispatch
     c = _conductor(FakeSeams())
     analysis = _verify_analysis(c.program_for_phase("verify"), max_db=None, verify_absolute=verify_absolute)
     verdict = capture_dispatch.assess(analysis, phase="verify", program=c.program_for_phase("verify"))
-    claims = verification._verify_claims(analysis.verify_tracking or {}, analysis.verify_absolute)
+    claims = {
+        "woofer_branch": {"status": CLAIM_NOT_EVALUATED, "reason": "no_per_branch_verify_capture"},
+        "hf_branch": {"status": CLAIM_NOT_EVALUATED, "reason": "no_per_branch_verify_capture"},
+        "integration": {"status": CLAIM_NOT_EVALUATED, "max_db": None, "tolerance_db": 1.5, "band_hz": None},
+        "absolute": absolute_claim,
+    }
     assert verdict.ok is True
     assert claims["integration"]["status"] == CLAIM_NOT_EVALUATED
     grade = _post_apply_grade(
@@ -146,22 +158,5 @@ def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
 
     assert grade["state"] == (GRADE_MARK_VERIFIED if badged else GRADE_INCONCLUSIVE)
     assert grade["graded"] is badged
-
-
-def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
-    """The threshold has no literal of its own: it is the loosest
-    ``flat_spec.SPEC_BANDS`` entry the crossover region overlaps, so revising
-    that table with hardware data moves this without a second edit."""
-    from jasper.active_speaker import flat_spec
-
-    assert verify_absolute_tolerance_db([1000.0, 4000.0]) == max(
-        tol for lo, hi, tol in flat_spec.SPEC_BANDS if lo < 4000.0 and 1000.0 < hi
-    )
-    # It is NOT the model-tracking tolerance wearing a different name.
-    assert verify_absolute_tolerance_db([1000.0, 4000.0]) != contracts.VERIFY_TOLERANCE_DB
-    # A region the spec table declines to grade yields no bar at all, and the
-    # claim is recorded not-evaluated rather than held to an invented one.
-    assert verify_absolute_tolerance_db([17_000.0, 20_000.0]) is None
-    assert verify_absolute_tolerance_db([1000.0]) is None
 
 

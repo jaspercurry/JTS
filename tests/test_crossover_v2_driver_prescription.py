@@ -46,7 +46,6 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     driver_max_q_for_gain,
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
-    driver_prescription_route,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
 )
@@ -1953,7 +1952,9 @@ def test_a_boost_is_admitted_on_the_horizontal_records_own_evidence(tmp_path):
 
     assert gated.filters[0]["gain"] == 2.0
     assert gated.classification_basis[0].verdict.freq_hz == hz
-    assert driver_prescription_route(gated) == LINEARIZATION_CANDIDATE_FIELD
+    assert set(driver_prescription_to_candidate_fields(gated, fitted=None)) == {
+        LINEARIZATION_CANDIDATE_FIELD,
+    }
 
 
 def test_the_depthless_record_still_vouches_for_a_boost_on_its_own_dip(tmp_path):
@@ -2267,7 +2268,7 @@ def test_the_knee_ruling_does_not_reach_tonights_targets(tmp_path, freq):
 def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
     """A prescription built directly has no classification basis and routes anyway.
 
-    ``driver_prescription_route`` used to restate ``_check_classification``'s bar
+    The route used to restate ``_check_classification``'s bar
     as a property of the SEAM, so an unvouched boost could not populate the
     candidate field however the object was constructed. The 2026-08-23 ruling
     made that bar a disclosure, and a seam-level restatement of a removed
@@ -2285,8 +2286,8 @@ def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
         passbands_hz=accepted.passbands_hz,
     )
 
-    assert driver_prescription_route(boost) == LINEARIZATION_CANDIDATE_FIELD
     fields = driver_prescription_to_candidate_fields(boost, fitted=None)
+    assert set(fields) == {LINEARIZATION_CANDIDATE_FIELD}
     assert fields[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["filters"][0][
         "gain"
     ] == 2.0
@@ -2328,7 +2329,6 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 
     assert prescription.prescription_class == "cut"
     assert prescription.composed_boost_db == 0.0
-    assert driver_prescription_route(prescription) == LINEARIZATION_CANDIDATE_FIELD
     assert driver_prescription_to_candidate_fields(prescription, fitted=None) == {
         LINEARIZATION_CANDIDATE_FIELD: {
             "tweeter": {

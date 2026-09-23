@@ -5213,9 +5213,8 @@ def test_verify_summed_late_energy_retains_the_room_reflection():
 
 # flatness-verify (#1668 PR-D) was RETIRED by the flat-linearization plan's
 # PR-5 (the spec-curve SSOT). ``_flatness_tracking`` graded ONE capture on its
-# own grid against its own band mean; the spec claim is now graded once per
-# spatial cloud group by ``flat_spec.evaluate_flat_spec`` +
-# ``spec_flatness_gauge`` (see tests/test_flat_spec_ssot.py). These two tests
+# own grid against its own band mean; the spec claim is now graded by
+# ``flat_spec.evaluate_flat_spec`` (see tests/test_flat_spec_ssot.py). These two tests
 # pin that the retirement is complete and that the SIBLING claim which stayed
 # — integration-verify's tracking comparator — is untouched by it.
 

@@ -148,12 +148,6 @@ TIMING_NEEDS_MEASUREMENT = "needs_measurement"
 TIMING_SAVED = "saved"
 TIMING_AUTHORED = "authored"
 TIMING_ESTIMATE = "estimate"
-#: Commitments an explicit prescription produced; read by
-#: crossover_v2.coordinator._round_measurements as the prescription's ``committed`` bit.
-ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-})
 #: Commitments where the flat-sum objective chose the POLARITY — necessary but
 #: not sufficient for :attr:`AlignmentPairSelection.polarity_agrees_with_sum`,
 #: which checks :attr:`~AlignmentPairSelection.polarity_pinned` first.
