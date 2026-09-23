@@ -338,12 +338,6 @@ function describeBondFailure(e) {
     ? failed.map((r) => (r.addr || "this speaker") + ": " +
         (r.detail || "failed")).join("; ")
     : (body.error || e.message || "unknown error");
-  const tokenGated = failed.some(
-    (r) => typeof r.detail === "string" &&
-      /control_token_required|X-JTS-Token/.test(r.detail));
-  if (tokenGated) {
-    msg = "access expired — reload the page and try again. Details — " + msg;
-  }
   if (body.rolled_back === true) {
     msg += " — the change was rolled back; both speakers kept their channels.";
   } else if (body.rolled_back === false) {
