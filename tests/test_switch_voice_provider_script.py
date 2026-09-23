@@ -69,9 +69,7 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
                     printf 'active\\n'
                     ;;
                 *"grep -h -E"*)
-                    if [[ "${FAKE_KEY_PRESENT:-1}" == "1" ]]; then
-                        printf 'JASPER_GEMINI_API_KEY=stub-key-value\\n'
-                    fi
+                    printf '%s\\n' "${FAKE_KEY_STATUS:-set}"
                     ;;
             esac
             """
@@ -83,6 +81,8 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _run(
     script_repo: tuple[Path, Path, Path],
     args: list[str],
+    *,
+    key_status: str = "set",
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     repo, fake_bin, log = script_repo
     log.unlink(missing_ok=True)
@@ -91,6 +91,7 @@ def _run(
         env.pop(key, None)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["FAKE_SSH_LOG"] = str(log)
+    env["FAKE_KEY_STATUS"] = key_status
     result = subprocess.run(
         ["bash", str(repo / "scripts" / SCRIPT.name), *args],
         cwd=repo,
@@ -125,7 +126,18 @@ def test_known_provider_switches(script_repo: tuple[Path, Path, Path]):
     assert len(calls) == 3
     assert "from jasper.voice.catalog import PROVIDERS" in calls[0]
     assert "grep -h -E" in calls[1]
+    assert "printf set" in calls[1] and "printf unset" in calls[1]
     assert "JASPER_GEMINI_API_KEY" in calls[1]
     assert "jasper_env_file_set" in calls[2]
     assert "/var/lib/jasper/voice_provider.env" in calls[2]
     assert "systemctl restart jasper-voice" in calls[2]
+
+
+def test_unset_provider_key_stops_before_switching(
+    script_repo: tuple[Path, Path, Path],
+):
+    result, calls = _run(script_repo, ["gemini"], key_status="unset")
+
+    assert result.returncode == 3
+    assert len(calls) == 2
+    assert "grep -h -E" in calls[1]
