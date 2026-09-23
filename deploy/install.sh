@@ -47,7 +47,6 @@ LOCAL_SBIN_DIR="/usr/local/sbin"
 INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
-source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
 source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
@@ -1270,7 +1269,7 @@ install_nginx_site_conf() {
     systemctl reload nginx
 }
 
-NGINX_PUBLIC_SURFACE="http://<host>/{,sources/,sound/,assistant/,system/} + https://<host>/sound/{room/,speaker/crossover/,measurements/,bass/,pair/sync/} are live"
+NGINX_PUBLIC_SURFACE="http://<host>/{,sources/,sound/,assistant/,system/} + https://<host>/sound/{speaker/crossover/,measurements/,bass/,pair/sync/} are live"
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
@@ -1282,8 +1281,8 @@ install_nginx_site() {
     # never by redirect — a cert interstitial is un-automatable (issue #2632).
     # The legacy routes stay HTTP — Spotify's HTTPS requirement is satisfied
     # by the GitHub Pages bounce, and there's no point breaking working flows
-    # for one feature. /google/ stays HTTP here; Google rejects mDNS redirect
-    # URIs, so it uses the same GitHub Pages bounce pattern as Spotify. The
+    # for one feature. Google rejects mDNS redirect URIs, so /assistant/google/
+    # stays HTTP and its bounce returns to /google/callback over HTTP. The
     # correction-only cert is provisioned by provision_correction_tls() before
     # this function runs.
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
