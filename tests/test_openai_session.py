@@ -168,7 +168,7 @@ def _make_conn(
     model: str = "gpt-realtime-2",
     voice: str = "marin",
     reasoning_effort: str = "low",
-    noise_reduction: str = "off",
+    noise_reduction: str | None = None,
 ) -> tuple[OpenAIRealtimeConnection, _FakeConnectFactory]:
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
@@ -239,9 +239,10 @@ def test_upsample_state_continuity_across_chunks():
     assert len(out1) + len(out2) >= 3700
 
 
-def test_invalid_noise_reduction_rejected_at_construction():
+@pytest.mark.parametrize("value", ["potato", "off"])
+def test_invalid_noise_reduction_rejected_at_construction(value):
     with pytest.raises(RuntimeError, match="OpenAI noise_reduction"):
-        _make_conn(noise_reduction="potato")
+        _make_conn(noise_reduction=value)
 
 
 def test_secret_literals_reports_the_api_key():
@@ -2447,8 +2448,7 @@ async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
 
 
 @pytest.mark.parametrize("intent, wire", [
-    ("off", None),  # chip-AEC streams opt out of OpenAI-side denoising
-    ("auto", None),  # unresolved intent: omit rather than guess
+    (None, None),  # chip-AEC streams opt out of OpenAI-side denoising
     ("near", {"type": "near_field"}),
     ("far", {"type": "far_field"}),
 ])

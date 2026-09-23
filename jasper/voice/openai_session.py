@@ -83,14 +83,8 @@ SESSION_SETUP_TIMEOUT_SEC = 15.0
 # via ``JASPER_OPENAI_REASONING_EFFORT`` if needed.
 DEFAULT_REASONING_EFFORT = "low"
 
-DEFAULT_NOISE_REDUCTION = "off"
-# ``auto`` is resolved to an intent by voice.input_policy before production
-# constructs this adapter. If a bare test/tool instantiates the adapter with
-# auto, omit provider denoising rather than guessing a wire value.
-_NOISE_REDUCTION_DISABLED = frozenset((
-    "", "auto", "off", "none", "disabled", "false", "0",
-))
-# The host's intent -> the OpenAI wire value this adapter sends.
+# The host's intent -> the OpenAI wire value this adapter sends. None (no
+# provider denoising) omits the block; voice.input_policy owns the spellings.
 _NOISE_REDUCTION_WIRE_VALUES = {
     NOISE_REDUCTION_NEAR: "near_field",
     NOISE_REDUCTION_FAR: "far_field",
@@ -117,20 +111,16 @@ def _is_progress_event(etype: str) -> bool:
     return etype in _PROGRESS_EVENT_TYPES or etype.startswith(_PROGRESS_EVENT_PREFIXES)
 
 
-def _normalize_noise_reduction(value: str | None) -> str:
+def _noise_reduction_wire_value(intent: str | None) -> str:
     """Host intent -> OpenAI wire value; "" omits the session block."""
-    intent = (value or "").strip().lower()
-    if intent in _NOISE_REDUCTION_DISABLED:
+    if intent is None:
         return ""
-    wire = _NOISE_REDUCTION_WIRE_VALUES.get(intent)
-    if wire is None:
-        allowed = sorted(
-            (_NOISE_REDUCTION_DISABLED | set(_NOISE_REDUCTION_WIRE_VALUES)) - {""}
-        )
+    if intent not in _NOISE_REDUCTION_WIRE_VALUES:
         raise RuntimeError(
-            "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
+            "OpenAI noise_reduction must be None or one of: "
+            + ", ".join(sorted(_NOISE_REDUCTION_WIRE_VALUES))
         )
-    return wire
+    return _NOISE_REDUCTION_WIRE_VALUES[intent]
 
 
 # ---------- Per-turn adapter ------------------------------------------------
@@ -442,7 +432,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         voice: str = "marin",
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-        noise_reduction: str = DEFAULT_NOISE_REDUCTION,
+        noise_reduction: str | None = None,
         # Proactive pre-cap reconnect — see `_watchdog_delay_sec`.
         # Both default to 0 (disabled) so tests and bare-construction don't
         # spawn surprise tasks. Production wires production values from
@@ -481,7 +471,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
         self._api_key = api_key
         self._reasoning_effort = reasoning_effort
-        self._noise_reduction = _normalize_noise_reduction(noise_reduction)
+        self._noise_reduction = _noise_reduction_wire_value(noise_reduction)
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
         self._connect_factory = connect_factory
