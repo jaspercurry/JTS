@@ -19,7 +19,6 @@ from jasper import output_topology_store as output_topology
 from jasper.audio_hardware import dac, output_probe
 from jasper.output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_DEVICE_ID,
     OutputCardFact,
     classify_output_cards,
 )
@@ -987,13 +986,13 @@ def test_saved_single_topology_is_untouched_when_the_observed_dac_differs(
     cards = [
         OutputCardFact(
             card_id="DAC8",
-            device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+            device_id=dac.HIFIBERRY_DAC8X_ID,
             label="HiFiBerry DAC8x",
             pcm="hw:CARD=DAC8,DEV=0",
         )
     ]
     observed = classify_output_cards(cards)
-    assert observed.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert observed.profile_id == dac.HIFIBERRY_DAC8X_ID
 
     state = output_topology_observation.apply_saved_topology_policy(
         observed,
@@ -1063,7 +1062,7 @@ def test_reason_never_names_a_child_that_is_physically_present(
         _apple_child("A_1", "right", "1-2"),
         OutputCardFact(
             card_id="DAC8",
-            device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+            device_id=dac.HIFIBERRY_DAC8X_ID,
             label="HiFiBerry DAC8x",
             pcm="hw:CARD=DAC8,DEV=0",
         ),
@@ -1071,7 +1070,7 @@ def test_reason_never_names_a_child_that_is_physically_present(
     observed = classify_output_cards(cards)
     # The third DAC wins classification, so the record's children are not the
     # Apple pair at all — the exact shape that produced the false diagnosis.
-    assert observed.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert observed.profile_id == dac.HIFIBERRY_DAC8X_ID
     assert [child.card_id for child in observed.child_devices] == ["DAC8"]
 
     state = output_topology_observation.apply_saved_topology_policy(
@@ -1280,12 +1279,12 @@ def _declared_percent_control(profile_id: str) -> str:
             id="composite",
         ),
         pytest.param(
-            HIFIBERRY_DAC8X_DEVICE_ID,
+            dac.HIFIBERRY_DAC8X_ID,
             (
                 OutputCardFact(
                     card_id="sndrpihifiberry",
                     label="HiFiBerry DAC8x",
-                    device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+                    device_id=dac.HIFIBERRY_DAC8X_ID,
                     pcm="hw:CARD=sndrpihifiberry,DEV=0",
                 ),
             ),

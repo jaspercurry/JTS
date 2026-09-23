@@ -13,13 +13,14 @@ import sys
 
 from jasper.usbsink.volume_bridge import VolumeBridge
 from jasper.logging_setup import configure_logging
+from jasper.usbgadget import UAC2_CARD_NAME
 
 logger = logging.getLogger("jasper.usbsink.volume")
 
 
 async def _run() -> int:
     bridge = VolumeBridge(
-        card_name=os.environ.get("JASPER_USBSINK_MIXER_CARD", "UAC2Gadget"),
+        card_name=os.environ.get("JASPER_USBSINK_MIXER_CARD", UAC2_CARD_NAME),
         control_url=os.environ.get("JASPER_USBSINK_CONTROL_URL"),
     )
     task = asyncio.create_task(bridge.run())

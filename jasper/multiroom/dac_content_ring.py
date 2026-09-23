@@ -39,7 +39,7 @@ joins neither registry.
 from __future__ import annotations
 
 from jasper.fanin_coupling import RING_SLOT_FRAMES
-from jasper.ring_assets import RING_SHM_DIR, ring_writer_lock_path
+from jasper.ring_assets import RING_SHM_DIR
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf``
 #: defines — one string for the member's snapclient ``--soundcard`` and for
@@ -101,13 +101,6 @@ DAC_CONTENT_RING_PERIOD_FRAMES = RING_SLOT_FRAMES
 #: constraint the grouping ring took knowingly: depth is not tunable upward from
 #: a conf.d edit. 16 x 128 frames = 2048 frames = 43 ms at 48 kHz.
 DAC_CONTENT_RING_SLOTS = 16
-
-#: The exclusive ``flock`` a C ioplug WRITER holds for the life of its mapping,
-#: which is what makes a second writer's open fail loudly with ``-EBUSY``.
-#: DERIVED by calling the ring platform's own constructor rather than spelled
-#: again here — one suffix rule, one owner, already pinned against the generated
-#: ring ABI by ``tests/test_ring_assets.py``.
-DAC_CONTENT_RING_WRITER_LOCK = ring_writer_lock_path(DAC_CONTENT_RING_FILE)
 
 
 def dac_content_ring_servable(outputd_period_frames: int | None) -> bool:

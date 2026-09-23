@@ -140,43 +140,6 @@ BASS_MANAGEMENT_CORNER_HZ_LO = 40.0
 BASS_MANAGEMENT_CORNER_HZ_HI = 200.0
 BASS_MANAGEMENT_CROSSOVER_ORDER = 4
 
-def emit_linkwitz_transform_biquad(
-    name: str,
-    freq_act: float,
-    q_act: float,
-    freq_target: float,
-    q_target: float,
-) -> list[str]:
-    """A CamillaDSP native ``LinkwitzTransform`` biquad."""
-
-    return [
-        f"  {name}:",
-        "    type: Biquad",
-        "    parameters:",
-        "      type: LinkwitzTransform",
-        f"      freq_act: {fmt(freq_act)}",
-        f"      q_act: {fmt(q_act)}",
-        f"      freq_target: {fmt(freq_target)}",
-        f"      q_target: {fmt(q_target)}",
-    ]
-
-
-def emit_butterworth_highpass(
-    name: str,
-    freq: float,
-    order: int,
-) -> list[str]:
-    """A CamillaDSP native ``ButterworthHighpass`` combo."""
-
-    return [
-        f"  {name}:",
-        "    type: BiquadCombo",
-        "    parameters:",
-        "      type: ButterworthHighpass",
-        f"      freq: {fmt(freq)}",
-        f"      order: {order}",
-    ]
-
 
 def emit_linkwitz_riley(
     name: str,
@@ -189,10 +152,7 @@ def emit_linkwitz_riley(
 
     This is CamillaDSP's *native* LR crossover — an order-N
     ``LinkwitzRileyLowpass`` / ``LinkwitzRileyHighpass``. An LR4 (the
-    standard sub/woofer slope) is ``order=4``. Reproduces
-    `active_speaker._emit_linkwitz_riley_filter` byte-for-byte; it is
-    the canonical spelling that multi-room's crossover now uses instead
-    of two hand-cascaded ``Biquad`` sections.
+    standard sub/woofer slope) is ``order=4``.
     """
     kind = "LinkwitzRileyHighpass" if highpass else "LinkwitzRileyLowpass"
     return [

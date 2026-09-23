@@ -224,7 +224,9 @@ function startingCard() {
       const response = await postJSON('./setup/apply', {});
       if (response.result?.status !== 'applied') {
         if (response.setup) adopt(response.setup);
-        throw new Error('The configuration could not be applied. Check the details and try again.');
+        const issue = response.result?.issues?.[0];
+        throw new Error(issue ? `${issue.message} (${issue.code})` :
+          'The configuration could not be applied. Check the details and try again.');
       }
       return response;
     }, 'Base setup is active.'), true));

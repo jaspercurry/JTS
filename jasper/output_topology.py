@@ -22,7 +22,6 @@ from typing import Any, Iterable, Mapping, cast
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
     by_id as _dac_by_id,
     clock_domain_label_for as _dac_clock_domain_label_for,
     label_for as _dac_label_for,

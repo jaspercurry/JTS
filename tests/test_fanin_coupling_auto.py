@@ -46,6 +46,7 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_TARGET_LEVEL,
 )
 from jasper.output_topology_store import save_output_topology
+from tests._log_events import event_field_maps
 
 
 def test_pure_auto_decision_module_does_not_import_transition_owner():
@@ -590,7 +591,9 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     assert result.usb_intent_enabled is False
     assert result.ok is False
     assert "bad USB intent value" in result.detail
-    assert "result=auto_usb_intent_fail_closed" in caplog.text
+    (_fail_closed,) = event_field_maps(
+        caplog, "fanin.coupling_reconcile", result="auto_usb_intent_fail_closed"
+    )
 
 
 def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):

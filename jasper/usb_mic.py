@@ -33,6 +33,7 @@ from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
 from .service_units import USBGADGET_SERVICE
 from .systemd_probe import unit_active
+from .usbgadget import GADGET_CONFIGFS_PATH
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
@@ -40,7 +41,7 @@ INTENT_KEY = "JASPER_USB_MIC"
 USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
 USB_MIC_PRIMARY_LEG = "primary"
 USB_MIC_RAW_XVF_LEG = "raw0"
-GADGET_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
+GADGET_PATH = GADGET_CONFIGFS_PATH
 RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
 USBGADGET_UNIT = USBGADGET_SERVICE
 USBMIC_UNIT = "jasper-usbmic.service"

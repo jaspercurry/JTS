@@ -60,6 +60,7 @@ level-axis decision and JTS3 research bounds.
 operating references unless a current document says otherwise.
 
 - [Research material](research/)
+- [PipeWire low-latency research](RESEARCH-pipewire-low-latency.md)
 - [Historical records](historical/)
 
 Historical files preserve evidence and provenance. They do not describe the
