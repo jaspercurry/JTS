@@ -481,7 +481,7 @@ class AirPlayHealthSampler:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            fanin = self._fanin.current
+            fanin = self._fanin.current  # read once: FaninView publishes outside self._lock
             summary_5m = self._summary_locked(5 * 60.0)
             summary_30m = self._summary_locked(30 * 60.0)
             status, reason = self._status_locked(fanin, summary_5m, summary_30m)
