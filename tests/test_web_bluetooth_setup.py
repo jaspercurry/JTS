@@ -2,22 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /bluetooth/ control panel after its migration to the canonical
-design system.
-
-1. The landing page renders canonical design-system bytes (links
-   /assets/app.css, carries the shared .app-header + icon sprite, embeds the
-   CSRF meta tag, links the page stylesheet) and delivers its behaviour as an
-   ES module -- no inline <script> body, no legacy hand-rolled doctype.
-2. Every route still resolves, the JSON POST handlers still enforce CSRF,
-   Bluetooth power delegates to the shared persisted source-intent authority,
-   adapter-local operations still use the async dispatcher, the SSE pair-stream
-   coordination remains, and the public module surface (_landing_html / main)
-   is unchanged.
-
-The Bluetooth engine and its asyncio dispatcher are mocked -- these tests are
-hardware-free (no dbus / bluez).
-"""
+"""Tests for the Bluetooth control panel."""
 
 from __future__ import annotations
 
@@ -36,6 +21,8 @@ import pytest
 
 from dbus_next.errors import AuthError
 
+from jasper import source_intent
+from jasper.local_sources import reconcile as source_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
@@ -1664,17 +1651,16 @@ def test_power_route_reports_success_when_only_a_SIBLING_source_failed(
     locations are stubbed), so this exercises the target-scoped verdict rather
     than a mock of it.
     """
-    from jasper import source_intent
 
     env_path = str(tmp_path / "intent.env")
     status_path = str(tmp_path / "status.json")
 
     def kicker():
-        source_intent._default_write_status(
+        source_reconcile._default_write_status(
             status_path,
             {
                 "completed_monotonic_ns": time.monotonic_ns(),
-                "intent_fingerprint": source_intent._intent_fingerprint(
+                "intent_fingerprint": source_intent.intent_fingerprint(
                     Path(env_path).read_text(encoding="utf-8"),
                 ),
                 "sources": {

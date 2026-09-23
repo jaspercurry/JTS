@@ -15,7 +15,7 @@ Not here: the daemon ``STATUS`` control-socket reader, which is
 :mod:`jasper.platform.status_socket` reached through
 :mod:`jasper.cli.doctor._evidence`, and the per-run evidence cache itself.
 
-``_run`` is re-imported into the domain modules that call it, so a check
+``run`` is re-imported into the domain modules that call it, so a check
 resolves it in its OWN namespace and a test patch must target that module,
 not this one."""
 from __future__ import annotations
@@ -146,7 +146,7 @@ REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 REASON_HOSTNAME_UNREADABLE = "hostname_unreadable"
 
 
-def _systemctl_unavailable_result(label: str) -> CheckResult:
+def systemctl_unavailable_result(label: str) -> CheckResult:
     """The verbatim skip every caller reports when ``unit_state()`` (or the
     ``unit_states()`` batch behind it) returns ``None`` — systemctl itself
     answered nothing, so no unit's state was observed."""
@@ -193,7 +193,7 @@ def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
     return f"{age:.0f}s ago"
 
 
-def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
+def run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 #: Frames an ALSA open-probe moves before it exits: `aplay -s` / `arecord -s`
@@ -342,7 +342,7 @@ def _service_state_failure(
 
     state = evidence.unit_state(unit)
     if state is None:
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     silent = silence_unobserved()
     code = unit_not_running(state)
     if code == "missing":

@@ -30,8 +30,8 @@ from ..service_units import (
     FANIN_SERVICE,
     OUTPUTD_SERVICE,
 )
-from ._health_fields import _mapping
-from ._health_sources import _SOURCE_LABELS
+from ._health_fields import mapping as _mapping
+from ._health_sources import SOURCE_LABELS
 from .audio_attribution import _input_attribution
 from .audio_incident_view import (
     _incident_is_relevant,
@@ -106,7 +106,7 @@ def _incident_context(
     active_source: str | None,
     system: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Capture only the evidence rendered on a persisted incident."""
+    """Capture persisted incident evidence."""
     current = _mapping(airplay.get("current"))
     fanin = _mapping(current.get("fanin"))
     source_input = (
@@ -285,7 +285,7 @@ def compose_audio_health(
         overall_status = "ok"
         headline = "Audio is playing"
         detail = (
-            f"{_SOURCE_LABELS.get(active_source, active_source)} · sound path healthy."
+            f"{SOURCE_LABELS.get(active_source, active_source)} · sound path healthy."
         )
 
     previous = _mapping(previous_overall)
@@ -343,7 +343,7 @@ def compose_audio_health(
         selected = _selected_source(ap)
         current_stream = {
             "source_id": selected,
-            "label": _SOURCE_LABELS.get(selected or "", "Audio activity"),
+            "label": SOURCE_LABELS.get(selected or "", "Audio activity"),
             "signal": {
                 "summary": "Playback state unavailable",
                 "detail": "Waiting for a fresh reading of what is playing.",

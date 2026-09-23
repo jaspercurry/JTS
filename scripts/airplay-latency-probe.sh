@@ -4,8 +4,7 @@
 # know whether a bonded leader's downstream delay fits inside it.
 #
 # WHY: bonded-leader AirPlay lip-sync hinges on the sender's negotiated
-# budget vs. the leader's hidden downstream delay
-# (~165 ms pipeline + the Snapcast buffer_ms). The sender CHOOSES that
+# budget vs. the leader's hidden downstream delay. The sender CHOOSES that
 # budget live, per session, and shairport already logs it — so this
 # probe is READ-ONLY: no config change, no restart. Needs log_verbosity
 # >= 1 for the latency line and >= 2 for the stream type. The template
@@ -107,26 +106,10 @@ fi
 
 if grep -qiE 'Stream-specified latency is' "$tmp"; then
     echo "Negotiated latency  : NON-DEFAULT (sender overrode the ~2 s default)"
-    grep -ioE 'Stream-specified latency is [0-9]+ frames' "$tmp" | sort -u | while read -r line; do
-        frames="$(printf '%s' "$line" | grep -oE '[0-9]+')"
-        # AirPlay frames are 44100 Hz; total scheduled latency adds shairport's
-        # fixed +11025 (the value the backend offset lives inside). The
-        # canonical, unit-tested home of these constants (77175 / 11025 / 44100
-        # / the 0.045 s backend buffer) is jasper/multiroom/airplay_latency.py —
-        # keep this awk in sync with it if a shairport rate/firmware change lands.
-        secs="$(awk -v f="$frames" 'BEGIN{printf "%.3f", (f+11025)/44100}')"
-        echo "    ${line}  -> ~${secs}s total scheduled latency"
-    done
-    echo "TIGHT-REGIME CHECK  : shairport drops the offset (audio plays late) when"
-    echo "    the budget < 165 ms + buffer_ms + shairport's 0.045 s backend buffer"
-    echo "    (default buffer_ms 400 => need ~0.57 s => threshold ~0.610 s). Below"
-    echo "    that, expect bounded residual lip-sync lag (~the full need) when bonded."
+    grep -ioE 'Stream-specified latency is [0-9]+ frames' "$tmp" | sort -u \
+      | sed 's/^/    /'
 elif [[ -n "$stream" ]]; then
     echo "Negotiated latency  : DEFAULT (no 'Stream-specified latency' line)"
-    echo "    => 77175 frames (~1.75 s) + 11025 = exactly 2.0 s budget. With the"
-    echo "    default buffer_ms (400) that clears the ~0.610 s threshold with ~1.39 s"
-    echo "    to spare (FREE regime). NB: a buffer_ms above 1790 would be tight even"
-    echo "    at this default budget — check jasper-doctor / /state if you raised it."
 elif (( blind )); then
     echo "Negotiated latency  : CANNOT OBSERVE at log_verbosity ${verbosity}"
     echo "    Nothing was logged — but at this verbosity a default-budget"
@@ -137,4 +120,7 @@ else
     echo "No AirPlay session detected in the window."
     echo "    Start AirPlay audio to ${PI_HOST} and re-run. If you saw a"
     echo "    permissions error above, prefix the remote journalctl with sudo."
+fi
+if grep -qiE 'Stream-specified latency is' "$tmp" || [[ -n "$stream" ]]; then
+    echo "Fit assessment      : see /state or jasper-doctor"
 fi

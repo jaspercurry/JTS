@@ -854,13 +854,9 @@ def test_outputd_failure_reconcile_park_verdicts(
     assert result.speaker_silent is silent
 
 
-def test_outputd_failure_reconcile_park_ok_surfaces_last_park_age(
+def test_outputd_failure_reconcile_park_ok_reports_previous_park(
     tmp_path, monkeypatch,
 ):
-    """The healthy row names the most recently retired park (R15, #4416) when
-    jasper-unpark left a `.last` sibling; a fresh box with no `.last`
-    at all still reads as plain "carries no park record", nothing tolerated
-    as a KeyError."""
     target = tmp_path / "failure-reconcile.park"
     (tmp_path / "failure-reconcile.park.last").write_text(
         "parked_at=1000\nexit_status=78\nreason=recent\nunparked_at=1200\n"
@@ -875,7 +871,7 @@ def test_outputd_failure_reconcile_park_ok_surfaces_last_park_age(
     result = resilience.check_outputd_failure_reconcile_park()
 
     assert result.status == "ok"
-    assert "last park" in result.detail
+    assert result.reason == resilience.REASON_OUTPUTD_PREVIOUSLY_PARKED
 
 
 def test_outputd_failure_reconcile_park_ok_tolerates_no_last_park(
@@ -884,7 +880,7 @@ def test_outputd_failure_reconcile_park_ok_tolerates_no_last_park(
     result = _park_check(monkeypatch, tmp_path, record=None, unit=_RUNNING)
 
     assert result.status == "ok"
-    assert "last park" not in result.detail
+    assert result.reason == ""
 
 
 def test_outputd_failure_reconcile_park_skips_without_systemctl(
@@ -1079,7 +1075,7 @@ def test_a_controller_is_dead_until_the_log_re_registers_its_buses(
     so only the log separates dead from live — the last marker per controller
     wins, and only a re-bind revives it (#5443)."""
     monkeypatch.setattr(
-        resilience, "_run",
+        resilience, "run",
         lambda *a, **kw: subprocess.CompletedProcess(
             args=[], returncode=0, stdout=kernel_log, stderr="",
         ),

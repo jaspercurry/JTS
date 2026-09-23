@@ -261,7 +261,7 @@ async def _with_coordinator(
 def _make_duck_active_probe(
     voice_socket_path: str,
 ) -> Callable[[], Awaitable[Optional[bool]]]:
-    return _volume_ops._make_duck_active_probe(
+    return _volume_ops.make_duck_active_probe(
         voice_socket_path,
         voice_socket_command=_voice_socket_command,
     )

@@ -2,36 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Issue #1842: the bond card's balance block used to render an
-// `https://<hostname>/balance/` link ("Balance automatically with a
-// microphone") — a capture design ADR-0188 parked. On the self-signed origin
-// that link fails hard (ERR_CERT_AUTHORITY_INVALID). The `/balance/` page is
-// gone entirely now (#4031). What the rule forbids is an anchor that leaves
-// the origin the household is already on (#2632) — not an anchor as such: the
-// bonded face links this page's own child, /sound/pair/sync/, by a relative
-// href. Pinned structurally, on the anchors' href attributes.
-//
-// Loads main.js as a real ES module (dom.js/grouping-view.js/
-// pair-balance-controller.js run for real; only the network-touching
-// imports — http.js, dialog.js, local-web-host.js — are stubbed, since
-// building the page never calls them) and inspects the actual DOM tree
-// buildPage() produces, truncated before the self-scheduling poll() so the
-// module never reaches for the network.
-//
-//   node tests/js/rooms_bond_card_link_test.mjs
-
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
+import { element } from "./_dom.mjs";
 import { loadEsm, repoPath } from "./_loader.mjs";
 
-// A DOM stub minimal enough for the real dom.js h()/svg()/appendChildren to
-// build against: appendChild, setAttribute/getAttribute, a style object,
-// and an el that satisfies `instanceof Node`.
 class Style {
   setProperty(name, value) { this[name] = value; }
 }
 class El {
   constructor(tag) {
+    const { addEventListener, click, classList } = element(tag);
+    Object.assign(this, { addEventListener, click, classList });
     this.tagName = tag;
     this.children = [];
     this.attributes = {};
@@ -45,26 +27,49 @@ class El {
     return Object.prototype.hasOwnProperty.call(this.attributes, key)
       ? this.attributes[key] : null;
   }
-  addEventListener() {}
 }
 
+const timers = new Map();
+let nextTimer = 0;
+globalThis.setTimeout = (fn, ms) => { timers.set(++nextTimer, { fn, ms }); return nextTimer; };
+globalThis.clearTimeout = (id) => timers.delete(id);
+async function fire(ms) {
+  const runs = [];
+  for (const [id, timer] of [...timers]) {
+    if (timer.ms !== ms) continue;
+    timers.delete(id);
+    runs.push(timer.fn());
+  }
+  await Promise.all(runs);
+}
+const pending = [];
+let gets = 0;
+globalThis.__getJSON = (url) => {
+  assert.equal(url, "rooms.json");
+  gets++;
+  return new Promise((resolve) => pending.push(resolve));
+};
+const posts = [];
+globalThis.__postJSON = async (...args) => { posts.push(args); return { ok: true }; };
 const appRoot = new El("div");
 globalThis.Node = El;
 globalThis.location = { hostname: "test-speaker.local" };
 globalThis.document = {
+  body: element(), visibilityState: "visible", addEventListener() {},
   createElement: (tag) => new El(tag),
   createElementNS: (_ns, tag) => new El(tag),
   createTextNode: (text) => Object.assign(new El("#text"), { textContent: String(text) }),
   getElementById: (id) => (id === "app" ? appRoot : null),
 };
 
+const httpUrl = pathToFileURL(repoPath("deploy/assets/shared/js/http.js")).href;
 const domUrl = pathToFileURL(repoPath("deploy/assets/shared/js/dom.js")).href;
 const pbcUrl = pathToFileURL(repoPath("deploy/assets/rooms/js/pair-balance-controller.js")).href;
 const groupingUrl = pathToFileURL(repoPath("deploy/assets/rooms/js/grouping-view.js")).href;
 
 const { refs } = await loadEsm(repoPath("deploy/assets/rooms/js/main.js"), {
   rewrite: [
-    [/^import \{ getJSON, postJSON \} from "\/assets\/shared\/js\/http\.js";\n/m, ""],
+    [/^import \{ getJSON, postJSON, startPolling \} from "\/assets\/shared\/js\/http\.js";\n/m, `import { startPolling } from "${httpUrl}";\n`],
     [/^import \{ jtsConfirm \} from "\/assets\/shared\/js\/dialog\.js";\n/m, ""],
     [/^import \{ localWebHost \} from "\/assets\/shared\/js\/local-web-host\.js";\n/m, ""],
     [/"\/assets\/shared\/js\/dom\.js"/, `"${domUrl}"`],
@@ -72,14 +77,10 @@ const { refs } = await loadEsm(repoPath("deploy/assets/rooms/js/main.js"), {
     [/"\.\/grouping-view\.js"/, `"${groupingUrl}"`],
   ],
   prelude:
-    "const getJSON = async () => ({});\n" +
-    "const postJSON = async () => ({});\n" +
+    "const getJSON = globalThis.__getJSON;\n" +
+    "const postJSON = globalThis.__postJSON;\n" +
     "const jtsConfirm = async () => true;\n" +
     "const localWebHost = () => '';\n",
-  // buildPage() (and its refs const) runs at module top level, well before
-  // the self-scheduling poll() call at EOF — cut there so the module never
-  // touches the network.
-  truncateBefore: "\npoll();",
   exportNames: ["refs"],
 });
 
@@ -101,4 +102,29 @@ for (const href of hrefs) {
   );
 }
 
+function buttons(node) {
+  return [node, ...node.children.flatMap(buttons)].filter((el) => el.tagName === "button");
+}
+const dissolve = buttons(refs.bondCard.el).find((el) =>
+  el.children.some((child) => child.textContent === "Dissolve group"));
+assert.ok(dissolve);
+await dissolve.click();
+await dissolve.click();
+assert.deepEqual(posts, [["unbond", {}], ["unbond", {}]]);
+assert.equal([...timers.values()].filter((t) => t.ms === 1200).length, 2);
+const actions = fire(1200);
+assert.equal(gets, 1);
+assert.equal(pending.length, 1);
+pending.shift()({});
+await actions;
+await Promise.resolve();
+assert.deepEqual([...timers.values()].map((t) => t.ms), [7000]);
+const tick = fire(7000);
+await dissolve.click();
+const action = fire(1200);
+assert.equal(gets, 2);
+assert.equal(pending.length, 1);
+pending.shift()({});
+await Promise.all([tick, action]);
+assert.deepEqual([...timers.values()].map((t) => t.ms), [7000]);
 console.log(JSON.stringify({ ok: true }));

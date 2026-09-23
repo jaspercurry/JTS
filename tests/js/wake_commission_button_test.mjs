@@ -21,7 +21,10 @@ installFixedDocument([], {
   querySelectorAll: () => [],
 });
 
-globalThis.setTimeout = () => 0;
+let now = 1000;
+Date.now = () => now;
+const timers = [];
+globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
 
 let confirmAnswer = true;
 let confirmCalls = 0;
@@ -30,21 +33,26 @@ globalThis.__jtsConfirm = async () => {
   confirmCalls += 1;
   return confirmAnswer;
 };
-globalThis.__jtsAlert = async () => {};
-globalThis.__jsonHeaders = () => ({});
+const alerts = [];
+globalThis.__jtsAlert = async (message) => { alerts.push(message); };
+let getCalls = 0;
+globalThis.__getJSON = async (path) => {
+  assert.equal(path, "detection.json"); getCalls++; return {};
+};
+let response = () => ({});
 globalThis.__postJSON = async (path, body) => {
   posts.push({ path, body });
-  return {};
+  return response();
 };
 
-const { applyProfileStatus } = await loadEsm(
+const { applyProfileStatus, applyState, postProfile, postLayer, postUsbMic, pollDetection } = await loadEsm(
   repoPath("deploy/assets/wake/js/main.js"),
   {
     stripImports: true,
     guardNoImports: true,
-    prelude: aliasGlobals(["jtsConfirm", "jtsAlert", "jsonHeaders", "postJSON"]),
+    prelude: aliasGlobals(["jtsConfirm", "jtsAlert", "getJSON", "postJSON"]),
     truncateBefore: "\n// Model-picker form:",
-    exportNames: ["applyProfileStatus"],
+    exportNames: ["applyProfileStatus", "applyState", "postProfile", "postLayer", "postUsbMic", "pollDetection"],
   },
 );
 
@@ -105,3 +113,43 @@ await button.click();
 assert.equal(confirmCalls, 2);
 assert.equal(posts.length, 1);
 assert.equal(posts[0].path, "commission");
+
+const cases = [
+  ["profile", { profile: "direct_mic" }, () => postProfile("direct_mic"), "profile"],
+  ["layer/raw", { enabled: true }, () => postLayer("raw", true), "layer-raw"],
+  ["usb-mic", { enabled: true }, () => postUsbMic(true), "usb-mic-toggle"],
+  ["sensitivity", { value: 0.7 }, () => node("sensitivity-save").click(), "sensitivity-save"],
+];
+for (const [path, body, act, id] of cases) {
+  for (const fails of [false, true]) {
+    let resolve, reject;
+    response = () => new Promise((yes, no) => { resolve = yes; reject = no; });
+    node("sensitivity-input").value = "0.70";
+    node("sensitivity-save").classList.add("is-dirty");
+    node(id).checked = true;
+    const alertCount = alerts.length;
+    const task = act();
+    assert.deepEqual(posts.at(-1), { path, body });
+    if (path === "usb-mic" || path === "sensitivity") assert.equal(node(id).disabled, true);
+    if (path === "profile" || path === "layer/raw") {
+      const before = getCalls;
+      await pollDetection();
+      assert.equal(getCalls, before);
+    }
+    applyState({});
+    if (path === "layer/raw" || path === "usb-mic") assert.equal(node(id).checked, true);
+    if (fails) reject(new Error("test failure"));
+    else resolve({ mic_settings: { fusion: { toggles: [{ id: "raw", checked: true, enabled: true }] } },
+      usb_mic: { enabled: true, toggle_enabled: true } });
+    await task;
+    assert.equal(alerts.length, alertCount + Number(fails));
+    if (path === "layer/raw" || path === "usb-mic") assert.equal(node(id).checked, !fails);
+    if (path === "sensitivity") assert.equal(node(id).classList.contains("is-dirty"), fails);
+  }
+}
+now += 3000;
+await pollDetection();
+assert.equal(getCalls, 1);
+assert.ok(timers.some(({ ms }) => ms === 250));
+assert.ok(timers.some(({ ms }) => ms === 500));
+console.log(JSON.stringify({ ok: true, requests: cases.length * 2 }));

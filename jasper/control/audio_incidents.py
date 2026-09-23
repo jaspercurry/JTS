@@ -21,7 +21,7 @@ from typing import Any
 
 from ..atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from ..log_event import log_event
-from ._health_fields import _duration_label, _finite_number, _mapping
+from ._health_fields import _duration_label, _finite_number, mapping
 from .audio_attribution import ATTRIBUTION_VERDICTS
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ _ATTRIBUTION_FIELD_MAX_LEN = 160
 def _clean_attribution(raw: Any) -> dict[str, Any] | None:
     """Bounded, allowlisted like the rest of the freeze frame: an unknown
     or corrupt verdict token is dropped rather than rendered."""
-    attribution = _mapping(raw)
+    attribution = mapping(raw)
     verdict = attribution.get("verdict")
     if verdict not in ATTRIBUTION_VERDICTS:
         return None
@@ -66,7 +66,7 @@ def _clean_attribution(raw: Any) -> dict[str, Any] | None:
     details: list[dict[str, str]] = []
     if isinstance(details_raw, list):
         for row in details_raw[:_ATTRIBUTION_MAX_DETAILS]:
-            row = _mapping(row)
+            row = mapping(row)
             label, value = row.get("label"), row.get("value")
             if isinstance(label, str) and isinstance(value, str):
                 details.append({
@@ -78,16 +78,16 @@ def _clean_attribution(raw: Any) -> dict[str, Any] | None:
 
 def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     """Keep only the start evidence the dashboard actually renders."""
-    context = _mapping(raw)
+    context = mapping(raw)
     out: dict[str, Any] = {}
     clock_mode = context.get("clock_mode")
     if isinstance(clock_mode, str):
         out["clock_mode"] = clock_mode[:160]
-    rms = _finite_number(_mapping(context.get("input")).get("rms_dbfs"))
+    rms = _finite_number(mapping(context.get("input")).get("rms_dbfs"))
     if rms is not None:
         out["input"] = {"rms_dbfs": rms}
     delay = _finite_number(
-        _mapping(context.get("output")).get("snd_pcm_delay_ms"),
+        mapping(context.get("output")).get("snd_pcm_delay_ms"),
     )
     if delay is not None:
         out["output"] = {"snd_pcm_delay_ms": delay}
@@ -97,7 +97,7 @@ def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     host = {
         field: value
         for field, value in (
-            (name, _finite_number(_mapping(context.get("host")).get(name)))
+            (name, _finite_number(mapping(context.get("host")).get(name)))
             for name in ("throttled_now", "throttled_history", "mem_psi_some_avg60")
         )
         if value is not None
@@ -114,7 +114,7 @@ def _started_context(raw: Any) -> dict[str, Any]:
 
 def _clean_incident(raw: Any) -> dict[str, Any] | None:
     """Validate the on-disk shape without coercing corrupt field types."""
-    record = _mapping(raw)
+    record = mapping(raw)
     key = record.get("key")
     status = record.get("status")
     if (
@@ -141,7 +141,7 @@ def _clean_incident(raw: Any) -> dict[str, Any] | None:
     if isinstance(count, int) and not isinstance(count, bool) and count >= 1:
         out["count"] = count
     started = _clean_freeze_frame(
-        _mapping(record.get("context")).get("started"),
+        mapping(record.get("context")).get("started"),
     )
     if started:
         out["context"] = {"started": started}

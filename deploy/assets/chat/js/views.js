@@ -2,15 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// views.js — build-once / update-on-fetch rendering for /assistant/chat/.
-//
-// The conversation store treats transcript text and data_json as untrusted.
-// This module never uses innerHTML; all visible content is built with text
-// nodes through dom.js.
-
 import { h } from "/assets/shared/js/dom.js";
 import { appHeader } from "/assets/shared/js/chrome.js";
-import { actionButton, livePill, titledCard } from "./components.js";
+import { actionButton, livePill, titledCard } from "/assets/shared/js/ui.js";
 
 const NO_USER_TRANSCRIPT = "No user transcript captured for this turn.";
 const NO_ASSISTANT_TRANSCRIPT = "No transcript for this turn.";

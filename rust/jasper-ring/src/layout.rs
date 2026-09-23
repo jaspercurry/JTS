@@ -93,13 +93,9 @@ pub const RING_SLOTS: u32 = 2;
 pub const MIN_N_SLOTS: u32 = 2;
 pub const MAX_N_SLOTS: u32 = 16;
 
-/// Ceiling on `channels`. 8 is the widest registered DAC channel count
-/// (HiFiBerry DAC8x) and matches the `2..=8` bound outputd applies to
-/// `JASPER_OUTPUTD_ACTIVE_CHANNELS`, so the layout accept-set IS the product
-/// envelope rather than a looser superset of it. The floor is 2 — a literal in
-/// [`Geometry::validate_self`], not a constant, because excluding mono is a
-/// product policy rather than a property of the layout (the header could carry
-/// `channels = 1` perfectly well; nothing in JTS produces one).
+/// Mono is representable, but no JTS source or sink produces it.
+pub const MIN_RING_CHANNELS: u32 = 2;
+/// The widest registered DAC (HiFiBerry DAC8x) has eight channels.
 pub const MAX_RING_CHANNELS: u32 = 8;
 
 /// Ceiling on one slot's payload bytes
@@ -207,7 +203,7 @@ impl Geometry {
 
     /// Validate the geometry the caller wants BEFORE touching the filesystem.
     ///
-    /// The accept-set is S16LE or S32LE, 2..=[`MAX_RING_CHANNELS`] channels,
+    /// The accept-set is S16LE or S32LE, [`MIN_RING_CHANNELS`]..=[`MAX_RING_CHANNELS`] channels,
     /// [`RATE_HZ`], a non-zero `period_frames`, an `n_slots` in
     /// [`MIN_N_SLOTS`]..=[`MAX_N_SLOTS`], and a slot no larger than
     /// [`MAX_SLOT_BYTES`]. Anything outside it returns an
@@ -223,12 +219,9 @@ impl Geometry {
                 self.sample_format
             )));
         }
-        // The floor is a literal 2: mono is excluded by product policy (no JTS
-        // source or sink produces a one-channel ring), not by the layout — see
-        // MAX_RING_CHANNELS.
-        if !(2..=MAX_RING_CHANNELS).contains(&self.channels) {
+        if !(MIN_RING_CHANNELS..=MAX_RING_CHANNELS).contains(&self.channels) {
             return Err(cfg_err(format!(
-                "ring channels {} out of range 2..={MAX_RING_CHANNELS}",
+                "ring channels {} out of range {MIN_RING_CHANNELS}..={MAX_RING_CHANNELS}",
                 self.channels
             )));
         }
@@ -299,6 +292,7 @@ pub fn layout_json() -> String {
         ("sample_format_s32le", SAMPLE_FORMAT_S32LE as u64),
         ("min_n_slots", MIN_N_SLOTS as u64),
         ("max_n_slots", MAX_N_SLOTS as u64),
+        ("min_ring_channels", MIN_RING_CHANNELS as u64),
         ("max_ring_channels", MAX_RING_CHANNELS as u64),
         ("max_slot_bytes", MAX_SLOT_BYTES as u64),
         ("rate_hz", RATE_HZ as u64),

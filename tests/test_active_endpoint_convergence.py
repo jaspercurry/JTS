@@ -64,7 +64,7 @@ class _Box:
         )
         monkeypatch.setattr(
             converge,
-            "_start_audio_hardware_reconcile",
+            "start_audio_hardware_reconcile",
             lambda **k: (self.kicks.append("kick"), (True, ""))[1],
         )
         monkeypatch.setattr(

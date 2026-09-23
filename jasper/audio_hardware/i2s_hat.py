@@ -20,10 +20,10 @@ from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
 
 from .config_txt import (
-    _OVERLAY_LINE_RE,
-    _collapse_empty_all_sections,
-    _global_or_all_lines,
-    _overlay_values,
+    OVERLAY_LINE_RE,
+    collapse_empty_all_sections,
+    global_or_all_lines,
+    overlay_values,
 )
 from .dac import (
     DacProfile,
@@ -68,7 +68,7 @@ def configured_i2s_overlays(
     *,
     profiles: tuple[DacProfile, ...] | None = None,
 ) -> tuple[str, ...]:
-    overlays = _overlay_values(_global_or_all_lines(content))
+    overlays = overlay_values(global_or_all_lines(content))
     candidates = profiles if profiles is not None else all_profiles()
     registered = {
         profile.dtoverlay.lower()
@@ -240,7 +240,7 @@ def _without_managed_i2s_hat(content: str) -> tuple[str, str | None]:
             continue
         if in_managed_block:
             if stripped and not stripped.startswith("#"):
-                match = _OVERLAY_LINE_RE.match(line)
+                match = OVERLAY_LINE_RE.match(line)
                 if (
                     match is None
                     or "," in line.split("#", 1)[0]
@@ -252,7 +252,7 @@ def _without_managed_i2s_hat(content: str) -> tuple[str, str | None]:
         output.append(line)
     if in_managed_block:
         raise ValueError("JTS I2S audio-HAT block is missing its end marker")
-    return _collapse_empty_all_sections("".join(output)), block_overlay
+    return collapse_empty_all_sections("".join(output)), block_overlay
 
 
 def render_i2s_hat_boot_config(

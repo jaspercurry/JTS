@@ -26,7 +26,7 @@ UsbDataRole = Literal["host", "peripheral", "unknown"]
 MANAGED_BLOCK_BEGIN = "# BEGIN JTS USB DATA ROLE"
 MANAGED_BLOCK_END = "# END JTS USB DATA ROLE"
 
-_OVERLAY_LINE_RE = re.compile(
+OVERLAY_LINE_RE = re.compile(
     r"^\s*dtoverlay\s*=\s*([^,\s#]+)",
     re.IGNORECASE,
 )
@@ -38,7 +38,7 @@ _ROLE_LINE_RE = re.compile(
 _LEGACY_COMMENT_START = "# JTS install — required for the composite USB gadget"
 
 
-def _global_or_all_lines(content: str) -> tuple[str, ...]:
+def global_or_all_lines(content: str) -> tuple[str, ...]:
     """Return directives that apply globally or under the final ``[all]``.
 
     JTS owns its role and registered DAC overlays in that portable scope.  A
@@ -58,13 +58,13 @@ def _global_or_all_lines(content: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _overlay_values(lines: Iterable[str]) -> set[str]:
+def overlay_values(lines: Iterable[str]) -> set[str]:
     overlays: set[str] = set()
     for line in lines:
         stripped = line.lstrip()
         if not stripped or stripped.startswith("#"):
             continue
-        match = _OVERLAY_LINE_RE.match(line)
+        match = OVERLAY_LINE_RE.match(line)
         if match:
             overlays.add(match.group(1).lower())
     return overlays
@@ -78,7 +78,7 @@ def overlay_declared_anywhere(content: str, overlay: str) -> bool:
     ``[pi5]``) must not false-FAIL a check whose only job is catching the
     line vanishing from the file entirely (#2575).
     """
-    return overlay.lower() in _overlay_values(content.splitlines())
+    return overlay.lower() in overlay_values(content.splitlines())
 
 
 def boot_config_path() -> Path:
@@ -103,7 +103,7 @@ def read_boot_config_or_none(path: str | Path | None = None) -> str | None:
         return None
 
 
-def _collapse_empty_all_sections(content: str) -> str:
+def collapse_empty_all_sections(content: str) -> str:
     """Collapse adjacent bare ``[all]`` headers separated only by blank lines.
 
     ``render_boot_config`` and ``render_i2s_hat_boot_config`` each append a
@@ -137,7 +137,7 @@ def _collapse_empty_all_sections(content: str) -> str:
 
 def configured_usb_role(content: str) -> UsbDataRole:
     role: UsbDataRole = "unknown"
-    for line in _global_or_all_lines(content):
+    for line in global_or_all_lines(content):
         match = _ROLE_LINE_RE.match(line)
         if match:
             role = match.group(1).lower()  # type: ignore[assignment]
@@ -239,7 +239,7 @@ def _without_managed_role_lines(content: str) -> str:
         output.append(line)
     if in_managed_block:
         raise ValueError("JTS USB data-role block is missing its end marker")
-    return _collapse_empty_all_sections("".join(output))
+    return collapse_empty_all_sections("".join(output))
 
 
 def render_boot_config(content: str, desired_role: UsbDataRole) -> str:

@@ -6,7 +6,7 @@
 
 The capture geometry and reference endpoint the snapshot republishes belong
 to the bridge, so they arrive as a `StatsIdentity`, and each emitter carries
-the `_BridgeStats` it counts into rather than reaching for a module global.
+the `BridgeStats` it counts into rather than reaching for a module global.
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ RMS_WINDOW_HISTORY = 6
 
 
 def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
-    """Read the snapshot `_BridgeStats.write_snapshot` last wrote."""
+    """Read the snapshot `BridgeStats.write_snapshot` last wrote."""
     stats_path = path
     if stats_path is None:
         raw = os.environ.get(BRIDGE_STATS_PATH_ENV, "").strip()
@@ -95,7 +95,7 @@ def _zero_leg_counters(
     return counters
 
 
-class _BridgeStats:
+class BridgeStats:
     """Low-cost monotonic counters for capture provenance.
 
     The wake-corpus recorder snapshots this JSON file at clip start/stop and
@@ -410,7 +410,7 @@ class DropLogDebouncer:
 
 def _send_packet(
     *,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     sock: socket.socket,
     dest: tuple[str, int],
     packet: bytes,
@@ -428,7 +428,7 @@ def _send_packet(
 
 def emit_packet(
     *,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     sock: socket.socket,
     dest: tuple[str, int],
     batch: bytearray,
@@ -455,7 +455,7 @@ class LegEmitter:
     dest: tuple[str, int]
     batch: bytearray
     stats_key: str
-    stats: _BridgeStats
+    stats: BridgeStats
     frame_samples: int = OUT_FRAME_SAMPLES
 
     def emit(self, pcm: bytes) -> None:
@@ -511,7 +511,7 @@ class TimestampedLegEmitter(LegEmitter):
 
 def add_loop_emitter(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     host: str,
     leg: str,
     port: int,

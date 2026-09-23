@@ -129,7 +129,7 @@ from jasper.aec.bridge_telemetry import (
     RMS_LOG_INTERVAL_SEC,
     StatsIdentity,
     TimestampedLegEmitter,
-    _BridgeStats,
+    BridgeStats,
     add_loop_emitter,
     logger,
 )
@@ -153,7 +153,7 @@ _STATS_IDENTITY = StatsIdentity(
     reference_source=REF_SOURCE,
     reference_endpoint=f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}",
 )
-_bridge_stats = _BridgeStats(_STATS_IDENTITY)
+_bridge_stats = BridgeStats(_STATS_IDENTITY)
 
 
 def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:

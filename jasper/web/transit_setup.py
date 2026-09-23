@@ -216,30 +216,16 @@ def _validate_google_routes_key(key: str) -> str | None:
 def _apply_geocode(
     form: dict[str, str], current: dict[str, str],
 ) -> tuple[dict[str, str], str | None]:
-    """Geocode the submitted address and return updated state.
-
-    Empty input means "use the manual lat/lon fields instead" — the
-    Advanced section ships those, and they bypass Nominatim entirely
-    (privacy-maximalist path)."""
     address = (form.get("address") or "").strip()
-    manual_lat = (form.get("manual_lat") or "").strip()
-    manual_lon = (form.get("manual_lon") or "").strip()
-
+    try:
+        loc = location_state.parse_manual_coordinates(
+            form.get("manual_lat") or "", form.get("manual_lon") or "",
+        )
+    except location_state.CoordinateError as exc:
+        return current, str(exc)
     new = dict(current)
-
-    if manual_lat or manual_lon:
-        if not (manual_lat and manual_lon):
-            return current, "Enter both latitude and longitude, or use the address field above."
-        try:
-            lat = geocode_mod.round_coord(float(manual_lat))
-            lon = geocode_mod.round_coord(float(manual_lon))
-        except ValueError:
-            return current, "Latitude and longitude must be numbers."
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            return current, "Latitude must be -90..90 and longitude -180..180."
-        new[LAT_ENV] = f"{lat:.3f}"
-        new[LON_ENV] = f"{lon:.3f}"
-        new[DISPLAY_NAME_ENV] = f"Manual: {lat:.3f}, {lon:.3f}"
+    if loc is not None:
+        new.update(location_state.transit_env_for_location(loc))
         return new, None
 
     if not address:
@@ -248,8 +234,8 @@ def _apply_geocode(
         result = geocode_mod.geocode(address)
     except geocode_mod.GeocodeError as e:
         return current, f"Couldn't geocode that — {e}"
-    new[LAT_ENV] = f"{geocode_mod.round_coord(result.lat):.3f}"
-    new[LON_ENV] = f"{geocode_mod.round_coord(result.lon):.3f}"
+    new[LAT_ENV] = f"{location_state.round_coord(result.lat):.3f}"
+    new[LON_ENV] = f"{location_state.round_coord(result.lon):.3f}"
     new[DISPLAY_NAME_ENV] = result.display_name
     return new, None
 

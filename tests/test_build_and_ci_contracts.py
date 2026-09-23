@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -43,18 +41,6 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) ->
         stderr=subprocess.PIPE,
     )
     return result.stdout
-
-
-def _init_git_repo(repo: Path) -> None:
-    _run(["git", "init"], cwd=repo)
-    _run(["git", "config", "user.email", "tests@example.invalid"], cwd=repo)
-    _run(["git", "config", "user.name", "JTS Tests"], cwd=repo)
-    _run(["git", "config", "commit.gpgsign", "false"], cwd=repo)
-
-
-def _commit_all(repo: Path, message: str) -> None:
-    _run(["git", "add", "-A"], cwd=repo)
-    _run(["git", "commit", "-m", message], cwd=repo)
 
 
 def _dependabot() -> dict:
@@ -379,7 +365,6 @@ def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
         "scripts/test-fast",
         "scripts/test-merge",
         "scripts/check-rust.sh",
-        "scripts/rust-ci-needed",
     ):
         path = ROOT / relpath
         assert path.is_file(), f"{relpath} must exist"
@@ -425,87 +410,6 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
     )
     assert "tests/test_e0_capture_experiment.py" in selected
     assert "tests/test_usb_turntable_experiment.py" not in selected
-
-
-def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:
-    """Keep the visible `rust` job while avoiding unrelated apt/Cargo work."""
-
-    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
-    rust_router = (ROOT / "scripts" / "rust-ci-needed").read_text(encoding="utf-8")
-
-    assert "  rust:" in workflow
-    assert "run: scripts/rust-ci-needed" in workflow
-    assert "run: scripts/check-rust.sh" in workflow
-    assert "steps.rust-needed.outputs.run == 'true'" in workflow
-    assert "steps.rust-needed.outputs.run != 'true'" in workflow
-    for surface in (
-        "rust/*",
-        "deploy/install.sh",
-        ".github/workflows/tests.yml",
-        "scripts/check-rust.sh",
-    ):
-        assert surface in rust_router
-
-
-def _router_decision_for_changed_path(tmp_path: Path, changed_path: str) -> dict[str, str]:
-    repo = tmp_path / changed_path.replace("/", "_").replace(".", "_")
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    shutil.copy2(ROOT / "scripts" / "rust-ci-needed", repo / "scripts" / "rust-ci-needed")
-    _commit_all(repo, "base")
-
-    path = repo / changed_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("changed\n", encoding="utf-8")
-    _commit_all(repo, f"change {changed_path}")
-
-    stdout = _run(
-        ["scripts/rust-ci-needed"],
-        cwd=repo,
-        env={
-            **os.environ,
-            "GITHUB_EVENT_NAME": "pull_request",
-            "GITHUB_BASE_REF": "main",
-        },
-    )
-    return dict(line.split("=", 1) for line in stdout.strip().splitlines())
-
-
-def test_rust_ci_router_behavior_for_pull_request_paths(tmp_path: Path) -> None:
-    """Exercise the path-aware Cargo skip decision, not just workflow strings."""
-
-    assert _router_decision_for_changed_path(tmp_path, "docs/noop.md")["run"] == "false"
-    for changed_path in (
-        "rust/jasper-outputd/src/main.rs",
-        "deploy/install.sh",
-        ".github/workflows/tests.yml",
-        "scripts/check-rust.sh",
-    ):
-        decision = _router_decision_for_changed_path(tmp_path, changed_path)
-        assert decision["run"] == "true", decision
-        assert decision["reason"] == f"PR touches {changed_path}"
-
-
-def test_rust_ci_router_runs_full_gate_for_non_pr_events(tmp_path: Path) -> None:
-    """Main pushes must keep running the full Rust gate."""
-
-    repo = tmp_path / "non-pr"
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    shutil.copy2(ROOT / "scripts" / "rust-ci-needed", repo / "scripts" / "rust-ci-needed")
-
-    env = {**os.environ, "GITHUB_EVENT_NAME": ""}
-    env.pop("GITHUB_BASE_REF", None)
-    env.pop("GITHUB_OUTPUT", None)
-
-    stdout = _run(["scripts/rust-ci-needed"], cwd=repo, env=env)
-
-    assert dict(line.split("=", 1) for line in stdout.strip().splitlines()) == {
-        "run": "true",
-        "reason": "non-PR event runs the full Rust gate",
-    }
 
 
 def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:

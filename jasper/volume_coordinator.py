@@ -56,7 +56,6 @@ from .music_sources import (
     VolumeMode,
     volume_mode,
 )
-from . import volume_diagnostics
 from . import volume_push_sources
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_echo import (
@@ -69,7 +68,7 @@ from .volume_scales import native_to_listening_level
 from .volume_curve import percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 from .volume_handoff import VolumeHandoff, main_mute_for_level
-from .volume_state import VolumeState, _OutboundStamp
+from .volume_state import VolumeState, OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -179,7 +178,7 @@ class VolumeCoordinator:
         self._mute_token: str | None = None
         self._confirmed_push_mute_tokens: dict[Source, str] = {}
         # Echo-prevention timestamps, per source.
-        self._last_outbound: dict[Source, _OutboundStamp] = {}
+        self._last_outbound: dict[Source, OutboundStamp] = {}
         # One lock for all level mutations — coordinator is async-
         # single-threaded but multiple consumers (voice tool, remote
         # via UDS, observer) can race.
@@ -932,10 +931,8 @@ class VolumeCoordinator:
                     )
                 else:
                     await self._handoff.guard_camilla_after_push_failure(
-                        source,
                         level,
                         context="dispatch_spotify_degraded",
-                        reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
                         warning_prefix="spotify volume dispatch failed",
                         guarded_warning_suffix=(
                             "; camilla guarded at {guard_db:.1f} dB for "
@@ -952,10 +949,8 @@ class VolumeCoordinator:
                     )
                 else:
                     await self._handoff.guard_camilla_after_push_failure(
-                        source,
                         level,
                         context="dispatch_bluetooth_degraded",
-                        reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
                         warning_prefix="bluetooth volume dispatch failed",
                         guarded_warning_suffix=(
                             "; camilla guarded at {guard_db:.1f} dB for "
@@ -1067,12 +1062,8 @@ class VolumeCoordinator:
                     )
                 else:
                     await self._handoff.guard_camilla_after_push_failure(
-                        current_source,
                         level,
                         context="active_source_transition_push_degraded",
-                        reason=(
-                            volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED
-                        ),
                         warning_prefix=(
                             f"active source: {prev_source.value} → "
                             f"{current_source.value}; source volume push failed"
@@ -1115,12 +1106,8 @@ class VolumeCoordinator:
                     )
                 else:
                     await self._handoff.guard_camilla_after_push_failure(
-                        current_source,
                         level,
                         context="active_source_transition_push_push_degraded",
-                        reason=(
-                            volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED
-                        ),
                         warning_prefix=(
                             f"active source: {prev_source.value} → "
                             f"{current_source.value} (push→push); source "

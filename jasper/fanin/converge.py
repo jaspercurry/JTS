@@ -24,7 +24,7 @@ import logging
 from jasper.active_speaker.environment import camilla_statefile_path
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.fanin import ring_readiness as rr
-from jasper.fanin.coupling_reconcile import _start_audio_hardware_reconcile
+from jasper.fanin.coupling_reconcile import start_audio_hardware_reconcile
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
@@ -148,7 +148,7 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
         return _emit(
             "reemit_refused", reason=reason, detail=detail, level=logging.WARNING
         )
-    kick_ok, kick_detail = _start_audio_hardware_reconcile(reason=reason)
+    kick_ok, kick_detail = start_audio_hardware_reconcile(reason=reason)
     return _emit(
         "graph_reemitted",
         reason=reason,

@@ -71,7 +71,7 @@ class _FakeHost:
         elif unit == "jasper-usbgadget.service" and verb == "stop":
             self.usb_audio = False
             self.active[unit] = False
-        elif unit == units._USB_COUPLING_UNIT:
+        elif unit == units.USB_COUPLING_UNIT:
             self.usb_direct = bool(
                 self.enabled.get("jasper-usbsink.service", False) and self.allowed
             )
@@ -329,7 +329,7 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
         "start",
     ) == (0, "")
     assert reconcile._run_unit_action(
-        units._USB_COUPLING_UNIT,
+        units.USB_COUPLING_UNIT,
         "start",
     ) == (0, "")
     assert reconcile._run_systemctl("librespot.service", True) == (0, "")
@@ -339,15 +339,15 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
         (["systemctl", "start", "librespot.service"], 3.0),
         (
             ["systemctl", "start", "shairport-sync.service"],
-            units._unit_action_timeout_sec("shairport-sync.service", "start"),
+            units.unit_action_timeout_sec("shairport-sync.service", "start"),
         ),
         (
             ["systemctl", "start", "jasper-usbsink.service"],
-            units._unit_action_timeout_sec("jasper-usbsink.service", "start"),
+            units.unit_action_timeout_sec("jasper-usbsink.service", "start"),
         ),
         (
             ["systemctl", "restart", "jasper-usbgadget.service"],
-            units._unit_action_timeout_sec("jasper-usbgadget.service", "restart"),
+            units.unit_action_timeout_sec("jasper-usbgadget.service", "restart"),
         ),
         (["systemctl", "stop", "bt-agent.service"], 11.0),
         (
@@ -355,8 +355,8 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
             65.0,
         ),
         (
-            ["systemctl", "start", units._USB_COUPLING_UNIT],
-            units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units._USB_COUPLING_UNIT],
+            ["systemctl", "start", units.USB_COUPLING_UNIT],
+            units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units.USB_COUPLING_UNIT],
         ),
         (
             ["systemctl", "enable", "--no-reload", "librespot.service"],
@@ -446,7 +446,7 @@ def test_production_reconcile_publishes_atomic_per_source_outcomes(tmp_path):
 
     payload = json.loads(status_path.read_text(encoding="utf-8"))
     assert payload["completed_monotonic_ns"] > 0
-    assert payload["intent_fingerprint"] == source_intent._intent_fingerprint("")
+    assert payload["intent_fingerprint"] == source_intent.intent_fingerprint("")
     assert set(payload["sources"]) == {
         source.value for source in source_intent.source_intent_sources()
     }
@@ -467,7 +467,7 @@ def test_production_reconcile_publishes_atomic_per_source_outcomes(tmp_path):
 
 def test_direct_reconcile_is_status_io_free_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        source_intent,
+        reconcile,
         "_default_write_status",
         lambda *_args, **_kwargs: pytest.fail("unexpected production status write"),
     )
@@ -490,7 +490,7 @@ def test_reconcile_is_idempotent_after_convergence(tmp_path):
     # USB Off still invokes its canonical owner so stale persisted fanin.env is
     # repaired even when the live daemon is absent; the owner itself is
     # idempotent and performs no restart when its files already match.
-    assert host.calls == [("start", units._USB_COUPLING_UNIT)]
+    assert host.calls == [("start", units.USB_COUPLING_UNIT)]
 
 
 def test_reconcile_rejects_unknown_prefixed_key_but_applies_valid_sources(
@@ -788,7 +788,7 @@ def test_usb_enable_arms_direct_lane_before_advertising_audio(tmp_path):
     ]
     assert usb_calls == [
         ("enable", "jasper-usbsink.service"),
-        ("start", units._USB_COUPLING_UNIT),
+        ("start", units.USB_COUPLING_UNIT),
         ("restart", "jasper-usbgadget.service"),
         ("start", "jasper-usbsink.service"),
     ]
@@ -806,7 +806,7 @@ def test_a_failed_usb_on_leaves_the_transport_composed(tmp_path):
     unavailable DSP self-heal failed this transition and usb0 vanished from a
     box that was playing fine.
     """
-    host = _FakeHost(fail={("start", units._USB_COUPLING_UNIT)})
+    host = _FakeHost(fail={("start", units.USB_COUPLING_UNIT)})
     env = _write(tmp_path, f"{_key(Source.USBSINK)}=enabled\n")
 
     # The transition still reports failure — this is about what it does NOT do.
@@ -852,7 +852,7 @@ def test_usb_desired_on_parks_and_restores_through_one_source_owner(tmp_path):
         )
     ]
     assert usb_calls == [
-        ("start", units._USB_COUPLING_UNIT),
+        ("start", units.USB_COUPLING_UNIT),
         ("restart", "jasper-usbgadget.service"),
         ("start", "jasper-usbsink.service"),
     ]
@@ -879,7 +879,7 @@ def test_usb_enable_withdraws_stale_uac2_before_arming_direct_lane(tmp_path):
     assert usb_calls == [
         ("enable", "jasper-usbsink.service"),
         ("restart", "jasper-usbgadget.service"),
-        ("start", units._USB_COUPLING_UNIT),
+        ("start", units.USB_COUPLING_UNIT),
         ("restart", "jasper-usbgadget.service"),
         ("start", "jasper-usbsink.service"),
     ]
@@ -909,7 +909,7 @@ def test_usb_disable_stops_then_recomposes_without_dropping_network(tmp_path):
         ("disable", "jasper-usbsink.service"),
         ("stop", "jasper-usbsink.service"),
         ("restart", "jasper-usbgadget.service"),
-        ("start", units._USB_COUPLING_UNIT),
+        ("start", units.USB_COUPLING_UNIT),
     ]
     assert ("stop", "jasper-usbgadget.service") not in host.calls
     assert host.usb_audio is False
@@ -1073,7 +1073,7 @@ def test_usb_disable_recompose_failure_stops_gadget_before_disarming(tmp_path):
     assert host.usb_direct is False
     restart = host.calls.index(("restart", "jasper-usbgadget.service"))
     stop = host.calls.index(("stop", "jasper-usbgadget.service"))
-    disarm = host.calls.index(("start", units._USB_COUPLING_UNIT))
+    disarm = host.calls.index(("start", units.USB_COUPLING_UNIT))
     assert restart < stop < disarm
 
 
@@ -1106,7 +1106,7 @@ def test_usb_off_or_park_keeps_direct_armed_if_uac2_cannot_be_withdrawn(
 
     assert host.usb_audio is True
     assert host.usb_direct is True
-    assert ("start", units._USB_COUPLING_UNIT) not in host.calls
+    assert ("start", units.USB_COUPLING_UNIT) not in host.calls
 
 
 def test_converged_usb_off_still_repairs_persisted_coupling_state(tmp_path):
@@ -1121,7 +1121,7 @@ def test_converged_usb_off_still_repairs_persisted_coupling_state(tmp_path):
     assert reconcile.reconcile(env_path=env, ops=host.ops()) == 0
     assert all("usbgadget" not in str(call) for call in host.calls)
     assert host.usb_direct is False
-    assert host.calls.count(("start", units._USB_COUPLING_UNIT)) == 1
+    assert host.calls.count(("start", units.USB_COUPLING_UNIT)) == 1
 
 
 def test_bluetooth_enable_clears_soft_block_before_power_and_dependents(tmp_path):

@@ -81,7 +81,7 @@ def _idle_exit_journal(monkeypatch, *, journal, active="active"):
             raise journal
         return journal
 
-    monkeypatch.setattr(correction, "_run", fake_run)
+    monkeypatch.setattr(correction, "run", fake_run)
 
 
 def _journal(stdout="", *, returncode=0, stderr=""):

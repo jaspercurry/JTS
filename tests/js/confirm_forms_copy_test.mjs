@@ -2,15 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Pins the two shared widgets extracted from four/three per-page copies
-// (issue #4031): confirm-forms.js submits a form[data-confirm] only after
-// jtsConfirm resolves true, and busies the submit button first; copy.js
-// swaps a copy button's own label to "Copied" on a successful clipboard
-// write. jtsConfirm and the clipboard are stubbed — this pins the modules'
-// own wiring, not the shared <dialog> or the browser clipboard.
-//
-//   node tests/js/confirm_forms_copy_test.mjs
 import assert from "node:assert/strict";
+import { element } from "./_dom.mjs";
 import { loadEsm, repoPath } from "./_loader.mjs";
 
 // ---- confirm-forms.js ------------------------------------------------------
@@ -79,7 +72,7 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
 });
 
-const { wireCopyButtons } = await loadEsm(repoPath("deploy/assets/shared/js/copy.js"));
+const { copyText, wireCopyButtons } = await loadEsm(repoPath("deploy/assets/shared/js/copy.js"));
 
 {
   const listeners = [];
@@ -94,4 +87,68 @@ const { wireCopyButtons } = await loadEsm(repoPath("deploy/assets/shared/js/copy
   assert.equal(btn.textContent, "Copied", "successful copy must swap the button label");
 }
 
+const attached = new Set();
+const writes = [];
+let command, selectionFails = false;
+Object.assign(document, {
+  body: { appendChild: (el) => attached.add(el) },
+  createElement: (tag) => {
+    assert.equal(tag, "textarea");
+    return { style: {}, setAttribute() {},
+      select() { if (selectionFails) throw new Error("selection unavailable"); },
+      remove() { attached.delete(this); },
+    };
+  },
+  execCommand: (name) => {
+    assert.equal(name, "copy");
+    if (command === "throw") throw new Error("copy unavailable");
+    return command;
+  },
+});
+for (const clipboard of [undefined, { writeText: async () => { throw new Error("denied"); } }]) {
+  navigator.clipboard = clipboard;
+  for (const value of [sourceInput, "dummy credential"]) {
+    for (command of [true, false, "throw"]) {
+      assert.equal(await copyText(value), command === true);
+      assert.equal(attached.size, 0);
+    }
+  }
+}
+selectionFails = true;
+assert.equal(await copyText("dummy credential"), false);
+assert.equal(attached.size, 0);
+navigator.clipboard = { writeText: async (text) => { writes.push(text); } };
+assert.equal(await copyText("dummy credential"), true);
+assert.deepEqual(writes, ["dummy credential"]);
+assert.equal(attached.size, 0);
+
+const nodes = new Map(["copy-voice-prompt-btn", "copy-voice-prompt-creds-btn", "copy-voice-prompt-feedback"]
+  .map((id) => [id, element(id)]));
+document.getElementById = (id) => nodes.get(id);
+let confirmed = false, fetched = 0;
+globalThis.__copyText = copyText;
+globalThis.__jtsConfirm = async () => confirmed;
+globalThis.fetch = async () => {
+  fetched++;
+  return { ok: true, json: async () => ({ url: "http://dummy.local", token: "dummy-token" }) };
+};
+const ha = await loadEsm(repoPath("deploy/assets/home-assistant/js/main.js"), {
+  stripImports: true, guardNoImports: true,
+  prelude: "const copyText = globalThis.__copyText; const jtsConfirm = globalThis.__jtsConfirm; const csrfHeaders = () => ({});",
+  truncateBefore: "\nwireDiscover();", exportNames: ["wireCopyButtons"],
+});
+ha.wireCopyButtons("{HA_URL_PLACEHOLDER} {HA_TOKEN_PLACEHOLDER}");
+writes.length = 0;
+await nodes.get("copy-voice-prompt-creds-btn").click();
+assert.equal(fetched, 0);
+assert.deepEqual(writes, []);
+await nodes.get("copy-voice-prompt-btn").click();
+assert.equal(fetched, 0);
+assert.match(writes[0], /<your HA URL/);
+assert.match(writes[0], /<paste a long-lived access token/);
+confirmed = true;
+await nodes.get("copy-voice-prompt-creds-btn").click();
+assert.equal(fetched, 1);
+assert.equal(writes[1], "http://dummy.local dummy-token");
+assert.equal(nodes.get("copy-voice-prompt-feedback").classList.contains("ha-ok"), true);
 console.log(JSON.stringify({ ok: true }));

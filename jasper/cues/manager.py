@@ -97,29 +97,17 @@ def _preview(text: str, limit: int = 40) -> str:
     return repr(text if len(text) <= limit else text[:limit] + "…")
 
 
-# Fallback wait for legacy/fake playout objects that predate
-# TtsPlayout.wait_drained(). Real TtsPlayout implementations expose a
-# sample-counted drain deadline, which is the source of truth for both
-# the old sounddevice path and the outputd path.
-_PLAY_DRAIN_BUFFER_SEC = 0.2
-
-
-async def wait_tts_drained_owned(tts: Any, *, fallback_sec: float = 0.0) -> None:
+async def wait_tts_drained_owned(tts: Any) -> None:
     """Wait through the physical tail and defer repeated cancellation.
 
     Cue and feedback callers use this once PCM may have been accepted. A
     cancelled coroutine cannot revoke worker-thread socket writes, so the
     caller retains duck/output ownership until the real drain waiter finishes,
-    then receives cancellation. ``fallback_sec`` supports legacy test/out-of-
-    tree playout objects that predate ``wait_drained``.
+    then receives cancellation.
     """
 
     async def _wait() -> None:
-        wait_drained = getattr(tts, "wait_drained", None)
-        if callable(wait_drained):
-            await wait_drained()
-        elif fallback_sec > 0.0:
-            await asyncio.sleep(fallback_sec)
+        await tts.wait_drained()
 
     drain = asyncio.create_task(_wait(), name="tts-physical-drain")
     deferred_cancel = False
@@ -483,9 +471,7 @@ class AudioCueManager:
             )
             return OUTCOME_FAILED, REASON_WRITE_ERROR, slug, False
         finally:
-            await wait_tts_drained_owned(
-                self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
-            )
+            await wait_tts_drained_owned(self._tts)
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
@@ -602,9 +588,7 @@ class AudioCueManager:
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return OUTCOME_FAILED, REASON_WRITE_ERROR, _DYNAMIC_TEXT_SLUG, False
         finally:
-            await wait_tts_drained_owned(
-                self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
-            )
+            await wait_tts_drained_owned(self._tts)
         # Dynamic cue text (timer labels) can be personal and
         # the journal is persistent — log a short preview + length at INFO, full
         # text only at DEBUG.

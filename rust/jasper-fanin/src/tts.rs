@@ -33,16 +33,11 @@ use jasper_tts_protocol::loudness::{
 };
 use jasper_tts_protocol::{
     command_name, serve_client, QueuedTtsCommand, TtsAudioSamples, TtsCommand, TtsCommandSink,
-    TtsServerCounters, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE,
+    TtsServerCounters, TtsWireWidth, VolumeContext, SAMPLE_RATE, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
-pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
-/// Fan-in's assistant wire protocol is contractually 48 kHz stereo
-/// (`TtsPlayout.__init__` in jasper/tts_playout.py hardcodes this rate) and
-/// matches the snd-aloop mix rate, so the playout ledger's frames->ms math
-/// is fixed at 48 kHz.
-const TTS_SAMPLE_RATE: u32 = 48_000;
+pub const DEFAULT_MAX_PENDING_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 // Keep this above voice's `JASPER_IDLE_TIMEOUT_SEC` default (20 s):
 // fan-in only sees the one-shot duck IPC, not the provider turn state, so
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
@@ -644,7 +639,7 @@ impl TtsMixer {
             assistant_reference_tx: input.assistant_reference_tx,
             log_tx: input.log_tx,
             loudness,
-            ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
+            ledger: PlayoutLedger::new(SAMPLE_RATE),
             last_payload_width: None,
             starved_run_samples: 0,
             starved_run_segment: 0,
@@ -887,7 +882,7 @@ impl TtsMixer {
             if resumed_segment != Some(self.starved_run_segment) {
                 self.metrics.mark_boundary_gap(frames);
             } else {
-                let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
+                let ms = frames_to_ms(frames, SAMPLE_RATE);
                 if ms > STARVED_DROPOUT_MAX_MS {
                     self.metrics.mark_starved_long_run(frames);
                 } else {
@@ -3402,7 +3397,7 @@ mod tests {
                     log_rx.try_recv().unwrap(),
                     FaninLogEvent::TtsStarved {
                         frames: 600,
-                        ms: frames_to_ms(600, TTS_SAMPLE_RATE),
+                        ms: frames_to_ms(600, SAMPLE_RATE),
                         segment: 1,
                         queued_frames_at_resume: 120,
                     },
@@ -3467,7 +3462,7 @@ mod tests {
         send_audio_frames(&tx, 2);
         mix_one_period(&mut mixer, 2);
 
-        let dropout_max_frames = (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
+        let dropout_max_frames = (STARVED_DROPOUT_MAX_MS * SAMPLE_RATE as u64) / 1_000;
         let mut starved_frames = 0;
         while starved_frames <= dropout_max_frames {
             mix_one_period(&mut mixer, 480);

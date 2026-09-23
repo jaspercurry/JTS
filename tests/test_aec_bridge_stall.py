@@ -47,7 +47,7 @@ from jasper.cli.aec_bridge import (
 from jasper.aec import bridge_engines, bridge_telemetry
 from jasper.aec.bridge_config import OUT_HOST, leg_default_port
 from jasper.aec.bridge_engines import FRAME_SAMPLES
-from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
+from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, BridgeStats
 from jasper.cues.registry import (
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_ASSETS_MISSING_CUE_SLUG,
@@ -141,7 +141,7 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
 ) -> None:
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
+    stats = BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.reset(
         reference_source="outputd_udp",
         reference_endpoint="127.0.0.1:9891",
@@ -158,7 +158,7 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
 
 
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
-    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
+    stats = BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
 
     assert snapshot["schema_version"] == 5

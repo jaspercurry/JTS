@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _detail, _finite_number, _mapping
+from ._health_fields import _detail, _finite_number, mapping
 
 ATTRIBUTION_NETWORK_RATIO = 0.35
 ATTRIBUTION_RECEIVER_RATIO = 0.70
@@ -58,12 +58,12 @@ def _input_attribution(
     """
     if active_source != Source.AIRPLAY.value:
         return None
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    source_input = _mapping(_mapping(fanin.get("inputs")).get(Source.AIRPLAY.value))
-    ring = _mapping(source_input.get("ring"))
-    link = _mapping(current.get("link"))
-    receiver = _mapping(link.get("receiver"))
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    source_input = mapping(mapping(fanin.get("inputs")).get(Source.AIRPLAY.value))
+    ring = mapping(source_input.get("ring"))
+    link = mapping(current.get("link"))
+    receiver = mapping(link.get("receiver"))
 
     baseline = _finite_number(link.get("rx_bytes_per_sec_baseline"))
     rx_rate = _finite_number(link.get("rx_bytes_per_sec"))

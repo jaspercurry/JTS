@@ -9,7 +9,7 @@ as the 16 kHz mono frames AEC3 subtracts from the mic. Conversion, the queue
 publish, and the clip accounting the RMS window reports all sit behind this
 one surface.
 
-The process-wide `_BridgeStats` this transport counts into arrives as an
+The process-wide `BridgeStats` this transport counts into arrives as an
 argument, the way the telemetry emitters take theirs, and the shutdown
 signal and endpoint arrive from the caller that owns them.
 """
@@ -28,7 +28,7 @@ from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
-    _BridgeStats,
+    BridgeStats,
     logger,
 )
 
@@ -152,7 +152,7 @@ def enqueue_reference_frames(
     ref_q: Queue[bytes],
     batch: ReferenceFrameBatch,
     *,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     drop_log: DropLogDebouncer,
     drop_message: str,
 ) -> None:
@@ -190,7 +190,7 @@ def outputd_ref_udp_thread(
     *,
     host: str,
     port: int,
-    stats: _BridgeStats,
+    stats: BridgeStats,
     shutdown: threading.Event,
 ) -> None:
     """Receive outputd's final speaker-reference UDP tap and convert it

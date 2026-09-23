@@ -159,6 +159,7 @@ static void test_header_matches_the_generated_ring_abi(void) {
     check_layout_uint("sample_format_s32le", JTS_RING_SAMPLE_FORMAT_S32LE);
     check_layout_uint("min_n_slots", JTS_RING_MIN_SLOTS);
     check_layout_uint("max_n_slots", JTS_RING_MAX_SLOTS);
+    check_layout_uint("min_ring_channels", JTS_RING_MIN_CHANNELS);
     check_layout_uint("max_ring_channels", JTS_RING_MAX_CHANNELS);
     check_layout_uint("max_slot_bytes", JTS_RING_MAX_SLOT_BYTES);
     check_layout_uint("rate_hz", JTS_RING_RATE_HZ);

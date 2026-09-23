@@ -424,6 +424,9 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        from . import mic_mute_persistence, timers  # lazy: keep config imports light
+        from .peering import config as peering_config  # lazy: keep config imports light
+
         # No default — the user MUST pick a provider via the wizard at
         # http://${JASPER_HOSTNAME}/voice. Empty value here is a clear
         # signal that first-time setup hasn't happened yet, not a
@@ -770,7 +773,7 @@ class Config:
                 "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
             ),
             timer_db_path=_env(
-                "JASPER_TIMER_DB", "/var/lib/jasper/timers.db",
+                "JASPER_TIMER_DB", timers.DEFAULT_DB_PATH,
             ),
             gemini_tts_model=_env(
                 "JASPER_GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview",
@@ -827,7 +830,7 @@ class Config:
             # silently un-mute. Default lives under StateDirectory=jasper.
             mic_mute_state_path=_env(
                 "JASPER_MIC_MUTE_STATE_PATH",
-                "/var/lib/jasper/mic_mute.env",
+                mic_mute_persistence.DEFAULT_PATH,
             ),
             # Unix-domain socket where voice_daemon listens for external
             # session triggers (remote hold-to-talk via jasper-control).
@@ -842,14 +845,10 @@ class Config:
             # peering is off by default, and a typo in the env file
             # should never accidentally enable it).
             peering_enabled=env_bool("JASPER_PEERING", False),
-            # The UDS where jasper-control's peering daemon listens.
-            # Matches PEERING_UDS_PATH in jasper.peering.config —
-            # duplicated here so voice_daemon doesn't have to import
-            # the peering package just to know where to connect. The
-            # path lives under jasper-control's RuntimeDirectory because
+            # The path lives under jasper-control's RuntimeDirectory because
             # jasper-control owns the server side of this socket.
             peering_uds_socket=_env(
-                "JASPER_PEERING_UDS", "/run/jasper-control/peering.sock",
+                "JASPER_PEERING_UDS", peering_config.PEERING_UDS_PATH,
             ),
         ))
 

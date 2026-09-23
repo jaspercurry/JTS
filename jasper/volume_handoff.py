@@ -14,7 +14,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
-from . import volume_diagnostics
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
 from .volume_curve import percent_to_db
@@ -89,37 +88,26 @@ class VolumeHandoff:
 
     async def guard_camilla_after_push_failure(
         self,
-        source: Source,
         level: int,
         *,
         context: str,
-        reason: str,
         warning_prefix: str,
         guarded_warning_suffix: str,
     ) -> bool:
         """Fall back to Camilla after a source-volume push fails.
 
         Callers own their operator-facing warning wording; this helper owns
-        the safety sequence and diagnostics so dispatch and source-transition
+        the safety sequence so dispatch and source-transition
         paths cannot drift. The bounded success suffix may reference
         ``guard_db`` and ``level``; every failure path shares the same suffix.
         """
         guard_db = percent_to_db(level)
-        previous_db = self._persisted_main_volume_db()
         guarded = await self._set_camilla_db(
             guard_db,
             context=context,
             persist=True,
         )
         if guarded:
-            volume_diagnostics.record_push_guard(
-                source,
-                level=level,
-                guard_db=guard_db,
-                reason=reason,
-                context=context,
-                previous_db=previous_db,
-            )
             logger.warning(
                 "%s%s",
                 warning_prefix,
@@ -289,14 +277,6 @@ class VolumeHandoff:
                 result="failed",
                 detail="push_failed_camilla_guard_catchdown_failed",
             )
-        volume_diagnostics.record_push_guard(
-            current_source,
-            level=level,
-            guard_db=guard_db,
-            reason=volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED,
-            context="source_handoff_push_degraded",
-            previous_db=camilla_before,
-        )
         return _handoff(
             push_ok=False,
             camilla_guarded=True,
@@ -330,22 +310,11 @@ class VolumeHandoff:
                     )
                     if not push_ok:
                         guard_db = percent_to_db(latest_level)
-                        previous_db = self._persisted_main_volume_db()
                         guarded = await self._set_camilla_db(
                             guard_db,
                             context="source_handoff_push_finalize_degraded",
                             persist=True,
                         )
-                        if guarded:
-                            reason = volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED
-                            volume_diagnostics.record_push_guard(
-                                handoff.current_source,
-                                level=latest_level,
-                                guard_db=guard_db,
-                                reason=reason,
-                                context="source_handoff_push_finalize_degraded",
-                                previous_db=previous_db,
-                            )
                         return guarded
                     if self._push_settle_sec > 0:
                         await asyncio.sleep(self._push_settle_sec)
@@ -461,14 +430,6 @@ class VolumeHandoff:
             previous_db if persisted_guard_active else current_db
         )
         if await self._camilla_locked() is True:
-            volume_diagnostics.record_push_guard_clear(
-                source,
-                level=level,
-                previous_db=effective_previous_db,
-                reason=volume_diagnostics.GUARD_CLEAR_DEFERRED_DUCK_ACTIVE,
-                context=context,
-                ok=False,
-            )
             self._log_push_guard_clear_failed(
                 source,
                 level,
@@ -484,13 +445,6 @@ class VolumeHandoff:
             persist=True,
         )
         if cleared:
-            volume_diagnostics.record_push_guard_clear(
-                source,
-                level=level,
-                previous_db=effective_previous_db,
-                context=context,
-                ok=True,
-            )
             log_event(
                 logger,
                 "volume.push_guard_cleared",
@@ -512,13 +466,6 @@ class VolumeHandoff:
                 },
             )
         else:
-            volume_diagnostics.record_push_guard_clear(
-                source,
-                level=level,
-                previous_db=effective_previous_db,
-                context=context,
-                ok=False,
-            )
             self._log_push_guard_clear_failed(
                 source,
                 level,

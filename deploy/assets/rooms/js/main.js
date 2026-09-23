@@ -2,45 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — the /sound/pair/ "Stereo pair" surface. Directory + wake-response.
-//
-// Fetches /rooms.json on load and re-polls every 7 s. Renders:
-//   * a "this speaker" card — name, hostname, address, Room (with a "Change
-//     in Speaker settings" link to /speaker/, since room lives in the
-//     identity home now), and grouping status (off/solo, or the bond
-//     role/channel/codec; a fail-LOUD error if grouping is enabled-but-broken).
-//   * a "Wake response" card — a toggle for the household question "when
-//     multiple speakers hear 'Hey Jarvis', only one answers", plus a
-//     "Primary" checkbox (prefer this speaker in ties) shown when the toggle
-//     is on. Changes POST /peering (CSRF via http.js) and the card reflects
-//     the returned state. This is the ONE working write surface on this page.
-//   * one row per sibling speaker (self excluded by the server), each a real
-//     click-through <a> to that speaker's OWN /system/ page on its stable
-//     .local web host. The value of the directory is discovery +
-//     click-through, not config aggregation.
-//
-// The poll loop self-schedules (setTimeout after each completes) so a slow
-// response can't overlap the next tick, and it separates a transport failure
-// (→ "Disconnected", dimmed) from a render failure (isolated + logged, so one
-// bad field never blanks the page or masquerades as a disconnect). The
-// wake-response card is built ONCE (it has interactive state — a pending
-// save — that a per-poll rebuild would stomp); the poll only reconciles its
-// controls to the latest /rooms.json when no save is in flight.
-//
-// Security: every peer field (name, room, address, hostname-derived URL) and
-// every grouping value is untrusted — it arrives over mDNS / from a config
-// file. This module builds DOM exclusively through the shared h()/svg()
-// helpers (/assets/shared/js/dom.js), whose text children become
-// document.createTextNode (escaped by construction). There is NO innerHTML
-// path and NO inline onclick with interpolated strings. The peer
-// click-through href is additionally
-// scheme-guarded (http/https only) as defense-in-depth against a poisoned
-// mDNS address. The wake-response toggle needs no confirm; the bond card's
-// destructive "Dissolve pair" action uses jtsConfirm (the styled <dialog>,
-// never native confirm/alert — a static test forbids the natives). A save
-// error surfaces inline in the card's status line.
-
-import { getJSON, postJSON } from "/assets/shared/js/http.js";
+import { getJSON, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
 import { h, svg, appendChildren } from "/assets/shared/js/dom.js";
@@ -695,7 +657,7 @@ function makeBondCard() {
       if (data && data.ok) {
         created = true;
         status.textContent = "Stereo pair created — both speakers are configuring (~10s).";
-        setTimeout(poll, 1200);
+        setTimeout(refresh, 1200);
       }
     } catch (e) {
       console.error("rooms: bond create failed", e);
@@ -721,7 +683,7 @@ function makeBondCard() {
       const data = await postJSON("unbond", {});
       if (data && data.ok) {
         status.textContent = "Pair dissolved.";
-        setTimeout(poll, 1200);
+        setTimeout(refresh, 1200);
       }
     } catch (e) {
       console.error("rooms: bond dissolve failed", e);
@@ -859,19 +821,24 @@ function update(refs, snap) {
 // ---------------------------------------------------------------------------
 const refs = buildPage(root);
 
-async function poll() {
+let refreshing = null;
+
+function refresh() {
+  if (!refreshing) refreshing = refreshOnce().finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+async function refreshOnce() {
   let snap;
   try {
     snap = await getJSON("rooms.json");
   } catch (e) {
     document.body.classList.add("stale");
     refs.staleness.textContent = "Disconnected (" + e.message + "). Retrying…";
-    setTimeout(poll, POLL_MS);
     return;
   }
   document.body.classList.remove("stale");
   update(refs, snap);
-  setTimeout(poll, POLL_MS);
 }
 
-poll();
+startPolling(refresh, { intervalMs: POLL_MS });

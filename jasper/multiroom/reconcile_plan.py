@@ -245,7 +245,7 @@ def snapclient_argv(
     return argv
 
 
-def _assemble_args(
+def assemble_args(
     cfg: GroupingConfig,
     *,
     active_endpoint: bool = False,

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class _OutboundStamp:
+class OutboundStamp:
     """Per-source last-outbound timestamp, for the same-source echo window."""
     at_mono: float
 

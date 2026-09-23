@@ -72,7 +72,7 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
-    _run,
+    run,
 )
 
 REASON_DATA_ROLE_UNAVAILABLE = "data_role_unavailable"
@@ -87,6 +87,8 @@ REASON_STATE_PARKED = "state_parked"
 REASON_STATE_SPLIT_BRAIN = "state_split_brain"
 REASON_STATE_RAM_DRIFT = "state_ram_drift"
 REASON_STATE_DISABLED = "state_disabled"
+REASON_STATE_HOST_CONNECTED = "state_host_connected"
+REASON_STATE_HOST_DISCONNECTED = "state_host_disconnected"
 REASON_STATE_MARKER_ACTIVE_NO_FUNCTION = "state_marker_active_no_function"
 
 # The readiness marker is not active, so the card, its device name and the
@@ -183,7 +185,7 @@ def _skip_when_usbsink_inactive(label: str) -> CheckResult | None:
 
 def _lsmod_modules() -> set[str]:
     """Every loaded kernel module name, from one ``lsmod`` per run."""
-    proc = _run(["lsmod"])
+    proc = run(["lsmod"])
     if proc.returncode != 0:
         return set()
     # lsmod output: first column is the module name.
@@ -200,20 +202,20 @@ def _uac2_capture_rate() -> int | None:
     """Read u_audio's volatile ``Capture Rate`` control, or None if unreadable.
 
     Subprocesses ``amixer`` because the control is an iface=PCM one the simple
-    mixer does not expose, and its output is stable and parseable. ``_run`` is
+    mixer does not expose, and its output is stable and parseable. ``run`` is
     a bare ``subprocess.run``, so both failure
     modes have to be caught here: alsa-utils is not in install.sh's apt lists,
     and a wedged card — the very state this feeds — can hang the read past the
     timeout. Either one must read as "not observable", never as a doctor crash.
     ``TimeoutExpired`` subclasses ``SubprocessError``, not ``OSError``."""
     try:
-        controls = _run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
+        controls = run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
         if controls.returncode != 0:
             return None
         numid = _UAC2_RATE_NUMID_RE.search(controls.stdout)
         if numid is None:
             return None
-        value = _run(
+        value = run(
             ["amixer", "-c", UAC2_CARD_NAME, "cget", f"numid={numid.group(1)}"]
         )
         if value.returncode != 0:
@@ -436,6 +438,7 @@ def check_usbsink_state() -> CheckResult:
         "usbsink state", "ok",
         "readiness marker active; uac2.usb0 composed; "
         f"host_connected={connected} (activity/level owned by fan-in STATUS)",
+        reason=REASON_STATE_HOST_CONNECTED if connected else REASON_STATE_HOST_DISCONNECTED,
     )
 
 def _usbsink_host_stream_finding() -> tuple[str, str]:

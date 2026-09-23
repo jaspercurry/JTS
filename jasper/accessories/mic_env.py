@@ -53,11 +53,7 @@ import os
 import sys
 from collections.abc import Mapping
 
-# Keep in lockstep with jasper-voice.service's EnvironmentFile= line and
-# jasper.env_load.ENV_FILES. deploy/bin/jasper-aec-reconcile deliberately
-# carries NO copy — it calls this module. tests/test_voice_input_gate.py
-# asserts the agreement.
-DEFAULT_ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
+from jasper.env_load import ACCESSORY_MIC_ENV_FILE as DEFAULT_ACCESSORY_MIC_ENV_FILE
 
 # Must match the key jasper/config.py parses into Config.manual_mic_sources.
 MANUAL_MIC_SOURCES_KEY = "JASPER_MANUAL_MIC_SOURCES"

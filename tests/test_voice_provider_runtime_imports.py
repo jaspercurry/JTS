@@ -190,7 +190,7 @@ def probe(monkeypatch):
             cmd, box["returncode"], box["stdout"], box["stderr"],
         )
 
-    monkeypatch.setattr(doctor_voice, "_run", fake_run)
+    monkeypatch.setattr(doctor_voice, "run", fake_run)
     box["calls"] = calls
     box["timeouts"] = timeouts
     return box

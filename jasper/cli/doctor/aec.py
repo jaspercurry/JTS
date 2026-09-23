@@ -62,7 +62,7 @@ from ._shared import (
     _CHIP_AEC_PASSIVE_REQUIRED_CHECKS,
     _loopback_playback_active,
     _parked_follower_result,
-    _run,
+    run,
 )
 
 # One snake_case constant per distinct decision branch across the aec-domain
@@ -1704,7 +1704,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     # post-deploy restarts. The engine init line is logged once at
     # bridge startup, so we just need to look back far enough to
     # find the most recent startup.
-    proc = _run(
+    proc = run(
         ["journalctl", "-u", AEC_BRIDGE_SERVICE,
          "--since", "10 min ago", "--no-pager", "--output", "cat"],
         timeout=8.0,
@@ -1812,9 +1812,9 @@ def check_xvf_mixer_state() -> CheckResult:
     card = xvf3800.alsa_card_name()
     # Use cget (not get) — these controls aren't part of any aggregated
     # "simple control" group, so `amixer get` misses them.
-    sw = _run(["amixer", "-c", card, "cget",
+    sw = run(["amixer", "-c", card, "cget",
                f"name={xvf3800.MIXER_CAPTURE_SWITCH}"])
-    vol = _run(["amixer", "-c", card, "cget",
+    vol = run(["amixer", "-c", card, "cget",
                 f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
         return CheckResult("XVF mixer state", "warn", "amixer cget failed",

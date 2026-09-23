@@ -74,23 +74,21 @@ def test_check_peering_mode_reports_unreadable_env(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "output, local_peer_id, must_name",
+    "output, local_peer_id, reason",
     [
-        ("+ eth0 IPv4 SomeOtherService _foo._tcp local\n", None, "0 sibling"),
+        ("+ eth0 IPv4 SomeOtherService _foo._tcp local\n", None, peering.REASON_DISCOVERY_NO_SIBLINGS),
         # Two advertised peers, one of them us — self is excluded.
-        (_TWO_SIBLINGS, "alice-uuid", "1 sibling"),
+        (_TWO_SIBLINGS, "alice-uuid", peering.REASON_DISCOVERY_SIBLINGS_VISIBLE),
+        ('txt = ["peer_id=alice-uuid"]', "alice-uuid", peering.REASON_DISCOVERY_NO_SIBLINGS),
     ],
-    ids=["no-peers", "one-sibling"],
+    ids=["no-peers", "one-sibling", "self-only"],
 )
-def test_check_peering_discovery_counts_siblings_excluding_self(
-    monkeypatch, output, local_peer_id, must_name
+def test_check_peering_discovery_finds_siblings_excluding_self(
+    monkeypatch, output, local_peer_id, reason
 ):
-    """The sibling count is a formatted number the reason vocabulary does not
-    carry — this is the pure-formatting exception AGENTS.md allows to keep a
-    `.detail` assertion."""
     monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor.peering._run",
+        "jasper.cli.doctor.peering.run",
         lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": output})(),
     )
     if local_peer_id is not None:
@@ -101,7 +99,7 @@ def test_check_peering_discovery_counts_siblings_excluding_self(
     r = peering.check_peering_discovery()
 
     assert r.status == "ok"
-    assert must_name in r.detail
+    assert r.reason == reason
 
 
 def test_check_peering_discovery_warns_without_avahi_browse(monkeypatch):
@@ -117,7 +115,7 @@ def test_check_peering_discovery_warns_without_avahi_browse(monkeypatch):
 def test_check_peering_discovery_warns_on_browse_failure(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor.peering._run",
+        "jasper.cli.doctor.peering.run",
         lambda *a, **kw: type("P", (), {"returncode": 1, "stdout": ""})(),
     )
 

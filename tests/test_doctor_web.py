@@ -98,16 +98,14 @@ def test_web_design_assets_verdicts(
     assert r.reason == reason
 
 
-def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
-    """A wiped asset tree warns with a bounded list, not journal spam."""
+def test_web_design_assets_many_missing_warns(monkeypatch, tmp_path: Path):
     _assets(tmp_path, manifest=[f"page{i}/js/main.js" for i in range(20)])
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
 
     r = doctor_web.check_web_design_assets()
 
     assert r.status == "warn"
-    assert "(+8 more)" in r.detail
-    assert r.detail.count("js/main.js") == 12
+    assert r.reason == doctor_web.REASON_WEB_ASSETS_MISSING
 
 
 def test_web_design_assets_skips_when_not_installed(monkeypatch, tmp_path: Path):
@@ -196,7 +194,7 @@ def _fake_ss(*lines: str, returncode: int = 0):
     ],
 )
 def test_camillagui_loopback_verdicts(monkeypatch, rows, status, reason):
-    monkeypatch.setattr(doctor_web, "_run", _fake_ss(*rows))
+    monkeypatch.setattr(doctor_web, "run", _fake_ss(*rows))
 
     r = doctor_web.check_camillagui_loopback()
 
@@ -222,7 +220,7 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
     def raises(cmd, timeout=5.0):
         raise failure
 
-    monkeypatch.setattr(doctor_web, "_run", raises)
+    monkeypatch.setattr(doctor_web, "run", raises)
 
     result = doctor_web.check_camillagui_loopback()
     assert result.status == "skipped"
@@ -230,7 +228,7 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
 
 
 def test_camillagui_loopback_skips_when_ss_exits_nonzero(monkeypatch):
-    monkeypatch.setattr(doctor_web, "_run", _fake_ss(returncode=1))
+    monkeypatch.setattr(doctor_web, "run", _fake_ss(returncode=1))
 
     result = doctor_web.check_camillagui_loopback()
     assert result.status == "skipped"

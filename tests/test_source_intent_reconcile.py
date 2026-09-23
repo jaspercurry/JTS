@@ -17,6 +17,7 @@ import pytest
 from jasper import source_intent
 from jasper.control.restart_broker import START_ONLY_UNITS
 from jasper.music_sources import Source
+from jasper.local_sources import reconcile as source_reconcile
 from tests._log_events import event_fields
 
 
@@ -40,7 +41,7 @@ def _write_target_status(
     siblings: dict[str, dict[str, str]] | None = None,
 ) -> None:
     text = Path(env_path).read_text(encoding="utf-8")
-    source_intent._default_write_status(
+    source_reconcile._default_write_status(
         status_path,
         {
             "completed_monotonic_ns": (
@@ -49,7 +50,7 @@ def _write_target_status(
                 else completed_monotonic_ns
             ),
             "intent_fingerprint": (
-                source_intent._intent_fingerprint(text)
+                source_intent.intent_fingerprint(text)
                 if fingerprint is None
                 else fingerprint
             ),
@@ -71,9 +72,7 @@ def _key(source: Source) -> str:
 
 
 def _problem_events(env_path: str) -> list[tuple[str, Source | None]]:
-    """The classified parse problems behind a strict reader's refusal."""
-
-    _, problems = source_intent._parse_source_intents(
+    _, problems = source_intent.parse_source_intents(
         Path(env_path).read_text(encoding="utf-8"),
     )
     return [(problem.event, problem.source) for problem in problems]
@@ -585,7 +584,7 @@ def test_production_status_reader_rejects_writable_parent(tmp_path, monkeypatch)
         path=status_path,
         source=Source.BLUETOOTH,
         desired="disabled",
-        intent_fingerprint=source_intent._intent_fingerprint(
+        intent_fingerprint=source_intent.intent_fingerprint(
             Path(env_path).read_text(encoding="utf-8")
         ),
         not_before_monotonic_ns=0,

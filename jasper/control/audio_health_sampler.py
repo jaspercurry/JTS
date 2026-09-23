@@ -30,7 +30,7 @@ from ..platform.status_socket import (
 from ..platform.uds import mux_socket_command
 from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
-from ._health_fields import _MONITOR_ERRORS, _mapping
+from ._health_fields import _MONITOR_ERRORS, mapping
 from .audio_health import (
     RESTART_WATCH_UNITS,
     _health_prelude,
@@ -213,7 +213,7 @@ class AudioHealthSampler:
                 "status": "unknown",
                 "headline": "Audio monitor is stale",
                 "detail": "The last health sample is no longer current.",
-                "active_source": _mapping(snapshot.get("overall")).get(
+                "active_source": mapping(snapshot.get("overall")).get(
                     "active_source",
                 ),
                 "since": stale_since,
@@ -242,8 +242,8 @@ class AudioHealthSampler:
             issues = list(snapshot.get("issues") or [])
             issues.insert(0, stale_issue)
             snapshot["issues"] = issues
-            previous_stream = _mapping(snapshot.get("current_stream"))
-            source_id = previous_stream.get("source_id") or _mapping(
+            previous_stream = mapping(snapshot.get("current_stream"))
+            source_id = previous_stream.get("source_id") or mapping(
                 snapshot.get("overall")
             ).get("active_source")
             snapshot["current_stream"] = {
@@ -342,7 +342,7 @@ class AudioHealthSampler:
             self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
 
-        route_state = _mapping(self._route)
+        route_state = mapping(self._route)
         active_source, activity_unknown, signal_path, latency = _health_prelude(
             airplay, outputd, mux_status, route_state,
         )

@@ -50,7 +50,7 @@ def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
     env publication says (the doctor used to default to the Apple dongle)."""
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "apple_usb_c_dongle")
     monkeypatch.setattr(
-        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
+        audio, "run", _lsusb_only("Bus 001 Device 002: ID 1d6b:0002 hub\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -65,7 +65,7 @@ def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated
     """A dongle with nothing in its jack is a USB device and no audio card, so
     the record names no DAC; the bus is the only place the dongle shows."""
     monkeypatch.setattr(
-        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+        audio, "run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -79,7 +79,7 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
         raise AssertionError("Apple USB probe should not run")
 
     record_active_dac("hifiberry_dac8x")
-    monkeypatch.setattr(audio, "_run", fail_probe)
+    monkeypatch.setattr(audio, "run", fail_probe)
 
     result = audio.check_apple_dongle_audio()
 
@@ -102,7 +102,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -128,7 +128,7 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -142,7 +142,7 @@ def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch)
     dongle with an analog load reports ok, not the 'no audio card' warn."""
     record_active_dac("apple_usb_c_dongle", card_id="A", status="partial")
     monkeypatch.setattr(
-        audio, "_run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
+        audio, "run", _lsusb_only("Bus 001 Device 002: ID 05ac:110a Apple\n")
     )
 
     result = audio.check_apple_dongle_audio()
@@ -179,7 +179,7 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
         raise AssertionError(cmd)
 
     evidence.seed("output_hardware_state", state)
-    monkeypatch.setattr(audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "run", fake_run)
 
     result = audio.check_apple_dongle_audio()
 
@@ -430,7 +430,7 @@ def test_check_arecord_l_card_device_match():
     with (
         patch.object(
             audio,
-            "_run",
+            "run",
             return_value=type(
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
             )(),
@@ -452,7 +452,7 @@ def test_check_arecord_l_does_not_match_wrong_card():
     with (
         patch.object(
             audio,
-            "_run",
+            "run",
             return_value=type(
                 "FakeProc", (), {"stdout": fake_output, "returncode": 0}
             )(),
@@ -489,7 +489,7 @@ def test_check_mic_card_routes_shorthand_through_arecord_l(
     with (
         patch.object(
             audio,
-            "_run",
+            "run",
             return_value=type(
                 "FakeProc", (), {"stdout": arecord_l, "returncode": 0}
             )(),
@@ -885,7 +885,7 @@ def test_check_loopback_verdicts(monkeypatch, aplay_l, status, reason) -> None:
         assert cmd == ["aplay", "-L"]
         return subprocess.CompletedProcess(cmd, 0, stdout=aplay_l, stderr="")
 
-    monkeypatch.setattr(audio, "_run", fake_run)
+    monkeypatch.setattr(audio, "run", fake_run)
 
     result = audio.check_loopback()
 

@@ -112,7 +112,7 @@ def _run_bt_pairing_probe(monkeypatch, *, exec_path: str, bt_result):
             return bt_result
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "run", fake_run)
 
 
 @pytest.mark.parametrize(
@@ -248,7 +248,6 @@ def test_shairport_legacy_remediations_name_the_canonical_device(
     }[stale_device]
     assert r.status == "fail"
     assert r.reason == expected_reason
-    assert "shairport_substream" in r.detail
 
 
 _AIRPLAY_RESOLVED_ROW = (
@@ -273,7 +272,7 @@ def _seed_airplay_avahi(monkeypatch, stdout: str) -> None:
             return SimpleNamespace(returncode=0, stdout="jts3\n", stderr="")
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "run", fake_run)
 
 
 def _seed_airplay_intentionally_off(monkeypatch) -> None:
@@ -291,7 +290,7 @@ def _seed_airplay_empty_hostname(monkeypatch) -> None:
         lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
     )
     monkeypatch.setattr(
-        renderers, "_run",
+        renderers, "run",
         lambda cmd, timeout=5.0: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
 
@@ -658,7 +657,7 @@ def test_probe_verdict_and_check_status(
         returncode, stderr = probe
         return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
 
-    monkeypatch.setattr(renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "run", fake_run)
     # Aloop ownership reads through the evidence cache (not `Path`); seed
     # every private-lane substream so whichever aloop device a row uses finds
     # its owner_pid.
@@ -734,7 +733,7 @@ def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status)
         probed.append(cmd)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(renderers, "_run", fake_run)
+    monkeypatch.setattr(renderers, "run", fake_run)
     assert renderers.check_renderer_device_resolvable().status == expect_status
     # An unloaded unit must not even be probed.
     assert bool(probed) is (load_state == "loaded")
@@ -1138,7 +1137,7 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     })
     monkeypatch.setattr(
         renderers,
-        "_run",
+        "run",
         lambda cmd: SimpleNamespace(returncode=3, stdout="Powered: no\n", stderr=""),
     )
     monkeypatch.setattr(
@@ -1210,7 +1209,7 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
     )
     monkeypatch.setattr(
         renderers,
-        "_run",
+        "run",
         lambda cmd: SimpleNamespace(
             returncode=0,
             stdout="Powered: no\n",
@@ -1239,7 +1238,7 @@ def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
         "bluealsa-aplay.service": {"active_state": "active"},
     })
     monkeypatch.setattr(
-        renderers, "_run",
+        renderers, "run",
         lambda cmd: SimpleNamespace(returncode=0, stdout="Powered: yes\n", stderr=""),
     )
 

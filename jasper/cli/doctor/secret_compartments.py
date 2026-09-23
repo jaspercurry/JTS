@@ -53,12 +53,13 @@ from ...google_creds import DEFAULT_TOKEN_DIR as GOOGLE_DEFAULT_TOKEN_DIR
 from ...google_creds import registry_path as google_registry_path
 from . import privsep
 from ._registry import doctor_check
-from ._shared import CheckResult, _systemctl_unavailable_result
+from ._shared import CheckResult, systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a compartment check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_COMPARTMENT_ABSENT = "compartment_absent"
 REASON_COMPARTMENT_OVER_EXPOSED = "compartment_over_exposed"
+REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE = "compartment_exposed_and_unavailable"
 REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 
 # privsep is the single home for "could a process with this uid + group-set
@@ -302,7 +303,11 @@ def _classify_compartment(
         detail = "OVER-EXPOSED (Phase 4 isolation regressed): " + "; ".join(shown)
         if warns:
             detail += f" (+{len(warns)} availability warning(s))"
-        return CheckResult(label, "fail", detail, reason=REASON_COMPARTMENT_OVER_EXPOSED)
+        return CheckResult(
+            label, "fail", detail,
+            reason=(REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE if warns
+                    else REASON_COMPARTMENT_OVER_EXPOSED),
+        )
     if warns:
         return CheckResult(
             label, "warn", "; ".join(_truncate(warns)),
@@ -376,7 +381,7 @@ def _check_compartment(group: str) -> CheckResult:
     comp = _COMPARTMENT_BY_GROUP[group]
     label = f"secret compartment: {group}"
     if not _systemctl_available():
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     member_units = set(comp.member_units)
     members: list[_Identity] = []
     non_members: list[_Identity] = []

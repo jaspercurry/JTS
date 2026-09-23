@@ -2,26 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /spotify/ wizard behaviour.
-//
-// The page is server-rendered (forms POST and redirect); this module adds
-// the following progressive enhancements:
-//   1. highlight the picked OAuth-mode radio card (the radios themselves
-//      are inside the credentials form and need no mirroring),
-//   2. copy the redirect URL to the clipboard, wired by the shared copy.js
-//      module,
-//   3. live-preview a pasted playlist's name before enabling its Add button,
-//   4. reveal the inline "add playlist" form,
-//   5. route every destructive submit through the shared data-confirm guard
-//      (confirm-forms.js — never window.confirm, which the browser can
-//      suppress).
-//
-// All of it degrades gracefully: with JS off the forms still submit, the
-// redirect URL is still selectable, and Add is simply always enabled.
-//
-// Shared helpers come from the canonical layer by absolute path — we never
-// re-declare the CSRF/JSON/dialog plumbing here.
-
 import { wireConfirmForms } from "/assets/shared/js/confirm-forms.js";
 import { wireCopyButtons } from "/assets/shared/js/copy.js";
 
@@ -71,12 +51,12 @@ document.querySelectorAll("form.pl-add").forEach((form) => {
   }
 
   input.addEventListener("input", () => {
+    const mySeq = ++seq;
     clearTimeout(timer);
     reset();
     const value = input.value.trim();
     if (!value) return;
     timer = setTimeout(async () => {
-      const mySeq = ++seq;
       preview.textContent = "Looking up…";
       // Build the request URL relative to the current page so it works behind
       // nginx's /spotify/ prefix. account + url ride as query params.

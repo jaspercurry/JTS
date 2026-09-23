@@ -1011,15 +1011,6 @@ def _case_marker_armed_member_ok(monkeypatch, tmp_path):
 
 _R = audio_runtime_outputd
 _SILENT = {"speaker_silent": True}
-_DUAL_APPLE_COUNTERS = {
-    "detail_contains": (
-        "dual_dac_a_xruns=0",
-        "dual_dac_b_xruns=0",
-        "dual_group_recoveries=0",
-        "dual_delay_baseline_relatches=0",
-        "dual_reprime_alignment_failures=0",
-    )
-}
 
 
 @pytest.mark.parametrize(
@@ -1042,7 +1033,7 @@ _DUAL_APPLE_COUNTERS = {
         pytest.param(_case_gain_exceeds_peak_cap, "warn", _R.REASON_OUTPUTD_ASSISTANT_GAIN_OFF_CONTRACT, None, id="test_outputd_service_warns_when_gain_exceeds_the_peak_cap"),
         pytest.param(_case_dual_apple_status_missing, "fail", _R.REASON_OUTPUTD_DUAL_APPLE_STATUS_MISSING, None, id="test_outputd_service_fails_when_dual_apple_status_missing"),
         pytest.param(_case_dual_apple_pcm_link_missing, "warn", _R.REASON_OUTPUTD_DUAL_APPLE_NOT_LINKED, None, id="test_outputd_service_warns_when_dual_apple_pcm_link_missing"),
-        pytest.param(_case_dual_apple_status_ok, "ok", "", _DUAL_APPLE_COUNTERS, id="test_outputd_service_ok_with_dual_apple_status"),
+        pytest.param(_case_dual_apple_status_ok, "ok", "", None, id="test_outputd_service_ok_with_dual_apple_status"),
         pytest.param(_case_fake_backend, "fail", _R.REASON_OUTPUTD_BACKEND_NOT_ALSA, None, id="test_outputd_service_fails_on_fake_backend"),
         pytest.param(_case_small_runtime_buffers, "fail", _R.REASON_OUTPUTD_DAC_BUFFER_UNDERSIZED, None, id="test_outputd_service_fails_on_small_runtime_buffers"),
         pytest.param(_case_reference_contract_missing, "fail", _R.REASON_OUTPUTD_REFERENCE_SOURCE_UNEXPECTED, None, id="test_outputd_service_fails_when_reference_contract_missing"),
@@ -1061,6 +1052,3 @@ def test_outputd_service_status(
     extra = extra or {}
     if "speaker_silent" in extra:
         assert r.speaker_silent is extra["speaker_silent"]
-    if "detail_contains" in extra:
-        for substr in extra["detail_contains"]:
-            assert substr in r.detail

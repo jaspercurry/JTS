@@ -150,16 +150,23 @@ def test_pace_watermark_stays_under_fanin_budget():
         / "rust" / "jasper-fanin" / "src" / "tts.rs"
     ).read_text()
     m = re.search(
-        r"DEFAULT_MAX_PENDING_FRAMES:\s*u64\s*=\s*([0-9_]+)\s*\*\s*([0-9_]+)",
+        r"DEFAULT_MAX_PENDING_FRAMES:\s*u64\s*=\s*SAMPLE_RATE as u64\s*\*\s*([0-9_]+)",
         tts_rs,
     )
     assert m, (
-        "DEFAULT_MAX_PENDING_FRAMES literal not found in "
-        "rust/jasper-fanin/src/tts.rs — if its shape changed, update this "
-        "test so the pace-ahead/budget contract stays pinned."
+        "DEFAULT_MAX_PENDING_FRAMES not found in rust/jasper-fanin/src/tts.rs "
+        "— if its shape changed, update this test so the pace-ahead/budget "
+        "contract stays pinned."
     )
-    budget_frames = int(m.group(1).replace("_", "")) * int(
-        m.group(2).replace("_", "")
+    # The fan-in budget is in TTS wire frames; the protocol crate owns the rate.
+    loudness_rs = (
+        Path(__file__).resolve().parents[1]
+        / "rust" / "jasper-tts-protocol" / "src" / "loudness.rs"
+    ).read_text()
+    rate = re.search(r"pub const SAMPLE_RATE:\s*u32\s*=\s*([0-9_]+)", loudness_rs)
+    assert rate, "SAMPLE_RATE not found in rust/jasper-tts-protocol/src/loudness.rs"
+    budget_frames = int(rate.group(1).replace("_", "")) * int(
+        m.group(1).replace("_", "")
     )
     budget_sec = budget_frames / tts_mod._OUTPUTD_SAMPLE_RATE
     ipc_chunk_sec = tts_mod._OUTPUTD_MAX_AUDIO_CHUNK_BYTES / (

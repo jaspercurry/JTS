@@ -169,32 +169,6 @@ function toolsForPack(catalog, pack) {
   return names ? tools.filter((t) => names.has(t.name)) : [];
 }
 
-function packsFromTools(tools) {
-  const packs = new Map();
-  for (const tool of tools) {
-    const source = tool.pack && typeof tool.pack === "object" ? tool.pack : null;
-    const id = source && source.id ? source.id : "tool:" + (tool.name || "tool");
-    if (!packs.has(id)) {
-      packs.set(id, {
-        id,
-        title: (source && source.title) || tool.name || "Tool",
-        summary: (source && source.summary) || tool.summary || "",
-        setup_url: (source && source.setup_url) || tool.setup_url || null,
-        category: tool.category || "Other",
-        status: tool.status || "off",
-        tool_names: [],
-        tool_count: 0,
-        customized_count: 0,
-      });
-    }
-    const pack = packs.get(id);
-    pack.tool_names.push(tool.name);
-    pack.tool_count += 1;
-    if (tool.prompt_customized) pack.customized_count += 1;
-  }
-  return [...packs.values()];
-}
-
 export function packCard(pack, tools = []) {
   const href = safePackUrl(pack.id);
   const title = pack.title || pack.id || "Tool pack";
@@ -237,9 +211,7 @@ export function toolList(catalog, { query = "", unavailable } = {}) {
       "</div>"
     );
   }
-  const view = Array.isArray(catalog)
-    ? { tools: catalog, packs: packsFromTools(catalog) }
-    : catalog || {};
+  const view = catalog || {};
   const q = (query || "").trim().toLowerCase();
   const packs = sortedPacks(Array.isArray(view.packs) ? view.packs : []);
   const filtered = packs

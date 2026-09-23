@@ -600,10 +600,6 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "deploy" / "assets"
 _MODULE_DIR = _ASSETS_DIR / "system-status" / "js"
 _SYSTEM_CSS = _ASSETS_DIR / "system-status" / "system.css"
 
-# The CSRF/JSON fetch plumbing the /system/ modules used to inline now lives in
-# the cross-page shared module; system-status/api.js just re-exports it. Scan it
-# alongside the page modules so the "CSRF read from the meta tag" guarantee is
-# still asserted at its (new) canonical home.
 _SHARED_HTTP_JS = _ASSETS_DIR / "shared" / "js" / "http.js"
 _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 
@@ -616,7 +612,7 @@ _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 # in via _system_js() below rather than listed here.
 _EXPECTED_MODULES = (
     "format", "charts", "components", "sections", "audio-sections", "audio-view",
-    "views", "usb-forensics-card", "optional-features-card", "api", "actions",
+    "views", "usb-forensics-card", "optional-features-card", "actions",
     "main",
 )
 

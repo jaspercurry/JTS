@@ -23,7 +23,6 @@ code = [
   "scripts/ci-classify.py",
   "scripts/check-js-syntax.sh",
   "scripts/check-rust.sh",
-  "scripts/rust-ci-needed",
 ]
 docs = [
   ".github/CONTRIBUTING.md",

@@ -15,25 +15,19 @@ import logging
 
 import pytest
 
-from tests._log_events import event_fields
-from tests._gemini_fakes import GoAway as _GoAway
-from tests._gemini_fakes import Response as _GoAwayResp
-
 try:
     from google.genai import types
-
-    from jasper.voice.gemini_session import (
-        GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
-        GeminiLiveConnection,
-        GeminiLiveTurn,
-    )
-    _HAVE_GENAI = True
 except ImportError:
-    _HAVE_GENAI = False
+    pytest.skip("google-genai not installed in this environment", allow_module_level=True)
 
-pytestmark = pytest.mark.skipif(
-    not _HAVE_GENAI, reason="google-genai not installed in this environment"
+from jasper.voice.gemini_session import (
+    GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
+    GeminiLiveConnection,
+    GeminiLiveTurn,
 )
+from tests._gemini_fakes import GoAway as _GoAway
+from tests._gemini_fakes import Response as _GoAwayResp
+from tests._log_events import event_fields
 
 
 @pytest.mark.parametrize("transcripts", [False, True])

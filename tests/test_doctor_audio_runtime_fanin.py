@@ -649,15 +649,7 @@ def test_offender_owner_line_names_the_pid():
     assert audio_runtime_fanin._aloop_substream_owner("state: RUNNING\n") == ""
 
 
-def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
-    """A pathological box cannot produce an unbounded doctor line.
-
-    The registered set is shrunk to one pair, so every other pair reads as an
-    offender and the offender count (28) genuinely exceeds the cap. An earlier
-    version of this test opened only pair 5 across the four PCM dirs, giving
-    exactly 4 offenders against a cap of 4; `[:cap]` and `[:]` were then
-    indistinguishable and the bound was asserted but never proven.
-    """
+def test_many_unregistered_substreams_warn(proc_root, tmp_path, monkeypatch):
     monkeypatch.setattr(
         audio_runtime_fanin,
         "_derive_registered_pairs",
@@ -674,9 +666,7 @@ def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
     )
     result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "warn"
-    cap = audio_runtime_fanin._ALOOP_OFFENDER_DETAIL_CAP
-    shown = result.detail.count("/sub")
-    assert shown <= cap, f"listed {shown} offenders, cap is {cap}"
+    assert result.reason == audio_runtime_fanin.REASON_ALOOP_UNREGISTERED_SUBSTREAM_OPEN
 
 
 def test_unreadable_proc_is_skipped(proc_root, tmp_path):

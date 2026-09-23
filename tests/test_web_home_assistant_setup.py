@@ -2,27 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /assistant/ha/ wizard after its migration to the canonical look.
-
-Two things this guards:
-
-1. Each of the three states (none / partial / connected) renders canonical
-   design-system bytes (links /assets/app.css, carries the shared .app-header,
-   embeds the CSRF meta tag) and delivers its behaviour as an ES module -- no
-   inline <script> beyond the typed #ha-page-data JSON island.
-2. The migration was presentation-only: the server-rendered POST flow
-   (/discover, /save, /disconnect, /credentials-for-copy, /reset), the CSRF
-   checks, the restart-on-save, and the public module surface (render fn,
-   make_server, main) are unchanged.
-
-Network (httpx) and subprocess (systemctl) are mocked, mirroring the other
-hardware-free web tests.
-"""
+"""Home Assistant wizard rendering, request guards, and state transitions."""
 from __future__ import annotations
 
 import http
 import json
+import shutil
+import subprocess
 from typing import Any
+from unittest.mock import Mock
+from urllib.parse import urlencode
 
 import pytest
 
@@ -219,19 +208,6 @@ def _make_request(
     cookies: str = "",
     headers: dict[str, str] | None = None,
 ) -> Any:
-    """Build a *real* /assistant/ha/ Handler instance wired to a synthetic request.
-
-    Mirrors tests/test_web_wifi_setup.py's `_make_request`. The route
-    bodies close over the handler class's `cfg`, so we instantiate the real
-    class (via __new__, to skip BaseHTTPRequestHandler.__init__'s socket
-    plumbing) and bolt the request I/O onto it. We then override only the
-    network-touching surface of BaseHTTPRequestHandler so the real dispatch
-    runs without a socket.
-
-    Status + emitted headers are captured back onto the instance as
-    ``.status`` / ``.sent_headers`` (with a ``header_values(name)`` reader),
-    matching the attribute surface the handler tests assert against.
-    """
     headers = dict(headers or {})
     if cookies:
         headers["Cookie"] = cookies
@@ -341,65 +317,65 @@ def test_read_only_post_routes_run_when_guard_allows(route, fake, payload_key, m
     assert h.status == 200
 
 
-def test_post_save_url_only_advances_to_partial(monkeypatch):
-    token = "a" * 64
-    written: dict[str, dict[str, str]] = {}
-
-    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    monkeypatch.setattr(
-        ha, "write_env_file",
-        lambda path, values, mode=0o600, **kwargs: written.update({"v": values}),
-    )
-    restarted = {"n": 0}
-    monkeypatch.setattr(ha, "restart_voice_daemon", lambda: restarted.__setitem__("n", restarted["n"] + 1))
-
-    body = (
-        "csrf_token=" + token
-        + "&url=homeassistant.local:8123&token=&agent_id="
-    ).encode()
-    h = _make_request("/save", body=body, cookies="jts_csrf=" + token)
-    h.do_POST()
-
-    assert h.status == int(http.HTTPStatus.SEE_OTHER)
-    # URL persisted, token not yet -> next render is state 2. No restart yet.
-    assert written["v"][ha.ENV_URL] == "http://homeassistant.local:8123"
-    assert restarted["n"] == 0
-
-
-def test_post_save_with_token_verifies_and_restarts(monkeypatch):
-    token = "b" * 64
-    written: dict[str, dict[str, str]] = {}
-
-    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    monkeypatch.setattr(
-        ha, "verify_sync",
-        lambda url, tok, verify_ssl=True: {
-            "ok": True, "instance_name": "Home", "version": "2026.5",
-        },
-    )
-    monkeypatch.setattr(
-        ha, "write_env_file",
-        lambda path, values, mode=0o600, **kwargs: written.update({"v": values}),
-    )
-    restarted = {"n": 0}
-    monkeypatch.setattr(
-        ha, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
-    )
-
+@pytest.mark.parametrize("branch", ["url-only", "changed-url", "rejected", "connected", "reused"])
+@pytest.mark.parametrize("recent", [[], ["http://old:8123", "http://ha.local:8123", "http://third:8123"]])
+@pytest.mark.parametrize("verify_ssl", [True, False])
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_post_save_persistence(branch, recent, verify_ssl, write_fails, tmp_path, monkeypatch, caplog):
+    path = tmp_path / "home_assistant.env"
+    url = "http://homeassistant.local:8123" if branch == "url-only" else "http://ha.local:8123"
     llat = "eyJ0eXAi" + "z" * 180
-    body = (
-        "csrf_token=" + token
-        + "&url=http://ha.local:8123&token=" + llat + "&agent_id="
-    ).encode()
-    h = _make_request("/save", body=body, cookies="jts_csrf=" + token)
+    existing = {ha.ENV_URL: url, ha.ENV_AGENT_ID: "old-agent", ha.ENV_VERIFY_SSL: "0"}
+    if branch in ("changed-url", "reused"):
+        existing[ha.ENV_TOKEN] = llat
+    if branch == "changed-url":
+        existing[ha.ENV_URL] = "http://old:8123"
+    if recent:
+        existing[ha.ENV_RECENT_URLS] = json.dumps(recent)
+    ha.write_env_file(path, existing, mode=ha.SECRET_ENV_MODE, owner=ha.HA_ENV_OWNER)
+    before = path.read_bytes()
+    writer = Mock(wraps=ha.write_env_file, side_effect=OSError("disk unavailable") if write_fails else None)
+    verifier = Mock(return_value={"ok": branch != "rejected", "instance_name": "Home", "version": "2026.5"})
+    restart = Mock(return_value=RestartOutcome.RAN)
+    monkeypatch.setattr(ha, "write_env_file", writer)
+    monkeypatch.setattr(ha, "verify_sync", verifier)
+    monkeypatch.setattr(ha, "restart_voice_daemon", restart)
+    caplog.set_level("INFO", logger=ha.__name__)
+    form = {
+        "csrf_token": CSRF, "url": url.removeprefix("http://"), "agent_id": "",
+        "token": llat if branch in ("rejected", "connected") else "",
+        "accept_self_signed_present": "1", "accept_self_signed": "" if verify_ssl else "on",
+    }
+    h, _ = make_real_handler(
+        ha._make_handler({"state_path": str(path)}), "/save",
+        body=urlencode(form).encode(), headers={"Cookie": "jts_csrf=" + CSRF},
+    )
     h.do_POST()
 
+    connected = branch in ("connected", "reused")
+    expected = {ha.ENV_URL: url}
+    if connected:
+        expected.update({ha.ENV_TOKEN: llat, ha.ENV_AGENT_ID: "", ha.ENV_RECENT_URLS: json.dumps(
+            [url] + [u for u in recent if u != url][:2],
+        )})
+    if not verify_ssl and branch in ("rejected", "connected", "reused"):
+        expected[ha.ENV_VERIFY_SSL] = "0"
+    if recent and not connected:
+        expected[ha.ENV_RECENT_URLS] = json.dumps(recent)
+    writer.assert_called_once_with(str(path), expected, mode=ha.SECRET_ENV_MODE, owner=ha.HA_ENV_OWNER)
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
-    assert written["v"][ha.ENV_TOKEN] == llat
-    assert restarted["n"] == 1
-    # Lands on the restart-poll URL.
-    assert h.header_values("Location") == ["./?restarting=1"]
+    assert restart.call_count == int(connected and not write_fails)
+    assert h.header_values("Location") == ["./?restarting=1" if connected and not write_fails else "./"]
+    if branch in ("url-only", "changed-url"):
+        verifier.assert_not_called()
+    else:
+        verifier.assert_called_once_with(url, llat, verify_ssl=verify_ssl)
+    if write_fails:
+        assert path.read_bytes() == before
+    else:
+        assert list(ha.read_env_file(str(path)).items()) == list(expected.items())
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert llat not in h.wfile.getvalue().decode() + str(h.sent_headers) + caplog.text
 
 
 def test_post_disconnect_clears_and_restarts(monkeypatch):
@@ -435,3 +411,15 @@ def test_credentials_for_copy_returns_creds_with_csrf(monkeypatch):
     payload = json.loads(h.wfile.getvalue().decode())
     assert payload["url"] == "http://homeassistant.local:8123"
     assert payload["token"].startswith("eyJ0eXAi")
+
+
+def test_confirm_copy_and_ha_credentials_via_node():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    result = subprocess.run(
+        [node, "tests/js/confirm_forms_copy_test.mjs"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["ok"] is True

@@ -1355,7 +1355,7 @@ def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypa
 
     monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
 
-    ok, detail = cr._start_audio_hardware_reconcile(reason="t")
+    ok, detail = cr.start_audio_hardware_reconcile(reason="t")
 
     assert ok is True and detail == ""
     assert seen["units"] == (cr.AUDIO_HARDWARE_RECONCILE_UNIT,)
@@ -1953,7 +1953,7 @@ def test_start_budget_reset_covers_only_crash_budget_daemon_starts(monkeypatch):
     cr._restart_outputd(reason="t")
     cr._stop_camilla(reason="t")
     cr._start_camilla(reason="t")
-    cr._start_audio_hardware_reconcile(reason="t")
+    cr.start_audio_hardware_reconcile(reason="t")
 
     assert calls == [
         (cr.OUTPUTD_UNIT, "reset-failed"),

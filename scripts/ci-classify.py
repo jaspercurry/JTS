@@ -40,6 +40,14 @@ LANDING_PYTEST_TARGETS = (
     "::test_landing_page_app_css_version_uses_resolved_build_sha",
 )
 FAST_LANDING_PATHS = frozenset((LANDING_PAGE, *LANDING_TEST_FILES))
+RUST_PATHS = frozenset((
+    "deploy/install.sh",
+    "deploy/systemd/jasper-fanin.service",
+    "deploy/systemd/jasper-outputd.service",
+    ".github/workflows/tests.yml",
+    "scripts/check-rust.sh",
+    "scripts/rust-ci-needed",
+))
 
 ROUTING_POLICY_PYTEST_TARGETS = ("tests/test_ci_classifier.py",)
 
@@ -156,6 +164,7 @@ class Decision:
     lane: str
     reason: str
     changes: tuple[Change, ...] = ()
+    rust: bool = True
 
 
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
@@ -231,8 +240,13 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
         return Decision(
             "full", f"{event_name or 'unknown'} event runs the complete CI farm", frozen
         )
+    paths = frozenset(path for change in frozen for path in change.paths)
+    rust = any(
+        path.startswith(("rust/", "c/jts-ring-ioplug/")) or path in RUST_PATHS
+        for path in paths
+    )
     if not frozen:
-        return Decision("full", "empty pull-request diff", frozen)
+        return Decision("full", "empty pull-request diff", frozen, rust)
     for change in frozen:
         if change.status in {"A", "M"}:
             continue
@@ -245,9 +259,9 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
             "full",
             f"change status {change.status!r} is not safe for a narrow lane",
             frozen,
+            rust,
         )
 
-    paths = frozenset(path for change in frozen for path in change.paths)
     for lane, is_subject, is_lane_path in NARROW_LANES:
         subjects = sorted(path for path in paths if is_subject(path))
         if not subjects:
@@ -258,15 +272,17 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
                 "full",
                 f"path outside the {lane} allowlist: " + ", ".join(disallowed),
                 frozen,
+                rust,
             )
         return Decision(
             lane,
             f"{len(subjects)} {lane} subject(s) plus "
             f"{len(paths) - len(subjects)} registered companion path(s)",
             frozen,
+            rust,
         )
 
-    return Decision("full", "no narrow lane subject in the pull-request diff", frozen)
+    return Decision("full", "no narrow lane subject in the pull-request diff", frozen, rust)
 
 
 def decision_from_git(
@@ -313,6 +329,7 @@ def _write_github_files(decision: Decision) -> None:
         with open(output_path, "a", encoding="utf-8") as output:
             output.write(f"lane={decision.lane}\n")
             output.write(f"reason={decision.reason}\n")
+            output.write(f"rust={str(decision.rust).lower()}\n")
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
@@ -342,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     decision = decision_from_git(args.event, args.base, args.head)
     print(f"lane={decision.lane}")
     print(f"reason={decision.reason}")
+    print(f"rust={str(decision.rust).lower()}")
     for change in decision.changes:
         print(f"change={change.status} {' -> '.join(change.paths)}")
     _write_github_files(decision)

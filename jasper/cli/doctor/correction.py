@@ -22,8 +22,8 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_UNREADABLE,  # noqa: F401 — re-exported, see below
     REASON_CAMILLA_STATEFILE_UNREADABLE,  # noqa: F401 — re-exported, see below
     _group_writable_dir,
-    _run,
-    _systemctl_unavailable_result,
+    run,
+    systemctl_unavailable_result,
 )
 from ...identity import identity_state
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
@@ -118,7 +118,7 @@ def check_correction_web_service() -> CheckResult:
     socket_raw = evidence.unit_state("jasper-correction-web.socket")
     service_raw = evidence.unit_state("jasper-correction-web.service")
     if socket_raw is None or service_raw is None:
-        return _systemctl_unavailable_result("correction web")
+        return systemctl_unavailable_result("correction web")
     socket_state = socket_raw.get("active_state") or ""
     service_state = service_raw.get("active_state") or ""
     if socket_state == "active":
@@ -208,7 +208,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
     label = "correction idle-exit holds"
     active = evidence.unit_active(_CORRECTION_WEB_UNIT)
     if active is None:
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     if not active:
         return CheckResult(
             label, "skipped", f"{_CORRECTION_WEB_UNIT} not running",
@@ -223,7 +223,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
         - datetime.timedelta(seconds=DEFERRED_EXIT_LOG_PERIOD_SEC * 2)
     )
     try:
-        journal = _run(
+        journal = run(
             ["journalctl", "-u", _CORRECTION_WEB_UNIT, "-p", "warning",
              "--since", since.strftime("%Y-%m-%d %H:%M:%S UTC"),
              "--no-pager", "--output=cat"],

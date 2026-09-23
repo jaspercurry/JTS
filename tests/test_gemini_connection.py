@@ -13,13 +13,20 @@ from typing import Any
 
 import pytest
 
+try:
+    from google.genai import types
+except ImportError:
+    pytest.skip("google-genai not installed in this environment", allow_module_level=True)
 
+from jasper.tools import ToolRegistry, tool
 from jasper.voice._base import ToolCall, close_code_and_reason
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     request_planned_reopen,
     run_reconnect_with_backoff,
 )
+from jasper.voice.gemini_session import GeminiLiveConnection, GeminiLiveTurn
+from jasper.voice.session import ConnectionState
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
@@ -27,23 +34,6 @@ from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
 from tests._gemini_fakes import Transcription as _Transcription
 from tests._log_events import event_fields, event_records, leaked_lines
-
-try:
-    from google.genai import types
-
-    from jasper.voice.gemini_session import (
-        GeminiLiveConnection,
-        GeminiLiveTurn,
-    )
-    from jasper.voice.session import ConnectionState
-    from jasper.tools import ToolRegistry, tool
-    _HAVE_GENAI = True
-except ImportError:
-    _HAVE_GENAI = False
-
-pytestmark = pytest.mark.skipif(
-    not _HAVE_GENAI, reason="google-genai not installed in this environment"
-)
 
 
 # ---------------------------------------------------------------------------

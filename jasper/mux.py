@@ -94,7 +94,7 @@ from .airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
-from .control.volume_ops import _make_duck_active_probe
+from .control.volume_ops import make_duck_active_probe
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .music_sources import (
     MUSIC_SOURCE_VALUES,
@@ -1097,7 +1097,7 @@ class Mux:
             camilla=primary_controller(),
             backend=RendererClient(librespot_state_path=self._librespot_state_path),
             spotify_router=self._ensure_spotify_router(),
-            duck_active_probe=_make_duck_active_probe(
+            duck_active_probe=make_duck_active_probe(
                 os.environ.get(
                     "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
                 ),

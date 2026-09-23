@@ -36,7 +36,7 @@ from ...wake_events import (
 )
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, run
 
 # Machine-stable codes naming which branch of a memory check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -674,7 +674,7 @@ def _journald_effective_config() -> tuple[str | None, str | None]:
     ``(None, None)`` when the tool is unavailable (values then fall back to
     the JTS drop-in alone)."""
     try:
-        proc = _run(
+        proc = run(
             ["systemd-analyze", "cat-config", "systemd/journald.conf"],
             timeout=10.0,
         )
@@ -702,7 +702,7 @@ def _journald_installed_cap_raw() -> str | None:
 def _journald_disk_usage() -> str:
     """One-line ``journalctl --disk-usage`` summary, or "" on any failure."""
     try:
-        proc = _run(["journalctl", "--disk-usage"], timeout=10.0)
+        proc = run(["journalctl", "--disk-usage"], timeout=10.0)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return ""
     if proc.returncode != 0:

@@ -20,12 +20,12 @@ from typing import Any
 
 from ..music_sources import Source
 from ..service_units import CAMILLA_SERVICE, unit_failed
-from ._health_fields import _mapping
+from ._health_fields import mapping
 from ._health_sources import (
     SOURCE_OFF_DRIFT_DETAIL,
     SOURCE_UNAVAILABLE_DETAIL,
     _SOURCE_HEALTH_UNITS,
-    _SOURCE_LABELS,
+    SOURCE_LABELS,
     _SOURCE_OFF_DRIFT_UNITS,
 )
 from .audio_incidents import issue_row
@@ -57,7 +57,7 @@ def _state_issues(
     transport_park: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    park_state = _mapping(transport_park)
+    park_state = mapping(transport_park)
     if coherence_park is not None and park_state.get("status") != "parked":
         issues.append(issue_row(
             "path.transport_parked",
@@ -88,7 +88,7 @@ def _state_issues(
                 detail=_park_detail([park]),
             ))
     warmup = bool(airplay.get("warmup_active"))
-    current = _mapping(airplay.get("current"))
+    current = mapping(airplay.get("current"))
     fanin = current.get("fanin")
     if activity_unknown:
         issues.append(issue_row(
@@ -110,7 +110,7 @@ def _state_issues(
         ))
     if not warmup:
         camilla_stopped = _camilla_stopped(
-            _mapping(service_states).get(CAMILLA_SERVICE)
+            mapping(service_states).get(CAMILLA_SERVICE)
         )
         if camilla_stopped is not None:
             issues.append(issue_row(
@@ -208,7 +208,7 @@ def _state_issues(
             detail=str(signal_path.get("detail")),
         ))
     if active_source == Source.USBSINK.value:
-        latency_runtime = _mapping(latency.get("runtime"))
+        latency_runtime = mapping(latency.get("runtime"))
         raw_mode = latency_runtime.get("raw_mode")
         if raw_mode == "l2_fallback" and latency_runtime.get("preset") != "high":
             issues.append(issue_row(
@@ -241,7 +241,7 @@ def _state_issues(
                 detail="JTS cannot check this computer's USB audio delay.",
             ))
         elif (
-            _mapping(latency.get("runtime")).get("raw_mode")
+            mapping(latency.get("runtime")).get("raw_mode")
             not in {"l0_locked", "l1_warn", "l2_fallback", "probing"}
         ):
             issues.append(issue_row(
@@ -254,16 +254,16 @@ def _state_issues(
                 detail="Playback continues with standard buffering.",
             ))
     for source_id, health_units in _SOURCE_HEALTH_UNITS.items():
-        desired = _mapping(source_intents).get(source_id)
+        desired = mapping(source_intents).get(source_id)
         units = (
             _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
             if desired is False
             else health_units
         )
         for unit in units:
-            unit_state = _mapping(service_states).get(unit)
+            unit_state = mapping(service_states).get(unit)
             if desired is False:
-                if _mapping(unit_state).get("active_state") == "active":
+                if mapping(unit_state).get("active_state") == "active":
                     issues.append(issue_row(
                         f"{source_id}.service.{unit}.off_drift",
                         scope="source",
@@ -271,13 +271,13 @@ def _state_issues(
                         impact="availability",
                         severity="issue",
                         title=(
-                            f"{_SOURCE_LABELS.get(source_id, source_id)} "
+                            f"{SOURCE_LABELS.get(source_id, source_id)} "
                             "is running while Off"
                         ),
                         detail=SOURCE_OFF_DRIFT_DETAIL,
                     ))
                 continue
-            if not unit_failed(_mapping(unit_state)):
+            if not unit_failed(mapping(unit_state)):
                 continue
             issues.append(issue_row(
                 f"{source_id}.service.{unit}",
@@ -285,7 +285,7 @@ def _state_issues(
                 source_id=source_id,
                 impact="availability",
                 severity="issue",
-                title=f"{_SOURCE_LABELS.get(source_id, source_id)} is unavailable",
+                title=f"{SOURCE_LABELS.get(source_id, source_id)} is unavailable",
                 detail=SOURCE_UNAVAILABLE_DETAIL,
             ))
     return issues

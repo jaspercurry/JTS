@@ -2,30 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /assistant/wake/ microphone/echo/wake card + model-form affordance.
-//
-// The page is server-rendered. Two pieces of behaviour ride on top:
-//
-//   1. The microphone, echo-cancellation, and advanced-fusion cards are live:
-//      they poll jasper-control's backend-owned `mic_settings` view model
-//      (proxied through this page's /detection.json) and render it. User
-//      interaction POSTs intent back to /profile, /layer/<name>, and
-//      /sensitivity, which proxy on to jasper-control. This mirrors the
-//      optimistic-flip-with-reconcile pattern used elsewhere: a per-control
-//      `dirty` flag keeps an in-flight click from being clobbered by a poll.
-//
-//   2. The model-picker form is a plain POST to ./save; we only disable its
-//      submit button on submit so the household sees something happen before
-//      the redirect (the daemon restart lands after the redirect — observed in
-//      PR #117 that without this the action feels like a no-op).
-//
-// Confirms use the shared <dialog> helper, never window.confirm (the browser
-// can suppress that). Mutating fetches reuse jsonHeaders() from the shared HTTP
-// module so the CSRF token is read from the <meta name="jts-csrf"> tag — this
-// cached module bakes in no secret. The slider uses an explicit Save button
-// rather than apply-on-change so a drag doesn't restart jasper-voice per pixel.
-
-import { jsonHeaders, postJSON, startPolling } from "/assets/shared/js/http.js";
+import { getJSON, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
 const LAYERS = ["raw", "dtln", "chip_aec_150", "chip_aec_210"];
@@ -337,9 +314,7 @@ function applyState(s) {
 async function pollDetection() {
   if (Date.now() < ignorePollUntil) return;
   try {
-    const r = await fetch("detection.json", { cache: "no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    applyState(await r.json());
+    applyState(await getJSON("detection.json"));
   } catch (e) {
     LAYERS.forEach((name) => {
       setText("layer-status-" + name, "Disconnected");
@@ -394,13 +369,7 @@ async function postProfile(profile) {
   dirty.profile = true;
   ignorePollUntil = Date.now() + 1500;
   try {
-    const r = await fetch("profile", {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({ profile }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    const body = await postJSON("profile", { profile });
     dirty.profile = false;
     applyState(body);
   } catch (err) {
@@ -414,13 +383,7 @@ async function postLayer(name, wanted) {
   dirty[name] = true;
   ignorePollUntil = Date.now() + 1500;
   try {
-    const r = await fetch("layer/" + name, {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({ enabled: wanted }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    const body = await postJSON("layer/" + name, { enabled: wanted });
     // The server returns the full state after applying — reconcile right away
     // so the AEC-off → legs-disabled transition is instant.
     dirty[name] = false;
@@ -438,13 +401,7 @@ async function postUsbMic(wanted) {
   input.disabled = true;
   setText("usb-mic-status", wanted ? "Adding microphone…" : "Removing microphone…");
   try {
-    const r = await fetch("usb-mic", {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({ enabled: wanted }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    const body = await postJSON("usb-mic", { enabled: wanted });
     usbMicBusy = false;
     applyState(body);
     // Re-enumeration may briefly take this page's USB network path down.
@@ -550,13 +507,7 @@ saveBtn.addEventListener("click", async () => {
   saveBtn.disabled = true;
   saveBtn.textContent = "…";
   try {
-    const r = await fetch("sensitivity", {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({ value: v }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    await postJSON("sensitivity", { value: v });
     saveBtn.classList.remove("is-dirty");
   } catch (err) {
     await jtsAlert("Save failed: " + err.message);

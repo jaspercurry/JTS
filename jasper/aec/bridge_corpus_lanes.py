@@ -39,7 +39,7 @@ from jasper.aec.bridge_engines import (
 )
 from jasper.aec.bridge_telemetry import (
     LegEmitter,
-    _BridgeStats,
+    BridgeStats,
     add_loop_emitter,
     logger,
 )
@@ -77,7 +77,7 @@ class CorpusLanes:
 
 def build_corpus_lanes(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -154,7 +154,7 @@ def build_corpus_lanes(
 
 def _build_xvf_raw0_optional_paths(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -218,7 +218,7 @@ def _build_xvf_raw0_optional_paths(
 
 def _build_usb_optional_paths(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -315,7 +315,7 @@ def _build_usb_optional_paths(
 
 def _build_aec3_sweep_paths(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -396,7 +396,7 @@ def _build_aec3_sweep_paths(
 
 def _build_dtln_optional_path(
     emitters: dict[str, LegEmitter],
-    stats: _BridgeStats,
+    stats: BridgeStats,
     config: BridgeConfig,
     *,
     production_chip_aec_enabled: bool,
