@@ -40,6 +40,9 @@ REFUSE_NO_PROGRAMS = "round_no_programs"
 REFUSE_PROGRAM_UNMATCHED = "round_program_hash_unmatched"
 REFUSE_RADIATED_BAND_MISSING = "round_radiated_band_missing"
 REFUSE_CAPTURE_UNREADABLE = "round_capture_unreadable"
+#: A branch role was asked of a take whose record kept no branch diagnostic;
+#: only a take played in the ``branches`` regime keeps one (#5632 F8).
+REFUSE_BRANCH_DIAGNOSTIC_MISSING = "round_branch_diagnostic_missing"
 
 
 class RoundCapturesRefused(Exception):
@@ -425,7 +428,7 @@ def _capture_response(
             band = tuple(retained["band_hz"])
         else:
             if role != "summed":
-                raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav), "detail": "take has no retained branch diagnostic"})
+                raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
             signal, rate = read_wav_mono(wav)
         if retained is None:
             program_key = str(program)

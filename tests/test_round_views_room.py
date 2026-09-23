@@ -491,6 +491,8 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
     write_manifest(root, program=f"{purpose}/express", groups=groups)
     manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
     packet = write_round_packet(root, manifest_path, views)
+    # A timing set bounds no prescription, so it is not listed as unavailable (#5632 F8).
+    assert set(packet["limits"]) == {"woofer", "tweeter", "summed"}
     assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
         (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
     assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])

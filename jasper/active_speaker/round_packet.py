@@ -32,7 +32,7 @@ from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, r
 from .round_bank import BankedRound
 from .round_verdicts import round_verdicts
 from .round_packet_report import INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index
-from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets
+from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets, view_sets
 from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
 
 
@@ -196,7 +196,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     profile = sources.get("applied_profile") or {}
     limits = {}
     rooms = room_sets(manifest)
-    for group in manifest.get("sets", ()):
+    for group in view_sets(manifest):
         try:
             section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None)
             contracts = prescription_contracts(programs=contract_programs(section_sources), **section_sources)

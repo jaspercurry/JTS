@@ -39,7 +39,7 @@ def build_tuning_handoff_binding(
     **No credential of any kind belongs here** — not the control token, not a
     PSK, not the peer id. Anything here is disclosed to a third-party chat.
     """
-    from jasper.active_speaker.crossover_v2.round_inputs import recent_round_sessions  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+    from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, recent_round_sessions  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
     identity = read_identity()
     revision = design_draft.get("revision")
@@ -56,16 +56,18 @@ def build_tuning_handoff_binding(
         "applied_candidate_fingerprint": applied.get("candidate_fingerprint") if has_applied else None,
         "applied_record": applied.get("record") if has_applied else None,
         "applied_at": applied.get("applied_at") if has_applied else None,
-        "latest_round_dir": str(rounds[0]) if rounds else None,
+        "latest_round_dir": str(banked_round_of(rounds[0]) or rounds[0]) if rounds else None,
     }
 
 
-#: Extra operator guidance. Rear composes the rear-muted reference and
-#: variants as ordinary candidates, then trials them (playbook, Rear
-#: section); bass's default layout pins the arm.
+#: The steps the playbook's loops add per program (playbook, Seat and Rear);
+#: bass's default layout pins the arm.
 _PROGRAM_PROMPT_LINES = {
     "rear": (
-        "First compose the rear-muted copy and the variants as ordinary "
+        "Rear previews read the pair model: bank it at the mark with "
+        f"sudo {_BIN}/jasper-round run --program rear --poses rear/pair_mark --wait, "
+        f"then preview with sudo {_BIN}/jasper-crossover-prescriber judge --preview <doc> --round <pair round>.",
+        "Compose the rear-muted copy and the variants as ordinary "
         f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
         "<fingerprint> --candidates base,<muted>,<variant> (the trial picks "
         "the rear positions).",
