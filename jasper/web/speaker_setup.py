@@ -58,6 +58,8 @@ from ..service_units import (
     FANIN_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
+    SHAIRPORT_SYNC_SERVICE,
+    USBGADGET_SERVICE,
     read_unit_states,
     unit_active as _unit_state_active,
 )
@@ -68,10 +70,8 @@ logger = logging.getLogger(__name__)
 def _unit_active(unit: str) -> bool:
     """Whether systemd currently reports ``unit`` active, read fresh.
 
-    5 s timeout (not the 2 s ``read_unit_states`` default): mirrors the
-    old ``_service_state.systemctl`` probe this converged onto. A timed
-    out/unavailable probe is logged so a skipped USB-gadget rebuild
-    (the ``jasper-usbgadget.service`` caller) leaves evidence.
+    The 5 s timeout gives systemd more time than the 2 s reader default. An
+    unavailable probe is logged so a skipped USB-gadget rebuild leaves evidence.
     """
     states = read_unit_states((unit,), timeout=5.0)
     if states is None:
@@ -98,7 +98,7 @@ RESTART_UNITS = [
 # use systemd's active-only `try-restart` for this set.
 SOURCE_TRY_RESTART_UNITS = [
     LIBRESPOT_SERVICE,
-    "shairport-sync.service",
+    SHAIRPORT_SYNC_SERVICE,
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",
@@ -122,8 +122,6 @@ def _restart_units(
     no_block: bool = True,
     timeout: float = 5.0,
 ) -> bool:
-    # Route through jasper-control's restart broker (the read-only
-    # `_systemctl` probes elsewhere in this file stay direct).
     resp = manage_units(
         *units,
         verb=verb,
@@ -262,13 +260,13 @@ def _refresh_gadget_consumers_after_rebuild(name_changed: bool) -> bool:
     rebuild succeeded, so the caller can fold this straight into its own
     success return.
     """
-    if not name_changed or not _unit_active("jasper-usbgadget.service"):
+    if not name_changed or not _unit_active(USBGADGET_SERVICE):
         return True
     # Blocking, like the bluetooth restart in _apply_name: the caller must
     # know the rebuild actually finished -- not merely that systemd accepted
     # the job -- before it is safe to touch the consumers below.
     gadget_restarted = _restart_units(
-        ["jasper-usbgadget.service"],
+        [USBGADGET_SERVICE],
         no_block=False,
         timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
     )

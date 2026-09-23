@@ -4,9 +4,9 @@
 
 """Guard: every LLM voice tool has a regression scenario file mention.
 
-AGENTS.md ("Test discipline — required, not optional"): every tool the
-LLM can call — anything registered via a `make_*_tools` factory in
-jasper/tools/ — ships with a regression scenario under
+`.github/CONTRIBUTING.md` requires every tool the LLM can call — anything
+registered via a `make_*_tools` factory in jasper/tools/ — to ship with a
+regression scenario under
 tests/voice_eval/regression/. *No exceptions.* A tool with no scenario
 can't be reasoned about across model swaps or provider switches.
 

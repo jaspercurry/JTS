@@ -29,11 +29,9 @@ present and explains what is missing. An unavailable source that is already
 Off cannot be turned On; a stale desired-On source can always be turned Off so
 the safest recovery choice never depends on the missing component.
 
-This page renders on the canonical design system (canonical_page); its
-behaviour ships as the static ES module deploy/assets/sources/js/main.js,
-not inline <script>. The routes, JSON shapes, CSRF gate, and fail-soft
-logging are unchanged from the legacy look. Availability/enabled derivation
-and the enable-time precondition checks live in
+This page renders with ``canonical_page``; its behaviour ships as the static
+ES module deploy/assets/sources/js/main.js. Availability/enabled derivation
+and enable-time precondition checks live in
 ``jasper.local_sources.status``, the single owner both this page and
 jasper-control's mux-status augmenter read.
 
@@ -116,8 +114,7 @@ def _source_row(
 ) -> str:
     """One source row: name + optional notes on the left, toggle on the
     right. The toggle is disabled at first paint; the ES module's /state
-    poll hydrates checked/disabled within a poll cycle (mirrors the
-    legacy behaviour)."""
+    poll hydrates checked/disabled within a poll cycle."""
     notes = ""
     if note_html:
         notes += note_html

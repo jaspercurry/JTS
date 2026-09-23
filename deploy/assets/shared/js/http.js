@@ -4,7 +4,7 @@
 
 // http.js — CSRF-aware fetch helpers shared across the canonical pages.
 //
-// The first cross-page module after dialog.js. A migrated wizard imports it
+// A wizard imports this module
 // by absolute path (`/assets/shared/js/http.js`) and uses it for every
 // same-origin JSON call, so no page re-implements the CSRF/JSON plumbing.
 //
@@ -19,16 +19,14 @@ function csrfToken() {
   return meta ? meta.content : "";
 }
 
-// --- control token (WS1 Phase 2: mandatory, invisible) --------------------
+// --- control token ---------------------------------------------------------
 // The shared token gates jasper-control's high-impact mutations (poweroff /
 // reboot / restart-voice|audio / mic-mute / grouping / firmware update) behind
 // an X-JTS-Token header; control answers those routes 403
 // {error:"control_token_required"}
-// without it. Phase 2 makes it invisible to the household: the page is served
-// behind the read guard and embeds the token in `meta[name=jts-control-token]`
-// (canonical_page), so the dashboard reads it automatically and rides it on
-// every destructive POST — no prompt, no paste. We still honour a per-browser
-// localStorage value as a fallback (older paste-once flow / a rotated token).
+// without it. The page embeds the token in `meta[name=jts-control-token]`
+// (canonical_page), so the dashboard sends it on each destructive POST.
+// A per-browser localStorage value supports a rotated token.
 // The token is never baked into this cached JS and never logged.
 const CONTROL_TOKEN_KEY = "jts-control-token";
 

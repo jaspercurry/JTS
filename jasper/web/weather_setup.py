@@ -15,8 +15,7 @@ This page owns only the bare-question default and units. It stores
 rounded coordinates (same privacy posture as /assistant/transit/) plus a display
 label; the raw address typed into the form is never persisted.
 
-Migrated to the canonical design system: renders through
-``canonical_page`` with the page-specific CSS in
+The page renders through ``canonical_page`` with page-specific CSS in
 ``/assets/weather/weather.css``. It is a plain server-rendered
 request/response form; its only client behaviour is the shared
 data-confirm guard on the Clear form (assets/weather/js/main.js).
@@ -127,8 +126,8 @@ def _seed_transit_from_weather_if_missing(
     # clear. Take the shared flock and re-read transit INSIDE the lock: the
     # "transit already has coords → skip" decision and the write must be one
     # atomic step, or a concurrent transit save can be clobbered (or this seed
-    # can overwrite coords the user just entered). Symmetric with the
-    # transit->weather seed (DA-0036).
+    # can overwrite coords the user just entered). The transit-to-weather
+    # seed uses the same lock discipline.
     seeded = False
 
     def _seed_transform(transit_state: dict[str, str]) -> dict[str, str] | None:

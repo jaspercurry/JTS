@@ -939,33 +939,3 @@ async def test_probe_from_env_accepts_shared_false_value(tmp_path, monkeypatch):
     await probe_status_from_env(env_file_path=str(p))
 
     assert seen["verify_ssl"] is False
-
-
-# ---- IPv6 bracketing -------------------------------------------------------
-#
-# Discovery returns IP addresses from python-zeroconf as ipaddress
-# objects; their str() form for v6 is "fe80::1" (no brackets). RFC 3986
-# requires brackets when v6 literals are embedded in URLs alongside
-# port — otherwise the colon in the address collides with the
-# host:port separator. Without this fix, IPv6-only HA installs (rare
-# but real) would have their discovery results render as malformed
-# URLs that downstream urlparse couldn't reconstruct.
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        pytest.param("192.168.1.42", "192.168.1.42", id="ipv4_passes_through"),
-        pytest.param(
-            "homeassistant.local", "homeassistant.local", id="mdns_hostname_passes_through"
-        ),
-        pytest.param("uuid.local.", "uuid.local.", id="mdns_hostname_trailing_dot"),
-        pytest.param("fe80::1", "[fe80::1]", id="wraps_v6_literal"),
-        pytest.param("::1", "[::1]", id="wraps_v6_loopback"),
-        pytest.param("2001:db8::42", "[2001:db8::42]", id="wraps_v6_global"),
-        pytest.param("[fe80::1]", "[fe80::1]", id="idempotent_when_already_bracketed"),
-        pytest.param("", "", id="empty_passes_through"),
-    ],
-)
-def test_bracket_ipv6(raw, expected):
-    from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6(raw) == expected

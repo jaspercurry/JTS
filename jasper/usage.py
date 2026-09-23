@@ -914,12 +914,9 @@ class SpendCap:
     ``JASPER_DAILY_SPEND_CAP_USD=0`` — a multiplier of 0 must not silently
     turn the breaker off.
 
-    ``cap_usd <= 0`` means **disabled**: ``allowed()`` is always True.
-    This matches the documented contract everywhere the knob is
-    described (``Config.from_env``'s validation message, ``.env.example``,
-    the /voice wizard). Before 2026-06 a cap of 0 inverted the contract —
-    ``padded < 0.0`` is False from the first wake, so the documented
-    "disable" value blocked every session instead."""
+    ``cap_usd <= 0`` means **disabled**: ``allowed()`` is always True, matching
+    ``Config.from_env``'s validation message, ``.env.example``, and the voice
+    wizard."""
 
     def __init__(
         self,
