@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from jasper.control import restart_broker
+from jasper.control import camilla_topology_gate_state, restart_broker
 from jasper.atomic_io import (
     CONFIG_FILE_MODE,
     env_key_action,
@@ -212,12 +212,6 @@ def _camilla_up_or_gate_refusal() -> tuple[bool, str]:
     record = records.get(CAMILLA_UNIT) if records else None
     if not service_units.unit_loaded(record) or service_units.unit_active(record):
         return True, ""
-    # lazy: the control package is optional here for the same reason the broker
-    # import above is — a broken install degrades to a reported failure.
-    try:
-        from jasper.control import camilla_topology_gate_state
-    except ImportError:  # pragma: no cover - control pkg always present in prod
-        return False, "camilla_inactive_after_start"
     state = camilla_topology_gate_state.snapshot()
     if not state.get("refused"):
         return False, "camilla_inactive_after_start"
@@ -1369,10 +1363,9 @@ def _write_env_actions(
     """Fold ``build_actions`` onto ``path`` under its per-file advisory lock.
 
     The shared text-preserving writer, in this module's ``RuntimeEnvAction``
-    vocabulary. An empty result deletes the file, mirroring the old
-    ``_write_env_text``. Raises ``OSError`` on a write failure or a
-    lock-acquire timeout (``TimeoutError`` is one) — callers already handle
-    ``OSError`` from the old unlocked write.
+    vocabulary. Returns ``(text, changed)``; an empty result deletes the file
+    instead of publishing zero bytes. Raises ``OSError`` on a write failure or
+    a lock-acquire timeout (``TimeoutError`` is one).
     """
     return locked_upsert_env_file(
         path,
