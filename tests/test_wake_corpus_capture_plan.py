@@ -506,48 +506,22 @@ def test_begin_session_with_aec3_sweep_records_variant_legs(
     assert "dtln" not in clip.files
 
 
-def test_missing_bridge_outputs_detects_disabled_usb_and_dtln(
+def test_capture_plan_detects_disabled_usb_and_dtln(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     _use_tmp_bridge_env(monkeypatch, tmp_path)
 
-    assert bridge_session.missing_bridge_outputs_for_session(
+    plan = capture_plan.build_capture_plan(
+        wake_ports.build_ports(),
         include_dtln=True,
         include_usb_mic=True,
         include_usb_dtln=True,
         include_aec3_sweep=True,
-    ) == ["dtln", "ref", "usb", "usb_dtln", "aec3_sweep"]
-
-
-def test_missing_bridge_outputs_honors_overlay_order(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """The /var/lib corpus env wins over /etc, matching systemd's
-    later EnvironmentFile precedence."""
-    _use_tmp_bridge_env(
-        monkeypatch,
-        tmp_path,
-        system_env=(
-            "JASPER_AEC_DTLN_ENABLED=0\n"
-            "JASPER_AEC_CORPUS_REF_ENABLED=0\n"
-            "JASPER_AEC_CORPUS_USB_ENABLED=0\n"
-        ),
-        corpus_env=(
-            "JASPER_AEC_DTLN_ENABLED=1\n"
-            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
-            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
-            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
-            "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n"
-            "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb\n"
-        ),
     )
 
-    assert bridge_session.missing_bridge_outputs_for_session(
-        include_dtln=True,
-        include_usb_mic=True,
-        include_usb_dtln=True,
-        include_aec3_sweep=True,
-    ) == []
+    assert plan["bridge"]["missing_outputs"] == [
+        "dtln", "ref", "usb", "usb_dtln", "aec3_sweep",
+    ]
 
 
 def test_parse_amixer_bool_accepts_common_forms() -> None:
@@ -679,6 +653,11 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
     restarts: list[str] = []
     monkeypatch.setattr(
+        runtime_probe,
+        "chip_ref_pcm_for_env",
+        lambda env=None: "plughw:CARD=Test,DEV=0",
+    )
+    monkeypatch.setattr(
         bridge_session,
         "restart_unit",
         lambda unit, timeout=bridge_session.BRIDGE_RESTART_TIMEOUT_SEC: (
@@ -709,7 +688,7 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
-    assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == runtime_probe.DEFAULT_CHIP_REF_PCM
+    assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == "plughw:CARD=Test,DEV=0"
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == runtime_probe.OUTPUTD_REF_UDP_TARGET
     assert (
         values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"]
@@ -1147,12 +1126,14 @@ def test_exec_main_status_parses_systemctl_show_and_fails_soft(
 
     def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="2\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="ExecMainStatus=2\n", stderr="",
+        )
 
     monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
     assert bridge_session._aec_init_exec_main_status() == 2
     assert calls == [[
-        "systemctl", "show", "-p", "ExecMainStatus", "--value",
+        "systemctl", "show", "--no-page", "--property=ExecMainStatus",
         bridge_session.AEC_INIT_UNIT,
     ]]
 
@@ -1160,7 +1141,7 @@ def test_exec_main_status_parses_systemctl_show_and_fails_soft(
         bridge_session.subprocess,
         "run",
         lambda argv, **kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout="[not set]\n", stderr="",
+            argv, 0, stdout="ExecMainStatus=[not set]\n", stderr="",
         ),
     )
     assert bridge_session._aec_init_exec_main_status() is None

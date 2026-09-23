@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_lib.sh"
 
-SSH=(ssh -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
+SSH=(ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
 OPERATOR_ENV="/etc/jasper/jasper.env"
 PROVIDER_ENV="/var/lib/jasper/voice_provider.env"
 # The provider API keys live here (group jasper-secrets),
@@ -82,12 +82,9 @@ if ! KEY_VAR="$(lookup_catalog_field "$PROVIDER" 2)"; then
     exit 2
 fi
 
-# Sanity-check the active provider's API key BEFORE flipping the env — the daemon will refuse
-# to start without it, which would leave the Pi voiceless if we don't catch it here. The key
-# lives in KEYS_ENV (group jasper-secrets) or the operator's jasper.env; PROVIDER_ENV is still
-# grepped to cover a not-yet-migrated Pi (tail -1 wins on the last match).
-KEY_LINE=$("${SSH[@]}" "sudo sh -c 'grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${KEYS_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 || true'")
-if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
+# PROVIDER_ENV stays last because installed services still read legacy keys there.
+KEY_STATUS=$("${SSH[@]}" "sudo sh -c 'if grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${KEYS_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 | grep -qv -x \"${KEY_VAR}=\"; then printf set; else printf unset; fi'")
+if [[ "$KEY_STATUS" != "set" ]]; then
     echo "error: ${KEY_VAR} is not set for the effective voice config on ${PI_HOST}." >&2
     echo "       Set it via http://${PI_HOST}/assistant/voice/ or ${OPERATOR_ENV}, then re-run." >&2
     exit 3

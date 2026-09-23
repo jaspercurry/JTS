@@ -8,9 +8,9 @@ The WRITE side — verbs, the polkit roster, transition timeouts — belongs to
 :mod:`jasper.control.restart_broker`; ``systemctl show`` records and single
 properties (``LoadState``, ``ActiveState``, ``ExecStart``, ...) belong to
 :mod:`jasper.service_units`. This module owns the ``is-active`` /
-``is-enabled`` / ``is-failed`` reads: ONE spawn (:func:`unit_state`, or
-:func:`unit_states` for a batch) and pure classifiers over the word systemd
-printed.
+``is-enabled`` / ``is-failed`` reads: :func:`unit_state` for one unit,
+:func:`unit_states` for a batch, and :func:`async_unit_probe` on an event loop.
+Classifiers interpret the word systemd printed.
 
 Callers keep their own semantics by parameter rather than by a private copy:
 ``timeout`` is theirs, and ``activating_is_live`` picks the verdict a
@@ -18,9 +18,12 @@ Callers keep their own semantics by parameter rather than by a private copy:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 #: What a probe that could not reach systemd reports. ``systemctl is-active``
 #: never prints this for a unit it resolved, so it cannot collide with a real
@@ -96,6 +99,36 @@ def unit_state(query: str, unit: str, *, timeout: float) -> UnitState:
     )
 
 
+async def async_unit_probe(
+    query: str, unit: str, *, timeout: float,
+) -> subprocess.CompletedProcess[str] | None:
+    """Read a unit without blocking the loop; kill and reap on timeout/cancel."""
+    args = ["systemctl", query, unit]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, TimeoutError):
+        return None
+    try:
+        async with asyncio.timeout(timeout):
+            stdout, stderr = await proc.communicate()
+    except (asyncio.CancelledError, TimeoutError) as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(TimeoutError, OSError):
+            async with asyncio.timeout(1.0):
+                await proc.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        return None
+    return subprocess.CompletedProcess(
+        args, cast(int, proc.returncode),
+        stdout=stdout.decode("utf-8", "replace"),
+        stderr=stderr.decode("utf-8", "replace"),
+    )
+
+
 def unit_states(units: Sequence[str], *, timeout: float) -> dict[str, str]:
     """``systemctl is-active <units…>`` → ``{unit: state word}``.
 
@@ -128,7 +161,8 @@ def state_is_live(state: str, *, activating_is_live: bool) -> bool:
     Split out of :func:`unit_active` for callers that already hold the word —
     a batched read, or a probe whose failure they want to raise on.
     """
-    return state in (_RUNNING_OR_STARTING if activating_is_live else _RUNNING)
+    live = _RUNNING_OR_STARTING if activating_is_live else _RUNNING
+    return state in live
 
 
 def unit_query(result: UnitState) -> bool | None:

@@ -4,11 +4,7 @@
 
 """Tests for jasper.mux — the renderer source-arbiter.
 
-Tests focus on the transition-detection state machine, which is the
-hard logic. The probe-implementation tests live in test_source_state.py
-since the probes were factored out into jasper.source_state; here we
-just patch their bound names in jasper.mux's namespace and mutate the
-return values per tick.
+Probes are stubbed at the source-arbiter boundary.
 """
 from __future__ import annotations
 
@@ -29,6 +25,9 @@ import jasper.airplay_session as airplay_session
 from jasper.busctl import BusctlResult
 from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
+from jasper.volume_coordinator import VolumeCoordinator
+from jasper.volume_curve import percent_to_db
+from jasper.volume_persistence import VolumePersistence
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records
@@ -1477,27 +1476,26 @@ async def test_test_fanin_release_restores_manual_source(mux):
     assert status["active_source"] == "airplay"
 
 
-def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
-    assert "doctor-aec-probe" in mux_module.FANIN_TEST_OWNERS
-    assert "doctor-aec-probe" != "correction-measurement"
+@pytest.mark.parametrize("owner", ["", " \t"])
+async def test_test_fanin_gate_rejects_empty_owner(mux, owner):
+    assert "error" in await mux.select_test_fanin_label("correction", owner)
+    assert "error" in await mux.release_test_fanin_label(owner)
+    mux._fanin_select_label.assert_not_awaited()
+    mux._fanin_none.assert_not_awaited()
+    assert mux._test_fanin_owner is None
 
 
 @pytest.mark.parametrize(
-    ("holder", "other"),
-    [
-        ("correction-measurement", "active-speaker-commissioning"),
-        ("doctor-aec-probe", "correction-measurement"),
-    ],
+    "holder", ["correction-measurement", "chip-aec-commission", "seat-level",
+               "doctor-aec-probe", "arbitrary-owner"],
 )
 async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(
-    mux, holder, other,
+    mux, holder,
 ):
-    """The lease is per-owner: the holder may renew, anyone else is refused
-    both the gate and the release, and no foreign call reaches fan-in."""
     first = await mux.select_test_fanin_label("correction", holder)
     retry = await mux.select_test_fanin_label("correction", holder)
-    busy = await mux.select_test_fanin_label("correction", other)
-    wrong_release = await mux.release_test_fanin_label(other)
+    busy = await mux.select_test_fanin_label("correction", "other-owner")
+    wrong_release = await mux.release_test_fanin_label("other-owner")
 
     assert first["test_owner"] == holder
     assert retry["test_owner"] == holder
@@ -1505,13 +1503,13 @@ async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(
     assert holder in wrong_release["error"]
     assert mux._test_fanin_owner == holder
     assert mux._fanin_select_label.await_count == 2
+    assert "error" in await mux.select_test_fanin_label("spotify", holder)
+    assert (await mux.release_test_fanin_label(holder))["test_owner"] is None
 
 
 async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     mux, patched_probes,
 ):
-    """USB/direct and ordinary program starts cannot displace the held lane."""
-
     _stub_probes(
         patched_probes,
         spotify=True,
@@ -1778,9 +1776,6 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     tmp_path, patched_probes,
 ):
     """Context snapshotting runs after the coordinator's handoff lease exits."""
-    from jasper.volume_coordinator import VolumeCoordinator
-    from jasper.volume_persistence import VolumePersistence, percent_to_db
-
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     persistence.save_listening_level(50)
     camilla = SimpleNamespace(

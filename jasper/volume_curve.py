@@ -10,8 +10,7 @@ slider travel is therefore 1..100%, mapped over a calibrated dB range:
     1%   -> the quietest audible step, strictly above volume_floor_db
     100% -> 0 dB
 
-The default floor preserves the original shipped curve. Installations with
-low-sensitivity speakers can raise the floor from the /sound/ advanced
+Installations with low-sensitivity speakers can raise the floor from /sound/'s advanced
 settings so the bottom of the slider becomes useful without allowing positive
 digital gain.
 """
@@ -24,7 +23,6 @@ from .sound import settings as sound_settings
 from .volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
-    VOLUME_FLOOR_MIN_DB,  # noqa: F401 - re-exported; volume_persistence.py imports it from here
     normalize_volume_floor_db,
 )
 
@@ -89,9 +87,7 @@ def percent_to_db(percent: float, *, floor_db: float | None = None) -> float:
     audible step, not mute, so it must sit strictly above the floor: a
     quarter of the normal per-percent step keeps it audibly distinct from
     0% while landing well below 2%, and round-trips back through
-    ``db_to_percent`` as 1 (audit R-006 — the old floor-sharing value made
-    ``_main_mute_for_db`` treat level 1 as muted, re-muting it forever).
-    2..100% is the original, unchanged linear span.
+    ``db_to_percent`` as 1. 2..100% spans the remaining linear range.
     """
     p = max(0.0, min(100.0, float(percent)))
     floor = _floor(floor_db)
@@ -106,9 +102,7 @@ def percent_to_db(percent: float, *, floor_db: float | None = None) -> float:
 def db_to_percent(db: float, *, floor_db: float | None = None) -> int:
     """Map Camilla dB back to the nearest user-facing percent.
 
-    The floor dB unambiguously means mute now that 1% sits strictly above
-    it (audit R-006); exact/below-floor values return 0, matching legacy
-    dB-only callers that already expected the floor to mean 0%.
+    Exact/below-floor values return 0; 1% sits strictly above the floor.
     """
     floor = _floor(floor_db)
     try:

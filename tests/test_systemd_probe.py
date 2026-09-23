@@ -10,11 +10,15 @@ which parameters it chose.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from jasper import systemd_probe
+from tests._async_wait import wait_signalled
 
 
 def _fake_run(monkeypatch, *, stdout="", returncode=0, raises=None, calls=None,
@@ -179,3 +183,59 @@ def test_unit_state_spawn_failure_is_unresolved_with_error(monkeypatch, failure)
     assert result.word is None
     assert result.rc is None
     assert result.error is failure
+
+
+@pytest.mark.parametrize("returncode", [0, 1, 3])
+async def test_async_probe_preserves_output_and_exit_code(monkeypatch, returncode):
+    proc = SimpleNamespace(
+        returncode=returncode,
+        communicate=AsyncMock(return_value=(b" enabled\n", b" Unit NOT FOUND\xff\n")),
+    )
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    result = await systemd_probe.async_unit_probe("is-enabled", "u.service", timeout=0.1)
+    assert result is not None
+    assert (result.returncode, result.stdout, result.stderr) == (
+        returncode, " enabled\n", " Unit NOT FOUND\ufffd\n",
+    )
+    spawn.assert_awaited_once_with(
+        "systemctl", "is-enabled", "u.service",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), PermissionError(), TimeoutError()])
+async def test_async_probe_spawn_failure_is_unavailable(monkeypatch, error):
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(side_effect=error))
+    assert await systemd_probe.async_unit_probe("is-active", "u.service", timeout=0.1) is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("already_exited", [False, True])
+async def test_async_probe_kills_and_reaps_on_timeout_or_cancel(
+    monkeypatch, cancel, already_exited,
+):
+    started = asyncio.Event()
+
+    async def communicate():
+        started.set()
+        await asyncio.sleep(3600)  # a hung child; the probe's timeout or cancel ends it
+
+    proc = SimpleNamespace(
+        communicate=communicate,
+        kill=Mock(side_effect=ProcessLookupError() if already_exited else None),
+        wait=AsyncMock(return_value=-9),
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+    task = asyncio.create_task(
+        systemd_probe.async_unit_probe("is-active", "u.service", timeout=0.01),
+    )
+    await wait_signalled(started, "probe spawned communicate", producer=task)
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert await task is None
+    proc.kill.assert_called_once_with()
+    proc.wait.assert_awaited_once_with()

@@ -411,8 +411,8 @@ def handle_apply(handler) -> tuple[dict, int]:
 
     ``handler`` carries the browser-supplied ``X-JTS-Token``; we forward it
     to the leader's /grouping/set just like the /rooms bond fan-out. That
-    route is one of jasper-control's MANDATORY token-gated mutations (WS1
-    Phase 2), so the loopback write would otherwise be rejected 403 on a
+    route is one of jasper-control's mandatory token-gated mutations, so the
+    loopback write would otherwise be rejected 403 on a
     gate-armed speaker — and since sync only writes self, a missing token
     fails the apply outright.
     """

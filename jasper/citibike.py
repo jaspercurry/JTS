@@ -17,7 +17,7 @@ therefore degrades the answer rather than silencing it.
 
 This module is the GBFS data layer; the wizard provider at
 `jasper.transit.providers.citibike` imports `fetch_feed` to power
-"nearest station" lookups, and the voice tool (PR 2) constructs a
+"nearest station" lookups, and the voice tool constructs a
 `CitiBikeClient` from the wizard-written env vars for live queries.
 
 Everything here is sync. The voice tool wraps `CitiBikeClient.get_status`
@@ -35,11 +35,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-# httpx is imported lazily inside the fetch/classify helpers that
-# perform (or categorise) I/O: jasper.config imports this module for
-# `parse_saved_stations` alone, so a top-level import made every
-# config-loading process pay httpx's import cost. Mirrors the
-# lazy-import pattern in jasper/transit/providers/.
+# The transit wizard and doctor import `parse_saved_stations` without doing
+# I/O. Keep httpx at the network call sites so those processes do not load it.
 if TYPE_CHECKING:
     import httpx
 
@@ -455,8 +452,8 @@ class CitiBikeClient:
     Holds the parsed saved-stations set plus the global e-bike-only
     flag. `get_status` returns a list of `StationStatus` for the
     saved stations (optionally filtered to those whose label contains
-    a substring). The tool's async wrapper calls this via
-    `asyncio.to_thread` — see `make_citibike_tools` in PR 2.
+    a substring). `jasper.tools.citibike.make_citibike_tools` calls this via
+    `asyncio.to_thread`.
 
     `http` is a test-only injection seam for `httpx.MockTransport`-
     wired clients. Production callers leave it None and each

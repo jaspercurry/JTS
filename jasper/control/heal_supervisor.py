@@ -35,7 +35,7 @@ from jasper.service_units import (
     unit_unstable,
 )
 
-from ..measurement_window import DEFAULT_VOICE_SOCKET_PATH
+from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from ..platform.uds import voice_socket_command
 from . import camilla_topology_gate_state
 from ._health_fields import _mapping
@@ -212,7 +212,7 @@ class HealSupervisor:
         self,
         *,
         audio_health_sampler: Any = None,
-        voice_socket_path: str = DEFAULT_VOICE_SOCKET_PATH,
+        voice_socket_path: str = VOICE_CONTROL_SOCKET_PATH,
         interval_sec: float = TICK_INTERVAL_SEC,
         jitter_sec: float = TICK_JITTER_SEC,
         cold_start_sec: float = COLD_START_SEC,
@@ -364,7 +364,7 @@ def snapshot() -> dict[str, Any]:
 def start_supervisor(
     audio_health_sampler: Any = None,
     *,
-    voice_socket_path: str = DEFAULT_VOICE_SOCKET_PATH,
+    voice_socket_path: str = VOICE_CONTROL_SOCKET_PATH,
 ) -> None:
     """Start the supervisor on jasper-control's shared background loop. No env
     knob: observation costs one `systemctl show` and one socket read per 10

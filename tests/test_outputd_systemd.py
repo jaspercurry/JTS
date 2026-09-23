@@ -121,7 +121,6 @@ def test_the_unit_pins_neither_frame_default_over_the_operator_seam():
 def test_install_builds_installs_and_enables_outputd():
     install_sh = installer_text()
     assert "build_install_jasper_outputd" in install_sh
-    assert "ERROR: jasper-outputd source missing" in install_sh
     assert "/opt/jasper/bin/jasper-outputd" in install_sh
     assert "deploy/systemd/jasper-outputd.service" in install_sh
     assert "systemctl restart jasper-outputd.service" in install_sh

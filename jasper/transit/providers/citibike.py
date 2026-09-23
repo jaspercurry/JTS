@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
+from ...env_load import parse_bool_value
 from ..base import BoundingBox, Stop, haversine_miles
 
 # `jasper.citibike` imports `from .transit.base import TransitError`,
@@ -138,10 +139,9 @@ class _CitiBike:
         stations = list(parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
         if not stations:
             return None
-        ebike_only = (
-            env.get("JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
-            in {"1", "true", "yes"}
-        )
+        ebike_only = parse_bool_value(
+            env.get("JASPER_CITIBIKE_EBIKE_ONLY"),
+        ) is True
         return CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
 
     def make_tools(self, client: object):

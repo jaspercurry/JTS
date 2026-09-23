@@ -12,14 +12,10 @@ import pytest
 
 import jasper.volume_curve as volume_curve
 from jasper.sound import settings as sound_settings
-from jasper.volume_curve import (
+from jasper.volume_curve import configured_volume_floor_db, db_to_percent, percent_to_db
+from jasper.volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
-    configured_volume_floor_db,
-    db_to_percent,
-    percent_to_db,
-)
-from jasper.volume_floor import (
     VOLUME_FLOOR_MAX_DB,
     VOLUME_FLOOR_MIN_DB,
     normalize_volume_floor_db,

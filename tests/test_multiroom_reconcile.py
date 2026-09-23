@@ -1399,27 +1399,26 @@ def test_plan_leader_owns_only_snap_units():
     ("returncode", "state", "expected"),
     [
         (0, "active", True),
-        (0, "activating", True),
+        (3, "activating", True),
         (0, "reloading", True),
-        (0, "deactivating", True),
-        (0, "inactive", False),
-        (0, "failed", False),
-        (0, "unknown", None),
-        (1, "active", None),
+        (3, "deactivating", True),
+        (3, "inactive", False),
+        (3, "failed", False),
+        (4, "unknown", None),
+        (1, "", None),
     ],
 )
-def test_unit_active_barrier_requires_successful_show(
+def test_unit_active_barrier_reads_the_state_word_and_fails_soft(
     monkeypatch, returncode, state, expected,
 ):
     import subprocess as sp
 
     def fake_run(argv, **kwargs):
-        assert argv[1] == "show"
-        assert "u.service" in argv
+        assert argv == ["systemctl", "is-active", "u.service"]
         assert kwargs["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
-        stdout = state if "--value" in argv else f"ActiveState={state}"
         return sp.CompletedProcess(
-            argv, returncode, stdout=f"{stdout}\n", stderr="",
+            argv, returncode, stdout=f"{state}\n",
+            stderr="" if state else "Failed to connect to bus\n",
         )
 
     monkeypatch.setattr(
@@ -1497,13 +1496,9 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(), absent=()):
                 stderr="",
             )
         if unit in absent:
-            if kw.get("check"):
-                raise sp.CalledProcessError(
-                    5,
-                    argv,
-                    stderr=f"Failed to {verb} {unit}: Unit not loaded.",
-                )
-            return sp.CompletedProcess(argv, 5)
+            return sp.CompletedProcess(
+                argv, 5, stderr=f"Failed to {verb} {unit}: Unit not loaded.",
+            )
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
@@ -1536,7 +1531,7 @@ def test_apply_real_failure_still_flips_rc(monkeypatch):
     from jasper.multiroom.reconcile_plan import ReconcilePlan, UnitIntent
 
     def fake_run(argv, **kw):
-        raise sp.CalledProcessError(1, argv, stderr="Job failed. See logs.")
+        return sp.CompletedProcess(argv, 1, stderr="Job failed. See logs.")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
     rc = _apply(

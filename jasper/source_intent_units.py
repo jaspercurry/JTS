@@ -10,7 +10,13 @@ from ``jasper.local_sources.reconcile``.
 
 from __future__ import annotations
 
-from jasper.service_units import FANIN_SERVICE, LIBRESPOT_SERVICE
+from jasper.service_units import (
+    AUDIO_HARDWARE_RECONCILE_UNIT,
+    FANIN_SERVICE,
+    LIBRESPOT_SERVICE,
+    SHAIRPORT_SYNC_SERVICE,
+    USBGADGET_SERVICE,
+)
 
 RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
 
@@ -30,9 +36,8 @@ _USB_COUPLING_UNIT = "jasper-fanin-coupling-auto.service"
 # in its wait-card ExecStartPre.
 _DEFAULT_UNIT_ACTION_TIMEOUT_SEC = 15.0
 _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC = 5.0
-# The two verbs that only move symlinks, and the only two `--no-reload`
-# accepts.  Nothing here writes a unit file or drop-in first, and on systemd
-# 257 both readers of an enablement — `systemctl is-enabled` below, and the
+# Nothing here writes a unit file or drop-in first. On systemd 257 both
+# readers of an enablement — `systemctl is-enabled`, and the
 # cached `UnitFileState` property jasper/accessories/reconcile.py shows — read
 # a `--no-reload` enable or disable back immediately.  So the implicit
 # daemon-reload buys nothing, and it cost 3.6-14.9 s per call under the memory
@@ -42,13 +47,13 @@ _UNIT_STATE_QUERY_TIMEOUT_SEC = 2.0
 _UNIT_ACTION_CLIENT_MARGIN_SEC = 1.0
 _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     # unit: (TimeoutStartSec, TimeoutStopSec)
-    "shairport-sync.service": (30.0, 5.0),
+    SHAIRPORT_SYNC_SERVICE: (30.0, 5.0),
     "nqptp.service": (2.0, 5.0),
     LIBRESPOT_SERVICE: (2.0, 5.0),
     "bluealsa.service": (5.0, 5.0),
     "bluealsa-aplay.service": (2.0, 5.0),
     "bt-agent.service": (2.0, 10.0),
-    "jasper-usbgadget.service": (5.0, 5.0),
+    USBGADGET_SERVICE: (5.0, 5.0),
     "jasper-usbsink.service": (40.0, 5.0),
     "jasper-usbsink-volume.service": (2.0, 5.0),
 }
@@ -74,10 +79,9 @@ _UNIT_PHASE_COMMAND_COUNTS: dict[str, tuple[int, int]] = {
     # unit: (start-phase Exec* commands, stop-phase Exec* commands)
     # ExecCondition + 2 ExecStartPre + ExecStart + ExecStartPost; 2 ExecStop +
     # 5 ExecStopPost.
-    "jasper-usbgadget.service": (5, 7),
+    USBGADGET_SERVICE: (5, 7),
 }
-# The manager's DefaultTimeoutStartSec, which governs a pulled dependency whose
-# own unit declares no TimeoutStartSec= override.
+# Manager default for dependencies without a TimeoutStartSec override.
 _SYSTEMD_DEFAULT_TIMEOUT_START_SEC = 90.0
 _FANIN_RESTART_BACKOFF_SEC = 5.0
 # jasper-usbgadget.service orders its start half After= three units it also
@@ -92,7 +96,7 @@ _FANIN_RESTART_BACKOFF_SEC = 5.0
 # normally start concurrently, so this is a ceiling, not an expected wait.
 _USB_GADGET_START_DEPENDENCY_SEC: dict[str, float] = {
     "jasper-usb-network-plan.service": 10.0,
-    "jasper-audio-hardware-reconcile.service": 50.0,
+    AUDIO_HARDWARE_RECONCILE_UNIT: 50.0,
     FANIN_SERVICE: (_SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _FANIN_RESTART_BACKOFF_SEC),
 }
 # A synchronous start waits for the whole required dependency transaction, not
@@ -100,11 +104,11 @@ _USB_GADGET_START_DEPENDENCY_SEC: dict[str, float] = {
 # timing service, so a cold start legally consumes both start ceilings. The USB
 # gadget pays the same way for the three units above.
 _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
-    "shairport-sync.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0],
+    SHAIRPORT_SYNC_SERVICE: _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0],
     "jasper-usbsink.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
         "jasper-usbsink-volume.service"
     ][0],
-    "jasper-usbgadget.service": sum(_USB_GADGET_START_DEPENDENCY_SEC.values()),
+    USBGADGET_SERVICE: sum(_USB_GADGET_START_DEPENDENCY_SEC.values()),
 }
 # Owner oneshots are different: a synchronous ``systemctl start`` may join and
 # wait for their full Type=oneshot activation. USB starts coupling once.
@@ -113,12 +117,7 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # and the two accessory barriers below are unspent headroom in the budget, not
 # a bound this coordinator can reach. Their 5-second margin includes
 # broker/client overhead.
-# Each value mirrors its target's shipped TimeoutStartSec and is pinned to it by
-# tests/test_source_intent_systemd.py: the coupling entry read 125.0 against a
-# target raised to 210 s in #2651, so a client could report timeout with 85 s of
-# the owner's activation still legally left to run. That target is now derived
-# (jasper.fanin.coupling_reconcile.COUPLING_AUTO_TIMEOUT_START_SEC) from the
-# pass it actually has to outlast.
+# See tests/test_source_intent_systemd.py for the shipped TimeoutStartSec pins.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
     _USB_COUPLING_UNIT: 772.0,  # target TimeoutStartSec=767
@@ -158,13 +157,13 @@ def _unit_action_timeout_sec(unit: str, verb: str) -> float:
 # headroom — see _OWNER_UNIT_ACTION_TIMEOUT_SEC), bounded BlueZ/RF-kill work,
 # direct-lane settling, and failed-USB rollback.
 _WORST_CASE_ORDINARY_START_ACTIONS = (
-    ("shairport-sync.service", "start"),
+    (SHAIRPORT_SYNC_SERVICE, "start"),
     (LIBRESPOT_SERVICE, "start"),
     (_BLUETOOTH_SERVICE, "start"),
     ("bluealsa.service", "start"),
     ("bluealsa-aplay.service", "start"),
     ("bt-agent.service", "start"),
-    ("jasper-usbgadget.service", "restart"),
+    (USBGADGET_SERVICE, "restart"),
     ("jasper-usbsink.service", "start"),
 )
 _NON_SYSTEMD_RECONCILE_BUDGET_SEC = 15.0
@@ -213,8 +212,8 @@ _USB_FAILED_ON_CLEANUP_BUDGET_SEC = (
     + _unit_action_timeout_sec("jasper-usbsink.service", "stop")
     + (2 * _UNIT_STATE_QUERY_TIMEOUT_SEC + _RESET_FAILED_ACTION_TIMEOUT_SEC)
     + _ENABLEMENT_TRANSITION_BUDGET_SEC
-    + _unit_action_timeout_sec("jasper-usbgadget.service", "restart")
-    + _unit_action_timeout_sec("jasper-usbgadget.service", "stop")
+    + _unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
+    + _unit_action_timeout_sec(USBGADGET_SERVICE, "stop")
     + _OWNER_UNIT_ACTION_TIMEOUT_SEC[_USB_COUPLING_UNIT]
 )
 _RECONCILE_TIMEOUT_MARGIN_SEC = 21.25
@@ -223,7 +222,7 @@ _NON_OWNER_RECONCILE_BUDGET_SEC = (
     + _MAX_ENABLEMENT_TRANSITIONS * _ENABLEMENT_TRANSITION_BUDGET_SEC
     + _FAILED_RESET_BUDGET_SEC
     + _ACTIVE_TRANSITION_BUDGET_SEC
-    + _unit_action_timeout_sec("jasper-usbgadget.service", "restart")
+    + _unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
     + _BLUETOOTH_CONTROL_BUDGET_SEC
     + _USB_DIRECT_WAIT_BUDGET_SEC
     + _USB_FAILED_ON_CLEANUP_BUDGET_SEC

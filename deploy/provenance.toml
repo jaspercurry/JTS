@@ -82,26 +82,6 @@ sha256 = "9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7"
 verification = "sha256sum -c in deploy/install.sh"
 
 [[artifact]]
-id = "camillagui-amd64"
-kind = "release-archive"
-consumer = "deploy/install.sh: install_camillagui"
-resolved_url = "https://github.com/HEnquist/camillagui-backend/releases/download/v4.1.0/bundle_linux_amd64.tar.gz"
-version = "4.1.0"
-arch = "x86_64"
-sha256 = "86fd3cde575038f312ede7bad0910dc5e46b974cafc048c26115ec3cb9f54792"
-verification = "sha256sum -c in deploy/install.sh"
-
-[[artifact]]
-id = "camillagui-armv7"
-kind = "release-archive"
-consumer = "deploy/install.sh: install_camillagui"
-resolved_url = "https://github.com/HEnquist/camillagui-backend/releases/download/v4.1.0/bundle_linux_armv7.tar.gz"
-version = "4.1.0"
-arch = "armv7l"
-sha256 = "22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1"
-verification = "sha256sum -c in deploy/install.sh"
-
-[[artifact]]
 id = "pycamilladsp"
 kind = "python-source-archive"
 consumer = "pyproject.toml"

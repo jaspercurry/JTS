@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .env_load import parse_env_file
-from .service_units import JASPER_VOICE_SERVICE
+from .service_units import AEC_BRIDGE_SERVICE, JASPER_VOICE_SERVICE
 
 # Wizard-owned SSOT. Path (not contents) overridable for tests / headless
 # imaging via JASPER_DEBUG_FILE — a static deploy constant, so reading it
@@ -92,9 +92,7 @@ SUBSYSTEMS: dict[str, Subsystem] = {
     "voice": Subsystem(
         "voice", JASPER_VOICE_SERVICE, "Voice", ("jasper",),
     ),
-    "aec": Subsystem(
-        "aec", "jasper-aec-bridge.service", "AEC bridge", ("jasper",),
-    ),
+    "aec": Subsystem("aec", AEC_BRIDGE_SERVICE, "AEC bridge", ("jasper",)),
     "control": Subsystem(
         "control", "jasper-control.service", "Control", ("jasper",),
         apply_policy="in_process",

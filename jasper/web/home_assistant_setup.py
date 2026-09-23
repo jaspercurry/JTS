@@ -224,19 +224,10 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
     """Browse the LAN for `_home-assistant._tcp.local.` instances and map
     each to {name, host, port, location_name, version, url}.
 
-    The browse/resolve/parse mechanics are the shared one-shot primitive
-    `jasper.net.mdns.browse_once` (lazy zeroconf import, fail-soft → [] on any
-    failure, drops address-less instances). This function keeps the
-    HA-specific *policy*: SRV host as `host`, port defaulting to 8123,
-    IPv4-preferred `target_host`, base_url construction via `_normalize_url`,
-    and location_name/version from the TXT records.
-
-    `browse_once` is V4Only — that's fine here: HA already prefers an IPv4
-    address for the base URL (the old hand-rolled browse picked addrs[0],
-    which python-zeroconf orders v4-first), so a v4-only resolve matches the
-    address we'd have used anyway. `_bracket_ipv6` is kept on the
-    target_host purely as defensive parity with the old code; V4Only means
-    it's effectively a passthrough.
+    `jasper.net.mdns.browse_once` browses over IPv4 mDNS; a resolved address
+    may still be an IPv6 literal (AAAA record). This
+    function applies HA policy: SRV host as `host`, port defaulting to 8123,
+    the first resolved address in the URL, and location/version from TXT.
 
     Returns at most one entry per mDNS service name (browse_once de-dupes by
     instance name). Cross-subnet households return [] (mDNS is link-local).
@@ -251,9 +242,8 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
             # strings in practice.
             host = (svc.server or "").rstrip(".")
             port = svc.port or 8123
-            # Prefer a resolved address (browse_once drops address-less
-            # instances, so svc.addresses is non-empty); fall back to the
-            # mDNS host only defensively. V4Only → addresses are IPv4.
+            # The mDNS transport is IPv4-only, but a responder may still
+            # advertise AAAA records, so an address can be an IPv6 literal.
             target_host = _bracket_ipv6(svc.addresses[0]) if svc.addresses else host
             if not target_host:
                 continue

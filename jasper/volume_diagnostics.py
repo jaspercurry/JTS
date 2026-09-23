@@ -23,11 +23,11 @@ from typing import Any
 from .atomic_io import atomic_write_text, read_json_mapping
 from .json_fields import utc_now_iso
 from .music_sources import Source, VolumeMode, volume_mode
+from .volume_floor import RECONCILE_DRIFT_DB
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = "/run/jasper/volume_policy.json"
-PUSH_GUARD_EPSILON_DB = 1.0
 
 PUSH_OK = "ok"
 PUSH_MISSING_ROUTER = "missing_router"
@@ -65,8 +65,6 @@ def _write(snapshot: dict[str, Any], path: str | None = None) -> None:
     p = Path(diagnostics_path(path))
     try:
         body = json.dumps(snapshot, indent=2, sort_keys=True)
-        # mode=0o600 preserves the mode the previous hand-rolled mkstemp
-        # writer published (mkstemp creates 0600 and never chmod'd).
         atomic_write_text(p, body, mode=0o600)
     except OSError as e:
         logger.debug("volume diagnostics write failed for %s: %s", p, e)
@@ -199,7 +197,7 @@ def build_volume_policy_snapshot(
         persisted_main_volume_db
         if (
             persisted_main_volume_db is not None
-            and float(persisted_main_volume_db) < -PUSH_GUARD_EPSILON_DB
+            and float(persisted_main_volume_db) < -RECONCILE_DRIFT_DB
         )
         else None
     )
@@ -207,7 +205,7 @@ def build_volume_policy_snapshot(
         main_volume_db
         if (
             main_volume_db is not None
-            and float(main_volume_db) < -PUSH_GUARD_EPSILON_DB
+            and float(main_volume_db) < -RECONCILE_DRIFT_DB
         )
         else None
     )

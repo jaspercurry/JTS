@@ -83,7 +83,7 @@ _SECRET_KEY_ENVS = frozenset(p.key_env for p in PROVIDERS)
 
 def _load_merged(cfg: dict[str, Any]) -> dict[str, str]:
     """Wizard's full view: the non-secret selectors in ``state_path``
-    UNIONED with the API keys in ``keys_path`` (the Phase-4a split). The
+    UNIONED with the API keys in ``keys_path``. The
     two files own disjoint keys, so order does not matter. Reads are
     fail-soft (missing/unreadable → {})."""
     merged = read_env_file(cfg["state_path"])
@@ -647,8 +647,8 @@ def make_server(
       - `socket.socket` — pre-bound listener handed off by systemd
       - `(host, port)` tuple — explicit bind
       - `int` — port, binds 127.0.0.1
-    Mirrors the other wizard `make_server` signatures so jasper.web.__main__
-    can drive all four uniformly. `pricing_path` defaults to the same
+    The shared signature lets jasper.web.__main__ construct the wizard.
+    `pricing_path` defaults to the same
     JASPER_PRICING_FILE the daemon reads, so edits land where it looks."""
     cfg = {
         "state_path": state_path,

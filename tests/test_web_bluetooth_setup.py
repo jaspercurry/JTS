@@ -265,16 +265,7 @@ def _make_request(
     content_length: str | None = None,
     idle_hold=None,
 ):
-    """Instantiate the REAL handler class without running
-    BaseHTTPRequestHandler.__init__ (which expects a live socket), then attach
-    the minimal request I/O surface. This exercises the handler's own private
-    helpers (_send_html / _read_json / _send_json) and the real do_GET/do_POST
-    routing, rather than reimplementing them in a fake -- the migration didn't
-    touch any of that, and the test should prove it.
-
-    Returns the handler instance; read `handler.status` and
-    `handler.wfile.getvalue()` after invoking do_GET/do_POST.
-    """
+    """Use real request handling without a live socket."""
     headers = {}
     if cookies:
         headers["Cookie"] = cookies
@@ -1466,116 +1457,129 @@ def test_address_routes_reject_invalid_body_without_dispatch(
 
 
 @pytest.mark.parametrize(
-    ("path", "body"),
-    (
-        ("/power", {"on": True}),
-        ("/discoverable", {"on": True}),
-        ("/scan", {"action": "start"}),
-        ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
-        ("/connect", {
-            "mac": "AA:BB:CC:DD:EE:FF",
-            "mutationId": MUTATION_ID,
-        }),
-    ),
+    "path, body, condition, status, error",
+    [
+        *[pytest.param(path, body, "follower", 409,
+                       "Bluetooth is managed by the stereo pair while this speaker is a "
+                       "follower — unpair on /sound/pair/ to change it", id=f"follower-{path}-{body}")
+          for path, body in (
+              ("/power", {"on": True}), ("/power", {"on": False}),
+              ("/discoverable", {"on": True}), ("/discoverable", {"on": False}),
+              ("/scan", {"action": "start"}), ("/scan", {"action": "stop"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID})
+                for action in ("connect", "disconnect", "forget")],
+          )],
+        *[pytest.param(path, body, "unavailable", 409,
+                       "Required Bluetooth services are not installed: bluealsa.service.",
+                       id=f"unavailable-{path}")
+          for path, body in (
+              ("/power", {"on": True}), ("/discoverable", {"on": True}),
+              ("/scan", {"action": "start"}), ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              ("/connect", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID}),
+          )],
+        *[pytest.param(path, body, condition, status, error, id=f"{condition}-{path}")
+          for condition, status, error in (
+              ("intent_off", 409, "Bluetooth is turned off in Sources"),
+              ("intent_error", 502, "Bluetooth intent is unavailable: intent unavailable"),
+          )
+          for path, body in (
+              ("/discoverable", {"on": True}), ("/scan", {"action": "start"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              ("/connect", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID}),
+          )],
+        pytest.param("/power", {"on": False}, "cleanup", 200, None, id="power-off"),
+        pytest.param("/discoverable", {"on": False}, "cleanup", 200, None, id="discoverable-off"),
+        pytest.param("/scan", {"action": "stop"}, "cleanup", 200, None, id="scan-stop"),
+        *[pytest.param(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID},
+                       "cleanup", 202, None, id=action) for action in ("disconnect", "forget")],
+        pytest.param("/scan", {"action": " start "}, "cleanup", 200, None, id="scan-spaces"),
+        pytest.param("/scan", {"action": "invalid"}, "ready", 400,
+                     "action must be start or stop", id="scan-invalid"),
+        pytest.param("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}, "ready", 200, None, id="pair"),
+        *[pytest.param(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF"}, "follower", 400,
+                       "invalid mutation id", id=f"invalid-id-{action}")
+          for action in ("connect", "disconnect", "forget")],
+        *[pytest.param(path, body, "action_error", 502, "action failed", id=f"failure-{path}-{body}")
+          for path, body in (
+              ("/power", {"on": True}), ("/power", {"on": False}),
+              ("/discoverable", {"on": True}), ("/discoverable", {"on": False}),
+              ("/scan", {"action": "start"}), ("/scan", {"action": "stop"}),
+              ("/pair", {"mac": "AA:BB:CC:DD:EE:FF"}),
+              *[(f"/{action}", {"mac": "AA:BB:CC:DD:EE:FF", "mutationId": MUTATION_ID})
+                for action in ("connect", "disconnect", "forget")],
+          )],
+    ],
 )
-def test_unavailable_adapter_blocks_only_radio_activation(monkeypatch, path, body):
-    token = "a" * 64
+def test_post_preamble_preserves_route_outcomes(monkeypatch, caplog, path, body, condition, status, error):
     fake = _FakeDispatcher()
-    pair_start = mock.Mock()
-    request_intent = mock.Mock()
+    pair_start, request_intent = mock.Mock(return_value=True), mock.Mock()
+    intent = mock.Mock(return_value=condition != "intent_off")
+    availability = mock.Mock(return_value=_availability(
+        available=condition != "unavailable", missing_units=("bluealsa.service",),
+    ))
+    if condition == "intent_error":
+        intent.side_effect = RuntimeError("intent unavailable")
+    if condition in {"cleanup", "follower"}:
+        intent.side_effect = AssertionError("unexpected intent read")
+    if condition in {"cleanup", "follower", "intent_off", "intent_error"}:
+        availability.side_effect = AssertionError("unexpected availability probe")
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: condition == "follower")
     monkeypatch.setattr(bluetooth_setup, "_start_pair_stream", pair_start)
     monkeypatch.setattr(bluetooth_setup, "request_source_intent", request_intent)
-    monkeypatch.setattr(
-        bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
+    monkeypatch.setattr(bluetooth_setup, "source_intent_enabled", intent)
+    monkeypatch.setattr(bluetooth_setup, "probe_bluetooth_availability", availability)
+    monkeypatch.setattr(bluetooth_setup, "set_discoverable", mock.AsyncMock())
+    if condition == "action_error":
+        failure = RuntimeError("action failed")
+        request_intent.side_effect = pair_start.side_effect = failure
+        for name in ("_dispatch", "_start_device_mutation"):
+            monkeypatch.setattr(bluetooth_setup, name, mock.Mock(side_effect=failure))
+        monkeypatch.setattr(
+            bluetooth_setup, "_bluetooth_state_snapshot", lambda: ({"desired": True}, 200),
+        )
+    handler = _make_request(
+        path, body=json.dumps(body).encode(), cookies="jts_csrf=" + CSRF, csrf_header=CSRF,
     )
-    monkeypatch.setattr(
-        bluetooth_setup,
-        "probe_bluetooth_availability",
-        lambda _unit_probe: _availability(
-            available=False,
-            missing_units=("bluealsa.service",),
-        ),
-    )
-    h = _make_request(
-        path,
-        body=json.dumps(body).encode(),
-        cookies="jts_csrf=" + token,
-        csrf_header=token,
-    )
-
-    h.do_POST()
-
-    assert h.status == int(http.HTTPStatus.CONFLICT)
-    assert "bluealsa.service" in json.loads(h.wfile.getvalue())["error"]
-    assert fake.run_calls == 0
-    assert fake.engine.calls == []
-    pair_start.assert_not_called()
-    request_intent.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("path", "body"),
-    (
-        ("/power", {"on": False}),
-        ("/discoverable", {"on": False}),
-        ("/scan", {"action": "stop"}),
-        ("/disconnect", {
-            "mac": "AA:BB:CC:DD:EE:FF",
-            "mutationId": MUTATION_ID,
-        }),
-        ("/forget", {
-            "mac": "AA:BB:CC:DD:EE:FF",
-            "mutationId": MUTATION_ID,
-        }),
-    ),
-)
-def test_unavailable_adapter_still_allows_shutdown_and_cleanup(
-    monkeypatch,
-    path,
-    body,
-):
-    token = "c" * 64
-    fake = _FakeDispatcher()
-    request_intent = mock.Mock()
-
-    async def setter(_on):
-        return None
-
-    monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: False)
-    monkeypatch.setattr(bluetooth_setup, "request_source_intent", request_intent)
-    monkeypatch.setattr(bluetooth_setup, "set_discoverable", setter)
-    monkeypatch.setattr(
-        bluetooth_setup,
-        "source_intent_enabled",
-        mock.Mock(side_effect=AssertionError("cleanup read source intent")),
-    )
-    monkeypatch.setattr(
-        bluetooth_setup,
-        "probe_bluetooth_availability",
-        mock.Mock(side_effect=AssertionError("cleanup probed availability")),
-    )
-    h = _make_request(
-        path,
-        body=json.dumps(body).encode(),
-        cookies="jts_csrf=" + token,
-        csrf_header=token,
-    )
-
-    h.do_POST()
-
-    expected = (
-        http.HTTPStatus.ACCEPTED
-        if path in {"/disconnect", "/forget"}
-        else http.HTTPStatus.OK
-    )
-    assert h.status == int(expected)
-    if path == "/power":
-        request_intent.assert_called_once_with(bluetooth_setup.Source.BLUETOOTH, False)
+    handler.do_POST()
+    payload = json.loads(handler.wfile.getvalue())
+    assert handler.status == status
+    assert payload.get("error") == error
+    assert payload.get("code") is None
+    if condition == "action_error":
+        assert set(payload) == ({"error", "state"} if path == "/power" else {"error"})
+        if path == "/power":
+            assert payload["state"] == {"desired": True}
+        records = [r for r in caplog.records if r.name == bluetooth_setup.__name__]
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+        assert records[0].exc_info[1] is failure
+        assert bluetooth_setup._ACTIVE_BLUETOOTH_ACTION is None
+    elif error is not None:
+        assert set(payload) == {"error"}
+        assert fake.run_calls == 0
+        assert fake.engine.calls == []
+        pair_start.assert_not_called()
+        request_intent.assert_not_called()
+    elif path == "/power":
+        request_intent.assert_called_once_with(bluetooth_setup.Source.BLUETOOTH, body["on"])
+        assert payload == {"ok": True, "desired": body["on"]}
     else:
         request_intent.assert_not_called()
+        if path == "/pair":
+            pair_start.assert_called_once_with(body["mac"])
+            assert payload == {"ok": True}
+        elif path in {"/connect", "/disconnect", "/forget"}:
+            assert fake.engine.calls == [(path[1:], body["mac"])]
+            assert payload["action"] == path[1:]
+            assert payload["mutationId"] == MUTATION_ID
+        elif path == "/scan":
+            expected = (("start_discovery", bluetooth_setup.SCAN_DURATION_SEC)
+                        if body["action"].strip() == "start" else ("stop_discovery",))
+            assert fake.engine.calls == [expected]
+        else:
+            bluetooth_setup.set_discoverable.assert_awaited_once_with(body["on"])
 
 
 @pytest.mark.parametrize("action", ("connect", "disconnect", "forget"))
@@ -2075,27 +2079,6 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     assert state["effective"] == "parked"
     assert state["available"] is False
     assert state["parkReason"] == "bonded_follower"
-
-
-@pytest.mark.parametrize("path", ("/power", "/scan"))
-def test_mutation_is_rejected_while_bonded_follower(monkeypatch, path):
-    token = "f" * 64
-    request_intent = mock.Mock()
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
-    monkeypatch.setattr(bluetooth_setup, "request_source_intent", request_intent)
-    body = b'{"on":true}' if path == "/power" else b'{"action":"start"}'
-    h = _make_request(
-        path,
-        body=body,
-        cookies="jts_csrf=" + token,
-        csrf_header=token,
-    )
-
-    h.do_POST()
-
-    assert h.status == int(http.HTTPStatus.CONFLICT)
-    assert "stereo pair" in json.loads(h.wfile.getvalue())["error"]
-    request_intent.assert_not_called()
 
 
 def test_failed_power_apply_returns_durable_intent_readback(monkeypatch):

@@ -29,7 +29,12 @@ import numpy as np
 
 from jasper.control import restart_broker
 from jasper.log_event import log_event
-from jasper.service_units import OUTPUTD_SERVICE
+from jasper.service_units import (
+    AEC_RECONCILE_SERVICE,
+    OUTPUTD_SERVICE,
+    read_unit_property,
+    systemd_int,
+)
 from jasper.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
@@ -86,8 +91,6 @@ from .runtime_probe import (  # noqa: F401
     bridge_output_status,
     leg_detail,
     legacy_aec3_sweep_source as _legacy_aec3_sweep_source,
-    missing_bridge_outputs_from_required,
-    required_bridge_outputs_for_request,
     session_aec3_sweep_source as _session_aec3_sweep_source,
     session_legs,
 )
@@ -108,7 +111,7 @@ AEC_INIT_UNIT = "jasper-aec-init.service"
 # exit that lands the box in a state only this reconciler can resolve hands off
 # here rather than deciding locally — same shape as
 # jasper/accessories/reconcile.py's VOICE_INPUT_GATE_UNIT.
-AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
+AEC_RECONCILE_UNIT = AEC_RECONCILE_SERVICE
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
@@ -175,42 +178,6 @@ def chip_aec_config_metadata() -> dict[str, object]:
             for leg in plan.legs
         ],
     }
-
-
-def missing_bridge_outputs_for_session(
-    *,
-    corpus_profile: str = PROFILE_STANDARD,
-    include_dtln: bool,
-    include_usb_mic: bool,
-    include_usb_dtln: bool,
-    include_xvf_raw0_dtln: bool = False,
-    include_aec3_sweep: bool = False,
-    aec3_sweep_source: str | None = None,
-) -> list[str]:
-    """Return bridge outputs that must be enabled before a requested
-    session can actually produce the WAV legs the operator checked.
-
-    raw0 is always emitted by the bridge, so it does not participate
-    in this check.
-    """
-    sweep_source = (
-        _session_aec3_sweep_source(aec3_sweep_source)
-        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
-    )
-    required = required_bridge_outputs_for_request(
-        corpus_profile=corpus_profile,
-        include_dtln=include_dtln,
-        include_usb_mic=include_usb_mic,
-        include_usb_dtln=include_usb_dtln,
-        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-        include_aec3_sweep=include_aec3_sweep,
-        aec3_sweep_source=sweep_source,
-    )
-    return missing_bridge_outputs_from_required(
-        required,
-        runtime_probe.bridge_output_status(),
-        aec3_sweep_source=sweep_source,
-    )
 
 
 def _parse_amixer_bool(output: str) -> bool | None:
@@ -642,24 +609,10 @@ def _aec_init_exec_main_status() -> int | None:
     only place that distinction survives. A read-only `systemctl show` — no
     privilege, no broker.
     """
-    try:
-        result = subprocess.run(
-            [
-                "systemctl", "show",
-                "-p", "ExecMainStatus", "--value", AEC_INIT_UNIT,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=UNIT_STATE_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        return int((result.stdout or "").strip())
-    except ValueError:
-        return None
+    values = read_unit_property(
+        "ExecMainStatus", [AEC_INIT_UNIT], timeout=UNIT_STATE_TIMEOUT_SEC,
+    )
+    return systemd_int(values[0]) if values else None
 
 
 def _aec_init_parked_for_commissioning() -> bool:

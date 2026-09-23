@@ -13,8 +13,7 @@ this; the only existing fix is the manual `scripts/airplay-reset.sh`.
 This supervisor talks RTSP `OPTIONS *` to localhost:7000 on a
 cadence. After a confidence threshold of consecutive failures, gated
 on "no active session", it restarts shairport-sync + nqptp — the same
-units the manual fix already touches. The detection mechanism is
-symmetric with the manual path; no new failure modes introduced.
+units the manual fix already touches.
 
 A deliberately disabled unit is not a wedge: when the household turns
 AirPlay off at /sources/ (`systemctl is-enabled` reports disabled or
@@ -29,13 +28,14 @@ Disable knob: set `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.service_units import SHAIRPORT_SYNC_SERVICE
 from jasper.source_state import airplay_playbackstatus_observed
+from jasper.systemd_probe import async_unit_probe
 
 from . import restart_broker
 from .supervisor_runtime import (
@@ -244,8 +244,6 @@ class ShairportSupervisor:
             level=logging.ERROR,
         )
 
-    # ---- overridable IO ----
-
     async def probe(self) -> bool:
         """Open localhost:port, send OPTIONS, expect RTSP/1.0 200."""
         try:
@@ -337,36 +335,8 @@ class ShairportSupervisor:
     async def _systemctl_query(
         self, verb: str,
     ) -> tuple[int | None, str] | None:
-        """Run `systemctl <verb> shairport-sync.service` and return
-        `(returncode, stripped-stdout)`, or `None` when the command
-        can't be run to completion — a spawn error or a 2 s timeout,
-        after which the child is killed and reaped.
-
-        Shared spawn/timeout/kill scaffolding for the `is-active` and
-        `is-enabled` reads. Each caller owns its own result mapping so
-        the load-bearing fail-safe semantics stay local to the method
-        that documents them (is-active fails safe to None, is-enabled
-        to False — opposite directions, deliberately not unified here).
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "systemctl", verb, "shairport-sync.service",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except OSError:
-            return None
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=2.0,
-            )
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            return None
-        return proc.returncode, stdout.decode("utf-8", "replace").strip()
+        result = await async_unit_probe(verb, SHAIRPORT_SYNC_SERVICE, timeout=2.0)
+        return None if result is None else (result.returncode, result.stdout.strip())
 
     async def is_shairport_unit_active(self) -> bool | None:
         """Return systemd's shairport unit liveness.
@@ -420,7 +390,7 @@ class ShairportSupervisor:
         """
         result = await asyncio.to_thread(
             restart_broker.reset_then_manage,
-            "shairport-sync.service", "nqptp.service",
+            SHAIRPORT_SYNC_SERVICE, "nqptp.service",
             verb="restart",
             reason="shairport_supervisor",
         )

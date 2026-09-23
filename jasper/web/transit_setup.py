@@ -33,13 +33,9 @@ at mode 0640. The systemd unit for jasper-voice sources this file
 AFTER `/etc/jasper/jasper.env`, so wizard-written values win — same
 pattern as `voice_provider.env` and `wake_model.env`.
 
-Modularity: the page is data-driven by `jasper.transit.REGISTRY`. To
-add a new provider (Berlin BVG, Citi Bike, ...), drop a module under
-`jasper.transit.providers.` and append it to the REGISTRY tuple. The
-wizard auto-renders a card for it when the user's coords fall in its
-bounding box. Provider-specific config (subway's direction radio,
-bus's routes checkboxes) is dispatched on `provider.id` — extend the
-dispatch when a third provider needs its own knob.
+Modularity: `jasper.transit.CITY_PACKS` owns the provider registry and
+`jasper.transit.__init__` owns the provider contribution checklist. The
+wizard renders providers whose enabled pack covers the saved coordinates.
 
 Restart: every successful save kicks `systemctl restart jasper-voice`
 (non-blocking, see `_common.restart_voice_daemon`). The transit tools
@@ -137,9 +133,8 @@ def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str])
     (``current`` -> ``new``) diff onto the file as re-read INSIDE the lock:
     keys ``new`` changed are applied, keys it dropped are removed, and every
     other key — foreign keys, or a key a concurrent writer just set — is
-    preserved. Deletes the file when the merged result is empty (parity with
-    the old ``write``/``delete_env_file`` branch). Symmetric with the
-    weather.env fix (DA-0036) and shares its advisory flock semantics.
+    preserved. Deletes the file when the merged result is empty. The weather
+    writer uses the same advisory flock.
     """
     changed = {k: v for k, v in new.items() if current.get(k) != v}
     dropped = [k for k in current if k not in new]

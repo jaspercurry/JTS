@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/_lib.sh
 . "${SCRIPT_DIR}/_lib.sh"
 
-SSH=(ssh -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
+SSH=(ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
 OPERATOR_ENV="/etc/jasper/jasper.env"
 PROVIDER_ENV="/var/lib/jasper/voice_provider.env"
 CATALOG_PY="/opt/jasper/.venv/bin/python"

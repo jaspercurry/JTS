@@ -2,19 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""User-volume floor: constants and normalization, kept a dependency-free leaf.
-
-Both ``jasper.volume_curve`` (the percent<->dB curve) and
-``jasper.sound.settings`` (the wizard-persisted floor value) need these.
-Splitting them out here lets ``volume_curve`` import ``sound.settings`` at
-module scope instead of through a ``# lazy: cycle`` function-local import.
-"""
+"""User-volume constants and normalization, kept a dependency-free leaf."""
 from __future__ import annotations
 
 from typing import Any
 
 DEFAULT_VOLUME_FLOOR_DB = -50.0
 VOLUME_CEILING_DB = 0.0
+
+# Below human-noticeable drift, above Camilla's normal <0.1 dB jitter.
+RECONCILE_DRIFT_DB = 1.0
 
 # UI/setting clamp. A floor above -10 dB makes 1% potentially loud; a floor
 # below -60 dB is effectively silence for this product and wastes slider travel.

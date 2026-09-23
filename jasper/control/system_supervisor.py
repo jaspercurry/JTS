@@ -73,7 +73,6 @@ See ADR-0146 (docs/adr/).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
@@ -85,6 +84,7 @@ from jasper.log_event import log_event
 
 from ..atomic_io import atomic_write_text, read_json_mapping
 from ..platform.control_client import CONTROL_PORT
+from ..systemd_probe import async_unit_probe
 from . import restart_broker
 from .supervisor_runtime import (
     resolve_env_mode,
@@ -362,25 +362,10 @@ class SystemSupervisor:
         return True, None
 
     async def _systemctl_is_enabled(self, unit: str) -> str:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "systemctl", "is-enabled", unit,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except OSError:
+        result = await async_unit_probe("is-enabled", unit, timeout=self._probe_timeout)
+        if result is None:
             return "unknown"
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._probe_timeout,
-            )
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            return "unknown"
-        text = (stdout or stderr).decode("utf-8", "replace").strip()
+        text = (result.stdout or result.stderr).strip()
         if not text:
             return "unknown"
         status = text.splitlines()[0].strip()

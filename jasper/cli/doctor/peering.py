@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from ...env_load import read_env_file_state
+from ...env_load import parse_bool_value, read_env_file_state
 from ...identity.reader import PEER_ID_FILE
-from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -42,10 +41,11 @@ def check_peering_mode() -> CheckResult:
             label, "warn", f"can't read {p}: {env.error}",
             reason=REASON_PEERING_ENV_UNREADABLE,
         )
-    raw = env.values.get("JASPER_PEERING", "").lower()
-    if raw in PEERING_OFF_VALUES:
+    raw = env.values.get("JASPER_PEERING", "")
+    enabled = parse_bool_value(raw)
+    if enabled is False or not raw.strip():
         return CheckResult(label, "ok", "off (configured)", reason=REASON_PEERING_OFF)
-    if raw in PEERING_ON_VALUES:
+    if enabled is True:
         return CheckResult(
             label, "ok",
             "on — jasper-control runs the peering daemon",

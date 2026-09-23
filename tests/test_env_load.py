@@ -13,7 +13,30 @@ from pathlib import Path
 import pytest
 
 from jasper import env_load
-from jasper.env_load import bounded_env_float, bounded_env_int, read_env_file_or_warn
+from jasper.env_load import (
+    bounded_env_float,
+    bounded_env_int,
+    parse_bool_value,
+    read_env_file_or_warn,
+)
+from jasper.log_event import json_mode_enabled
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        *((v, True) for v in ("1", "true", "yes", "on", "enabled", " TrUe ", "ENABLED\n")),
+        *((v, False) for v in ("0", "false", "no", "off", "disabled", " Off ")),
+        *((v, None) for v in (None, "", "  ", "unknown", "y", "2")),
+    ],
+)
+def test_parse_bool_value_reads_the_shared_vocabulary(
+    value: str | None, expected: bool | None,
+) -> None:
+    assert parse_bool_value(value) is expected
+    # log_event keeps a stdlib-only copy of the truthy half.
+    env = {} if value is None else {"JASPER_LOG_JSON": value}
+    assert json_mode_enabled(env) is (expected is True)
 
 
 @pytest.mark.parametrize(

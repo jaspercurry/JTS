@@ -22,6 +22,7 @@ from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET,
+    VOICE_CONTROL_SOCKET_PATH,
     read_status_socket,
 )
 from jasper.control.system_metrics import (
@@ -41,7 +42,7 @@ STATUS_SOCKETS = {
     "outputd": OUTPUTD_STATUS_SOCKET,
     "fanin": FANIN_STATUS_SOCKET,
     "mux": MUX_CONTROL_SOCKET_PATH,
-    "voice": "/run/jasper/voice.sock",
+    "voice": VOICE_CONTROL_SOCKET_PATH,
 }
 
 # Resident daemons that matter to whole-system soak evidence but are not part

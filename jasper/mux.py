@@ -103,7 +103,11 @@ from .music_sources import (
     Source,
 )
 from .platform import wire
-from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
+from .platform.status_socket import (
+    FANIN_STATUS_SOCKET,
+    MUX_CONTROL_SOCKET_PATH,
+    VOICE_CONTROL_SOCKET_PATH,
+)
 from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
@@ -135,13 +139,6 @@ MUX_MODE_STATE_PATH = os.environ.get(
 # owner. Derived from the map fan-in SELECT uses, so the two never drift.
 USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
-FANIN_TEST_OWNERS = frozenset({
-    "active-speaker-commissioning",
-    "chip-aec-commission",
-    "correction-measurement",
-    "doctor-aec-probe",
-    "seat-level",
-})
 # A diagnostic owner must renew before this monotonic deadline;
 # correction renews every measurement_window.MEASUREMENT_GATE_REFRESH_SEC. A web
 # worker crash therefore self-recovers instead of pinning household music off.
@@ -822,8 +819,8 @@ class Mux:
         owner = str(owner or "").strip()
         if label not in FANIN_TEST_LABELS:
             return {"error": f"not a selectable test fan-in label {label!r}"}
-        if owner not in FANIN_TEST_OWNERS:
-            return {"error": f"not a recognized test fan-in owner {owner!r}"}
+        if not owner:
+            return {"error": "test fan-in owner must be non-empty"}
         async with self._transition_lock:
             if self._test_fanin_owner not in {None, owner}:
                 return {
@@ -885,8 +882,8 @@ class Mux:
         self, owner: str, *, reason: str = "requested",
     ) -> dict[str, Any]:
         owner = str(owner or "").strip()
-        if owner not in FANIN_TEST_OWNERS:
-            return {"error": f"not a recognized test fan-in owner {owner!r}"}
+        if not owner:
+            return {"error": "test fan-in owner must be non-empty"}
         async with self._transition_lock:
             if self._test_fanin_owner not in {None, owner}:
                 return {
@@ -1102,7 +1099,7 @@ class Mux:
             spotify_router=self._ensure_spotify_router(),
             duck_active_probe=_make_duck_active_probe(
                 os.environ.get(
-                    "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+                    "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
                 ),
             ),
         )
@@ -1679,8 +1676,7 @@ class Mux:
 
         Routed through jasper-control's restart broker (off-thread, since the
         broker client is blocking) so jasper-mux needs no privilege of its own.
-        The broker client falls back to a direct systemctl if the broker is
-        unreachable.
+        Only root can fall back to direct systemctl when the broker is unreachable.
         """
         resp = await asyncio.to_thread(
             restart_broker.manage_units,

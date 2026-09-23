@@ -4,18 +4,9 @@
 
 """Canonical structured-log emitter for JTS `event=` lines.
 
-Across the codebase, operational events are logged as hand-written
-f-strings of the shape ``event=<domain>.<action> k=v k=v``. That
-convention is grep-friendly and human-readable, but each call site
-re-implements the rendering, and none of them escape field values —
-so a value that contains a space, ``=``, or a quote (an SSID, a USB
-device label, a free-text reason) silently corrupts the key=val
-parse for any tool that reads the journal as logfmt.
-
-This module is the one place that renders that line. It keeps the
-exact same on-the-wire shape for clean values (so existing greps and
-parsers are unaffected), adds proper logfmt quoting plus one-line control
-character escaping for values that need it, and offers an opt-in JSON sink
+This module renders the grep-friendly ``event=<domain>.<action> k=v`` shape,
+quotes logfmt field values, and escapes control characters onto one line. It
+also offers an opt-in JSON sink
 (``JASPER_LOG_JSON=1``) for machine consumers that would rather parse
 one object per line than logfmt.
 
@@ -35,8 +26,7 @@ __all__ = ["log_event", "render_logfmt", "render_json", "json_mode_enabled"]
 
 
 # Printable characters that force a value to be quoted in logfmt. A bare token
-# (no ASCII space/control, no `=`, no quote, no backslash) is emitted as-is so
-# the common case stays byte-identical to the old hand-written lines. C0/DEL
+# (no ASCII space/control, no `=`, no quote, no backslash) is emitted as-is. C0/DEL
 # controls and Unicode line separators are handled by _unsafe_logfmt_char.
 # A backslash forces quoting too: a bare `C:\x` is not safely
 # round-trippable by a logfmt parser, and backslashes are rare in JTS
@@ -80,8 +70,8 @@ def json_mode_enabled(env: dict[str, str] | None = None) -> bool:
     Read per call (one dict lookup) rather than cached at import so a
     test — or an operator flipping the env for one daemon — gets the
     live value without import-order surprises. Mirrors the lazy read
-    in ``jasper.flight_recorder``. Accepts the literal truthy set the
-    rest of the codebase uses (``jasper.config.env_bool``).
+    in ``jasper.flight_recorder``. The set is the truthy half of
+    ``jasper.env_load.parse_bool_value``, spelled here to stay stdlib-only.
     """
     source = os.environ if env is None else env
     raw = source.get("JASPER_LOG_JSON")
@@ -160,10 +150,8 @@ def log_event(
     ``%`` are safe.
 
     ``exc_info`` is passed straight to ``logger.log`` — pass ``True``
-    from an ``except`` block to attach the current traceback, exactly
-    as ``logger.exception("event=...")`` did before migration. It
-    defaults to ``False`` so the common (non-exception) path is
-    byte-identical to a plain ``logger.info``/``warning`` call.
+    from an ``except`` block to attach the current traceback. It defaults to
+    ``False`` for the common non-exception path.
 
     ``fields`` is an explicit ordered mapping merged *before* the
     keyword fields. Use it for a field whose name can't be a keyword

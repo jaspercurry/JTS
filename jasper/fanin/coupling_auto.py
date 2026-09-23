@@ -37,12 +37,12 @@ permission: an unreadable config file does not arm a capture lane.
 from __future__ import annotations
 
 import logging
-import subprocess
 from collections.abc import Mapping
 
 from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
 from jasper.output_hardware import current_usb_data_role
+from jasper.systemd_probe import unit_state
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +62,6 @@ CUSHION_DECAY_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY"
 CUSHION_DECAY_FLOOR_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"
 USB_COMBO_ENABLED_VALUE = "enabled"
 USB_COMBO_DISABLED_VALUE = "disabled"
-# The ordered combo keys (deterministic write order for idempotence + readable
-# logs). Order is not load-bearing to the Rust reader; it is fixed only so the
-# emitted actions are stable across runs.
-USB_COMBO_ENV_VARS = (
-    USB_DIRECT_ENV_VAR,
-    HOST_CLOCK_ENV_VAR,
-    CUSHION_DECAY_ENV_VAR,
-    CUSHION_DECAY_FLOOR_ENV_VAR,
-)
 
 
 def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
@@ -140,19 +131,12 @@ def read_usb_gadget_available() -> bool:
 
 
 def _usbsink_lifecycle_ready() -> bool:
-    """Return the coordinator-derived USB lifecycle readiness mirror."""
+    """Return the coordinator-derived USB lifecycle readiness mirror.
 
-    try:
-        process = subprocess.run(
-            ["systemctl", "is-enabled", "--quiet", "jasper-usbsink.service"],
-            check=False,
-            timeout=5.0,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return process.returncode == 0
+    Reads systemd's own ``is-enabled`` exit verdict, so a failed probe reads
+    as not ready."""
+
+    return unit_state("is-enabled", "jasper-usbsink.service", timeout=5.0).rc == 0
 
 
 def usbsink_effectively_enabled() -> bool:

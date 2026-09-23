@@ -28,16 +28,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 . "${SCRIPT_DIR}/_lib.sh"
 
-SSH="ssh -o ConnectTimeout=5 ${PI_USER}@${PI_HOST}"
+SSH=(ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
 
 KEY="${1:-}"
 
 if [[ -z "$KEY" ]]; then
     echo "Current wake model on ${PI_HOST}:"
-    $SSH "sudo grep -h '^JASPER_WAKE_MODEL=' /var/lib/jasper/wake_model.env /etc/jasper/jasper.env 2>/dev/null | head -1 || echo '(unset — daemon falls back to hey_jarvis)'"
+    "${SSH[@]}" "sudo grep -h '^JASPER_WAKE_MODEL=' /var/lib/jasper/wake_model.env /etc/jasper/jasper.env 2>/dev/null | head -1 || echo '(unset — daemon falls back to hey_jarvis)'"
     echo
     echo "Available models (from jasper/wake_models.py):"
-    $SSH "sudo /opt/jasper/.venv/bin/python -c '
+    "${SSH[@]}" "sudo /opt/jasper/.venv/bin/python -c '
 from jasper.wake_models import REGISTRY
 for e in REGISTRY:
     marker = \" (recommended)\" if e.recommended else \"\"
@@ -51,7 +51,7 @@ fi
 # Resolve the key on the Pi (so the registry is the source of truth).
 # Prints `<model_string>|<bundled-bool>` for the chosen entry, or
 # nothing if the key isn't in the registry.
-RESOLVED=$($SSH "sudo /opt/jasper/.venv/bin/python -c '
+RESOLVED=$("${SSH[@]}" "sudo /opt/jasper/.venv/bin/python -c '
 import sys
 from jasper.wake_models import by_key
 e = by_key(\"${KEY}\")
@@ -73,7 +73,7 @@ BUNDLED="${RESOLVED#*|}"
 # the Pi yet — the daemon would crash on startup. install.sh fetches
 # missing files on the next deploy.
 if [[ "$BUNDLED" == "0" ]]; then
-    if ! $SSH "sudo test -s '${MODEL}'"; then
+    if ! "${SSH[@]}" "sudo test -s '${MODEL}'"; then
         echo "error: ${MODEL} is missing on ${PI_HOST}." >&2
         echo "       Run 'bash scripts/deploy-to-pi.sh' to fetch it, then retry." >&2
         exit 3
@@ -81,4 +81,4 @@ if [[ "$BUNDLED" == "0" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_WAKE_MODEL → ${MODEL}"
-$SSH "sudo $(remote_env_file_set_cmd /var/lib/jasper/wake_model.env JASPER_WAKE_MODEL "$MODEL" 0644 0770) && $(restart_voice_and_verify_cmd)"
+"${SSH[@]}" "sudo $(remote_env_file_set_cmd /var/lib/jasper/wake_model.env JASPER_WAKE_MODEL "$MODEL" 0644 0770) && $(restart_voice_and_verify_cmd)"

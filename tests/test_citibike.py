@@ -617,6 +617,15 @@ def test_provider_validate_credentials_keyless():
     assert rejected == {"WHATEVER": "citibike is keyless"}
 
 
+def test_provider_build_client_accepts_shared_true_value():
+    client = PROVIDER.build_client({
+        "JASPER_CITIBIKE_STATIONS": "abc|9 Av",
+        "JASPER_CITIBIKE_EBIKE_ONLY": "enabled",
+    })
+    assert isinstance(client, CitiBikeClient)
+    assert client.ebike_only is True
+
+
 def test_provider_find_stops_near_sorts_by_distance(monkeypatch):
     info = _gbfs_envelope(
         _station_info("far", "Far Station", 40.80, -73.90),

@@ -190,7 +190,7 @@ def test_the_leader_bake_emits_rate_adjust_off_unasked():
 def test_doctor_parser_reads_devices_enable_rate_adjust():
     from jasper.cli.doctor.grouping import _devices_rate_adjust_from_text
     assert _devices_rate_adjust_from_text(
-        "devices:\n  enable_rate_adjust: true\n") is True
+        "devices:\n  enable_rate_adjust: enabled\n") is True
     assert _devices_rate_adjust_from_text(
         "devices:\n  enable_rate_adjust: false\n") is False
     assert _devices_rate_adjust_from_text(

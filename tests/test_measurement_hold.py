@@ -251,11 +251,9 @@ def test_the_renewal_cadence_fits_inside_the_hold_ttl():
 
 
 @pytest.fixture(autouse=True)
-def _fresh_process_hold():
+def _fresh_process_hold(monkeypatch: pytest.MonkeyPatch) -> None:
     """The registrar is process-scoped; do not leak a hold between tests."""
-    mh.reset_for_tests()
-    yield
-    mh.reset_for_tests()
+    monkeypatch.setattr(mh, "_hold", mh.MeasurementHold())
 
 
 @pytest.fixture

@@ -56,7 +56,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from jasper.env_load import read_env_file_state
+from jasper.env_load import parse_bool_value, read_env_file_state
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -796,7 +796,7 @@ async def probe_status_from_env(
         state.get(ENV_URL, "").strip(),
         state.get(ENV_TOKEN, "").strip(),
         force=force,
-        verify_ssl=state.get(ENV_VERIFY_SSL, "1").strip() not in ("0", "false", "no"),
+        verify_ssl=parse_bool_value(state.get(ENV_VERIFY_SSL)) is not False,
     )
 
 

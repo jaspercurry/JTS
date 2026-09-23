@@ -33,6 +33,7 @@ STATUS_MAX_BYTES = 1024 * 1024
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 MUX_CONTROL_SOCKET_PATH = "/run/jasper-mux/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
+VOICE_CONTROL_SOCKET_PATH = "/run/jasper/voice.sock"
 
 # Ceilings on each owner's STATUS `watchdog.last_progress_age_ms`, in
 # milliseconds — above them the transport is stale. Fan-in's is deliberately
@@ -131,6 +132,7 @@ __all__ = [
     "STATUS_MAX_BYTES",
     "MUX_CONTROL_SOCKET_PATH",
     "OUTPUTD_STATUS_SOCKET",
+    "VOICE_CONTROL_SOCKET_PATH",
     "read_status_socket",
     "read_status_socket_or_none",
 ]

@@ -13,6 +13,7 @@ from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
+from .env_load import parse_bool_value
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
     TRANSIT_DISPLAY_NAME_ENV,
@@ -25,6 +26,7 @@ from .location_state import (
     WEATHER_UNITS_ENV,
 )
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
+from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
@@ -110,34 +112,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    """Read a named env var against the codebase's shared truthy vocabulary.
-
-    The single implementation for name-keyed env-bool parsing; ``aec.bridge_config``
-    and ``cli.aec_init`` import this rather than each hand-rolling their own
-    (see issue #4720).
-    """
-    value = _env_optional_bool(name)
+    """Read a named env var through :func:`jasper.env_load.parse_bool_value`,
+    falling back to ``default`` when it gives no answer."""
+    value = parse_bool_value(os.environ.get(name))
     return default if value is None else value
-
-
-def _env_optional_bool(name: str) -> bool | None:
-    """Tri-state boolean: None when the writer published no answer.
-
-    Unlike ``env_bool`` there is no default to fall back to, because the
-    absence of an answer is itself load-bearing information: "I did not
-    determine this" must stay distinguishable from "I determined False".
-    Unset, empty, and any unrecognised token (the reconciler writes the
-    literal ``unknown``) all read as None.
-    """
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return None
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if value in {"0", "false", "no", "off", "disabled"}:
-        return False
-    return None
 
 
 def local_mic_present_from_env() -> bool | None:
@@ -154,7 +132,7 @@ def local_mic_present_from_env() -> bool | None:
     does not manage) — never "absent". Only an explicit ``False`` may change
     behaviour anywhere.
     """
-    return _env_optional_bool("JASPER_LOCAL_MIC_PRESENT")
+    return parse_bool_value(os.environ.get("JASPER_LOCAL_MIC_PRESENT"))
 
 
 def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
@@ -856,7 +834,7 @@ class Config:
             # systemd's RuntimeDirectory=jasper auto-creates /run/jasper
             # at service start with mode 0750.
             voice_control_socket=_env(
-                "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+                "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
             ),
             # Multi-device peering — read JASPER_PEERING the same way
             # the peering daemon does. Anything other than "on" / "true"

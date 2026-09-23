@@ -450,15 +450,10 @@ def test_secret_fields_excluded_from_repr(monkeypatch, render):
 
 
 def test_config_import_chain_does_not_require_httpx():
-    """`import jasper.config` must not pull in httpx.
+    """Config and transit parser imports must not require httpx.
 
-    config.py imports home_assistant / bus / citibike (and, via bus,
-    the jasper.transit provider registry) purely for env-var names and
-    parse helpers. Those modules lazy-import httpx at their I/O points
-    so every config-loading process — socket-activated wizards,
-    jasper-doctor, tests in minimal envs — stays light and does not
-    hard-require httpx. Run in a subprocess with httpx poisoned in
-    sys.modules so an installed httpx can't mask a regression."""
+    Run in a subprocess with httpx poisoned in sys.modules so an installed
+    copy cannot mask a module-level import."""
     import subprocess
     import sys
 

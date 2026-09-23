@@ -12,13 +12,11 @@ from jasper.sound.profile import SimpleEq, SoundProfile
 from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
-    VOLUME_FLOOR_MAX_DB,
-    VOLUME_FLOOR_MIN_DB,
     load_sound_settings,
     output_trim_db,
     save_sound_settings,
 )
-from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
+from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_FLOOR_MAX_DB, VOLUME_FLOOR_MIN_DB
 
 
 def test_defaults_are_the_do_nothing_state():

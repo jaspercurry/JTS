@@ -10,7 +10,7 @@ BusTime is the canonical
 authority for bus ETAs — what their own bus-prediction signs use
 and what every NYC bus app pulls from.
 
-**v2 — multi-stop fan-out.** The client holds a list of configured
+The client holds a list of configured
 stops (typically opposing-direction stops at the same intersection).
 Every `get_arrivals` call fans out to all stops in parallel and
 unions the results, sorted by ETA and capped at a limit. Each
@@ -52,10 +52,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-# httpx is imported lazily inside the methods that perform I/O:
-# jasper.config imports this module for `parse_bus_stops` alone, so a
-# top-level import made every config-loading process pay httpx's import
-# cost. Mirrors the lazy-import pattern in jasper/transit/providers/.
+# The transit wizard and doctor import `parse_bus_stops` without doing I/O.
+# Keep httpx at the network call sites so those processes do not load it.
 if TYPE_CHECKING:
     import httpx
 

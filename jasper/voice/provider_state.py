@@ -37,17 +37,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from ..env_load import merged_env_files, read_env_file_state
+from ..env_load import merged_env_files, parse_bool_value, read_env_file_state
 from .catalog import (
     VALID_PROVIDER_IDS,
     default_model_id,
     provider_by_id,
 )
-
-# Values that count as "on" for a boolean selector in the SSOT file.
-# Mirrors jasper.config.env_bool's truthy set so the wizard / operator-edited
-# file and the typed Config agree on what "enabled" means.
-_TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
 
 # The wizard-owned single source of truth for active-provider state. The
 # path (not the provider value) may be overridden with
@@ -244,8 +239,8 @@ def resolve_barge_in_enabled(provider: str, env: Mapping[str, str]) -> bool:
     entry = provider_by_id(provider)
     if entry is None:
         return False
-    raw = env.get(barge_in_env_key(provider), "true" if entry.barge_in_default else "").strip().lower()
-    return raw in _TRUTHY
+    raw = env.get(barge_in_env_key(provider), "true" if entry.barge_in_default else "")
+    return parse_bool_value(raw) is True
 
 
 # read_barge_in_enabled runs once per turn-open on jasper-voice's event

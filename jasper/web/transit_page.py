@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
+from ..env_load import parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -55,10 +56,7 @@ def _bus_key_source(state: dict[str, str]) -> str:
 
     'state' = persisted in /var/lib/jasper/transit.env (the wizard's
               owned file).
-    'env'   = visible in os.environ (operator pasted it into
-              /etc/jasper/jasper.env directly, OR migrated by
-              install.sh into transit.env which systemd re-sourced
-              into our env on the next jasper-web spawn).
+    'env'   = visible in os.environ from a unit EnvironmentFile.
     'none'  = not set anywhere.
 
     Used to drive the locked / soft-unlocked / unlocked card states.
@@ -336,10 +334,8 @@ def _bus_card_html(
   </div>
 </section>"""
 
-    # Key is set — either in state (wizard-owned) or in env (operator
-    # set via /etc/jasper/jasper.env, or post-migration via systemd
-    # re-sourcing). Both unlock the card so the user can see what's
-    # configured; the `env` source adds a yellow banner explaining
+    # A key in either the wizard state or the process environment unlocks
+    # the card; the `env` source adds a yellow banner explaining
     # where the value lives.
     credentials = {"JASPER_MTA_BUSTIME_KEY": _value_for(state, "JASPER_MTA_BUSTIME_KEY")}
     error: str | None = None
@@ -591,10 +587,9 @@ def _citibike_card_html(
 
     saved_picks = parse_saved_stations(_value_for(state, "JASPER_CITIBIKE_STATIONS"))
     saved_ids = {sid for sid, _ in saved_picks}
-    ebike_only = (
-        _value_for(state, "JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
-        in {"1", "true", "yes"}
-    )
+    ebike_only = parse_bool_value(
+        _value_for(state, "JASPER_CITIBIKE_EBIKE_ONLY", ""),
+    ) is True
 
     badge = _badge_html(bool(saved_picks))
 
@@ -959,8 +954,8 @@ def _index_html(
     # Per-provider card dispatch. Discovery (bbox + find_stops_near
     # + validate_credentials) is data-driven from the REGISTRY, but
     # each provider's wizard card is bespoke enough — subway has a
-    # direction radio, bus has the locked-until-keyed state, future
-    # Citi Bike would have a dock-capacity readout — that branching
+    # direction radio, bus has the locked-until-keyed state, and Citi Bike
+    # has a dock-capacity readout — that branching
     # here is honest. New providers add a branch; the unknown-id
     # fallback below keeps the page rendering while the contributor
     # wires up theirs. See jasper/transit/__init__.py for the full
@@ -1031,4 +1026,3 @@ def _index_html(
     return _wrap_transit_page(
         "Transit", body, status_msg=status_msg, back_href=back_href,
     )
-

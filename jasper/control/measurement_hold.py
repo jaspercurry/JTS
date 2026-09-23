@@ -76,7 +76,6 @@ __all__ = [
     "record_declined_observation",
     "record_refused_write",
     "release",
-    "reset_for_tests",
     "snapshot",
 ]
 
@@ -148,10 +147,6 @@ class MeasurementHold:
         # source-observed name `declined_observations`, and conflating the two
         # would make that field lie.
         self._refusals: int = 0
-
-    def reset_for_tests(self) -> None:
-        with self._lock:
-            self._clear_locked()
 
     def _clear_locked(self) -> None:
         """Drop the hold and everything scoped to it. Caller holds the lock."""
@@ -407,10 +402,6 @@ def record_refused_write() -> tuple[str, bool, dict[str, Any]] | None:
 
 def snapshot() -> dict[str, Any]:
     return _hold.snapshot()
-
-
-def reset_for_tests() -> None:
-    _hold.reset_for_tests()
 
 
 def read_measurement_hold() -> dict[str, Any] | None:

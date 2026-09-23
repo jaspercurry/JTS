@@ -188,7 +188,7 @@ def test_usb_combo_actions_explicit_disabled_when_not_armed():
     assert all(a.action == "set" for a in acts)
     assert [a.value for a in acts[:3]] == ["disabled"] * 3
     assert acts[3].value == "576"
-    assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
+    assert {a.key for a in acts} == {ca.USB_DIRECT_ENV_VAR, ca.HOST_CLOCK_ENV_VAR, ca.CUSHION_DECAY_ENV_VAR, ca.CUSHION_DECAY_FLOOR_ENV_VAR}
 
 
 def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):

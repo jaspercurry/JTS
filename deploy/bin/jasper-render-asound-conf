@@ -10,29 +10,25 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
+if [[ -z "$ENV_FILE_LIB" ]]; then
+    ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+    [[ -r "$ENV_FILE_LIB" ]] || ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
+fi
+[[ -r "$ENV_FILE_LIB" ]] || { echo "jasper-render-asound-conf: env-file library missing: ${ENV_FILE_LIB}" >&2; exit 66; }
+# shellcheck disable=SC1090
+source "$ENV_FILE_LIB"
+declare -F jasper_env_file_get >/dev/null \
+    || { echo "jasper-render-asound-conf: unusable env-file library: ${ENV_FILE_LIB}" >&2; exit 66; }
+
 STATE_FILE="${JASPER_AUDIO_QUALITY_FILE:-/var/lib/jasper/audio_quality.env}"
 TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
 OUTPUT="${JASPER_ASOUND_CONF:-/var/lib/jasper-asound/asound.conf}"
 
 converter="samplerate_medium"
-if [[ -f "$STATE_FILE" ]]; then
-    key_seen=0
-    value="$(
-        sed -n -E 's/^[[:space:]]*JASPER_ALSA_RATE_CONVERTER[[:space:]]*=[[:space:]]*//p' "$STATE_FILE" \
-            | tail -n 1
-    )"
-    if grep -Eq '^[[:space:]]*JASPER_ALSA_RATE_CONVERTER[[:space:]]*=' "$STATE_FILE"; then
-        key_seen=1
-    fi
-    if [[ "$key_seen" == "1" ]]; then
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
-        converter="$value"
-    fi
+if value="$(jasper_env_file_get "$STATE_FILE" JASPER_ALSA_RATE_CONVERTER)"; then
+    converter="$value"
 fi
 
 case "$converter" in

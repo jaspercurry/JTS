@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -42,9 +43,11 @@ if TYPE_CHECKING:
     from ..volume_state import VolumeState
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..music_sources import Source
 from ..platform.control_client import CONTROL_PORT
+from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
     debug_control,
     grouping_supervisor,
@@ -196,22 +199,9 @@ def _control_route_allowed_for_install_profile(
     )
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
-        return default
-    if value <= 0:
-        logger.warning("%s=%r is not positive; using %d", name, raw, default)
-        return default
-    return value
-
-
-CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
+CONTROL_MAX_POST_BYTES = bounded_env_int(
+    "JASPER_CONTROL_MAX_POST_BYTES", 4096, lo=1, hi=sys.maxsize,
+)
 # Listen socket refused (address in use, unreachable bind host, privileged
 # port). Listed in jasper-control.service's SuccessExitStatus +
 # RestartPreventExitStatus so the daemon parks instead of climbing
@@ -674,16 +664,11 @@ def _make_handler(
             getattr(self, handler_name)()
 
         def _guard_control_token(self) -> bool:
-            """Opt-in token gate for the high-impact mutations.
+            """Require the startup-created control token for high-impact mutations.
 
-            Runs AFTER the browser-origin/install-profile guards so an
-            unknown path still 404s as before. Default-off: when no token
-            file exists, control_token.verify() returns True and this is a
-            pass-through. When the operator has enabled the gate
-            (jasper-control-token --enable), a request to one of
-            _TOKEN_GATED_ROUTES without a matching X-JTS-Token header is
-            rejected 403 with an actionable JSON body and an audit log
-            line. The token value is never logged.
+            Runs after the browser-origin/install-profile guards so an unknown
+            path still returns 404. A request to a token-gated route without a
+            matching X-JTS-Token is rejected with 403. The token is never logged.
             """
             if self.path not in _TOKEN_GATED_ROUTES:
                 return True
@@ -692,7 +677,7 @@ def _make_handler(
             # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
             # fan-out (rooms_setup) or an autonomous re-group presents the
             # household credential (X-JTS-Household), which each member verifies
-            # against its own persisted copy — NOT the per-device CSRF token a
+            # against its own persisted copy — not the control token a
             # leader can't hold for a follower. Accept EITHER on this route only;
             # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
             # update) are browser->own-speaker and stay control-token-only.
@@ -904,7 +889,7 @@ def build_server(
     port: int,
     camilla_host: str,
     camilla_port: int,
-    voice_socket_path: str = "/run/jasper/voice.sock",
+    voice_socket_path: str = VOICE_CONTROL_SOCKET_PATH,
     sampler: Any = None,
     audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
@@ -967,7 +952,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--voice-socket",
         default=os.environ.get(
-            "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+            "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
         ),
         help="path to voice_daemon's control UDS",
     )

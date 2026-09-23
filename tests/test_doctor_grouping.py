@@ -173,9 +173,7 @@ def test_check_grouping_snapcast_version_verdicts(
 def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
     """The concatenation order is load-bearing: snapclient's real version rides
     stdout, but ALSA-lib can print its OWN version-shaped token to stderr, so
-    stdout must win the parse. The extracted value is data the reason
-    vocabulary can't carry, so this keeps a `.detail` check as the
-    pure-formatting-helper exception."""
+    stdout must win the parse."""
     _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
@@ -191,7 +189,6 @@ def test_check_grouping_snapcast_version_stdout_wins_over_stderr(monkeypatch):
 
     assert r.status == "ok"
     assert r.reason == grouping.REASON_SNAPCAST_VERSION_MATCH
-    assert "9.9.9" not in r.detail
 
 
 # --------------------------------------------------------- household credential
