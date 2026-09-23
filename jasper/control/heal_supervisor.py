@@ -26,6 +26,7 @@ from jasper.install_profile import (
 from jasper.log_event import log_event
 from jasper.service_units import (
     AUDIO_HARDWARE_RECONCILE_UNIT,
+    CAMILLA_SERVICE,
     read_unit_states,
     unit_active,
     unit_failed,
@@ -116,12 +117,9 @@ def camilla_stopped_reason(
     REMOVE WHEN the gate is removed (ADR-0283): its refusal is the only fact
     this case reads.
     """
-    # lazy: audio_health owns the roster and costs ~3k lines of imports.
-    from .audio_health import CAMILLA_UNIT_FULL
-
     if not gate_refused:
         return None
-    camilla = (units or {}).get(CAMILLA_UNIT_FULL)
+    camilla = (units or {}).get(CAMILLA_SERVICE)
     if not unit_loaded(camilla) or unit_active(camilla) or unit_unstable(camilla):
         return None
     if unit_failed((units or {}).get(AUDIO_HARDWARE_RECONCILE_UNIT)):

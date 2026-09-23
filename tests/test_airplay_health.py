@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import json
-import logging
-import time
 import types
 
 import pytest
@@ -18,8 +16,8 @@ from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
+from jasper.control.camilla_rate_storm import STORM_EXIT_DEBOUNCE_SEC, CamillaRateStorm
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from tests._log_events import event_fields, event_records
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -745,31 +743,6 @@ def test_default_journal_reader_fails_soft_when_journal_is_unavailable(
     assert AirPlayHealthSampler._read_journal_lines(("shairport-sync",), 1, 2) == []
 
 
-def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
-    monkeypatch,
-) -> None:
-    # Fixed rather than the host's real CLOCK_MONOTONIC: a container whose
-    # own uptime is under 600s would otherwise see a negative timestamp.
-    now_us = 10_000.0 * 1e6
-    started_us = int(now_us - 600.0 * 1e6)
-    monkeypatch.setattr(
-        time, "clock_gettime", lambda _clock: now_us / 1e6,
-    )
-    monkeypatch.setattr(
-        airplay_health,
-        "read_unit_states",
-        lambda units, **_kw: {
-            airplay_health.CAMILLA_UNIT_FULL: {
-                "active_enter_timestamp_monotonic": started_us,
-            },
-        },
-    )
-
-    age = airplay_health._seconds_since_camilla_restart()
-
-    assert age == pytest.approx(600.0, abs=1.0)
-
-
 def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
     # macOS caps AF_UNIX sun_path at 104 bytes; pytest's tmp_path nests
     # ~123 bytes deep and overflows it (Linux allows 108 with a shorter
@@ -892,9 +865,6 @@ def test_airplay_connect_grace_suppresses_session_establish(tmp_path) -> None:
     assert snap["status"] == "issue"
 
 
-# ---- storm-triggered forensic capture (Tier 1 onset/offset + Tier 2) ----
-
-
 def _material_short_read_lines(count: int, frames: int = 970) -> list[str]:
     # deficit 1024-970 = 54 > 11 => material; matches CAMILLA_SHORT_READ_RE.
     return [
@@ -903,7 +873,10 @@ def _material_short_read_lines(count: int, frames: int = 970) -> list[str]:
     ]
 
 
-def _storm_sampler(now, *, reader, tmp_dir, **kw) -> AirPlayHealthSampler:
+def _storm_sampler(
+    now, *, reader, tmp_dir,
+    storm_exit_debounce_sec: float = STORM_EXIT_DEBOUNCE_SEC, **kw,
+) -> AirPlayHealthSampler:
     cam = {"rate_adjust": 1.0002, "capture_rate": 48125, "buffer_level": 2040}
     ctx = {
         "soc_temp_c": 52.0,
@@ -915,162 +888,13 @@ def _storm_sampler(now, *, reader, tmp_dir, **kw) -> AirPlayHealthSampler:
     kw.setdefault("fanin_probe", lambda: _fanin_status(airplay_frames=240000))
     kw.setdefault("mpris_probe", lambda: {"playing": True})
     kw.setdefault("camilla_probe", lambda: dict(cam))
-    kw.setdefault("context_probe", lambda: dict(ctx))
-    kw.setdefault("trajectory_dir", tmp_dir)
     kw.setdefault("time_fn", lambda: now[0])
-    return _sampler(journal_reader=reader, **kw)
-
-
-def _camilla_reader(pending):
-    def reader(_units, _since, _until):
-        return [
-            (airplay_health.CAMILLA_UNIT, line) for line in pending["lines"]
-        ]
-    return reader
-
-
-def test_storm_onset_event_captures_controller_and_context(tmp_path, caplog) -> None:
-    now = [1000.0]
-    pending = {"lines": []}
-    sampler = _storm_sampler(
-        now,
-        reader=_camilla_reader(pending),
-        tmp_dir=str(tmp_path / "rate-storms"),
-        storm_exit_debounce_sec=1.0,
+    rate_storm = CamillaRateStorm(
+        exit_debounce_sec=storm_exit_debounce_sec,
+        trajectory_dir=tmp_dir,
+        context_probe=lambda: dict(ctx),
     )
-    # First scan only establishes the journal cursor (its window spans from 0,
-    # so the rate is ~0 regardless of content) — never a storm.
-    sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is False
-
-    # Next scan: 100 material short reads across a 30 s window = 200/min -> storm.
-    now[0] += 30.0
-    pending["lines"] = _material_short_read_lines(100)
-    with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
-        sampler._tick()
-
-    snap = sampler.snapshot()
-    assert snap["storm"]["active"] is True
-    assert snap["storm"]["count"] == 1
-    onset = snap["storm"]["onset"]
-    assert onset["material_per_min"] == 200.0
-    assert onset["rate_adjust"] == 1.0002
-    assert onset["capture_rate"] == 48125
-    assert onset["buffer_level"] == 2040
-    assert onset["active_source"] == "airplay"
-    assert onset["soc_temp_c"] == 52.0
-    assert onset["cpu_governor"] == "ondemand"
-    assert onset["sec_since_camilla_restart"] == 600.0
-    assert onset["sec_since_deploy"] == 7200.0
-    assert event_records(caplog, "camilla_rate.storm_onset")
-
-    # Tier 2: a bounded trajectory artifact exists with header + the onset row.
-    files = list((tmp_path / "rate-storms").glob("storm-*.csv"))
-    assert len(files) == 1
-    rows = files[0].read_text().splitlines()
-    assert rows[0] == (
-        "t_sec,rate_adjust,capture_rate,buffer_level,"
-        "soc_temp_c,cpu_freq_khz,material_per_min"
-    )
-    assert len(rows) >= 2
-    assert rows[1].split(",")[1] == "1.0002"  # rate_adjust column, onset row
-
-
-def test_storm_offset_event_fires_after_debounced_clear(tmp_path, caplog) -> None:
-    now = [1000.0]
-    pending = {"lines": []}
-    sampler = _storm_sampler(
-        now,
-        reader=_camilla_reader(pending),
-        tmp_dir=str(tmp_path / "rate-storms"),
-        storm_exit_debounce_sec=1.0,
-    )
-    sampler._tick()                                   # cursor
-    now[0] += 30.0
-    pending["lines"] = _material_short_read_lines(100)
-    sampler._tick()                                   # onset
-    assert sampler.snapshot()["storm"]["active"] is True
-
-    # First quiet scan arms the debounce but does not yet clear.
-    now[0] += 30.0
-    pending["lines"] = []
-    sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is True
-
-    # Second quiet scan is past the (short) debounce -> offset.
-    now[0] += 30.0
-    with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
-        sampler._tick()
-    snap = sampler.snapshot()
-    assert snap["storm"]["active"] is False
-    assert snap["storm"]["count"] == 1
-    assert "duration_sec" in event_fields(caplog, "camilla_rate.storm_offset")
-
-
-def test_storm_ignores_short_scan_window(tmp_path) -> None:
-    # A high count over a sub-15 s scan window must not false-trigger a storm.
-    now = [1000.0]
-    pending = {"lines": []}
-    sampler = _storm_sampler(
-        now,
-        reader=_camilla_reader(pending),
-        tmp_dir=str(tmp_path / "rate-storms"),
-        journal_interval_sec=10.0,
-    )
-    sampler._tick()
-    now[0] += 10.0
-    pending["lines"] = _material_short_read_lines(100)  # 600/min, but window=10 s
-    sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is False
-
-
-def test_no_storm_below_enter_threshold(tmp_path) -> None:
-    now = [1000.0]
-    pending = {"lines": []}
-    sampler = _storm_sampler(
-        now,
-        reader=_camilla_reader(pending),
-        tmp_dir=str(tmp_path / "rate-storms"),
-    )
-    sampler._tick()
-    now[0] += 30.0
-    pending["lines"] = _material_short_read_lines(30)  # 60/min < 120 enter floor
-    sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is False
-
-
-def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
-    tmp_path, caplog,
-) -> None:
-    # A trajectory directory that can't be created must not break the Tier-1
-    # onset/offset events: forensics is observability-only.
-    now = [1000.0]
-    pending = {"lines": []}
-    blocker = tmp_path / "afile"
-    blocker.write_text("x")
-    sampler = _storm_sampler(
-        now,
-        reader=_camilla_reader(pending),
-        tmp_dir=str(blocker / "sub"),  # makedirs under a file -> OSError
-        storm_exit_debounce_sec=1.0,
-    )
-    sampler._tick()
-    now[0] += 30.0
-    pending["lines"] = _material_short_read_lines(100)
-    with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
-        sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is True
-    assert event_records(caplog, "camilla_rate.storm_onset")
-
-    now[0] += 30.0
-    pending["lines"] = []
-    sampler._tick()
-    now[0] += 30.0
-    with caplog.at_level(logging.WARNING, logger="jasper.control.airplay_health"):
-        sampler._tick()
-    assert sampler.snapshot()["storm"]["active"] is False
-    # No artifact dir, rendered as null.
-    assert event_fields(caplog, "camilla_rate.storm_offset")["artifact"] == "null"
+    return _sampler(journal_reader=reader, rate_storm=rate_storm, **kw)
 
 
 def _ring(**overrides) -> dict:

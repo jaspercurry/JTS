@@ -32,8 +32,7 @@ from ..output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
-from ..service_units import unit_not_running
-from .airplay_health import CAMILLA_UNIT_FULL
+from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
     DIAGNOSTICS_REMEDY,
     RESTART_REMEDY,
@@ -574,7 +573,7 @@ def _stopped_dsp_signal(
     """
     if bool(airplay.get("warmup_active")):
         return None
-    stopped = _camilla_stopped(_mapping(service_states).get(CAMILLA_UNIT_FULL))
+    stopped = _camilla_stopped(_mapping(service_states).get(CAMILLA_SERVICE))
     if stopped is None:
         return None
     code, detail = stopped

@@ -26,10 +26,10 @@ from typing import Any
 
 from ..music_sources import Source
 from ..service_units import (
+    CAMILLA_SERVICE,
     FANIN_SERVICE,
     OUTPUTD_SERVICE,
 )
-from .airplay_health import CAMILLA_UNIT_FULL
 from ._health_fields import _mapping
 from ._health_sources import _SOURCE_LABELS
 from .audio_attribution import _input_attribution
@@ -81,7 +81,7 @@ _UNDECLARED_OUTPUT_CODES = frozenset({"output_absent", "output_backend_inactive"
 # Public: `jasper.control.heal_supervisor` stands down when one is not active.
 RESTART_WATCH_UNITS = {
     FANIN_SERVICE: "path.fanin",
-    CAMILLA_UNIT_FULL: "path.camilla",
+    CAMILLA_SERVICE: "path.camilla",
     OUTPUTD_SERVICE: "path.outputd",
 }
 

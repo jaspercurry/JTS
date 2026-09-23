@@ -10,7 +10,8 @@ two ends of one dashboard payload read its untyped daemon JSON through this
 module instead of through each other. Not
 :mod:`jasper.json_fields` — that one raises on a bad field and coerces to
 ``float``; these return ``None`` and keep an ``int`` an ``int``, which is what
-a dashboard field that may simply be absent needs.
+a dashboard field that may simply be absent needs. ``_read_text_file`` and
+``_read_int_file`` apply the same rule to a small /proc or /sys file.
 
 Also the shared home for ``_MONITOR_ERRORS``, the fail-soft exception tuple
 every observability probe across the audio-health split degrades on, and for
@@ -132,6 +133,22 @@ def _nonnegative_counter(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _read_int_file(path: str) -> int | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_text_file(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 
 def _detail(label: str, value: Any) -> dict[str, str]:
