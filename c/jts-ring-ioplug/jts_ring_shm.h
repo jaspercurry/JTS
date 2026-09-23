@@ -654,6 +654,21 @@ typedef struct {
     uint32_t rate;           // wire rate, for the bucket refill
 } jts_ring_pointer_inputs_t;
 
+// ALSA infers motion modulo buffer_size: a full-buffer jump aliases to zero.
+// Keep a forward-only position and spread catch-up over sub-buffer advances.
+static inline uint64_t
+jts_ring_pointer_clamp(jts_ring_pointer_state_t *st, uint64_t honest,
+                       uint64_t buffer_size, uint32_t period_frames) {
+    uint64_t last = st->last_reported;
+    uint64_t advance = (honest > last) ? (honest - last) : 0;
+    uint64_t max_advance = (buffer_size > (uint64_t)period_frames)
+                               ? (buffer_size - (uint64_t)period_frames)
+                               : 0;
+    if (advance > max_advance) advance = max_advance;
+    st->last_reported = last + advance;
+    return st->last_reported;
+}
+
 // Compute the RAW (pre-modulo) hw_ptr to report to ALSA, advancing/clamping
 // `st->last_reported`. The caller returns `result % buffer_size`. Pure: no ALSA,
 // no atomics — the caller samples occupancy/liveness and passes them in.
@@ -675,31 +690,7 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
     honest = jts_ring_pace_apply(st, honest, in->pace_nominal, in->now_ns, in->rate,
                                  in->buffer_size, in->period_frames, in->reader_live);
 
-    // 2. Reported-position clamp. The reported value only ever moves FORWARD,
-    // and never by >= buffer_size in one call (which would alias to a zero — or
-    // negative — delta in ALSA's mod-buffer hw_ptr inference).
-    uint64_t last = st->last_reported;
-    uint64_t reported;
-    if (honest <= last) {
-        // Honest position went backward (dead->live regrow, a live reader lagging,
-        // or a governed bucket holding less than one period) or stayed put: hold at
-        // last_reported. Non-decreasing floor.
-        reported = last;
-    } else {
-        uint64_t advance = honest - last;
-        // Cap the per-call advance so ALSA always sees a sub-buffer delta.
-        // period_frames <= buffer_size always (n_slots >= 1), so the cap is
-        // strictly less than buffer_size. A larger true jump catches up over the
-        // next few ticks.
-        uint64_t max_advance =
-            (in->buffer_size > (uint64_t)in->period_frames)
-                ? (in->buffer_size - (uint64_t)in->period_frames)
-                : 0; // pathological buffer_size == period: no advance headroom
-        if (advance > max_advance) advance = max_advance;
-        reported = last + advance;
-    }
-    st->last_reported = reported;
-    return reported;
+    return jts_ring_pointer_clamp(st, honest, in->buffer_size, in->period_frames);
 }
 
 // --- ioplug CAPTURE pointer core (Ring A; shared by pcm_jts_ring.c and
@@ -785,26 +776,7 @@ jts_ring_capture_pointer_report(jts_ring_pointer_state_t *st,
     // Honest capture hw_ptr = appl + readable (frames available to be captured).
     uint64_t honest = in->appl_frames + readable;
 
-    // 2. Reported-position clamp (identical shape to the playback core): forward-
-    // only, and never by >= buffer_size in one call so ALSA's mod-buffer delta
-    // inference never aliases a full-buffer writer burst to a zero delta.
-    uint64_t last = st->last_reported;
-    uint64_t reported;
-    if (honest <= last) {
-        // Held or regressed (can't happen for an honest appl+readable, but the
-        // clamp keeps the floor unconditional): hold at last_reported.
-        reported = last;
-    } else {
-        uint64_t advance = honest - last;
-        uint64_t max_advance =
-            (in->buffer_size > (uint64_t)in->period_frames)
-                ? (in->buffer_size - (uint64_t)in->period_frames)
-                : 0;
-        if (advance > max_advance) advance = max_advance;
-        reported = last + advance;
-    }
-    st->last_reported = reported;
-    return reported;
+    return jts_ring_pointer_clamp(st, honest, in->buffer_size, in->period_frames);
 }
 
 #endif // JTS_RING_SHM_H

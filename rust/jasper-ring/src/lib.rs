@@ -144,8 +144,8 @@ pub fn ring_open_error_is_config_class(error: &io::Error) -> bool {
 
 pub use layout::{
     layout_json, Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES,
-    MIN_N_SLOTS, RATE_HZ, RING_SLOTS, RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE,
-    VERSION,
+    MIN_N_SLOTS, MIN_RING_CHANNELS, RATE_HZ, RING_SLOTS, RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE,
+    SAMPLE_FORMAT_S32LE, VERSION,
 };
 pub use writer::{
     PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,

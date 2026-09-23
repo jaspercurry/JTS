@@ -29,16 +29,8 @@
 //!
 //! # Sample width
 //!
-//! [`AudioRing`] stores **i32 spine-scale** samples and
-//! [`SincTable::interpolate`] returns its raw `f64` accumulator, so the ONE
-//! kernel serves both widths and the caller owns its own single rounding: an
-//! S16 producer pushes via [`AudioRing::push_interleaved_narrow`] and narrows
-//! back with [`spine_acc_to_i16`], a wide one pushes [`AudioRing::push_interleaved`]
-//! and rounds with [`clamp_i32`]. The narrow round trip is bit-transparent —
-//! [`SPINE_SCALE_F64`] explains why, `spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly`
-//! pins the arithmetic, and the END-TO-END proof is jasper-fanin's
-//! `the_direct_route_is_byte_identical_to_its_committed_golden`, which
-//! asserts a whole period of the shipping route exactly.
+//! [`AudioRing`] stores i32 spine-scale samples. [`SincTable::interpolate`]
+//! returns the raw `f64` accumulator; callers round once with [`clamp_i32`].
 //!
 //! # The capture-follower ratio convention
 //!
@@ -51,15 +43,15 @@
 //! the single inversion at the DLL's error input.
 //!
 //! ```
-//! use jasper_resampler::{AudioRing, SincTable, spine_acc_to_i16};
+//! use jasper_resampler::{AudioRing, SincTable, clamp_i32};
 //!
 //! // A stereo ramp interpolated at unity, well past the kernel's warm-up
 //! // radius, is a faithful copy to within 1 LSB.
 //! let table = SincTable::new();
 //! let mut ring = AudioRing::new(4096, 2).unwrap();
-//! let input: Vec<i16> = (0..2048).flat_map(|n| [n as i16, -(n as i16)]).collect();
-//! ring.push_interleaved_narrow(&input);
-//! let sample = spine_acc_to_i16(table.interpolate(&ring, 100.0, 0));
+//! let input: Vec<i32> = (0..2048).flat_map(|n| [n, -n]).collect();
+//! ring.push_interleaved(&input);
+//! let sample = clamp_i32(table.interpolate(&ring, 100.0, 0));
 //! assert!((sample - 100).abs() <= 1);
 //! ```
 
@@ -158,29 +150,7 @@ pub fn clamp_i32(value: f64) -> i32 {
 
 /// The exact scale factor between the i16 sample scale and the i32 spine scale:
 /// `2^16`, the same factor [`widen_i16_to_i32`] applies as a shift.
-///
-/// Named once because the byte-identity of the narrow resample path depends on
-/// it being an exact power of two: scaling every ring sample by `2^16` scales
-/// the interpolator's `f64` accumulator by exactly `2^16` (a power-of-two
-/// multiply changes only the exponent, never the mantissa or a rounding
-/// decision, and the kernel's magnitudes are far from subnormal or overflow),
-/// so dividing back out before the i16 round reproduces the pre-spine result
-/// bit for bit. [`spine_acc_to_i16`] is that division.
 pub const SPINE_SCALE_F64: f64 = 65_536.0;
-
-/// Narrow a spine-scale interpolator accumulator to `i16` with the HISTORICAL
-/// rounding — `clamp_i16(acc / 2^16)`.
-///
-/// The one place the narrow render path's rounding lives. [`SincTable::interpolate`]
-/// returns its raw accumulator at the ring's own (i32 spine) scale; a narrow
-/// consumer divides by [`SPINE_SCALE_F64`] and rounds ONCE here. Rounding at i32
-/// first and narrowing afterwards would round twice and is not the same
-/// function — do not compose [`clamp_i32`] with [`narrow_i32_to_i16_round`] to
-/// get here.
-#[inline]
-pub fn spine_acc_to_i16(acc: f64) -> i16 {
-    clamp_i16(acc / SPINE_SCALE_F64)
-}
 
 /// Narrow one S32_LE sample to S16 by keeping the high word — an arithmetic
 /// right shift by 16, sign-preserving, no rounding, no dither.
@@ -400,48 +370,11 @@ pub fn narrow_i32_to_i24_le_slice(input: &[i32], output: &mut [u8]) -> bool {
     true
 }
 
-/// The dBFS floor an empty / digitally-silent i16 slice reports. Lives in this
-/// pure crate so fan-in's telemetry and its tests share one sentinel.
+/// The dBFS floor for empty or digitally silent samples.
 pub const RMS_DBFS_FLOOR: f64 = -120.0;
 
-/// Per-period RMS in dBFS of an interleaved i16 slice.
-///
-/// The ONE definition of the USB path's per-lane level metric. It lives in this
-/// pure crate so fan-in's USB DIRECT lane and the mux's -60 dBFS activity gate
-/// depend on one tested metric rather than a hand-synced copy.
-///
-/// Semantics (pinned): each sample is normalized by `/ 32768.0`, the mean square
-/// is `sqrt`-ed, and an rms at or below a `1.0e-9` epsilon (empty or fully
-/// silent) returns [`RMS_DBFS_FLOOR`]; otherwise `20 * log10(rms)` clamped up to
-/// the floor. Allocation-free; no ALSA, so it unit-tests on any host.
-pub fn rms_dbfs_i16(samples: &[i16]) -> f64 {
-    if samples.is_empty() {
-        return RMS_DBFS_FLOOR;
-    }
-    let sum_sq: f64 = samples
-        .iter()
-        .map(|sample| {
-            let normalized = (*sample as f64) / 32768.0;
-            normalized * normalized
-        })
-        .sum();
-    let rms = (sum_sq / (samples.len() as f64)).sqrt();
-    if rms <= 1.0e-9 {
-        RMS_DBFS_FLOOR
-    } else {
-        (20.0 * rms.log10()).max(RMS_DBFS_FLOOR)
-    }
-}
-
-/// Per-period RMS in dBFS of an interleaved **spine-scale i32** slice — the
-/// wide sibling of [`rms_dbfs_i16`], for a lane whose samples are i32 rather
-/// than i16.
-///
-/// Identical shape, identical epsilon, identical floor; only the normalizer
-/// changes (`/ 2147483648.0`, i.e. `2^31`, where the narrow one uses `2^15`).
-/// That makes the two report the SAME dBFS for the same acoustic signal, which
-/// is what lets STATUS and mux's activity gate keep one meaning for `rms_dbfs`
-/// no matter which width a lane carries.
+/// Per-period RMS in dBFS of interleaved spine-scale i32 samples, normalized
+/// by 2^31. RMS at or below 1e-9 reports [`RMS_DBFS_FLOOR`].
 pub fn rms_dbfs_i32(samples: &[i32]) -> f64 {
     if samples.is_empty() {
         return RMS_DBFS_FLOOR;
@@ -487,12 +420,7 @@ impl SincTable {
     /// report). Out-of-window taps read as zero (the ring returns 0 outside
     /// `[read_frame, write_frame)`), so the edges of a fresh stream ramp in.
     ///
-    /// **The caller owns the rounding**, and which one it owns is the width
-    /// decision: a narrow consumer calls [`spine_acc_to_i16`] (the historical
-    /// `clamp_i16` of the pre-spine value), a wide one calls [`clamp_i32`].
-    /// Returning `f64` rather than rounding here is what keeps the two paths a
-    /// SINGLE rounding each — an `i32`-rounding interpolator would force a
-    /// narrow consumer to round twice, which is a different function.
+    /// The caller rounds once with [`clamp_i32`].
     pub fn interpolate(&self, ring: &AudioRing, pos: f64, channel: usize) -> f64 {
         let center = pos.floor() as i64;
         let frac = pos - center as f64;
@@ -523,22 +451,6 @@ impl Default for SincTable {
 /// outside that window). The monotonic counters let a fractional read cursor
 /// live in the *same* coordinate space as the writes, which is what makes the
 /// streaming resampler phase-continuous across blocks.
-///
-/// # Why the storage is i32 even for an S16 lane
-///
-/// There is ONE ring type, not a narrow one and a wide one. An S16 producer
-/// pushes through [`AudioRing::push_interleaved_narrow`], which widens with
-/// [`widen_i16_to_i32`] (`<< 16`) on the way in; an S32 producer pushes its
-/// samples unchanged. The interpolation kernel then runs at spine scale for
-/// both, and the ONE narrowing a 16-bit consumer needs happens at its output
-/// boundary ([`spine_acc_to_i16`]).
-///
-/// That is bit-transparent for the narrow path, not merely close: every ring
-/// sample is scaled by the exact power of two [`SPINE_SCALE_F64`], so the
-/// kernel's `f64` accumulator is scaled by exactly the same factor, and
-/// dividing it back out before the i16 round reproduces the pre-spine result
-/// sample for sample. Storing i16 and i32 in two ring types would instead have
-/// meant two interpolators and two kernels to keep in step.
 #[derive(Debug, Clone)]
 pub struct AudioRing {
     data: Vec<i32>,
@@ -599,31 +511,6 @@ impl AudioRing {
             let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
             let src = frame * self.channels;
             self.data[dst..dst + self.channels].copy_from_slice(&samples[src..src + self.channels]);
-            self.write_frame += 1;
-        }
-        dropped
-    }
-
-    /// Push interleaved **S16** frames, widening each with [`widen_i16_to_i32`]
-    /// on the way in. Same oldest-first drop and same return as
-    /// [`AudioRing::push_interleaved`].
-    ///
-    /// The widening is done here rather than in a caller-owned scratch buffer so
-    /// a narrow producer needs no second allocation and no second copy — the
-    /// hot path stays one pass.
-    pub fn push_interleaved_narrow(&mut self, samples: &[i16]) -> u64 {
-        let frames = samples.len() / self.channels;
-        let mut dropped = 0u64;
-        for frame in 0..frames {
-            if self.fill_frames() == self.capacity_frames {
-                self.read_frame += 1;
-                dropped += 1;
-            }
-            let dst = (self.write_frame as usize % self.capacity_frames) * self.channels;
-            let src = frame * self.channels;
-            for channel in 0..self.channels {
-                self.data[dst + channel] = widen_i16_to_i32(samples[src + channel]);
-            }
             self.write_frame += 1;
         }
         dropped
@@ -1120,55 +1007,6 @@ mod tests {
         }
     }
 
-    /// The BIT-IDENTITY LEMMA the narrow resample path rests on: widening every
-    /// ring sample by the exact power of two [`SPINE_SCALE_F64`] scales the
-    /// interpolator's accumulator by exactly that factor, so dividing it back
-    /// out and rounding reproduces the pre-spine `clamp_i16(acc)` sample for
-    /// sample.
-    ///
-    /// Asserted directly on the arithmetic (`spine_acc_to_i16(acc * 2^16) ==
-    /// clamp_i16(acc)`) across the interesting magnitudes, INCLUDING the
-    /// half-step values where a rounding-mode difference would show, and both
-    /// saturation rails. The end-to-end half of the same claim is jasper-fanin's
-    /// `the_direct_route_is_byte_identical_to_its_committed_golden` —
-    /// exact, whole-period, and on the shipping route.
-    #[test]
-    fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
-        let accs = [
-            0.0, 0.5, -0.5, 1.5, -1.5, 0.4999999, -0.4999999, 123.456, -123.456, 32_766.5,
-            -32_766.5, 32_767.0, -32_768.0,
-            // Past both rails: the clamp must engage identically.
-            40_000.0, -40_000.0, 1.0e12, -1.0e12,
-        ];
-        for acc in accs {
-            assert_eq!(
-                spine_acc_to_i16(acc * SPINE_SCALE_F64),
-                clamp_i16(acc),
-                "spine narrowing diverged from the pre-spine rounding at {acc}"
-            );
-        }
-    }
-
-    /// `push_interleaved_narrow` is exactly `widen_i16_to_i32` applied
-    /// per-sample — the same conversion an S16 lane would have done in a
-    /// caller-owned scratch, just without the scratch.
-    #[test]
-    fn the_narrow_push_widens_every_sample_by_the_shared_primitive() {
-        let block: [i16; 6] = [0, 1, -1, i16::MAX, i16::MIN, -12_345];
-        let mut ring = AudioRing::new(16, 2).unwrap();
-        ring.push_interleaved_narrow(&block);
-        assert_eq!(ring.fill_frames(), 3);
-        for (frame, pair) in block.chunks_exact(2).enumerate() {
-            for (channel, &sample) in pair.iter().enumerate() {
-                assert_eq!(
-                    ring.sample(frame as i64, channel),
-                    widen_i16_to_i32(sample),
-                    "frame {frame} channel {channel}"
-                );
-            }
-        }
-    }
-
     /// `clamp_i32` is `clamp_i16`'s rounding at the i32 rails: same
     /// half-away-from-zero `f64::round`, different saturation.
     #[test]
@@ -1182,27 +1020,6 @@ mod tests {
         assert_eq!(clamp_i32(i32::MIN as f64), i32::MIN);
         assert_eq!(clamp_i32(1.0e12), i32::MAX);
         assert_eq!(clamp_i32(-1.0e12), i32::MIN);
-    }
-
-    /// The wide RMS reports the SAME dBFS as the narrow one for the same
-    /// acoustic signal — the property that lets STATUS keep one meaning for
-    /// `rms_dbfs` across lane widths.
-    #[test]
-    fn the_wide_rms_agrees_with_the_narrow_one_on_a_widened_signal() {
-        let narrow: Vec<i16> = (0..512)
-            .map(|n| clamp_i16(9000.0 * ((n as f64) * 0.031).sin()))
-            .collect();
-        let wide: Vec<i32> = narrow.iter().copied().map(widen_i16_to_i32).collect();
-        let narrow_dbfs = rms_dbfs_i16(&narrow);
-        let wide_dbfs = rms_dbfs_i32(&wide);
-        assert!(
-            (narrow_dbfs - wide_dbfs).abs() < 1.0e-9,
-            "narrow {narrow_dbfs} vs wide {wide_dbfs}"
-        );
-        // Both ends of the scale, too.
-        assert_eq!(rms_dbfs_i32(&[]), RMS_DBFS_FLOOR);
-        assert_eq!(rms_dbfs_i32(&[0; 64]), RMS_DBFS_FLOOR);
-        assert!((rms_dbfs_i32(&[i32::MIN; 64])).abs() < 1.0e-9, "full scale");
     }
 
     // ---- The output spine's width conversions ----------------------------
@@ -1517,42 +1334,33 @@ mod tests {
         assert_eq!(I24_LE_BYTES_PER_SAMPLE, 3);
     }
 
-    // ---- Per-lane RMS level (USB combo silence gate) ---------------------
-    // The SINGLE definition of the USB path's dBFS level metric. jasper-fanin
-    // consumes `rms_dbfs_i16` / `RMS_DBFS_FLOOR` from this crate; the mux's
-    // activity gate consumes that telemetry.
-
     #[test]
-    fn rms_dbfs_i16_silence_is_the_floor() {
-        // Empty and all-zero slices both describe silence at the -120 floor —
-        // the value a muxed-out / gadget-absent / digitally-silent lane reports.
-        assert_eq!(rms_dbfs_i16(&[]), RMS_DBFS_FLOOR);
-        assert_eq!(rms_dbfs_i16(&[0i16; 512]), RMS_DBFS_FLOOR);
+    fn rms_dbfs_i32_silence_is_the_floor() {
+        for samples in [&[][..], &[0; 64], &[0; 512]] {
+            assert_eq!(rms_dbfs_i32(samples), RMS_DBFS_FLOOR);
+        }
     }
 
     #[test]
-    fn rms_dbfs_i16_full_scale_is_zero_dbfs() {
-        // A constant full-scale magnitude signal is 0 dBFS by definition
-        // (rms == 32768/32768 == 1.0). Use -i16::MAX so |sample|/32768 == 1.0.
-        let full = vec![-32768i16; 256];
-        assert!(
-            (rms_dbfs_i16(&full) - 0.0).abs() < 1e-6,
-            "full-scale ⇒ 0 dBFS"
-        );
+    fn rms_dbfs_i32_full_scale_is_zero_dbfs() {
+        for full in [vec![i32::MIN; 64], vec![i32::MIN; 256]] {
+            assert!(
+                (rms_dbfs_i32(&full) - 0.0).abs() < 1e-9,
+                "full-scale ⇒ 0 dBFS"
+            );
+        }
     }
 
     #[test]
-    fn rms_dbfs_i16_known_sine_matches_expected_dbfs() {
-        // A full-scale sine has RMS = amplitude/√2 ⇒ -3.01 dBFS regardless of
-        // frequency. Build one cycle at amplitude 32767 and assert the level.
-        let n = 480usize; // whole number of samples over one cycle
-        let sine: Vec<i16> = (0..n)
+    fn rms_dbfs_i32_known_sine_matches_expected_dbfs() {
+        let n = 480usize;
+        let sine: Vec<i32> = (0..n)
             .map(|i| {
                 let phase = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
-                (32767.0 * phase.sin()).round() as i16
+                widen_i16_to_i32((32767.0 * phase.sin()).round() as i16)
             })
             .collect();
-        let dbfs = rms_dbfs_i16(&sine);
+        let dbfs = rms_dbfs_i32(&sine);
         assert!(
             (dbfs - (-3.01)).abs() < 0.1,
             "full-scale sine ⇒ ~-3.01 dBFS, got {dbfs}"
@@ -1560,13 +1368,12 @@ mod tests {
     }
 
     #[test]
-    fn rms_dbfs_i16_low_level_is_below_the_combo_gate() {
-        // A -60 dBFS gate rejects a very quiet lane (a host emitting near-silence
-        // / dither). A single-LSB square (±1) sits at ~-90 dBFS — well under any
-        // reasonable playing threshold, so it never reads as "playing".
-        let quiet: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+    fn rms_dbfs_i32_low_level_is_below_the_combo_gate() {
+        let quiet: Vec<i32> = (0..512)
+            .map(|i| widen_i16_to_i32(if i % 2 == 0 { 1 } else { -1 }))
+            .collect();
         assert!(
-            rms_dbfs_i16(&quiet) < -60.0,
+            rms_dbfs_i32(&quiet) < -60.0,
             "a ±1-LSB lane must sit under the -60 dBFS combo gate"
         );
     }

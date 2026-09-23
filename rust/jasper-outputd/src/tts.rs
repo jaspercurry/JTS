@@ -75,7 +75,7 @@ pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 /// Default pending-audio budget: 2 s of queued-but-unplayed assistant
 /// audio. Beyond it, new AUDIO drops (counted) — bounding both memory
 /// and how stale a reply can get.
-pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
+pub const DEFAULT_MAX_PENDING_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 
 const FLUSH_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 

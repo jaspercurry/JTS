@@ -9,6 +9,8 @@
 //! config-class park contract, and the helper-thread stack budget. Audio-free
 //! and ALSA-free.
 
+use std::time::Duration;
+
 pub mod hooks;
 pub mod json;
 pub mod uds;
@@ -56,6 +58,17 @@ impl std::error::Error for ConfigClassError {}
 /// carried by this call.
 pub fn notify(state: NotifyState<'_>) -> std::io::Result<()> {
     sd_notify::notify(&[state])
+}
+
+pub fn watchdog_interval() -> Duration {
+    let watchdog_usec = std::env::var("WATCHDOG_USEC")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(30_000_000);
+    let thirds = Duration::from_micros(watchdog_usec / 3);
+    thirds
+        .min(Duration::from_secs(10))
+        .max(Duration::from_secs(1))
 }
 
 /// Pin the daemon's pages in RAM: `mlockall(MCL_CURRENT | MCL_FUTURE)` keeps

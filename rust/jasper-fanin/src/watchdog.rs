@@ -10,7 +10,7 @@
 //!
 //!   1. The work loop calls `bump_progress()` after every successful
 //!      unit of work (per-frame, per-iteration, etc.).
-//!   2. A separate heartbeat thread wakes every `HEARTBEAT_INTERVAL`
+//!   2. A separate heartbeat thread wakes at the shared watchdog interval
 //!      and calls `sd_notify(WATCHDOG=1)` ONLY IF the sentinel says
 //!      recent progress happened.
 //!   3. If the work loop wedges, `bump_progress()` stops firing, the
@@ -29,20 +29,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use jasper_daemon::NotifyState;
+use jasper_daemon::{watchdog_interval, NotifyState};
 use log::{info, warn};
 
 /// Maximum permitted age of the work loop's last progress bump before
 /// the heartbeat thread STOPS pinging systemd. systemd's WatchdogSec
 /// is 30 s; 5 s gives the work loop generous slack while still
-/// catching real hangs within 2 × HEARTBEAT_INTERVAL.
+/// catching real hangs between watchdog notifications.
 const STALE_THRESHOLD: Duration = Duration::from_secs(5);
-
-/// How often the heartbeat thread checks the sentinel and (if fresh)
-/// pings systemd. Must be well below the systemd unit's
-/// WatchdogSec=30s — 10 s gives 3 ping opportunities per watchdog
-/// window.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct Heartbeat {
     /// Nanoseconds since `epoch`, recorded by the work loop on every
@@ -132,12 +126,10 @@ impl Heartbeat {
         }
     }
 
-    /// The heartbeat thread's main loop. Wakes every
-    /// `HEARTBEAT_INTERVAL`, checks the sentinel, pings (or
-    /// deliberately doesn't).
     fn run(&self) {
+        let interval = watchdog_interval();
         loop {
-            std::thread::sleep(HEARTBEAT_INTERVAL);
+            std::thread::sleep(interval);
             let age_ms = self.last_progress_age_ms();
             if age_ms < STALE_THRESHOLD.as_millis() as u64 {
                 match jasper_daemon::notify(NotifyState::Watchdog) {
