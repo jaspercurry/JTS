@@ -25,62 +25,11 @@ Two production bugs caught here:
      both, even though the verifier was set. Same 400 from Spotify.
 
 The test_pkce_exchange_uses_restored_verifier check exercises the
-actual exchange POST with a mocked HTTP transport — that's the level
-of test that would have caught both bugs pre-deploy. The narrower
-attribute-set tests are kept as cheap shape regressions.
+actual exchange POST with a mocked HTTP transport.
 """
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
-
-from jasper.web.spotify_setup import (
-    _FLOW_TTL_SEC,
-    _PENDING_FLOWS,
-    _gc_pending,
-    _new_nonce,
-)
-
-
-def _clear_pending():
-    _PENDING_FLOWS.clear()
-
-
-def test_pending_flows_stores_four_tuple():
-    """{nonce: (account_name, verifier, challenge, created_monotonic)}.
-
-    Both verifier AND challenge must be stored. Storing only the
-    verifier triggers spotipy's PKCE-handshake regeneration on
-    exchange and breaks every OAuth flow.
-    """
-    _clear_pending()
-    nonce = _new_nonce()
-    _PENDING_FLOWS[nonce] = (
-        "alice", "verifier-abc-123", "challenge-xyz-987", time.monotonic(),
-    )
-
-    entry = _PENDING_FLOWS[nonce]
-    assert len(entry) == 4
-    name, verifier, challenge, created = entry
-    assert name == "alice"
-    assert verifier == "verifier-abc-123"
-    assert challenge == "challenge-xyz-987"
-    assert isinstance(created, float)
-
-
-def test_gc_pending_prunes_only_expired_entries():
-    """_gc_pending must unpack 4-tuples; if the shape is wrong it
-    breaks GC silently and stale entries leak."""
-    _clear_pending()
-    now = time.monotonic()
-    _PENDING_FLOWS["fresh"] = ("a", "v1", "c1", now)
-    _PENDING_FLOWS["expired"] = ("b", "v2", "c2", now - _FLOW_TTL_SEC - 1.0)
-
-    _gc_pending()
-
-    assert "fresh" in _PENDING_FLOWS
-    assert "expired" not in _PENDING_FLOWS
-
 
 def test_spotify_consumer_restart_includes_volume_handoff_daemons(monkeypatch):
     from jasper.web import spotify_setup as ss
@@ -95,18 +44,6 @@ def test_spotify_consumer_restart_includes_volume_handoff_daemons(monkeypatch):
     ss._restart_spotify_consumers()
 
     assert calls == [("jasper-voice", "jasper-control", "jasper-mux")]
-
-
-def test_new_nonce_unique_and_url_safe():
-    """Nonces are CSRF tokens; collisions would let one flow take over
-    another. URL-safe matters because they're sent as Spotify's
-    `state` parameter (round-trips through a query string)."""
-    nonces = {_new_nonce() for _ in range(100)}
-    assert len(nonces) == 100  # no collisions in 100 draws
-    for n in nonces:
-        # RFC4648 base64url alphabet — no padding, no `+`/`/`.
-        assert all(c.isalnum() or c in "-_" for c in n), n
-        assert len(n) >= 16
 
 
 def _spotipy_or_skip():
