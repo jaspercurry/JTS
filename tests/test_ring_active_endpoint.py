@@ -3190,7 +3190,7 @@ def _anchor_reemit_harness(
     # default path would otherwise decide this test's outcome from whatever the
     # dev machine happens to have on disk.
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_load.load_commission_load_state",
+        "jasper.active_speaker.startup_load.load_commission_load_state",
         lambda *a, **k: (
             {"status": "loaded", "target": "mono/tweeter",
              "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}

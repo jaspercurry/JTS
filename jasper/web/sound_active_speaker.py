@@ -829,8 +829,8 @@ async def _active_speaker_commission_state_payload(
     from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
-        load_commission_load_state,
     )
+    from jasper.active_speaker.startup_load import load_commission_load_state
 
     commission = load_commission_load_state()
     if commission.get("status") == "loaded":
@@ -1010,7 +1010,7 @@ async def _active_speaker_finish_commissioning_payload(
         nonlocal commissioning_cleanup
         try:
             from jasper.active_speaker.commission_ramp import load_ramp_state
-            from jasper.active_speaker.commission_load import load_commission_load_state
+            from jasper.active_speaker.startup_load import load_commission_load_state
 
             ramp_state = load_ramp_state()
             commission_load = load_commission_load_state()

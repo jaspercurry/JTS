@@ -53,10 +53,10 @@ from .staging import (
     running_commission_evidence,
 )
 from .commission_load import (
-    load_commission_load_state,
     load_driver_commissioning_config,
     rollback_driver_commissioning_config,
 )
+from .startup_load import load_commission_load_state
 
 logger = logging.getLogger(__name__)
 

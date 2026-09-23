@@ -55,12 +55,12 @@ from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     ReemitAnchorReport,
     describe_safe_graph_for_refusal,
+    load_commission_load_state,
     reemit_staged_startup_anchor,
     startup_anchor_from_decision,
 )
 from jasper.active_speaker.commission_load import (
     build_driver_commission_load_preflight,
-    load_commission_load_state,
     load_driver_commissioning_config,
     rollback_driver_commissioning_config,
 )

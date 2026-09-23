@@ -53,7 +53,7 @@ _LAZY_ATTRS: dict[str, str] = {
     "emit_active_speaker_startup_config": "camilla_yaml",
     "evaluate_path_safety_evidence": "path_safety",
     "load_active_speaker_preset": "tone_plan",
-    "load_commission_load_state": "commission_load",
+    "load_commission_load_state": "startup_load",
     "load_design_draft": "design_draft",
     "load_driver_commissioning_config": "commission_load",
     "load_ramp_state": "commission_ramp",

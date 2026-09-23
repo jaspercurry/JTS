@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from pathlib import Path
@@ -45,21 +44,21 @@ from .staging import (
 )
 from .startup_load import (
     AUDIO_HARDWARE_RECONCILE_UNIT,
+    COMMISSION_LOAD_SCHEMA_VERSION,
+    COMMISSION_LOAD_STATE_KIND,
     ConfigPathReader,
     PathLoader,
-    _base_load_state,
     _normalise_issue,
     _trigger_audio_hardware_reconcile,
     _utc_now,
     build_startup_load_preflight,
+    load_commission_load_state,
 )
 from .state_paths import commission_load_state_path
 
 logger = logging.getLogger(__name__)
 
 COMMISSION_LOAD_PREFLIGHT_KIND = "jts_active_speaker_commission_load_preflight"
-COMMISSION_LOAD_STATE_KIND = "jts_active_speaker_commission_load_state"
-COMMISSION_LOAD_SCHEMA_VERSION = 1
 
 # _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
 # acks the inline SetConfig before its readback side reflects the new graph, so
@@ -106,46 +105,6 @@ RunningConfigReader = Callable[[], Awaitable[str | None]]
 # browser-supplied verdict. Scope: the audible mask is the target's whole role on
 # the single active speaker group (mono jts3 = one output); per-SIDE isolation is
 # a future selector (S1, see prepare's docstring).
-
-
-def _commission_base_state(path: Path) -> dict[str, Any]:
-    return _base_load_state(
-        path,
-        schema_version=COMMISSION_LOAD_SCHEMA_VERSION,
-        kind=COMMISSION_LOAD_STATE_KIND,
-        extra={
-            "target": {},
-            "runtime_status": {},
-        },
-    )
-
-
-def load_commission_load_state(
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Return the latest per-driver commissioning load/rollback state."""
-
-    path = commission_load_state_path(state_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _commission_base_state(path)
-    if not isinstance(payload, dict):
-        return _commission_base_state(path)
-    state = _commission_base_state(path)
-    state.update(payload)
-    state["state_path"] = str(path)
-    state["loaded"] = state.get("status") == "loaded"
-    state["rollback_available"] = bool(
-        state.get("loaded") and state.get("previous_config_path")
-    )
-    state["issues"] = [
-        _normalise_issue(issue)
-        for issue in state.get("issues", [])
-        if isinstance(issue, dict)
-    ]
-    return state
 
 
 def _record_commission_state(

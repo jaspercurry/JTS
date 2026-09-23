@@ -47,7 +47,7 @@ from .runtime_contract import (
     safe_graph_for_current_topology,
 )
 from .safe_playback import load_safe_playback_state
-from .state_paths import baseline_profile_state_path, startup_load_state_path
+from .state_paths import baseline_profile_state_path, commission_load_state_path, startup_load_state_path
 from .staging import load_staged_startup_config
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 STARTUP_LOAD_SCHEMA_VERSION = 1
 STARTUP_LOAD_PREFLIGHT_KIND = "jts_active_speaker_startup_load_preflight"
 STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
+COMMISSION_LOAD_STATE_KIND = "jts_active_speaker_commission_load_state"
+COMMISSION_LOAD_SCHEMA_VERSION = 1
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
@@ -95,20 +97,27 @@ def _base_state(path: Path) -> dict[str, Any]:
     )
 
 
-def load_startup_load_state(
-    *,
-    state_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Return the latest active-speaker load/rollback state."""
+def _commission_base_state(path: Path) -> dict[str, Any]:
+    return _base_load_state(
+        path,
+        schema_version=COMMISSION_LOAD_SCHEMA_VERSION,
+        kind=COMMISSION_LOAD_STATE_KIND,
+        extra={
+            "target": {},
+            "runtime_status": {},
+        },
+    )
 
-    path = startup_load_state_path(state_path)
+
+def _read_load_state(path: Path, base: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:
+    """One guarded-load record over its ``base`` shape; the base alone when unreadable."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return _base_state(path)
+        return base(path)
     if not isinstance(payload, dict):
-        return _base_state(path)
-    state = _base_state(path)
+        return base(path)
+    state = base(path)
     state.update(payload)
     state["state_path"] = str(path)
     state["loaded"] = state.get("status") == "loaded"
@@ -121,6 +130,22 @@ def load_startup_load_state(
         if isinstance(issue, dict)
     ]
     return state
+
+
+def load_startup_load_state(
+    *,
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return the latest active-speaker load/rollback state."""
+    return _read_load_state(startup_load_state_path(state_path), _base_state)
+
+
+def load_commission_load_state(
+    *,
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return the latest per-driver commissioning load/rollback state."""
+    return _read_load_state(commission_load_state_path(state_path), _commission_base_state)
 
 
 def _trigger_audio_hardware_reconcile(*, source: str) -> bool:
@@ -751,8 +776,6 @@ def reemit_staged_startup_anchor(
     """
     import tempfile
 
-    # Deferred: commission_load imports this module at module scope.
-    from jasper.active_speaker.commission_load import load_commission_load_state
     from jasper.active_speaker.crossover_preview import current_crossover_preview
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
     from jasper.active_speaker.staging import (
