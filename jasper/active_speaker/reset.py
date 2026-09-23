@@ -26,7 +26,6 @@ from jasper.log_event import log_event
 
 from .commission_ramp import ramp_state_path
 from .design_draft import _design_draft_path
-from .measurement import measurement_state_path
 from .path_safety import path_safety_evidence_path
 from .staging import (
     StagedAnchorLockContended,
@@ -62,7 +61,6 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
         "startup_load": startup_load_state_path(),
         "commission_load": commission_load_state_path(),
         "commission_ramp": ramp_state_path(),
-        "measurements": measurement_state_path(),
         "baseline_profile": baseline_profile_state_path(),
     }
 
@@ -85,7 +83,6 @@ _MEASUREMENT_JOURNEY_ARTIFACT_IDS = (
     "path_safety",
     "commission_load",
     "commission_ramp",
-    "measurements",
 )
 
 ACTIVE_SPEAKER_MEASUREMENT_JOURNEY_RESET_KIND = (
@@ -110,7 +107,7 @@ def _staged_anchor_unlink_guard(artifact_id: str) -> Iterator[None]:
     """Hold the staged startup anchor's pair lock — for ONE unlink only.
 
     Scoped to the ``staged_config`` artifact and nothing else: holding it across
-    the whole clear loop would let one contending stage block seven unrelated
+    the whole clear loop would let one contending stage block six unrelated
     deletions.
 
     :func:`~jasper.active_speaker.staging.staged_anchor_lock` keyed on the GRAPH

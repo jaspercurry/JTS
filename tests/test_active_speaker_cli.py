@@ -780,10 +780,8 @@ def test_commission_rollback_cli_keeps_pending_when_rollback_fails(
 
 # --- commission-ramp status (the read-only operator surface) -----------------
 #
-# #2667: the handler merges durable confirmed-role evidence for the armed group,
-# which needs args.topology — a flag the status subparser never registered. The
-# armed target OUTLIVES a rollback, so the verb died on every box from its first
-# arm onward. One pin per state the sweep walked through.
+# The armed target OUTLIVES a rollback, so the verb must answer in every state a
+# box passes through after its first arm. One pin per state.
 
 
 def test_commission_ramp_status_cli_never_armed(monkeypatch, tmp_path: Path, capsys):
@@ -819,7 +817,7 @@ def test_commission_ramp_status_cli_after_rollback(monkeypatch, tmp_path: Path, 
     assert main(["commission-rollback"]) == 0
     capsys.readouterr()
     # The armed target survives the rollback, so the handler still resolves a
-    # non-empty group — the exact state the missing flag died on.
+    # non-empty group.
     assert load_commission_load_state()["target"]["speaker_group_id"] == "mono"
 
     code = main(["commission-ramp", "status"])  # text mode, the operator default

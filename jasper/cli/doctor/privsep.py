@@ -181,10 +181,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # The graphs the measurement daemon validates, applies and rolls back.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
-            # Written by whichever commissioning arm measured first — /sound/
-            # as jasper-web, or this unit. An unreadable one reads as "no
-            # measurements" and silently discards the household's captures.
-            "/var/lib/jasper/active_speaker_measurements.json",
             "/var/lib/jasper/active_speaker_design_draft.json",
         ),
     ),

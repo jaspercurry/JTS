@@ -20,13 +20,11 @@ from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
 
 from .candidate_bank import load_applied_candidate
-from .capture_geometry import comparison_set_valid
 from .crossover_contract import (
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
 from .environment import read_camilla_statefile_config_path
-from .measurement import load_measurement_state
 from .profile import ActiveSpeakerConfigError
 from .setup_readiness import (
     IN_SEQUENCE_CAPTURE_ANCHOR_REASON as IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
@@ -67,54 +65,10 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _newest_commissioning_record(
-    measurements: Mapping[str, Any] | None,
-) -> Mapping[str, Any] | None:
-    """The most recently created driver record.
-
-    ``created_at`` is the zero-padded UTC ``_utc_now()`` timestamp everywhere
-    it is written (measurement.py), so a plain string comparison sorts
-    chronologically.
-    """
-    if not isinstance(measurements, Mapping):
-        return None
-    bucket = measurements.get("latest_by_target")
-    if not isinstance(bucket, Mapping):
-        return None
-    candidates = [record for record in bucket.values() if isinstance(record, Mapping)]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda record: str(record.get("created_at") or ""))
-
-
-def _last_capture_summary(
-    measurements: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    """The ``{snr_db, verdict, clipping, at}`` view of the newest capture.
-
-    A fixed four-key shape — always all four keys, ``null`` where unknown — so a
-    consumer never has to branch on which keys exist.
-    """
-    record = _newest_commissioning_record(measurements)
-    if record is None:
-        return None
-    acoustic = _mapping(record.get("acoustic"))
-    worst_relevant = _mapping(_mapping(acoustic.get("snr")).get("worst_relevant"))
-    return {
-        "snr_db": worst_relevant.get("estimated_snr_db"),
-        "verdict": acoustic.get("verdict"),
-        "clipping": record.get("mic_clipping"),
-        "at": record.get("created_at"),
-    }
-
-
 def _idle_commissioning_summary() -> dict[str, Any]:
     return {
         "phase": "idle",
-        "session_id": None,
-        "session_fingerprint": None,
         "applied_profile_fingerprint": None,
-        "last_capture": None,
         "last_failure_code": None,
         # No topology resolved, so no transport to name (#2412): `null` rather
         # than a guess, since asserting a transport for a box whose route could
@@ -166,14 +120,12 @@ def _derive_commissioning_summary(
     *,
     profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
-    measurements: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     profile = profile if isinstance(profile, Mapping) else None
     applied_profile = applied_profile if isinstance(applied_profile, Mapping) else None
-    measurements = measurements if isinstance(measurements, Mapping) else {}
 
     # Phase derivation is pinned in priority order: failed, then
-    # proposal_ready, then measuring, else idle.
+    # proposal_ready, else idle.
     last_failure_code: str | None = None
     if profile is not None and profile.get("status") == "apply_failed":
         phase = "failed"
@@ -190,26 +142,8 @@ def _derive_commissioning_summary(
         or _mapping(profile.get("permissions")).get("may_compile")
     ):
         phase = "proposal_ready"
-    elif comparison_set_valid(measurements.get("active_comparison_set")) or bool(
-        measurements.get("bundle_session_id")
-    ):
-        phase = "measuring"
     else:
         phase = "idle"
-
-    active_comparison_set = measurements.get("active_comparison_set")
-    session_id = (
-        active_comparison_set.get("bundle_session_id")
-        if isinstance(active_comparison_set, Mapping)
-        else None
-    ) or measurements.get("bundle_session_id")
-    session_id = str(session_id) if session_id else None
-
-    session_fingerprint = (
-        active_comparison_set.get("fingerprint")
-        if isinstance(active_comparison_set, Mapping)
-        else None
-    )
 
     applied_profile_fingerprint = (applied_profile or {}).get(
         "candidate_fingerprint"
@@ -217,10 +151,7 @@ def _derive_commissioning_summary(
 
     return {
         "phase": phase,
-        "session_id": session_id,
-        "session_fingerprint": session_fingerprint,
         "applied_profile_fingerprint": applied_profile_fingerprint,
-        "last_capture": _last_capture_summary(measurements),
         "last_failure_code": last_failure_code,
         # A device name without its transport is the half-fact behind #2412.
         "transport": _commissioning_transport(topology),
@@ -232,21 +163,19 @@ def commissioning_summary(
     *,
     profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
-    measurements: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Small household/operator commissioning summary for ``/system/snapshot``.
 
-    Pure over ``profile``/``applied_profile``/``measurements`` and fail-soft:
-    any unreadable or malformed input degrades to the safest phase (``"idle"``)
-    rather than raising. Detailed curves and bundle paths belong to the session
-    report, not ``/system/snapshot``.
+    Pure over ``profile``/``applied_profile`` and fail-soft: any unreadable or
+    malformed input degrades to the safest phase (``"idle"``) rather than
+    raising. Detailed curves and bundle paths belong to the session report, not
+    ``/system/snapshot``.
     """
     try:
         return _derive_commissioning_summary(
             topology,
             profile=profile,
             applied_profile=applied_profile,
-            measurements=measurements,
         )
     except _READINESS_DERIVATION_ERRORS:
         return _idle_commissioning_summary()
@@ -419,13 +348,11 @@ def read_active_speaker_setup_status(
         return status
 
     profile = None
-    measurements = {}
     if topology is not None and status["active"]:
         from .baseline_profile import compile_commissioning_profile  # lazy: import cost — setup diagnostics
         from .design_draft import load_design_draft  # lazy: import cost — setup diagnostics
 
         try:
-            measurements = load_measurement_state(topology)
             _, profile = compile_commissioning_profile(
                 applied_profile=applied_profile, topology=topology,
                 design_draft=load_design_draft(),
@@ -470,6 +397,6 @@ def read_active_speaker_setup_status(
             applied_profile, current_source_fingerprint=str(source.get("fingerprint") or "") or None,
         )
     status["commissioning"] = commissioning_summary(
-        topology, profile=profile, applied_profile=applied_profile, measurements=measurements,
+        topology, profile=profile, applied_profile=applied_profile,
     )
     return status

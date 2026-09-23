@@ -73,7 +73,6 @@ from jasper.active_speaker.commission_ramp import (
     record_ramp_operator_ack,
     remute_stepped_driver,
 )
-from jasper.active_speaker.measurement import confirmed_driver_roles
 from jasper.active_speaker.commission_wiring import (
     commission_load_config,
     commission_seams,
@@ -897,10 +896,6 @@ def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
                 crossover_preview=crossover_preview,
                 path_safety_evidence_path=evidence_path,
                 staged_config=staged,
-                confirmed_roles=confirmed_driver_roles(
-                    topology,
-                    speaker_group_id=args.group,
-                ),
             ),
             load_config=load_config,
         )
@@ -945,22 +940,12 @@ def _cmd_commission_ramp_status(args: argparse.Namespace) -> int:
     group = str(
         target.get("speaker_group_id") or ramp.get("speaker_group_id") or ""
     ).strip()
-    durable_confirmed: list[str] = []
-    if group:
-        try:
-            topology = load_output_topology_strict(args.topology)
-        except OutputTopologyError:
-            durable_confirmed = []
-        else:
-            durable_confirmed = confirmed_driver_roles(topology, speaker_group_id=group)
     payload = {
         "commission_load": commission,
         "ramp": {
             **ramp,
             "confirmed_roles": effective_confirmed_roles(
-                ramp,
-                speaker_group_id=group,
-                confirmed_roles=durable_confirmed,
+                ramp, speaker_group_id=group,
             ),
         },
         "safe_playback": load_safe_playback_state(),
@@ -1317,11 +1302,6 @@ def build_parser() -> argparse.ArgumentParser:
     ramp_status = ramp_sub.add_parser(
         "status", help="show the commission-load, ramp, and per-driver floor state"
     )
-    # The handler reads args.topology to merge durable confirmed-role evidence
-    # for the armed group; without this flag the read raises AttributeError on
-    # every box that has ever armed a driver (the armed target outlives a
-    # rollback), which is the whole life of the verb after the first arm.
-    ramp_status.add_argument("--topology", help="optional output-topology JSON path")
     ramp_status.add_argument("--json", action="store_true")
     ramp_status.set_defaults(func=_cmd_commission_ramp_status)
 

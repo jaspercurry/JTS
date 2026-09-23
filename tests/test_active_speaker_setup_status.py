@@ -20,10 +20,6 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.output_topology import topology_config_fingerprint
-from jasper.active_speaker.measurement import (
-    active_driver_targets,
-    start_active_comparison_set,
-)
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from jasper.output_topology_store import save_output_topology
 from tests.active_speaker_fixtures import (
@@ -353,11 +349,6 @@ def _applied_automatic_room_status(
         lambda **k: ("", _candidate(status="ready_to_compile", config_path=config_path)),
     )
     monkeypatch.setattr(
-        setup_mod,
-        "load_measurement_state",
-        lambda _topology: {"summary": {}},
-    )
-    monkeypatch.setattr(
         baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
@@ -435,14 +426,10 @@ def test_commissioning_summary_idle_with_no_evidence() -> None:
         SimpleNamespace(topology_id="bench_mono"),
         profile=None,
         applied_profile=None,
-        measurements=None,
     )
     assert result == {
         "phase": "idle",
-        "session_id": None,
-        "session_fingerprint": None,
         "applied_profile_fingerprint": None,
-        "last_capture": None,
         "last_failure_code": None,
         # #2412 Wave 4. `None` here is the derivation answering honestly, not a
         # placeholder: this fixture's topology is a `SimpleNamespace` with only
@@ -518,7 +505,6 @@ def test_commissioning_summary_transport_follows_the_box(
         topology_factory(),
         profile=None,
         applied_profile=None,
-        measurements=None,
     )
     assert result["transport"] == expected
 
@@ -546,13 +532,13 @@ def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> N
     )
 
     result = setup_mod.commissioning_summary(
-        _active_topology(), profile=None, applied_profile=None, measurements=None
+        _active_topology(), profile=None, applied_profile=None
     )
 
     assert result["transport"] is None
     # ...and the block still answers in full: a null transport is a reported
     # value, not a truncated payload.
-    assert len(result) == 7
+    assert len(result) == 4
 
 
 def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> None:
@@ -560,55 +546,15 @@ def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> 
 
     `resolve_output_layout` walks `topology.hardware` unguarded, so a topology
     object that cannot answer raises a class none of this module's sibling
-    derivations do. The block reports `null` and keeps its other six keys
+    derivations do. The block reports `null` and keeps its other three keys
     rather than propagating.
     """
     result = setup_mod.commissioning_summary(
-        object(), profile=None, applied_profile=None, measurements=None
+        object(), profile=None, applied_profile=None
     )
     assert result["transport"] is None
     assert result["phase"] == "idle"
-    assert len(result) == 7
-
-
-def test_commissioning_summary_measuring_with_open_comparison_set(
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology()
-    driver_level_locks = {
-        target["target_id"]: {
-            "target_id": target["target_id"],
-            "speaker_group_id": target["speaker_group_id"],
-            "role": target["role"],
-            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
-            "tone_peak_dbfs": -12.0,
-            "commissioning_gain_db": 0.0,
-            "locked_main_volume_db": -12.0,
-        }
-        for target in active_driver_targets(topology)
-    }
-    comparison_set = start_active_comparison_set(
-        topology,
-        profile_context_id="ctx",
-        setup_sha256="a" * 64,
-        device_sha256="b" * 64,
-        calibration_id="",
-        driver_level_locks=driver_level_locks,
-        bundle_session_id="abc123def456",
-        state_path=tmp_path / "measurements.json",
-        now="2026-07-11T12:00:00Z",
-    )
-
-    result = setup_mod.commissioning_summary(
-        topology,
-        profile=None,
-        applied_profile=None,
-        measurements={"active_comparison_set": comparison_set},
-    )
-
-    assert result["phase"] == "measuring"
-    assert result["session_id"] == "abc123def456"
-    assert result["session_fingerprint"] == comparison_set["fingerprint"]
+    assert len(result) == 4
 
 
 @pytest.mark.parametrize("permission", ["may_apply", "may_compile"])
@@ -617,7 +563,6 @@ def test_commissioning_summary_proposal_ready_when_may_apply(permission) -> None
         SimpleNamespace(topology_id="bench_mono"),
         profile={"status": "ready_to_apply", "permissions": {permission: True}},
         applied_profile=None,
-        measurements=None,
     )
     assert result["phase"] == "proposal_ready"
 
@@ -641,57 +586,9 @@ def test_commissioning_summary_failed_surfaces_first_blocker_code() -> None:
             ],
         },
         applied_profile=None,
-        measurements=None,
     )
     assert result["phase"] == "failed"
     assert result["last_failure_code"] == "baseline_profile_apply_failed"
-
-
-def test_commissioning_summary_last_capture_is_the_newest_driver_record() -> None:
-    measurements = {
-        "latest_by_target": {
-            "mono:woofer": {
-                "created_at": "2026-07-11T10:00:00Z",
-                "mic_clipping": False,
-                "acoustic": {
-                    "verdict": "present",
-                    "snr": {"worst_relevant": {"estimated_snr_db": 22.5}},
-                },
-            },
-            "mono:tweeter": {
-                "created_at": "2026-07-11T11:00:00Z",
-                "mic_clipping": True,
-                "acoustic": {
-                    "verdict": "blend_ok",
-                    "snr": {"worst_relevant": {"estimated_snr_db": 18.0}},
-                },
-            },
-        },
-    }
-
-    result = setup_mod.commissioning_summary(
-        SimpleNamespace(topology_id="bench_mono"),
-        profile=None,
-        applied_profile=None,
-        measurements=measurements,
-    )
-
-    assert result["last_capture"] == {
-        "snr_db": 18.0,
-        "verdict": "blend_ok",
-        "clipping": True,
-        "at": "2026-07-11T11:00:00Z",
-    }
-
-
-def test_commissioning_summary_last_capture_none_without_any_record() -> None:
-    result = setup_mod.commissioning_summary(
-        SimpleNamespace(topology_id="bench_mono"),
-        profile=None,
-        applied_profile=None,
-        measurements={"latest_by_target": {}},
-    )
-    assert result["last_capture"] is None
 
 
 def test_commissioning_summary_is_fail_soft_never_raises() -> None:
@@ -703,7 +600,6 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
         SimpleNamespace(topology_id="bench_mono"),
         profile=_ExplodesOnGet(),
         applied_profile=None,
-        measurements=None,
     )
 
     # Degrades to the safest phase rather than propagating the exception.

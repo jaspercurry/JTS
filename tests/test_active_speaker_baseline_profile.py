@@ -39,9 +39,6 @@ from jasper.active_speaker.crossover_preview import (
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft, design_draft_view, save_design_draft
 from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
-from jasper.active_speaker.measurement import (
-    record_driver_measurement,
-)
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -106,34 +103,6 @@ def _dual_apple_topology() -> OutputTopology:
     )
 
 
-def _safe_session(
-    *,
-    role: str,
-    output_index: int,
-    playback_id: str,
-) -> dict:
-    target = {
-        "speaker_group_id": "mono",
-        "role": role,
-        "driver_role": role,
-        "output_index": output_index,
-    }
-    return {
-        "status": "armed",
-        "quiet_start": {
-            "status": "floor_confirmed",
-            "floor_audio_confirmed": True,
-            "current_target": target,
-            "last_operator_result": {
-                "accepted": True,
-                "outcome": "heard_correct_driver",
-                "playback_id": playback_id,
-                "target": target,
-            },
-        },
-    }
-
-
 def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -> dict:
     drivers = [
         {
@@ -195,35 +164,7 @@ def _draft(
     ))
 
 
-def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
-    state_path = tmp_path / "measurements.json"
-    for role in ("woofer", "tweeter"):
-        output_index = 0 if role == "woofer" else 1
-        playback_id = f"playback-{role}"
-        state = record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -42.0,
-                "test_level_dbfs": -68.0,
-                "playback_id": playback_id,
-            },
-            safe_session=_safe_session(
-                role=role,
-                output_index=output_index,
-                playback_id=playback_id,
-            ),
-            state_path=state_path,
-            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
-        )
-    return state
-
-
-def test_baseline_source_binds_exact_normalized_preview_candidate(
-    tmp_path: Path,
-) -> None:
+def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
@@ -231,14 +172,9 @@ def test_baseline_source_binds_exact_normalized_preview_candidate(
     changed_preview["groups"][0]["crossovers"][0]["candidate"][
         "confidence"
     ] = "high"
-    measurements = _measurements(topology, tmp_path)
 
-    first = baseline_profile_mod._source_payload(
-        topology, draft, preview, measurements
-    )
-    changed = baseline_profile_mod._source_payload(
-        topology, draft, changed_preview, measurements
-    )
+    first = baseline_profile_mod._source_payload(topology, draft, preview)
+    changed = baseline_profile_mod._source_payload(topology, draft, changed_preview)
 
     assert (
         first["crossover_preview_fingerprint"]
@@ -260,7 +196,7 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
         sources.append(baseline_profile_mod._source_payload(
-            topology, draft, build_crossover_preview(draft), {},
+            topology, draft, build_crossover_preview(draft),
         ))
     first, second = sources
     assert first["design_draft_updated_at"] != second["design_draft_updated_at"]
@@ -280,7 +216,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     draft = preview_draft()
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
-    source = baseline_profile_mod._source_payload(topology, draft, preview, {})
+    source = baseline_profile_mod._source_payload(topology, draft, preview)
     fingerprint = "6f72a93df72681846819bf3a40e1495a4881ee7e0c57ee1fa065f64fea03c8af"
     assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
@@ -302,7 +238,7 @@ def _applied_layer_a_yaml(tmp_path: Path) -> str:
     applied = declared_profile_fixture(
         topology,
         design_draft=draft,
-        measurements=_measurements(topology, tmp_path),
+        measurements={},
         write=False,
         config_path=tmp_path / "active_speaker_baseline.yml",
     )

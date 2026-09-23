@@ -1323,7 +1323,6 @@ def _bench_active_topology_payload() -> dict:
 _ACTIVE_SPEAKER_STATE_FILENAMES = {
     "JASPER_OUTPUT_TOPOLOGY_PATH": "output_topology.json",
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design_draft.json",
-    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR": "tone-artifacts",
     "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE": "safe-playback.json",
     "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH": "active_staged.yml",
@@ -2917,7 +2916,7 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
     assert payload["output_topology"]["speaker_groups"] == []
 
 
-#: The eight artifacts ``clear_active_speaker_setup_state`` unlinks, by env var.
+#: The seven artifacts ``clear_active_speaker_setup_state`` unlinks, by env var.
 _RESET_UNLINKED_STATE_ENVS = (
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
@@ -2925,7 +2924,6 @@ _RESET_UNLINKED_STATE_ENVS = (
     "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
-    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
     "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
 )
 
@@ -3195,29 +3193,23 @@ def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
     assert payload["section"] is None
 
 
-def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
+def test_active_speaker_baseline_http_route_is_exposed(
     monkeypatch,
     tmp_path: Path,
 ):
     _set_active_speaker_state_paths(
         monkeypatch,
         tmp_path,
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
         "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
         "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
     )
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
     with sound_server(tmp_path) as base:
-        measurement_resp = urllib.request.urlopen(
-            f"{base}/active-speaker/measurements"
-        )
-        measurement_payload = json.loads(measurement_resp.read().decode("utf-8"))
         profile_resp = urllib.request.urlopen(
             f"{base}/active-speaker/baseline-profile"
         )
         profile_payload = json.loads(profile_resp.read().decode("utf-8"))
 
-        assert measurement_payload["permissions"]["may_not_play_audio"] is True
         assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
         assert profile_payload["permissions"]["may_apply"] is False
 

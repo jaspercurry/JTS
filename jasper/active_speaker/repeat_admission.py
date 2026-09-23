@@ -22,8 +22,7 @@ from jasper.paths import resolve_state_path
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
 SCHEMA_VERSION = 1
-# Audible attempts and total reservations in stored repeat records.
-MAX_ATTEMPTS = 4
+# Total reservations in stored repeat records.
 MAX_RESERVATIONS = 8
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_admission.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE"

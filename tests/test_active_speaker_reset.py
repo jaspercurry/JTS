@@ -37,7 +37,6 @@ _MEASUREMENT_JOURNEY_ENVS = {
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission-ramp.json",
-    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
 }
 
 # The subset it MUST preserve: driver research/manual settings, the applied
@@ -55,7 +54,6 @@ _STATE_ENVS = {
     "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup-load.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission-ramp.json",
-    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
     "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline.json",
 }
 
@@ -130,7 +128,6 @@ def test_clear_active_speaker_measurement_journey_clears_only_journey_subset(
         "path_safety",
         "commission_load",
         "commission_ramp",
-        "measurements",
     }
 
     assert all(not path.exists() for path in journey_paths)
@@ -248,7 +245,6 @@ def test_reset_refuses_the_staged_anchor_while_a_stage_holds_the_pair_lock(
         "startup_load",
         "commission_load",
         "commission_ramp",
-        "measurements",
         "baseline_profile",
     }
     assert all(not path.exists() for path in others)

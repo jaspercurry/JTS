@@ -30,7 +30,6 @@ import yaml
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
@@ -49,7 +48,6 @@ from tests.test_bass_extension_dynamic import _descriptor
 from tests.test_active_speaker_baseline_profile import (
     _draft,
     _dual_apple_topology,
-    _measurements,
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -108,7 +106,7 @@ class _FakeCamilla:
         return True
 
 
-def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview):
     from tests.active_speaker_fixtures import declared_graph_fixture
 
     monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
@@ -120,9 +118,6 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
         crossover_preview_mod, "build_crossover_preview", lambda *a, **k: preview
-    )
-    monkeypatch.setattr(
-        measurement_mod, "load_measurement_state", lambda *a, **k: measurements
     )
     # Leader-specific config/state/stash paths so nothing clobbers the solo
     # baseline OR the active-follower arm's files.
@@ -178,8 +173,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     bake_path, crossover_path = asyncio.run(
         alc.precheck_active_leader(_cfg("left"), validate=_valid_config)
@@ -233,8 +227,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
 
@@ -258,8 +251,7 @@ def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> N
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
 
     def _boom(*a, **k):
@@ -282,8 +274,7 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json"))
     assert baseline_profile_mod.load_applied_baseline_profile_state() is None
 
@@ -322,10 +313,9 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
     applied = declared_profile_fixture(
         topology, design_draft=draft,
-        measurements=measurements, write=True,
+        measurements={}, write=True,
          config_path=tmp_path / "solo.yml",
     )
     assert applied["permissions"]["may_apply"]
@@ -353,7 +343,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         topology, applied_profile=applied,
     )
     assert not issues
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     monkeypatch.setattr(baseline_profile_mod, "load_applied_baseline_profile_state", lambda: applied)
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_STATE_PATH", str(tmp_path / "follower.json"))
@@ -399,8 +389,7 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     import jasper.active_speaker.camilla_yaml.pipeline as camilla_yaml
 
     original = camilla_yaml._driver_baseline_filter_chain
@@ -433,8 +422,7 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
     original = camilla_yaml._driver_baseline_filter_chain
@@ -457,8 +445,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     def _selective(_topology, *, graph_text, **_kwargs):
         ok = yaml.safe_load(graph_text)["devices"]["playback"]["type"] != "File"
@@ -486,8 +473,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     def _boom(*a, **k):
         raise OutputTopologyError("topology.json corrupt")
@@ -506,8 +492,7 @@ def test_precheck_bad_channel_fails_closed_as_leader_error(monkeypatch, tmp_path
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
 
     for bad in ("stereo", "sub"):
         with pytest.raises(alc.ActiveLeaderError) as exc:
@@ -524,8 +509,7 @@ def test_precheck_fails_closed_when_snapcast_missing(monkeypatch, tmp_path) -> N
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft)
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
     # snapserver absent (snapclient present) — either-absent must fail closed.
     monkeypatch.setattr(
         shutil, "which",

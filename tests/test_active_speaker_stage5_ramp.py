@@ -366,7 +366,6 @@ def _ramp_step(
     *,
     role,
     confirm_first=None,
-    durable_confirmed=None,
     env_report=_READY_ENV,
     play_tone=None,
 ):
@@ -395,8 +394,6 @@ def _ramp_step(
     )
     if play_tone is not None:
         common["play_tone"] = play_tone
-    if durable_confirmed is not None:
-        common["confirmed_roles"] = durable_confirmed
     if confirm_first:
         # Pre-seed the ramp's ordering memory (e.g. woofer already confirmed).
         from jasper.active_speaker.commission_ramp import _record_ramp_state, _ramp_base_state, ramp_state_path
@@ -507,12 +504,12 @@ def test_ramp_tweeter_blocked_until_woofer_confirmed_loads_nothing(
     assert cam.loaded_paths == [str(tmp_path / "commission.yml")]
 
 
-def test_ramp_tweeter_accepts_durable_woofer_confirmation(monkeypatch, tmp_path):
+def test_ramp_tweeter_steps_once_the_ramp_remembers_the_woofer(monkeypatch, tmp_path):
     step, cam, staged_path, state_path, _ = _ramp_step(
         tmp_path,
         monkeypatch,
         role="tweeter",
-        durable_confirmed={"woofer"},
+        confirm_first={"woofer"},
     )
     assert step["status"] == "stepped"
     assert step["gate"]["checks"]["role_order_woofer_first"] is True

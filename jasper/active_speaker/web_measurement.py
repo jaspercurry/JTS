@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Saved active-crossover measurement evidence and targets."""
+"""Active-crossover measurement targets."""
 
 from __future__ import annotations
 
@@ -11,17 +11,15 @@ from typing import Any
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
-    load_measurement_state,
 )
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology_store import load_output_topology
 
 
 def status_payload() -> dict[str, Any]:
-    """Return active-crossover targets plus saved measurement evidence."""
+    """Return active-crossover driver and summed targets."""
 
     topology = load_output_topology()
-    measurements = load_measurement_state(topology)
     return {
         "ok": True,
         "generated_at": _utc_now(),
@@ -33,5 +31,4 @@ def status_payload() -> dict[str, Any]:
             "drivers": active_driver_targets(topology),
             "summed": active_summed_targets(topology),
         },
-        "measurements": measurements,
     }
