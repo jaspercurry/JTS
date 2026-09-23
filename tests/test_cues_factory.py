@@ -27,7 +27,7 @@ import pytest
 
 from jasper.cues import manager as manager_mod
 from jasper.cues.factory import build_cue_tts_backend, build_env_cue_manager
-from jasper.cues.generator import CHIME_MODEL, TTS_MODEL, WAV_RATE
+from jasper.cues.generator import CHIME_MODEL, GEMINI_TTS_MODEL, WAV_RATE
 from jasper.cues.registry import CUES, VOICE_NOT_SET_UP_CUE_SLUG, find as find_cue
 from jasper.voice.catalog import PROVIDERS
 
@@ -92,7 +92,7 @@ def test_env_cue_manager_bakes_and_plays_a_chime_with_no_provider_configured(
     # The chime's cache-key model is its own token, distinct from any real
     # provider's — so configuring a provider later misses this cache entry
     # and re-bakes real speech over it instead of reusing the chime's hash.
-    assert CHIME_MODEL != TTS_MODEL
+    assert CHIME_MODEL != GEMINI_TTS_MODEL
 
     written = mgr.regenerate(slug=VOICE_NOT_SET_UP_CUE_SLUG)
     assert written == [VOICE_NOT_SET_UP_CUE_SLUG]
