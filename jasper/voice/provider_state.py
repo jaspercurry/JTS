@@ -81,8 +81,9 @@ VOICE_PROVIDER_ENV_OWNER = (
 # The /voice wizard writes it; jasper-voice + jasper-web source it via EnvironmentFile.
 # Outside the /var/lib/jasper StateDirectory on purpose — systemd's recursive
 # StateDirectory chown would otherwise force its group back to `jasper`, re-exposing the
-# keys to every jasper daemon. NOT read by this module (jasper-control has no business
-# reading the keys).
+# keys to every jasper daemon. In this module only keys_set reads it, for presence only
+# (names, never values), on behalf of the wizard and the root CLI; jasper-control never
+# calls it.
 KEYS_FILE = "/var/lib/jasper-secrets/voice_keys.env"
 
 ProviderStateStatus = Literal[
