@@ -32,7 +32,7 @@ import pytest
 
 from jasper import atomic_io, env_file
 from jasper.transit import geocode as geocode_mod
-from jasper.web import transit_page, transit_setup
+from jasper.web import transit_page, transit_setup, weather_setup
 from tests._log_events import event_records, leaked_lines
 from jasper.web._common import RestartOutcome
 
@@ -106,18 +106,28 @@ def test_apply_geocode_surfaces_geocoder_failure(monkeypatch):
     assert "geocode" in err.lower() or "couldn" in err.lower()
 
 
-def test_apply_geocode_manual_lat_lon_bypasses_nominatim(monkeypatch):
-    """Privacy path: paste coords directly, never hit OSM."""
+@pytest.mark.parametrize("wizard,apply", [
+    (transit_setup, transit_setup._apply_geocode), (weather_setup, weather_setup._apply_save),
+])
+@pytest.mark.parametrize("lat,lon", [("40.646292", "-73.994324"), ("40", ""), ("bad", "0"), ("91", "0")])
+def test_manual_coordinates_bypass_geocoding(monkeypatch, wizard, apply, lat, lon):
     def fail(*a, **kw):
         pytest.fail("manual coords should not call geocode")
 
     monkeypatch.setattr(geocode_mod, "geocode", fail)
-    new, err = transit_setup._apply_geocode(
-        {"manual_lat": "40.646", "manual_lon": "-73.994"}, {},
+    current = {"foo": "preserved"}
+    new, err = apply(
+        {"manual_lat": lat, "manual_lon": lon, "address": "unused", "location": "unused"}, current,
     )
-    assert err is None
-    assert new[transit_setup.LAT_ENV] == "40.646"
-    assert new[transit_setup.LON_ENV] == "-73.994"
+    if lat == "40.646292":
+        assert err is None
+        assert new[wizard.LAT_ENV] == "40.646"
+        assert new[wizard.LON_ENV] == "-73.994"
+        assert new[wizard.DISPLAY_NAME_ENV] == "Manual: 40.646, -73.994"
+        assert new["foo"] == "preserved"
+    else:
+        assert err is not None
+        assert new is current
 
 
 def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
@@ -154,8 +164,6 @@ def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
     key. Symmetric with test_seed_weather_skips_atomically_when_coords_present
     in test_web_weather_setup.py; the seed reads transit INSIDE the shared
     flock."""
-    from jasper.web import weather_setup
-
     tp = str(tmp_path / "transit.env")
     atomic_io.write_env_file(tp, {
         transit_setup.LAT_ENV: "40.646",
@@ -203,7 +211,6 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
         new.update(london)
         transit_setup._locked_apply(tp, current, new)
 
-    from jasper.web import weather_setup
     brooklyn_weather = {
         "JASPER_WEATHER_LAT": "40.700",
         "JASPER_WEATHER_LON": "-74.000",

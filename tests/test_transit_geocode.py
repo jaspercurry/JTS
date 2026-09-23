@@ -150,12 +150,6 @@ def test_geocode_handles_malformed_photon_coords():
         gc.geocode("weird", http=_client_with(handler))
 
 
-def test_round_coord_three_decimals():
-    """Privacy: coords stored at ~110 m precision, not house-level."""
-    assert gc.round_coord(40.646292) == 40.646
-    assert gc.round_coord(-73.994324) == -73.994
-
-
 def test_throttle_serialises_successive_calls(monkeypatch):
     """Module-level throttle blocks sub-second consecutive calls. We
     don't sleep in tests; instead we patch monotonic + sleep and check

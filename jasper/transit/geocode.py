@@ -67,11 +67,6 @@ HTTP_TIMEOUT = 6.0
 # on the wizard) serialise rather than burst.
 _RATE_LIMIT_SEC = 1.0
 
-# Three-decimal precision is ~110 m. Plenty for "what's the nearest
-# subway station?" — and intentionally coarser than the user's house
-# so the persisted coords don't pin them to an address.
-COORD_PRECISION_DECIMALS = 3
-
 
 @dataclass(frozen=True)
 class GeocodeResult:
@@ -114,12 +109,6 @@ def _normalise(query: str) -> str:
     """Cache key: lowercase, collapse whitespace. Two slightly different
     free-form spellings should hit the same cache entry."""
     return " ".join(query.lower().split())
-
-
-def round_coord(value: float) -> float:
-    """Round to `COORD_PRECISION_DECIMALS`. Use this before persisting
-    coords to env files so we don't store sub-house-level precision."""
-    return round(value, COORD_PRECISION_DECIMALS)
 
 
 def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
