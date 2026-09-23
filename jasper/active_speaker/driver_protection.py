@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ._common import finite_float as _finite_float, issue as _issue
+from ._common import coerce_finite_float, issue as _issue
 from .calibration_level import MAX_TEST_LEVEL_DBFS, MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
@@ -106,7 +106,7 @@ def driver_protection_profile(
     role_id = normalise_driver_role(role)
     style = normalise_driver_style(driver_style)
     if role_id in FULL_RANGE_ROLES:
-        floor = _finite_float(declared_floor_hz)
+        floor = coerce_finite_float(declared_floor_hz)
         return DriverProtectionProfile(
             role=role_id,
             role_class="full_range",
@@ -211,7 +211,7 @@ def _band_highpass_hz(band_limit: Any) -> float | None:
         return None
     if band_limit.get("type") not in {"highpass", "bandpass"}:
         return None
-    return _finite_float(band_limit.get("highpass_hz"))
+    return coerce_finite_float(band_limit.get("highpass_hz"))
 
 
 def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
@@ -241,7 +241,7 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
             continue
         if str(item.get("kind") or "").strip().lower() != "highpass":
             continue
-        cutoff = _finite_float(item.get("cutoff_hz"))
+        cutoff = coerce_finite_float(item.get("cutoff_hz"))
         if cutoff is not None and cutoff > 0:
             floors.append(cutoff)
     return max(floors) if floors else None
@@ -266,7 +266,7 @@ def declared_protection_lowpass_ceiling_hz(driver: Any) -> float | None:
             continue
         if str(item.get("kind") or "").strip().lower() != "lowpass":
             continue
-        cutoff = _finite_float(item.get("cutoff_hz"))
+        cutoff = coerce_finite_float(item.get("cutoff_hz"))
         if cutoff is not None and cutoff > 0:
             ceilings.append(cutoff)
     return min(ceilings) if ceilings else None
@@ -395,7 +395,7 @@ def _declared_highpass_filter(driver: Mapping[str, Any]) -> Mapping[str, Any] | 
             continue
         if str(item.get("kind") or "").strip().lower() != "highpass":
             continue
-        cutoff = _finite_float(item.get("cutoff_hz"))
+        cutoff = coerce_finite_float(item.get("cutoff_hz"))
         if cutoff is None or cutoff <= 0:
             continue
         if best is None or cutoff > float(best["cutoff_hz"]):
@@ -470,11 +470,11 @@ def resolve_driver_low_limit(
 
     if not isinstance(driver, Mapping):
         return None
-    declared = _finite_float(driver.get("recommended_highpass_hz"))
+    declared = coerce_finite_float(driver.get("recommended_highpass_hz"))
     if declared is not None and declared > 0:
         return DriverLowLimit(
             frequency_hz=declared,
-            slope_db_per_octave=_finite_float(
+            slope_db_per_octave=coerce_finite_float(
                 driver.get("recommended_highpass_slope_db_per_octave")
             ),
             provenance=LOW_LIMIT_DECLARED,
@@ -487,7 +487,7 @@ def resolve_driver_low_limit(
     if legacy is not None:
         return DriverLowLimit(
             frequency_hz=float(legacy["cutoff_hz"]),
-            slope_db_per_octave=_finite_float(
+            slope_db_per_octave=coerce_finite_float(
                 legacy.get("minimum_slope_db_per_octave")
             ),
             provenance=LOW_LIMIT_LEGACY_PROTECTION_FILTER,
@@ -558,8 +558,8 @@ def tone_gate_low_limit(
 def _band_pair(value: Any) -> tuple[float, float] | None:
     if not isinstance(value, list) or len(value) != 2:
         return None
-    low = _finite_float(value[0])
-    high = _finite_float(value[1])
+    low = coerce_finite_float(value[0])
+    high = coerce_finite_float(value[1])
     if low is None or high is None:
         return None
     return low, high
@@ -576,7 +576,7 @@ def driver_excitation_floor_hz(driver: Any) -> float | None:
 
     if not isinstance(driver, Mapping):
         return None
-    declared = _finite_float(driver.get("recommended_highpass_hz"))
+    declared = coerce_finite_float(driver.get("recommended_highpass_hz"))
     if declared is None or declared <= 0:
         declared = declared_protection_highpass_floor_hz(driver)
     if declared is not None and declared > 0:
