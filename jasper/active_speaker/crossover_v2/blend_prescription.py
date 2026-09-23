@@ -787,42 +787,6 @@ def _check_composed(
         )
 
 
-def _check_boost_evidence(
-    filters: tuple[dict[str, Any], ...],
-    evidence: PositionalEvidence | None,
-) -> tuple[PositionalSupport, ...]:
-    """The positional finding, per boosting filter. **It refuses nothing.**
-
-    The numbers ride the receipt as provenance for the prescriber and the
-    household to weigh; a prediction about whether a filter would help may not
-    veto the measurement that settles it
-    (``docs/measurement-loop-doctrine.md`` §2 and §5), and the delta probe
-    rolls a boost back on ``spatially_costly`` downstream. An empty return on a
-    boost-class prescription means the packet could not answer at all — such a
-    prescription carries at least one boosting filter by construction, so
-    ``[]`` cannot mean "nothing to evaluate". What bounds the COST of an
-    admitted boost is ``_check_bounds``.
-    """
-    if evidence is None:
-        return ()
-    positions, freqs_hz, reference_db = evidence
-    if len(positions) < BOOST_MIN_TESTIFYING_POSITIONS:
-        return ()
-    findings: list[PositionalSupport] = []
-    for entry in filters:
-        if float(entry["gain"]) <= 0.0:
-            continue
-        findings.append(
-            positional_support(
-                float(entry["freq"]),
-                positions=positions,
-                freqs_hz=freqs_hz,
-                reference_db=reference_db,
-            )
-        )
-    return tuple(findings)
-
-
 def _parse_prescription(
     raw: Mapping[str, Any],
 ) -> tuple[tuple[dict[str, Any], ...], str, str, str, str, int]:
@@ -903,9 +867,11 @@ def read_blend_prescription(
     forgot one would lose the evidence's opinion and never know.
 
     Order is deliberate — shape, identity, region, per-filter bounds, composed
-    cascade, the positional bar for a boost, and last the route — because each
-    stage sends a prescriber somewhere different. The bounds are INCLUSIVE, so
-    a round's legality does not turn on float noise.
+    cascade, and last the route — because each stage sends a prescriber
+    somewhere different, and :func:`prescription_route` refuses a boost
+    outright, so nothing past classification could ever change its answer.
+    The bounds are INCLUSIVE, so a round's legality does not turn on float
+    noise.
     """
     if raw is None:
         return None
@@ -926,23 +892,6 @@ def read_blend_prescription(
         filters, band, positional_evidence[1] if positional_evidence else None
     )
 
-    support: tuple[PositionalSupport, ...] = ()
-    if prescription_class == "boost":
-        support = _check_boost_evidence(filters, positional_evidence)
-
-    # The authority on whether a cut list is acceptable stays
-    # `blend_filters_from_mapping`; everything above is the diagnostic layer
-    # that says WHY. Asked LAST, so this module can never accept a cut the
-    # shipped reader would refuse, however its own bounds drift.
-    if prescription_class == "cut":
-        vouched = blend_filters_from_mapping([dict(f) for f in filters])
-        if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
-            _refuse(
-                STRICT_READER_DISAGREEMENT,
-                "the shipped persisted-correction reader would not vouch for "
-                "this filter list, so it is not one this system can persist",
-            )
-
     prescription = BlendPrescription(
         filters=filters,
         prescription_class=prescription_class,
@@ -951,11 +900,27 @@ def read_blend_prescription(
         prescriber_model=model,
         prescriber_operator=operator,
         band_hz=band,
-        positional_support=support,
         rationale=rationale,
         rationale_dropped_chars=rationale_dropped,
     )
+    # A boost is refused HERE, before it is ever asked for positional
+    # evidence: `prescription_route` refuses the class outright, so the
+    # positional bar could never change the answer.
     prescription_route(prescription)
+
+    # The authority on whether a cut list is acceptable stays
+    # `blend_filters_from_mapping`; everything above is the diagnostic layer
+    # that says WHY. Asked LAST, so this module can never accept a cut the
+    # shipped reader would refuse, however its own bounds drift. `prescription`
+    # is a cut by construction here: the route above has already refused
+    # every boost.
+    vouched = blend_filters_from_mapping([dict(f) for f in filters])
+    if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
+        _refuse(
+            STRICT_READER_DISAGREEMENT,
+            "the shipped persisted-correction reader would not vouch for "
+            "this filter list, so it is not one this system can persist",
+        )
     return prescription
 
 
@@ -976,8 +941,9 @@ def prescription_route(prescription: BlendPrescription) -> str:
        into a fingerprinted field would persist an attribution nothing
        measured.
 
-    The bars above still run first, so a prescriber learns whether its boost
-    would have qualified.
+    The per-filter and composed-cascade bars still run first, so a boost that
+    also fails one of those is refused with THAT more specific reason instead
+    of this one.
     """
     if not prescription.is_boost:
         return BLEND_CANDIDATE_FIELD

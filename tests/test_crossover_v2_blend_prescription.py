@@ -1938,19 +1938,18 @@ def test_an_unreadable_floor_leaves_the_denominator_rather_than_voting(tmp_path)
         ],
     )
     packet = build_crossover_evidence_packet(session)
-    # It reaches the ROUTE, which is what says the positional bar no longer
-    # stops anything: `boost_route_unavailable` is row (e), retained by ruling
-    # R8, and it is now the only thing refusing a blend boost.
+    # It reaches the ROUTE: a blend boost is refused before this gate ever
+    # asks for positional evidence, whatever the floors say.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
     assert excinfo.value.reason == "boost_route_unavailable"
     # …and the count this test exists for survives as the finding: two
     # positions could testify, which is the direction that matters.
-    support = bp._check_boost_evidence(
-        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
-        packet_positional_evidence(packet),
+    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
+    support = positional_support(
+        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
     )
-    assert support[0].n_testifying == 2
+    assert support.n_testifying == 2
 
 
 def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_path):
@@ -1966,14 +1965,11 @@ def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_p
     )
     packet = build_crossover_evidence_packet(session)
     assert packet_positional_evidence(packet) is None
-    # Unavailable evidence records no finding rather than refusing, so the
-    # boost reaches the route — R8's retained refusal, not the demoted bar.
+    # Unavailable evidence still reaches the route: a blend boost is refused
+    # before this gate ever asks for positional evidence.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
     assert excinfo.value.reason == "boost_route_unavailable"
-    assert bp._check_boost_evidence(
-        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},), None,
-    ) == ()
     # A cut still works: it needs no positional evidence.
     assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
 
@@ -2006,9 +2002,10 @@ def test_a_bignum_region_band_makes_the_region_unavailable(tmp_path):
 def test_the_public_positional_support_api_survives_hostile_numbers():
     """R1: the three public-API sites, guarded as defence in depth.
 
-    ``_check_boost_evidence`` only ever hands this validated numbers, so these
-    are unreachable on the shipped path — but the function is public, and a
-    caller reading a hand-edited artifact can hand it anything JSON admits.
+    Nothing in this module still calls ``positional_support`` — a blend boost
+    is refused before this gate ever asks for positional evidence — but the
+    function is public, and a caller reading a hand-edited artifact can hand
+    it anything JSON admits.
     """
     bignum = 10 ** 400
     grid = [1000.0, 1100.0, 1200.0]
@@ -2131,53 +2128,50 @@ def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
     }
 
 
-def test_a_single_position_dip_is_reported_unsupported_not_refused(tmp_path):
-    """The null-exclusion rule made deterministic without the null instrument.
+@pytest.mark.parametrize("filters,expected", [
+    pytest.param([_cut(gain=2.0, freq=1000.0)], "boost_route_unavailable", id="boost"),
+    pytest.param([_cut(gain=-1.5)], "cut", id="cut"),
+])
+def test_a_boost_is_refused_before_positional_evidence_and_a_cut_is_not(
+    packet, filters, expected,
+):
+    """R2-F28: a blend boost is refused as soon as it is classified, before
+    this gate ever asks for positional evidence — the positional bar cannot
+    change an answer no route will ever consult. A cut is unaffected.
+    """
+    if expected == "cut":
+        assert _gate(packet, _document(filters, packet)).prescription_class == "cut"
+        return
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document(filters, packet))
+    assert excinfo.value.reason == expected
 
-    It REFUSED on this until the nanny burn-down — a prediction about whether
-    the filter would help, vetoing the measurement that settles it. The fraction
-    is unchanged and now rides the receipt; the delta probe disposes."""
+
+def test_the_positional_boost_bar_is_gone(tmp_path):
+    """R2-F28: dead code, once a boost is refused before it could ever run."""
+    assert not hasattr(bp, "_check_boost_evidence")
+
+
+def test_a_single_position_dip_is_reported_unsupported_not_refused(tmp_path):
+    """``positional_support`` itself, independent of the (closed) boost route.
+
+    A single-position dip is not evidence a boost is safe — the fraction
+    still reports it unsupported — but it no longer matters to the route
+    either way, since a blend boost is refused before this gate ever asks for
+    positional evidence.
+    """
     session, _ = _bundle(tmp_path, dip_at=[1000.0, None, None, None])
     packet = build_crossover_evidence_packet(session)
-    # Unsupported no longer pre-empts: it reaches R8's retained route refusal.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
     assert excinfo.value.reason == "boost_route_unavailable"
-    support = bp._check_boost_evidence(
-        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
-        packet_positional_evidence(packet),
-    )[0]
+    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
+    support = positional_support(
+        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
+    )
     assert support.n_with_dip == 1
     assert support.n_testifying == 4
     assert support.supported is False
-
-
-def test_a_dip_at_all_but_one_position_clears_the_positional_bar(tmp_path):
-    """The bar's other side: it must be able to pass, or it proves nothing."""
-    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1000.0, 1000.0, None])
-    packet = build_crossover_evidence_packet(session)
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    # It got all the way to the route, which means the positional bar passed.
-    assert excinfo.value.reason == "boost_route_unavailable"
-
-
-def test_too_few_positions_records_no_finding_and_still_admits(tmp_path):
-    """"Go and measure" is still a different answer from "no" — and neither
-    of them refuses now.
-
-    Below ``BOOST_MIN_TESTIFYING_POSITIONS`` the rule can say nothing, so the
-    receipt carries no finding rather than a verdict."""
-    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1000.0])
-    assert 2 < BOOST_MIN_TESTIFYING_POSITIONS  # the condition under test
-    packet = build_crossover_evidence_packet(session)
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-    assert bp._check_boost_evidence(
-        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
-        packet_positional_evidence(packet),
-    ) == ()
 
 
 def test_a_cut_needs_no_positional_evidence(tmp_path):
@@ -2333,9 +2327,8 @@ def test_a_boost_keeps_the_narrower_ceiling_the_cut_class_left_behind(packet, q)
     """The sign split, from the side that did NOT move.
 
     Literal Q values that a CUT is now allowed (2.1-8.0) and a boost is not.
-    Refused at the Q gate specifically — before the positional bar and before
-    the route — so this cannot pass for the wrong reason once a boost route
-    exists.
+    Refused at the Q gate specifically, before the route, so this cannot pass
+    for the wrong reason once a boost route exists.
     """
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=1.5, q=q)], packet))
