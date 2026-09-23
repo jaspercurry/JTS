@@ -18,8 +18,8 @@ from typing import Any
 from ..fanin.latency_mode import PRESETS
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
-from ._health_fields import _as_int, _detail, _finite_number, _mapping
-from ._health_sources import _SOURCE_LABELS
+from ._health_fields import _as_int, _detail, _finite_number, mapping
+from ._health_sources import SOURCE_LABELS
 from .audio_signal_path import _ring_occupancy_ms, _ring_pressure
 from .audio_source_cards import _airplay_timing
 
@@ -45,13 +45,13 @@ def _receiver_latency(
     route: Mapping[str, Any],
     timing: Mapping[str, Any],
 ) -> dict[str, Any]:
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    output = _mapping(fanin.get("output"))
-    source_input = _mapping(_mapping(fanin.get("inputs")).get(active_source))
-    resampler = _mapping(source_input.get("resampler"))
-    camilla = _mapping(current.get("camilla"))
-    dac = _mapping(_mapping(outputd).get("dac"))
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    output = mapping(fanin.get("output"))
+    source_input = mapping(mapping(fanin.get("inputs")).get(active_source))
+    resampler = mapping(source_input.get("resampler"))
+    camilla = mapping(current.get("camilla"))
+    dac = mapping(mapping(outputd).get("dac"))
     rate = (
         _as_int(output.get("sample_rate"))
         or _as_int(route.get("fixed_sample_rate"))
@@ -80,7 +80,7 @@ def _receiver_latency(
     if dac_delay is not None:
         components.append(("DAC presentation queue", float(dac_delay)))
 
-    runtime = _mapping(timing.get("runtime"))
+    runtime = mapping(timing.get("runtime"))
     phase = str(runtime.get("phase") or "")
     raw_mode = str(runtime.get("raw_mode") or "")
     preset = str(runtime.get("preset") or "")
@@ -140,7 +140,7 @@ def _reliability(
             "Output queue pressure", f"{min(1.0, pressure) * 100:.0f}%",
         ))
     restarts = sum(
-        _as_int(_mapping(_mapping(service_states).get(unit)).get("n_restarts"))
+        _as_int(mapping(mapping(service_states).get(unit)).get("n_restarts"))
         for unit in restart_watch_units
     )
     if restarts:
@@ -162,17 +162,17 @@ def _current_stream(
 ) -> dict[str, Any] | None:
     if active_source is None:
         return None
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    source_input = _mapping(_mapping(fanin.get("inputs")).get(active_source))
-    resampler = _mapping(source_input.get("resampler"))
-    camilla = _mapping(current.get("camilla"))
-    dac = _mapping(_mapping(outputd).get("dac"))
-    session_state = _mapping(session)
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    source_input = mapping(mapping(fanin.get("inputs")).get(active_source))
+    resampler = mapping(source_input.get("resampler"))
+    camilla = mapping(current.get("camilla"))
+    dac = mapping(mapping(outputd).get("dac"))
+    session_state = mapping(session)
     session_start = session_state.get("started_at") or sampled_at
     stream: dict[str, Any] = {
         "source_id": active_source,
-        "label": _SOURCE_LABELS.get(active_source, active_source),
+        "label": SOURCE_LABELS.get(active_source, active_source),
         "started_at": session_start,
     }
     if resampler or camilla:
@@ -219,7 +219,7 @@ def _current_stream(
             "DAC queue",
             f"{dac_delay:.1f} ms",
         ))
-    if outputd is not None and _mapping(outputd).get("backend") == "alsa" and dac:
+    if outputd is not None and mapping(outputd).get("backend") == "alsa" and dac:
         stream["output"] = {
             "summary": (
                 f"{output_rate / 1000:g} kHz final output"
@@ -229,7 +229,7 @@ def _current_stream(
             "details": output_details,
         }
     reliability = _reliability(
-        _mapping(fanin.get("output")), service_states, restart_watch_units,
+        mapping(fanin.get("output")), service_states, restart_watch_units,
     )
     if reliability["details"]:
         stream["reliability"] = reliability

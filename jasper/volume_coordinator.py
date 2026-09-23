@@ -69,7 +69,7 @@ from .volume_scales import native_to_listening_level
 from .volume_curve import percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 from .volume_handoff import VolumeHandoff, main_mute_for_level
-from .volume_state import VolumeState, _OutboundStamp
+from .volume_state import VolumeState, OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -179,7 +179,7 @@ class VolumeCoordinator:
         self._mute_token: str | None = None
         self._confirmed_push_mute_tokens: dict[Source, str] = {}
         # Echo-prevention timestamps, per source.
-        self._last_outbound: dict[Source, _OutboundStamp] = {}
+        self._last_outbound: dict[Source, OutboundStamp] = {}
         # One lock for all level mutations — coordinator is async-
         # single-threaded but multiple consumers (voice tool, remote
         # via UDS, observer) can race.

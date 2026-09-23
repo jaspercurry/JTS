@@ -10,7 +10,7 @@ from pathlib import Path
 from ...env_load import parse_bool_value, read_env_file_state
 from ...identity.reader import PEER_ID_FILE
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, run
 
 REASON_PEERING_OFF = "peering_off"
 REASON_PEERING_ON = "peering_on"
@@ -75,7 +75,7 @@ def check_peering_discovery() -> CheckResult:
             "verify peer discovery.",
             reason=REASON_DISCOVERY_TOOL_MISSING,
         )
-    proc = _run([bin_path, "-rt", "_jasper-peer._udp"], timeout=4.0)
+    proc = run([bin_path, "-rt", "_jasper-peer._udp"], timeout=4.0)
     if proc.returncode != 0:
         return CheckResult(
             label, "warn",

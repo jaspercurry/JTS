@@ -37,8 +37,8 @@ from ._shared import (
     _RUNTIME_STATE_UNITS,
     silence_unobserved,
     speaker_silence_code,
-    _run,
-    _systemctl_unavailable_result,
+    run,
+    systemctl_unavailable_result,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -114,7 +114,7 @@ def check_service_runtime_state() -> CheckResult:
     acted on."""
     states = evidence.unit_states()
     if states is None:
-        return _systemctl_unavailable_result("service runtime state")
+        return systemctl_unavailable_result("service runtime state")
     failed: list[str] = []
     restarted: list[str] = []
     for unit in _RUNTIME_STATE_UNITS:
@@ -186,7 +186,7 @@ def check_required_units_active() -> CheckResult:
     label = "required units active"
     states = evidence.unit_states()
     if states is None:
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     down: list[str] = []
     for unit in _REQUIRED_ACTIVE_UNITS:
         state = states.get(unit) or {}
@@ -837,7 +837,7 @@ def check_usb_host_controllers() -> CheckResult:
     included — stays gone until a human intervenes, while the rows downstream
     report only an absent card."""
     name = "usb host controllers"
-    proc = _run(
+    proc = run(
         ["journalctl", "-k", "-b", "0", "--grep", "xhci-hcd",
          "--output", "short-monotonic", "--no-pager"],
         timeout=8.0,
@@ -905,7 +905,7 @@ def check_usb_hcd_recovery_watcher() -> CheckResult:
         )
     states = evidence.unit_states()
     if states is None:
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     state = states.get(USB_HCD_RECOVER_UNIT) or {}
     active = str(state.get("active_state") or "unknown")
     if active != "active":

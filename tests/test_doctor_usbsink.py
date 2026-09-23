@@ -364,7 +364,7 @@ def test_uac2_capture_rate_resolves_the_pcm_control_by_name(
             return SimpleNamespace(returncode=controls_rc, stdout=controls_out)
         return SimpleNamespace(returncode=value_rc, stdout=value_out)
 
-    monkeypatch.setattr(usbsink, "_run", fake_run)
+    monkeypatch.setattr(usbsink, "run", fake_run)
 
     assert usbsink._uac2_capture_rate() == expected
 
@@ -708,7 +708,7 @@ def _patch_composition_env(
         direct_ready = lifecycle_ready
     monkeypatch.setattr(
         usbsink,
-        "_run",
+        "run",
         lambda _cmd: SimpleNamespace(
             returncode=0 if lifecycle_ready else 1,
             stdout="enabled\n" if lifecycle_ready else "disabled\n",

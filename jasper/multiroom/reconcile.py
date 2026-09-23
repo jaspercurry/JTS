@@ -87,7 +87,7 @@ from .reconcile_plan import (
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,
-    _assemble_args,
+    assemble_args,
     plan,
 )
 from .tts_route import VOICE_PARK_ENV
@@ -1382,7 +1382,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # 1. Derived files — before any unit work.
-    derived = _assemble_args(role.cfg, active_endpoint=role.active_endpoint)
+    derived = assemble_args(role.cfg, active_endpoint=role.active_endpoint)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
     log_event(

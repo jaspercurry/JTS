@@ -146,7 +146,7 @@ def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
     required = (
         units._NON_OWNER_RECONCILE_BUDGET_SEC
         + 2 * owner_waits[units._ACCESSORY_RECONCILE_UNIT]
-        + owner_waits[units._USB_COUPLING_UNIT]
+        + owner_waits[units.USB_COUPLING_UNIT]
     )
     assert units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS >= required
     assert (
@@ -192,9 +192,9 @@ def test_owned_source_unit_client_bounds_outlast_explicit_systemd_contracts() ->
             start,
             stop,
         )
-        assert units._unit_action_timeout_sec(unit, "start") > start
-        assert units._unit_action_timeout_sec(unit, "stop") > stop
-        assert units._unit_action_timeout_sec(unit, "restart") > start + stop
+        assert units.unit_action_timeout_sec(unit, "start") > start
+        assert units.unit_action_timeout_sec(unit, "stop") > stop
+        assert units.unit_action_timeout_sec(unit, "restart") > start + stop
 
 
 def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
@@ -238,7 +238,7 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
         ),
     }
     assert (
-        units._unit_action_timeout_sec("shairport-sync.service", "start")
+        units.unit_action_timeout_sec("shairport-sync.service", "start")
         > shairport_start + nqptp_start
     )
 
@@ -405,9 +405,9 @@ def test_gadget_phase_model_matches_its_shipped_command_count() -> None:
     )
     # And the restart bound must cover the worst measured restart with room:
     # 33.64 s, Stopping -> Finished, on the pass that produced the false timeout.
-    assert units._unit_action_timeout_sec("jasper-usbgadget.service", "restart") > 33.64
+    assert units.unit_action_timeout_sec("jasper-usbgadget.service", "restart") > 33.64
     assert (
-        units._unit_action_timeout_sec("jasper-usbgadget.service", "stop")
+        units.unit_action_timeout_sec("jasper-usbgadget.service", "stop")
         > declared_stop * stops
     )
 
@@ -433,18 +433,18 @@ def test_failed_usb_on_cleanup_budget_matches_its_enumerated_waits() -> None:
     """The rollback budget is its own blocking waits, not a hand-picked floor."""
 
     gadget = "jasper-usbgadget.service"
-    query = units._UNIT_STATE_QUERY_TIMEOUT_SEC
+    query = units.UNIT_STATE_QUERY_TIMEOUT_SEC
     enumerated = (
         # _ensure_active(usbsink, False): probe, stop, probe, failed-state reset
         2 * query
-        + units._unit_action_timeout_sec("jasper-usbsink.service", "stop")
+        + units.unit_action_timeout_sec("jasper-usbsink.service", "stop")
         + (2 * query + units._RESET_FAILED_ACTION_TIMEOUT_SEC)
         # _ensure_enabled(usbsink, False): probe, disable, probe
         + units._ENABLEMENT_TRANSITION_BUDGET_SEC
         # recompose the gadget, stop it if audio survived, disarm coupling
-        + units._unit_action_timeout_sec(gadget, "restart")
-        + units._unit_action_timeout_sec(gadget, "stop")
-        + units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units._USB_COUPLING_UNIT]
+        + units.unit_action_timeout_sec(gadget, "restart")
+        + units.unit_action_timeout_sec(gadget, "stop")
+        + units._OWNER_UNIT_ACTION_TIMEOUT_SEC[units.USB_COUPLING_UNIT]
     )
     assert units._USB_FAILED_ON_CLEANUP_BUDGET_SEC == enumerated
 
@@ -459,14 +459,14 @@ def test_control_unit_client_bounds_match_packaged_dropins() -> None:
             start,
             stop,
         )
-        assert units._unit_action_timeout_sec(unit, "start") > start
-        assert units._unit_action_timeout_sec(unit, "stop") > stop
-        assert units._unit_action_timeout_sec(unit, "restart") > start + stop
+        assert units.unit_action_timeout_sec(unit, "start") > start
+        assert units.unit_action_timeout_sec(unit, "stop") > stop
+        assert units.unit_action_timeout_sec(unit, "restart") > start + stop
 
 
 def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
     stops = sum(
-        units._unit_action_timeout_sec(unit, verb)
+        units.unit_action_timeout_sec(unit, verb)
         for unit, verb in reconcile._WORST_CASE_ORDINARY_STOP_ACTIONS
     )
     enablement = (
@@ -477,7 +477,7 @@ def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
         + enablement
         + units._FAILED_RESET_BUDGET_SEC
         + units._ACTIVE_TRANSITION_BUDGET_SEC
-        + units._unit_action_timeout_sec("jasper-usbgadget.service", "restart")
+        + units.unit_action_timeout_sec("jasper-usbgadget.service", "restart")
         + units._BLUETOOTH_CONTROL_BUDGET_SEC
         + units._USB_DIRECT_WAIT_BUDGET_SEC
         + units._USB_FAILED_ON_CLEANUP_BUDGET_SEC
@@ -490,7 +490,7 @@ def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
     assert (
         units._NON_OWNER_RECONCILE_BUDGET_SEC
         + 2 * owner_waits[units._ACCESSORY_RECONCILE_UNIT]
-        + owner_waits[units._USB_COUPLING_UNIT]
+        + owner_waits[units.USB_COUPLING_UNIT]
         + units._RECONCILE_TIMEOUT_MARGIN_SEC
     ) == units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS
 

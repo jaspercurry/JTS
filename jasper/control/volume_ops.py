@@ -148,7 +148,7 @@ async def _with_coordinator(
 
     `duck_active_probe` is forwarded into the coordinator: when set, the
     coordinator defers its camilla write iff the probe returns True. See
-    `_make_duck_active_probe` for the wire details."""
+    `make_duck_active_probe` for the wire details."""
     # lazy: import cost — see module header
     from .. import librespot_state
     from ..camilla import CamillaController
@@ -170,7 +170,7 @@ async def _with_coordinator(
     return await op(coord)
 
 
-def _make_duck_active_probe(
+def make_duck_active_probe(
     voice_socket_path: str,
     *,
     voice_socket_command: Callable[..., Awaitable[dict]] = voice_socket_command,

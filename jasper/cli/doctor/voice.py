@@ -31,7 +31,7 @@ from ._shared import (
     CheckResult,
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     _exception_detail,
-    _run,
+    run,
 )
 
 # Machine-stable codes naming which branch of a voice check produced a
@@ -299,7 +299,7 @@ def check_provider_importable() -> CheckResult:
     joined = ", ".join(modules)
     timeout = _import_probe_timeout()
     try:
-        proc = _run(
+        proc = run(
             [sys.executable, *_PROBE_INTERPRETER_FLAGS, "-c", _IMPORT_PROBE,
              *modules],
             timeout=timeout,

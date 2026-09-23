@@ -22,7 +22,7 @@ from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     LegEmitter,
     TimestampedLegEmitter,
-    _BridgeStats,
+    BridgeStats,
 )
 from jasper.cli.doctor import aec as doctor_aec
 from jasper.usb_mic import (
@@ -73,7 +73,7 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
         "jasper.aec.bridge_telemetry.time.clock_gettime_ns",
         clock_gettime_ns,
     )
-    stats = _BridgeStats(IDENTITY)
+    stats = BridgeStats(IDENTITY)
     on_sock = _FakeSock(refuse=frozenset({2}))
     usb_sock = _FakeSock()
     on = LegEmitter(
@@ -244,7 +244,7 @@ def test_timestamped_sequence_wraps_and_survives_a_refused_send(
         "jasper.aec.bridge_telemetry.time.clock_gettime_ns",
         lambda _clock: 1,
     )
-    stats = _BridgeStats(IDENTITY)
+    stats = BridgeStats(IDENTITY)
     sock = _FakeSock(refuse=frozenset({2}))
     emitter = TimestampedLegEmitter(
         sock=sock,  # type: ignore[arg-type]
@@ -274,7 +274,7 @@ def test_timestamped_sequence_wraps_and_survives_a_refused_send(
 def test_leg_engine_status_reloads_and_clears_on_reset() -> None:
     """`leg_engines` is the journal-independent surface jasper-doctor's
     check_aec_bridge_dtln_engine reads to catch a silent DTLN load failure."""
-    stats = _BridgeStats(IDENTITY)
+    stats = BridgeStats(IDENTITY)
     stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
     stats.set_leg_engine("dtln", enabled=True, loaded=True)
 

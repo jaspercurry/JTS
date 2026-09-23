@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The stats identity every AEC-bridge suite stamps its `_BridgeStats` with."""
+"""The stats identity every AEC-bridge suite stamps its `BridgeStats` with."""
 from __future__ import annotations
 
 from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE

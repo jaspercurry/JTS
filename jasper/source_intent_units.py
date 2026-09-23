@@ -21,12 +21,12 @@ from jasper.service_units import (
 RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
 
 _RESET_FAILED_ACTION_TIMEOUT_SEC = 5.0
-_USB_DIRECT_SETTLE_ATTEMPTS = 20
-_USB_DIRECT_SETTLE_SECONDS = 0.25
+USB_DIRECT_SETTLE_ATTEMPTS = 20
+USB_DIRECT_SETTLE_SECONDS = 0.25
 
-_BLUETOOTH_SERVICE = "bluetooth.service"
+BLUETOOTH_SERVICE = "bluetooth.service"
 _ACCESSORY_RECONCILE_UNIT = "jasper-accessory-reconcile.service"
-_USB_COUPLING_UNIT = "jasper-fanin-coupling-auto.service"
+USB_COUPLING_UNIT = "jasper-fanin-coupling-auto.service"
 # Every blocking source-unit action has two finite layers: the systemd unit's
 # explicit TimeoutStartSec/TimeoutStopSec contract, then this client's slightly
 # longer subprocess bound.  A client must never report timeout while PID 1 may
@@ -42,8 +42,8 @@ _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC = 5.0
 # a `--no-reload` enable or disable back immediately.  So the implicit
 # daemon-reload buys nothing, and it cost 3.6-14.9 s per call under the memory
 # pressure of #3639.  Removal condition: a caller here writes a unit file.
-_UNIT_ENABLEMENT_VERBS = frozenset({"enable", "disable"})
-_UNIT_STATE_QUERY_TIMEOUT_SEC = 2.0
+UNIT_ENABLEMENT_VERBS = frozenset({"enable", "disable"})
+UNIT_STATE_QUERY_TIMEOUT_SEC = 2.0
 _UNIT_ACTION_CLIENT_MARGIN_SEC = 1.0
 _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     # unit: (TimeoutStartSec, TimeoutStopSec)
@@ -58,7 +58,7 @@ _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     "jasper-usbsink-volume.service": (2.0, 5.0),
 }
 _CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
-    _BLUETOOTH_SERVICE: (10.0, 10.0),
+    BLUETOOTH_SERVICE: (10.0, 10.0),
 }
 # A unit's declared TimeoutStartSec is not always the bound PID 1 enforces on
 # the whole start phase. Measured on jts4 across all 13 gadget starts since its
@@ -120,14 +120,14 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # See tests/test_source_intent_systemd.py for the shipped TimeoutStartSec pins.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
-    _USB_COUPLING_UNIT: 772.0,  # target TimeoutStartSec=767
+    USB_COUPLING_UNIT: 772.0,  # target TimeoutStartSec=767
 }
 
 
-def _unit_action_timeout_sec(unit: str, verb: str) -> float:
+def unit_action_timeout_sec(unit: str, verb: str) -> float:
     if verb == "start" and unit in _OWNER_UNIT_ACTION_TIMEOUT_SEC:
         return _OWNER_UNIT_ACTION_TIMEOUT_SEC[unit]
-    if verb in _UNIT_ENABLEMENT_VERBS:
+    if verb in UNIT_ENABLEMENT_VERBS:
         return _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC
     if verb == "reset-failed":
         return _RESET_FAILED_ACTION_TIMEOUT_SEC
@@ -159,7 +159,7 @@ def _unit_action_timeout_sec(unit: str, verb: str) -> float:
 _WORST_CASE_ORDINARY_START_ACTIONS = (
     (SHAIRPORT_SYNC_SERVICE, "start"),
     (LIBRESPOT_SERVICE, "start"),
-    (_BLUETOOTH_SERVICE, "start"),
+    (BLUETOOTH_SERVICE, "start"),
     ("bluealsa.service", "start"),
     ("bluealsa-aplay.service", "start"),
     ("bt-agent.service", "start"),
@@ -180,24 +180,24 @@ _MAX_ENSURE_ACTIVE_TRANSITIONS = len(_WORST_CASE_ORDINARY_START_ACTIONS)
 # test_source_intent_systemd.py::test_max_failed_reset_transitions_matches_local_source_registry.
 _MAX_FAILED_RESET_TRANSITIONS = 7
 _ENABLEMENT_TRANSITION_BUDGET_SEC = (
-    2 * _UNIT_STATE_QUERY_TIMEOUT_SEC + _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC
+    2 * UNIT_STATE_QUERY_TIMEOUT_SEC + _UNIT_ENABLEMENT_ACTION_TIMEOUT_SEC
 )
 _FAILED_RESET_BUDGET_SEC = _MAX_FAILED_RESET_TRANSITIONS * (
-    2 * _UNIT_STATE_QUERY_TIMEOUT_SEC
-    + _unit_action_timeout_sec("source.service", "reset-failed")
+    2 * UNIT_STATE_QUERY_TIMEOUT_SEC
+    + unit_action_timeout_sec("source.service", "reset-failed")
 )
 _ACTIVE_TRANSITION_BUDGET_SEC = sum(
-    _unit_action_timeout_sec(unit, verb)
+    unit_action_timeout_sec(unit, verb)
     for unit, verb in _WORST_CASE_ORDINARY_START_ACTIONS
-) + (2 * _UNIT_STATE_QUERY_TIMEOUT_SEC * _MAX_ENSURE_ACTIVE_TRANSITIONS)
+) + (2 * UNIT_STATE_QUERY_TIMEOUT_SEC * _MAX_ENSURE_ACTIVE_TRANSITIONS)
 _OWNER_RECONCILE_BUDGET_SEC = (
     2 * _OWNER_UNIT_ACTION_TIMEOUT_SEC[_ACCESSORY_RECONCILE_UNIT]
-    + _OWNER_UNIT_ACTION_TIMEOUT_SEC[_USB_COUPLING_UNIT]
+    + _OWNER_UNIT_ACTION_TIMEOUT_SEC[USB_COUPLING_UNIT]
 )
 _BLUETOOTH_CONTROL_BUDGET_SEC = 30.0
 _USB_DIRECT_WAIT_BUDGET_SEC = (
-    _USB_DIRECT_SETTLE_ATTEMPTS * 0.5
-    + (_USB_DIRECT_SETTLE_ATTEMPTS - 1) * _USB_DIRECT_SETTLE_SECONDS
+    USB_DIRECT_SETTLE_ATTEMPTS * 0.5
+    + (USB_DIRECT_SETTLE_ATTEMPTS - 1) * USB_DIRECT_SETTLE_SECONDS
 )
 # The failed-On rollback, enumerated in the call order the except-branch of the
 # USB applier runs them: stop the derived unit through _ensure_active (an active
@@ -208,13 +208,13 @@ _USB_DIRECT_WAIT_BUDGET_SEC = (
 # lane. The live-state probes between those steps are not systemd waits and are
 # carried by the non-systemd budget instead.
 _USB_FAILED_ON_CLEANUP_BUDGET_SEC = (
-    2 * _UNIT_STATE_QUERY_TIMEOUT_SEC
-    + _unit_action_timeout_sec("jasper-usbsink.service", "stop")
-    + (2 * _UNIT_STATE_QUERY_TIMEOUT_SEC + _RESET_FAILED_ACTION_TIMEOUT_SEC)
+    2 * UNIT_STATE_QUERY_TIMEOUT_SEC
+    + unit_action_timeout_sec("jasper-usbsink.service", "stop")
+    + (2 * UNIT_STATE_QUERY_TIMEOUT_SEC + _RESET_FAILED_ACTION_TIMEOUT_SEC)
     + _ENABLEMENT_TRANSITION_BUDGET_SEC
-    + _unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
-    + _unit_action_timeout_sec(USBGADGET_SERVICE, "stop")
-    + _OWNER_UNIT_ACTION_TIMEOUT_SEC[_USB_COUPLING_UNIT]
+    + unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
+    + unit_action_timeout_sec(USBGADGET_SERVICE, "stop")
+    + _OWNER_UNIT_ACTION_TIMEOUT_SEC[USB_COUPLING_UNIT]
 )
 _RECONCILE_TIMEOUT_MARGIN_SEC = 21.25
 _NON_OWNER_RECONCILE_BUDGET_SEC = (
@@ -222,7 +222,7 @@ _NON_OWNER_RECONCILE_BUDGET_SEC = (
     + _MAX_ENABLEMENT_TRANSITIONS * _ENABLEMENT_TRANSITION_BUDGET_SEC
     + _FAILED_RESET_BUDGET_SEC
     + _ACTIVE_TRANSITION_BUDGET_SEC
-    + _unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
+    + unit_action_timeout_sec(USBGADGET_SERVICE, "restart")
     + _BLUETOOTH_CONTROL_BUDGET_SEC
     + _USB_DIRECT_WAIT_BUDGET_SEC
     + _USB_FAILED_ON_CLEANUP_BUDGET_SEC

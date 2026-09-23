@@ -21,7 +21,7 @@ from ._shared import (
     CheckResult,
     _camilla_block_field,
     _parse_systemd_environment,
-    _run,
+    run,
 )
 
 REASON_GROUPING_OFF = "grouping_off"
@@ -256,7 +256,7 @@ def _probe_grouping_pcm(pcm: str) -> tuple[int | None, str]:
     unparseable answer) — which is a warn, not a verdict about the PCM.
     """
     try:
-        proc = _run(
+        proc = run(
             [sys.executable, "-c", _GROUPING_PCM_PROBE, pcm],
             timeout=_GROUPING_PCM_PROBE_TIMEOUT_SEC,
         )
@@ -415,7 +415,7 @@ def check_grouping_snapcast_version() -> CheckResult:
         )
 
     try:
-        proc = _run(["snapclient", "--version"])
+        proc = run(["snapclient", "--version"])
     except (FileNotFoundError, subprocess.SubprocessError) as e:
         return CheckResult(
             label, "skipped",
@@ -1210,7 +1210,7 @@ def check_crossover_unit_installed() -> CheckResult:
             f"installed ({unit}); systemd-analyze unavailable, parse unchecked",
             reason=REASON_CROSSOVER_UNIT_UNVERIFIED,
         )
-    verify = _run(["systemd-analyze", "verify", unit])
+    verify = run(["systemd-analyze", "verify", unit])
     if verify.returncode != 0:
         detail = (verify.stderr or verify.stdout or "").strip().replace("\n", " ")
         return CheckResult(

@@ -254,12 +254,12 @@ def test_the_probe_is_isolated_and_bounded():
         calls.append((cmd, timeout))
         return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
 
-    original = doctor_grouping._run
-    doctor_grouping._run = _fake_run  # type: ignore[assignment]
+    original = doctor_grouping.run
+    doctor_grouping.run = _fake_run  # type: ignore[assignment]
     try:
         rc, reason = doctor_grouping._probe_grouping_pcm("jts_ring_grouping")
     finally:
-        doctor_grouping._run = original  # type: ignore[assignment]
+        doctor_grouping.run = original  # type: ignore[assignment]
 
     assert (rc, reason) == (0, "")
     cmd, timeout = calls[0]
@@ -272,12 +272,12 @@ def test_an_unparseable_probe_answer_is_not_read_as_success():
     def _fake_run(cmd, timeout=5.0):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Traceback ...")
 
-    original = doctor_grouping._run
-    doctor_grouping._run = _fake_run  # type: ignore[assignment]
+    original = doctor_grouping.run
+    doctor_grouping.run = _fake_run  # type: ignore[assignment]
     try:
         rc, reason = doctor_grouping._probe_grouping_pcm("jts_ring_grouping")
     finally:
-        doctor_grouping._run = original  # type: ignore[assignment]
+        doctor_grouping.run = original  # type: ignore[assignment]
 
     assert rc is None
     assert "no result" in reason

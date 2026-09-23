@@ -1079,7 +1079,7 @@ def test_a_controller_is_dead_until_the_log_re_registers_its_buses(
     so only the log separates dead from live — the last marker per controller
     wins, and only a re-bind revives it (#5443)."""
     monkeypatch.setattr(
-        resilience, "_run",
+        resilience, "run",
         lambda *a, **kw: subprocess.CompletedProcess(
             args=[], returncode=0, stdout=kernel_log, stderr="",
         ),

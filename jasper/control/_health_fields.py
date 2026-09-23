@@ -67,7 +67,7 @@ def _finite_number(value: Any) -> int | float | None:
     return value
 
 
-_mapping = as_mapping
+mapping = as_mapping
 
 
 def _as_int(value: Any, default: int = 0) -> int:

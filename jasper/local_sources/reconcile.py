@@ -8,18 +8,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from jasper.accessories.reconcile import request_reconcile
-from jasper.atomic_io import advisory_file_lock
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.bluetooth.rfkill import BluetoothRfkillState, read_bluetooth_rfkill_state
 from jasper.env_load import SOURCE_INTENT_ENV
@@ -46,22 +47,20 @@ from jasper.output_hardware import current_usb_data_role
 from jasper.service_units import LIBRESPOT_SERVICE
 from jasper.source_intent import (
     SOURCE_STATUS_PATH,
-    StatusWriter,
-    _intent_fingerprint,
-    _parse_source_intents,
-    _publish_reconcile_status,
-    _read_intent,
+    intent_fingerprint,
+    parse_source_intents,
+    read_intent,
     source_intent_sources,
 )
 from jasper.source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
-    _BLUETOOTH_SERVICE,
-    _UNIT_ENABLEMENT_VERBS,
-    _UNIT_STATE_QUERY_TIMEOUT_SEC,
-    _USB_COUPLING_UNIT,
-    _USB_DIRECT_SETTLE_ATTEMPTS,
-    _USB_DIRECT_SETTLE_SECONDS,
-    _unit_action_timeout_sec,
+    BLUETOOTH_SERVICE,
+    UNIT_ENABLEMENT_VERBS,
+    UNIT_STATE_QUERY_TIMEOUT_SEC,
+    USB_COUPLING_UNIT,
+    USB_DIRECT_SETTLE_ATTEMPTS,
+    USB_DIRECT_SETTLE_SECONDS,
+    unit_action_timeout_sec,
 )
 from jasper.systemd_probe import unit_query, unit_state
 from jasper.usbgadget import uac2_card_present
@@ -89,18 +88,53 @@ _BLUETOOTH_SETTLE_SECONDS = 0.25
 _BLUETOOTH_DBUS_TIMEOUT_SEC = 0.75
 _BLUETOOTH_BLUEZ_ATTEMPTS = 3
 
+StatusWriter = Callable[[str, Mapping[str, Any]], None]
 SystemctlRunner = Callable[[str, bool], tuple[int, str]]
 UnitRunner = Callable[[str, str], tuple[int, str]]
 UnitProbe = Callable[[str], bool | None]
 
 
+def _default_write_status(path: str, payload: Mapping[str, Any]) -> None:
+    """Atomically publish the root-owned, world-readable completion fact."""
+
+    atomic_write_text(
+        path,
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        mode=0o644,
+    )
+
+
+def _publish_reconcile_status(
+    *,
+    path: str | None,
+    intent_fingerprint: str,
+    outcomes: Mapping[str, Mapping[str, str]],
+    writer: StatusWriter | None,
+) -> bool:
+    if path is None:
+        return True
+    payload: Mapping[str, Any] = {
+        "completed_monotonic_ns": time.monotonic_ns(),
+        "intent_fingerprint": intent_fingerprint,
+        "sources": dict(outcomes),
+    }
+    try:
+        (writer or _default_write_status)(path, payload)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        log_event(
+            logging.getLogger("jasper.source_intent"),
+            "source_intent.status_write_failed",
+            path=path,
+            error=str(exc),
+            level=logging.WARNING,
+        )
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class ReconcileOps:
-    """Injectable host operations used by the four concrete appliers.
-
-    This is a test seam, not an extension contract.  The root coordinator owns
-    every callable and source declarations never receive this object.
-    """
+    """Root-owned host operations for the four source appliers."""
 
     set_enabled: SystemctlRunner
     run_unit: UnitRunner
@@ -125,8 +159,8 @@ def _run_systemctl(unit: str, enabled: bool) -> tuple[int, str]:
 
 
 def _run_unit_action(unit: str, verb: str) -> tuple[int, str]:
-    timeout = _unit_action_timeout_sec(unit, verb)
-    flags = ["--no-reload"] if verb in _UNIT_ENABLEMENT_VERBS else []
+    timeout = unit_action_timeout_sec(unit, verb)
+    flags = ["--no-reload"] if verb in UNIT_ENABLEMENT_VERBS else []
     try:
         process = subprocess.run(
             ["systemctl", verb, *flags, unit],
@@ -148,7 +182,7 @@ def _query_unit_state(query: str, unit: str) -> bool | None:
     Classification lives in jasper.systemd_probe (shared with the multiroom
     reconciler's `_systemctl_unit_state`); this wrapper only picks the timeout.
     """
-    return unit_query(unit_state(query, unit, timeout=_UNIT_STATE_QUERY_TIMEOUT_SEC))
+    return unit_query(unit_state(query, unit, timeout=UNIT_STATE_QUERY_TIMEOUT_SEC))
 
 
 def _unit_enabled(unit: str) -> bool | None:
@@ -482,10 +516,10 @@ def _reconcile_usbsink(
         else:
             _attempt_teardown(
                 hardware_teardown_errors,
-                f"start {_USB_COUPLING_UNIT}",
+                f"start {USB_COUPLING_UNIT}",
                 lambda: _check_result(
-                    *ops.run_unit(_USB_COUPLING_UNIT, "start"),
-                    f"systemctl start {_USB_COUPLING_UNIT}",
+                    *ops.run_unit(USB_COUPLING_UNIT, "start"),
+                    f"systemctl start {USB_COUPLING_UNIT}",
                 ),
             )
         if hardware_teardown_errors:
@@ -517,37 +551,27 @@ def _reconcile_usbsink(
                         "USB audio remained advertised without a direct consumer"
                     )
             if not ops.usb_direct_present():
-                # NOT _check_result: this unit also runs an opportunistic
-                # CamillaDSP self-heal, so its exit status is not evidence
-                # about USB transport. The lane arming IS verified — by the
-                # checks below and the usb_direct_ready() settle loop, which
-                # still fail this transition when the lane does not arm.
-                # See ADR-0191.
-                ops.run_unit(_USB_COUPLING_UNIT, "start")
+                # The owner's exit also covers DSP self-heal; verify the USB
+                # lane separately below. See ADR-0191.
+                ops.run_unit(USB_COUPLING_UNIT, "start")
             if not ops.usb_audio_present():
                 rc, detail = ops.run_unit(gadget, "restart")
                 _check_result(rc, detail, f"systemctl restart {gadget}")
             _ensure_active(ops, unit, True)
             if not ops.usb_audio_present():
                 raise RuntimeError("USB audio function did not appear after recompose")
-            for attempt in range(_USB_DIRECT_SETTLE_ATTEMPTS):
+            for attempt in range(USB_DIRECT_SETTLE_ATTEMPTS):
                 if ops.usb_direct_ready():
                     break
-                if attempt + 1 < _USB_DIRECT_SETTLE_ATTEMPTS:
-                    ops.settle(_USB_DIRECT_SETTLE_SECONDS)
+                if attempt + 1 < USB_DIRECT_SETTLE_ATTEMPTS:
+                    ops.settle(USB_DIRECT_SETTLE_SECONDS)
             else:
                 raise RuntimeError(
                     "fan-in direct USB capture lane did not become ready"
                 )
             return "on"
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            # No teardown: a failed On leaves the endpoint composed. An
-            # unconsumed UAC2 is a disclosed state, not a reason to withdraw
-            # the transport, and the rollback this replaces stopped the whole
-            # composite gadget — taking the NCM management network with it.
-            # Canonical intent still says On, so the next pass retries.
-            # See ADR-0191. Off and follower parking below keep their
-            # teardowns: those ARE safety transitions.
+            # Preserve the NCM management link on failed On; see ADR-0191.
             raise RuntimeError(f"USB On transition failed: {exc}") from exc
 
     # Off and follower parking are safety transitions. Keep going through
@@ -595,10 +619,10 @@ def _reconcile_usbsink(
     if audio_withdrawn:
         _attempt_teardown(
             teardown_errors,
-            f"start {_USB_COUPLING_UNIT}",
+            f"start {USB_COUPLING_UNIT}",
             lambda: _check_result(
-                *ops.run_unit(_USB_COUPLING_UNIT, "start"),
-                f"systemctl start {_USB_COUPLING_UNIT}",
+                *ops.run_unit(USB_COUPLING_UNIT, "start"),
+                f"systemctl start {USB_COUPLING_UNIT}",
             ),
         )
     if teardown_errors:
@@ -732,7 +756,7 @@ def _reconcile_bluetooth(
         return "parked"
 
     if effective_on:
-        _ensure_active(ops, _BLUETOOTH_SERVICE, True)
+        _ensure_active(ops, BLUETOOTH_SERVICE, True)
         _wait_for_bluetooth_radio(ops)
         _rfkill_converge(ops, False)
         _bluez_power_converge(ops, True)
@@ -758,8 +782,8 @@ def _reconcile_bluetooth(
         )
     _attempt_teardown(
         teardown_errors,
-        f"start {_BLUETOOTH_SERVICE} control plane",
-        lambda: _ensure_active(ops, _BLUETOOTH_SERVICE, True),
+        f"start {BLUETOOTH_SERVICE} control plane",
+        lambda: _ensure_active(ops, BLUETOOTH_SERVICE, True),
     )
     radio_state: BluetoothRfkillState | None = None
     try:
@@ -800,11 +824,6 @@ def _apply_source(
         return _reconcile_usbsink(desired, allowed, ops)
     if source == Source.BLUETOOTH:
         return _reconcile_bluetooth(desired, allowed, ops)
-    # Ordinary sources are selected by their lifecycle declaration, not a
-    # second central enum set.  This is deliberately only a dispatch rule—not
-    # a plugin API: USB and Bluetooth keep their concrete ordered appliers,
-    # while any declared source with one intent unit uses the common systemd
-    # mechanism without another coordinator edit.
     if local_source_lifecycle(source).intent_unit is not None:
         return _reconcile_systemd_source(source, desired, allowed, ops)
     raise RuntimeError(f"unsupported source {source.value}")
@@ -842,7 +861,7 @@ def _reconcile_once(
     operations = ops or default_reconcile_ops()
 
     try:
-        text = _read_intent(env_path)
+        text = read_intent(env_path)
     except RuntimeError as exc:
         log_event(
             logger,
@@ -867,8 +886,8 @@ def _reconcile_once(
         )
         return 1
 
-    fingerprint = _intent_fingerprint(text)
-    intents, problems = _parse_source_intents(text)
+    fingerprint = intent_fingerprint(text)
+    intents, problems = parse_source_intents(text)
     failures = len(problems)
     outcomes: dict[str, dict[str, str]] = {}
     invalid_sources = {

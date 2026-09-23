@@ -63,7 +63,7 @@ def normalize_output_device_id(raw: str | None) -> str:
     ``OutputChildDevice.from_mapping`` — where a truthy non-string reached
     ``.strip()`` and raised ``AttributeError``, escaping the schema's typed
     contract. ``ValueError`` so the topology loaders normalise it like any
-    other malformed field. This module's own callers pre-coerce with ``_text``.
+    other malformed field. This module's own callers pre-coerce with ``text``.
     """
 
     if raw is not None and not isinstance(raw, str):
@@ -88,7 +88,7 @@ def degraded_marker_path(path: str | Path | None = None) -> Path:
     return state_path(path).parent / "reconcile.degraded"
 
 
-def _text(value: Any) -> str | None:
+def text(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
@@ -126,22 +126,22 @@ class OutputCardFact:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "OutputCardFact":
-        card_id = _text(raw.get("card_id") or raw.get("card")) or "unknown"
+        card_id = text(raw.get("card_id") or raw.get("card")) or "unknown"
         return cls(
             card_id=card_id,
             card_index=_int(raw.get("card_index")),
-            label=_text(raw.get("label")) or "",
-            device_id=normalize_output_device_id(_text(raw.get("device_id"))),
-            vendor_id=_text(raw.get("vendor_id") or raw.get("idVendor")),
-            product_id=_text(raw.get("product_id") or raw.get("idProduct")),
-            serial=_text(raw.get("serial")),
-            pcm=_text(raw.get("pcm")) or f"hw:CARD={card_id},DEV=0",
-            stable_path=_text(raw.get("stable_path")),
-            usb_path=_text(raw.get("usb_path")),
-            controller=_text(raw.get("controller")),
-            busnum=_text(raw.get("busnum")),
-            devpath=_text(raw.get("devpath")),
-            endpoint_sync=_text(raw.get("endpoint_sync")),
+            label=text(raw.get("label")) or "",
+            device_id=normalize_output_device_id(text(raw.get("device_id"))),
+            vendor_id=text(raw.get("vendor_id") or raw.get("idVendor")),
+            product_id=text(raw.get("product_id") or raw.get("idProduct")),
+            serial=text(raw.get("serial")),
+            pcm=text(raw.get("pcm")) or f"hw:CARD={card_id},DEV=0",
+            stable_path=text(raw.get("stable_path")),
+            usb_path=text(raw.get("usb_path")),
+            controller=text(raw.get("controller")),
+            busnum=text(raw.get("busnum")),
+            devpath=text(raw.get("devpath")),
+            endpoint_sync=text(raw.get("endpoint_sync")),
             has_playback=bool(raw.get("has_playback", True)),
         )
 
@@ -262,7 +262,7 @@ class OutputHardwareState:
             for item in raw.get("issues", []) or []
             if isinstance(item, Mapping)
         )
-        profile_id = normalize_output_device_id(_text(raw.get("profile_id")))
+        profile_id = normalize_output_device_id(text(raw.get("profile_id")))
         raw_apple_dac_count = raw.get("apple_dac_count")
         apple_dac_count = (
             _apple_card_count(children)
@@ -283,18 +283,18 @@ class OutputHardwareState:
         )
         return cls(
             profile_id=profile_id,
-            profile_label=_text(raw.get("profile_label"))
+            profile_label=text(raw.get("profile_label"))
             or _dac_label_for(profile_id) or profile_id,
-            status=_text(raw.get("status")) or "unknown",
+            status=text(raw.get("status")) or "unknown",
             physical_output_count=_int(raw.get("physical_output_count")) or 0,
-            selected_card_id=_text(raw.get("selected_card_id")),
-            selected_pcm=_text(raw.get("selected_pcm")),
+            selected_card_id=text(raw.get("selected_card_id")),
+            selected_pcm=text(raw.get("selected_pcm")),
             apple_dac_count=apple_dac_count
             if apple_dac_count is not None
             else _apple_card_count(children),
             child_devices=children,
             issues=issues,
-            observed_at=_text(raw.get("observed_at")),
+            observed_at=text(raw.get("observed_at")),
             usb_data_role=usb_data_role,
             hat_eeprom=hat_eeprom,
         )

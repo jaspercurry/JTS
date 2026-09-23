@@ -15,7 +15,7 @@ from ...control import control_token
 from ...identity.reader import resolve_hostname
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run, _systemctl_unavailable_result
+from ._shared import CheckResult, run, systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a web check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
@@ -308,7 +308,7 @@ def _camillagui_listen_addresses() -> list[str] | None:
     installed" and "administratively stopped" alike, neither a live
     exposure."""
     try:
-        proc = _run(["ss", "-H", "-ltn"], timeout=5.0)
+        proc = run(["ss", "-H", "-ltn"], timeout=5.0)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
     if proc.returncode != 0:
@@ -453,7 +453,7 @@ def check_wizard_socket_start_limits() -> CheckResult:
     for unit in WIZARD_UNITS:
         result = _wizard_socket_state(unit)
         if result is None:
-            return _systemctl_unavailable_result(label)
+            return systemctl_unavailable_result(label)
         active, finding = result
         if finding:
             findings.append(finding)

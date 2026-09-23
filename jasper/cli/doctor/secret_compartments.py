@@ -53,7 +53,7 @@ from ...google_creds import DEFAULT_TOKEN_DIR as GOOGLE_DEFAULT_TOKEN_DIR
 from ...google_creds import registry_path as google_registry_path
 from . import privsep
 from ._registry import doctor_check
-from ._shared import CheckResult, _systemctl_unavailable_result
+from ._shared import CheckResult, systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a compartment check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -376,7 +376,7 @@ def _check_compartment(group: str) -> CheckResult:
     comp = _COMPARTMENT_BY_GROUP[group]
     label = f"secret compartment: {group}"
     if not _systemctl_available():
-        return _systemctl_unavailable_result(label)
+        return systemctl_unavailable_result(label)
     member_units = set(comp.member_units)
     members: list[_Identity] = []
     non_members: list[_Identity] = []

@@ -18,12 +18,12 @@ from typing import Any
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
-from ._health_fields import _as_int, _mapping
+from ._health_fields import _as_int, mapping
 from ._health_sources import (
     SOURCE_OFF_DRIFT_DETAIL,
     SOURCE_UNAVAILABLE_DETAIL,
     _SOURCE_HEALTH_UNITS,
-    _SOURCE_LABELS,
+    SOURCE_LABELS,
     _SOURCE_OFF_DRIFT_UNITS,
     _SOURCE_PRIMARY_UNITS,
 )
@@ -37,7 +37,7 @@ def _usb_timing(
     active: bool,
 ) -> dict[str, Any]:
     claimed = bool(route.get("low_latency_claim"))
-    resampler = _mapping(_mapping(usb_input).get("resampler"))
+    resampler = mapping(mapping(usb_input).get("resampler"))
     latency_runtime = classify_runtime(resampler, host_clock)
     raw_mode = latency_runtime.ladder
     preset_mode = latency_runtime.applied_mode
@@ -178,7 +178,7 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
         headline = "AirPlay idle"
         detail = "Sync timing is checked while AirPlay is playing."
     else:
-        recent = _mapping(airplay.get("summary_5m"))
+        recent = mapping(airplay.get("summary_5m"))
         sync_events = (
             _as_int(recent.get("shairport_packet_drops"))
             + _as_int(recent.get("shairport_sync_errors"))
@@ -223,30 +223,30 @@ def _source_service_summary(
     source_intents: Mapping[str, bool] | None = None,
 ) -> tuple[str, str, str] | None:
     """Return ``(state, headline, detail)`` from cached systemd truth."""
-    states = _mapping(service_states)
-    desired = _mapping(source_intents).get(source_id)
+    states = mapping(service_states)
+    desired = mapping(source_intents).get(source_id)
     if desired is False:
         if any(
-            _mapping(states.get(unit)).get("active_state") == "active"
+            mapping(states.get(unit)).get("active_state") == "active"
             for unit in _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
         ):
             return (
                 "unavailable",
-                f"{_SOURCE_LABELS.get(source_id, source_id)} is running while Off",
+                f"{SOURCE_LABELS.get(source_id, source_id)} is running while Off",
                 SOURCE_OFF_DRIFT_DETAIL,
             )
         return "off", "Off", "Turned off in Playback sources."
     if not states:
         return None
     for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
-        if unit_failed(_mapping(states.get(unit))):
+        if unit_failed(mapping(states.get(unit))):
             return (
                 "unavailable",
-                f"{_SOURCE_LABELS.get(source_id, source_id)} unavailable",
+                f"{SOURCE_LABELS.get(source_id, source_id)} unavailable",
                 SOURCE_UNAVAILABLE_DETAIL,
             )
     primary = _SOURCE_PRIMARY_UNITS.get(source_id)
-    primary_state = _mapping(states.get(primary)) if primary else {}
+    primary_state = mapping(states.get(primary)) if primary else {}
     if primary_state.get("active_state") == "active":
         return "ready", "Ready", "Waiting for a stream."
     if primary_state.get("active_state") == "inactive":
@@ -262,10 +262,10 @@ def _source_cards(
     service_states: Mapping[str, Any] | None = None,
     source_intents: Mapping[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    inputs = _mapping(fanin.get("inputs"))
-    host_clock = _mapping(fanin.get("host_clock")) or None
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    inputs = mapping(fanin.get("inputs"))
+    host_clock = mapping(fanin.get("host_clock")) or None
     cards: list[dict[str, Any]] = []
     for spec in MUSIC_SOURCE_SPECS:
         source_id = spec.id.value
@@ -297,7 +297,7 @@ def _source_cards(
                 status = "warn"
         elif spec.id == Source.USBSINK:
             timing = _usb_timing(
-                route, host_clock, _mapping(inputs.get(source_id)), active=active
+                route, host_clock, mapping(inputs.get(source_id)), active=active
             )
             if active and timing["status"] in {"warn", "unknown"}:
                 status = "warn"

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from .music_sources import Source
 from .volume_persistence import VolumePersistence
-from .volume_state import _OutboundStamp
+from .volume_state import OutboundStamp
 
 # Window during which an observed source-side change is treated as
 # the echo of our own write and ignored. Long enough that DBus
@@ -26,13 +26,13 @@ ECHO_WINDOW_SEC = 0.5
 PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
-def stamp_outbound(last_outbound: dict[Source, _OutboundStamp], source: Source) -> None:
+def stamp_outbound(last_outbound: dict[Source, OutboundStamp], source: Source) -> None:
     """Record that ``source`` was just written outbound by this coordinator."""
-    last_outbound[source] = _OutboundStamp(at_mono=time.monotonic())
+    last_outbound[source] = OutboundStamp(at_mono=time.monotonic())
 
 
 def is_own_echo(
-    last_outbound: dict[Source, _OutboundStamp],
+    last_outbound: dict[Source, OutboundStamp],
     source: Source,
     observed_level: int,
 ) -> bool:

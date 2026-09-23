@@ -426,7 +426,7 @@ COUPLING_AUTO_TIMEOUT_START_SEC = (
 )
 
 
-def _start_audio_hardware_reconcile(
+def start_audio_hardware_reconcile(
     reason: str, *, timeout: float = _HARDWARE_RECONCILE_TIMEOUT_SEC
 ) -> tuple[bool, str]:
     """Start the audio-hardware reconciler oneshot through the broker. (ok, detail).
@@ -695,7 +695,7 @@ def _converge_ring(
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
     do_converge_content_format = kick_hardware_reconcile or (
-        lambda: _start_audio_hardware_reconcile(
+        lambda: start_audio_hardware_reconcile(
             reason=reason, timeout=_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC
         )
     )

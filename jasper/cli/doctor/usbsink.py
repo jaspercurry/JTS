@@ -72,7 +72,7 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
-    _run,
+    run,
 )
 
 REASON_DATA_ROLE_UNAVAILABLE = "data_role_unavailable"
@@ -183,7 +183,7 @@ def _skip_when_usbsink_inactive(label: str) -> CheckResult | None:
 
 def _lsmod_modules() -> set[str]:
     """Every loaded kernel module name, from one ``lsmod`` per run."""
-    proc = _run(["lsmod"])
+    proc = run(["lsmod"])
     if proc.returncode != 0:
         return set()
     # lsmod output: first column is the module name.
@@ -200,20 +200,20 @@ def _uac2_capture_rate() -> int | None:
     """Read u_audio's volatile ``Capture Rate`` control, or None if unreadable.
 
     Subprocesses ``amixer`` because the control is an iface=PCM one the simple
-    mixer does not expose, and its output is stable and parseable. ``_run`` is
+    mixer does not expose, and its output is stable and parseable. ``run`` is
     a bare ``subprocess.run``, so both failure
     modes have to be caught here: alsa-utils is not in install.sh's apt lists,
     and a wedged card — the very state this feeds — can hang the read past the
     timeout. Either one must read as "not observable", never as a doctor crash.
     ``TimeoutExpired`` subclasses ``SubprocessError``, not ``OSError``."""
     try:
-        controls = _run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
+        controls = run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
         if controls.returncode != 0:
             return None
         numid = _UAC2_RATE_NUMID_RE.search(controls.stdout)
         if numid is None:
             return None
-        value = _run(
+        value = run(
             ["amixer", "-c", UAC2_CARD_NAME, "cget", f"numid={numid.group(1)}"]
         )
         if value.returncode != 0:

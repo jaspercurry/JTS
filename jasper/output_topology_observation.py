@@ -22,7 +22,7 @@ from .output_hardware import (
     ObservedOutput,
     OutputCardFact,
     OutputHardwareState,
-    _text,
+    text,
     apple_output_card_ids,
     detected_hardware_adoption_precondition,
     normalize_output_device_id,
@@ -35,11 +35,68 @@ from .output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
-    _dual_apple_clock_issues,
 )
 from .output_topology_store import load_output_topology, topology_path
 
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
+
+
+def _dual_apple_clock_issues(
+    hardware: OutputHardware,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    child_devices = hardware.child_devices
+    if len(child_devices) != 2:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_children_required",
+            "measured dual-Apple topology requires exactly two child DACs",
+        ))
+    child_serials: list[str] = []
+    mapped_outputs: list[int] = []
+    for child in child_devices:
+        if child.device_id != APPLE_USB_C_DONGLE_DEVICE_ID:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_device_required",
+                f"{child.child_id} is {child.device_id}, not "
+                f"{APPLE_USB_C_DONGLE_DEVICE_ID}",
+            ))
+        if not child.serial:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_serial_required",
+                f"{child.child_id} is missing a serial for stable pinning",
+            ))
+        else:
+            child_serials.append(child.serial)
+        if len(child.physical_output_indexes) != 2:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_output_pair_required",
+                f"{child.child_id} must own exactly two physical outputs",
+            ))
+        mapped_outputs.extend(child.physical_output_indexes)
+    if len(child_serials) == 2 and len(set(child_serials)) != 2:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_child_serials_not_unique",
+            "measured dual-Apple topology requires two unique child DAC serials",
+        ))
+    if child_devices and sorted(mapped_outputs) != list(range(4)):
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_output_map_invalid",
+            "dual-Apple child outputs must cover physical outputs 1-4 exactly once",
+        ))
+    if hardware.physical_output_count != 4:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_physical_output_count",
+            "dual-Apple topology requires exactly four physical outputs",
+        ))
+
+    return issues
 
 
 def _observed_dual_apple_hardware_issues(
@@ -239,27 +296,11 @@ def _composite_repin_pairs(
     topology: OutputTopology,
     observed: OutputHardwareState | None,
 ) -> tuple[tuple[str, OutputChildDevice, OutputCardFact], ...] | None:
-    """Pair each saved composite child with the DAC now in its USB port.
+    """Pair same-shape children by USB port, preserving declared lane indexes.
 
-    Returns ``None`` unless the attached hardware is the SAME SHAPE as the
-    saved declaration — same profile, same physical output count, same child
-    count, one child of the same kind per saved USB port — so the only thing
-    that can differ is WHICH physical unit is plugged into each port. Whether
-    the attached hardware is usable at all is
-    ``detected_hardware_adoption_precondition``'s verdict, not this one's.
-
-    The pairing anchor is ``usb_path`` — the sysfs port topology path, which
-    survives a unit swap in the same port and is the first identity token the
-    runtime child-order matcher tries
-    (``dual_apple_runtime_mapping``). Serial cannot be
-    the anchor: it is the thing that changed. A DAC moved to a DIFFERENT port
-    is therefore not a re-pin — nothing then says which physical unit landed on
-    which lanes, and the saved speaker/role assignment has no anchor to keep.
-
-    ``physical_output_indexes`` are deliberately NOT compared against the
-    observed projection: observed lane order follows ALSA enumeration, which is
-    precisely what a saved topology exists to override. Those indexes are
-    declaration, and a re-pin preserves them.
+    Serials change on replacement; USB port paths retain the speaker assignment.
+    Observed ALSA lane order must not replace the saved physical output indexes.
+    Usability belongs to ``detected_hardware_adoption_precondition``.
     """
 
     if observed is None:
@@ -293,7 +334,6 @@ def _composite_repin_pairs(
         return None
 
     pairs: list[tuple[str, OutputChildDevice, OutputCardFact]] = []
-    # Walks the saved child order (dict insertion order).
     for port, child in saved_by_port.items():
         card = attached_by_port[port]
         if card.device_id != child.device_id or not card.serial:
@@ -354,13 +394,10 @@ def declared_hardware_mismatch(
     topology: OutputTopology,
     observed: OutputHardwareState | None,
 ) -> dict[str, Any] | None:
-    """Compare declared hardware against the supplied observation snapshot.
+    """Compare saved hardware with observation.
 
-    Adoption being allowed only proves the observed hardware is usable; this
-    comparison says whether it differs from the declaration. A missing saved
-    topology auto-seeds a draft from observation, so it can match without ever
-    being saved. Callers needing that distinction must check the store's
-    snapshot revision for "missing".
+    Missing intent auto-seeds a matching draft; callers must check the store
+    revision to distinguish that draft from saved intent.
     """
     clock_blockers = [
         issue
@@ -417,15 +454,9 @@ def repin_composite_child_serials(
     topology: OutputTopology,
     observed: OutputHardwareState | None,
 ) -> OutputTopology:
-    """Return a copy pinned to the units now attached, keeping the design.
+    """Update physical identities without changing the saved speaker design.
 
-    The NARROW counterpart to :func:`new_topology_draft`'s wipe: the design a
-    swapped dongle cannot invalidate survives, and only each child's observed
-    physical identity is rewritten.
-
-    Raises ``OutputTopologyError`` when the attached hardware is not a
-    same-shape re-pin — callers offer this only after
-    :func:`composite_serial_repin_plan` returns a plan.
+    Raises ``OutputTopologyError`` unless the attached hardware has the same shape.
     """
 
     pairs = _composite_repin_pairs(topology, observed)
@@ -534,7 +565,7 @@ def _identity_tokens(raw: Any) -> tuple[tuple[str, str], ...]:
         values = {}
     tokens: list[tuple[str, str]] = []
     for key in ("serial", "stable_path", "usb_path"):
-        value = _text(values.get(key))
+        value = text(values.get(key))
         if value:
             tokens.append((key, value))
     return tuple(tokens)
@@ -582,7 +613,7 @@ def _load_dual_apple_topology_children(
         return None
     if hardware is None:
         return ()
-    device_id = normalize_output_device_id(_text(hardware.get("device_id")))
+    device_id = normalize_output_device_id(text(hardware.get("device_id")))
     if device_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
         return None
     children = hardware.get("child_devices") or []
@@ -630,9 +661,9 @@ def _missing_topology_child_labels(
         if tokens and observed_tokens.intersection(tokens):
             continue
         missing.append(
-            _text(child.get("serial"))
-            or _text(child.get("child_id"))
-            or _text(child.get("card_id"))
+            text(child.get("serial"))
+            or text(child.get("child_id"))
+            or text(child.get("card_id"))
             or "unidentified child"
         )
     return tuple(missing)
@@ -671,7 +702,7 @@ def apply_saved_topology_policy(
     exists, hardware = _read_topology_hardware(topology_path)
     if not exists or hardware is None:
         return state
-    declared_id = normalize_output_device_id(_text(hardware.get("device_id")))
+    declared_id = normalize_output_device_id(text(hardware.get("device_id")))
     declared = _dac_profile_by_id(declared_id)
     if declared is None or declared.kind != "composite":
         return state
@@ -684,18 +715,12 @@ def apply_saved_topology_policy(
     # children: a record can carry children that are not the Apple pair at all
     # (attach a registered single DAC beside both dongles and the record's
     # children are that DAC), which would report a plugged-in child missing.
-    # The one surface this policy exists to produce must not misname hardware.
     missing = _missing_topology_child_labels(hardware, observed_cards)
     if missing:
         detail = f"missing child devices: {', '.join(missing)}"
     elif not _declared_child_devices(hardware):
         detail = "the saved topology declares no child devices to look for"
     else:
-        # Every declared child IS attached. Reaching here at all means
-        # classification went elsewhere, and it can only do that when other
-        # output hardware is also attached — two Apple children alone classify
-        # as the composite and return above. So the remediation is to remove
-        # the interloper, not to reconnect anything.
         detail = (
             "every declared child device is attached; other output hardware is "
             "also present and was classified first — detach it so the declared "
@@ -703,9 +728,6 @@ def apply_saved_topology_policy(
         )
     return replace(
         state,
-        # An already-partial/missing observation keeps its own status; only a
-        # "ready" one is downgraded, because "ready" is the single word every
-        # consumer reads as "safe to drive this speaker with".
         status="partial" if state.status == "ready" else state.status,
         issues=state.issues + (
             _issue(
