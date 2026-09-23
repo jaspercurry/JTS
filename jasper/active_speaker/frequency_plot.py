@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.series_stats import _power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.json_fields import finite_float
 from .frequency_display import merge_display_intervals, prepare_frequency_curve
 
@@ -38,7 +38,7 @@ def prepare_plot_curve(curve: Mapping[str, Any], metadata: Mapping[str, Any] | N
     reference = None if normalize else finite_float(curve.get("reference_db"))
     mode = "run_reference" if reference is not None else "normalized"
     if reference is None and ref_mask.any():
-        reference = _power_mean_db(values[ref_mask])
+        reference = power_mean_db(values[ref_mask])
     if reference is None:
         raise ValueError(f"{curve['id']}: no valid bins in the reference band")
     values -= reference
@@ -46,7 +46,7 @@ def prepare_plot_curve(curve: Mapping[str, Any], metadata: Mapping[str, Any] | N
     bands = []
     for lo, hi in zip(LOW_BANDS_HZ, LOW_BANDS_HZ[1:]):
         band = values[valid & (freqs >= lo) & (freqs < hi)]
-        bands.append({"band_hz": [lo, hi], "mean_db": _power_mean_db(band) if band.size else None})
+        bands.append({"band_hz": [lo, hi], "mean_db": power_mean_db(band) if band.size else None})
     return {
         **display, "freqs_hz": freqs.tolist(), "display": mode,
         "deviation_db": [float(db) if ok else None for db, ok in zip(values, valid)],

@@ -28,9 +28,10 @@ from jasper.audio_measurement import deconv
 from jasper.audio_measurement.band_ladders import (
     SNR_BANDS_HZ as SNR_BANDS_HZ, CROSSOVER_SNR_BANDS_HZ as CROSSOVER_SNR_BANDS_HZ, band_ladder_name,
 )
-from jasper.audio_measurement.quality_model import QualityModel
+from jasper.audio_measurement.quality import dbfs
+from jasper.audio_measurement.quality_model import ROOM, QualityModel
 
-DBFS_FLOOR = -120.0
+DBFS_FLOOR = ROOM.dbfs_floor
 
 # Decision-class vocabulary for band_snr_verdicts.
 DECISION_CLASS_MAGNITUDE = "magnitude"
@@ -48,12 +49,6 @@ _ALIGNMENT_BAND_METHODS = frozenset({
 # magnitude thresholds: a TrustLevel LABELS a number, this REFUSES a decision and is scoped per
 # decision class, so one capture is legitimately magnitude-"ok" and alignment-"insufficient".
 _VERDICT_RANK: dict[str, int] = {"ok": 0, "reduced": 1, "insufficient": 2}
-
-
-def _dbfs(value: float) -> float:
-    if value <= 0 or not np.isfinite(value):
-        return DBFS_FLOOR
-    return max(DBFS_FLOOR, 20.0 * math.log10(value))
 
 
 def _to_float(value: Any) -> float | None:
@@ -127,7 +122,7 @@ def band_levels_dbfs(
         out.append({
             "band_id": band_id,
             "band_hz": [low, high],
-            "level_dbfs": round(_dbfs(math.sqrt(max(mean_square, 0.0))), 2),
+            "level_dbfs": round(dbfs(math.sqrt(max(mean_square, 0.0)), floor=DBFS_FLOOR), 2),
         })
     return out
 

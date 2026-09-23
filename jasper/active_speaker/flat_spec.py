@@ -25,7 +25,7 @@ from jasper.audio_measurement.band_ladders import (
     BEST_EFFORT_ABOVE_HZ as BEST_EFFORT_ABOVE_HZ, SPEC_BANDS as SPEC_BANDS, SPEC_BAND_EDGES_HZ,
 )
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
-from jasper.audio_measurement.series_stats import _power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # SPEC_BANDS[0] exactly — the LOW-MID band alone, so no band above 2 kHz is
@@ -439,7 +439,7 @@ def evaluate_flat_spec(
             "bins; cannot compute reference level"
         )
     reference_db = (
-        _power_mean_db(spec_smoothed_db[ref_band_mask])
+        power_mean_db(spec_smoothed_db[ref_band_mask])
         if reference_db_override is None
         else float(reference_db_override)
     )
@@ -489,7 +489,7 @@ def evaluate_flat_spec(
         )
         rms_deviation_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
         # The attribution split. Nothing below feeds `within_target`.
-        band_level_db = _power_mean_db(spec_smoothed_db[band_indices])
+        band_level_db = power_mean_db(spec_smoothed_db[band_indices])
         band_ripple_db = spec_smoothed_db[band_indices] - band_level_db
         worst_ripple = int(band_indices[np.argmax(np.abs(band_ripple_db))])
         band_results.append(

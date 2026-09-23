@@ -39,7 +39,7 @@ WITNESS_BAND_FLOOR_HZ = 200.0
 # Clip run: consecutive samples at/above full scale (threshold owned by quality_model).
 CLIP_RUN_SAMPLES = 3
 CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
-DBFS_FLOOR = -120.0
+DBFS_FLOOR = DRIVER.dbfs_floor
 ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding"
 # Conditioning floor on the emitted protection `P`, dB: below it, dividing it
 # out amplifies noise faster than it recovers signal.

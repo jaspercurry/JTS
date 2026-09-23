@@ -76,7 +76,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_TOO_FEW_POSITIONS,
 )
 from jasper.audio_measurement.peq import bell_half_width_oct
-from jasper.audio_measurement.series_stats import _power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_CLUSTER_TOLERANCE,
@@ -565,7 +565,7 @@ def _measure_candidates(
         pl = lo_bound + int(np.argmax(y[lo_bound:p]))
         pr = p + 1 + int(np.argmax(y[p + 1 : hi_bound + 1]))
         i, il, ir = int(band_idx[p]), int(band_idx[pl]), int(band_idx[pr])
-        baseline = _power_mean_db(np.array([diag[il], diag[ir]], dtype=float))
+        baseline = power_mean_db(np.array([diag[il], diag[ir]], dtype=float))
         depth = baseline - float(raw[i])
         diag_depth = baseline - float(diag[i])
         # Half-depth width on the diagnostic curve, bounded by the two flanking maxima.
