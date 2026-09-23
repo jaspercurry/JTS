@@ -24,6 +24,7 @@ mod config;
 mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
+mod log_writer;
 mod mixer;
 mod output_clock;
 mod playout;

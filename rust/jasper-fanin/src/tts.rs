@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use log::{info, warn};
 
-use crate::mixer::{send_drop_counted, FaninLogEvent, CHANNELS};
+use crate::log_writer::{send_drop_counted, FaninLogEvent};
+use crate::mixer::CHANNELS;
 use crate::playout::{frames_to_ms, PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
@@ -1561,7 +1562,7 @@ fn unpack_reference_kind(value: u64) -> Option<&'static str> {
 }
 
 /// `pub(crate)`: called from `TtsMixer::begin_segment_gain` on the SCHED_FIFO
-/// mixer thread ONLY to build the [`crate::mixer::FaninLogEvent`] it hands to
+/// mixer thread ONLY to build the [`crate::log_writer::FaninLogEvent`] it hands to
 /// `fanin-ring-log` — `run_ring_stall_log_writer` is what actually calls this
 /// (off that thread) to format and log it (issue #4787).
 pub(crate) fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDecision) {
