@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..log_event import log_event
+from ..net.mdns import instance_label
 from .speaker_name import normalize_name
 
 logger = logging.getLogger(__name__)
@@ -59,16 +60,8 @@ def _key(value: str) -> str:
     return normalize_name(value).casefold()
 
 
-def _strip_service_type(full_name: str, service_type: str) -> str:
-    name = full_name.rstrip(".")
-    suffix = "." + service_type.rstrip(".")
-    if name.endswith(suffix):
-        name = name[:-len(suffix)]
-    return name.replace("\\032", " ")
-
-
 def _display_name_candidates(full_name: str, service_type: str) -> set[str]:
-    instance = _strip_service_type(full_name, service_type).strip()
+    instance = instance_label(full_name, service_type)
     candidates = {instance} if instance else set()
     # RAOP service instances commonly look like "AABBCCDDEEFF@Living Room".
     if "@" in instance:

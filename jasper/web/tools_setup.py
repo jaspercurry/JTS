@@ -47,7 +47,6 @@ URL surface (after nginx strips /assistant/tools/):
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import math
 import os
@@ -76,7 +75,7 @@ from ._common import (
     resolve_samples,
     restart_voice_daemon,
     send_html_response,
-    send_proxy_json,
+    send_json_response,
 )
 from .chrome import canonical_header, canonical_page, json_island
 
@@ -433,9 +432,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             malformed one so `json_body` never dispatches it to a route."""
             parsed, err = read_json_body(self, max_bytes=_JSON_BODY_LIMIT)
             if err is not None:
-                send_proxy_json(
-                    self, json.dumps({"error": err}).encode(), status=400,
-                )
+                send_json_response(self, {"error": err}, status=400)
                 return None
             return parsed
 
@@ -447,7 +444,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         view = catalog_view(
             cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
         )
-        send_proxy_json(handler, json.dumps(view).encode(), status=200)
+        send_json_response(handler, view, status=200)
 
     def _get_guide(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
@@ -458,9 +455,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         name = body.get("name")
         enabled = body.get("enabled")
         if not isinstance(name, str) or not isinstance(enabled, bool):
-            send_proxy_json(
+            send_json_response(
                 handler,
-                b'{"error":"name (str) and enabled (bool) required"}',
+                {"error": "name (str) and enabled (bool) required"},
                 status=400,
             )
             return
@@ -471,16 +468,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
         entry = index.get(name)
         if entry is None:
-            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            send_json_response(handler, {"error": "unknown tool"}, status=400)
             return
         if entry.get("disabled_by_pack") is True:
-            send_proxy_json(
-                handler, b'{"error":"pack disabled"}', status=400,
-            )
+            send_json_response(handler, {"error": "pack disabled"}, status=400)
             return
         if entry.get("status") not in ("active", "off"):
-            send_proxy_json(
-                handler, b'{"error":"tool not configured"}', status=400,
+            send_json_response(
+                handler,
+                {"error": "tool not configured"},
+                status=400,
             )
             return
         with _STATE_LOCK:
@@ -503,9 +500,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                 except OSError as e:
                     logger.exception("could not write tool_state.env")
-                    send_proxy_json(
+                    send_json_response(
                         handler,
-                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        {"error": f"save failed: {e}"},
                         status=500,
                     )
                     return
@@ -523,12 +520,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 cfg["prompt_overrides_path"],
             ).get("pending")
         )
-        send_proxy_json(
+        send_json_response(
             handler,
-            json.dumps(
-                {"ok": True, "name": name, "enabled": enabled,
-                 "pending": pending},
-            ).encode(),
+            {"ok": True, "name": name, "enabled": enabled, "pending": pending},
             status=200,
         )
 
@@ -537,16 +531,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         pack_id = body.get("id")
         enabled = body.get("enabled")
         if not isinstance(pack_id, str) or not isinstance(enabled, bool):
-            send_proxy_json(
+            send_json_response(
                 handler,
-                b'{"error":"id (str) and enabled (bool) required"}',
+                {"error": "id (str) and enabled (bool) required"},
                 status=400,
             )
             return
         index = _pack_index(cfg["catalog_path"], cfg["state_path"])
         entry = index.get(pack_id)
         if entry is None:
-            send_proxy_json(handler, b'{"error":"unknown pack"}', status=400)
+            send_json_response(handler, {"error": "unknown pack"}, status=400)
             return
         singleton_tool = entry.get("singleton_tool_name")
         setup_only = (
@@ -577,9 +571,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                     except OSError as e:
                         logger.exception("could not write tool_state.env")
-                        send_proxy_json(
+                        send_json_response(
                             handler,
-                            json.dumps({"error": f"save failed: {e}"}).encode(),
+                            {"error": f"save failed: {e}"},
                             status=500,
                         )
                         return
@@ -603,9 +597,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                     except OSError as e:
                         logger.exception("could not write tool_state.env")
-                        send_proxy_json(
+                        send_json_response(
                             handler,
-                            json.dumps({"error": f"save failed: {e}"}).encode(),
+                            {"error": f"save failed: {e}"},
                             status=500,
                         )
                         return
@@ -629,9 +623,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                     except OSError as e:
                         logger.exception("could not write tool_state.env")
-                        send_proxy_json(
+                        send_json_response(
                             handler,
-                            json.dumps({"error": f"save failed: {e}"}).encode(),
+                            {"error": f"save failed: {e}"},
                             status=500,
                         )
                         return
@@ -653,12 +647,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 cfg["prompt_overrides_path"],
             ).get("pending")
         )
-        send_proxy_json(
+        send_json_response(
             handler,
-            json.dumps(
-                {"ok": True, "id": pack_id, "enabled": enabled,
-                 "pending": pending, "setup_required": setup_only},
-            ).encode(),
+            {
+                "ok": True,
+                "id": pack_id,
+                "enabled": enabled,
+                "pending": pending,
+                "setup_required": setup_only,
+            },
             status=200,
         )
 
@@ -667,30 +664,29 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         name = body.get("name")
         prompt = body.get("prompt")
         if not isinstance(name, str) or not isinstance(prompt, str):
-            send_proxy_json(
+            send_json_response(
                 handler,
-                b'{"error":"name (str) and prompt (str) required"}',
+                {"error": "name (str) and prompt (str) required"},
                 status=400,
             )
             return
         if not prompt.strip():
-            send_proxy_json(handler, b'{"error":"prompt cannot be blank"}', status=400)
+            send_json_response(handler, {"error": "prompt cannot be blank"}, status=400)
             return
         if len(prompt) > MAX_PROMPT_OVERRIDE_CHARS:
-            send_proxy_json(
+            send_json_response(
                 handler,
-                json.dumps({
+                {
                     "error": (
-                        f"prompt too long (max {MAX_PROMPT_OVERRIDE_CHARS} "
-                        "characters)"
+                        f"prompt too long (max {MAX_PROMPT_OVERRIDE_CHARS} characters)"
                     ),
-                }).encode(),
+                },
                 status=400,
             )
             return
         index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
         if name not in index:
-            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            send_json_response(handler, {"error": "unknown tool"}, status=400)
             return
         # Editing a prompt back to the exact code default is a reset, not a
         # customization: storing it would leave prompt_customized() true
@@ -712,9 +708,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
                 except OSError as e:
                     logger.exception("could not write tool prompt overrides")
-                    send_proxy_json(
+                    send_json_response(
                         handler,
-                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        {"error": f"save failed: {e}"},
                         status=500,
                     )
                     return
@@ -726,9 +722,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         pending = bool(catalog_view(
             cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
         ).get("pending"))
-        send_proxy_json(
+        send_json_response(
             handler,
-            json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
+            {"ok": True, "name": name, "pending": pending},
             status=200,
         )
 
@@ -736,11 +732,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_prompt_reset(handler, body: dict[str, Any]) -> None:
         name = body.get("name")
         if not isinstance(name, str):
-            send_proxy_json(handler, b'{"error":"name (str) required"}', status=400)
+            send_json_response(handler, {"error": "name (str) required"}, status=400)
             return
         index = _toggle_index(cfg["catalog_path"], cfg["state_path"])
         if name not in index:
-            send_proxy_json(handler, b'{"error":"unknown tool"}', status=400)
+            send_json_response(handler, {"error": "unknown tool"}, status=400)
             return
         with _STATE_LOCK:
             overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
@@ -750,9 +746,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     write_prompt_overrides(cfg["prompt_overrides_path"], overrides)
                 except OSError as e:
                     logger.exception("could not write tool prompt overrides")
-                    send_proxy_json(
+                    send_json_response(
                         handler,
-                        json.dumps({"error": f"save failed: {e}"}).encode(),
+                        {"error": f"save failed: {e}"},
                         status=500,
                     )
                     return
@@ -763,9 +759,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         pending = bool(catalog_view(
             cfg["catalog_path"], cfg["state_path"], cfg["prompt_overrides_path"],
         ).get("pending"))
-        send_proxy_json(
+        send_json_response(
             handler,
-            json.dumps({"ok": True, "name": name, "pending": pending}).encode(),
+            {"ok": True, "name": name, "pending": pending},
             status=200,
         )
 
@@ -774,18 +770,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # HONEST about whether a restart will actually happen — never an
         # ok-banner promising an effect the server knowingly won't deliver.
         if not read_active_provider():
-            send_proxy_json(handler, json.dumps({
-                "restarted": False, "reason": "no_provider",
-                "message": "Saved. Choose a voice provider at "
-                           "/assistant/voice/ to start the assistant.",
-            }).encode(), status=200)
+            send_json_response(
+                handler,
+                {
+                    "restarted": False,
+                    "reason": "no_provider",
+                    "message": "Saved. Choose a voice provider at "
+                    "/assistant/voice/ to start the assistant.",
+                },
+                status=200,
+            )
             return
         if bonded_follower_active():
-            send_proxy_json(handler, json.dumps({
-                "restarted": False, "reason": "bonded",
-                "message": "Saved. Changes apply when this speaker "
-                           "leaves the stereo pair.",
-            }).encode(), status=200)
+            send_json_response(
+                handler,
+                {
+                    "restarted": False,
+                    "reason": "bonded",
+                    "message": "Saved. Changes apply when this speaker "
+                    "leaves the stereo pair.",
+                },
+                status=200,
+            )
             return
         now = time.time()
         with _STATE_LOCK:
@@ -794,13 +800,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             last = max(_read_apply_ts(cfg["apply_ts_path"]), _LAST_APPLY[0])
             remaining = _APPLY_MIN_INTERVAL_SEC - (now - last)
             if remaining > 0:
-                send_proxy_json(handler, json.dumps({
-                    "restarted": False, "reason": "throttled",
-                    "retry_after": int(remaining) + 1,
-                    "message": "The assistant is already restarting — "
-                               "your changes are saved and will apply "
-                               "shortly.",
-                }).encode(), status=200)
+                send_json_response(
+                    handler,
+                    {
+                        "restarted": False,
+                        "reason": "throttled",
+                        "retry_after": int(remaining) + 1,
+                        "message": "The assistant is already restarting — "
+                        "your changes are saved and will apply "
+                        "shortly.",
+                    },
+                    status=200,
+                )
                 return
             _LAST_APPLY[0] = now
             _write_apply_ts(cfg["apply_ts_path"], now)
@@ -809,16 +820,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # restart (and re-writes the catalog JSON).
         outcome = restart_voice_daemon()
         if outcome is not RestartOutcome.RAN:
-            send_proxy_json(handler, json.dumps({
-                "restarted": False, "reason": outcome.name.lower(),
-                "message": "Saved, but the assistant did not restart — "
-                           "save again, or check System.",
-            }).encode(), status=200)
+            send_json_response(
+                handler,
+                {
+                    "restarted": False,
+                    "reason": outcome.name.lower(),
+                    "message": "Saved, but the assistant did not restart — "
+                    "save again, or check System.",
+                },
+                status=200,
+            )
             return
-        send_proxy_json(handler, json.dumps({
-            "restarted": True,
-            "message": "Restarting the assistant to apply your changes…",
-        }).encode(), status=200)
+        send_json_response(
+            handler,
+            {
+                "restarted": True,
+                "message": "Restarting the assistant to apply your changes…",
+            },
+            status=200,
+        )
 
     # The tables stay local to this closure because every route body reads
     # `cfg`. GET's two detail routes (/pack/<id>, /tool/<name>) carry a path

@@ -5,7 +5,6 @@
 """Household history at /assistant/chat/; data contract: docs/privacy.md."""
 from __future__ import annotations
 
-import json
 import logging
 import urllib.parse
 from dataclasses import asdict
@@ -21,7 +20,7 @@ from ._common import (
     json_body,
     read_json_body,
     send_html_response,
-    send_proxy_json,
+    send_json_response,
 )
 from .chrome import canonical_page
 
@@ -48,16 +47,6 @@ def _render_page(csrf_token: str = "") -> bytes:
     )
 
 
-def _json_response(
-    handler: BaseHTTPRequestHandler,
-    payload: dict[str, Any],
-    *,
-    status: int = HTTPStatus.OK,
-) -> None:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    send_proxy_json(handler, body, status=int(status))
-
-
 def _parse_limit(query: dict[str, list[str]]) -> int | None:
     raw = query.get("limit", [""])[0].strip()
     if not raw:
@@ -78,7 +67,7 @@ class _Handler(BaseHTTPRequestHandler):
         malformed one so `json_body` never dispatches it to a route."""
         parsed, err = read_json_body(self, max_bytes=MAX_JSON_BYTES)
         if err is not None:
-            _json_response(self, {"error": err}, status=HTTPStatus.BAD_REQUEST)
+            send_json_response(self, {"error": err}, status=HTTPStatus.BAD_REQUEST)
             return None
         return parsed
 
@@ -101,7 +90,7 @@ def _get_data(handler: _Handler) -> None:
     )
     limit = _parse_limit(query)
     if limit is None:
-        _json_response(
+        send_json_response(
             handler,
             {"error": "limit must be an integer"},
             status=HTTPStatus.BAD_REQUEST,
@@ -130,14 +119,14 @@ def _get_data(handler: _Handler) -> None:
         }
     finally:
         store.close()
-    _json_response(handler, payload)
+    send_json_response(handler, payload)
 
 
 @json_body
 def _post_capture(handler: _Handler, body: dict[str, Any]) -> None:
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
-        _json_response(
+        send_json_response(
             handler,
             {"error": "enabled must be true or false"},
             status=HTTPStatus.BAD_REQUEST,
@@ -150,7 +139,7 @@ def _post_capture(handler: _Handler, body: dict[str, Any]) -> None:
         try:
             stats = store.stats()
             if not store.available or stats is None:
-                _json_response(
+                send_json_response(
                     handler,
                     {
                         "error": (
@@ -166,13 +155,13 @@ def _post_capture(handler: _Handler, body: dict[str, Any]) -> None:
         settings = write_settings(capture_enabled=enabled)
     except (OSError, ValueError) as e:
         logger.exception("could not write conversation-history settings")
-        _json_response(
+        send_json_response(
             handler,
             {"error": f"could not save settings: {e}"},
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
         return
-    _json_response(
+    send_json_response(
         handler,
         {
             "ok": True,
@@ -188,7 +177,7 @@ def _post_clear(handler: _Handler) -> None:
     store = ConversationStore(settings.db_path)
     try:
         if not store.available:
-            _json_response(
+            send_json_response(
                 handler,
                 {"error": "conversation-history store is unavailable"},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -198,7 +187,7 @@ def _post_clear(handler: _Handler) -> None:
         stats = store.stats()
     finally:
         store.close()
-    _json_response(
+    send_json_response(
         handler,
         {
             "ok": True,
