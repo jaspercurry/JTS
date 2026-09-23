@@ -29,7 +29,6 @@ from jasper.active_speaker.angle_capture import (
 )
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.linearization_budget import fit_budgets_by_role
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
@@ -459,9 +458,6 @@ def prepare_v2_session(
     from jasper.active_speaker.crossover_v2.capture_plan import (
         wall_clock_ceiling_s,
     )
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        series_position_from_state,
-    )
     from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         CrossoverV2Session,
     )
@@ -603,7 +599,6 @@ def prepare_v2_session(
             camilla_factory=camilla_factory,
             provenance=capture_provenance, layout=context.preset.channel_map.layout,
         )
-        series_position = series_position_from_state(prior_raw)
         conductor = CrossoverV2Session.hydrate(
             prior_snapshot,
             session_id=session_id,
@@ -614,21 +609,14 @@ def prepare_v2_session(
             driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=seams,
-            positions_gated=True,
             index_phase_map=opening.plan.index_phase_map,
             post_apply_verifies=opening.plan.post_apply_verifies,
             driver_spacing_m=context.driver_spacing_m,
-            driver_class_by_role=context.driver_class_by_role,
-            fit_budget_by_role=fit_budgets_by_role(context.safety_profile),
-            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
             lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
             lateral_prompts=lateral_prompts,
             measure_specs_by_index=engine_measure_specs,
             measurement_protection_sections_by_role=protection_sections,
             sound_design_revision=context.sound_design_revision,
-            tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
-            speaker_id=context.topology.topology_id,
-            series_position=series_position,
         )
         v2state.persist_conductor_state(conductor, failure_code=None, evidence=refs)
         manifest = RunManifest(session_id, v2evidence._record_store(evidence_store, session_id),

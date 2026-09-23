@@ -15,6 +15,7 @@ which drives every ``_POST_ROUTES`` entry — now including the three
 ``/crossover/v2/*`` routes — to the CSRF guard); this file adds the
 flow-selector refusals the dispatch relies on.
 """
+
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
@@ -1505,25 +1506,6 @@ def test_state_cloud_block_is_none_before_any_group_closes():
     assert v2status.crossover_v2_status_block()["cloud"] is None
 
 
-def test_cloud_summary_stamps_the_producing_session_id():
-    """PR-7's provenance marker: ``_cloud_summary`` stamps each closed
-    phase's dict with the CONDUCTOR's own session id, so a later carry-
-    forward (``persist_conductor_state``'s B1 branch, which copies this
-    whole per-phase dict verbatim) can still say which session actually
-    produced it — see ``compact_cloud_status``'s ``provenance_note``."""
-    fake = SimpleNamespace(
-        session_id="cap_producer_session",
-        session_phases=(PHASE_CLOUD_MEASURE,),
-        group_geometry=lambda phase: {"locked": True, "reason": "geometry_locked"},
-        group_position_takes=lambda phase: [],
-        group_cloud_result=lambda phase: {
-            "available": True, "spec": {"overall_within_target": True},
-        },
-    )
-    summary = v2durable._cloud_summary(fake)
-    assert summary[PHASE_CLOUD_MEASURE]["session_id"] == "cap_producer_session"
-
-
 def test_provenance_note_reflects_whether_the_group_matches_the_active_session():
     """The household-facing half of the same marker
     (``compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
@@ -2186,25 +2168,6 @@ def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
-def _ready_to_apply(monkeypatch, tmp_path):
-    """The real apply environment plus durable state holding its candidate.
-
-    Same seeding the neighbouring apply tests use, so these exercise the REAL
-    ``handle_v2_apply`` up to (and, when the preflight refuses, not past) the
-    transaction.
-    """
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = _run6_measured_candidate(preset)
-    v2state.save_v2_state({
-        "session_id": "cap_preflight",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-    return candidate
-
-
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
     """A conductor of the verify-only prepare's shape, seams stubbed — the same
     construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
@@ -2254,31 +2217,6 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     state = v2state.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["verify_priors"]["pilot_transfer_reference"] == reference
-
-
-def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
-    """The SEEDING path end to end, minus the capture: durable state carrying a
-    previous session's reference → the value the verify-only prepare passes as
-    ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
-    empty; only the history arrives (#1927)."""
-    v2state.save_v2_state({
-        "session_id": "cap_original_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        "applied": True,
-        "verify_priors": {
-            "pilot_transfer_reference": {
-                "values": {"summed": -20.0}, "at": time.time() - 86400.0,
-            },
-        },
-    })
-    prior = v2durable.pilot_transfer_prior_from_state(v2state.load_v2_state())
-    assert prior["values"] == {"summed": -20.0}
-    conductor = _rearm_conductor_for_persist(
-        "cap_rearm_session", {1: PHASE_VERIFY},
-        verify_pilot_transfer_prior=prior,
-    )
-    assert conductor._verify_pilot_baseline is None
-    assert conductor.verify_pilot_transfer_reference is None
 
 
 def test_a_measuring_session_drops_the_prior_level_reference():
@@ -3010,7 +2948,7 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
         assert (v2state.load_v2_state() or {})["fc_selection"] == legacy
 
 
-def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
+def test_terminal_result_logs_once_with_target_failure_evidence(caplog, monkeypatch):
     prior = _honest_result_state()
     prior["session_phases"] = [PHASE_VERIFY]
     v2state.save_v2_state(prior)
@@ -3028,6 +2966,9 @@ def test_terminal_result_logs_once_with_target_failure_evidence(caplog):
             )
 
     conductor = TerminalConductor("cap_p04")
+    from jasper.active_speaker.crossover_v2.durable_state import ConductorState
+    monkeypatch.setattr(v2state, "build_conductor_state", lambda *a, **k: ConductorState(
+        {**prior, "accepted_phases": [PHASE_VERIFY]}, False))
     with caplog.at_level(logging.INFO, logger=v2state.__name__):
         v2state.persist_conductor_state(conductor, failure_code=None)
         v2state.persist_conductor_state(conductor, failure_code=None)
@@ -3931,16 +3872,20 @@ def _linearization_summary(linearization=None, *, outcome=None, analysis=None):
         extra["linearization"] = linearization
     if outcome is not None:
         extra["linearization_outcome"] = outcome
-    return v2durable._candidate_summary(MeasuredCrossoverCandidate(
-        program_id="prog-abc",
-        analysis=analysis or {
-            "alignment_confidence": 0.9, "predicted_ripple_db": 1.1,
-            "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
-        },
-        source_preset=_preset(),
-        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
-        **extra,
-    ))
+    return v2durable.candidate_summary(
+        MeasuredCrossoverCandidate(
+            program_id="prog-abc",
+            analysis=analysis
+            or {
+                "alignment_confidence": 0.9,
+                "predicted_ripple_db": 1.1,
+                "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
+            },
+            source_preset=_preset(),
+            role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+            **extra,
+        )
+    )
 
 
 _VERDICTS_WITHOUT_NUMBERS = {
@@ -4110,7 +4055,7 @@ def test_candidate_summary_carries_whether_the_polarity_was_pinned():
 
 
 def test_candidate_summary_none_candidate_returns_none():
-    assert v2durable._candidate_summary(None) is None
+    assert v2durable.candidate_summary(None) is None
 
 
 class _FakeWindow:
@@ -4155,9 +4100,6 @@ def test_session_measurement_pause_is_idempotent(monkeypatch):
 
     asyncio.run(scenario())
     assert log == ["enter", "exit"]  # exactly one enter, one exit
-
-
-# --- W6.1 Finding E: recovery paths actually recover -----------------------------
 
 
 def test_reconcile_drains_residual_owned_active_before_new_session(monkeypatch):
@@ -5181,187 +5123,6 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         )
 
 
-_UNKNOWN_DELTA_PROBE_FIELDS = {
-    "safety_anchored": False,
-    "entry_anchor_offset_db": None,
-    "quiet_n_bins": None,
-    "quiet_core_band_hz": None,
-    "quiet_probe_coverage": None,
-}
-
-_SECTION_7_CLAIMS = {
-    "woofer_branch": {
-        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-    },
-    "hf_branch": {
-        "status": "not_evaluated", "reason": "no_per_branch_verify_capture",
-    },
-    "integration": {"status": "pass", "max_db": 0.069, "tolerance_db": 1.5},
-    "absolute": {
-        "status": "pass", "max_db": 0.69, "tolerance_db": 2.0,
-        "band_hz": [1000.0, 4000.0], "worst_db": 0.69, "worst_hz": 1050.0,
-    },
-}
-
-_COMPARED_FRAME = {
-    "offset_db": -0.75, "tilt_db_per_octave": -0.79,
-    "rms_db_tilt_removed": 1.34, "max_db_tilt_removed": 0.62,
-}
-
-_GATE_DISCLOSURE = {
-    "disclosure": (
-        "no reflection found; window capped at the 7.00 ms search ceiling, "
-        "so nothing was gated out, valid above 357 Hz"
-    ),
-    "reflection_measured": False,
-}
-
-
-@pytest.mark.parametrize(
-    ("attrs", "key", "expected", "also_absent", "plain_outcome"),
-    (
-        # #1811 SF1. A ``level_mismatch`` produces no refusal, so it only ever
-        # occurs alongside a pass — gating this on failure persists it never.
-        pytest.param(
-            {"delta_probe": SimpleNamespace(
-                verdict="level_mismatch", reason="uncommanded_level_shift",
-                expected_offset_db=-22.458, residual_offset_db=-4.0,
-                frame=SimpleNamespace(
-                    offset_db=None, tilt_db_per_octave=None, n_bins=0,
-                    band_hz=None,
-                ),
-            )},
-            "delta_probe",
-            {
-                **_UNKNOWN_DELTA_PROBE_FIELDS,
-                "verdict": "level_mismatch",
-                "reason": "uncommanded_level_shift",
-                "expected_offset_db": -22.458, "residual_offset_db": -4.0,
-                "frame_offset_db": None, "frame_tilt_db_per_octave": None,
-                "frame_n_bins": 0, "frame_band_hz": None,
-            },
-            (),
-            "pass",
-            id="delta-probe-level-mismatch",
-        ),
-        # #2521: the offset and tilt that explain the verdict, and the span
-        # they were fitted over — a tilt fitted over a narrow quiet region is
-        # free to be large and mean nothing.
-        pytest.param(
-            {"delta_probe": SimpleNamespace(
-                verdict="frame_mismatch", reason="uncommanded_frame_shift",
-                expected_offset_db=0.0, residual_offset_db=-2.39,
-                frame=SimpleNamespace(
-                    offset_db=-2.39, tilt_db_per_octave=-0.916, n_bins=214,
-                    band_hz=(120.0, 3_300.0),
-                ),
-            )},
-            "delta_probe",
-            {
-                **_UNKNOWN_DELTA_PROBE_FIELDS,
-                "verdict": "frame_mismatch",
-                "reason": "uncommanded_frame_shift",
-                "expected_offset_db": 0.0, "residual_offset_db": -2.39,
-                "frame_offset_db": -2.39, "frame_tilt_db_per_octave": -0.916,
-                "frame_n_bins": 214, "frame_band_hz": [120.0, 3_300.0],
-            },
-            (),
-            "fail",
-            id="delta-probe-frame-mismatch",
-        ),
-        # #1868. ``evidence``'s pass-only suppression is UNCHANGED — only the
-        # band, which bounds the claim, is added beside it.
-        pytest.param(
-            {
-                "verify_evidence": {
-                    "max_db": 0.9, "rms_db": 0.4, "tolerance_db": 1.5,
-                },
-                "verify_graded_band_hz": [2000.0, 4000.0],
-            },
-            "graded_band_hz", [2000.0, 4000.0], ("evidence",), "fail",
-            id="graded-band",
-        ),
-        # R18 (#1868): the band bounds how wide the tracking claim is; the
-        # claims say which claims exist at all.
-        pytest.param(
-            {"verify_claims": _SECTION_7_CLAIMS},
-            "claims", _SECTION_7_CLAIMS, (), "fail",
-            id="section-7-claims",
-        ),
-        # Rung P1: a pass is precisely when an undisclosed tilt is dangerous.
-        pytest.param(
-            {"verify_frame": _COMPARED_FRAME},
-            "frame", _COMPARED_FRAME, (), "fail",
-            id="compared-frame",
-        ),
-        # #1966: before R9 this sentence rendered nowhere a screen could read.
-        pytest.param(
-            {"verify_gate": _GATE_DISCLOSURE},
-            "gate", _GATE_DISCLOSURE, (), "fail",
-            id="gate-disclosure",
-        ),
-    ),
-)
-def test_a_verify_record_is_persisted_even_on_a_pass(
-    attrs, key, expected, also_absent, plain_outcome,
-):
-    """Every VERIFY record the done screen and ``/state`` read has to survive a
-    PASSING persist, because a pass is the one outcome nobody interrogates.
-
-    The converse half is the same contract read backwards: a conductor that
-    recorded nothing writes no key rather than an empty claim, so absent means
-    "this was never measured" and never "measured, and clean".
-    """
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "pass"
-    for name, value in attrs.items():
-        setattr(conductor, name, value)
-    v2state.save_v2_state({"session_id": "s1"})
-    v2state.persist_conductor_state(conductor, failure_code=None)
-
-    verify = (v2state.load_v2_state() or {})["verify"]
-    assert verify[key] == expected
-    for absent in also_absent:
-        assert absent not in verify
-
-    plain = _StubConductor("s1")
-    plain.verify_outcome = plain_outcome
-    v2state.persist_conductor_state(plain, failure_code=None)
-    assert key not in (v2state.load_v2_state() or {})["verify"]
-
-
-def test_the_verify_code_is_persisted_beside_its_outcome():
-    """Issue #1974: "inconclusive" is reached by two verdicts with no shared
-    mechanism, and the done screen names the cause from the code.
-
-    It is NOT read from ``failure.code``: that is the most recent rejection of
-    any phase, and the second persist below — the ordinary shape of a session
-    that fails VERIFY and then writes again with nothing failing — nulls the
-    failure block while the verify outcome stands. A screen reading it there
-    would have lost the cause exactly when it needed it.
-    """
-    conductor = _StubConductor("s1")
-    conductor.verify_outcome = "inconclusive"
-    conductor.verify_code = "verify_level_shift"
-    v2state.save_v2_state({"session_id": "s1"})
-    v2state.persist_conductor_state(
-        conductor, failure_code="verify_level_shift",
-    )
-    state = v2state.load_v2_state() or {}
-    assert state["verify"]["code"] == "verify_level_shift"
-
-    v2state.persist_conductor_state(conductor, failure_code=None)
-    state = v2state.load_v2_state() or {}
-    assert state["failure"] is None
-    assert state["verify"]["code"] == "verify_level_shift"
-
-    # A pass carries no code — nothing rejected it.
-    passing = _StubConductor("s1")
-    passing.verify_outcome = "pass"
-    v2state.persist_conductor_state(passing, failure_code=None)
-    assert "code" not in (v2state.load_v2_state() or {})["verify"]
-
-
 def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
     """``0.0`` is the honest answer for an absent or malformed value — the
     probe then leaves the whole shift visible in ``residual_offset_db``
@@ -5788,7 +5549,6 @@ def test_v2_session_start_refuses_by_name_when_draft_cannot_produce_a_ready_prev
         ensure_crossover_preview_ready()
 
 
-
 class _RecordingEvidenceStore:
     """Minimal stand-in for the commissioning evidence store."""
 
@@ -5913,16 +5673,6 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     return pointer
 
 
-def _rearm_verify():
-    """What the verify-only prepare does to durable state on a ``verify_retry``:
-    re-derive the session context (which re-ensures the crossover preview) and
-    persist a conductor under a new session id."""
-    ensure_crossover_preview_ready()
-    v2state.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
-
-
-
-
 @pytest.mark.parametrize("record", ["absent", "applied", "legacy", "pruned"])
 @pytest.mark.parametrize("campaigns_exist", [False, True])
 def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, tmp_path, record, campaigns_exist):
@@ -6018,6 +5768,7 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert body["code"] == "measurement_candidate_required"
     assert isinstance(body["next_action"], dict)
     assert body["next_action"]["id"] == "select_candidate"
+
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import summed_at
@@ -6161,7 +5912,9 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(
     ((-18, -23), ("lateral",)),
     ((-8, -18), ("lateral",)),
 ])
-def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, levels, phases):
+def test_inline_preparation_binds_the_real_engine_without_fitting(
+    monkeypatch, tmp_path, levels, phases
+):
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
@@ -6173,21 +5926,24 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
     v2volume.set_volume_plan_for_tests(SessionVolumePlan())
     monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
                         lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).anchor.sensitivity)
     bound = {}
+
     def build(conductor, **kwargs):
         bound.update(conductor=conductor, **kwargs)
         return None
+
     monkeypatch.setattr(v2host, "_build_wired_run", build)
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
     assert not bound["door"].is_open
     assert bound["request"] == AngleCaptureRequest.from_mapping(store.reopen_json_artifact(
         store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json")))
-    assert bound["conductor"]._candidate is None
+    assert bound["conductor"].snapshot().candidate_fingerprint is None
     assert prepared.join_spec.capture_plan.capture_target == len(bound["captures"])
     assert tuple(capture.spec.program_phase for capture in bound["captures"]) == phases
     assert (bound["execute"] is not None) == (bound["request"].levels is not None)

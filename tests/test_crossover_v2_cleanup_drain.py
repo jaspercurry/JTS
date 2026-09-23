@@ -38,7 +38,7 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
         return SimpleNamespace(reason="", cancelled=False)
     monkeypatch.setattr(plan_run, "run_plan", execute)
     runner = build_v2_wired_run_and_consume(
-        SimpleNamespace(_measure_gain_ceiling_db={}), door=door,
+        SimpleNamespace(measure_gain_ceiling_db={}), door=door,
         signals=plan_run.RunSignals(), ceiling_s=30,
         manifest=None, request=None, captures=None, analyze=None, assessor=None,
     )

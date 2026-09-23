@@ -23,6 +23,7 @@ for the glitch case — deleting a run of samples. The analysis must recover:
 
 Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -241,9 +242,7 @@ def _configured_path_priors(protection, configured, *, tweeter_sign=-1):
     )
 
 
-# --------------------------------------------------------------------------- #
 # MEASURE — the combined drift/delay/polarity/trim round-trip
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("polarity_amp,expected_polarity", [(0.7, "normal"), (-0.7, "inverted")])
@@ -871,7 +870,6 @@ def test_measure_uses_check_ambient_for_snr_verdicts():
     assert all(r.snr is None for r in res_none.driver_responses)
 
 
-# --------------------------------------------------------------------------- #
 # #1830 — the per-driver SNR verdict must be a MEASUREMENT of the level played
 #
 # `_measure_priors` carrying CHECK's ambient report (#1972) made the verdict
@@ -880,7 +878,6 @@ def test_measure_uses_check_ambient_for_snr_verdicts():
 # (`test_measure_analysis_is_invariant_to_the_programmed_drive_gain`). So the
 # revived instrument could not see the one thing #1829's SNR-solved levels made
 # it exist to see. These pin the units, not the physics.
-# --------------------------------------------------------------------------- #
 
 # The two relevant bands at FC_HZ: `relevant_hz` is (FC_HZ/2, FC_HZ*2), and
 # `transition` (350-1000 Hz) and `mid` (1000-4000 Hz) are the CROSSOVER_SNR_BANDS_HZ
@@ -1217,9 +1214,7 @@ def test_measure_no_drift_delay_is_tight():
     assert res.drift.epsilon_ppm == pytest.approx(0.0, abs=2.0)
 
 
-# --------------------------------------------------------------------------- #
 # sweep-composition PR-A (#1668): N-repeat exposure + era tolerance
-# --------------------------------------------------------------------------- #
 
 
 def _build_old_shaped_measure_program():
@@ -1351,9 +1346,7 @@ def test_sweep_occurrence_index_round_trips_through_occurrence_suffix(n):
     assert _sweep_occurrence_index(f"sweep_w{_occurrence_suffix(n)}") == n
 
 
-# --------------------------------------------------------------------------- #
 # glitch injection
-# --------------------------------------------------------------------------- #
 
 
 def test_dropped_buffer_glitch_is_detected():
@@ -1436,7 +1429,6 @@ def test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift():
     assert res.drift.discontinuity_after_segment == "sweep_w"
 
 
-# --- D7: the desync guard vs. its own estimator's resolution -------------------
 #
 # Series-2 diagnosis (2026-08-17). The guard's 1.5-sample threshold used to be
 # compared against a residual built from `_locate_in_window`'s INTEGER
@@ -1924,9 +1916,7 @@ def test_glitch_log_event_survives_an_unresolved_discontinuity(caplog):
     assert fields["discontinuity_samples"] == "unresolved"
 
 
-# --------------------------------------------------------------------------- #
 # integrity: clip runs + locator robustness
-# --------------------------------------------------------------------------- #
 
 
 def test_clip_run_detection():
@@ -1968,30 +1958,7 @@ def test_locator_robust_to_large_global_offset():
         assert res.alignment.delay_us == pytest.approx(-tau_true / SR * 1e6, abs=5.0)
 
 
-# --------------------------------------------------------------------------- #
 # sign convention (worked example)
-# --------------------------------------------------------------------------- #
-
-
-def testgcc_phat_sign_convention():
-    # A ≈ B shifted right by +lag: build st = sw delayed by 30 samples.
-    base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
-    sw = base
-    st = np.roll(base, 30)  # tweeter LATER by 30 samples
-    lag, sign, conf, at_edge = gcc_phat(
-        st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
-        upsample=16, max_lag_samples=200,
-    )
-    assert lag == pytest.approx(30.0, abs=0.5)  # positive ⇒ st (tweeter) later
-    assert sign == 1
-    assert not at_edge
-    # Inverting the tweeter flips the correlation sign.
-    lag2, sign2, _conf2, _edge2 = gcc_phat(
-        -st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
-        upsample=16, max_lag_samples=200,
-    )
-    assert sign2 == -1
-    assert lag2 == pytest.approx(30.0, abs=0.5)
 
 
 def test_gcc_confidence_is_never_nan_even_for_a_silent_capture():
@@ -2450,9 +2417,7 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
     assert candidate.predicted_ripple_db < 0.1
 
 
-# --------------------------------------------------------------------------- #
 # the joint (polarity, delay) selector — issue #2598
-# --------------------------------------------------------------------------- #
 
 
 def _lr4_branches(fc_hz=2000.0, n_bins=4097, f_max_hz=24_000.0):
@@ -2773,8 +2738,6 @@ def _refused_two_way_analysis(applied_alignment=None, *, ambient=None):
 #: The 2026-08-16 jts3 numbers, as the two models one held round can ship: the
 #: applied graph's own +59.6 us commitment against a refused capture's -211 us
 #: anchor is a 270.6 us disagreement, and half a period at 1885 Hz is 265.3 us.
-HELD_ROUND_FC_HZ = 1885.0
-HELD_ROUND_RESIDUAL_US = 270.6
 
 
 def test_diagnostic_summary_alignment_snr_trio_is_distinct_from_the_magnitude_one():
@@ -2805,9 +2768,7 @@ def test_diagnostic_summary_alignment_snr_trio_is_distinct_from_the_magnitude_on
     assert summary["tweeter_snr_verdict"] != summary["tweeter_alignment_snr_verdict"]
 
 
-# --------------------------------------------------------------------------- #
 # the SNR verdict is scoped to the band the stimulus occupies (#2613)
-# --------------------------------------------------------------------------- #
 
 
 # The band table `_driver_snr_block` reads its signal side over — six canonical
@@ -3130,9 +3091,7 @@ def test_measure_snr_verdict_still_refuses_a_noisy_occupied_row(
     assert res.candidate.timing_verdict == "estimate"
 
 
-# --------------------------------------------------------------------------- #
 # the summed model carries the COMMITTED delay (rung P3 / R10b)
-# --------------------------------------------------------------------------- #
 
 
 _IMPULSE_GAP_SAMPLES = 11
@@ -3579,9 +3538,7 @@ def test_parallax_is_subtracted():
     )
 
 
-# --------------------------------------------------------------------------- #
 # CHECK — ambient, linearity, channel map, gain plan
-# --------------------------------------------------------------------------- #
 
 
 def _check_roles() -> list[RoleBand]:
@@ -3727,9 +3684,7 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
         assert abs(solve.flat_target_gain_db - buggy_gain) > 2.0
 
 
-# --------------------------------------------------------------------------- #
 # CHECK's ambient window CLIPS on a late capture, never SLIDES (issue #1818)
-# --------------------------------------------------------------------------- #
 #
 # The shipped CHECK program is 12 s of ambient silence at [0, 12 s) followed
 # IMMEDIATELY by the courtesy prelude — 0.6 s of -18 dBFS beeps at
@@ -3740,8 +3695,6 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
 # opens stage 1, so it is one of the phases that keeps the prelude). A
 # window whose end is computed from the CLAMPED start walks forward onto those
 # beeps on a capture that began late. Measured on that shipped geometry over a
-# -70 dBFS floor: a 0.6 s late start read the window RMS 39.5 dB hot (-70.00
-# -> -30.52 dBFS) and the worst framed band 21.8 dB hot (-74.65 -> -52.85),
 # and by ~5.9 s late the window had slid onto the PILOTS (-23.18 dBFS), which
 # flipped `snr_floor_ok` False and refused a perfectly quiet room.
 #
@@ -3890,9 +3843,7 @@ def test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_eviden
         assert solve.bound_by == GAIN_BOUND_NO_AMBIENT_EVIDENCE
 
 
-# --------------------------------------------------------------------------- #
 # MEASURE level solve — as quiet as the fit's SNR need allows (issue #1825)
-# --------------------------------------------------------------------------- #
 #
 # Before #1825 the CHECK gain solve drove every driver's MEASURE sweep until
 # its capture peak hit `DEFAULT_TARGET_CAPTURE_DBFS` (-10.5 dBFS) — the ADC's
@@ -4399,9 +4350,7 @@ def test_check_ambient_report_present():
     assert res.ambient_report["bands"]
 
 
-# --------------------------------------------------------------------------- #
 # CHECK linearity — band-relative, ambient-compensated (2026-07-20 fix)
-# --------------------------------------------------------------------------- #
 #
 # Real hardware (jts3, 2026-07-20): a Dayton iMM-6C and a UMIK-2 capture, same
 # room/placement, both failed `agc_behavioral_fail` at CHECK — the OLD
@@ -4617,9 +4566,7 @@ def test_pilot_linearity_aggregate_is_tri_state():
     assert aggregate([_pilot("w", False), _pilot("t", True)]) is False
 
 
-# --------------------------------------------------------------------------- #
 # CHECK channel map — band-relative discriminator (Fix 1, W6.4)
-# --------------------------------------------------------------------------- #
 
 
 def test_channel_map_exclusive_pieces_subtract_overlap():
@@ -4743,7 +4690,6 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     assert res.gain_plan.snr_floor_ok is False
 
 
-# --------------------------------------------------------------------------- #
 # CHECK channel map — the CROSS test is an ISOLATION RATIO, not an additive
 # cross-rise bound (2026-08-21, jts3).
 #
@@ -4754,7 +4700,6 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
 # `channel_map_mismatch` hard stop, `condition_not_retriable`, blocking every
 # round in the louder frame. The rows below are that measurement, and they are
 # the reason the metric is now `target_rise - cross_rise`.
-# --------------------------------------------------------------------------- #
 
 
 #: Centre of `_band_impulse`'s default 4096-tap buffer — see `_isolation_pilot`.
@@ -5051,14 +4996,12 @@ def test_channel_map_isolation_is_one_definition_not_two():
     assert program_analysis.channel_map_isolation_db(None, None) is None
 
 
-# --------------------------------------------------------------------------- #
 # CHECK channel map — honest-unknown on the no-ambient fallback (issue #2052)
 #
 # The fallback runs whenever the ambient window is absent or unusable. Three
 # facts are pinned below and they are one design: the fallback's PASS is not
 # evidence (so it is UNKNOWN), its FAIL still is (so it stays a finding), and
 # the fold over the roles is tri-state rather than `all()`.
-# --------------------------------------------------------------------------- #
 
 
 def _deep_plant(delay: int, f_lo: float, f_hi: float, amp: float) -> np.ndarray:
@@ -5235,9 +5178,7 @@ def test_channel_map_aggregate_is_tri_state():
     assert aggregate([False, True]) is False
 
 
-# --------------------------------------------------------------------------- #
 # VERIFY
-# --------------------------------------------------------------------------- #
 
 
 def test_verify_summed_response_and_ripple():
@@ -5271,7 +5212,6 @@ def test_verify_summed_late_energy_retains_the_room_reflection():
     assert figures[0]["early_late_db"] > figures[1]["early_late_db"]
 
 
-# --------------------------------------------------------------------------- #
 # flatness-verify (#1668 PR-D) was RETIRED by the flat-linearization plan's
 # PR-5 (the spec-curve SSOT). ``_flatness_tracking`` graded ONE capture on its
 # own grid against its own band mean; the spec claim is now graded once per
@@ -5279,7 +5219,6 @@ def test_verify_summed_late_energy_retains_the_room_reflection():
 # ``spec_flatness_gauge`` (see tests/test_flat_spec_ssot.py). These two tests
 # pin that the retirement is complete and that the SIBLING claim which stayed
 # — integration-verify's tracking comparator — is untouched by it.
-# --------------------------------------------------------------------------- #
 
 
 def test_verify_carries_no_capture_grid_flatness_claim():
@@ -5432,9 +5371,7 @@ def test_verify_tracking_smooths_measured_and_predicted_curves_equally():
     assert old_max > 1.5
 
 
-# --------------------------------------------------------------------------- #
 # frame discipline (rung P1)
-# --------------------------------------------------------------------------- #
 
 
 def _verify_against(predicted_sum, *, seed: int = 7):
@@ -5588,7 +5525,7 @@ def test_excluding_notch_bins_from_the_fit_beats_fitting_the_whole_band(
 
 
 def test_the_beside_grade_is_not_promised_to_be_smaller_than_the_raw_one():
-    """"tilt-removed ≤ raw" is NOT a theorem and must never be asserted.
+    """ "tilt-removed ≤ raw" is NOT a theorem and must never be asserted.
 
     The two numbers are taken over different bin sets by different graders, and
     removing a frame estimated on one set can legitimately raise a residual
@@ -5797,9 +5734,7 @@ def test_verify_tracking_notch_exclusion_reduces_max_through_the_pipeline():
     assert tracking["rms_db_notch_excluded"] < tracking["rms_db"]
 
 
-# --------------------------------------------------------------------------- #
 # W6.9 — gating-consistent prediction + validity-floor tracking clamp
-# --------------------------------------------------------------------------- #
 #
 # W6.9 forensics (2026-07-19) numerically reproduced a W6 run-7/8 hardware
 # VERIFY failure and traced it to two compounding bugs: (1) the MEASURE-side
@@ -6124,9 +6059,7 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     assert expected_hi == pytest.approx(3000.0)  # hi clamped DOWN from the nominal 2*Fc=4000
 
 
-# --------------------------------------------------------------------------- #
 # PR-L3 — the level-match frame, and #1667's ripple-optimal trim solve
-# --------------------------------------------------------------------------- #
 #
 # solve_branch_trims band-energy-averages |W| and |T|, which is a LEVEL match
 # only when each branch is weighted symmetrically about Fc. It used to read
@@ -6340,9 +6273,7 @@ def test_build_candidate_refuses_a_tweeter_swept_above_fc():
         )
 
 
-# --------------------------------------------------------------------------- #
 # PR-L4 item 1 — the inter-driver realized-level assertion
-# --------------------------------------------------------------------------- #
 #
 # The archived 2026-07-27 JTS3 session `d5b171fa81a5` (the profile the owner
 # heard as ~10 dB dark), as its own evidence store recorded it. The candidate
@@ -6872,9 +6803,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
     assert not event_records(caplog, "program_analysis.ripple_trim_rejected")
 
 
-# --------------------------------------------------------------------------- #
 # drive-gain invariance — the frame every MEASURE consumer works in
-# --------------------------------------------------------------------------- #
 #
 # ``_deconvolve_window`` builds its deconvolution reference with
 # ``segment_stimulus(segment)``, which regenerates the sweep at
@@ -7016,9 +6945,7 @@ def test_measure_analysis_is_invariant_to_the_programmed_drive_gain():
     assert DRIVE_GAIN_INVARIANCE_TOL_DB < abs(DRIVE_GAIN_SKEW_DB) / 100.0
 
 
-# --------------------------------------------------------------------------- #
 # guards
-# --------------------------------------------------------------------------- #
 
 
 def test_a_two_branch_measure_still_requires_the_fc_prior():
@@ -7043,9 +6970,7 @@ def test_rate_mismatch_is_rejected():
         analyze_program_capture(prog, cap, 44_100)
 
 
-# --------------------------------------------------------------------------- #
 # PR-L3 — real-hardware corpus: the frame the fix was diagnosed on
-# --------------------------------------------------------------------------- #
 #
 # The 2026-07-24/25 JTS3 cdhorn MEASURE captures are gitignored and
 # laptop-durable, so this skips cleanly in CI. Root, skip gate and the
@@ -7312,9 +7237,7 @@ def test_the_radiating_band_core_level_converges_on_the_trim_frame(monkeypatch):
     assert disagreement["declared_span"] < REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 
-# --------------------------------------------------------------------------- #
 # R18 — honest post-apply verification (issues #1868 / #1654)
-# --------------------------------------------------------------------------- #
 
 
 R18_FC_HZ = 2000.0

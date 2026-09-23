@@ -932,23 +932,24 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, monkeypatch,
     kind = "pilot_level_collapse"
     request = _walk([0])
     request = replace(request, stops=(replace(request.stops[0], purpose=purpose),))
-    prompt = ac.resolve_request(request)[0].prompt
-    conductor = _conductor(FlowSeams(), lateral_prompts=(prompt,), verify_prompts=(prompt,),
-                           lateral_consumer="forward_model_evidence",
-                           index_phase_map={1: "lateral", 2: "cloud_verify", 3: "cloud_verify", 4: "entry_baseline"})
-    conductor._measure_program = program
+    screens = spatial.CaptureScreens(
+        stimulus_located=capture_dispatch._stimulus_locate_ok(analysis),
+        pilot_snr_ok=analysis.pilot_snr_ok, linearity_ok=analysis.linearity_ok,
+        glitch_detected=analysis.glitch_detected,
+        sweep_schedule_ok=capture_dispatch._sweep_schedule_ok(analysis, program.sample_rate_hz),
+        any_sweep_clipped=capture_dispatch._any_sweep_clipped(analysis),
+    )
     lateral_screen = Mock(wraps=spatial.lateral_pose_screens)
     cloud_screen = Mock(wraps=spatial.cloud_position_screens)
-    monkeypatch.setattr(spatial, "lateral_pose_screens", lateral_screen)
-    monkeypatch.setattr(spatial, "cloud_position_screens", cloud_screen)
-    pose = conductor._consume_lateral_pose(1, 1, analysis, None)
-    assert (pose.accepted, pose.code) == (False, kind)
+    pose = lateral_screen(screens)
+    assert (pose is None, pose) == (False, kind)
     assert lateral_screen.call_args.args[0].pilot_snr_ok is False
-    cloud = conductor._cloud_position_verdict("cloud_verify", 2, 1, analysis, None)
-    assert (cloud.accepted, cloud.code) == (False, kind)
+    cloud = cloud_screen(screens, has_summed_response=analysis.summed_response is not None)
+    assert (cloud is None, cloud) == (False, kind)
     assert cloud_screen.call_args.args[0].pilot_snr_ok is False
-    baseline, _ = conductor._entry_baseline_verdict(analysis)
-    assert (baseline.accepted, baseline.code) == (False, kind)
+    baseline = spatial.entry_baseline_screens(analysis, stimulus_located=screens.stimulus_located,
+        reference_mark="design_axis")
+    assert (baseline.kind is None, baseline.kind) == (False, kind)
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
     assert result.status == "partial"
     take = _takes(result.to_dict())[0]

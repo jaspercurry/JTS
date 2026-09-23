@@ -39,9 +39,7 @@ PRESET = _preset()
 PROTECTION = sections_by_role(PRESET.crossover_regions)
 
 
-# --------------------------------------------------------------------------- #
 # 1. the withholdings
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -110,9 +108,7 @@ def test_check_is_told_the_corner_and_nothing_else():
     assert got.configured_crossover_response_by_role is None
 
 
-# --------------------------------------------------------------------------- #
 # 2. the configured-path trio moves together
-# --------------------------------------------------------------------------- #
 
 
 def test_the_configured_path_priors_are_all_present_or_all_absent():
@@ -173,9 +169,7 @@ def test_verify_carries_the_design_target_unguarded_by_protection():
     assert got.measurement_protection_response_by_role is None
 
 
-# --------------------------------------------------------------------------- #
 # 2b. the candidate-required union has ONE owner
-# --------------------------------------------------------------------------- #
 
 
 def test_the_required_band_covers_both_declarations_without_widening():
@@ -224,13 +218,11 @@ def test_measure_priors_asks_the_owner_rather_than_re_spelling_it():
     )
 
 
-# --------------------------------------------------------------------------- #
 # 3. the sweep bounds are MEASURED, not derived
-# --------------------------------------------------------------------------- #
 
 
 def test_the_sweep_bounds_come_off_the_composed_program():
-    """"What did this session sweep" has one answer, and it is the program's.
+    """ "What did this session sweep" has one answer, and it is the program's.
 
     Deriving them from Fc instead would bound the tracking comparison and R17's
     scoring band by a number nothing was excited at.
@@ -296,9 +288,7 @@ def test_no_composed_program_means_no_durations_rather_than_a_guess():
     assert priors.measure_sweep_durations_s(None) is None
 
 
-# --------------------------------------------------------------------------- #
 # 4. the kernel boundary
-# --------------------------------------------------------------------------- #
 
 
 def test_role_transfers_hands_over_callables_never_sections():
@@ -327,14 +317,12 @@ def test_no_sections_means_no_map_rather_than_an_empty_one():
     assert priors.role_transfers({}) == {}
 
 
-# --------------------------------------------------------------------------- #
 # 5. what the conductor's delegates actually hand over
 #
 # The module above cannot be wrong about a value it was never given. These pin
 # the other half — that the conductor passes its accumulated session evidence
 # in — and they exist because a mutation that blanked one of these arguments
 # survived 351 conductor and entry-baseline tests.
-# --------------------------------------------------------------------------- #
 
 
 def _wired_conductor(**kwargs):
@@ -365,7 +353,7 @@ def test_verify_is_handed_the_prediction_the_tracking_comparison_needs():
     sentinel = ("freqs", "db")
     conductor = _wired_conductor(measure_predicted_sum=sentinel)
 
-    assert conductor._verify_priors().predicted_sum is sentinel
+    assert conductor.verify_priors().predicted_sum is sentinel
 
 
 def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
@@ -382,7 +370,7 @@ def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
     conductor = _wired_conductor()
     conductor._check_ambient_report = {"floor_db": -71.5}
 
-    got = conductor._measure_priors()
+    got = conductor.measure_priors()
 
     assert got.ambient_report == {"floor_db": -71.5}
     assert got.alignment_delay_bounds_us == alignment_delay_search_bounds_us(PRESET)
@@ -391,9 +379,7 @@ def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
     )
 
 
-# --------------------------------------------------------------------------- #
 # 6. the guard this extraction earned
-# --------------------------------------------------------------------------- #
 
 
 def shadowed_methods(source: str) -> dict[str, list[str]]:
@@ -538,7 +524,9 @@ class C:
     (0, "Loudness", "unsupported_graph"),
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
-def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch, tmp_path, position_deg, shape, reason, repeats):
+def test_session_summed_alignment_uses_raw_capture_and_played_chain(
+    monkeypatch, tmp_path, position_deg, shape, reason, repeats
+):
     baseline = SimpleNamespace(artifact_ref="sum", reference_mark=REFERENCE_MARK_DESIGN_AXIS)
     filters = {"common": {"type": "Gain", "parameters": {"gain": -3.0}}}
     pipeline = []
@@ -590,7 +578,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch,
     monkeypatch.setattr(summed_alignment, "analyze_program_capture", lambda *a, **k: SimpleNamespace(summed_response=raw))
     conductor = _wired_conductor(measure_entry_baseline=baseline)
     conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, preset))
-    reference = conductor._measure_priors().summed_alignment
+    reference = conductor.measure_priors().summed_alignment
     assert (reference is not None) is (position_deg == 0 and shape == "valid")
     assert events == ([] if reason is None else [{"code": "summed_reference_unreadable", "reason": reason}] * repeats)
     if reference is not None:
@@ -610,7 +598,7 @@ def test_two_measure_attempts_share_reference_until_baseline_changes(available):
     from jasper.active_speaker.crossover_v2 import journey  # lazy: avoid measurement-stack import cost outside this test
     from unittest.mock import Mock
 
-    from tests.crossover_v2_fixtures import FakeSeams, _capture, _conductor, _run_phase
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase
 
     fakes = FakeSeams()
     conductor = _conductor(fakes)
@@ -618,12 +606,14 @@ def test_two_measure_attempts_share_reference_until_baseline_changes(available):
     seam = Mock(return_value=reference)
     conductor._seams = replace(conductor._seams, summed_alignment_reference=seam)
     _run_phase(conductor, 1, 1)
-    conductor.consume_capture(2, 1, _capture())
-    conductor.consume_capture(2, 2, _capture())
+    _run_phase(conductor, 2, 1)
+    _run_phase(conductor, 2, 2)
     assert seam.call_count == 1
-    assert conductor._measure_priors().summed_alignment is reference
-    conductor._measure_entry_baseline = replace(conductor._measure_entry_baseline, artifact_ref="changed")
-    assert conductor._measure_priors().summed_alignment is reference
+    assert conductor.measure_priors().summed_alignment is reference
+    conductor.set_entry_baseline(
+        replace(conductor.measure_entry_baseline, artifact_ref="changed")
+    )
+    assert conductor.measure_priors().summed_alignment is reference
     assert seam.call_count == 2
     assert fakes.analyzed[-1][0] == journey.PHASE_MEASURE
 
@@ -631,12 +621,12 @@ def test_two_measure_attempts_share_reference_until_baseline_changes(available):
 @pytest.mark.parametrize("position, vertical", [(0, 0), (-20, 0), (20, 0), (0, 20)])
 def test_measure_attempt_geometry_carries_its_pose(position, vertical):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-    from tests.crossover_v2_fixtures import FakeSeams, _capture, _conductor, _run_phase
+    from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase
 
     fakes = FakeSeams()
     conductor = _conductor(fakes, measure_specs_by_index={2: MeasureSpec(kind="baseline", positions=(position,), vertical_deg=vertical)})
     _run_phase(conductor, 1, 1)
-    conductor.consume_capture(2, 1, _capture())
+    _run_phase(conductor, 2, 1)
     geometry = fakes.analyzed[-1][4]
     assert (geometry.position_deg, geometry.vertical_deg) == (position, vertical)
 

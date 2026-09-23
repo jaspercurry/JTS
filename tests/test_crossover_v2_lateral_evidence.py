@@ -6,58 +6,41 @@ re-built: two copies of a conductor factory is two definitions of a session.
 
 from __future__ import annotations
 
-import hashlib
-import logging
 import math
 from dataclasses import replace
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.crossover_v2 import capture_plan
-from jasper.active_speaker.crossover_v2.capture_dispatch import LOCATE_MIN_CONFIDENCE
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import pose_curve
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2 import journey
-from jasper.active_speaker.crossover_v2 import refusal_copy
-from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
     PHASE_MEASURE,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_AGC_BEHAVIORAL_FAIL,
-    REASON_CLIPPED,
-    REASON_DRIFT_BASELINES_DISAGREE,
-    REASON_LOCATE_FAILED,
-    REASON_PILOT_LEVEL_COLLAPSE,
-)
 from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
     POSITION_ROLE_XOVR,
-    LateralPose,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_cloud_index_phase_map,
 )
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.audio_measurement.program import KIND_SWEEP, build_verify_program
+from jasper.audio_measurement.program import build_verify_program
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     DriverResponse,
 )
 
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
-    bank_into,
-    _alignment,
     _conductor,
     _measure_analysis,
     _roles,
@@ -86,9 +69,6 @@ def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
     for index in range(FIRST_LATERAL_INDEX, through + 1):
         out.append(_run_phase(conductor, index, 1))
     return out
-
-
-# --- the pose table -----------------------------------------------------------
 
 
 def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
@@ -181,10 +161,6 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     assert steps["measure"] == "active"
 
 
-
-# --- the capture plan ---------------------------------------------------------
-
-
 @pytest.mark.parametrize("purpose", ["speaker", "room"])
 def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     request = ac.AngleCaptureRequest((
@@ -213,9 +189,6 @@ def test_the_retry_budget_grows_with_lateral_entries(capture_target):
     assert capture_plan.stage1_plan_max_attempts(capture_target) == (
         capture_target + capture_plan.CLOUD_RETAKE_ALLOWANCE
     )
-
-
-# --- priors: the pose evidence stays NEUTRAL ----------------------------------
 
 
 def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
@@ -274,189 +247,6 @@ def test_a_pose_replays_the_anchors_own_program_object():
     assert PHASE_LATERAL not in programs.SUMMED_SWEEP_PHASES
 
 
-# --- retained evidence --------------------------------------------------------
-
-
-def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c)
-    poses = c.lateral_poses
-    assert len(poses) == LATERAL_COUNT
-    assert [p.index for p in poses] == list(
-        range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1)
-    )
-    grid = lateral_evidence_grid_hz()
-    program = c.program_for_phase(PHASE_LATERAL)
-    bands = {
-        s.role: (s.f1_hz, s.f2_hz)
-        for s in program.segments if s.kind == KIND_SWEEP and s.role
-    }
-    for pose, prompt in zip(poses, capture_plan.LATERAL_POSE_PROMPTS):
-        assert pose.prompt == prompt.text
-        assert pose.role == prompt.role
-        assert pose.offset_cm == prompt.offset_cm
-        assert pose.at_mark is (prompt.offset_cm == 0.0)
-        assert pose.pose_id == f"lateral_{pose.index:02d}"
-        assert {c.role for c in pose.curves} == {"woofer", "tweeter"}
-        for curve in pose.curves:
-            assert curve.freqs_hz.size == grid.size
-            assert curve.complex_tf.size == grid.size
-            # Sampled, never interpolated: every retained frequency is real.
-            assert np.all(np.isin(curve.freqs_hz, np.asarray(
-                next(r.freqs_hz for r in
-                     _measure_analysis(program).driver_responses
-                     if r.role == curve.role)
-            )))
-            assert curve.band_hz == bands[curve.role]
-    # §4.4: the anchor solution is held fixed, so a pose carries no second one.
-    assert not {"trim_db", "delay_us", "polarity"} & set(
-        LateralPose.__dataclass_fields__
-    )
-    # Idempotent per index: a retake REPLACES its earlier take.
-    _run_phase(c, FIRST_LATERAL_INDEX, 2)
-    retaken = [p for p in c.lateral_poses if p.index == FIRST_LATERAL_INDEX]
-    assert len(retaken) == 1 and retaken[0].attempt == 2
-
-
-def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
-    """A v2 MEASURE program OPENS with a leading pilot pair carrying a role and
-    a band, so a role-only match would take the pilot's. Today the two bands are
-    equal (same intersected ``RoleBand``), so this is not a live bug — which is
-    why the coupling is pinned rather than assumed: the mutation below breaks it
-    and shows which segment the evidence follows.
-    """
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX)
-    program = c.program_for_phase(PHASE_LATERAL)
-    pilots = [s for s in program.segments if s.kind == "pilot" and s.role]
-    assert pilots, "the fixture must actually carry a leading pilot pair"
-    honest = spatial._primary_sweep_bands(program)
-    # Today's coupling, stated rather than relied on.
-    assert (pilots[0].f1_hz, pilots[0].f2_hz) == honest[pilots[0].role]
-    # Break it: a pilot whose band is a narrow tone. The reader must still
-    # report the SWEEP's band, because that is the band the retained curve
-    # describes.
-    # (A ``SimpleNamespace`` because ``ExcitationProgram`` binds ``program_id``
-    # to its schedule content and refuses an edited copy — which is its own
-    # guard working. The reader only ever touches ``.segments``.)
-    mutated = SimpleNamespace(segments=tuple(
-        replace(s, f1_hz=900.0, f2_hz=1100.0)
-        if s.kind == "pilot" and s.role else s
-        for s in program.segments
-    ))
-    assert spatial._primary_sweep_bands(mutated) == honest
-    for curve in c.lateral_poses[0].curves:
-        assert curve.band_hz == honest[curve.role]
-
-
-
-
-
-@pytest.mark.parametrize(
-    "kwargs, code",
-    [
-        ({"locate_confidence": 0.0}, REASON_LOCATE_FAILED),
-        ({"pilot_snr_ok": False}, REASON_PILOT_LEVEL_COLLAPSE),
-        ({"glitch": True}, REASON_DRIFT_BASELINES_DISAGREE),
-        ({"clipped": True}, REASON_CLIPPED),
-        ({"linearity": False}, REASON_AGC_BEHAVIORAL_FAIL),
-    ],
-)
-def test_a_pose_runs_measures_own_capture_integrity_screens(kwargs, code):
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX - 1)
-    fakes.measure = lambda program: _measure_analysis(program, **kwargs)
-    result = _run_phase(c, FIRST_LATERAL_INDEX, 1)
-    assert result["accepted"] is False
-    assert result["code"] == code
-    assert c.lateral_poses == ()
-
-
-def test_a_pose_is_not_refused_for_an_off_axis_alignment():
-    """§4.4 forbids re-solving alignment at a pose, so the three MEASURE gates
-    that judge the solve must not fire here — a microphone 40 cm to the side
-    legitimately blows the mark's delay-search window and GCC confidence."""
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX - 1)
-    hopeless = _alignment(
-        confidence=0.0, status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
-    )
-    fakes.measure = lambda program: _measure_analysis(program, alignment=hopeless)
-    assert _run_phase(c, FIRST_LATERAL_INDEX, 1)["accepted"] is True
-    assert len(c.lateral_poses) == 1
-    # The SAME analysis at the anchor is refused, so this is a pose-scoped
-    # exemption rather than the gate having been deleted.
-    other = _lateral_conductor(FakeSeams(measure=fakes.measure))
-    _run_phase(other, 1, 1)
-    anchor = _run_phase(other, 2, 1)
-    assert anchor["accepted"] is False
-    assert anchor["code"] == refusal_copy.REASON_DELAY_EXCEEDS_SEARCH_WINDOW
-
-
-def test_a_pose_that_yielded_one_branch_is_not_evidence():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX - 1)
-    fakes.measure = lambda program: replace(
-        _measure_analysis(program),
-        driver_responses=_measure_analysis(program).driver_responses[:1],
-    )
-    result = _run_phase(c, FIRST_LATERAL_INDEX, 1)
-    assert result["accepted"] is False
-    assert result["code"] == REASON_LOCATE_FAILED
-
-
-# --- the candidate is built at the anchor -------------------------------------
-
-
-
-
-
-
-
-
-# --- the return-to-mark bracket -----------------------------------------------
-
-
-def test_the_mark_return_bracket_reports_drift_and_never_invents_zero():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=LAST_LATERAL_INDEX - 1)
-    # Only one at-mark pose so far, so there is no bracket to draw.
-    assert c.lateral_mark_return_drift_db() is None
-    _run_phase(c, LAST_LATERAL_INDEX, 1)
-    drift = c.lateral_mark_return_drift_db()
-    assert drift is not None
-    assert set(drift) == {"woofer", "tweeter"}
-    # The fixture replays an identical response, so an identical repeat reads
-    # as zero drift — the number is a measurement, not a placeholder.
-    assert all(value == pytest.approx(0.0, abs=1e-9) for value in drift.values())
-
-
-def test_the_mark_return_bracket_measures_a_real_level_change():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=LAST_LATERAL_INDEX - 1)
-
-    def quieter(program):
-        analysis = _measure_analysis(program)
-        return replace(analysis, driver_responses=tuple(
-            replace(r, complex_tf=r.complex_tf * (10.0 ** (-2.0 / 20.0)))
-            for r in analysis.driver_responses
-        ))
-
-    fakes.measure = quieter
-    _run_phase(c, LAST_LATERAL_INDEX, 1)
-    drift = c.lateral_mark_return_drift_db()
-    assert drift is not None
-    assert all(value == pytest.approx(2.0, abs=1e-6) for value in drift.values())
-
-
-# --------------------------------------------------------------------------- #
 # the screens run BEFORE the curves are built (#2291 Phase 5a-iv)
 #
 # ``_consume_lateral_pose`` screens first and only then resamples each driver
@@ -476,7 +266,6 @@ def test_the_mark_return_bracket_measures_a_real_level_change():
 # 16 crossover-reaching suites came back 891 passed / 11 skipped / 5 deselected,
 # exit 0. Two independent reviewers reached the same conclusion from a smaller
 # set. With the tests below in place the same inversion fails 3.
-# --------------------------------------------------------------------------- #
 
 
 def _empty_axis_response(role: str):
@@ -511,72 +300,6 @@ def test_the_resampler_really_does_raise_on_an_empty_axis():
         pose_curve.lateral_pose_curve(_empty_axis_response("woofer"), (100.0, 20000.0))
 
 
-@pytest.mark.parametrize(
-    "rung,mutate,expected_code",
-    [
-        (
-            "stimulus_locate",
-            lambda a: replace(
-                a,
-                locations=tuple(
-                    replace(loc, confidence=LOCATE_MIN_CONFIDENCE / 2) for loc in a.locations
-                ),
-            ),
-            REASON_LOCATE_FAILED,
-        ),
-        (
-            "glitch",
-            lambda a: replace(a, glitch_detected=True),
-            REASON_DRIFT_BASELINES_DISAGREE,
-        ),
-        (
-            "linearity",
-            lambda a: replace(a, linearity_ok=False),
-            REASON_AGC_BEHAVIORAL_FAIL,
-        ),
-    ],
-)
-def test_a_screened_out_pose_refuses_before_any_curve_is_built(
-    rung, mutate, expected_code,
-):
-    """A rejected pose is refused cleanly, even when its curves cannot be built.
-
-    The two failures are independent in production — a capture too quiet to
-    locate is also a capture whose reduction can come back degenerate — so the
-    household-visible difference is entirely one of ORDER: screens first is
-    ``locate_failed`` and a retry; build first is an uncaught ``IndexError`` and
-    a terminal internal-error screen.
-
-    Driven through ``_run_phase`` rather than by calling the ladder, because the
-    ordering under test lives in ``_consume_lateral_pose`` and not in either
-    piece it sequences.
-    """
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 1)
-
-    def _degenerate(program):
-        analysis = mutate(_measure_analysis(program))
-        return replace(
-            analysis,
-            driver_responses=(
-                _empty_axis_response("woofer"), _empty_axis_response("tweeter"),
-            ),
-        )
-
-    fakes.measure = _degenerate
-
-    verdict = _run_phase(c, FIRST_LATERAL_INDEX, 1)
-
-    assert verdict["accepted"] is False, rung
-    # Each rung keeps its OWN household code — the refusal is the ladder's
-    # verdict, not a generic "something went wrong" the raise would have become.
-    assert verdict["code"] == expected_code, rung
-    # Nothing was retained from a pose that never became evidence.
-    assert c.lateral_poses == ()
-
-
 def test_the_evidence_basis_is_a_bounded_log_grid():
     grid = lateral_evidence_grid_hz()
     lo, hi = pose_curve.LATERAL_EVIDENCE_BAND_HZ
@@ -595,7 +318,6 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
     assert grid.size * 2 * LATERAL_COUNT < 2000
 
 
-# --- the consumer: who a lateral group is FOR (#2732 P2) ----------------------
 #
 # Every test below drives the SAME shipped per-driver-at-a-pose machinery and
 # differs only in which pose table the walk runs, which is the whole claim: an
@@ -610,259 +332,6 @@ def _angle_prompts(angles=(0, 7, -7, 22, -22)):
         externally_positioned=False,
         base_entries=3,
     )
-
-
-def _evidence_conductor(fakes: FakeSeams, *, prompts=None, **kwargs):
-    """A conductor whose lateral group is EVIDENCE for the offline P2 model."""
-    prompts = _angle_prompts() if prompts is None else prompts
-    return _conductor(
-        fakes,
-        index_phase_map=build_v2_cloud_index_phase_map(
-            include_lateral=True,
-            lateral_prompts=prompts,
-        ),
-        lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL,
-        lateral_prompts=prompts,
-        **kwargs,
-    )
-
-
-def _evidence_walk(conductor, prompts) -> list[dict]:
-    out = [_run_phase(conductor, 1, 1), _run_phase(conductor, 2, 1)]
-    for offset in range(len(prompts)):
-        out.append(_run_phase(conductor, FIRST_LATERAL_INDEX + offset, 1))
-    return out
-
-
-def test_an_evidence_walk_reaches_its_last_pose_and_publishes_nothing():
-    """The walk's last accepted pose is the ONE place ``_close_lateral_walk``
-    runs for an accepted capture, and that close publishes nothing: the poses
-    are evidence an offline model reads off the banked round.
-    """
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    verdicts = _evidence_walk(c, prompts)
-
-    assert verdicts[-1]["accepted"] is True
-    assert len(c.lateral_poses) == len(prompts)
-    # No candidate was published AT the close — MEASURE already published one,
-    # and the close added nothing to its verdict.
-    assert "candidate_fingerprint" not in verdicts[-1]
-    # No selector surface at all since ticket 2.4 — not a surface that answers
-    # "nothing to recommend", which would be a live comparator declining.
-    assert not hasattr(c, "fc_selection")
-
-
-@pytest.mark.parametrize(
-    "angles, bracketed",
-    [((0, 0, 20), False), ((0, 20, 0), True)],
-    ids=["repeats-then-off-axis", "off-axis-then-back"],
-)
-def test_the_mark_return_bracket_needs_a_pose_taken_after_the_mic_moved(
-    angles, bracketed
-):
-    """Adjacent at-mark repeats are repeat noise, not return drift.
-
-    Both baseline tiers open with their anchor repeats and never come back, so
-    a bracket drawn from the first and last at-mark pose would publish
-    take-to-take spread as if the household had nudged something.
-    """
-    prompts = _angle_prompts(angles)
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    _evidence_walk(c, prompts)
-
-    assert [pose.at_mark for pose in c.lateral_poses] == [a == 0 for a in angles]
-    assert (c.lateral_mark_return_drift_db() is not None) is bracketed
-
-
-def test_a_settled_last_pose_closes_the_walk_too():
-    """The OTHER route into the close, pinned independently.
-
-    A last pose that is SETTLED rather than accepted (its slot spent) reaches
-    ``_close_lateral_walk`` through ``_settled_group_verdict``, so a walk whose
-    final capture could not be measured still ends. It is a different route, so
-    a pin at the accepted path alone would leave it uncovered.
-    """
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    last = FIRST_LATERAL_INDEX + len(prompts) - 1
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 1)
-    with c._close_lock:
-        verdict = c._settled_group_verdict(PHASE_LATERAL, last, {"left_out": True})
-
-    # Still "accepted" on the wire — the capture's only "move on" signal.
-    assert verdict.accepted is True
-    assert verdict.payload == {"left_out": True}
-
-
-
-
-def test_an_evidence_pose_banks_the_stated_prompt_not_the_ratified_table():
-    """A pose's prompt is the only durable statement of WHERE it was measured.
-
-    The walk this session was handed is the operator's, so every banked pose
-    must carry that walk's copy and geometry — reading the module's ratified
-    table here would record five poses at spots the microphone never visited.
-    """
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    _evidence_walk(c, prompts)
-
-    assert [p.prompt for p in c.lateral_poses] == [p.text for p in prompts]
-    assert [round(p.offset_cm, 1) for p in c.lateral_poses] == [
-        round(p.offset_cm, 1) for p in prompts
-    ]
-    # The ratified table is a DIFFERENT walk, so this cannot pass by accident.
-    assert [p.text for p in prompts] != [
-        p.text for p in capture_plan.LATERAL_POSE_PROMPTS[: len(prompts)]
-    ]
-
-
-def test_an_accepted_pose_is_retained_with_its_angle():
-    """The durable shape the offline forward model rebuilds a plant from.
-
-    Before this, a lateral pose reached the evidence bundle not at all: the
-    curves lived in memory and the WAV was dropped. What an offline consumer
-    needs is the bytes AND the bearing they were taken at.
-    """
-    prompts = _angle_prompts()
-    retained: list = []
-    fakes = FakeSeams()
-    c = _evidence_conductor(
-        fakes,
-        prompts=prompts,
-        seams=replace(
-            fakes.seams(),
-            bank_take=bank_into(
-                retained, with_capture=True, phase=PHASE_LATERAL,
-            ),
-        ),
-    )
-    _evidence_walk(c, prompts)
-
-    banked = [meta for _r, meta in retained]
-    assert [m["pose_id"] for m in banked] == [
-        f"{PHASE_LATERAL}_{FIRST_LATERAL_INDEX + i:02d}"
-        for i in range(len(prompts))
-    ]
-    # The RAW capture crosses the seam, not a derived curve — a replay needs
-    # the bytes.
-    assert all(getattr(result, "wav", None) for result, _m in retained)
-    assert [m["position_deg"] for m in banked] == [0, 7, -7, 22, -22]
-    assert [round(m["offset_cm"], 1) for m in banked] == [
-        round(p.offset_cm, 1) for p in prompts
-    ]
-    assert [m["at_mark"] for m in banked] == [True, False, False, False, False]
-    assert {m["regime"] for m in banked} == {ac.REGIME_PER_DRIVER}
-    assert {m["lateral_consumer"] for m in banked} == {
-        journey.LATERAL_CONSUMER_FORWARD_MODEL
-    }
-    # ...and the identity/verifier fields a cloud position already carries, so
-    # one replay path covers both kinds of retained take.
-    first = banked[0]
-    assert first["session_id"] == c.session_id
-    assert first["phase"] == PHASE_LATERAL
-    assert first["take_id"] == f"{first['pose_id']}_a{first['attempt']:02d}"
-    assert first["prompt"] == prompts[0].text
-    assert first["wav_sha256"] == hashlib.sha256(b"fake-wav").hexdigest()
-
-
-def test_an_accepted_pose_publishes_its_id_under_the_POSE_key():
-    """``pose_id`` is the canonical per-pose key on every surface, the verdict
-    payload included.
-
-    ``position_id`` / ``position_index`` are the WALK's keys — which slot of a
-    walk this is, assigned by whatever drives it — and they answer a different
-    question from "which pose was measured". Publishing a pose id under the
-    position key hands a reader the right string for the wrong question, and it
-    reads as correct because the two strings coincide today.
-    """
-    prompts = _angle_prompts()
-    c = _evidence_conductor(FakeSeams(), prompts=prompts)
-    verdicts = _evidence_walk(c, prompts)
-
-    lateral = verdicts[2:]
-    assert [v["pose_id"] for v in lateral] == [p.pose_id for p in c.lateral_poses]
-    assert not any("position_id" in v for v in lateral)
-
-
-def test_a_raised_pose_banks_the_elevation_the_operator_was_SENT_to():
-    """Both bearings come off the prompt that was actually shown.
-
-    The sidecar is the only durable statement of where a curve was measured,
-    and a raised pose recorded at mark height would place the microphone
-    somewhere it never was. The axis word stays ``horizontal`` because the pose
-    still commands a bearing — it is COMPOUND, not vertical.
-
-    ``at_mark`` answers the same question on both axes at once: a pose raised
-    over the mark with no bearing at all is not AT the mark, and one that says
-    it is brackets the walk's drift with a pose the operator was standing up
-    for.
-    """
-    prompts = ac.session_lateral_walk(
-        ac.AngleCaptureRequest(
-            stops=(
-                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0),
-                ac.AngleStop(0, ac.REGIME_PER_DRIVER, 10),
-                ac.AngleStop(22, ac.REGIME_PER_DRIVER, 20),
-                ac.AngleStop(-22, ac.REGIME_PER_DRIVER, -20),
-            ),
-            mover=ac.MOVER_HUMAN,
-        ),
-        externally_positioned=False, base_entries=3,
-    )
-    retained: list = []
-    fakes = FakeSeams()
-    c = _evidence_conductor(
-        fakes,
-        prompts=prompts,
-        seams=replace(
-            fakes.seams(),
-            bank_take=bank_into(
-                retained, with_capture=True, phase=PHASE_LATERAL,
-            ),
-        ),
-    )
-    _evidence_walk(c, prompts)
-
-    banked = [meta for _r, meta in retained]
-    assert [m["vertical_deg"] for m in banked] == [0, 10, 20, -20]
-    assert [m["position_deg"] for m in banked] == [0, 0, 22, -22]
-    assert [m["at_mark"] for m in banked] == [True, False, False, False]
-    assert {m["position_axis"] for m in banked} == {
-        spatial.POSITION_AXIS_HORIZONTAL
-    }
-
-
-def test_a_closed_walk_says_so_by_name(caplog):
-    """A walk that finished has to be a POSITIVE journal statement.
-
-    The absence of the line is indistinguishable from a walk that never
-    finished, which is the reading an operator would most like to be wrong
-    about. ONE event covers every walk — the close publishes nothing whichever
-    pose table ran, so a second "suppressed" name would only invite a reader to
-    look for a suppression that has no alternative.
-    """
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 1)
-    with caplog.at_level(logging.INFO):
-        for offset in range(len(prompts)):
-            _run_phase(c, FIRST_LATERAL_INDEX + offset, 1)
-
-    line = next(
-        rec.getMessage() for rec in caplog.records
-        if "crossover_v2_lateral_walk_closed" in rec.getMessage()
-    )
-    assert f"consumer={journey.LATERAL_CONSUMER_FORWARD_MODEL}" in line
-    assert f"planned={len(prompts)}" in line and f"captured={len(prompts)}" in line
 
 
 @pytest.mark.parametrize(

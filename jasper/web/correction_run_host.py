@@ -27,7 +27,7 @@ from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
-from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE
+from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import ExcitationProgram
@@ -54,7 +54,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         result: Any = KeyError("program")
         if program is not None:
             try:
-                phase = conductor._phase_of_index(index_of(record))
+                phase = conductor.phase_of_index(index_of(record))
                 result = analyze_capture({**record, "program": program}, capture)
                 fields = evidence.get("capture_provenance", {}).get(phase, {})
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
@@ -62,41 +62,34 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         elif getattr(result, "branch_diagnostic", None):
-            # The one moment a round can retain it: the take record is banked
-            # write-once after this, so nothing downstream can put it back, and
-            # without it `round_captures._capture_response` refuses every
-            # non-``summed`` role. ``regime`` is NOT set alongside as the web
-            # flow's `_retain_lateral_pose` does: a round's record already
-            # carries its plan row's own ``regime``, and `RunManifest.append`
-            # fingerprints that word into each capture set as ``stimulus``.
             fields = {**fields, "branch_diagnostic": result.branch_diagnostic}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),
             **({"provenance": captured.to_dict()} if captured is not None else {}),
-        }, layout=conductor._preset.channel_map.layout)
+        }, layout=conductor.source_preset.channel_map.layout)
 
     def after_bank(record: Any, record_id: str) -> None:
         answers[record_id] = answers.pop(record["take_id"])
         _, analysis = answers[record_id]
         if (record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception)
-                and conductor._measure_entry_baseline is None):
-            conductor._measure_entry_baseline = banked_entry_baseline(record, analysis)
+                and conductor.measure_entry_baseline is None):
+            conductor.set_entry_baseline(banked_entry_baseline(record, analysis))
 
     records.enrich, records.after_bank = enrich, after_bank
 
     def analyze_capture(record: Any, capture: Any) -> Any:
         index = index_of(record)
-        phase = conductor._phase_of_index(index)
-        priors = (conductor._check_priors() if phase == PHASE_CHECK else
-                  conductor._measure_priors() if phase == PHASE_MEASURE else
-                  conductor._lateral_priors())
+        phase = conductor.phase_of_index(index)
+        priors = (conductor.check_priors() if phase == PHASE_CHECK else
+                  conductor.measure_priors() if phase == PHASE_MEASURE else
+                  conductor.lateral_priors())
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
-        analysis = conductor._seams.analyze(
+        analysis = conductor.analyze(
             ExcitationProgram.from_dict(record["program"]), capture, priors,
-            conductor._capture_geometry(phase, index), phase=phase,
+            conductor.capture_geometry(phase, index), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),
@@ -107,7 +100,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         nonlocal index, phase, answer
         answer, analysis = answers.pop(record_id)
         index = index_of(record)
-        phase = conductor._phase_of_index(index)
+        phase = conductor.phase_of_index(index)
         if isinstance(analysis, Exception):
             raise analysis
         return analysis
@@ -119,36 +112,31 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if level_verdict is not None and not level_verdict.ok:
             verdict = PhaseVerdict.from_take(level_verdict)
         elif phase == PHASE_CHECK:
-            verdict = conductor._check_verdict(analysis)
+            verdict = conductor.check_verdict(analysis)
         prior = None if verdict is None else TakeVerdict(verdict.accepted, fault=verdict.code, evidence=verdict.evidence,
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
                            next_gain_db=verdict.next_gain_db, charge=verdict.charge)
         if kwargs.get("phase") == PHASE_MEASURE:
-            kwargs.update(gain_ceiling_db=conductor._measure_gain_ceiling_db, caps_dbfs=conductor._excitation.caps_dbfs,
-                          session_volume_db=conductor._excitation.session_volume_db,
-                          spl_stop_db_spl=conductor._preset.safety.max_commissioning_level_db_spl,
+            kwargs.update(gain_ceiling_db=conductor.measure_gain_ceiling_db, caps_dbfs=conductor.caps_dbfs,
+                          session_volume_db=conductor.excitation.session_volume_db,
+                          spl_stop_db_spl=conductor.spl_stop_db_spl,
                           spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
-            conductor._rearm_measure_after_transient(assessed)
+            conductor.rearm_measure_after_transient(assessed)
         elif verdict is not None and assessed.ok:
-            conductor._note_accepted(phase, index)
+            conductor.note_accepted(phase, index)
         return assessed
 
     return analyze, assessor
 
 
 def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
-    gains = conductor._gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
-    program = program_for_spec(spec, conductor._excitation, gains, stimulus_dbfs,
+    gains = conductor.gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
+    program = program_for_spec(spec, conductor.excitation, gains, stimulus_dbfs,
                                safety_profile=context.safety_profile, role_targets=context.role_targets)
-    if spec.program_phase == PHASE_CHECK:
-        conductor._check_program = program
-    elif spec.program_phase == PHASE_VERIFY:
-        conductor._verify_program = program
-    elif spec.program_phase == PHASE_CLOUD_VERIFY:
-        conductor._cloud_program = program
+    conductor.set_program(spec.program_phase, program)
     return program
 
 
@@ -175,7 +163,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
         )
         records.capture = capture
-        conductor._excitation = replace(conductor._excitation, session_volume_db=door.measurement_volume_db)
+        conductor.set_excitation(replace(conductor.excitation, session_volume_db=door.measurement_volume_db))
         return TuningSession(
             manifest.run_id, host.bind_v2_engine_seams(
                 session_graph=door.graph, compose_stimulus=production.compose,
@@ -200,7 +188,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             nonlocal bound
             child = RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet,
                                 incumbent=manifest.incumbent)
-            selected = prepare_level_captures(plan, roles_bands=conductor._roles)
+            selected = prepare_level_captures(plan, roles_bands=conductor.roles_bands)
             child_door, child_analyze, child_assessor, _ = bind_run_door(
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,

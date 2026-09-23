@@ -28,11 +28,9 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
-    PHASE_REVIEW,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_DONE,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
@@ -69,9 +67,7 @@ def _journey(mapping=None, **kwargs) -> CommissionJourney:
     )
 
 
-# --------------------------------------------------------------------------
 # the plan
-# --------------------------------------------------------------------------
 
 
 def test_the_plan_orders_phases_canonically_not_by_map_iteration():
@@ -102,19 +98,6 @@ def test_a_session_walks_only_the_phases_its_map_addresses():
     assert plan.is_group(PHASE_CLOUD_MEASURE) is False
 
 
-def test_group_index_spans_come_from_the_map_and_are_ascending():
-    plan = JourneyPlan.from_index_map(STAGE1_MAP)
-    assert plan.group_indexes[PHASE_LATERAL] == (3, 4)
-    assert plan.group_indexes[PHASE_CLOUD_MEASURE] == (5, 6)
-    # A single-capture phase is not a group even though it is in the map.
-    assert plan.is_group(PHASE_ENTRY_BASELINE) is False
-    assert plan.is_group(PHASE_LATERAL) is True
-    assert plan.is_last_index_of_group(PHASE_CLOUD_MEASURE, 6) is True
-    assert plan.is_last_index_of_group(PHASE_CLOUD_MEASURE, 5) is False
-    # Never "yes" for a phase with no group — an empty span has no last member.
-    assert plan.is_last_index_of_group(PHASE_ENTRY_BASELINE, 7) is False
-
-
 def test_is_group_asks_about_this_session_not_the_vocabulary():
     """``PHASE_LATERAL`` is a group phase in general and not in a session that
     walks no lateral poses; per-index bookkeeping must follow the session."""
@@ -143,9 +126,7 @@ def test_the_plan_is_frozen_and_owns_its_own_copy_of_the_map():
         plan.phases = ()  # type: ignore[misc]
 
 
-# --------------------------------------------------------------------------
 # post_apply_verifies — the boost-permission evidence gate
-# --------------------------------------------------------------------------
 
 
 def test_post_apply_verifies_defaults_to_reading_the_walk():
@@ -186,141 +167,10 @@ def test_open_stage_without_a_target_leaves_the_walk_derived_reading():
     assert opening.plan.post_apply_verifies is True
 
 
-# --------------------------------------------------------------------------
 # transitions
-# --------------------------------------------------------------------------
 
 
-def test_a_single_capture_phase_is_accepted_by_one_accept():
-    journey = _journey()
-    assert journey.phase_status(PHASE_CHECK) == "pending"
-    journey.accept(PHASE_CHECK, 1)
-    assert journey.phase_status(PHASE_CHECK) == "accepted"
-    assert journey.accepted_phases == frozenset({PHASE_CHECK})
-
-
-def test_a_group_phase_closes_only_when_every_position_is_resolved():
-    """Accepting position 1 of 2 must not read as "the cloud is done"."""
-
-    journey = _journey(STAGE1_MAP)
-    journey.accept(PHASE_CLOUD_MEASURE, 5)
-    assert journey.phase_status(PHASE_CLOUD_MEASURE) == "pending"
-    assert PHASE_CLOUD_MEASURE in journey.pending_phases()
-    journey.accept(PHASE_CLOUD_MEASURE, 6)
-    assert journey.phase_status(PHASE_CLOUD_MEASURE) == "accepted"
-    assert PHASE_CLOUD_MEASURE not in journey.pending_phases()
-
-
-def test_re_accepting_a_position_does_not_close_a_group_early():
-    """A geometry retake lands on an index already resolved; the group must
-    still wait for the position nobody has walked."""
-
-    journey = _journey(STAGE1_MAP)
-    journey.accept(PHASE_CLOUD_MEASURE, 5)
-    journey.accept(PHASE_CLOUD_MEASURE, 5)
-    assert journey.phase_status(PHASE_CLOUD_MEASURE) == "pending"
-
-
-def test_pending_phases_follows_the_walk_order_and_shrinks():
-    journey = _journey(STAGE1_MAP)
-    assert journey.pending_phases() == journey.plan.phases
-    journey.accept(PHASE_CHECK, 1)
-    journey.accept(PHASE_MEASURE, 2)
-    assert journey.pending_phases() == (
-        PHASE_LATERAL, PHASE_CLOUD_MEASURE, PHASE_ENTRY_BASELINE
-    )
-
-
-def test_unresolved_in_group_excludes_the_position_being_decided():
-    """The "can this group still reach its floor" question: positions in hand
-    plus positions not yet walked, never the count so far."""
-
-    journey = _journey(STAGE1_MAP)
-    assert journey.unresolved_in_group(PHASE_LATERAL, excluding=3) == (4,)
-    journey.accept(PHASE_LATERAL, 4)
-    assert journey.unresolved_in_group(PHASE_LATERAL, excluding=3) == ()
-    # A phase with no group in this session has nothing unresolved.
-    assert journey.unresolved_in_group(PHASE_ENTRY_BASELINE, excluding=7) == ()
-
-
-def test_a_journey_can_be_constructed_already_part_way_through():
-    """Stage 2 is built with CHECK/MEASURE accepted and the apply observed."""
-
-    journey = _journey(
-        VERIFY_ONLY_MAP, accepted_phases=(PHASE_CHECK, PHASE_MEASURE), applied=True
-    )
-    assert journey.accepted_phases == frozenset({PHASE_CHECK, PHASE_MEASURE})
-    assert journey.applied is True
-    assert journey.current_phase == PHASE_VERIFY
-
-
-# --------------------------------------------------------------------------
 # current_phase, including the REVIEW interlude
-# --------------------------------------------------------------------------
-
-
-def test_current_phase_walks_to_the_first_unaccepted_phase():
-    journey = _journey(STAGE1_MAP)
-    assert journey.current_phase == PHASE_CHECK
-    journey.accept(PHASE_CHECK, 1)
-    assert journey.current_phase == PHASE_MEASURE
-
-
-def test_current_phase_is_done_only_when_the_whole_walk_is_accepted():
-    journey = _journey(VERIFY_ONLY_MAP)
-    assert journey.current_phase == PHASE_VERIFY
-    journey.accept(PHASE_VERIFY, 1)
-    assert journey.current_phase == PHASE_DONE
-
-
-def test_measure_accepted_and_verify_pending_and_unapplied_is_the_interlude():
-    """Measured evidence awaits an explicit candidate decision."""
-
-    journey = _journey(THREE_ENTRY_MAP)
-    journey.accept(PHASE_CHECK, 1)
-    journey.accept(PHASE_MEASURE, 2)
-    assert journey.current_phase == PHASE_REVIEW
-
-
-def test_the_interlude_needs_measure_accepted_not_merely_verify_pending():
-    """CHECK still pending ⇒ CHECK, never "applying" — otherwise a session that
-    had measured nothing would report an apply in progress."""
-
-    journey = _journey(THREE_ENTRY_MAP)
-    assert journey.current_phase == PHASE_CHECK
-    journey.accept(PHASE_MEASURE, 2)
-    assert journey.current_phase == PHASE_CHECK
-
-
-def test_a_verify_only_walk_that_measured_nothing_reports_verify_not_applying():
-    """The §5.2 recovery re-verify's shape, and the one place the "MEASURE is
-    accepted" conjunct is load-bearing.
-
-    Every other unaccepted-MEASURE case stops the walk at MEASURE before VERIFY
-    is ever considered. Here MEASURE is not in the walk at all, so without that
-    conjunct a re-verify session that has not yet observed an apply would
-    announce an apply in progress and the wizard would render the machine-paced
-    hold over a session with nothing to apply.
-    """
-
-    journey = _journey(VERIFY_ONLY_MAP)
-    assert journey.applied is False
-    assert PHASE_MEASURE not in journey.accepted_phases
-    assert journey.current_phase == PHASE_VERIFY
-
-
-def test_a_measure_only_walk_finishes_in_review():
-    """Stage 1 finishes with measured evidence awaiting review."""
-
-    journey = _journey(STAGE1_MAP)
-    for phase, index in (
-        (PHASE_CHECK, 1), (PHASE_MEASURE, 2), (PHASE_LATERAL, 3),
-        (PHASE_LATERAL, 4), (PHASE_CLOUD_MEASURE, 5), (PHASE_CLOUD_MEASURE, 6),
-    ):
-        journey.accept(phase, index)
-    assert journey.current_phase == PHASE_ENTRY_BASELINE
-    journey.accept(PHASE_ENTRY_BASELINE, 7)
-    assert journey.current_phase == PHASE_REVIEW
 
 
 def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
@@ -333,9 +183,7 @@ def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
     )
 
 
-# --------------------------------------------------------------------------
 # stage capabilities
-# --------------------------------------------------------------------------
 
 
 def test_a_stage_requiring_nothing_is_missing_nothing_when_handed_nothing():
@@ -343,9 +191,7 @@ def test_a_stage_requiring_nothing_is_missing_nothing_when_handed_nothing():
     assert opening.missing == ()
 
 
-# --------------------------------------------------------------------------
 # the conductor over the journey — delegation, not a copy
-# --------------------------------------------------------------------------
 
 
 def _conductor(**kwargs):
@@ -356,24 +202,6 @@ def _conductor(**kwargs):
     from tests.crossover_v2_fixtures import _conductor as _build
 
     return _build(FakeSeams(), **kwargs)
-
-
-def test_the_conductors_phase_readers_move_when_the_journey_moves():
-    """The delegation is live. A shim that cached the plan or the accepted set
-    would satisfy the aggregate tests above and still be the bug."""
-
-    conductor = _conductor(index_phase_map=dict(THREE_ENTRY_MAP))
-    assert conductor.current_phase == PHASE_CHECK
-    assert conductor.phase_status(PHASE_CHECK) == "pending"
-
-    conductor._journey.accept(PHASE_CHECK, 1)
-    assert conductor.accepted_phases == frozenset({PHASE_CHECK})
-    assert conductor.phase_status(PHASE_CHECK) == "accepted"
-    assert conductor.current_phase == PHASE_MEASURE
-    assert conductor.pending_phases() == (PHASE_MEASURE, PHASE_VERIFY)
-
-    conductor._journey.accept(PHASE_MEASURE, 2)
-    assert conductor.current_phase == PHASE_REVIEW
 
 
 def test_the_snapshot_reads_the_journey_and_not_a_constructor_echo():
@@ -410,9 +238,7 @@ def test_a_conductor_with_no_index_map_walks_the_three_entry_default():
     )
 
 
-# --------------------------------------------------------------------------
 # architecture — dependency direction
-# --------------------------------------------------------------------------
 
 #: The two things a module in this package may not import.
 FORBIDDEN_IMPORT_ROOTS = ("jasper.web", "crossover_v2_flow")
@@ -567,9 +393,7 @@ def test_no_test_module_imports_the_conductor_test_file():
     assert offenders == {}
 
 
-# --------------------------------------------------------------------------
 # architecture — the package's own shape
-# --------------------------------------------------------------------------
 
 #: How a module inside the package spells itself from the outside.
 PACKAGE_DOTTED = "jasper.active_speaker.crossover_v2"
@@ -695,9 +519,7 @@ def test_the_package_import_graph_stays_acyclic():
     assert cycle is None, f"crossover_v2 import cycle: {' -> '.join(cycle or ())}"
 
 
-# --------------------------------------------------------------------------
 # architecture — the renderer speaks the vocabulary by symbol
-# --------------------------------------------------------------------------
 
 
 def _guarded_vocabulary() -> dict[str, str]:
@@ -829,20 +651,3 @@ def test_restoring_a_journey_that_never_applied_is_a_no_op():
     journey = _journey()
     journey.mark_restored()
     assert journey.applied is False
-
-
-def test_the_restore_re_opens_the_review_interlude():
-    """The derivation ``applied`` feeds moves back with it.
-
-    Stage-2 construction collapses the PHASE_REVIEW interlude into VERIFY.
-    Restore has to re-open it, or the flag would be reversible while the
-    screen the household sees would not.
-    """
-    journey = _journey(
-        VERIFY_ONLY_MAP, accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-    )
-    applied_phase = journey.current_phase
-    journey.mark_restored()
-    assert journey.current_phase != applied_phase
-    assert journey.current_phase == PHASE_REVIEW

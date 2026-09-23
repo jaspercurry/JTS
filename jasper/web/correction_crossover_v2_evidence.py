@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from jasper.json_fields import finite_float
+
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_provenance, enrich_capture_record
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
@@ -174,14 +176,13 @@ def _bankable(value: Any) -> Any:
 
     Floats only. An unbounded JSON integer serializes exactly, so ``int`` is
     left alone and only the type that can BE ``NaN``/``inf`` is screened —
-    through :func:`_finite`, this module's one "is that a usable number?"
-    test, rather than a second spelling of it. A non-native number (a
+    through ``json_fields.finite_float``. A non-native number (a
     ``numpy`` scalar, an array) is NOT screened here and would cost the record
     at the store's own ``TypeError``; no field on today's three blocks is one,
     and :func:`_capture_evidence_blocks` names that contract.
     """
     if isinstance(value, float):
-        return v2durable._finite(value)
+        return finite_float(value)
     if isinstance(value, Mapping):
         return {key: _bankable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -260,8 +261,7 @@ def bind_production_analyze(
     ``{"applied": False}`` annotation.
 
     ``phase`` (required, keyword-only) is the conductor's own flow phase —
-    ``crossover_v2_flow.CrossoverV2Session.consume_capture`` always passes it,
-    and ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
+    The run host passes it. It is NOT the same
     value as ``program.phase``: every cloud position plays the verify-shaped
     summed sweep, so ``program.phase == "verify"`` even during
     PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. It keys the per-phase calibration
@@ -442,7 +442,7 @@ def _bank(
     reopen-and-compare, and answers with the id that finds the record again;
     the identity every ``refs`` column and every citation needs is re-read from
     it. Driven through ``run_async`` because the publishing seams are
-    synchronous all the way up from ``consume_capture``, on a worker thread.
+    synchronous all the way up from ``the capture handler``, on a worker thread.
     """
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 
@@ -936,7 +936,7 @@ def bind_cloud_publisher(
     silently matched — the per-group content (mask/registry/spec/geometry) is
     exactly what was asked for either way.
 
-    Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``): a
+    Fail-soft at the CALLER (``CrossoverV2Session.the cloud pipeline``): a
     full disk or a write-once conflict must surface as an exception here so the
     conductor's own boundary can log and continue.
     """

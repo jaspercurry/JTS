@@ -137,9 +137,7 @@ def _conductor(caps: dict[str, float]):
     )
 
 
-# --------------------------------------------------------------------------- #
 # 1. golden identities — the extraction changed nothing that plays
-# --------------------------------------------------------------------------- #
 
 
 def test_the_verify_program_is_the_one_that_shipped():
@@ -319,9 +317,7 @@ def test_the_pilot_pair_keeps_its_ten_db_delta_at_any_level():
         assert hi - lo == pytest.approx(programs.PILOT_LEVEL_DELTA_DB)
 
 
-# --------------------------------------------------------------------------- #
 # 2. the clamp itself
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -380,9 +376,7 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
     )
 
 
-# --------------------------------------------------------------------------- #
 # 3. the identity invariant
-# --------------------------------------------------------------------------- #
 
 
 def test_the_compared_pair_gets_the_same_object():
@@ -456,9 +450,7 @@ def test_an_unplanned_phase_refuses():
         )
 
 
-# --------------------------------------------------------------------------- #
 # 3b. the courtesy-prelude rule (#1677, trimmed 2026-08-18)
-# --------------------------------------------------------------------------- #
 
 
 def _has_prelude(program) -> bool:
@@ -533,9 +525,7 @@ def test_the_conductor_translates_the_refusal_into_its_own_error():
         c.program_for_phase(journey.PHASE_MEASURE)
 
 
-# --------------------------------------------------------------------------- #
 # 4. the bundle is frozen, so a subset cannot drift
-# --------------------------------------------------------------------------- #
 
 
 def test_the_declarations_cannot_be_mutated_after_construction():
@@ -583,7 +573,7 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
         for channel, (role, fingerprint) in enumerate(targets.items()))
     captures = prepare_plan_captures(request, roles_bands=roles)
     excitation = replace(_excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0}), roles=roles)
-    host = SimpleNamespace(_excitation=excitation)
+    host = SimpleNamespace(excitation=excitation, set_program=lambda *args: None)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     for capture in captures:
         spec = capture.spec
@@ -631,7 +621,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
     assert captures[0].spec.branch_target_ids == tuple(take)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     program = compose_plan_program(
-        SimpleNamespace(_excitation=excitation, _gain_plan_db=None),
+        SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
         captures[0].spec, None, context=context)
     assert program.channels == 2
     assert {s.role for s in program.stimulus_segments() if s.role} == set(take)

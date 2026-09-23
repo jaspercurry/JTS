@@ -6,13 +6,6 @@
 
 See ADR-0231 §1.
 
-Logic-free vocabulary only, same register as :mod:`.refusal_copy` and
-:mod:`.contracts`. The three conductor-owned hooks a provider is handed:
-``authorize_begin(index, attempt, entry)``, ``on_armed(state)`` and
-``consume_capture(index, attempt, answer)``, plus the stop/completion
-predicates — shipped by
-``jasper.web.correction_crossover_v2_wired.build_v2_wired_run_and_consume``.
-
 Two ownership rules: the provider mints the session identity (the bundle id
 is canonical for ATTRIBUTION; the provider's rides as the
 ``ALIAS_CAPTURE_SESSION_ID`` alias), and the host owns the persisted-code

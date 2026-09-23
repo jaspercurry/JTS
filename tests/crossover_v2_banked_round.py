@@ -10,16 +10,6 @@ shared builder living in a collected test module makes that module
 undeletable. This one is imported by the round-views and forward-model
 suites.
 
-**Every artifact here is written by the product's own writer.** The bundle is
-:func:`~jasper.active_speaker.bundles.open_bundle`'s; the paths are
-:class:`~jasper.active_speaker.crossover_v2.record_store.BankedRecordStore`'s;
-the take records are :mod:`~jasper.active_speaker.crossover_v2.spatial`'s four
-builders; the banked VERIFY curve is
-:func:`~jasper.active_speaker.crossover_v2.durable_state._decimate_verify_measured`'s
-output. Nothing below hand-types a record shape, so a writer that changes
-fails the suites that read it instead of leaving a fixture agreeing with
-nothing that ships.
-
 **The two shapes are DISJOINT, and that is the finding they exist to hold.**
 ``jasper.web.correction_crossover_v2``'s own words: *"stage 2 opens a new
 bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
@@ -96,9 +86,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REFERENCE_MARK_DESIGN_AXIS,
     ROUND_RECEIPT_KIND,
 )
-from jasper.active_speaker.crossover_v2.durable_state import (
-    _decimate_verify_measured,
-)
+from jasper.active_speaker.crossover_v2.durable_state import MAX_PERSISTED_SUM_POINTS
 from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
@@ -116,6 +104,10 @@ from jasper.attribution.session_identity import (
 
 from tests.active_speaker_fixtures import mono_output_topology
 
+
+#: The two SHAPES ``bank_measure_round`` can bank, spelled as the topology
+#: fixture's own group modes so a round's bundle and its solos cannot disagree
+#: about how many branches the speaker has.
 __all__ = [
     "ENTRY_GRID_HZ",
     "MODE_TWO_WAY",
@@ -130,9 +122,7 @@ __all__ = [
     "bank_verify_round",
 ]
 
-#: The two SHAPES ``bank_measure_round`` can bank, spelled as the topology
-#: fixture's own group modes so a round's bundle and its solos cannot disagree
-#: about how many branches the speaker has.
+
 MODE_TWO_WAY = "active_2_way"
 MODE_WAY1 = "full_range_passive"
 
@@ -582,3 +572,50 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
             _, record_id = manifest.pending_records[0]
             return json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
         return asyncio.run(bank())
+
+
+def _decimate_verify_measured(tracking_curve: Any) -> dict[str, Any] | None:
+    """Persist-time reduction of the VERIFY capture's graded curve pair — the
+    ``(freqs_hz, measured_db, predicted_db)`` the delta probe graded (#2522).
+
+    Averaged in dB, which here is what makes the record RE-GRADABLE: block
+    averaging in dB is linear, so the difference of the two decimated curves is
+    exactly the decimated difference, and ``measured − predicted`` is what
+    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe` grades. A
+    power mean would bias each side differently.
+
+    ``None`` for an absent curve, one that is not a triple, an empty grid, or
+    arrays whose lengths disagree — all of which mean "not re-gradable offline".
+    """
+    if tracking_curve is None:
+        return None
+    import numpy as np
+
+    try:
+        freqs, measured, predicted = tracking_curve
+    except (TypeError, ValueError):
+        return None
+    grid = np.asarray(freqs, dtype=float)
+    measured_db = np.asarray(measured, dtype=float)
+    predicted_db = np.asarray(predicted, dtype=float)
+    n = int(grid.size)
+    if n == 0 or int(measured_db.size) != n or int(predicted_db.size) != n:
+        return None
+    if n > MAX_PERSISTED_SUM_POINTS:
+        block = -(-n // MAX_PERSISTED_SUM_POINTS)  # ceil division
+        blocks = n // block
+        kept = blocks * block
+
+        def _blocks(values):
+            return values[:kept].reshape(blocks, block).mean(axis=1)
+
+        grid, measured_db, predicted_db = (
+            _blocks(grid),
+            _blocks(measured_db),
+            _blocks(predicted_db),
+        )
+    return {
+        "freqs_hz": [float(f) for f in grid],
+        "measured_db": [float(v) for v in measured_db],
+        "predicted_db": [float(v) for v in predicted_db],
+    }

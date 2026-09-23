@@ -1,21 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
 
 from __future__ import annotations
 
-from .crossover_v2.alignment_prescription import (
-    alignment_delay_search_bounds_us,
-)
-
-
-import hashlib
 import logging
-import threading
-import time
 from dataclasses import dataclass, replace
-from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -25,253 +15,107 @@ from typing import (
     Sequence,
 )
 
-import numpy as np
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    # ``round_evidence`` is imported lazily at its runtime use site
-    # (``_consume_entry_baseline``): eagerly it drags ``flat_spec`` in.
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        RoundPorts,
-        SeriesPosition,
-    )
-    from jasper.active_speaker.crossover_v2.round_evidence import (
-        EntryBaseline,
-        MeasuredResponse,
-    )
-
-from jasper.active_speaker.crossover_v2.durable_state import AttemptRecord, MAX_ATTEMPT_HISTORY
-from jasper.active_speaker.delta_probe import DeltaProbeMap
+from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.branch_chain import CrossoverSection
-from jasper.active_speaker.camilla_yaml import role_polarity
-from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
-from jasper.active_speaker.crossover_v2 import commanded as _commanded
-from jasper.active_speaker.crossover_v2 import diagnostics as _diagnostics
-from jasper.active_speaker.crossover_v2.diagnostics import (
-    _commanded_delta,
-    _derive_cloud_echo_band_hz,
-    assemble_cloud_group_result,
-    combine_cloud_positions,
-    logger,
-    spec_report_for_predicted_sum,
-)
-from jasper.active_speaker.crossover_v2 import (
-    delta_probe_run as _delta_probe_run,
-)
-from jasper.active_speaker.crossover_v2 import durable_state as _durable_state
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
-from jasper.audio_measurement.branch_program import build_branch_program, is_branch_program
 from jasper.active_speaker.crossover_v2 import programs as _programs
-from jasper.active_speaker.crossover_v2 import spatial as _spatial
-from jasper.active_speaker.crossover_v2.summed_alignment import cached_session_reference
-from jasper.active_speaker.crossover_v2 import verification as _verification
-from jasper.active_speaker.crossover_v2 import contracts as _contracts
-from jasper.active_speaker.crossover_v2.contracts import (
-    REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
+from jasper.active_speaker.crossover_v2.admission import (
+    ATTEMPT_INITIATOR_SPEAKER,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    SlotAttempts,
 )
-
-from jasper.active_speaker.crossover_v2.intervention import plan_linearization
-from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord, LinearizationPlan
-from jasper.active_speaker.crossover_v2.measure_spec import (
-    GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_channels_for,
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CLOUD_GEOMETRY_RETRY_PROMPTS,
+    CLOUD_GEOMETRY_RETRY_RISE_CM,
+    CLOUD_POSITION_PROMPTS,
+    GEOMETRY_RETRY_OFFSET_CM,
+    LATERAL_POSE_PROMPTS,
+    CloudPositionPrompt,
+    _pose,
+    position_angle_deg,
+    position_elevation_deg,
+    verify_pose_table,
+)
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginRefused,
+)
+from jasper.active_speaker.crossover_v2.contracts import (
+    CrossoverV2FlowError,
+)
+from jasper.active_speaker.crossover_v2.diagnostics import (
+    logger,
+)
+from jasper.active_speaker.crossover_v2.durable_state import (
+    MAX_ATTEMPT_HISTORY,
+    AttemptRecord,
+    V2ConductorSnapshot,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
-    PHASE_MEASURE,
     PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
     validated_lateral_consumer,
 )
-from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
-from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
-from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz
+from jasper.active_speaker.crossover_v2.measure_spec import (
+    GRAPH_SCOPE_DRIVERS,
+    MeasureSpec,
+    branch_channels_for,
+)
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    NON_RETRIABLE_CODES,
+    REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_LOCATE_FAILED,
+    REASON_REGISTRY,
+    PhaseVerdict,
+    TakeVerdict,
+    reason_diagnosis,
+    reason_message,
+)
+from jasper.active_speaker.crossover_v2.spatial import (
+    POSITION_ROLE_OFFAX,
+    LateralPose,
+    _CloudPosition,
+)
+from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
+from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import (
     ExcitationProgram,
     RoleBand,
 )
 from jasper.audio_measurement.program_analysis import (
-    MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
     GainPlan,
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
 )
-from jasper.active_speaker.crossover_v2.capture_source import (
-    CaptureBeginRefused,
-)
 from jasper.log_event import log_event
 
-from jasper.active_speaker.crossover_v2.admission import (
-    ATTEMPT_INITIATOR_SPEAKER,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    SlotAttempts,
+from .crossover_v2.alignment_prescription import (
+    alignment_delay_search_bounds_us,
 )
-from jasper.active_speaker.crossover_v2.candidates import (
-    CloudFitEvidence as _CloudFitEvidence,
-    LinearizationState as _LinearizationState,
-)
-from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-    _any_sweep_clipped,
-    _stimulus_locate_ok,
-)
-from jasper.active_speaker.crossover_v2.capture_plan import (
-    CLOUD_GEOMETRY_RETRY_PROMPTS,
-    CLOUD_GEOMETRY_RETRY_RISE_CM,
-    CLOUD_POSITION_PROMPTS,
-    CloudPositionPrompt,
-    GEOMETRY_RETRY_OFFSET_CM,
-    LATERAL_POSE_PROMPTS,
-    _pose,
-    position_angle_deg,
-    position_elevation_deg,
-    position_geometry,
-    verify_pose_table,
-)
-from jasper.active_speaker.crossover_v2.contracts import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-    CLAIM_FAIL,
-    CrossoverV2FlowError,
-    VERIFY_TOLERANCE_DB,
-)
-from jasper.active_speaker.crossover_v2.durable_state import V2ConductorSnapshot, attempt_record_from_verify
-from jasper.active_speaker.crossover_v2.spatial import (
-    LateralPose,
-    MARK_DISTANCE_M,
-    POSITION_ROLE_OFFAX,
-    _CloudPosition,
-    _geometry_verdict_from_combined,
-    _primary_sweep_bands,
-)
-from jasper.active_speaker.crossover_v2.verification import _per_band_flatness_log_field
-
-from jasper.active_speaker.crossover_v2 import refusal_copy as _reasons
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    NON_RETRIABLE_CODES,
-    REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_LOCATE_FAILED,
-    REASON_MEASURE_GAIN_ADJUSTED,
-    REASON_GEOMETRY_RETAKE_UNREACHABLE,
-    REASON_REGISTRY,
-    REASON_VERIFY_INCONCLUSIVE,
-    REASON_VERIFY_LEVEL_SHIFT,
-    REASON_VERIFY_OUT_OF_TOLERANCE,
-    PhaseVerdict,
-    _screen_refusal_code,
-    reason_diagnosis,
-    reason_message,
-)
-
-from jasper.active_speaker.crossover_v2.spatial import GEOMETRY_RETRY_POSITIONS
-
-#: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
-#: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
-#: VERIFY tracking error on JTS3. A ledger boundary, never a refusal. See
-#: ADR-0227 #4.
-PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
-
-#: dB. Non-worsening bar for PRESCRIBED branches; a ledger boundary between
-#: ``improved`` and ``not_an_improvement``, never a refusal. See ADR-0227 #4.
-PRESCRIBED_NON_WORSENING_DB: float = 0.0
-
-
-def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
-    """Which of a candidate's driver branches are PRESCRIBED rather than fitted."""
-    linearization = getattr(candidate, "linearization", None)
-    if not isinstance(linearization, Mapping):
-        return ()
-    return tuple(
-        str(role)
-        for role, entry in linearization.items()
-        if isinstance(entry, Mapping) and entry.get("prescribed_by")
-    )
-
-from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    _gate_entanglement_floor,
-    _gate_floor_source,
-    _gate_record,
-    _gate_trusted_band_hz,
-    _gate_window_ms,
-    _pilot_transfer_by_role,
-    _sweep_schedule_ok,
-)
-
-
-from jasper.audio_measurement import measurement_geometry as _measurement_geometry
-
 from .measurement_programs import gate_exemption, resolved_measurement_purpose
 
-DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from jasper.active_speaker.crossover_v2.round_evidence import (
+        EntryBaseline,
+    )
+
+# dB of pooled spec residual; the model's measured tracking error (ADR-0227).
+PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
 
-def _declared_first_bounce_s(distance_m: float | None) -> float | None:
-    """The operator-declared rig's first bounce at ONE capture's distance.
-
-    Read FRESH per capture — the file is wizard-owned and a cached value would
-    outlive a correction. ``None``, journaled rather than raised, when unreadable.
-    """
-    try:
-        return _measurement_geometry.declared_first_bounce_s(
-            distance_m, path=DECLARED_GEOMETRY_PATH
-        )
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        log_event(
-            logger, "correction.crossover_v2_declared_geometry_unreadable",
-            level=logging.WARNING,
-            path=str(DECLARED_GEOMETRY_PATH),
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return None
-
-
-# --- tuning constants -----------------------------------------------------
-
-
-# The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
-# GCC-seed/capture confidence floor. A DISCLOSURE trigger, not a gate: below it
-# the capture is ACCEPTED and the confidence is banked as a reservation. See
-# ADR-0180.
-ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
-
-
-# Measurement-honesty disclosure G1, dB. A DISCLOSURE trigger, not a gate. See
-# ADR-0181.
-MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
-
-
-# --- pure helpers (fixture-testable in isolation) --------------------------
-
-
-def _measure_sufficient(take: _dispatch.TakeVerdict, analysis: ProgramAnalysis) -> bool:
-    return take.ok and (not analysis.driver_responses or analysis.measure_pair_not_evaluated is not None
-                        or take.capabilities["delay_estimate"])
-
-
-def _capture_wav_sha256(result: Any) -> str | None:
-    """SHA-256 of a capture's WAV bytes, or ``None`` when there are none."""
-
-    wav = getattr(result, "wav", None)
-    if not isinstance(wav, (bytes, bytearray)):
-        return None
-    return hashlib.sha256(bytes(wav)).hexdigest()
-
-
-# --- seams + snapshot -----------------------------------------------------
-
-# Injected seams: the web host binds production, tests inject fakes.
 
 
 class AnalyzeCapture(Protocol):
@@ -295,11 +139,7 @@ class AnalyzeCapture(Protocol):
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
-# Reads whether an apply hit a TERMINAL failure: the reason code, or "" while
-# pending. Distinct from ``apply_complete``, which is success only.
 ApplyFailureGate = Callable[[], str]
-# Banks one accepted capture: ``(capture_result, record)`` -> the store id, or
-# ``""`` when nothing was stored.
 BankTake = Callable[[Any, Mapping[str, Any]], str]
 
 
@@ -316,9 +156,9 @@ class RecordModelError(Protocol):
         *,
         attempt_id: str,
         metric: str,
+        speaker_id: str,
         predicted_db: float,
         realized_db: float,
-        speaker_id: str,
         context: Mapping[str, Any],
     ) -> bool: ...
 
@@ -335,13 +175,8 @@ class V2RecordPublishers:
 
     check: PublishCheck
     candidate: PublishCandidate
-    # Cloud honesty bundle publisher, once per CLOSED group: ``(phase, result)``.
     cloud: Callable[[str, Mapping[str, Any]], None] | None = None
-    # #1866: the banked level-frame disagreement, at most once per session and
-    # AFTER ``candidate``, so the artifact it cites already exists.
     findings: Callable[[Mapping[str, Any]], None] | None = None
-    # #2291: publish the round receipt, returning its artifact fingerprint. A raise
-    # or a ``None`` is "no receipt written"; a receipt is never a gate.
     round_receipt: Callable[[Mapping[str, Any]], str] | None = None
 
 
@@ -353,33 +188,18 @@ class V2FlowSeams:
     records: V2RecordPublishers
     apply_complete: ApplyGate
     apply_failed: ApplyFailureGate
-    # Called once per ACCEPTED capture of every retained kind. Fail-soft.
     bank_take: BankTake = _no_bank_take
-    # #1811: the whole-band level move the APPLY made and did not command, read at
-    # probe time. ``None`` is "nothing known", which the probe reports honestly.
     applied_offset_db: Callable[[], float] | None = None
-    # #2611: the Layer-A profile the speaker is playing right now. Its absence is
-    # NOT a fallback to the raw-crossover axis — the probe reports ``unavailable``.
     applied_profile: Callable[[], Mapping[str, Any] | None] | None = None
     summed_alignment_reference: Callable[[Any, Any], Any] | None = None
-    # S3: once per newly accepted applied-candidate VERIFY.
     record_model_error: RecordModelError | None = None
-    # #2291: which DSP graph the entry baseline was measured through, read at accept
-    # time. A raise is caught: a fingerprint is provenance, never a gate.
     entry_graph_fingerprint: Callable[[], str] | None = None
-    # #2291: is a prior candidate recorded to restore TO? Absence reads as "cannot
-    # confirm", never as "there is one".
     rollback_available: Callable[[], bool] | None = None
     tuning_graph_fingerprint: Callable[[], str] | None = None
-    # #2291/#2318: does the APPLIED graph put energy in? Absence answers "boosted".
     applied_boosts: Callable[[], bool] | None = None
 
 
-# --- the session ----------------------------------------------------------
-
-
 class CrossoverV2Session:
-
     def __init__(
         self,
         *,
@@ -391,7 +211,6 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
-            positions_gated: bool = False,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -400,29 +219,15 @@ class CrossoverV2Session:
         index_phase_map: Mapping[int, str] | None = None,
         post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
-        measure_predicted_spec_report: Mapping[str, Any] | None = None,
-        measure_commanded_delta: Any = None,
-        measure_declared_transfer: Any = None,
         measure_entry_baseline: "EntryBaseline | None" = None,
-        measure_gate_window_ms: float | None = None,
-        measure_proposal_fingerprint: str = "",
-        measure_alignment_objective: str = "",
-        verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
-        driver_class_by_role: Mapping[str, str] | None = None,
-        fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
-        radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
-        ] | None = None,
-        tweeter_measurement_band_hz: tuple[float, float] | None = None,
+        ]
+        | None = None,
         attempt_history: Sequence[AttemptRecord] = (),
-        series_position: "SeriesPosition | None" = None,
-        speaker_id: str = "",
-        tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
-        lateral_claims: Sequence["_spatial.TakeClaim"] = (),
         measure_specs_by_index: Mapping[int, MeasureSpec] | None = None,
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
@@ -431,33 +236,15 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError("a v2 session walks one or two drivers")
         self.session_id = str(session_id)
         self.sound_design_revision = sound_design_revision
-        self._positions_gated = bool(positions_gated)
         self._preset = source_preset
         self._roles = roles
-        # Lowest role first. ``_tweeter`` is ``None`` on a 1-way main, never aliased.
-        self._role_names = tuple(band.role for band in roles)
-        self._woofer = roles[0]
         self._tweeter: RoleBand | None = roles[1] if len(roles) == 2 else None
         self._tweeter_role = None if self._tweeter is None else self._tweeter.role
-        # Why this session evaluates no driver PAIR, or ``None`` when it does.
-        self._pair_reason = None if len(roles) > 1 else MEASURE_PAIR_SINGLE_DRIVER
         self._fc_hz = None if fc_hz is None else float(fc_hz)
-        # PR-4: computed once so every group-close event uses the SAME bands.
-        self._cloud_signal_band_hz = _programs.measurement_band_hz(roles)
-        # Band AND provenance as one value (#1763): the payload cannot publish a band
-        # without the disclosure of how it was derived.
-        self._cloud_echo_band = _derive_cloud_echo_band_hz(
-            self._cloud_signal_band_hz, tweeter_measurement_band_hz,
-        )
         self._caps = dict(driver_caps_dbfs)
-        # Per-role longest admissible ONE sweep (#2921); an absent role composes at its
-        # nominal duration.
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
-        # True once ``authorize_begin`` has refused: the capture writes its own
-        # capture_refused into a last-write-wins slot the terminal rider
-        # must not clobber.
         self.capture_published_refusal = False
         self._measurement_protection_sections_by_role = None
         if measurement_protection_sections_by_role is not None:
@@ -465,43 +252,24 @@ class CrossoverV2Session:
                 str(role): tuple(sections)
                 for role, sections in measurement_protection_sections_by_role.items()
             }
-        # Attempts belong to the commissioning journey, not to this capture session.
-        self._attempt_history = list(attempt_history)[
-            -MAX_ATTEMPT_HISTORY:
-        ]
-        # #2602's series memory, resolved by the host from durable state on BOTH stages
-        # since #2698, because the two readers run on different ones.
-        self._series_position = series_position
-        self._speaker_id = str(speaker_id or "unknown")
-        self._tuning_attempt_id = str(tuning_attempt_id or "")
-        self._fit_budget_by_role = fit_budget_by_role or {}
-        # Layer-1a per-role driver class (#1668 PR-C); empty matches
-        # ``compose_envelope``'s own "unknown".
-        self._driver_class_by_role = (
-            dict(driver_class_by_role) if driver_class_by_role else {}
-        )
-        # #1675: declared effective radiating diameter per role, provenance only. Empty
-        # means UNDECLARED — there is no conservative default diameter.
-        self._radiating_diameter_mm_by_role = (
-            dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
-        )
-        # #1864: ``None`` is undeclared spacing, never a default -- disclose it
-        # rather than silently folding it into the same 0.0
-        # ``MeasurementGeometry.parallax_us`` already treats as "no correction".
+        self._attempt_history = list(attempt_history)[-MAX_ATTEMPT_HISTORY:]
         if driver_spacing_m is None:
             log_event(
-                logger, "crossover_v2.driver_spacing_unknown",
-                level=logging.INFO, session_id=self.session_id,
+                logger,
+                "crossover_v2.driver_spacing_unknown",
+                level=logging.INFO,
+                session_id=self.session_id,
             )
         self._geometry = MeasurementGeometry(
-            driver_spacing_m=0.0 if driver_spacing_m is None else float(driver_spacing_m),
+            driver_spacing_m=0.0
+            if driver_spacing_m is None
+            else float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
         )
-        # Where this round is, and the walk it is in (#2291 Phase 4). ONE aggregate:
-        # six correlated fields here could disagree.
         self._journey = CommissionJourney(
             JourneyPlan.from_index_map(
-                index_phase_map if index_phase_map is not None
+                index_phase_map
+                if index_phase_map is not None
                 else _plan.DEFAULT_INDEX_PHASE_MAP,
                 post_apply_verifies=post_apply_verifies,
             ),
@@ -510,67 +278,42 @@ class CrossoverV2Session:
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
-        # CHECK's measured room floor, held until ``_measure_priors`` reads it (#1830).
-        # In-memory only: §5.6 invalidates CHECK/MEASURE evidence across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
-        # Retained per-position evidence in capture order, keyed by group phase.
+        self._lateral_poses: list[LateralPose] = []
         self._group_positions: dict[str, list[_CloudPosition]] = {
             phase: [] for phase in self._journey.plan.group_indexes
         }
-        self._lateral_poses: list[LateralPose] = []
         try:
-            self._lateral_consumer = validated_lateral_consumer(
-                lateral_consumer, states_own_poses=lateral_prompts is not None,
+            validated_lateral_consumer(
+                lateral_consumer,
+                states_own_poses=lateral_prompts is not None,
             )
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from exc
         self._lateral_prompts: tuple[CloudPositionPrompt, ...] = (
-            tuple(lateral_prompts) if lateral_prompts is not None
+            tuple(lateral_prompts)
+            if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
         )
-        self._lateral_claims: tuple[_spatial.TakeClaim, ...] = tuple(lateral_claims)
-        self._measure_specs_by_index = measure_specs_by_index if measure_specs_by_index is not None else {}
-        # Resolved through the resolver the plan builder uses, so the session and the
-        # plan cannot read different pose tables.
+        self._measure_specs_by_index = (
+            measure_specs_by_index if measure_specs_by_index is not None else {}
+        )
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
             verify_prompts
         )
-        # Per-position evidence metadata by position id. Not pruned on removal;
-        # the serializer joins on ``combined.position_ids``, so an orphan is never read.
-        self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
-            phase: {} for phase in self._journey.plan.group_indexes
-        }
-        # Geometry-locked retakes already spent, per group.
         self._geometry_retries_used: dict[str, int] = {
             phase: 0 for phase in self._journey.plan.group_indexes
         }
-        # The group's closing geometry verdict; ``None`` until the group closes.
-        self._group_geometry: dict[str, dict[str, Any]] = {}
-        # PR-4: the group's closing honesty pipeline result. ``None`` until the group
-        # closes — never confuse not-yet-run with a clean verdict.
-        self._group_cloud_result: dict[str, dict[str, Any]] = {}
-        # #2291: the LIVE ``FlatSpecReport`` behind the serialized ``spec`` key. Not
-        # persisted; the dict beside it is the durable copy.
-        self._group_graded_spec: dict[str, Any] = {}
-        # #1872: which phases' evidence artifact has already been PUBLISHED. Only the
-        # durable write skips a repeat, and only on a SUCCESSFUL publish.
-        self._group_cloud_published: set[str] = set()
-        # #2609 SF5 / §4.2, per closed group, read only by ``_grade_round_once``: the
-        # frame the spec bands were graded in, and one residual per position.
-        self._group_trusted_floor_hz: dict[str, float | None] = {}
-        self._group_position_residuals: dict[str, tuple[Mapping[str, Any], ...]] = {}
-
-        # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
             caps_dbfs=self._caps,
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
-            summed_sweep_band_hz=_plan.room_sweep_band_hz(self._roles, self._lateral_prompts),
+            summed_sweep_band_hz=_plan.room_sweep_band_hz(
+                self._roles, self._lateral_prompts
+            ),
         )
-        # Composed ONCE and held: ``program_for_phase`` answers by OBJECT IDENTITY, and
-        # #2291's before→after comparability depends on it.
         self._check_program = self._excitation.check_program()
         self._measure_program: ExcitationProgram | None = (
             self._excitation.measure_program(self._gain_plan_db)
@@ -578,219 +321,139 @@ class CrossoverV2Session:
             else None
         )
         self._verify_program = self._excitation.verify_program()
-        # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
-        branch_spec = next((spec for spec in self._measure_specs_by_index.values()
-                            if spec.graph_scope == "candidate_branches"), None)
+        branch_spec = next(
+            (
+                spec
+                for spec in self._measure_specs_by_index.values()
+                if spec.graph_scope == "candidate_branches"
+            ),
+            None,
+        )
         self._branch_program = (
             build_branch_program(self._cloud_program, branch_channels_for(branch_spec))
-            if branch_spec is not None else None
+            if branch_spec is not None
+            else None
         )
-
-        # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
-        # ``phase:index`` inside a group. ONE meter per slot (owner ruling #2086).
         self._slot_attempts: dict[str, SlotAttempts] = {}
         self._last_reason: dict[str, str] = {}
-        # The capture evidence paired with each slot's last rejection; exhaustion reads
-        # this rather than the global pair, which can belong to a different position.
-        self._last_pilot_evidence: dict[
-            str, tuple[str, bool | None, bool | None]
-        ] = {}
-        # Positions the flow GAVE UP on, so the group closes with what it has instead
-        # of the session dying at the mic.
+        self._last_pilot_evidence: dict[str, tuple[str, bool | None, bool | None]] = {}
         self._group_unresolved: dict[str, dict[int, str]] = {
             phase: {} for phase in self._journey.plan.group_indexes
         }
-        self._armed_index: int | None = None
-        # The most recent authorized (index, attempt): the host addresses the terminal
-        # ``capture_result`` to it at a play-seam failure (§5.10).
         self._armed_capture: tuple[int, int] | None = None
-        # MEASURE→VERIFY handoff evidence; a verify-only re-arm rehydrates it (§5.2).
         self._measure_predicted_sum: Any = measure_predicted_sum
-        # D4's spec verdict for the curve above, graded ONCE against the full-resolution
-        # tuple and held serialized — the rehydration route can only hand back JSON.
-        self._measure_predicted_spec_report: dict[str, Any] | None = (
-            dict(measure_predicted_spec_report)
-            if isinstance(measure_predicted_spec_report, Mapping)
-            else None
-        )
-        # What the applied correction COMMANDS on the summed response.
-        self._measure_commanded_delta: Any = measure_commanded_delta
-        # #2614: the applied graph's OWN transfer against the uncorrected crossover —
-        # the STATE axis beside the CHANGE axis above.
-        self._measure_declared_transfer: Any = measure_declared_transfer
-        # What ``_previous_graph_predicted_sum``'s INFO line last disclosed.
-        self._previous_graph_disclosed: tuple[Any, ...] | None = None
-        # #2291's "before": WRITTEN by stage 1's entry-baseline capture, PASSED IN on
-        # stage 2, which never captures one.
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
-        # #2392's proposal identity, written by the stage that COMMITS and passed in to
-        # the stage that GRADES. It travels as the fingerprint, not the ingredients.
-        self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
-        # WHICH commitment produced the committed delay (#2662). ``""`` is "no candidate
-        # committed yet" — a third answer from "committed" and "not committed".
-        self._measure_alignment_objective: str = str(measure_alignment_objective or "")
-        # The proposal itself, for THIS session only; the fingerprint above is the
-        # durable identity.
-        self._intervention_proposal: Any = None
-        # #2291's round grading and its fire-once guard: the round is graded at two
-        # different moments on the two tiers.
-        self._round_evaluated = False
-        self._round_evaluation: Any = None
-        # Where this round's receipt landed. ``None`` when writing failed — an
-        # identity for a receipt that does not exist would be worse than none.
-        self._round_receipt_identity: dict[str, Any] | None = None
-        # The post-apply VERIFY analysis, retained for the Full tier's later grading.
-        self._verify_analysis: ProgramAnalysis | None = None
-        # ``None`` until VERIFY is consumed.
-        self._delta_probe: DeltaProbeMap | None = None
-        # VERIFY's measured-vs-predicted pair and the band its own gate says it can be
-        # judged over — the gate disclosure's, never derived here (#2521).
-        self._verify_tracking_curve: Any = None
-        self._verify_trusted_band_hz: tuple[float, float] | None = None
-        # Absent for a group that never closed; empty for one with fewer than two
-        # positions.
-        self._group_band_spread: dict[str, tuple[Any, ...]] = {}
-        self._measure_gate_window_ms: float | None = measure_gate_window_ms
-        self._candidate: Any = None
-        self._close_lock = threading.Lock()
-        self._verify_outcome: str | None = None  # pass | fail | inconclusive
-        # WHICH VERDICT produced that outcome (#1974), written with it and never apart.
-        # ``failure.code`` cannot answer it: that is the last rejection of ANY phase.
-        self._verify_code: str | None = None
-        # VERIFY's own gate, reduced to what the screens need (#1974). Written only by
-        # ``_set_verify_outcome``, so it always describes the same capture.
-        self._verify_gate: dict[str, Any] | None = None
-        # The verify_fail expert-disclosure numbers (#1605). Set only once the tolerance
-        # comparison is reached, so no half-empty disclosure renders.
-        self._verify_evidence: dict[str, Any] | None = None
-        # The span that comparison graded (#1868), surfaced on EVERY outcome: a pass is
-        # exactly when an unstated band overclaims.
-        self._verify_graded_band_hz: list[float] | None = None
-        # The FRAME that comparison spanned — one offset, one tilt (rung P1). Same
-        # lifecycle and every-outcome rule as the band above.
-        self._verify_frame: dict[str, Any] | None = None
-        # The plan §7 claim record, on EVERY outcome that reached a grade (R18, #1868):
-        # "Verified." over no claim list reads as "everything was checked".
-        self._verify_claims: dict[str, Any] | None = None
         self._last_failure_code: str | None = None
-        # The pilot evidence belonging to ``_last_failure_code`` (#2085), ALWAYS written
-        # with it. ``None`` is "no pilot evidence for this failure".
         self._last_failure_pilot_heard: bool | None = None
-        # SESSION-SCOPED reference, since #1927: the first usable VERIFY attempt of
-        # THIS session records it and every later attempt is compared against it. A
-        # rehydrated one conflated within-session chain consistency with cross-day
-        # setup identity — the 2026-07-30 bench measured 0.775 dB of ordinary mic
-        # replacement.
-        self._verify_pilot_baseline: dict[str, float] | None = None
-        # WHEN this session set the reference above (epoch float), stamped in the same
-        # statement so the two cannot disagree.
-        self._verify_pilot_baseline_at: float | None = None
-        # The PREVIOUS session's reference, as dated HISTORY, never a comparator. An
-        # undated record cannot be shown as history without inventing a date (#1942).
-        self._verify_pilot_prior: dict[str, float] | None = None
-        self._verify_pilot_prior_at: float | None = None
-        if isinstance(verify_pilot_transfer_prior, Mapping):
-            prior_values = verify_pilot_transfer_prior.get("values")
-            prior_at = verify_pilot_transfer_prior.get("at")
-            if isinstance(prior_values, Mapping) and isinstance(prior_at, (int, float)):
-                values = {
-                    str(role): float(value)
-                    for role, value in prior_values.items()
-                    if isinstance(value, (int, float))
-                }
-                # Values AND a date, together or not at all.
-                if values:
-                    self._verify_pilot_prior = values
-                    self._verify_pilot_prior_at = float(prior_at)
-        # Set once by the attempt that establishes this session's reference, and only
-        # past the gate's own ceiling — one threshold, not a second definition.
-        self._verify_level_reference_reset: dict[str, float] | None = None
-        # Transient, recomputed on every VERIFY attempt; ``None`` when there is nothing
-        # to compare.
-        self._verify_pilot_transfer_step_db: float | None = None
-        # Which measurement-honesty check produced the LAST MEASURE verdict, reset at
-        # the top of every ``_measure_verdict``. NOT every value is a refusal: G1 writes
-        # ``ripple_disclosure`` on a capture it ACCEPTS, so pair it with ``accepted=``.
-        self._last_measure_guard: str = ""
-        # The banked ripple reservation (#2087). Reset at the top of every
-        # ``_measure_verdict``, so it describes THE ACCEPTED CAPTURE and no other.
-        self._measure_ripple_reservation: dict[str, Any] | None = None
-        self._measure_alignment_reservation: dict[str, Any] | None = None
-        # Audit gauntlet 5a: ``True`` when the accepted MEASURE had no resolved mic
-        # calibration, ``None`` otherwise. Same reset lifecycle as the two above.
-        self._measure_calibration_reservation: bool | None = None
 
-    # --- program composition -------------------------------------------------
+    @property
+    def source_preset(self) -> Any:
+        return self._preset
+
+    @property
+    def roles_bands(self) -> tuple[RoleBand, ...]:
+        return self._roles
+
+    @property
+    def excitation(self) -> _programs.SessionExcitation:
+        return self._excitation
+
+    @property
+    def caps_dbfs(self) -> Mapping[str, float]:
+        return self._excitation.caps_dbfs
+
+    @property
+    def spl_stop_db_spl(self) -> float:
+        return self._preset.safety.max_commissioning_level_db_spl
+
+    @property
+    def gain_plan_db(self) -> Mapping[str, float] | None:
+        return self._gain_plan_db
+
+    @property
+    def measure_gain_ceiling_db(self) -> Mapping[str, float]:
+        return self._measure_gain_ceiling_db
+
+    @property
+    def analyze(self) -> AnalyzeCapture:
+        return self._seams.analyze
+
+    def summed_alignment_reference(self) -> Any:
+        baseline = self.measure_entry_baseline
+        key = baseline.artifact_ref if baseline is not None else None
+        cached = getattr(self, "_summed_alignment_reference_cache", None)
+        if cached is None or cached[0] != key:
+            seam = self._seams.summed_alignment_reference
+            reference = (
+                _unreadable("no_entry_baseline")
+                if baseline is None
+                else seam(baseline, self.source_preset)
+                if seam
+                else None
+            )
+            cached = self._summed_alignment_reference_cache = (key, reference)
+        return cached[1]
+
+    def set_program(self, phase: str, program: ExcitationProgram) -> None:
+        if phase == PHASE_CHECK:
+            self._check_program = program
+        elif phase == PHASE_VERIFY:
+            self._verify_program = program
+        elif phase == PHASE_CLOUD_VERIFY:
+            self._cloud_program = program
+
+    def set_excitation(self, excitation: _programs.SessionExcitation) -> None:
+        self._excitation = excitation
+
+    def set_entry_baseline(self, baseline: EntryBaseline | None) -> None:
+        self._measure_entry_baseline = baseline
 
     def _compose_measure_program(
-        self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
+        self,
+        gain_plan_db: Mapping[str, float],
+        *,
+        extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
         """MEASURE's program at the solved gains, the one with a LIFECYCLE."""
         return self._excitation.measure_program(
-            gain_plan_db, extra_backoff_db=extra_backoff_db,
+            gain_plan_db,
+            extra_backoff_db=extra_backoff_db,
         )
 
-    # --- priors per phase ----------------------------------------------------
-
-    def _check_priors(self) -> MeasurementPriors:
+    def check_priors(self) -> MeasurementPriors:
         return _priors.check_priors(fc_hz=self._fc_hz)
 
-    def _measure_priors(self) -> MeasurementPriors:
+    def measure_priors(self) -> MeasurementPriors:
         return _priors.measure_priors(
             fc_hz=self._fc_hz,
             source_preset=self._preset,
             protection_sections_by_role=self._measurement_protection_sections_by_role,
             ambient_report=self._check_ambient_report,
-            summed_alignment=cached_session_reference(self),
-            # Derived here: its producer is shared with the plausibility gate.
+            summed_alignment=self.summed_alignment_reference(),
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
-            explicit_alignment_delay_us=None, explicit_alignment_polarity_sign=None,
+            explicit_alignment_delay_us=None,
+            explicit_alignment_polarity_sign=None,
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
-        from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: baseline imports the flow
-
         if self._tweeter_role is None:
             return None
-        return _planning.applied_profile_timing(load_applied_baseline_profile_state())
-
-    def _applied_blend_correction(self) -> tuple[Mapping[str, Any], ...] | None:
-        """The blend correction the post-apply capture rode, or ``None``."""
-        from jasper.active_speaker.baseline_profile import (
-            load_applied_baseline_profile_state,
-            profile_blend_correction,
+        return _planning.applied_profile_timing(
+            baseline_profile.load_applied_baseline_profile_state()
         )
 
-        from .crossover_v2.blend_correction import blend_filters_from_mapping
-
-        try:
-            raw = profile_blend_correction(load_applied_baseline_profile_state())
-        except (OSError, TypeError, ValueError):
-            return None
-        if raw is None:
-            return None
-        return blend_filters_from_mapping(list(raw))
-
-    def _candidate_blend_correction(self) -> tuple[Mapping[str, Any], ...]:
-        instruction = (
-            None if self._series_position is None
-            else self._series_position.previous_blend_correction
-        )
-        if instruction is not None:
-            return tuple(instruction)
-        return self._applied_blend_correction() or ()
-
-    def _lateral_priors(self) -> MeasurementPriors:
+    def lateral_priors(self) -> MeasurementPriors:
         return _priors.lateral_priors(
-            fc_hz=self._fc_hz, ambient_report=self._check_ambient_report,
+            fc_hz=self._fc_hz,
+            ambient_report=self._check_ambient_report,
         )
 
     def _measure_sweep_bounds(self) -> tuple[float, float] | None:
         return _priors.measure_sweep_bounds(self._measure_program)
 
-    def _verify_priors(self) -> MeasurementPriors:
+    def verify_priors(self) -> MeasurementPriors:
         return _priors.verify_priors(
             fc_hz=self._fc_hz,
             source_preset=self._preset,
@@ -798,20 +461,16 @@ class CrossoverV2Session:
             sweep_bounds=self._measure_sweep_bounds(),
         )
 
-    def _cloud_priors(self) -> MeasurementPriors:
+    def cloud_priors(self) -> MeasurementPriors:
         return _priors.cloud_priors(fc_hz=self._fc_hz)
 
-    def _entry_baseline_priors(self) -> MeasurementPriors:
+    def entry_baseline_priors(self) -> MeasurementPriors:
         return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
-
-    # --- journey delegation --------------------------------------------------
 
     @property
     def post_apply_verifies(self) -> bool:
         """Will this session's correction be MEASURED after it is applied?"""
         return self._journey.plan.post_apply_verifies
-
-    # --- read surfaces -------------------------------------------------------
 
     @property
     def accepted_phases(self) -> frozenset[str]:
@@ -822,115 +481,10 @@ class CrossoverV2Session:
         """Accepted applied-candidate attempts, oldest first and bounded."""
         return tuple(self._attempt_history)
 
-    def phase_status(self, phase: str) -> str:
-        return self._journey.phase_status(phase)
-
     @property
     def session_phases(self) -> tuple[str, ...]:
         """The ordered phases this session runs (its ``index_phase_map``'s)."""
         return self._journey.plan.phases
-
-    def pending_phases(self) -> tuple[str, ...]:
-        return self._journey.pending_phases()
-
-    def group_geometry(self, phase: str) -> dict[str, Any] | None:
-        """The closing geometry verdict for one position group, or ``None``."""
-        verdict = self._group_geometry.get(phase)
-        return dict(verdict) if verdict is not None else None
-
-    def group_cloud_result(self, phase: str) -> dict[str, Any] | None:
-        """The honesty-pipeline result for one closed group, or ``None`` when the
-        group has not closed — never a clean verdict.
-        """
-        result = self._group_cloud_result.get(phase)
-        return dict(result) if result is not None else None
-
-    def group_positions(self, phase: str) -> tuple[str, ...]:
-        """Accepted position ids in one group, in capture order."""
-        return tuple(p.position_id for p in self._group_positions.get(phase, ()))
-
-    def group_position_takes(self, phase: str) -> tuple[dict[str, Any], ...]:
-        """The SURVIVING take per position — ``{position_id, index, attempt}``."""
-        return tuple(
-            {"position_id": p.position_id, "index": p.index, "attempt": p.attempt}
-            for p in self._group_positions.get(phase, ())
-        )
-
-    @property
-    def lateral_poses(self) -> tuple[LateralPose, ...]:
-        """The accepted lateral walk, in capture order (plan §4.4)."""
-        return tuple(self._lateral_poses)
-
-    def lateral_mark_return_drift_db(self) -> dict[str, float] | None:
-        """Per-role worst |Δ dB| between the walk's two AT-MARK poses."""
-        poses = self._lateral_poses
-        left_the_mark = max(
-            (i for i, p in enumerate(poses) if not p.at_mark), default=-1
-        )
-        opening = next((p for p in poses if p.at_mark), None)
-        closing = next((p for p in poses[left_the_mark + 1:] if p.at_mark), None)
-        if opening is None or closing is None or opening.index == closing.index:
-            return None
-        drift: dict[str, float] = {}
-        for first in opening.curves:
-            last = closing.curve(first.role)
-            if last is None or first.freqs_hz.size != last.freqs_hz.size:
-                continue
-            lo, hi = first.band_hz
-            # Only where BOTH poses were actually driven; outside the sweep band
-            # the samples are noise and their difference is noise squared.
-            inside = (first.freqs_hz >= lo) & (first.freqs_hz <= hi)
-            if not np.any(inside):
-                continue
-            delta = 20.0 * np.log10(
-                np.abs(last.complex_tf[inside]) / np.abs(first.complex_tf[inside])
-            )
-            finite = delta[np.isfinite(delta)]
-            if finite.size:
-                drift[first.role] = float(np.max(np.abs(finite)))
-        return drift or None
-
-    @property
-    def current_phase(self) -> str:
-        return self._journey.current_phase
-
-    @property
-    def candidate(self) -> Any:
-        return self._candidate
-
-    @property
-    def verify_outcome(self) -> str | None:
-        return self._verify_outcome
-
-    @property
-    def verify_code(self) -> str | None:
-        """The reason code behind :attr:`verify_outcome`, or ``None`` on a pass."""
-        return self._verify_code
-
-    @property
-    def verify_gate(self) -> dict[str, Any] | None:
-        """VERIFY's gate as the screens need it, or ``None`` (#1974)."""
-        return dict(self._verify_gate) if self._verify_gate else None
-
-    @property
-    def verify_evidence(self) -> dict[str, Any] | None:
-        """The verify_fail expert-disclosure numbers (#1605), or None."""
-        return dict(self._verify_evidence) if self._verify_evidence else None
-
-    @property
-    def verify_graded_band_hz(self) -> list[float] | None:
-        """``[lo, hi]`` VERIFY's tracking comparison graded, or None (#1868)."""
-        return list(self._verify_graded_band_hz) if self._verify_graded_band_hz else None
-
-    @property
-    def verify_frame(self) -> dict[str, Any] | None:
-        """The frame VERIFY's comparison spanned, or None (rung P1)."""
-        return dict(self._verify_frame) if self._verify_frame else None
-
-    @property
-    def verify_claims(self) -> dict[str, Any] | None:
-        """The plan §7 claim record, or ``None`` (R18, #1868)."""
-        return dict(self._verify_claims) if self._verify_claims else None
 
     @property
     def applied(self) -> bool:
@@ -941,116 +495,9 @@ class CrossoverV2Session:
         return self._measure_predicted_sum
 
     @property
-    def measure_predicted_spec_report(self) -> dict[str, Any] | None:
-        """The spec verdict for :attr:`measure_predicted_sum`, or ``None``.
-
-        ``None`` means it could not be graded — **never that it passed**. Graded
-        against the full-resolution tuple; durable state holds a 512-point
-        average (#1858).
-        """
-        return (
-            dict(self._measure_predicted_spec_report)
-            if self._measure_predicted_spec_report is not None
-            else None
-        )
-
-    @property
-    def measure_commanded_delta(self) -> Any:
-        return self._measure_commanded_delta
-
-    @property
-    def measure_declared_transfer(self) -> Any:
-        """The applied graph's own transfer against the raw crossover (#2614)."""
-        return self._measure_declared_transfer
-
-    @property
-    def measure_proposal_fingerprint(self) -> str:
-        """This round's :class:`InterventionProposal` identity, or ``""``."""
-        return self._measure_proposal_fingerprint
-
-    @property
-    def measure_alignment_objective(self) -> str:
-        """Which commitment produced this round's delay, or ``""`` (#2662)."""
-        return self._measure_alignment_objective
-
-    @property
-    def last_intervention_proposal(self) -> Any:
-        """This session's proposal, its refusal, or ``None`` before the commit."""
-        return self._intervention_proposal
-
-    @property
-    def round_receipt_identity(self) -> dict[str, Any] | None:
-        """Where this session's round receipt landed, or ``None`` (#2291)."""
-        record = self._round_receipt_identity
-        return dict(record) if isinstance(record, Mapping) else None
-
-    @property
-    def round_evaluation(self) -> Any:
-        """This session's graded round, or ``None`` before it is graded."""
-        return self._round_evaluation
-
-    @property
     def measure_entry_baseline(self) -> "EntryBaseline | None":
         """#2291's pre-apply side of this round, or ``None``."""
         return self._measure_entry_baseline
-
-    @property
-    def delta_probe(self) -> DeltaProbeMap | None:
-        """This session's realized-vs-commanded verdict, or ``None``."""
-        return self._delta_probe
-
-    @property
-    def verify_tracking_curve(self) -> Any:
-        """The VERIFY capture's ``(freqs_hz, measured_db, predicted_db)``, or
-        ``None`` (#2522).
-        """
-        return self._verify_tracking_curve
-
-    @property
-    def measure_gate_window_ms(self) -> float | None:
-        return self._measure_gate_window_ms
-
-    @property
-    def measure_ripple_reservation(self) -> dict[str, Any] | None:
-        """The banked ripple reservation about the accepted MEASURE, or ``None``."""
-        reservation = self._measure_ripple_reservation
-        return dict(reservation) if reservation else None
-
-    @property
-    def measure_alignment_reservation(self) -> dict[str, Any] | None:
-        """The banked reservation about an accepted low-confidence alignment."""
-        reservation = self._measure_alignment_reservation
-        return dict(reservation) if reservation else None
-
-    @property
-    def measure_calibration_reservation(self) -> bool | None:
-        """``True`` when the accepted MEASURE ran with no resolved measurement-mic
-        calibration; ``None`` when it was calibrated, or never resolved.
-        """
-        return self._measure_calibration_reservation
-
-    @property
-    def verify_pilot_transfer_reference(self) -> Mapping[str, Any] | None:
-        """This session's own G3 reference, DATED, for the host to persist.
-
-        ``{"values": {role: dB}, "at": epoch}``. One value rather than two keys: a
-        record without its date cannot be shown as history (#1942).
-        """
-        if self._verify_pilot_baseline is None or self._verify_pilot_baseline_at is None:
-            return None
-        return {
-            "values": dict(self._verify_pilot_baseline),
-            "at": self._verify_pilot_baseline_at,
-        }
-
-    @property
-    def verify_level_reference_reset(self) -> Mapping[str, float] | None:
-        """This session's level-reference reset, when it is worth disclosing."""
-        return (
-            dict(self._verify_level_reference_reset)
-            if self._verify_level_reference_reset is not None
-            else None
-        )
 
     @property
     def last_failure_code(self) -> str | None:
@@ -1067,7 +514,10 @@ class CrossoverV2Session:
         return self._last_failure_pilot_heard if self._last_failure_code else None
 
     def _pilot_heard_for(
-        self, code: str | None, *, slot: str | None = None,
+        self,
+        code: str | None,
+        *,
+        slot: str | None = None,
     ) -> bool | None:
         """The pilot evidence recorded WITH ``code``, else ``None`` (#2085)."""
         if slot is not None:
@@ -1076,12 +526,17 @@ class CrossoverV2Session:
             paired = None
         else:
             paired = (
-                self._last_failure_code, self._last_failure_pilot_heard, None,
+                self._last_failure_code,
+                self._last_failure_pilot_heard,
+                None,
             )
         return _admission.pilot_heard_for(code, paired)
 
     def _reflection_measured_for(
-        self, code: str | None, *, slot: str,
+        self,
+        code: str | None,
+        *,
+        slot: str,
     ) -> bool | None:
         """The gate discriminator recorded with ``code`` at ``slot``."""
         return _admission.reflection_measured_for(
@@ -1095,7 +550,7 @@ class CrossoverV2Session:
         """
         return self._armed_capture
 
-    def _phase_of_index(self, index: int) -> str:
+    def phase_of_index(self, index: int) -> str:
         phase = self._journey.plan.phase_for_index(index)
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
@@ -1103,7 +558,7 @@ class CrossoverV2Session:
 
     def _slot_of_index(self, index: int) -> str:
         """The retry-budget key for one capture index."""
-        phase = self._phase_of_index(index)
+        phase = self.phase_of_index(index)
         return f"{phase}:{index}" if phase in GROUP_PHASES else phase
 
     def _cloud_prompt(self, phase: str, index: int) -> CloudPositionPrompt:
@@ -1113,17 +568,15 @@ class CrossoverV2Session:
             position = offsets.index(index)
         except ValueError:
             position = 0
-        # Three groups, three tables: the lateral walk and the post-apply walk each
-        # have their own; the pre-apply cloud walks the shared table.
         table = (
-            self._lateral_prompts if phase == PHASE_LATERAL
-            else self._verify_prompts if phase == PHASE_CLOUD_VERIFY
+            self._lateral_prompts
+            if phase == PHASE_LATERAL
+            else self._verify_prompts
+            if phase == PHASE_CLOUD_VERIFY
             else CLOUD_POSITION_PROMPTS
         )
         if position < len(table):
             return table[position]
-        # A DISTINCT defensive spot, not a table row repeated: 45 cm right is past the
-        # table's widest RIGHT offset (40 cm) and inside the geometry rung's.
         return _pose(_plan._LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
 
     def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
@@ -1137,8 +590,6 @@ class CrossoverV2Session:
             used = max(self._geometry_retries_used.get(phase, 1), 1)
             index_ = min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
             rung = CLOUD_GEOMETRY_RETRY_PROMPTS[index_]
-            # Rung 2 is COMPOUND — 75 cm sideways AND 30 cm up — so its rise
-            # is stated rather than left to read as mark height.
             rise_cm = CLOUD_GEOMETRY_RETRY_RISE_CM[index_]
             return CloudPositionPrompt(
                 rung,
@@ -1149,13 +600,12 @@ class CrossoverV2Session:
             )
         return self._cloud_prompt(phase, index)
 
-    # --- lifecycle -----------------------------------------------------------
-
     def note_restore_observed(self) -> None:
         """The restore-observed host event — disarms the VERIFY hold (#2616)."""
         self._journey.mark_restored()
         log_event(
-            logger, "correction.crossover_v2_restore_observed",
+            logger,
+            "correction.crossover_v2_restore_observed",
             session_id=self.session_id,
         )
 
@@ -1170,10 +620,7 @@ class CrossoverV2Session:
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
-            candidate_fingerprint=(
-                getattr(self._candidate, "fingerprint", None)
-                if self._candidate is not None else None
-            ),
+            candidate_fingerprint=None,
             attempt_history=tuple(self._attempt_history),
         )
 
@@ -1196,13 +643,9 @@ class CrossoverV2Session:
             journey = {
                 "attempt_history": snapshot.attempt_history,
             }
-        # Explicit caller values win for migrations/tests that deliberately replace one
-        # journey fact; ordinary production hydration supplies none.
-        journey.update({
-            key: kwargs.pop(key)
-            for key in tuple(journey)
-            if key in kwargs
-        })
+        journey.update(
+            {key: kwargs.pop(key) for key in tuple(journey) if key in kwargs}
+        )
         if snapshot is not None and snapshot.session_id == session_id:
             return cls(
                 session_id=session_id,
@@ -1215,30 +658,39 @@ class CrossoverV2Session:
             )
         if snapshot is not None:
             log_event(
-                logger, "correction.crossover_v2_session_rebound",
+                logger,
+                "correction.crossover_v2_session_rebound",
                 level=logging.INFO,
                 prior_session=snapshot.session_id,
                 session_id=session_id,
             )
         return cls(session_id=session_id, **journey, **kwargs)
 
-    # --- capture callbacks ---------------------------------------------------
-
     def authorize_begin(
-        self, index: int, attempt: int, entry: Any = None, *,
+        self,
+        index: int,
+        attempt: int,
+        entry: Any = None,
+        *,
         executor_ledger: SlotAttempts | None = None,
     ) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7)."""
-        phase = self._phase_of_index(index)
+        phase = self.phase_of_index(index)
         slot = self._slot_of_index(index)
-        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.get(slot)
+        ledger = (
+            executor_ledger
+            if executor_ledger is not None
+            else self._slot_attempts.get(slot)
+        )
 
         decision = _admission.assess_begin(
             ledger=None if executor_ledger is not None and attempt == 1 else ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
             default_code=REASON_LOCATE_FAILED,
-            retry_charge=executor_ledger.charge if executor_ledger is not None else "operator",
+            retry_charge=executor_ledger.charge
+            if executor_ledger is not None
+            else "operator",
         )
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
@@ -1260,7 +712,8 @@ class CrossoverV2Session:
                 spec,
                 pilot_heard=self._pilot_heard_for(code, slot=slot),
                 reflection_measured=self._reflection_measured_for(
-                    code, slot=slot,
+                    code,
+                    slot=slot,
                 ),
             )
             self.capture_published_refusal = True
@@ -1274,31 +727,47 @@ class CrossoverV2Session:
             )
         if decision.kind != _admission.ADMIT:
             log_event(
-                logger, "correction.crossover_v2_begin_decision_kind_unmapped",
-                level=logging.ERROR, session_id=self.session_id,
-                phase=phase, index=index, kind=str(decision.kind),
+                logger,
+                "correction.crossover_v2_begin_decision_kind_unmapped",
+                level=logging.ERROR,
+                session_id=self.session_id,
+                phase=phase,
+                index=index,
+                kind=str(decision.kind),
             )
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 REASON_LOCATE_FAILED,
                 reason_message(
-                    REASON_LOCATE_FAILED, REASON_REGISTRY[REASON_LOCATE_FAILED],
+                    REASON_LOCATE_FAILED,
+                    REASON_REGISTRY[REASON_LOCATE_FAILED],
                 ),
             )
-        ledger = executor_ledger if executor_ledger is not None else self._slot_attempts.setdefault(slot, SlotAttempts())
+        ledger = (
+            executor_ledger
+            if executor_ledger is not None
+            else self._slot_attempts.setdefault(slot, SlotAttempts())
+        )
         if decision.spends_extra and executor_ledger is None:
             try:
-                ledger.spend("speaker" if decision.initiator == ATTEMPT_INITIATOR_SPEAKER else "operator")
+                ledger.spend(
+                    "speaker"
+                    if decision.initiator == ATTEMPT_INITIATOR_SPEAKER
+                    else "operator"
+                )
             except _admission.AttemptOverspendError as exc:
                 raise CrossoverV2FlowError(str(exc)) from exc
         if executor_ledger is not None and attempt > 1:
             ledger.spend(executor_ledger.charge)
         ledger.admitted += 1
-        self._armed_index = index
         self._armed_capture = (index, attempt)
         log_event(
-            logger, "correction.crossover_v2_authorized",
-            session_id=self.session_id, phase=phase, index=index, attempt=attempt,
+            logger,
+            "correction.crossover_v2_authorized",
+            session_id=self.session_id,
+            phase=phase,
+            index=index,
+            attempt=attempt,
             extra_used=ledger.extras_used,
             extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
             extra_by_speaker=ledger.by_speaker,
@@ -1306,11 +775,16 @@ class CrossoverV2Session:
 
     @staticmethod
     def _extras_spent_message(
-        ledger: SlotAttempts, *, diagnosis: str, outcome: str,
+        ledger: SlotAttempts,
+        *,
+        diagnosis: str,
+        outcome: str,
     ) -> str:
         """The household sentence for a position whose extras are gone."""
         return _admission.extras_spent_message(
-            ledger, diagnosis=diagnosis, outcome=outcome,
+            ledger,
+            diagnosis=diagnosis,
+            outcome=outcome,
         )
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
@@ -1322,7 +796,6 @@ class CrossoverV2Session:
             unresolved=self._group_unresolved[phase] if is_group else (),
             retained=self._retained_group_indexes(phase) if is_group else (),
         )
-
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
         """The composed program this session plays for ``phase``."""
@@ -1343,611 +816,69 @@ class CrossoverV2Session:
                 cloud=self._cloud_program,
             )
         except _programs.NoProgramForPhaseError as exc:
-            # The flow's own error type is what every caller already handles;
-            # the selector is pure and has no business knowing it.
             raise CrossoverV2FlowError(str(exc)) from exc
 
     def _capture_purpose(self, phase: str, index: int) -> str | None:
-        prompt = (self._prompt_shown_for(phase, index) if phase in GROUP_PHASES else
-                  self._lateral_prompts[0] if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts else None)
-        return resolved_measurement_purpose(prompt.purpose, prompt.kind) if prompt else None
+        prompt = (
+            self._prompt_shown_for(phase, index)
+            if phase in GROUP_PHASES
+            else self._lateral_prompts[0]
+            if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts
+            else None
+        )
+        return (
+            resolved_measurement_purpose(prompt.purpose, prompt.kind)
+            if prompt
+            else None
+        )
 
-    def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
+    def capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
         """Apply the plan's analysis purpose to this capture."""
         spec = self._measure_specs_by_index.get(index)
-        position, vertical, exemption = (spec.positions or (0,))[0] if spec else 0, spec.vertical_deg if spec else 0, None
+        position, vertical, exemption = (
+            (spec.positions or (0,))[0] if spec else 0,
+            spec.vertical_deg if spec else 0,
+            None,
+        )
         if phase in GROUP_PHASES:
             prompt = self._prompt_shown_for(phase, index)
-            position, vertical = position_angle_deg(prompt), position_elevation_deg(prompt)
+            position, vertical = (
+                position_angle_deg(prompt),
+                position_elevation_deg(prompt),
+            )
             exemption = gate_exemption(self._capture_purpose(phase, index))
-        return replace(self._geometry, gate_exempt_reason=exemption, position_deg=position, vertical_deg=vertical)
-
-    def consume_capture(
-        self, index: int, attempt: int, result: Any,
-    ) -> dict[str, Any]:
-        """Analyze one uploaded capture and advance (or reject) the phase."""
-        phase = self._phase_of_index(index)
-        slot = self._slot_of_index(index)
-        # ONE table for both "which priors" and "which consumer". Group members are
-        # keyed per phase: ``PHASE_LATERAL`` is in ``GROUP_PHASES`` yet reads its own.
-        dispatch: dict[
-            str,
-            tuple[
-                Callable[[], MeasurementPriors],
-                Callable[[int, int, ProgramAnalysis, Any], PhaseVerdict],
-            ],
-        ] = {
-            PHASE_CHECK: (self._check_priors, self._consume_check),
-            PHASE_MEASURE: (self._measure_priors, self._consume_measure),
-            PHASE_LATERAL: (self._lateral_priors, self._consume_lateral_pose),
-            PHASE_CLOUD_VERIFY: (
-                self._cloud_priors,
-                partial(self._consume_cloud_position, PHASE_CLOUD_VERIFY),
-            ),
-            PHASE_ENTRY_BASELINE: (
-                self._entry_baseline_priors, self._consume_entry_baseline,
-            ),
-            PHASE_VERIFY: (
-                self._verify_priors,
-                partial(self._consume_verify, phase=PHASE_VERIFY),
-            ),
-        }
-        if phase not in dispatch:
-            raise CrossoverV2FlowError(
-                f"no capture consumer for phase {phase!r}"
-            )
-        priors_of, consume = dispatch[phase]
-        program = self.program_for_phase(phase)
-        priors = priors_of()
-        # The whole CaptureResult crosses the seam: the binding resolves mic calibration
-        # from it. ``phase`` is the flow's own (#1855) — ``program.phase`` is not.
-        analysis = self._seams.analyze(
-            program, result, priors, self._capture_geometry(phase, index), phase=phase,
-        )
-        verdict = consume(index, attempt, analysis, result)
-        # THIS capture's pilot evidence, attached at ONE point rather than at each of
-        # the three gates that can produce ``locate_failed``.
-        reflection_measured: bool | None = None
-        if verdict.code == REASON_VERIFY_INCONCLUSIVE:
-            # Read, never recomputed: the one verdict carrying this code
-            # stashed THIS capture's record via ``_set_verify_outcome``.
-            gate_record = self._verify_gate
-            if gate_record is not None:
-                reflection_measured = bool(gate_record["reflection_measured"])
-        verdict = replace(
-            verdict,
-            pilot_heard=analysis.pilot_snr_ok,
-            reflection_measured=reflection_measured,
-            payload={**verdict.payload, "screens": _dispatch.pilot_screens(
-                analysis, program=program)},
-        )
-        ledger = self._slot_attempts.get(slot)
-        if ledger is not None:
-            ledger.charge = "operator" if verdict.accepted else verdict.charge
-        if not verdict.accepted and verdict.code is not None:
-            self._last_reason[slot] = verdict.code
-            self._last_pilot_evidence[slot] = (
-                verdict.code,
-                verdict.pilot_heard,
-                verdict.reflection_measured,
-            )
-            # SETTLE HERE, not at the next begin (owner ruling #2086 item 3), so the
-            # household is never shown a retry screen whose button leads to a pre-play
-            # refusal — UNLESS the verdict already ended the set on its own finding.
-            if verdict.payload.get("terminal") is not True:
-                verdict = self._resolve_spent_slot(phase, index, slot, verdict)
-        if verdict.accepted:
-            # A group's PHASE is accepted only when its last index is in. Both
-            # route through ``_note_accepted``, so one place decides "done".
-            self._note_accepted(phase, index)
-            # A clean acceptance supersedes the slot's rejection; a settled
-            # exhaustion stays paired for the defensive replay.
-            if not (
-                "unresolved" in verdict.payload
-                or verdict.payload.get("kept_earlier_take") is True
-            ):
-                self._last_reason.pop(slot, None)
-                self._last_pilot_evidence.pop(slot, None)
-            self._last_failure_code = None
-            self._last_failure_pilot_heard = None
-        elif verdict.code is not None:
-            # Re-read off the FINAL verdict: a settled close can substitute a product
-            # refusal for the quality rejection that got here.
-            self._last_reason[slot] = verdict.code
-            self._last_failure_code = verdict.code
-            # Set and cleared together with the code above: the envelope renders the
-            # persisted failure's sentence from this pair.
-            self._last_failure_pilot_heard = verdict.pilot_heard
-        # Stamped once here rather than in each ``_consume_*``, so the number the phone
-        # renders and the number the journal logs cannot drift (ruling item 2).
-        verdict = self._with_attempt_payload(slot, verdict)
-        log_event(
-            logger, "correction.crossover_v2_result",
-            session_id=self.session_id, phase=phase,
-            accepted=verdict.accepted, code=verdict.code or "",
-            # The discriminator behind the sentence the household just read (#2085):
-            # without it four ``code=locate_failed`` lines are indistinguishable.
-            pilot_heard=verdict.pilot_heard,
-        )
-        return verdict.to_capture_dict()
-
-    def _with_attempt_payload(
-        self, slot: str, verdict: PhaseVerdict
-    ) -> PhaseVerdict:
-        ledger = self._slot_attempts.get(slot)
-        if ledger is None:
-            return verdict
         return replace(
-            verdict, payload={**verdict.payload, "attempts": ledger.to_payload()}
+            self._geometry,
+            gate_exempt_reason=exemption,
+            position_deg=position,
+            vertical_deg=vertical,
         )
 
-    def _resolve_spent_slot(
-        self, phase: str, index: int, slot: str, verdict: PhaseVerdict
-    ) -> PhaseVerdict:
-        """Act on a rejection the next begin would refuse — attribute, then degrade.
-
-        The ladder belongs to ``crossover_v2.admission.settle_spent_slot``; its two
-        halves bracket the lock, whose group rungs read facts only true while held.
-        """
-        ledger = self._slot_attempts.get(slot)
-        kind = _admission.settle_spent_slot(
-            ledger=ledger,
-            is_group=lambda: self._journey.plan.is_group(phase),
-            code=verdict.code,
-            non_retriable=NON_RETRIABLE_CODES,
-        )
-        if kind == _admission.SETTLE_RETRY_REMAINS:
-            return verdict
-        observed = verdict.code or self._last_reason.get(slot) or ""
-        diagnosis = ""
-        if observed in REASON_REGISTRY:
-            diagnosis = reason_diagnosis(
-                observed,
-                REASON_REGISTRY[observed],
-                pilot_heard=verdict.pilot_heard,
-                reflection_measured=verdict.reflection_measured,
-            )
-        if kind == _admission.SETTLE_CONDITION_NOT_RETRIABLE:
-            # The condition rung — nothing was spent, so the copy stays the code's OWN
-            # sentence; the exhaustion sentence would be false about a first take.
-            _diagnostics._log_condition_settled(
-                logger, phase, index, observed, kind, diagnosis,
-                session_id=self.session_id,
-            )
-            return replace(
-                verdict,
-                payload={
-                    **verdict.payload,
-                    # Same runner/page contract the spent terminals use: publish this
-                    # capture_result, then finish rather than wait for a refused begin.
-                    "terminal": True,
-                    "terminal_outcome": kind,
-                },
-            )
-        # Past this rung the meter is empty, which is what lets the terminal builder
-        # below index ``_slot_attempts`` directly.
-        if kind != _admission.SETTLE_GROUP_CLOSE_REQUIRED:
-            # One arm per :data:`admission.SETTLE_KINDS` member, and the LOUD fallback:
-            # here the dangerous direction is the PERMISSIVE one.
-            if kind != _admission.SETTLE_PHASE_CANNOT_PROCEED:
-                log_event(
-                    logger, "correction.crossover_v2_settle_kind_unmapped",
-                    level=logging.ERROR, session_id=self.session_id,
-                    phase=phase, index=index, kind=str(kind),
-                )
-                kind = _admission.SETTLE_PHASE_CANNOT_PROCEED
-            _diagnostics._log_slot_spent(
-                logger, phase, index, observed, kind,
-                session_id=self.session_id,
-                diagnosis=diagnosis,
-                pilot_heard=verdict.pilot_heard,
-                reflection_measured=verdict.reflection_measured,
-            )
-            return self._terminal_spent_verdict(
-                phase, index, slot, verdict,
-                diagnosis=diagnosis,
-                outcome=kind,
-            )
-        with self._close_lock:
-            retained = self._retained_group_indexes(phase)
-            kind = _admission.settle_group_position(
-                index=index,
-                retained=retained,
-                floor=self._group_position_floor(phase),
-                unwalked_count=lambda: len(
-                    self._journey.unresolved_in_group(phase, excluding=index)
-                ),
-            )
-            if kind == _admission.SETTLE_KEPT_EARLIER_TAKE:
-                _diagnostics._log_slot_spent(
-                    logger, phase, index, observed, kind,
-                    session_id=self.session_id,
-                    diagnosis=diagnosis,
-                    pilot_heard=verdict.pilot_heard,
-                    reflection_measured=verdict.reflection_measured,
-                )
-                return self._settled_group_verdict(
-                    phase, index, {"kept_earlier_take": True}
-                )
-            if kind == _admission.SETTLE_POSITION_UNRESOLVED:
-                self._group_unresolved[phase][index] = observed
-                _diagnostics._log_slot_spent(
-                    logger, phase, index, observed, kind,
-                    session_id=self.session_id,
-                    diagnosis=diagnosis,
-                    pilot_heard=verdict.pilot_heard,
-                    reflection_measured=verdict.reflection_measured,
-                )
-                return self._settled_group_verdict(
-                    phase,
-                    index,
-                    {
-                        "unresolved": {
-                            "index": index,
-                            "code": observed,
-                            "diagnosis": diagnosis,
-                        }
-                    },
-                )
-            # ``SETTLE_BELOW_POSITION_FLOOR``'s arm and the group half's LOUD fallback:
-            # a group that cannot be shown to reach its floor ends honestly.
-            if kind != _admission.SETTLE_BELOW_POSITION_FLOOR:
-                log_event(
-                    logger, "correction.crossover_v2_settle_kind_unmapped",
-                    level=logging.ERROR, session_id=self.session_id,
-                    phase=phase, index=index, kind=str(kind),
-                )
-                kind = _admission.SETTLE_BELOW_POSITION_FLOOR
-            _diagnostics._log_slot_spent(
-                logger, phase, index, observed, kind,
-                session_id=self.session_id,
-                diagnosis=diagnosis,
-                pilot_heard=verdict.pilot_heard,
-                reflection_measured=verdict.reflection_measured,
-            )
-            return self._terminal_spent_verdict(
-                phase, index, slot, verdict,
-                diagnosis=diagnosis,
-                outcome=kind,
-            )
-
-    def _terminal_spent_verdict(
-        self,
-        phase: str,
-        index: int,
-        slot: str,
-        verdict: PhaseVerdict,
-        *,
-        diagnosis: str,
-        outcome: str,
-    ) -> PhaseVerdict:
-        """Return the last capture's terminal, no-more-attempts verdict."""
-        ledger = self._slot_attempts[slot]
-        return replace(
-            verdict,
-            payload={
-                **verdict.payload,
-                # Overrides ``to_capture_dict``'s retryable reason; the same observed
-                # code still selects the diagnosis.
-                "reason": self._extras_spent_message(
-                    ledger,
-                    diagnosis=diagnosis,
-                    outcome=self._spent_slot_outcome(phase, index),
-                ),
-                # Generic runner/page contract: publish this capture_result,
-                # then finish without waiting for a dead next begin.
-                "terminal": True,
-                "terminal_outcome": outcome,
-            },
-        )
-
-    def _settled_group_verdict(
-        self, phase: str, index: int, payload: dict[str, Any]
-    ) -> PhaseVerdict:
-        """Advance the group past a settled position.
-
-        ``accepted=True`` is the only "this slot is done" signal, so a settled
-        position must look accepted on the wire. Caller holds ``_close_lock``.
-        """
-        if self._journey.plan.is_last_index_of_group(phase, index):
-            # A dropped LAST pose must still close the walk, so the journal records
-            # that the walk ENDED. Nothing is published either way.
-            if phase == PHASE_LATERAL:
-                return PhaseVerdict(
-                    True, payload={**self._close_lateral_walk(), **payload}
-                )
-            closing = self._close_cloud_group(phase, None)
-            if not closing.accepted:
-                # This slot is already spent: a close-time product gate replaced
-                # the retryable rejection with its own hard stop. Not
-                # ``_terminal_spent_verdict``, whose diagnosis is the earlier one.
-                closing_payload = {
-                    **closing.payload,
-                    "terminal": True,
-                    "terminal_outcome": "phase_cannot_proceed",
-                }
-            else:
-                # Only a successful close continues the group, so only that
-                # path carries the settled position's left-out/kept payload.
-                closing_payload = {**closing.payload, **payload}
-            return replace(closing, payload=closing_payload)
-        return PhaseVerdict(True, payload=payload)
-
-    def _note_accepted(self, phase: str, index: int) -> None:
-        # A position the flow gave up on counts as resolved too, or the phase
-        # would never close. ``_group_positions`` stays the record of what was
-        # MEASURED.
+    def note_accepted(self, phase: str, index: int) -> None:
         self._journey.accept(phase, index)
 
-    # --- per-phase verdicts ---------------------------------------------------
-    # Each ``_consume_<phase>`` wraps ``_<phase>_verdict``, the only place an
-    # accept/reject may be decided, and logs through ``_safe_log_diag``.
-
-    def _consume_unprompted(
-        self,
-        phase: str,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-        verdict: PhaseVerdict,
-        log_diag: Any,
-    ) -> PhaseVerdict:
-        """Bank an accepted unprompted capture, journal every one, decide nothing."""
-        if verdict.accepted:
-            self._bank_phase_capture(phase, index, attempt, analysis, result)
-        _diagnostics._safe_log_diag(
-            logger, log_diag, analysis, verdict, session_id=self.session_id,
-        )
-        return verdict
-
-    def _consume_check(
-        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
-    ) -> PhaseVerdict:
-        return self._consume_unprompted(
-            PHASE_CHECK, index, attempt, analysis, result,
-            self._check_verdict(analysis), self._log_check_diag,
-        )
-
-    def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+    def check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         gain_plan = analysis.gain_plan
-        verdict = PhaseVerdict.from_take(_dispatch.assess(analysis, phase=PHASE_CHECK, program=self._check_program))
+        verdict = PhaseVerdict.from_take(
+            _dispatch.assess(analysis, phase=PHASE_CHECK, program=self._check_program)
+        )
         if not verdict.accepted:
             return verdict
         assert gain_plan is not None
         self._gain_plan_db = dict(gain_plan.gain_db)
         self._measure_gain_ceiling_db.clear()
-        self._measure_gain_ceiling_db.update({
-            role: solve.flat_target_gain_db for role, solve in gain_plan.role_solves.items()
-        })
-        # HOLD the ambient report, don't just publish it (#1830): without it MEASURE's
-        # per-driver SNR verdict has no noise floor to grade against.
+        self._measure_gain_ceiling_db.update(
+            {
+                role: solve.flat_target_gain_db
+                for role, solve in gain_plan.role_solves.items()
+            }
+        )
         self._check_ambient_report = (
             dict(analysis.ambient_report) if analysis.ambient_report else None
         )
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
         return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
-
-    def _consume_measure(
-        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
-    ) -> PhaseVerdict:
-        verdict = self._measure_verdict(analysis)
-        if verdict.payload.get("kept_measurement"):
-            self._bank_phase_capture(PHASE_MEASURE, index, attempt, analysis, result)
-        if verdict.next in {"retake_same", "retake_louder", "retake_quieter"}:
-            self._rearm_measure_after_transient(verdict)
-            if "gain_adjustment" in verdict.payload:
-                verdict.payload["gain_adjustment"]["next_program_id"] = self.program_for_phase(PHASE_MEASURE).program_id
-                log_event(logger, "correction.crossover_v2_measure_gain_adjusted",
-                          session_id=self.session_id, **verdict.payload["gain_adjustment"])
-        return self._consume_unprompted(
-            PHASE_MEASURE, index, attempt, analysis, result,
-            verdict, self._log_measure_diag,
-        )
-
-    def _bank_phase_capture(
-        self,
-        phase: str,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> None:
-        candidate_id = self._applied_candidate_id()
-        self._seams.bank_take(
-            result,
-            _spatial.phase_capture_record(
-                phase=phase,
-                index=index,
-                attempt=attempt,
-                curves=self._banked_curves(phase, analysis),
-                claim=_spatial.TakeClaim(
-                    candidate_id=candidate_id,
-                    measure_kind=(_contracts.MEASURE_KIND_VERIFY if phase == PHASE_VERIFY else
-                                  _contracts.MEASURE_KIND_CANDIDATE if candidate_id else ""),
-                    phase_composition=self._phase_composition(analysis),
-                ),
-                **self._capture_stamp(result),
-            ),
-        )
-
-    def _phase_composition(self, analysis: ProgramAnalysis) -> str:
-        """What a banked take says its curves carry — see
-        :func:`~jasper.active_speaker.crossover_v2.spatial.phase_composition`.
-        Here because whether protection was EMITTED is this session's fact.
-        """
-        return _spatial.phase_composition(
-            analysis,
-            protection_emitted=(
-                self._measurement_protection_sections_by_role is not None
-            ),
-        )
-
-    def _capture_stamp(self, result: Any) -> dict[str, Any]:
-        """The four facts every banked take states about its OWN capture."""
-        return {
-            "session_id": self.session_id,
-            "graph_fingerprint": self._entry_graph_fingerprint(),
-            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "wav_sha256": _capture_wav_sha256(result),
-        }
-
-    def _banked_curves(
-        self, phase: str, analysis: ProgramAnalysis,
-    ) -> list[dict[str, Any]]:
-        """WHAT THIS CAPTURE MEASURED, or nothing — never the take.
-
-        Ruling S3: the complex responses land in no file unless they land on the take.
-        Guarded because a raise here would cost the CAPTURE; the caught tuple is
-        concrete. ``[]`` means the curves were LOST, and the journal is the tell.
-        """
-        try:
-            return _spatial.analysis_curve_records(
-                analysis, self.program_for_phase(phase),
-            )
-        except (AttributeError, IndexError, TypeError, ValueError):
-            log_event(
-                logger, "correction.crossover_v2_take_curves_failed",
-                level=logging.WARNING, session_id=self.session_id, phase=phase,
-                exc_info=True,
-            )
-            return []
-
-    def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
-        """Bank the ripple reservation about the capture being accepted (#2087).
-
-        It records and decides nothing, and must never acquire a branch that
-        could, or the #2087 ruling quietly grows a gate back.
-        """
-        self._last_measure_guard = "ripple_disclosure"
-        self._measure_ripple_reservation = {
-            "predicted_ripple_db": float(predicted_ripple_db),
-            # The threshold rides WITH the value: the disclosure states what was
-            # true when the capture was judged.
-            "threshold_db": float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
-        }
-        log_event(
-            logger, "correction.crossover_v2_ripple_disclosed",
-            level=logging.WARNING,
-            session_id=self.session_id,
-            predicted_ripple_db=round(float(predicted_ripple_db), 3),
-            threshold_db=float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
-        )
-
-    def _note_mic_calibration_reservation(self) -> None:
-        """Bank the disclosure that the accepted MEASURE had no resolved mic
-        calibration (audit gauntlet 5a).
-
-        Records and decides nothing. Not a hearing-safety mechanism: the analysis still
-        runs, and only the absolute-SPL commissioning stop hard-stops on calibration.
-        """
-        self._measure_calibration_reservation = True
-        log_event(
-            logger, "correction.crossover_v2_mic_calibration_disclosed",
-            level=logging.WARNING, session_id=self.session_id,
-        )
-
-    def _note_alignment_confidence_reservation(
-        self, confidence: float, delay_us: float
-    ) -> None:
-        """Bank the reservation about an accepted low-confidence alignment.
-
-        ``docs/measurement-loop-doctrine.md`` §4 names confidence heuristics as
-        provenance, not a gate. The PHYSICS half still refuses, on its own screen kind.
-        """
-        self._last_measure_guard = "alignment_confidence_disclosure"
-        self._measure_alignment_reservation = {
-            "confidence": float(confidence),
-            "delay_us": float(delay_us),
-            # The floor rides WITH the value, for the ripple disclosure's reason:
-            # a rendered "0.41, below 0.6" is a lie once the constant moves.
-            "trust_floor": float(ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
-        }
-        log_event(
-            logger, "correction.crossover_v2_alignment_confidence_disclosed",
-            level=logging.WARNING,
-            session_id=self.session_id,
-            confidence=round(float(confidence), 3),
-            delay_us=round(float(delay_us), 1),
-            trust_floor=float(ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
-        )
-
-    def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
-        # Reset every call — a stale value from a PRIOR attempt must never
-        # leak into THIS attempt's diagnostic (see __init__'s comment).
-        self._last_measure_guard = ""
-        self._measure_ripple_reservation = None
-        self._measure_alignment_reservation = None
-        self._measure_calibration_reservation = None
-        take = _dispatch.assess(
-            analysis, phase=PHASE_MEASURE,
-            priors=MeasurementPriors(alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset)),
-            program=self._measure_program,
-            gain_ceiling_db=_dispatch.capped_gain_ceilings(
-                self._excitation.caps_dbfs, self._excitation.session_volume_db, self._measure_gain_ceiling_db),
-        )
-        self._last_measure_guard = str(take.evidence.get("guard", ""))
-        verdict = PhaseVerdict.from_take(take)
-        if not verdict.accepted:
-            if take.ok and take.next == "retake_louder":
-                return replace(verdict, code=REASON_MEASURE_GAIN_ADJUSTED, payload={
-                    "gain_adjustment": {"source_program_id": analysis.program_id,
-                                        "previous_gain_db": dict(self._gain_plan_db or {}),
-                                        "next_gain_db": {**(self._gain_plan_db or {}), **take.gain_targets}},
-                    "kept_measurement": True,
-                })
-            return verdict
-        if not _measure_sufficient(take, analysis):
-            code = (_reasons.REASON_DELAY_IMPLAUSIBLE if take.evidence.get("delay_physically_plausible") is False
-                    else _reasons.REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
-            return replace(verdict, accepted=False, code=code, next="fix_and_retake", charge="operator",
-                           payload={"kept_measurement": True})
-        # Measurement-honesty DISCLOSURE G1 (owner ruling 2026-08-03, #2087). **This
-        # does not refuse.** The capture is ACCEPTED and carries a reservation, which
-        # changes what the household is TOLD and nothing about what is built.
-        candidate = analysis.candidate
-        if candidate is not None and _dispatch.ripple_reservation_due(
-            predicted_ripple_db=candidate.predicted_ripple_db,
-            has_alignment=analysis.alignment is not None,
-            disclosure_threshold_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
-        ):
-            self._note_ripple_reservation(candidate.predicted_ripple_db)
-        if (
-            analysis.alignment is not None
-            and analysis.alignment.confidence < ALIGNMENT_CONFIDENCE_TRUST_FLOOR
-        ):
-            self._note_alignment_confidence_reservation(
-                analysis.alignment.confidence, analysis.alignment.delay_us
-            )
-        # Disclose, never block — an explicit ``False`` only, never ``None``, which is
-        # "not resolved either way" per ``ProgramAnalysis.mic_calibrated``.
-        if analysis.mic_calibrated is False:
-            self._note_mic_calibration_reservation()
-        pair_claim: dict[str, Any] = {}
-        solo_reason = analysis.measure_pair_not_evaluated
-        if solo_reason is not None:
-            log_event(
-                logger, "correction.crossover_v2_measure_solo",
-                session_id=self.session_id,
-                reason=solo_reason,
-                roles=",".join(self._role_names),
-                responses=len(analysis.driver_responses),
-            )
-            pair_claim = _contracts.measure_pair_claim(solo_reason)
-        elif analysis.candidate is None:
-            # Fail FAST, at the capture that produced the unusable analysis: a
-            # household must not walk the whole cloud for a session that cannot
-            # produce a candidate.
-            raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
-        self._measure_gate_window_ms = self._measure_gate(analysis)
-        return replace(
-            verdict,
-            payload={
-                "measurement_phase": PHASE_MEASURE,
-                **pair_claim,
-            },
-        )
 
     def _retained_group_indexes(self, phase: str) -> set[int]:
         """Which indexes of one group already hold evidence — one accessor over the
@@ -1957,1397 +888,22 @@ class CrossoverV2Session:
             return {pose.index for pose in self._lateral_poses}
         return {p.index for p in self._group_positions.get(phase, ())}
 
-    def _group_position_floor(self, phase: str) -> int:
-        """How few resolved positions still lets a group stand — see
-        :func:`~jasper.active_speaker.crossover_v2.spatial.group_position_floor`.
-        """
-        return _spatial.group_position_floor(phase)
-
-    def _consume_lateral_pose(
-        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
-    ) -> PhaseVerdict:
-        """One pose of the R16 lateral walk (plan §4.4).
-
-        One rule is this method's rather than the ladder's: a rejected pose does NOT
-        re-arm MEASURE with a level backoff, or its curve stops being comparable.
-        """
-        program = self.program_for_phase(PHASE_LATERAL)
-        kind = _spatial.lateral_pose_screens(
-            _spatial.CaptureScreens(
-                stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok,
-                linearity_ok=analysis.linearity_ok,
-                glitch_detected=bool(analysis.glitch_detected),
-                sweep_schedule_ok=_sweep_schedule_ok(
-                    analysis, program.sample_rate_hz
-                ),
-                any_sweep_clipped=_any_sweep_clipped(analysis),
-            )
-        )
-        if kind is not None:
-            return PhaseVerdict(False, _screen_refusal_code(kind))
-        summed_band = _spatial._summed_sweep_band_hz(program)
-        if summed_band is not None:
-            response = analysis.summed_response
-            if response is None:
-                return PhaseVerdict(False, _screen_refusal_code(_spatial.SCREEN_LOCATE_FAILED))
-            curves = [lateral_pose_curve(response, summed_band)]
-            if is_branch_program(program):
-                bands = _primary_sweep_bands(program)
-                curves = [lateral_pose_curve(r, bands[r.role]) for r in analysis.driver_responses] + curves
-            kind = None
-        else:
-            bands = _primary_sweep_bands(program)
-            curves = [
-                lateral_pose_curve(response, bands[response.role])
-                for response in analysis.driver_responses
-                if response.repeat_index is None and response.role in bands
-            ]
-            kind = _spatial.lateral_curves_sufficient(len(curves))
-        if kind is not None:
-            return PhaseVerdict(False, _screen_refusal_code(kind))
-        prompt = self._prompt_shown_for(PHASE_LATERAL, index)
-        pose = LateralPose(
-            pose_id=f"{PHASE_LATERAL}_{index:02d}",
-            index=index,
-            attempt=attempt,
-            prompt=prompt.text,
-            role=prompt.role,
-            offset_cm=float(prompt.offset_cm),
-            at_mark=prompt.at_mark,
-            curves=tuple(curves),
-        )
-        log_event(
-            logger, "correction.crossover_v2_lateral_pose",
-            session_id=self.session_id, pose_id=pose.pose_id, index=index,
-            attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
-            vertical_deg=position_elevation_deg(prompt),
-            at_mark=pose.at_mark, curves=len(pose.curves),
-        )
-        # Outside the lock below, unlike the cloud's in-lock retention: this writes
-        # nothing any close reads.
-        self._retain_lateral_pose(pose, prompt, result, analysis)
-        # ONE critical section for retain + close: the candidate build reads the whole
-        # walk, and a half-landed retain would fit a session that never existed.
-        with self._close_lock:
-            self._lateral_poses = sorted(
-                [p for p in self._lateral_poses if p.index != index] + [pose],
-                key=lambda p: p.index,
-            )
-            payload: dict[str, Any] = {"pose_id": pose.pose_id}
-            if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
-                payload.update(self._close_lateral_walk())
-            return PhaseVerdict(True, payload=payload)
-
-    def _retain_lateral_pose(
-        self,
-        pose: LateralPose,
-        prompt: CloudPositionPrompt,
-        result: Any,
-        analysis: ProgramAnalysis,
+    def rearm_measure_after_transient(
+        self, verdict: PhaseVerdict | TakeVerdict
     ) -> None:
-        """Bank one accepted pose's WAV + sidecar. Fail-soft; never a gate."""
-        summed = analysis.summed_response
-        self._seams.bank_take(
-            result,
-            {**_spatial.lateral_pose_record(
-                pose,
-                geometry=position_geometry(prompt),
-                lateral_consumer=self._lateral_consumer,
-                claim=replace(
-                    self._lateral_claim(pose.index),
-                    phase_composition=self._phase_composition(analysis),
-                ),
-                gating_applied=(
-                    bool((summed.gating or {}).get("applied")) if summed is not None else None
-                ),
-                **self._capture_stamp(result),
-            ), "screens": _dispatch.pilot_screens(analysis,
-                                                  program=self.program_for_phase(PHASE_LATERAL)),
-             **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
-        )
-
-    def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":
-        """What the pose at this capture index was measured under."""
-        offsets = self._journey.plan.group_offsets(PHASE_LATERAL)
-        try:
-            position = offsets.index(index)
-        except ValueError:
-            return _spatial.TakeClaim()
-        claims = self._lateral_claims
-        return claims[position] if position < len(claims) else _spatial.TakeClaim()
-
-    def _close_lateral_walk(self) -> dict[str, Any]:
-        """Record that the walk finished. Publishes nothing."""
-        log_event(
-            logger, "correction.crossover_v2_lateral_walk_closed",
-            session_id=self.session_id,
-            consumer=self._lateral_consumer,
-            planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
-            captured=len(self._lateral_poses),
-            mark_return_drift_db=self.lateral_mark_return_drift_db(),
-        )
-        return {}
-
-    def _consume_cloud_position(
-        self,
-        phase: str,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> PhaseVerdict:
-        verdict = self._cloud_position_verdict(
-            phase, index, attempt, analysis, result
-        )
-        _diagnostics._safe_log_diag(
-            logger,
-            lambda a, v: _diagnostics._log_cloud_diag(
-                logger, phase, index, a, v,
-                session_id=self.session_id,
-                positions_in=len(self._group_positions.get(phase, ())),
-            ),
-            analysis, verdict, session_id=self.session_id,
-        )
-        return verdict
-
-    def _cloud_position_verdict(
-        self,
-        phase: str,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> PhaseVerdict:
-        """One prompted position: light per-capture QC, then the group check."""
-        response = analysis.summed_response
-        kind = _spatial.cloud_position_screens(
-            _spatial.CaptureScreens(
-                stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok,
-                linearity_ok=analysis.linearity_ok,
-                glitch_detected=bool(analysis.glitch_detected),
-                sweep_schedule_ok=_sweep_schedule_ok(
-                    analysis, self._verify_program.sample_rate_hz
-                ),
-                any_sweep_clipped=_any_sweep_clipped(analysis),
-            ),
-            has_summed_response=response is not None,
-        )
-        if kind is not None:
-            return PhaseVerdict(False, _screen_refusal_code(kind))
-        prompt = self._prompt_shown_for(phase, index)
-        position = _CloudPosition(
-            position_id=f"{phase}_{index:02d}",
-            index=index,
-            attempt=attempt,
-            prompt=prompt.text,
-            wide=prompt.wide,
-            role=prompt.role,
-            geometry=position_geometry(prompt),
-            captured_at=time.time(),
-            response=response,
-            sample_rate_hz=self._verify_program.sample_rate_hz,
-            echo_band_hz=self._cloud_echo_band.band_hz,
-            signal_band_hz=self._cloud_signal_band_hz,
-        )
-        with self._close_lock:
-            self._retain_cloud_position(phase, position, analysis, result)
-            if not self._journey.plan.is_last_index_of_group(phase, index):
-                return PhaseVerdict(
-                    True, payload={"position_id": position.position_id}
-                )
-            return self._close_cloud_group(phase, position)
-
-    def _retain_cloud_position(
-        self,
-        phase: str,
-        position: _CloudPosition,
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> None:
-        """Record one position in the group and hand it to the evidence seam.
-
-        Idempotent per index: a retaken position REPLACES the earlier take. The hash
-        stays inside ``_close_lock`` on purpose — the meta is read by
-        :meth:`_run_cloud_pipeline` at a close that can run on a background thread.
-        """
-        retained = self._group_positions[phase]
-        retained[:] = [p for p in retained if p.index != position.index]
-        retained.append(position)
-        retained.sort(key=lambda p: p.index)
-        gating = getattr(position.response, "gating", None) or {}
-        # THIS seat's distance, not the rig's: the room floor rises with distance, so
-        # the pose's own mark distance is what the declared geometry is evaluated at.
-        bounce_s = _declared_first_bounce_s(position.geometry.mark_distance_m)
-        gate = _gate_record(position.response, declared_first_bounce_s=bounce_s) or {}
-        # The room survives a capture with no gating block, which is the one state
-        # ``_gate_record`` reports as no record at all.
-        entanglement_floor_hz, entanglement_floor_source = (
-            (gate["entanglement_floor_hz"], gate["entanglement_floor_source"])
-            if gate
-            else _gate_entanglement_floor(
-                position.response, declared_first_bounce_s=bounce_s
-            )
-        )
-        metadata = _spatial.cloud_position_record(
-            position_id=position.position_id,
-            phase=phase,
-            index=position.index,
-            attempt=position.attempt,
-            prompt=position.prompt,
-            wide=position.wide,
-            role=position.role,
-            geometry=position.geometry,
-            captured_at=position.captured_at,
-            session_id=self.session_id,
-            gate_window_ms=_gate_window_ms(position.response),
-            gate_floor_source=_gate_floor_source(position.response),
-            gate_disclosure=gate.get("disclosure"),
-            gate_moved_rms_db=gate.get("moved_rms_db"),
-            gate_reflection_delay_ms=gate.get("reflection_delay_ms"),
-            gate_entanglement_floor_hz=entanglement_floor_hz,
-            gate_entanglement_floor_source=entanglement_floor_source,
-            validity_floor_hz=getattr(
-                position.response, "validity_floor_hz", None
-            ),
-            gating_applied=bool(gating.get("applied")),
-            summed_ripple_db=analysis.summed_ripple_db,
-            glitch_detected=bool(analysis.glitch_detected),
-            wav_sha256=_capture_wav_sha256(result),
-            curves=self._banked_curves(phase, analysis),
-        )
-        metadata["screens"] = _dispatch.pilot_screens(
-            analysis, program=self.program_for_phase(phase))
-        self._group_position_meta.setdefault(phase, {})[
-            position.position_id
-        ] = metadata
-        self._seams.bank_take(result, metadata)
-
-    def _close_cloud_group(
-        self, phase: str, position: _CloudPosition | None
-    ) -> PhaseVerdict:
-        """The group-end combine, and the one bounded retake it can ask for.
-
-        ``position`` is ``None`` when the group closes on a SETTLED position with no
-        curve, and a settled close never asks for a geometry retake. Combines exactly
-        ONCE: a combine measured 3-6 s on the ten-position S0 corpus, worse on a Pi 5.
-        """
-        positions = self._group_positions[phase]
-        combined = combine_cloud_positions(positions)
-        # The spatial arm reads the across-position level spread of BOTH groups,
-        # off the one combine this method already paid for.
-        self._group_band_spread[phase] = tuple(
-            getattr(combined, "band_spread", None) or ()
-        )
-        verdict = _geometry_verdict_from_combined(combined, len(positions))
-        retries = self._geometry_retries_used[phase]
-        # Four conjuncts and a narrowing — see
-        # :func:`~jasper.active_speaker.crossover_v2.spatial.geometry_retake`.
-        retake = _spatial.geometry_retake(
-            locked=verdict.get("locked"),
-            thin_evidence=verdict.get("thin_evidence"),
-            retries_used=retries,
-            budget=GEOMETRY_RETRY_POSITIONS,
-            group_already_closed=phase in self._group_geometry,
-            have_take_to_replace=position is not None,
-        )
-        if retake is not None and self._positions_gated:
-            # REFUSE rather than prompt (owner ruling: refuse, don't mislead), for
-            # EITHER gated shape: a wider rung is a pose an external positioner cannot
-            # reach, and the retry re-authorizes the SAME entry with its original
-            # bearing. The retry budget is NOT spent and no take is dropped.
-            log_event(
-                logger,
-                "correction.crossover_v2_geometry_retake_unreachable",
-                level=logging.WARNING,
-                session_id=self.session_id,
-                phase=phase,
-                    # `tier` cannot carry this: stage 2 is constructed without one. This
-                # names the PREDICATE that refused, not WHICH shape.
-                gated=self._positions_gated,
-                median_tau_us=verdict.get("median_tau_us"),
-                clustered_fraction=verdict.get("clustered_fraction"),
-            )
-            return PhaseVerdict(
-                False,
-                REASON_GEOMETRY_RETAKE_UNREACHABLE,
-                payload={"geometry": dict(verdict)},
-            )
-        if retake is not None:
-            # Narrowed by ``have_take_to_replace`` above: a retake is returned
-            # only when there is a take at this index to drop.
-            assert position is not None
-            replacing = position
-            self._geometry_retries_used[phase] = retake.retries_after
-            # Drop the take being replaced FROM THE CLOUD — what the retake lever
-            # means. Its artifact stays on disk under its attempt-qualified path.
-            retained = self._group_positions[phase]
-            retained[:] = [p for p in retained if p.index != replacing.index]
-            log_event(
-                logger, "correction.crossover_v2_cloud_geometry_retry",
-                session_id=self.session_id, phase=phase,
-                retry=retake.retries_after, of=GEOMETRY_RETRY_POSITIONS,
-                median_tau_us=verdict.get("median_tau_us"),
-                clustered_fraction=verdict.get("clustered_fraction"),
-            )
-            prompt = CLOUD_GEOMETRY_RETRY_PROMPTS[
-                min(retake.rung, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
-            ]
-            return PhaseVerdict(
-                False, REASON_CLOUD_GEOMETRY_LOCKED, charge="speaker",
-                payload={"prompt": prompt, "geometry": dict(verdict)},
-            )
-        # #1872: a retake of the group's LAST position can land AFTER the group closed
-        # once. Either way this is a REAL close as it stands NOW, so everything below
-        # re-runs; only the durable artifact write is a per-phase singleton.
-        self._group_geometry[phase] = verdict
-        log_event(
-            logger, "correction.crossover_v2_cloud_group_complete",
-            session_id=self.session_id, phase=phase,
-            positions=len(self._group_positions[phase]),
-            geometry_locked=bool(verdict.get("locked")),
-            geometry_reason=verdict.get("reason") or "",
-            thin_evidence=bool(verdict.get("thin_evidence")),
-            geometry_retries=retries,
-            # Positions the flow gave up on (ruling #2086 item 3), so a support read
-            # can tell a degraded cloud from a completed walk.
-            unresolved=len(self._group_unresolved.get(phase, {})),
-        )
-        # The group's accept is decided ABOVE; this pipeline is disclosure on top of it.
-        # Scoped claim: a NAMED-family exception cannot cost the accept, and anything
-        # outside the six names propagates by design, pinned by
-        # ``test_an_unnamed_exception_family_still_propagates_through_the_outer_wrap``.
-        try:
-            self._run_cloud_pipeline(phase, combined, positions)
-        except (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError):
-            log_event(
-                logger, "correction.crossover_v2_cloud_pipeline_call_failed",
-                level=logging.WARNING,
-                session_id=self.session_id, phase=phase, exc_info=True,
-            )
-        payload: dict[str, Any] = {
-            "group_complete": phase,
-            "geometry": dict(verdict),
-        }
-        if position is not None:
-            payload["position_id"] = position.position_id
-        if phase == PHASE_CLOUD_VERIFY:
-            self._run_delta_probe()
-            return self._grade_round_once(PhaseVerdict(True, payload=payload))
-        return PhaseVerdict(True, payload=payload)
-
-    def _previous_graph_predicted_sum(self, analysis: Any, capture_fc_hz: float | None) -> Any:
-        """The graph an apply REPLACES, modelled on this capture's branches (#2611).
-
-        Evaluated on the same measured branch pair against the same alignment anchor as
-        the applied side. ``capture_fc_hz`` stays a PARAMETER because the guard checks
-        it against the corner the applied profile ran. ``None`` becomes an
-        ``unavailable`` probe; there is no fallback to the pre-#2611 axis.
-        """
-        def _absent(reason: str, **fields: Any) -> None:
-            log_event(
-                logger, "correction.crossover_v2_previous_graph_unavailable",
-                level=logging.WARNING, session_id=self.session_id,
-                reason=reason, **fields,
-            )
-            return None
-
-        roles = self._role_names
-        if len(roles) > 1 and capture_fc_hz is None:
-            # The commanded axis over a PAIR is a statement about a crossover.
-            # A 1-way main is not that case: its lone branch IS the graph.
-            return _absent("no_crossover_to_command")
-        seam = self._seams.applied_profile
-        if seam is None:
-            return _absent("no_applied_profile_seam")
-        try:
-            profile = seam()
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return _absent("applied_profile_unreadable", error=str(exc))
-        corner = _commanded.corner_disagreement(profile, capture_fc_hz)
-        if corner is not None:
-            return _absent(corner.reason, **corner.fields)
-        # The DRAFT's declared per-role polarity, which the measured branches carry.
-        # The profile records absolute flags, so without this the frames differ.
-        try:
-            draft_inverted = role_polarity(self._preset)
-        except ActiveSpeakerConfigError as exc:
-            return _absent("draft_polarity_unreadable", error=str(exc))
-        previous = _commanded.previous_graph_prediction(
-            profile,
-            roles=roles,
-            draft_inverted_by_role=draft_inverted,
-            responses={
-                response.role: response
-                for response in (analysis.driver_responses or ())
-            },
-            alignment=analysis.alignment,
-        )
-        if isinstance(previous, str):
-            return _absent(previous)
-        graph, predicted = previous
-        # INFO, carrying the four numbers the model turned on: a disputed rollback
-        # should not need a second session. ONCE per distinct answer, keyed on fields.
-        disclosed = (
-            tuple(sorted((r, round(v, 4)) for r, v in graph.trim_db.items())),
-            round(graph.delay_us, 3),
-            graph.polarity_sign,
-            tuple(sorted(
-                (role, len(entries))
-                for role, entries in graph.linearization.items()
-            )),
-        )
-        if disclosed != self._previous_graph_disclosed:
-            self._previous_graph_disclosed = disclosed
-            log_event(
-                logger, "correction.crossover_v2_previous_graph",
-                level=logging.INFO, session_id=self.session_id,
-                trim_db={r: round(v, 4) for r, v in graph.trim_db.items()},
-                delay_us=round(graph.delay_us, 3),
-                polarity_sign=graph.polarity_sign,
-                linearization_filters={
-                    role: len(entries)
-                    for role, entries in graph.linearization.items()
-                },
-            )
-        return predicted
-
-    def _commanded_delta_for(
-        self, analysis: Any, predicted_sum: Any, capture_fc_hz: float | None,
-    ) -> Any:
-        """This candidate's commanded axis: applied graph minus previous graph."""
-        return _commanded_delta(
-            self._previous_graph_predicted_sum(analysis, capture_fc_hz),
-            predicted_sum,
-        )
-
-    @staticmethod
-    def _declared_transfer_for(analysis: Any, predicted_sum: Any) -> Any:
-        """This candidate's STATE axis: applied graph minus the RAW crossover."""
-        return _commanded_delta(getattr(analysis, "predicted_sum", None), predicted_sum)
-
-    def _publish_accountability_finding(
-        self, record: Mapping[str, Any] | None,
-    ) -> None:
-        """Persist the banked accountability finding, or say why it was not."""
-
-        if record is None or self._seams.records.findings is None:
-            return
-        try:
-            self._seams.records.findings(record)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            # ``…_publish_failed`` rather than ``…_finding_failed``: the
-            # method persists a RECORD, and "finding" is the deleted
-            # level-frame mechanism's own vocabulary (#2609, #2653).
-            log_event(
-                logger, "correction.crossover_v2_accountability_publish_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-
-    def _candidate_headroom_cost_db(self) -> float:
-        """The applied correction's disclosed max-level cost, dB."""
-        linearization = getattr(self._candidate, "linearization", None)
-        if not isinstance(linearization, Mapping):
-            return 0.0
-        return worst_headroom_cost_db(linearization)
-
-    def _position_residual_rows(
-        self, combined: Any, floor_hz: float | None, ceiling_hz: float | None,
-    ) -> tuple[Mapping[str, Any], ...]:
-        """§4.2: how far each position sat from the combined curve, labelled."""
-        from jasper.audio_measurement.spatial_combine import position_residuals
-
-        try:
-            freqs = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
-            if freqs.size == 0:
-                return ()
-            band_hz = (
-                float(floor_hz) if floor_hz is not None else float(freqs[0]),
-                float(ceiling_hz) if ceiling_hz is not None else float(freqs[-1]),
-            )
-            return tuple(
-                row.to_dict() for row in position_residuals(combined, band_hz=band_hz)
-            )
-        except (ValueError, TypeError, IndexError, AttributeError):
-            log_event(
-                logger, "correction.crossover_v2_position_residual_failed",
-                level=logging.WARNING, session_id=self.session_id, exc_info=True,
-            )
-            return ()
-
-    def _mic_trust_ceiling_hz(self, freqs: Any) -> float | None:
-        """The frequency above which the FITTER was not allowed to command.
-
-        Read off the envelope module's ``mic_trust_limit``: the first grid bin where the
-        allowed depth is 0 dB IS the ceiling, so the probe's and the fit's cannot drift.
-        On a ``reference`` mic that is 20 kHz (2026-08-29 horn-droop ruling).
-        **The fitter may not command there; the probe may not grade there** (#2649).
-        ``None`` in four cases, each of which SAYS so on the journal.
-        """
-        from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
-
-        def unavailable(reason: str, tier: str = "") -> None:
-            log_event(
-                logger, "correction.crossover_v2_mic_trust_ceiling_unavailable",
-                level=logging.WARNING, session_id=self.session_id,
-                reason=reason, mic_tier=tier,
-            )
-
-        linearization = getattr(self._candidate, "linearization", None)
-        if not isinstance(linearization, Mapping):
-            unavailable("no_candidate_linearization")
-            return None
-        tier = ""
-        for entry in linearization.values():
-            if isinstance(entry, Mapping) and entry.get(MIC_TIER_FIELD):
-                tier = str(entry[MIC_TIER_FIELD])
-                break
-        if not tier:
-            unavailable("no_entry_recorded_a_mic_tier")
-            return None
-        from jasper.active_speaker.linearization_envelope import mic_trust_limit
-
-        try:
-            grid = np.asarray(freqs, dtype=float)
-            allowed = mic_trust_limit(grid, tier=tier)
-        except (ValueError, TypeError):
-            # An unknown tier raises by design in the envelope module. Here that is
-            # missing evidence: fall back to no ceiling and grade what the gate trusted.
-            unavailable("mic_tier_not_recognised", tier)
-            return None
-        zeros = np.flatnonzero(allowed <= 0.0)
-        if zeros.size == 0:
-            unavailable("trust_curve_never_reaches_zero", tier)
-            return None
-        return float(grid[zeros[0]])
-
-    def _assert_accountable(
-        self, predicted_sum: Any, raw_predicted_sum: Any = None,
-        *, linearization: _LinearizationState | None = None,
-        prescribed: tuple[str, ...] = (),
-    ) -> Mapping[str, Any] | None:
-        """The three accountability assertions — see
-        ``crossover_v2.accountability.assess_accountability``.
-
-        What stays here is the stash the host persists and the journal identity. The
-        ONE input the gate is TOLD is the prediction threshold, and choosing between its
-        two values is THIS method's job (PR-B, owner ruling 2026-08-20): the fitted
-        class keeps :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` (0.5 dB), while a
-        prescribed graph requires NON-WORSENING (0.0), because a narrow high-Q filter
-        predicts only 0.077-0.152 dB of pooled improvement when it is exactly right.
-        **Neither bar stops anything**: it chooses which LEDGER value is banked.
-        """
-        prescribed_graph = bool(prescribed)
-        decision = _accountability.assess_accountability(
-            predicted_sum=predicted_sum,
-            raw_predicted_sum=raw_predicted_sum,
-            state=linearization,
-            grade_prediction=spec_report_for_predicted_sum,
-            material_improvement_db=(
-                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
-                else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
-            ),
-        )
-        # Unconditional: item 2 is reached on every path the gate takes, so
-        # ``spec_report`` is always written — ``None`` meaning "graded nothing".
-        self._measure_predicted_spec_report = decision.spec_report
-        for record in decision.journal:
-            self._journal_linearization(record)
-        return decision.finding
-
-    def _cloud_fit_evidence(self, combined: Any) -> "_CloudFitEvidence | None":
-        """This group's honesty verdict, in the shape the fit envelope takes.
-
-        ``None`` — the fit runs with no cloud terms — in two disclosed cases.
-        **All-or-nothing on purpose**: the screen cannot see a position-invariant null
-        (0 of 5462 bins in 8-16 kHz on S0), so a screen-only mask is worse (#1742).
-        """
-        if combined is None:
-            return None
-        result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
-        if result.get("available") is not True:
-            log_event(
-                logger, "correction.crossover_v2_fit_without_cloud",
-                level=logging.WARNING, session_id=self.session_id,
-                reason=str(result.get("reason") or "no_pipeline_result"),
-            )
-            return None
-        intervals = tuple(
-            (float(band[0]), float(band[1]))
-            for band in result.get("merged_excluded_bands_hz") or ()
-        )
-        return _CloudFitEvidence(
-            excluded_bands_hz=intervals,
-            band_spread=tuple(combined.band_spread),
-            n_positions=int(combined.n_positions),
-            boost_excluded_bands_hz=self._boost_excluded_bands_hz(combined, result),
-        )
-
-    def _boost_excluded_bands_hz(
-        self, combined: Any, result: Mapping[str, Any],
-    ) -> tuple[tuple[float, float], ...]:
-        """Bands BELOW the null registry's floor where this cloud's positions disagree
-        about a dip (#1967) — the derivation is in ``crossover_v2.spatial``.
-        """
-        exclusion = _spatial.boost_excluded_bands_hz(
-            combined, result, echo_band_hz=self._cloud_echo_band.band_hz,
-        )
-        diagnostics = dict(exclusion.diagnostics)
-        if diagnostics.pop("variance_check_failed", False):
-            log_event(
-                logger, "correction.crossover_v2_boost_variance_failed",
-                level=logging.WARNING, session_id=self.session_id,
-                band_hz=diagnostics["unadjudicated_span_hz"],
-            )
-        log_event(
-            logger, "correction.crossover_v2_boost_evidence",
-            level=logging.WARNING if exclusion.bands else logging.INFO,
-            session_id=self.session_id, **diagnostics,
-        )
-        return exclusion.bands
-
-    def _run_cloud_pipeline(
-        self, phase: str, combined: Any, positions: Sequence[_CloudPosition],
-    ) -> None:
-        """The honest-instrument pipeline for one closed group.
-
-        ``combined`` is the SAME object ``_close_cloud_group`` derived its verdict from
-        — ONE combine per close. ``positions`` supplies the gated validity floor the
-        spec bands' lower edges are intersected with (#2551). **Runs on EVERY close,
-        including a re-close from a retake** (#1872). Never raises.
-        """
-        # One reading of the tier's trust ceiling, spent twice below: the spec may not
-        # GRADE above where the fitter may not COMMAND (#2649).
-        ceiling_hz = (
-            None if combined is None
-            else self._mic_trust_ceiling_hz(getattr(combined, "freqs_hz", ()))
-        )
-        result = assemble_cloud_group_result(
-            combined,
-            echo_band_hz=self._cloud_echo_band.band_hz,
-            echo_band_provenance=self._cloud_echo_band.disclosure(),
-            position_records=tuple(
-                self._group_position_meta.get(phase, {}).values()
-            ),
-            validity_floor_hz=_spatial.cloud_validity_floor_hz(positions),
-            trusted_ceiling_hz=ceiling_hz,
-            # #1967: where the SHIPPED graph divides the spectrum, from the
-            # preset's committed regions.
-            crossover_region_hz=_verification.committed_crossover_region_hz(
-                getattr(self._preset, "crossover_regions", ()) or ()
-            ),
-            # #2291: the round's SPEC verdict needs the live object; the dict
-            # below keeps the serialized copy every other surface reads.
-            graded_spec_sink=lambda graded: self._group_graded_spec.__setitem__(
-                phase, graded
-            ),
-        )
-        self._group_cloud_result[phase] = result
-        # #2609 SF5 / §4.2: what the ROUND needs and the serialized result does not
-        # carry. Recorded for both phases; only ``PHASE_CLOUD_VERIFY``'s are read.
-        floor_hz = cloud_trusted_floor_hz(
-            _spatial.cloud_validity_floor_hz(positions)
-        )
-        self._group_trusted_floor_hz[phase] = floor_hz
-        self._group_position_residuals[phase] = self._position_residual_rows(
-            combined, floor_hz, ceiling_hz,
-        )
-        # PR-5: the spec verdict a session's journal carries, logged once per group
-        # instead of once per capture.
-        flatness = result.get("flatness") if result.get("available") else None
-        flatness = flatness if isinstance(flatness, Mapping) else {}
-        spec = result.get("spec") if result.get("available") else None
-        spec = spec if isinstance(spec, Mapping) else {}
-        log_event(
-            logger, "correction.crossover_v2_cloud_spec",
-            session_id=self.session_id, phase=phase,
-            available=bool(result.get("available")),
-            reason=str(result.get("reason") or ""),
-            spec_passed=flatness.get("passed"),
-            spec_evaluable=flatness.get("evaluable"),
-            flatness_max_db=flatness.get("max_db"),
-            flatness_max_hz=flatness.get("max_hz"),
-            # WHICH FRAME the deviation above is stated against (#1857): the
-            # pointer moves under a different reference band.
-            flatness_reference_band_lo_hz=_verification._band_edge(
-                flatness.get("reference_band_hz"), 0
-            ),
-            flatness_reference_band_hi_hz=_verification._band_edge(
-                flatness.get("reference_band_hz"), 1
-            ),
-            # EVERY band's own deviation from that reference (#1857): a
-            # uniformly-off band drags it and mislabels the largest deviation.
-            flatness_bands=_per_band_flatness_log_field(spec.get("bands")),
-            # The one figure above that the frame CANNOT move (#1857): the step
-            # between two band levels, in which the shared reference cancels.
-            flatness_tilt=_verification._flatness_tilt_log_field(flatness),
-            flatness_rms_db=flatness.get("rms_db"),
-            spec_n_excluded=flatness.get("n_excluded"),
-            validity_floor_hz=result.get("validity_floor_hz"),
-        )
-        # #1872: the PUBLISH is the one per-phase SINGLETON here. The store accepts an
-        # identical retry idempotently, so this guard exists to stop a re-close spending
-        # an attempt guaranteed to be REFUSED. Marked only on success.
-        if phase in self._group_cloud_published:
-            # The skip is the one fact nothing else states: the durable artifact now
-            # LAGS the recomputed result. INFO — the retake contract as designed.
-            log_event(
-                logger, "correction.crossover_v2_cloud_publish_skipped",
-                session_id=self.session_id, phase=phase,
-            )
-        elif self._seams.records.cloud is not None:
-            try:
-                self._seams.records.cloud(
-                    phase, self._group_cloud_result[phase]
-                )
-            except (OSError, RuntimeError, TypeError, ValueError):
-                # Evidence publication is forensics, never a gate, so a full disk
-                # or a write-once conflict must not undo the group's own accept.
-                log_event(
-                    logger, "correction.crossover_v2_cloud_publish_failed",
-                    level=logging.WARNING,
-                    session_id=self.session_id, phase=phase, exc_info=True,
-                )
-            else:
-                self._group_cloud_published.add(phase)
-
-    def _consume_entry_baseline(
-        self,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> PhaseVerdict:
-        """#2291's "before" capture: screen it, reduce it, retain it."""
-        verdict, measured = self._entry_baseline_verdict(analysis)
-        if verdict.accepted and measured is not None:
-            self._retain_entry_baseline(index, attempt, measured, analysis, result)
-        _diagnostics._safe_log_diag(
-            logger,
-            lambda a, v: _diagnostics._log_entry_baseline_diag(
-                logger, index, a, v,
-                session_id=self.session_id,
-                baseline=self._measure_entry_baseline,
-            ),
-            analysis, verdict, session_id=self.session_id,
-        )
-        return verdict
-
-    def _entry_baseline_verdict(
-        self, analysis: ProgramAnalysis,
-    ) -> tuple[PhaseVerdict, "MeasuredResponse | None"]:
-        """The screens above, and the reduced side when they all pass."""
-        screen = _spatial.entry_baseline_screens(
-            analysis,
-            stimulus_located=_stimulus_locate_ok(analysis),
-            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
-        )
-        if screen.kind is not None:
-            return (
-                PhaseVerdict(
-                    False,
-                    _screen_refusal_code(screen.kind),
-                    payload=dict(screen.integrity_payload or {}),
-                ),
-                None,
-            )
-        measured = screen.measured
-        assert measured is not None  # an accepted screen carries its side
-        return PhaseVerdict(True, payload={"program_id": measured.program_id}), measured
-
-    def _retain_entry_baseline(
-        self,
-        index: int,
-        attempt: int,
-        measured: "MeasuredResponse",
-        analysis: ProgramAnalysis,
-        result: Any,
-    ) -> None:
-        """Bank the accepted baseline, and hand its bytes to the evidence seam.
-
-        **The only retention site that reads the seam's answer**, which decides only
-        whether this baseline can CITE a durable artifact. The take carries the reduced
-        CURVE, not only its scalars: a take is write-once, the state file is not.
-        """
-        metadata = _spatial.entry_baseline_record(
-            index=index,
-            attempt=attempt,
-            program_id=measured.program_id,
-            reference_mark=measured.reference_mark,
-            **self._capture_stamp(result),
-            freqs_hz=measured.curve.hz,
-            magnitude_db=measured.curve.db,
-            excluded=measured.excluded,
-            validity_floor_hz=getattr(
-                analysis.summed_response, "validity_floor_hz", None
-            ),
-            gate_window_ms=_gate_window_ms(analysis.summed_response),
-            summed_ripple_db=analysis.summed_ripple_db,
-            glitch_detected=bool(analysis.glitch_detected),
-            curves=self._banked_curves(PHASE_ENTRY_BASELINE, analysis),
-        )
-        metadata["screens"] = _dispatch.pilot_screens(
-            analysis,
-            program=self.program_for_phase(PHASE_ENTRY_BASELINE))
-        # The TAKE id, not the store's record id: ``read_entry_baseline_take``
-        # answers a banked take's ``take_id`` under this name.
-        artifact_ref = (
-            str(metadata["take_id"])
-            if self._seams.bank_take(result, metadata) else ""
-        )
-        from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
-
-        self._measure_entry_baseline = EntryBaseline.from_measurement(
-            measured,
-            graph_fingerprint=str(metadata["graph_fingerprint"]),
-            captured_at=str(metadata["captured_at"]),
-            artifact_ref=artifact_ref,
-        )
-
-    def _entry_graph_fingerprint(self) -> str:
-        """Which graph this capture was measured through, or the unknown word."""
-        from jasper.active_speaker.crossover_v2 import coordinator
-
-        return coordinator.entry_graph_fingerprint(
-            self._round_ports(), session_id=self.session_id,
-        )
-
-    # --- round advice ---
-
-    def _round_ports(self) -> "RoundPorts":
-        """Bind the round's readers and receipt publisher."""
-        from jasper.active_speaker.crossover_v2.coordinator import RoundPorts
-
-        return RoundPorts(
-            rollback_available=self._seams.rollback_available,
-            tuning_graph_fingerprint=self._seams.tuning_graph_fingerprint,
-            applied_boosts=self._seams.applied_boosts,
-            entry_graph_fingerprint=self._seams.entry_graph_fingerprint,
-            publish_round_receipt=self._seams.records.round_receipt,
-        )
-
-    def _applied_candidate_id(self) -> str:
-        """The APPLIED candidate's fingerprint, by the one honest chain."""
-        return self._tuning_attempt_id or str(
-            getattr(self._candidate, "fingerprint", "") or ""
-        )
-
-    def _grade_round_once(self, verdict: PhaseVerdict) -> PhaseVerdict:
-        """Grade this round and record the adoption advice. Once per session.
-
-        **One owner, two triggers**: express, at the end of :meth:`_consume_verify`;
-        full, at the ``PHASE_CLOUD_VERIFY`` close. **Both require an ACCEPTED
-        capture** — a retriable rejection would burn this guard on evidence the
-        household then replaced, and a write-once receipt would name the wrong capture.
-        """
-        from jasper.active_speaker.crossover_v2 import coordinator
-
-        if self._round_evaluated:
-            return verdict
-        self._round_evaluated = True
-        # #2602. ``None`` is a host that resolved nothing, and the opening round is the
-        # fail-safe reading: it can only offer another round, never suppress a stop.
-        position = self._series_position or coordinator.SeriesPosition.first()
-        graded_verify = self._group_graded_spec.get(PHASE_CLOUD_VERIFY)
-        decision = coordinator.run_round(
-            coordinator.RoundEvidence(
-                session_id=self.session_id,
-                    post_analysis=self._verify_analysis,
-                entry_baseline=self._measure_entry_baseline,
-                # ``None`` on a tier that walks no cloud, which the evaluator reads
-                # as "no report" rather than as a pass (#2160).
-                spec_report=(
-                    None if graded_verify is None else graded_verify.report
-                ),
-                # Decision 10's evidence: the SAME evaluation the spec verdict
-                # reads, with its curve and merged honesty mask.
-                graded_spec=graded_verify,
-                applied_blend_correction=self._applied_blend_correction(),
-                previous_blend_residual_db=position.previous_blend_residual_db,
-                # …and whether the machinery COMMITTED it: provenance without its
-                # outcome is a receipt that can credit a round it never ran.
-                alignment_objective=self._measure_alignment_objective,
-                # WHAT THIS ROUND PROPOSED (#2392), preferred over what it applied.
-                # The candidate below is a real fallback: a stage-2 re-arm predating
-                # #2392, and a commit whose proposal assembly was refused.
-                proposal_fingerprint=(
-                    self._measure_proposal_fingerprint or self._applied_candidate_id()
-                ),
-                # The receipt says which of the two it got, because they are
-                # indistinguishable by inspection — both are 64-hex SHA-256.
-                proposal_fingerprint_kind=(
-                    "intervention_proposal"
-                    if self._measure_proposal_fingerprint
-                    else "candidate"
-                ),
-                # Kept on the record either way, so taking the field above for
-                # the proposal does not cost the receipt its candidate identity.
-                candidate_fingerprint=self._applied_candidate_id(),
-                commanded_delta_present=self._measure_commanded_delta is not None,
-                realization_tolerance_db=VERIFY_TOLERANCE_DB,
-                reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
-                # ``None`` when this session never ran one (#2537). Both triggers
-                # reach here AFTER :meth:`_run_delta_probe` has stamped it.
-                delta_probe=self._delta_probe,
-                # Where this round sits in the household's flattening series (#2602),
-                # from the durable receipt the previous round banked.
-                round_ordinal=position.ordinal,
-                # Which epoch that ordinal counts in: a republish restarts the
-                # sequence, and the pair says so where the ordinal alone cannot.
-                round_ordinal_epoch=position.ordinal_epoch,
-                previous_objectives=position.previous_objectives,
-                # #2609 SF5: the frame those objectives were graded in. Without the
-                # pair, a 7-vs-10 ms gate change reads as 0.518 dB of progress.
-                trusted_floor_hz=self._group_trusted_floor_hz.get(
-                    PHASE_CLOUD_VERIFY
-                ),
-                previous_trusted_floor_hz=position.previous_trusted_floor_hz,
-                # §4.2, from the same close as the spec report above — ``()``
-                # on a tier that walks no post-apply cloud.
-                position_residuals=self._group_position_residuals.get(
-                    PHASE_CLOUD_VERIFY, (),
-                ),
-            ),
-            self._round_ports(),
-        )
-        self._round_evaluation = decision.evaluation
-        self._round_receipt_identity = decision.receipt_identity
-        return verdict
-
-    def _consume_verify(
-        self,
-        index: int,
-        attempt: int,
-        analysis: ProgramAnalysis,
-        result: Any,
-        *,
-        phase: str,
-    ) -> PhaseVerdict:
-        # ``phase`` is REQUIRED rather than defaulted: a hardcoded ``verify`` would
-        # mislabel another phase's capture into a write-once record.
-        verdict = self._consume_unprompted(
-            phase, index, attempt, analysis, result,
-            self._verify_verdict(analysis), self._log_verify_diag,
-        )
-        # #2291: the round's post-apply side, retained BEFORE grading, because the Full
-        # tier grades the round later from a call that cannot see this capture.
-        self._verify_analysis = analysis
-        self._grade_verify_attempt(analysis, verdict, capture_attempt=attempt)
-        # Grade the round HERE when this ACCEPTED capture is the last post-apply
-        # evidence there will be; a Full session grades it at the cloud close. **Only
-        # on an accepted verdict**, or the fire-once guard burns on replaced evidence.
-        if verdict.accepted and PHASE_CLOUD_VERIFY not in self._journey.plan.phases:
-            return self._grade_round_once(verdict)
-        return verdict
-
-    def _grade_verify_attempt(
-        self,
-        analysis: ProgramAnalysis,
-        verdict: PhaseVerdict,
-        *,
-        capture_attempt: int,
-    ) -> None:
-        """Bank accepted VERIFY evidence without scheduling another measurement."""
-
-        # The identity is the APPLIED candidate's, most specific first: the tuning
-        # attempt id, the built candidate's fingerprint, then a per-capture fallback.
-        # Two captures of one candidate must land on one id or the dedup is blind.
-        attempt_id = self._tuning_attempt_id
-        if not attempt_id and self._candidate is not None:
-            attempt_id = str(getattr(self._candidate, "fingerprint", "") or "")
-        if not attempt_id:
-            attempt_id = f"{self.session_id}:{capture_attempt}"
-        if any(item.attempt_id == attempt_id for item in self._attempt_history):
-            # Already in accepted history: a repeated successful re-verify is not a
-            # new tuning attempt, and this skip is the one rung against a second
-            # durable observation of one identity.
-            return
-
-        record = attempt_record_from_verify(
-            analysis,
-            attempt_id=attempt_id,
-            # The session that captured THIS sweep — a capture session is the
-            # sitting (#2081).
-            sitting_id=self.session_id,
-        )
-        writer = self._seams.record_model_error
-        # The store banks PREDICTION error, and its number is the tracking deviation —
-        # read off the analysis, not ``record.grade_db``. The two are equal today and
-        # that coincidence is the hazard: two owners, two quantities (#2291).
-        tracking_deviation_db = _durable_state._attempt_optional_float(
-            (analysis.verify_tracking or {}).get(
-                ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
-            )
-        )
-        if verdict.accepted and writer is not None and tracking_deviation_db is not None:
-            try:
-                # Claim the durable observation identity before banking the journey
-                # projection: a recovery capture can measure a slightly different grade.
-                identity_accepted = writer(
-                    speaker_id=self._speaker_id,
-                    attempt_id=record.attempt_id,
-                    metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-                    predicted_db=0.0,
-                    realized_db=tracking_deviation_db,
-                    context={
-                        "session_id": self.session_id,
-                        "provenance": record.provenance,
-                    },
-                )
-            except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
-                # Ordinary persistence outages are forensics failures: they do not
-                # reverse a VERIFY the measurement gate already accepted.
-                log_event(
-                    logger,
-                    "correction.crossover_v2_model_error_write_failed",
-                    level=logging.WARNING,
-                    session_id=self.session_id,
-                    speaker_id=self._speaker_id,
-                    attempt_id=record.attempt_id,
-                    exc_info=True,
-                )
-            except Exception:  # noqa: BLE001 - the fall-through below is the point
-                # Any OTHER store failure, contained for the arm above's reason — and
-                # containing it is what makes the write exactly-once (#2386): an
-                # escape also skips the ``_attempt_history`` append below. Not
-                # ``BaseException``.
-                # ERROR, because the arm above is an outage and this one is a defect.
-                log_event(
-                    logger,
-                    "correction.crossover_v2_model_error_write_unexpected",
-                    level=logging.ERROR,
-                    session_id=self.session_id,
-                    speaker_id=self._speaker_id,
-                    attempt_id=record.attempt_id,
-                    exc_info=True,
-                )
-            else:
-                if not identity_accepted:
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_model_error_identity_conflict",
-                        level=logging.WARNING,
-                        session_id=self.session_id,
-                        speaker_id=self._speaker_id,
-                        attempt_id=record.attempt_id,
-                    )
-                    return
-
-        if verdict.accepted and record.integrity.comparable:
-            self._attempt_history = [*self._attempt_history, record][-MAX_ATTEMPT_HISTORY:]
-
-    def _set_verify_outcome(
-        self, outcome: str, code: str | None, gate: dict[str, Any] | None,
-    ) -> None:
-        """Record the verify outcome, its verdict, and its gate — as ONE write.
-
-        One call, not three assignments (#1974): the done screen reads the code and the
-        gate TOGETHER. **The gate is a parameter, not a field this method reads** —
-        recomputing it before the early returns let an attempt that early-returned
-        overwrite it while leaving the PREVIOUS attempt's outcome and code standing.
-        """
-        self._verify_outcome = outcome
-        self._verify_code = code
-        self._verify_gate = gate
-
-    def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
-        # Reset every call: ``_log_verify_diag`` runs unconditionally after this method
-        # returns and would misreport a prior attempt's step as fresh.
-        self._verify_pilot_transfer_step_db = None
-        # Same reset discipline: only a verdict that reaches the tracking comparison
-        # carries expert-disclosure evidence (#1605) or a graded band (#1868).
-        self._verify_evidence = None
-        self._verify_graded_band_hz = None
-        self._verify_frame = None
-        self._verify_claims = None
-        gate_record = _gate_record(
-            analysis.summed_response,
-            declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
-        )
-        take = _dispatch.assess(analysis, phase=PHASE_VERIFY, program=self._verify_program,
-                                pilot_transfer_prior=self._verify_pilot_baseline, measure_gate_window_ms=self._measure_gate_window_ms)
-        verdict = PhaseVerdict.from_take(take)
-        if "pilot_transfer_step_db" in take.evidence:
-            self._verify_pilot_transfer_step_db = float(take.evidence["pilot_transfer_step_db"])
-        if not verdict.accepted:
-            if verdict.code in {REASON_VERIFY_LEVEL_SHIFT, REASON_VERIFY_INCONCLUSIVE}:
-                self._set_verify_outcome("inconclusive", verdict.code, gate_record)
-            if analysis.capture_integrity is not None and analysis.capture_integrity.failed:
-                verdict = replace(verdict, payload={"capture_integrity": analysis.capture_integrity.to_dict()})
-            return verdict
-        transfer = _pilot_transfer_by_role(analysis)
-        if transfer and self._verify_pilot_baseline is None:
-            self._verify_pilot_baseline = dict(transfer)
-            self._verify_pilot_baseline_at = time.time()
-            self._note_level_reference_reset(transfer)
-        tracking = analysis.verify_tracking or {}
-        self._verify_evidence = _verification._verify_evidence_from_tracking(tracking)
-        self._verify_graded_band_hz = _verification._verify_graded_band_from_tracking(
-            tracking
-        )
-        self._verify_frame = _verification._verify_frame_from_tracking(tracking)
-        self._verify_claims = _verification._verify_claims(
-            tracking, analysis.verify_absolute
-        )
-        if self._verify_claims["integration"]["status"] == CLAIM_FAIL:
-            self._set_verify_outcome("fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record)
-            return replace(verdict, payload={"tracking": dict(tracking), "authority": "advisory"},
-                           next="accept", charge="none")
-        # The delta probe, run only once tracking has PASSED. What it adds is the
-        # band tracking cannot see: the whole span the correction commands.
-        self._verify_tracking_curve = analysis.verify_tracking_curve
-        summed = analysis.summed_response
-        if summed is not None:
-            self._verify_trusted_band_hz = _gate_trusted_band_hz(summed)
-        # The probe reports here and the ROUND decides one call later; this CAPTURE
-        # passed tracking, which is what this verdict answers.
-        self._run_delta_probe()
-        # Absolute remains independent; the terminal owner classifies its miss.
-        self._set_verify_outcome("pass", None, gate_record)
-        return replace(
-            verdict, payload={
-                "measurement_phase": PHASE_VERIFY,
-                "tracking": dict(tracking),
-                **(
-                    {"delta_probe": self._delta_probe.to_dict()}
-                    if self._delta_probe is not None else {}
-                ),
-            }
-        )
-
-    def _note_level_reference_reset(self, transfer: Mapping[str, float]) -> None:
-        """Record that this session set its own G3 reference, if that is news."""
-        if self._verify_pilot_prior is None or self._verify_pilot_prior_at is None:
-            return
-        shared = [r for r in transfer if r in self._verify_pilot_prior]
-        if not shared:
-            return
-        step = max(
-            abs(transfer[r] - self._verify_pilot_prior[r]) for r in shared
-        )
-        if step <= VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
-            return
-        self._verify_level_reference_reset = {
-            "prior_at": self._verify_pilot_prior_at,
-            "step_db": step,
-        }
-        # The step across the session boundary, which the WITHIN-session
-        # ``pilot_transfer_step_db`` cannot be. INFO: a reset is ordinary.
-        log_event(
-            logger, "correction.crossover_v2_level_reference_reset",
-            level=logging.INFO,
-            session_id=self.session_id,
-            step_db=round(step, 3),
-            prior_age_s=round(time.time() - self._verify_pilot_prior_at, 1),
-            ceiling_db=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-        )
-
-    # --- delta probe ---------------------------------------------------------
-
-    def _run_delta_probe(self) -> DeltaProbeMap | None:
-        """Classify what the speaker actually did against what was commanded.
-
-        Runs at VERIFY on the at-the-mark map, and again at the post-apply group's
-        close, which can only ADD evidence. A run that graded nothing is ``None``.
-        """
-        probe = _delta_probe_run.run_delta_probe(
-            logger,
-            session_id=self.session_id,
-            tracked=self._verify_tracking_curve,
-            commanded=self._measure_commanded_delta,
-            band_hz=self._verify_trusted_band_hz,
-            declared=self._measure_declared_transfer,
-            entry_baseline=self._measure_entry_baseline,
-            measure_band_spread=self._group_band_spread.get(
-                PHASE_CLOUD_MEASURE, (),
-            ),
-            verify_band_spread=self._group_band_spread.get(
-                PHASE_CLOUD_VERIFY, (),
-            ),
-            trust_ceiling=self._mic_trust_ceiling_hz,
-            applied_offset_seam=self._seams.applied_offset_db,
-            program_for_phase=self.program_for_phase,
-        )
-        if probe is not None:
-            self._delta_probe = probe
-        return probe
-
-    # --- diagnostic logging ---------------------------------------------------
-    # These three keep their method form because they ARE the seam that
-    # ``_consume_unprompted`` takes as its ``log_diag`` argument.
-
-    def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        _diagnostics._log_check_diag(
-            logger, analysis, verdict,
-            session_id=self.session_id,
-            woofer_role=self._woofer.role,
-            tweeter_role=self._tweeter_role,
-        )
-
-    def _log_measure_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        _diagnostics._log_measure_diag(
-            logger, analysis, verdict,
-            session_id=self.session_id,
-            roles=self._role_names,
-            sample_rate_hz=self.program_for_phase(PHASE_MEASURE).sample_rate_hz,
-            gate_window_ms=self._measure_gate(analysis),
-            gate_floor_source=self._measure_gate_floor_source(analysis),
-            guard=self._last_measure_guard,
-        )
-
-    def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        _diagnostics._log_verify_diag(
-            logger, analysis, verdict,
-            session_id=self.session_id,
-            verify_frame=self._verify_frame,
-            verify_claims=self._verify_claims,
-            verify_pilot_transfer_step_db=self._verify_pilot_transfer_step_db,
-            measure_gate_window_ms=self._measure_gate_window_ms,
-        )
-
-    # --- helpers -------------------------------------------------------------
-
-    def _rearm_measure_after_transient(self, verdict: PhaseVerdict) -> None:
         if self._gain_plan_db is not None:
-            self._gain_plan_db.update({key.removeprefix("next_gain_db."): float(value)
-                                      for key, value in verdict.evidence.items()
-                                      if key.startswith("next_gain_db.")})
+            self._gain_plan_db.update(
+                {
+                    key.removeprefix("next_gain_db."): float(value)
+                    for key, value in verdict.evidence.items()
+                    if key.startswith("next_gain_db.")
+                }
+            )
             self._measure_program = self._compose_measure_program(self._gain_plan_db)
             if verdict.next == "retake_quieter":
-                self._measure_gain_ceiling_db.update({
-                    role: min(ceiling, self._gain_plan_db[role])
-                    for role, ceiling in self._measure_gain_ceiling_db.items()
-                })
-
-    def _measure_binding_response(self, analysis: ProgramAnalysis) -> Any | None:
-        """The driver response whose gate window BINDS MEASURE — the shortest."""
-        gated = [
-            (window, resp)
-            for resp, window in (
-                (r, _gate_window_ms(r)) for r in analysis.driver_responses
-            )
-            if window is not None
-        ]
-        if not gated:
-            return None
-        return min(gated, key=lambda pair: pair[0])[1]
-
-    def _measure_gate(self, analysis: ProgramAnalysis) -> float | None:
-        return _gate_window_ms(self._measure_binding_response(analysis))
-
-    def _measure_gate_floor_source(self, analysis: ProgramAnalysis) -> str | None:
-        return _gate_floor_source(self._measure_binding_response(analysis))
-
-    def _build_candidate(
-        self, analysis: ProgramAnalysis, cloud: _CloudFitEvidence | None = None,
-        *,
-        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-        source_preset: Any = None,
-    ) -> tuple[Any, _LinearizationState]:
-        """Build one candidate — see ``crossover_v2.planning.build_candidate``.
-
-        **The two preconditions stay HERE**: both are facts about this SESSION in this
-        module's refusal vocabulary, and the first is ABOVE the SF2 degrade handler,
-        which once caught it and degraded to a committable trims-only candidate in the
-        wrong polarity convention. The two ports are bound attributes (#2354).
-        """
-        roles = self._role_names
-        if (self._measurement_protection_sections_by_role is not None
-                and not analysis.configured_path_composed):
-            raise ValueError("protected-neutral capture reached the fitter uncomposed")
-        if analysis.candidate is None and len(roles) > 1:
-            # Hoisted to the capture that produces the analysis, so reaching it here
-            # means a caller that did not walk that path. KEPT: without it the
-            # fallback is a bare builtin mapped to ``internal_error``, not
-            # ``program_unplayable``, and the organ contracts on this check.
-            raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
-        return _planning.build_candidate(
-            analysis, analysis.candidate, cloud,
-            candidate_sections=candidate_sections,
-            source_preset=source_preset or self._preset,
-            roles=roles,
-            plan=self._plan_linearization,
-            exclusion_evidence=self._exclusion_evidence_json,
-            journal=self._journal_linearization,
-            blend_correction=self._candidate_blend_correction(),
-        )
-
-    def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
-        """The fit's cloud inputs — see ``planning.exclusion_evidence_json``.
-
-        Read HERE, at call time, which is why the build takes this as a PORT: it must
-        see ``_group_cloud_result``'s CURRENT value, refreshed on every close (#1872).
-        """
-        return _planning.exclusion_evidence_json(
-            cloud,
-            cloud_result=self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {},
-        )
-
-    def _journal_linearization(
-        self,
-        record: (
-            JournalRecord | _accountability.GateRecord | _planning.FailureRecord
-        ),
-    ) -> None:
-        """Emit one planner, gate or build record through this session's journal.
-
-        Two suites pin these lines to the ``crossover_v2_flow`` logger by name. The
-        three producers carry deliberately different record types, and only the build's
-        has ``exc_info``. ``record.fields`` is spread as keyword arguments so the
-        rendered order matches; a colliding key raises ``TypeError``.
-        """
-        log_event(
-            logger, record.event, level=record.level,
-            exc_info=getattr(record, "exc_info", False),
-            session_id=self.session_id, **record.fields,
-        )
-
-    def _plan_linearization(
-        self,
-        analysis: ProgramAnalysis,
-        cand: Any,
-        cloud: "_CloudFitEvidence | None",
-        *,
-        candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    ) -> LinearizationPlan:
-        """Assemble ONE candidate's planner request and run the pure planner — see
-        ``crossover_v2.planning.plan_for_candidate``.
-
-        :meth:`program_for_phase` is passed rather than called because it can raise
-        before the gain solve, and must raise AFTER the section set has been judged.
-        **The ``journal_dropped`` notice stays HERE**, or it is lost with the port.
-        """
-        plan = _planning.plan_for_candidate(
-            analysis, cand, cloud,
-            candidate_sections=candidate_sections,
-            preset=self._preset,
-            program_for_phase=self.program_for_phase,
-            roles=self._role_names,
-            driver_class_by_role=self._driver_class_by_role,
-            fit_budget_by_role=self._fit_budget_by_role,
-            plan_linearization=plan_linearization,
-            journal=self._journal_linearization,
-        )
-        if plan.journal_dropped:
-            # The port refused lines. Plain scalars only, so whatever broke one
-            # record's payload cannot also swallow the notice about it.
-            log_event(
-                logger, "correction.crossover_v2_linearization_journal_dropped",
-                level=logging.WARNING, session_id=self.session_id,
-                dropped=len(plan.journal_dropped),
-                detail="; ".join(plan.journal_dropped),
-            )
-        return plan
-
-
-__all__ = [
-    "CrossoverV2Session",
-    "V2FlowSeams",
-    "V2RecordPublishers",
-    "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
-    "MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB",
-    "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
-    "PRESCRIBED_NON_WORSENING_DB",
-    "spec_report_for_predicted_sum",
-]
+                self._measure_gain_ceiling_db.update(
+                    {
+                        role: min(ceiling, self._gain_plan_db[role])
+                        for role, ceiling in self._measure_gain_ceiling_db.items()
+                    }
+                )
