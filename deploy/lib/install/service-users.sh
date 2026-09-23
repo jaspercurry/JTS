@@ -140,9 +140,8 @@ create_jasper_service_users() {
     # jasper-web (the wizard HTTP servers) drops to non-root too.
     # One account serves every nginx-fronted wizard unit — jasper-web,
     # jasper-chat-web, jasper-correction-web, jasper-bluetooth-web,
-    # jasper-system-web — because they share state files, the /run
-    # staged-startup-hold directory, the jasper-secrets compartment the tuning
-    # LLM key lives in, and the restart broker's closed client list.
+    # jasper-system-web — because they share state files, the jasper-secrets
+    # compartment for the tuning LLM key, and the restart broker's client list.
     # The /wifi/ page drives NetworkManager: its privileged restarts/reboots are
     # NOT needed, but its NM writes are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), keyed on User=jasper-web. Its

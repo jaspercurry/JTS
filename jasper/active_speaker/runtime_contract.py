@@ -49,7 +49,6 @@ from jasper.output_topology import (
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 
 from ._common import issue as _issue
-from .startup_hold import staged_startup_hold_active
 from .camilla_yaml import STARTUP_MUTE_GAIN_DB, _reserialize_keeping_header
 from .camilla_names import output_commission_mute_name as _commission_mute_name
 from .graph_safety import (
@@ -2443,7 +2442,6 @@ def safe_graph_for_current_topology(
     parked_config_path: str | Path | None = None,
     applied_baseline_path: str | Path | None = None,
     staged_metadata_path: str | Path | None = None,
-    staged_startup_hold_path: str | Path | None = None,
     consider_applied_baseline: bool = True,
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology.
@@ -2552,30 +2550,6 @@ def safe_graph_for_current_topology(
             status="preserve_current",
             selected_config_path=current_path,
             reason="current approved active-speaker runtime graph is legal for saved topology",
-            topology_contract=contract,
-            current_graph=current_graph,
-            preferred_graph=preferred_graph,
-        )
-    # Deadlock guard (re-commission on an already-commissioned box). While a
-    # protected startup-load session holds the staged all-muted anchor as the
-    # durable graph, the reconciler that load KICKED must NOT restore the saved
-    # baseline over it: that moves the durable statefile off the anchor and
-    # commission-load's pre-audio gate then refuses. So the anchor-preserve is
-    # hoisted ABOVE the baseline-restore rung, but ONLY while the hold is in
-    # flight — the marker is ephemeral (/run), so a normal boot never sees it.
-    if (
-        current_graph
-        and current_graph.allowed
-        and current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-        and staged_startup_hold_active(staged_startup_hold_path)
-    ):
-        return SafeGraphDecision(
-            status="preserve_current",
-            selected_config_path=current_path,
-            reason=(
-                "protected startup-load hold is active; preserving the staged "
-                "all-muted startup anchor for the in-flight commission"
-            ),
             topology_contract=contract,
             current_graph=current_graph,
             preferred_graph=preferred_graph,

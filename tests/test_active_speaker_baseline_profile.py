@@ -927,7 +927,6 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
     monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
-    monkeypatch.setattr(baseline_profile_mod, "release_staged_startup_hold", lambda: None)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, measurements={}, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})

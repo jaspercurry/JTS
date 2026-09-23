@@ -473,7 +473,7 @@ def test_a_read_only_convergence_stamps_nothing(tmp_path: Path) -> None:
 @pytest.mark.parametrize("staged", [False, True])
 @pytest.mark.parametrize("case", [
     "heal", "heal_current", "read_only", "disabled", "missing", "bad_candidate", "unsafe_emit",
-    "publish_error", "reselect_refusal", "already_safe", "current_startup", "hold", "blocked",
+    "publish_error", "reselect_refusal", "already_safe", "current_startup", "blocked",
 ])
 def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, staged):
     topology = mono_output_topology()
@@ -499,12 +499,8 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     paths = _boot_convergence_paths(tmp_path)
     startup = tmp_path / "startup.yml"
     startup.write_text(_active_yaml("mono", 2, frozenset()))
-    if staged or case in {"current_startup", "hold"}:
+    if staged or case in {"current_startup"}:
         paths["staged_metadata_path"].write_text(json.dumps(_staged_metadata(topology, startup)))
-    hold = tmp_path / "startup-hold"
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER", str(hold))
-    if case == "hold":
-        hold.touch()
     artifact = tmp_path / "baseline.yml"
     applied = prepare_applied_baseline_profile(
         banked, declaration=declaration, design_draft=draft, measurements={}, config_path=artifact,
@@ -516,10 +512,10 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     if case != "blocked":
         old_payload["processors"]["bass_ext_dynamic_compress_0"]["parameters"]["attack"] = 0.123
     old = "\n".join(line for line in fresh.splitlines() if line.startswith("#")) + "\n" + yaml.safe_dump(old_payload)
-    artifact.write_text(fresh if case in {"already_safe", "hold"} else old)
+    artifact.write_text(fresh if case in {"already_safe"} else old)
     current = artifact if case == "heal_current" else tmp_path / "prior.yml"
     current.write_text(artifact.read_text())
-    if case in {"current_startup", "hold"}:
+    if case in {"current_startup"}:
         current = startup
     elif case == "blocked":
         artifact.write_text(_under_charged_boosted_baseline())
@@ -559,7 +555,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     )
     assert result.ok is (case != "blocked")
     assert len(calls) == (0 if case in {
-        "read_only", "disabled", "missing", "already_safe", "current_startup", "hold", "blocked",
+        "read_only", "disabled", "missing", "already_safe", "current_startup", "blocked",
     } else 1)
     if case in {"heal", "heal_current"}:
         assert result.decision.status == ("select_active_baseline" if case == "heal" else "preserve_current")
@@ -569,12 +565,10 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(artifact)
         assert yaml.safe_load(artifact.read_text())["devices"]["volume_limit"] == 0.0
         assert yaml.safe_load(paths["statefile_path"].read_text())["volume"] == -18.0
-    elif case in {"already_safe", "current_startup", "hold", "blocked"}:
+    elif case in {"already_safe", "current_startup", "blocked"}:
         assert result.decision.status == ("blocked" if case == "blocked" else "preserve_current")
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(current)
         assert artifact.read_bytes() == before[artifact]
-        if case == "hold":
-            assert hold.exists()
     else:
         assert result.decision.status == ("select_active_startup" if staged else "parked_muted")
         if case == "read_only":

@@ -38,9 +38,7 @@ _mem_log() {
 # a reboot. Rather than leave callers (onboard.sh, deploy-to-pi.sh)
 # parsing this file's log prose for "REBOOT REQUIRED", each migration
 # records its own reason line here — one canonical, machine-readable
-# marker. /run is tmpfs, so an actual reboot clears it on its own (same
-# idiom as jasper.active_speaker.startup_hold's /run marker); no
-# separate cleanup step is needed.
+# marker. /run is tmpfs, so a reboot clears it without a separate cleanup step.
 REBOOT_REQUIRED_MARKER="${JTS_REBOOT_REQUIRED_MARKER:-/run/jasper-install/reboot_required}"
 
 # Set (non-empty reason) or clear (empty reason) this step's line in the

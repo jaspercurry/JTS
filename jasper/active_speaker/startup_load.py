@@ -14,12 +14,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
 
-from jasper.atomic_io import atomic_write_json
 from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
-    DspApplyError,
-    apply_dsp_config,
     validate_camilla_config,
 )
 from jasper.json_fields import utc_now_iso as _utc_now
@@ -42,11 +39,6 @@ from .path_safety import (
     staged_target_signature,
     topology_target_signature,
     validate_startup_load_evidence_binding,
-)
-from .startup_hold import (
-    hold_staged_startup,
-    release_staged_startup_hold,
-    startup_hold_marker_path,
 )
 from .runtime_contract import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
@@ -137,22 +129,6 @@ def load_startup_load_state(
         if isinstance(issue, dict)
     ]
     return state
-
-
-def _record_state(
-    payload: dict[str, Any],
-    *,
-    state_path: str | Path | None = None,
-) -> None:
-    path = startup_load_state_path(state_path)
-    payload = dict(payload)
-    payload["state_path"] = str(path)
-    payload["updated_at"] = payload.get("updated_at") or _utc_now()
-    atomic_write_json(
-        path,
-        payload,
-        mode=0o640,
-    )
 
 
 def _trigger_audio_hardware_reconcile(*, source: str) -> bool:
@@ -644,267 +620,6 @@ def build_startup_load_preflight(
     }
 
 
-def _loaded_state_payload(
-    *,
-    status: str,
-    candidate_config_path: str | None,
-    active_config_path: str | None,
-    previous_config_path: str | None,
-    last_action: str,
-    preflight: dict[str, Any] | None = None,
-    dsp_apply: dict[str, Any] | None = None,
-    issues: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    loaded = status == "loaded"
-    return {
-        "artifact_schema_version": STARTUP_LOAD_SCHEMA_VERSION,
-        "kind": STARTUP_LOAD_STATE_KIND,
-        "status": status,
-        "updated_at": _utc_now(),
-        "loaded": loaded,
-        "candidate_config_path": candidate_config_path,
-        "active_config_path": active_config_path,
-        "previous_config_path": previous_config_path,
-        "rollback_available": bool(loaded and previous_config_path),
-        "last_action": last_action,
-        "preflight_status": (preflight or {}).get("status"),
-        "path_safety_load_gate": ((preflight or {}).get("path_safety") or {}).get(
-            "load_gate"
-        ),
-        "dsp_apply": dsp_apply,
-        "issues": issues or [],
-    }
-
-
-async def load_protected_startup_config(
-    topology: OutputTopology,
-    *,
-    load_config: PathLoader,
-    get_current_config_path: ConfigPathReader,
-    path_safety_evidence_path: str | Path | None = None,
-    state_path: str | Path | None = None,
-    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
-        validate_camilla_config
-    ),
-) -> dict[str, Any]:
-    """Load the staged active-speaker startup config after all gates pass."""
-
-    try:
-        prior_config_path = await get_current_config_path()
-    except Exception as exc:  # noqa: BLE001
-        preflight = build_startup_load_preflight(
-            topology,
-            path_safety_evidence_path=path_safety_evidence_path,
-            validate=validate,
-        )
-        candidate_path = preflight.get("candidate", {}).get("path")
-        issue = _issue(
-            "blocker",
-            "current_config_snapshot_failed",
-            f"could not read current CamillaDSP config path: {type(exc).__name__}",
-        )
-        payload = _loaded_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=None,
-            last_action="load_failed",
-            preflight=preflight,
-            issues=[issue],
-        )
-        _record_state(payload, state_path=state_path)
-        return {"preflight": preflight, "load": payload}
-
-    preflight = build_startup_load_preflight(
-        topology,
-        path_safety_evidence_path=path_safety_evidence_path,
-        current_config_path=prior_config_path,
-        validate=validate,
-    )
-    candidate_path = preflight.get("candidate", {}).get("path")
-    if not preflight.get("load_allowed"):
-        payload = _loaded_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(prior_config_path) if prior_config_path else None,
-            last_action="load_blocked",
-            preflight=preflight,
-            issues=[
-                _normalise_issue(issue)
-                for issue in preflight.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-        )
-        _record_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.startup_load result=blocked blockers=%d gate=%s",
-            len(payload["issues"]),
-            preflight.get("path_safety", {}).get("load_gate"),
-        )
-        return {"preflight": preflight, "load": payload}
-
-    if not prior_config_path:
-        issue = _issue(
-            "blocker",
-            "current_config_snapshot_missing",
-            "CamillaDSP did not report a current config path for rollback",
-        )
-        payload = _loaded_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=None,
-            last_action="load_failed",
-            preflight=preflight,
-            issues=[issue],
-        )
-        _record_state(payload, state_path=state_path)
-        return {"preflight": preflight, "load": payload}
-    if not Path(str(prior_config_path)).exists():
-        issue = _issue(
-            "blocker",
-            "rollback_anchor_missing",
-            f"current CamillaDSP config path does not exist: {prior_config_path}",
-        )
-        payload = _loaded_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(prior_config_path),
-            last_action="load_blocked",
-            preflight=preflight,
-            issues=[issue],
-        )
-        _record_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.startup_load result=blocked reason=rollback_anchor_missing prior=%s",
-            prior_config_path,
-        )
-        return {"preflight": preflight, "load": payload}
-
-    # Hold the staged anchor BEFORE touching the DSP. The reconcile this load
-    # kicks re-runs the graph selector, which restores the saved baseline over
-    # the anchor unless the hold is present (safe_graph_for_current_topology's
-    # deadlock-guard rung reads this marker). A load that cannot be held would
-    # have its durable half undone seconds later, so refuse here rather than
-    # answer success: nothing has been applied yet at this point.
-    if not hold_staged_startup():
-        hold_marker = startup_hold_marker_path()
-        payload = _loaded_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(prior_config_path),
-            last_action="load_blocked",
-            preflight=preflight,
-            issues=[
-                _issue(
-                    "blocker",
-                    "staged_startup_hold_unavailable",
-                    "could not hold the staged startup anchor at "
-                    f"{hold_marker}: the reconcile this load kicks would "
-                    "restore the saved baseline over it. The writing service "
-                    "needs write access to that directory, which a sandboxed "
-                    "unit gets from RuntimeDirectory=jasper-active-speaker.",
-                )
-            ],
-        )
-        _record_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.startup_load result=blocked "
-            "reason=staged_startup_hold_unavailable marker=%s",
-            hold_marker,
-        )
-        return {"preflight": preflight, "load": payload}
-
-    def _persist_loaded_anchor() -> None:
-        _record_state(
-            _loaded_state_payload(
-                status="loaded",
-                candidate_config_path=candidate_path,
-                active_config_path=candidate_path,
-                previous_config_path=str(prior_config_path),
-                last_action="load",
-                preflight=preflight,
-            ),
-            state_path=state_path,
-        )
-
-    # The hold is taken before the apply, so EVERY way out of the apply that
-    # leaves the anchor off the durable statefile has to give it back — not just
-    # the one this function renders a payload for. `apply_dsp_config` raises at
-    # least two non-`DspApplyError` types on the writer-lock path both web
-    # surfaces contend for (`DspWriterLockTimeout`, `BassExtensionApplyPending`),
-    # and an awaited call can also be cancelled. A `finally` covers all of them
-    # without a broad `except`, and it re-raises nothing, so the caller's error
-    # handling stays exactly as it was.
-    apply_succeeded = False
-    try:
-        apply_state = await apply_dsp_config(
-            source="active_speaker_startup_load",
-            candidate_path=str(candidate_path),
-            prior_config_path=str(prior_config_path),
-            load_config=load_config,
-            get_current_config_path=get_current_config_path,
-            persist=_persist_loaded_anchor,
-            validate=validate,
-        )
-        apply_succeeded = True
-    except DspApplyError as exc:
-        payload = _loaded_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(prior_config_path),
-            last_action="load_failed",
-            preflight=preflight,
-            dsp_apply=exc.state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "startup_config_load_failed",
-                    f"CamillaDSP startup load failed: {exc}",
-                )
-            ],
-        )
-        _record_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.startup_load result=failed candidate=%s prior=%s error=%s",
-            candidate_path,
-            prior_config_path,
-            type(exc).__name__,
-        )
-        return {"preflight": preflight, "load": payload}
-    finally:
-        # Runs on the return above too, so the rolled-back apply gives the hold
-        # back by the same one line that covers the escapes this function never
-        # sees. The success path clears the flag, so a held anchor stays held.
-        if not apply_succeeded:
-            release_staged_startup_hold()
-
-    payload = _loaded_state_payload(
-        status="loaded",
-        candidate_config_path=str(candidate_path),
-        active_config_path=apply_state.active_config_path or str(candidate_path),
-        previous_config_path=apply_state.prior_config_path or str(prior_config_path),
-        last_action="load",
-        preflight=preflight,
-        dsp_apply=apply_state.to_dict(),
-    )
-    _record_state(payload, state_path=state_path)
-    # The hold taken before the apply is still in force, so the reconcile kicked
-    # here preserves the anchor it just wrote instead of restoring the baseline.
-    _trigger_audio_hardware_reconcile(source="active_speaker_startup_load")
-    logger.info(
-        "event=active_speaker.startup_load result=loaded candidate=%s prior=%s op_id=%s",
-        payload["candidate_config_path"],
-        payload["previous_config_path"],
-        apply_state.op_id,
-    )
-    return {"preflight": preflight, "load": payload}
-
-
 def startup_anchor_from_decision(decision: Any) -> Any | None:
     """The decision's operative graph, when it IS the all-muted startup anchor.
 
@@ -1017,13 +732,6 @@ def reemit_staged_startup_anchor(
     Its ring arm needs the same first step every roleful box needs — the GRAPH
     moves first, so ``jasper-audio-hardware-reconcile`` has a loaded graph to
     derive the endpoint marker FROM.
-
-    DERIVED FROM PERSISTED STATE ONLY. The re-stage reads the box's own saved
-    design draft — the same file
-    ``jasper.active_speaker.web_commissioning._stage_startup_config`` reads when
-    it is handed neither a preset nor a preview. The operator supplies exactly
-    one thing, ``--endpoint``, which is the act that breaks the marker<->graph
-    fixed point; nothing else about the graph is operator-supplied.
 
     NOTHING LIVE IS TOUCHED UNTIL THE GRAPH PROVES. The staged artifact sits at a
     FIXED path, so writing it IS moving the boot graph — there is no separate

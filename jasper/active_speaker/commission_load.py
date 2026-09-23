@@ -81,13 +81,8 @@ RunningConfigReader = Callable[[], Awaitable[str | None]]
 
 # Guarded per-driver commissioning load (gap-1 slice 2b-ii).
 #
-# `startup_load.load_protected_startup_config` loads the DURABLE all-muted staged
-# boot config and persists it as the config file path CamillaDSP reboots into.
-# Per-driver commissioning is different: it loads a TRANSIENT config that unmutes
-# one driver, and the boot config MUST stay all-muted (crash-recovery-MUTED).
-# The two transactions share
-# the same shape (snapshot → preflight gate → apply_dsp_config load with rollback)
-# but differ in TWO safety-critical ways:
+# Per-driver commissioning loads a TRANSIENT config that unmutes one driver.
+# The durable boot config MUST stay all-muted (crash-recovery-MUTED):
 #
 #  1. Transport. The injected `load_config` here is the INLINE loader
 #     (`CamillaController.set_active_config_raw` of the file's contents), NOT the
@@ -658,11 +653,10 @@ async def load_driver_commissioning_config(
     the path-safety binding + the durable-statefile S3 fact), NOT the running
     graph.
 
-    Precondition: the active graph (the staged all-muted config) is already live
-    via :func:`load_protected_startup_config`. Commissioning swaps the running
-    graph at the same width. The first arm waits for the output-hardware
-    reconciler so outputd is reading the active lane before the audible ramp can
-    start; later same-target ramp updates may skip that reconciler because they
+    Precondition: the staged all-muted config is already live and persisted.
+    Commissioning swaps the running graph at the same width. The first arm waits
+    for the output-hardware reconciler so outputd reads the active lane before
+    the audible ramp starts; later same-target ramp updates may skip it because they
     only change the transient CamillaDSP gain/mask, not the output lane.
     """
 
@@ -777,8 +771,7 @@ async def load_driver_commissioning_config(
         return {"preflight": preflight, "load": payload}
 
     # Precondition gate: the persisted (boot / rollback-anchor) config must
-    # ALREADY be the all-muted staged config (loaded by load_protected_startup_config
-    # at Stage 4 via set_config_file_path). Commissioning swaps the running graph
+    # ALREADY be the all-muted staged config. Commissioning swaps the running graph
     # at the same width and rolls back to this anchor; running it when the boot
     # config is an unrelated graph (a stereo/correction config) is not a safe
     # transition. Fail closed rather than swap blindly.

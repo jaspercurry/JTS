@@ -162,25 +162,9 @@ NoNewPrivileges=true
 # /ha wizards can atomically replace integration secret files and Spotify
 # OAuth tokens there.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
-# The active-speaker staged-startup hold marker
-# (jasper.active_speaker.startup_hold, #2896) lives at
-# /run/jasper-active-speaker/staged-startup-hold, and this unit writes it from
-# the /sound/ protected startup load. ProtectSystem=strict mounts the whole
-# hierarchy read-only apart from /dev, /proc, and /sys, so a bare mkdir under
-# /run cannot succeed here; RuntimeDirectory= both creates the directory as
-# jasper-web:jasper (the unit's User:Group) and excludes it from
-# ProtectSystem=. Mode 0755 keeps the root reconciler's read of the marker
-# working; jasper-correction-web (through its driver-capture arms)
-# declares this same RuntimeDirectory= with the same user and mode since its
-# own de-root, and jasper-web-streambox.service (this same process, installed
-# as jasper-web.service on a streambox) stays root under ProtectSystem=full
-# and needs nothing. 0755 is also what lets either non-root unit release a
-# marker the streambox root writer created root:root 0600: unlink needs
-# write on the directory, not the file.
-# Preserve=yes is
-# load-bearing: jasper-web is socket-activated and idles out after 10 minutes,
-# and a commission hold has to outlive that stop — /run is tmpfs, so a reboot
-# still clears the marker, which is the property the guard rung depends on.
+# audition.py writes /run/jasper-active-speaker/audition.json as jasper-web.
+# RuntimeDirectory= permits this under ProtectSystem=; Preserve=yes keeps
+# audition state when either web service idles out. Reboot clears /run.
 RuntimeDirectory=jasper-active-speaker
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
