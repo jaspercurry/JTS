@@ -10,6 +10,7 @@ test there that builds a ``CrossoverV2Session`` (via
 ``tests/crossover_v2_fixtures.py``'s ``_conductor``/``FakeSeams``), so the
 census's largest class-A file can stay session-free.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -38,7 +39,8 @@ from tests.test_audio_measurement_program_analysis import (
 
 @pytest.mark.parametrize("identity_protection", [False, True])
 def test_configured_path_matches_legacy_through_analyzer_and_fitter(
-    monkeypatch, identity_protection,
+    monkeypatch,
+    identity_protection,
 ):
     """One shared H makes neutral M*C/P and legacy H*C equivalent end to end.
 
@@ -143,15 +145,28 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         dataclasses.asdict(legacy),
     )
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
+    from jasper.active_speaker.crossover_v2 import planning
+    from jasper.active_speaker.crossover_v2.intervention import plan_linearization
+
     fitted = []
     for analysis in (neutral, legacy):
         conductor = _conductor(FakeSeams())
-        conductor._measure_program = program
         # The planner since #2291 Phase 2b, which returns what the fitter used
         # to leave on the conductor. The three values compared are the same
         # three: the committed trims, the emitted filters, and the linearized
         # VERIFY prediction.
-        plan = conductor._plan_linearization(analysis, analysis.candidate, None)
+        plan = planning.plan_for_candidate(
+            analysis,
+            analysis.candidate,
+            None,
+            preset=conductor.source_preset,
+            program_for_phase=lambda _: program,
+            roles=tuple(role.role for role in conductor.roles_bands),
+            driver_class_by_role={},
+            fit_budget_by_role={},
+            plan_linearization=plan_linearization,
+            journal=lambda _: None,
+        )
         fitted.append((
             dict(plan.role_attenuations_db),
             dict(plan.linearization),

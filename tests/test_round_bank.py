@@ -247,31 +247,35 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
 ):
 
     session, state_path = _live_session(tmp_path)
+    calibration = {"measure": {"calibration_id": "capture-1"}}
     if snapshot:
         monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: session.parent)
         from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
         conductor = _conductor(FakeSeams())
         conductor.session_id = "capture-1"
-        conductor._set_verify_outcome("pass", None, {})
         v2state.set_state_path_for_tests(state_path)
         try:
-            v2state.persist_conductor_state(conductor, failure_code=None, evidence={"bundle_session_id": session.name})
+            v2state.persist_conductor_state(conductor, failure_code=None, evidence={
+                "bundle_session_id": session.name, "calibration": calibration})
         finally:
             v2state.set_state_path_for_tests(None)
         assert json.loads((session / CAPTURE_STATE_FILENAME).read_text())["session_id"] == "capture-1"
-    state_path.write_text(json.dumps({"session_id": "capture-B", "verify": {"outcome": "fail"}}))
+    state_path.write_text(json.dumps({
+        "session_id": "capture-B", "verify": {"outcome": "fail"},
+        "evidence": {"calibration": {"measure": {"calibration_id": "capture-B"}}},
+    }))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state_path)
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
     assert packet["entry_baseline"]["available"] is True
-    assert packet["verify"]["available"] is snapshot
-    if snapshot:
-        assert packet["verify"]["outcome"] == "pass"
-    else:
-        assert "state.json" in banked.provenance["missing"]
+    assert packet["identity"]["calibration"] == (calibration if snapshot else {})
+    assert packet["verify"]["available"] is False
+    assert ("state.json" in banked.provenance["missing"]) is not snapshot
     (banked.path / "state.json").write_text(state_path.read_text())
-    assert load_banked_round(banked.path).packet["verify"]["available"] is snapshot
+    reread = load_banked_round(banked.path).packet
+    assert reread["identity"]["calibration"] == (calibration if snapshot else {})
+    assert reread["verify"]["available"] is False
 
 SR = 48000
 

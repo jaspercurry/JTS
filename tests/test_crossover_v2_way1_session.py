@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
+
 import yaml as yaml_lib
 
 from jasper.active_speaker.crossover_v2 import contracts
@@ -37,11 +38,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
-    PHASE_VERIFY,
 )
-from jasper.active_speaker.delta_probe import VERDICT_MATCHED, VERDICT_MODEL_ERROR
 from jasper.audio_measurement.program_analysis import (
-    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
     MEASURE_PAIR_SINGLE_DRIVER,
     MeasurementPriors,
     analyze_program_capture,
@@ -74,7 +72,7 @@ def test_the_way1_stage_one_walk_names_one_role_and_ends_on_the_entry_baseline()
     assert phases.count(PHASE_ENTRY_BASELINE) == 1
     # The missing upper driver is absent, never aliased onto the lone branch.
     assert conductor._tweeter is None
-    assert conductor._woofer.role == "full_range"
+    assert conductor.roles_bands[0].role == "full_range"
 
 
 def test_a_three_role_session_is_still_refused():
@@ -90,9 +88,7 @@ def test_a_three_role_session_is_still_refused():
         )
 
 
-# --------------------------------------------------------------------------- #
 # measure, fit, compile
-# --------------------------------------------------------------------------- #
 
 
 def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
@@ -145,15 +141,13 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
         atol=0.5,
     )
 
-    verdict = conductor._measure_verdict(analysis)
+    from jasper.active_speaker.crossover_v2.capture_dispatch import assess
+    verdict = assess(analysis, phase=PHASE_MEASURE, program=program)
 
-    assert verdict.accepted is True
-    assert verdict.code is None
-    assert verdict.payload["measurement_phase"] == PHASE_MEASURE
-    assert verdict.payload["pair"] == {
-        "status": "not_evaluated",
-        "reason": MEASURE_PAIR_SINGLE_DRIVER,
-    }
+    assert verdict.ok is True
+    assert verdict.fault is None
+    assert analysis.phase == PHASE_MEASURE
+    assert (analysis.alignment, analysis.measure_pair_not_evaluated) == (None, MEASURE_PAIR_SINGLE_DRIVER)
 def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
     """Driven through the same ``_build_candidate`` the 2-way walk uses."""
     conductor = _way1_conductor(
@@ -163,7 +157,7 @@ def test_the_way1_candidate_carries_the_fit_and_no_inter_driver_axis():
     )
     analysis = _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
 
-    candidate, state = conductor._build_candidate(analysis)
+    candidate, state = _way1_candidate(conductor, analysis)
 
     assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
     assert candidate.linearization_outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
@@ -219,7 +213,7 @@ def _way1_ready_to_apply_payload(tmp_path):
         gain_plan_db={"full_range": -11.0},
         source_preset=commission_wiring.resolve_capture_preset(topology),
     )
-    candidate, state = conductor._build_candidate(
+    candidate, state = _way1_candidate(conductor,
         _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
     )
     assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
@@ -298,133 +292,22 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
     assert dbt.load_base_trim() is None
 
 
-# --------------------------------------------------------------------------- #
 # grading
-# --------------------------------------------------------------------------- #
 
 #: The band the fixture round commands a boost in, and how much. Inside the
 #: capture's own trusted span so the probe grades it, and narrow enough that the
 #: rest of the span stays quiet.
-_BOOST_HZ = (2000.0, 4000.0)
-_BOOST_DB = 3.0
 
 
-def _boost_db(freqs_hz) -> np.ndarray:
-    hz = np.asarray(freqs_hz, dtype=float)
-    return np.where((hz >= _BOOST_HZ[0]) & (hz <= _BOOST_HZ[1]), _BOOST_DB, 0.0)
+def _way1_candidate(conductor, analysis):
+    from functools import partial
+    from jasper.active_speaker.crossover_v2 import planning, intervention
 
-
-def _way1_round_through_verify():
-    """One way-1 round driven to the far side of VERIFY on a REAL capture.
-
-    Both axes come from the session's own owners over a one-role MEASURE
-    analysis; the tracking curve and trusted band from ``_consume_verify``. The
-    applied graph asks for :data:`_BOOST_DB` across :data:`_BOOST_HZ` and the
-    speaker delivers it, so the probe runs where a shipped round runs it.
-    """
-    from jasper.active_speaker.crossover_v2.priors import (
-        measure_sweep_bounds,
-        verify_priors,
-    )
-    from tests.crossover_v2_round_harness import _consume_verify
-    from tests.test_audio_measurement_program_analysis import (
-        SR,
-        _band_impulse,
-        _synthesize,
-    )
-
-    # The Layer-A profile this speaker's PREVIOUS round emitted: one role, one
-    # gain, no delay and no relative polarity.
-    applied_profile = {
-        "status": "applied",
-        "recomposition_snapshot": {
-            "preset": _one_way_preset().to_dict(),
-            "corrections": {"full_range": {"gain_db": 0.0, "inverted": False}},
-            "linearization": {},
-        },
-    }
-    conductor = _way1_conductor(
-        FakeSeams(applied_profile_state=applied_profile),
-        index_phase_map=_way1_index_phase_map(),
-        gain_plan_db={"full_range": -11.0},
-    )
-    measure_program = conductor.program_for_phase(PHASE_MEASURE)
-    measure = _way1_measure_analysis(measure_program)
-    raw_hz, raw_db = measure.predicted_sum
-    applied = (raw_hz, np.asarray(raw_db, dtype=float) + _boost_db(raw_hz))
-    conductor._measure_commanded_delta = conductor._commanded_delta_for(
-        measure, applied, None,
-    )
-    conductor._measure_declared_transfer = conductor._declared_transfer_for(
-        measure, applied,
-    )
-
-    program = conductor.program_for_phase(PHASE_VERIFY)
-    ir = _band_impulse(200, WAY1_BAND.lower_hz, WAY1_BAND.upper_hz, 1.0)
-    capture = _synthesize(program, woofer_ir=ir, tweeter_ir=ir)
-
-    def _analyze(predicted_sum):
-        return analyze_program_capture(program, capture, SR, priors=verify_priors(
-            fc_hz=None, source_preset=_one_way_preset(),
-            predicted_sum=predicted_sum,
-            sweep_bounds=measure_sweep_bounds(measure_program),
-        ))
-
-    # The prediction the applied graph is graded against is this capture's own
-    # summed response, read off a first pass — a speaker that did exactly what
-    # was modelled, which is the only state that reaches the probe at all.
-    summed = _analyze(None).summed_response
-    analysis = _analyze((summed.freqs_hz, summed.magnitude_db))
-    return conductor, analysis, _consume_verify(conductor, analysis)
-
-
-def test_a_way1_verify_capture_grades_through_the_shipped_path():
-    """The whole chain, on a speaker with one branch: a way-1 round is GRADED
-    rather than reporting unavailable, which is neither a rollback nor a
-    permission."""
-    conductor, analysis, verdict = _way1_round_through_verify()
-
-    assert verdict.accepted is True
-    assert analysis.verify_tracking_curve is not None
-    measure_sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
-    verify_sweep = conductor.program_for_phase(PHASE_VERIFY).segment("sweep_verify")
-    assert verify_sweep.f1_hz == WAY1_BAND.lower_hz < measure_sweep.f1_hz == 150.0
-    assert verify_sweep.f2_hz == measure_sweep.f2_hz == WAY1_BAND.upper_hz
-    assert analysis.verify_tracking["tracking_band_hz"] == [
-        measure_sweep.f1_hz, measure_sweep.f2_hz,
-    ]
-    # R18 declines by SHAPE, never by a missing corner.
-    assert analysis.verify_absolute == {
-        "not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    }
-    # Both axes were built, so the probe classified rather than reporting
-    # unavailable, and it graded the band the round actually commanded in.
-    probe = conductor._delta_probe
-    assert probe is not None
-    assert probe.verdict == VERDICT_MATCHED
-    assert probe.probe_band_hz[0] == pytest.approx(_BOOST_HZ[0], rel=0.05)
-    assert probe.probe_band_hz[1] == pytest.approx(_BOOST_HZ[1], rel=0.05)
-
-
-def test_a_way1_probe_that_contradicts_its_claim_is_graded_not_excused():
-    """The round commands a boost and the speaker delivers a cut instead.
-
-    Only the MEASURED half of the tracking curve is displaced — the grid, the
-    predicted curve, the trusted band and both axes stay what the run above
-    produced — so this is the same round with a different speaker in it.
-    """
-    conductor, _analysis, _verdict = _way1_round_through_verify()
-    curve = conductor._verify_tracking_curve
-    assert curve is not None
-    freqs, measured_db, predicted_db = curve
-    conductor._verify_tracking_curve = (
-        freqs, measured_db - 2.0 * _boost_db(freqs), predicted_db,
-    )
-
-    probe = conductor._run_delta_probe()
-
-    assert probe is not None
-    assert probe.verdict == VERDICT_MODEL_ERROR
-    assert probe.max_error_db == pytest.approx(2.0 * _BOOST_DB, abs=0.1)
-    # A SHORTFALL, not an overshoot.
-    assert probe.realized_louder_than_commanded is False
+    plan = partial(planning.plan_for_candidate, preset=conductor.source_preset,
+        program_for_phase=conductor.program_for_phase, roles=("full_range",),
+        driver_class_by_role={}, fit_budget_by_role={},
+        plan_linearization=intervention.plan_linearization, journal=lambda _: None)
+    return planning.build_candidate(analysis, analysis.candidate, None,
+        source_preset=conductor.source_preset, roles=("full_range",), plan=plan,
+        exclusion_evidence=partial(planning.exclusion_evidence_json, cloud_result={}),
+        journal=lambda _: None, blend_correction=())

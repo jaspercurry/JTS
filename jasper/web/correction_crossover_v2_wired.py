@@ -144,7 +144,7 @@ def build_v2_wired_run_and_consume(
                     request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
                     gate=position_gate, captures=captures,
                     signals=signals, admit=admit, aborts={},
-                    gain_ceiling_db=conductor._measure_gain_ceiling_db,
+                    gain_ceiling_db=conductor.measure_gain_ceiling_db,
                 )
             finally:
                 restore = door.opened.restore_result if door.opened else None

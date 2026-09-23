@@ -68,11 +68,12 @@ def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras()
     _run_phase(conductor, 1, 1)
     fakes.measure = lambda program: _measure_analysis(program, linearity=False)
     _run_phase(conductor, 2, 2)
-    spent = _run_phase(conductor, 2, 3)
+    conductor.authorize_begin(2, 3)
+    spent = conductor._slot_attempts[PHASE_MEASURE]
 
     # One extra really was spent before the rebuild.
-    assert spent["attempts"]["by_household"] == 1
-    assert spent["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION - 1
+    assert spent.by_household == 1
+    assert spent.extras_left == MAX_EXTRA_ATTEMPTS_PER_POSITION - 1
 
     snapshot = conductor.snapshot()
     # The mechanism: the durable shape has no room for the ledger.
@@ -88,9 +89,10 @@ def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras()
     assert "check" in resumed.accepted_phases
     assert resumed._slot_attempts == {}
 
-    after = _run_phase(resumed, 2, 4)
-    assert after["attempts"]["by_household"] == 0
-    assert after["attempts"]["left"] == MAX_EXTRA_ATTEMPTS_PER_POSITION
+    resumed.authorize_begin(2, 4)
+    after = resumed._slot_attempts[PHASE_MEASURE]
+    assert after.by_household == 0
+    assert after.extras_left == MAX_EXTRA_ATTEMPTS_PER_POSITION
 
 
 def test_a_different_session_starts_the_ledger_fresh_as_section_5_6_requires():

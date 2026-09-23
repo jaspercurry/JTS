@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd, refusal_copy
 from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
@@ -28,8 +27,14 @@ from jasper.audio_measurement.program_analysis.model import (
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.platform import control_client
 from tests.crossover_v2_fixtures import (
-    FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
-    _snr_pilot, plan_context,
+    FakeSeams,
+    _alignment,
+    _conductor,
+    _driver_response,
+    _loc,
+    _measure_analysis,
+    _snr_pilot,
+    plan_context,
 )
 from tests.test_plan_run import AnsweredGate, _run_gated, _walk
 
@@ -212,7 +217,13 @@ def test_sweep_schedule_is_absolute_for_anchored_roles(role, branches, direction
     (0.15, 0.70, -30.0, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator", None),
 ])
 def test_failed_schedule_routes_by_sweep_confidence_and_available_gain(
-    sweep_confidence, pilot_confidence, ceiling, code, next, charge, target,
+    sweep_confidence,
+    pilot_confidence,
+    ceiling,
+    code,
+    next,
+    charge,
+    target,
 ):
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -40}],
@@ -228,7 +239,11 @@ def test_failed_schedule_routes_by_sweep_confidence_and_available_gain(
     verdict = cd.assess(analysis, phase="measure", gain_db=GAINS, gain_ceiling_db={"woofer": ceiling})
     assert not verdict.ok and verdict.fault == code
     assert (verdict.next, verdict.charge, verdict.next_gain_db) == (next, charge, target)
-    assert verdict.gain_targets == ({} if target is None else {"woofer": target})
+    assert {
+        key.removeprefix("next_gain_db."): float(value)
+        for key, value in verdict.evidence.items()
+        if key.startswith("next_gain_db.")
+    } == ({} if target is None else {"woofer": target})
     assert verdict.evidence["locate_confidence_min"] == min(sweep_confidence, pilot_confidence)
     assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(-26.0)
     if code == refusal_copy.REASON_DRIFT_BASELINES_DISAGREE:
@@ -275,11 +290,11 @@ def test_mic_meter_grade_is_a_disclosure(phase, status):
 @pytest.mark.parametrize("phase", ["check", "verify"])
 def test_clip_auto_retry_comes_from_the_registry_without_a_gain_target(phase):
     take = cd.assess(_analysis(locations=(_loc("sweep_w", clipped=True),)), phase=phase)
-    result = refusal_copy.PhaseVerdict.from_take(take).to_capture_dict()
-    assert result["code"] == refusal_copy.REASON_CLIPPED
-    assert result["template"] == refusal_copy.TEMPLATE_SILENT_AUTO_RETRY
-    assert result["next"] == "retake_quieter" and result["next_gain_db"] is None
-    assert result["auto_retry"] is True
+    result = refusal_copy.PhaseVerdict.from_take(take)
+    assert result.code == refusal_copy.REASON_CLIPPED
+    assert refusal_copy.REASON_REGISTRY[result.code].template == refusal_copy.TEMPLATE_SILENT_AUTO_RETRY
+    assert result.next == "retake_quieter" and result.next_gain_db is None
+    assert (result.code in refusal_copy.TRANSIENT_AUTO_RETRY_CODES) is True
 
 
 @pytest.mark.parametrize("glitch_inputs,frame_loss", [
@@ -325,7 +340,11 @@ def test_louder_retake_on_a_quieter_role_keeps_the_program_peak(anchor_corrobora
                         gain_db={"woofer": -20.0, "tweeter": -30.0}, gain_ceiling_db={"tweeter": -22.0})
     assert verdict.fault == (None if anchor_corroborated else refusal_copy.REASON_ANCHOR_TOO_QUIET)
     assert verdict.next == "retake_louder"
-    assert verdict.gain_targets == {"tweeter": -22.0}
+    assert {
+        key.removeprefix("next_gain_db."): float(value)
+        for key, value in verdict.evidence.items()
+        if key.startswith("next_gain_db.")
+    } == {"tweeter": -22.0}
     assert verdict.next_gain_db == -20.0
 
 
@@ -361,7 +380,17 @@ def test_effective_caps_become_digital_gain_ceilings(cap, volume, expected):
     (-33.2, -16.9, 0, 20, "insufficient", 0, None, None),
 ])
 @pytest.mark.parametrize("stop", [80, 85])
-def test_alignment_only_retry_uses_driver_and_spl_headroom(cap, volume, session_headroom, spl_headroom, magnitude, raise_db, capped_by, residual, stop):
+def test_alignment_only_retry_uses_driver_and_spl_headroom(
+    cap,
+    volume,
+    session_headroom,
+    spl_headroom,
+    magnitude,
+    raise_db,
+    capped_by,
+    residual,
+    stop,
+):
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
         noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
@@ -376,7 +405,11 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(cap, volume, session_
     assert verdict.ok and verdict.fault is None
     assert verdict.next == ("retake_louder" if raise_db else "accept")
     assert verdict.next_gain_db == (pytest.approx(-30 + raise_db) if raise_db else None)
-    assert verdict.gain_targets == ({"woofer": pytest.approx(-30 + raise_db)} if raise_db else {})
+    assert {
+        key.removeprefix("next_gain_db."): float(value)
+        for key, value in verdict.evidence.items()
+        if key.startswith("next_gain_db.")
+    } == ({"woofer": pytest.approx(-30 + raise_db)} if raise_db else {})
     assert verdict.capabilities["delay_estimate"] is False
     assert verdict.evidence["alignment.woofer.alignment_level_db"] == -30
     assert verdict.evidence["alignment.woofer.alignment_snr_shortfall_db"] == 6
@@ -477,66 +510,17 @@ def test_check_gates(changes, code):
     assert cd.assess(_analysis(**changes), phase="check").fault == code
 
 
-@pytest.mark.parametrize("has_drivers", [False, True])
-def test_measure_purpose_decides_whether_delay_is_required(has_drivers):
-    analysis = _analysis(alignment=_alignment(status="unresolved"))
-    if not has_drivers:
-        analysis = replace(analysis, driver_responses=(), summed_response=_driver_response("summed", 8.0))
-    take = cd.assess(analysis, phase="measure")
-    assert take.ok and take.fault is None
-    assert flow._measure_sufficient(take, analysis) is (not has_drivers)
-
-
 @pytest.mark.parametrize("ok", [False, True])
 def test_phase_verdict_publishes_take_fields(ok):
     take = cd.assess(_analysis(glitch_detected=not ok), phase="measure")
-    result = refusal_copy.PhaseVerdict.from_take(take).to_capture_dict()
+    result = refusal_copy.PhaseVerdict.from_take(take)
     for field in ("evidence", "capabilities", "next", "next_gain_db", "charge"):
-        assert result[field] == getattr(take, field)
+        assert getattr(result, field) == getattr(take, field)
 
 
 @pytest.mark.parametrize(("ripple", "alignment", "due"), [(15.1, True, True), (15.0, True, False), (99, False, False)])
 def test_ripple_is_a_disclosure(ripple, alignment, due):
     assert cd.ripple_reservation_due(predicted_ripple_db=ripple, has_alignment=alignment, disclosure_threshold_db=15.0) is due
-
-
-@pytest.mark.parametrize(
-    ("fault", "code", "figures"),
-    [
-        ({}, None, {}),
-        ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, {}),
-        ({"anchor": AnchorEvidence(presence=0.0156, confidence=0.18, corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET,
-         {"anchor_presence": 0.0156, "anchor_confidence": 0.18, "anchor_corroborated": False}),
-        ({"glitch_detected": True, "discontinuity_samples": -1066.7,
-          "drift": DriftEstimate(-3106.0, 1066.7, True, discontinuity_samples=-1066.7)},
-         refusal_copy.REASON_DRIFT_BASELINES_DISAGREE,
-         {"epsilon_ppm": -3106.0, "max_residual_samples": 1066.7,
-          "discontinuity_samples": -1066.7}),
-        ({"clipped": True}, refusal_copy.REASON_CLIPPED, {"peak_dbfs": -12.0}),
-    ],
-)
-def test_measure_evidence_reaches_capture_result_and_journal(monkeypatch, fault, code, figures):
-    events = []
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.diagnostics.log_event",
-        lambda logger, event, **fields: events.append((event, fields)),
-    )
-    fault = dict(fault)
-    clipped = fault.pop("clipped", False)
-    fakes = FakeSeams(measure=lambda program: replace(
-        _measure_analysis(program, clipped=clipped), mic_meter_status="usable", **fault,
-    ))
-    conductor = _conductor(fakes)
-    _run_phase(conductor, 1, 1)
-    verdict = _run_phase(conductor, 2, 1)
-    assert verdict["accepted"] is (code is None)
-    assert verdict.get("code") == code
-    assert verdict["evidence"].items() >= {"mic_meter_status": "usable", **figures}.items()
-    for key, value in figures.items():
-        assert type(verdict["evidence"][key]) is type(value)
-    journal = next(fields for event, fields in events
-                   if event == "correction.crossover_v2_measure_diag")
-    assert journal["evidence"] == verdict["evidence"]
 
 
 def test_no_household_vocabulary_reaches_this_module():
@@ -568,3 +552,33 @@ def test_session_level_drift_has_margin(same_pose, delta, accepted):
     assert verdict.evidence["level_delta_db"] == pytest.approx(delta)
     if not accepted:
         assert (verdict.fault, verdict.next, verdict.charge) == ("level_drift_at_session_gain", "retake_same", "none")
+
+
+def test_run_host_passes_the_excitation_caps_and_preset_spl_stop_unchanged(monkeypatch):
+    from jasper.web import correction_run_host
+    from tests.crossover_v2_fixtures import _run_phase
+
+    conductor = _conductor(
+        FakeSeams(), gain_plan_db=GAINS, index_phase_map={1: "measure"}
+    )
+    excitation = replace(
+        conductor.excitation, caps_dbfs={"woofer": -9.25, "tweeter": -51.75}
+    )
+    conductor.set_excitation(excitation)
+    assess = Mock(wraps=correction_run_host.assess)
+    monkeypatch.setattr(correction_run_host, "assess", assess)
+
+    _run_phase(conductor, 1, 1)
+
+    inputs = assess.call_args.kwargs
+    assert conductor.excitation is excitation
+    assert inputs["caps_dbfs"] is excitation.caps_dbfs
+    assert inputs["caps_dbfs"] == excitation.caps_dbfs
+    assert (
+        inputs["spl_stop_db_spl"]
+        is conductor.source_preset.safety.max_commissioning_level_db_spl
+    )
+    assert (
+        inputs["spl_stop_db_spl"]
+        == conductor.source_preset.safety.max_commissioning_level_db_spl
+    )

@@ -12,7 +12,6 @@ from typing import Any, Iterable, Literal, Mapping
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
-from jasper.log_event import log_event
 
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
@@ -40,7 +39,7 @@ TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 # renders each through its template copy).
 REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
 # The same pilot mismatch ``REASON_AGC_BEHAVIORAL_FAIL`` names, caused by a
-# loud ambient burst rather than the phone's AGC. ``_consume_check``
+# loud ambient burst rather than the phone's AGC. ``capture_dispatch.assess``
 # distinguishes the two on the CHECK gain solve's own ``gain_plan.
 # snr_floor_ok``, computed against this capture's ambient bands independent of
 # the linearity outcome.
@@ -1090,10 +1089,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
         # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
-        # count is the session's own ceiling on wider-spot asks —
-        # ``_close_cloud_group`` stops at ``GEOMETRY_RETRY_POSITIONS`` — not
-        # what admits the retake: every rung spends one of the POSITION's
-        # pooled extras.
+        # count is the session's own ceiling on wider-spot asks, not what
+        # admits the retake: every rung spends one of the POSITION's pooled
+        # extras.
         GEOMETRY_RETRY_POSITIONS,
         # #2092 (owner-approved 2026-08-08): the old diagnosis ("too close
         # together") is factually false on a wide walk — the estimator reads
@@ -1141,7 +1139,7 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
 #: copy the household reads. A mapping rather than an identity because two
 #: kinds do NOT share their code's name: a glitched timeline renders as
 #: ``drift_baselines_disagree`` and a bent curve as ``agc_behavioral_fail``.
-#: Completeness is checked — see :func:`_screen_refusal_code` and
+#: Completeness is checked — see
 #: ``test_every_screen_kind_has_a_household_sentence``.
 SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_LOCATE_FAILED: REASON_LOCATE_FAILED,
@@ -1150,24 +1148,6 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _spatial.SCREEN_CAPTURE_GLITCH: REASON_DRIFT_BASELINES_DISAGREE,
     _spatial.SCREEN_CLIPPED: REASON_CLIPPED,
 }
-
-
-def _screen_refusal_code(kind: str) -> str:
-    """One screen kind's household code, LOUDLY on an unmapped one.
-
-    An unmapped kind is a wiring defect — a ladder step shipped without a
-    sentence. It still returns rather than raising, under the most conservative
-    code available: losing the refusal to a mapping gap would be worse than
-    naming it imprecisely.
-    """
-    code = SCREEN_KIND_REASONS.get(kind)
-    if code is not None:
-        return code
-    log_event(
-        logger, "correction.crossover_v2_screen_kind_unmapped",
-        level=logging.ERROR, kind=str(kind),
-    )
-    return REASON_LOCATE_FAILED
 
 
 def reason_message(
@@ -1180,7 +1160,7 @@ def reason_message(
     """The household sentence for ``code``, given what the capture measured.
 
     THE single copy selector: one failure is narrated on surfaces that never
-    see each other — the capture verdict (:meth:`PhaseVerdict.to_capture_dict`),
+    see each other — the capture verdict,
     the envelope (``crossover_envelope_v2._reason_message``), and the
     apply-seam refusal — and a household looking at two of them after ONE
     failure must not be handed two accounts of it. Adding a third
@@ -1261,15 +1241,10 @@ class TakeVerdict:
     charge: TakeCharge = "none"
     screens: list[dict[str, Any]] = field(default_factory=list)
 
-    @property
-    def gain_targets(self) -> dict[str, float]:
-        return {key.removeprefix("next_gain_db."): float(value)
-                for key, value in self.evidence.items() if key.startswith("next_gain_db.")}
-
 
 @dataclass(frozen=True)
 class PhaseVerdict:
-    """A consume verdict: the capture dict + the internal reason (if any)."""
+    """A phase verdict: acceptance plus the internal reason (if any)."""
 
     accepted: bool
     code: str | None = None
@@ -1298,42 +1273,3 @@ class PhaseVerdict:
                    payload={"screens": take.screens} if take.screens else {},
                    evidence=take.evidence, capabilities=take.capabilities, next=take.next,
                    next_gain_db=take.next_gain_db, charge=take.charge)
-
-    def to_capture_dict(self) -> dict[str, Any]:
-        """The mapping ``consume_capture`` returns to ``run_capture_plan``.
-
-        Always carries ``accepted``; a rejection adds the reason code,
-        template and copy so the phone renders the right §5.10 screen. Every
-        non-``accepted`` field is relayed verbatim in the ``capture_result``
-        host event.
-
-        ``reason`` comes from :func:`reason_message` rather than the registry
-        entry, so a code whose honest sentence depends on what was measured
-        renders that sentence HERE and not only in the envelope served later.
-        """
-        out: dict[str, Any] = {"accepted": self.accepted}
-        if self.code is not None:
-            spec = REASON_REGISTRY[self.code]
-            out.update(
-                code=self.code,
-                template=spec.template,
-                reason=reason_message(
-                    self.code,
-                    spec,
-                    pilot_heard=self.pilot_heard,
-                    reflection_measured=self.reflection_measured,
-                ),
-                banner=spec.banner,
-                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES and not self.payload.get("terminal"),
-                pilot_heard=self.pilot_heard,
-            )
-            if self.code == REASON_VERIFY_INCONCLUSIVE:
-                out["reflection_measured"] = self.reflection_measured
-        out.update(self.payload)
-        out.update(evidence=dict(self.evidence), capabilities=dict(self.capabilities),
-                   next=self.next or ("accept" if self.accepted else "fix_and_retake"),
-                   next_gain_db=self.next_gain_db,
-                   charge="none" if self.accepted else self.charge)
-        if self.payload.get("terminal"):
-            out["next"] = "stop"
-        return out

@@ -57,7 +57,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "TEMPLATE_VOLUME_RECOVERY",
         "TRANSIENT_AUTO_RETRY_CODES",
         "_retriable_reason",
-        "_screen_refusal_code",
         "locate_failed_diagnosis",
         "locate_failed_message",
         "reason_diagnosis",
@@ -66,13 +65,8 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "verify_inconclusive_diagnosis",
         "verify_inconclusive_message",
     ),
-    "spatial": (
-        "GEOMETRY_RETRY_POSITIONS",
-    ),
-    "crossover_v2_flow": (
-            "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
-        "PRESCRIBED_NON_WORSENING_DB",
-    ),
+    "spatial": ("GEOMETRY_RETRY_POSITIONS",),
+    "crossover_v2_flow": ("PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",),
     "capture_dispatch": (
         "_gate_disclosure",
         "_gate_floor_source",

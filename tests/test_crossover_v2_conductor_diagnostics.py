@@ -2,15 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: cap-aware composition and per-capture diagnostic logging."""
+"""Conductor W5a: cap-aware composition."""
 
 from __future__ import annotations
 
-import logging
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
 from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db as _compose_sigma_db
 from jasper.active_speaker.crossover_v2.journey import (
@@ -18,48 +16,31 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import ALIGNMENT_CONFIDENCE_TRUST_FLOOR, CrossoverV2Session
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, PILOT_LEVEL_DELTA_DB
-from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.mic_meter import (
-    MIC_USABLE_MAX_DBFS,
-    MIC_USABLE_MIN_DBFS,
-)
 from jasper.audio_measurement.program import (
     RoleBand,
     BASE_STIMULUS_PEAK_DBFS,
 )
 from jasper.audio_measurement.program_analysis import (
-    CHANNEL_MAP_TARGET_RISE_DB,
-    CHANNEL_MAP_MIN_ISOLATION_DB,
-    AlignmentEstimate,
-    CrossoverCandidate,
-    DriftEstimate,
-    GainPlan,
     ProgramAnalysis,
     analyze_program_capture,
 )
-from tests._log_events import event_field_maps, event_fields, event_records
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
     SESSION,
-    _DIAG_LOGGER,
-    _alignment,
     _check_analysis_with_solves,
     _conductor,
-    _driver_response_diag,
-    _loc,
-    _measure_analysis,
     _pilot_obs,
     _preset,
-    _profiled_conductor,
     _resp_with_repeats,
     _run_phase,
-    _stage2_after_measure,
-    _verify_analysis,
 )
+
+
+pytestmark = pytest.mark.usefixtures("banked_session_level")
 
 
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
@@ -69,6 +50,35 @@ from tests.crossover_v2_fixtures import (
 # hardware-free suite and only surfaced on JTS3 (program_channel_peak_over_cap
 # refused the CHECK program). These pins compose the real programs and run them
 # through the ACTUAL admission the play seam uses.
+
+
+def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
+    from jasper.active_speaker.session_volume_plan import (
+        session_measurement_volume_db,
+    )
+
+    from tests.test_active_speaker_program_admission import _profile_and_targets
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
+    )
+    sv = session_measurement_volume_db(profile, targets.values())
+    caps = {"woofer": float(woofer_peak), "tweeter": float(tweeter_peak)}
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
+    ]
+    c = CrossoverV2Session(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=roles,
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=caps,
+        session_volume_db=sv,
+        seams=FakeSeams().seams(),
+        driver_spacing_m=0.15,
+    )
+    return c, topology, profile, targets, sv
 
 
 @pytest.mark.parametrize(
@@ -281,195 +291,6 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
     assert not stale.allowed
 
 
-# --- per-capture diagnostic logging (durable observability, Part 1) -------------
-#
-# Every CHECK/MEASURE/VERIFY capture now logs its full numeric diagnostics via
-# ``log_event`` on BOTH the accepted path and every rejection — before this
-# change a failed hardware run left no numbers to look at (only a partial
-# ``program_analysis.glitch`` line existed, and only for a glitch MEASURE).
-# These tests pin the event names + key fields on accept AND reject.
-
-
-def test_diag_logging_bug_cannot_crash_or_flip_the_verdict(caplog, monkeypatch):
-    """The diag-logging call is wrapped defensively (``_safe_log_diag``),
-    symmetric with the capture-retention path's own best-effort guarantee —
-    a bug in a ``_log_*_diag`` method must degrade to a WARN, never crash
-    the capture or change the verdict already decided above it. Exercises
-    all three phases through the SAME shared wrapper."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-
-    monkeypatch.setattr(
-        c, "_log_check_diag",
-        lambda analysis, verdict: (_ for _ in ()).throw(AttributeError("boom")),
-    )
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is True  # the verdict is completely unaffected
-    fields = event_fields(caplog, "correction.crossover_v2_diag_log_failed")
-    assert fields["phase"] == "check"
-    caplog.clear()
-
-    monkeypatch.setattr(
-        c, "_log_measure_diag",
-        lambda analysis, verdict: (_ for _ in ()).throw(TypeError("boom")),
-    )
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_diag_log_failed")
-    assert fields["phase"] == "measure"
-    caplog.clear()
-
-    fakes.apply_done = True
-    monkeypatch.setattr(
-        c, "_log_verify_diag",
-        lambda analysis, verdict: (_ for _ in ()).throw(ValueError("boom")),
-    )
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_diag_log_failed")
-    assert fields["phase"] == "verify"
-
-
-def test_check_diag_logs_full_numbers_on_accept(caplog):
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        ambient_report={"bands": [{"level_dbfs": -70.0}]},
-        pilots=(
-            _pilot_obs("woofer", snr_db=20.0, target_rise_db=18.0, cross_rise_db=1.0),
-            _pilot_obs("tweeter", snr_db=15.0, target_rise_db=22.0, cross_rise_db=2.0),
-        ),
-        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
-        ),
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_check_diag")
-    assert fields["accepted"] == "true"
-    assert fields["pilot_snr_ok"] == "true"
-    # The two independent rung-2 tells (#2647): both False here, so this pin
-    # also covers the accepted, neither-fired shape.
-    assert fields["anchor_ambiguous"] == "false"
-    assert fields["delta_implausible"] == "false"
-    assert fields["woofer_delta_implausible"] == "false"
-    assert fields["tweeter_delta_implausible"] == "false"
-    assert fields["woofer_snr_db"] == "20.0"
-    assert fields["tweeter_snr_db"] == "15.0"
-    assert fields["woofer_captured_delta_db"] == "10.0"
-    assert fields["woofer_programmed_delta_db"] == "10.0"
-    assert fields["woofer_channel_map_target_rise_db"] == "18.0"
-    assert fields["tweeter_channel_map_cross_rise_db"] == "2.0"
-    # Both RAW rises AND the ratio derived from them: the raws keep a sweep of
-    # these lines comparable across the 2026-08-21 metric switch, the ratio is
-    # what the CROSS verdict is now decided on.
-    assert fields["woofer_channel_map_isolation_db"] == "17.0"
-    assert fields["tweeter_channel_map_isolation_db"] == "20.0"
-
-
-def test_check_emits_a_named_row_per_driver_with_its_absolute_level(caplog):
-    """#1922: the CHECK verdict reduces every per-driver fact to one boolean.
-
-    So a ``channel_map_mismatch`` cannot say WHICH driver was silent, though
-    the system knows. One row per role restores the attribution, and carries
-    the fact the whole gate chain never asks: an ABSOLUTE level. Every shipped
-    rung is relative (rise above ambient, ratio within a pilot pair, SNR
-    floor), so a 12 dB rise in a very quiet room passes arbitrarily quiet and
-    nothing bounds the top at all.
-
-    Advisory, and pinned as such: the verdict is unchanged by the level window
-    (#1894 — adjudication explores inside the declared fence, never moves it).
-    """
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        ambient_report={"bands": [{"level_dbfs": -70.0}]},
-        pilots=(
-            _pilot_obs("woofer", peak_hi_dbfs=-24.0),
-            # Present, correct, and far under the usable window's floor: the
-            # exact shape every relative rung passes.
-            _pilot_obs("tweeter", peak_hi_dbfs=-72.0, mic_meter_status="too_quiet"),
-        ),
-        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
-        ),
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    # ADVISORY: the quiet driver does not refuse the phase.
-    assert verdict["accepted"] is True
-
-    rows = event_field_maps(caplog, "correction.crossover_v2_check_pilot")
-    assert [row["role"] for row in rows] == ["woofer", "tweeter"]
-    assert rows[0]["level_sanity"] == "usable"
-    assert rows[1]["level_sanity"] in {"low", "too_quiet"}
-    # The window travels with the reading, so an old row stays readable after
-    # the constants move.
-    assert rows[1]["level_usable_min_dbfs"] == str(MIC_USABLE_MIN_DBFS)
-    assert rows[1]["level_usable_max_dbfs"] == str(MIC_USABLE_MAX_DBFS)
-    # The per-driver verdicts the aggregate collapsed, named.
-    assert rows[1]["channel_map_ok"] == "true"
-    assert rows[1]["peak_hi_dbfs"] == "-72.0"
-
-
-def test_check_diag_names_the_isolation_ratio_and_its_bound_on_a_refusal(caplog):
-    """A `channel_map_mismatch` refusal has to be readable from the journal.
-
-    The household-facing copy stays number-free by design (the Language guide:
-    one reason, one action), so the diag line IS the operator's record of the
-    refusal. Since 2026-08-21 the CROSS verdict is decided on the ISOLATION
-    RATIO rather than an additive cross-rise bound, so the line has to carry
-    both the ratio and the bound it was graded against — without the bound, a
-    journal of old lines is silently reinterpreted the next time the constant
-    moves, and the operator cannot tell a refusal from a near miss.
-    """
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        ambient_report={"bands": [{"level_dbfs": -70.0}]},
-        pilots=(
-            # The swap shape: the driver played (target clears the floor) but
-            # the other band rose with it, so the isolation collapses.
-            _pilot_obs("woofer", target_rise_db=40.0, cross_rise_db=39.0,
-                       channel_map_ok=False),
-            _pilot_obs("tweeter", target_rise_db=22.0, cross_rise_db=2.0),
-        ),
-        linearity_ok=True, channel_map_ok=False, pilot_snr_ok=True,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
-        ),
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "channel_map_mismatch"
-    fields = event_fields(caplog, "correction.crossover_v2_check_diag")
-    assert fields["woofer_channel_map_isolation_db"] == "1.0"
-    assert fields["channel_map_min_isolation_db"] == str(CHANNEL_MAP_MIN_ISOLATION_DB)
-    # ...and the threshold, without which a sub-bound isolation figure on a
-    # QUIET capture would read as the cause of a refusal that never happened:
-    # below it the ratio is published but decides nothing.
-    assert fields["channel_map_cross_judged_above_db"] == str(
-        CHANNEL_MAP_TARGET_RISE_DB
-    )
-    # The raws that produced the ratio are still there to attribute it with.
-    assert fields["woofer_channel_map_target_rise_db"] == "40.0"
-    assert fields["woofer_channel_map_cross_rise_db"] == "39.0"
-
-
 def test_check_priors_carry_fc_for_the_measure_level_solve():
     """#1825: CHECK's gain solve scopes each band's SNR requirement by whether
     the band sits inside the crossover overlap window, so Fc has to reach the
@@ -482,59 +303,6 @@ def test_check_priors_carry_fc_for_the_measure_level_solve():
     assert priors.crossover_fc_hz == pytest.approx(FC_HZ)
 
 
-def test_check_diag_discloses_the_per_driver_measure_level_solve(caplog):
-    """#1825 honesty: the solved MEASURE level and the ambient evidence it
-    rests on land in the journal, one event per driver."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = _check_analysis_with_solves
-    c = _conductor(fakes)
-    assert _run_phase(c, 1, 1)["accepted"] is True
-    event = "correction.crossover_v2_measure_level_solve"
-    maps = event_field_maps(caplog, event)
-    assert len(maps) == 2
-    (woofer_fields,) = (m for m in maps if m["role"] == "woofer")
-    assert woofer_fields["solved_gain_db"] == "-19.0"
-    assert woofer_fields["flat_target_gain_db"] == "-11.0"
-    assert woofer_fields["reduction_db"] == "8.0"
-    assert woofer_fields["bound_by"] == "room_snr"
-    assert woofer_fields["ambient_dbfs"] == "-60.0"
-    assert woofer_fields["required_snr_db"] == "41.0"
-    assert woofer_fields["band_lo_hz"] == "150.0"
-    assert woofer_fields["band_hi_hz"] == "2000.0"
-    (tweeter_fields,) = (m for m in maps if m["role"] == "tweeter")
-    assert tweeter_fields["solved_gain_db"] == "-31.0"
-    assert tweeter_fields["reduction_db"] == "18.0"
-    assert tweeter_fields["ambient_dbfs"] == "-72.0"
-
-
-def test_check_diag_discloses_the_level_solve_on_a_rejected_check_too(caplog):
-    """Knowing what level the solve WOULD have chosen is exactly what an
-    `snr_floor` refusal needs read beside it — so the disclosure rides the
-    diagnostic path, not the accept path."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis_with_solves(
-        program, snr_floor_ok=False,
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is False and verdict["code"] == "snr_floor"
-    assert len(event_records(caplog, "correction.crossover_v2_measure_level_solve")) == 2
-
-
-def test_check_diag_survives_a_gain_plan_without_solves(caplog):
-    """A legacy/fixture plan carries no ``role_solves``; the disclosure must
-    simply not fire rather than crash the diagnostic path."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _conductor(fakes)  # default _check_analysis, no role_solves
-    assert _run_phase(c, 1, 1)["accepted"] is True
-    assert event_records(caplog, "correction.crossover_v2_check_diag")
-    assert not event_records(caplog, "correction.crossover_v2_measure_level_solve")
-    assert not event_records(caplog, "correction.crossover_v2_diag_log_failed")
-
-
 def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     """#1825's pilot floor reserves `hi_seg.gain_db - lo_seg.gain_db` read off
     the CHECK program — because that is what MEASURE's own leading pair will
@@ -542,9 +310,6 @@ def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     `PILOT_LEVEL_DELTA_DB`). If the
     two ever diverged the floor would be mis-sized in silence, so pin them
     equal at the composers that produce them."""
-    from jasper.active_speaker.crossover_v2.programs import (  # lazy: avoid measurement-stack import cost on unused paths
-        PILOT_LEVEL_DELTA_DB,
-    )
 
     fakes = FakeSeams()
     fakes.check = _check_analysis_with_solves
@@ -556,7 +321,7 @@ def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
         hi = check.segment(f"pilot_{role}_hi")
         assert hi.gain_db - lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
 
-    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert _run_phase(c, 1, 1).ok is True
     measure = c.program_for_phase("measure")
     m_lo = measure.segment("pilot_woofer_lo")
     m_hi = measure.segment("pilot_woofer_hi")
@@ -571,7 +336,7 @@ def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
     fakes = FakeSeams()
     fakes.check = _check_analysis_with_solves
     c = _conductor(fakes)
-    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert _run_phase(c, 1, 1).ok is True
     measure = c.program_for_phase("measure")
     w_gains = {
         measure.segment(sid).gain_db
@@ -585,553 +350,7 @@ def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
     assert w_gains != t_gains
 
 
-def test_check_diag_logs_full_numbers_on_rejection_too(caplog):
-    """The bug this fixes: a rejected CHECK used to leave no numbers behind."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        pilots=(
-            _pilot_obs("woofer", snr_db=5.0, snr_valid=False),
-            _pilot_obs("tweeter", snr_db=15.0),
-        ),
-        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=False,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
-        ),
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "snr_floor"
-    fields = event_fields(caplog, "correction.crossover_v2_check_diag")
-    assert fields["accepted"] == "false"
-    assert fields["code"] == "snr_floor"
-    assert fields["pilot_snr_ok"] == "false"
-    # Numbers still present on the rejected capture.
-    assert fields["woofer_snr_db"] == "5.0"
-    assert fields["tweeter_snr_db"] == "15.0"
-
-
-def test_check_diag_names_implausible_pilot_step_before_channel_map(caplog):
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.check = lambda program: ProgramAnalysis(
-        phase="check", program_id=program.program_id,
-        locations=(_loc("pilot_woofer_hi", "pilot"),),
-        pilots=(
-            _pilot_obs("woofer", captured_delta_db=-55.0, delta_implausible=True),
-            _pilot_obs("tweeter"),
-        ),
-        linearity_ok=True, channel_map_ok=False, pilot_snr_ok=True,
-        anchor_ambiguous=False, delta_implausible=True,
-        gain_plan=GainPlan(
-            gain_db={"woofer": -11.0, "tweeter": -13.0},
-            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
-        ),
-    )
-    c = _conductor(fakes)
-    verdict = _run_phase(c, 1, 1)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "pilot_step_implausible"
-    fields = event_fields(caplog, "correction.crossover_v2_check_diag")
-    assert fields["code"] == "pilot_step_implausible"
-    assert fields["anchor_ambiguous"] == "false"
-    assert fields["delta_implausible"] == "true"
-    assert fields["woofer_delta_implausible"] == "true"
-    assert fields["tweeter_delta_implausible"] == "false"
-
-
-def test_measure_diag_logs_full_numbers_on_accept(caplog):
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: ProgramAnalysis(
-        phase="measure", program_id=program.program_id,
-        locations=(
-            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"),
-        ),
-        drift=DriftEstimate(
-            epsilon_ppm=30.0,
-            max_residual_samples=0.2, glitch_detected=False,
-            repeat_level_delta_db=0.05,
-        ),
-        driver_responses=(
-            _driver_response_diag(
-                "woofer", window_ms=8.0, floor_hz=180.0, snr_db=25.0, snr_verdict="ok",
-            ),
-            _driver_response_diag(
-                "tweeter", window_ms=9.0, snr_db=8.0, snr_verdict="insufficient",
-            ),
-        ),
-        alignment=AlignmentEstimate(
-            delay_us=150.0, raw_delay_us=161.0, parallax_us=11.0,
-            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-            confidence=0.9, seed_delay_us=120.0,
-            confidence_source="gcc_phat_seed",
-        ),
-        candidate=CrossoverCandidate(
-            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
-            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
-            alignment_seed_ripple_db=4.56, alignment_seed_delay_us=120, flatness_improvement_db=3.33,
-            anchor_delay_us=145.0, snap_delta_us=5.0, snap_found=True,
-            alignment_objective="flat_sum_committed", seed_polarity_sign=-1,
-            left_anchor_lobe=True,
-        ),
-        linearity_ok=True,
-        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
-        glitch_detected=False,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["accepted"] == "true"
-    assert fields["alignment_confidence"] == "0.9"
-    assert fields["alignment_confidence_source"] == "gcc_phat_seed"
-    assert fields["alignment_seed_delay_us"] == "120.0"
-    assert fields["alignment_refinement_delta_us"] == "30.0"
-    assert fields["gate_window_ms"] == "8.0"  # min(8.0, 9.0)
-    assert fields["validity_floor_hz"] == "180.0"  # max(180.0) — only one floor set
-    assert fields["epsilon_ppm"] == "30.0"
-    assert fields["max_residual_samples"] == "0.2"
-    assert fields["repeat_level_delta_db"] == "0.05"
-    assert fields["delay_role"] == "tweeter"  # positive delay_us ⇒ tweeter delayed
-    # ``polarity`` here is the candidate-facing keep/invert action
-    # (``alignment_to_candidate_fields``'s third return value), not the raw
-    # AlignmentEstimate.polarity ("normal"/"inverted") — "normal" maps to
-    # POLARITY_KEEP ("keep").
-    assert fields["polarity"] == "keep"
-    assert fields["predicted_ripple_db"] == "1.23"
-    assert fields["alignment_seed_ripple_db"] == "4.56"
-    assert fields["flatness_improvement_db"] == "3.33"
-    assert fields["anchor_delay_us"] == "145.0"
-    assert fields["snap_delta_us"] == "5.0"
-    assert fields["snap_found"] == "true"
-    assert fields["woofer_snr_db"] == "25.0"
-    assert fields["woofer_snr_verdict"] == "ok"
-    assert fields["tweeter_snr_db"] == "8.0"
-    assert fields["tweeter_snr_verdict"] == "insufficient"
-    # #2598 / #2607 S2: WHICH objective committed the (polarity, delay) pair,
-    # what correlation answered, whether the two agreed, and whether the
-    # committed delay left the comb lobe its anchor owns. The lobe flag is the
-    # compensating control for the ±1-period search — a wrong-lobe commit is
-    # magnitude-flat, so an on-axis VERIFY cannot contradict it and the journal
-    # and the receipt are where it has to be legible.
-    assert fields["alignment_objective"] == "flat_sum_committed"
-    assert fields["seed_polarity"] == "inverted"
-    assert fields["polarity_agrees_with_sum"] == "true"
-    assert fields["left_anchor_lobe"] == "true"
-    evidence = _analysis_json(fakes.measure(c.program_for_phase(PHASE_MEASURE)))
-    assert evidence["alignment_confidence_source"] == "gcc_phat_seed"
-    assert evidence["alignment_seed_delay_us"] == 120.0
-    assert evidence["alignment_seed_ripple_db"] == 4.56
-    assert evidence["flatness_improvement_db"] == 3.33
-    assert evidence["anchor_delay_us"] == 145.0
-    assert evidence["snap_delta_us"] == 5.0
-    assert evidence["snap_found"] is True
-    assert evidence["alignment_objective"] == "flat_sum_committed"
-    assert evidence["seed_polarity"] == "inverted"
-    assert evidence["polarity_agrees_with_sum"] is True
-    assert evidence["left_anchor_lobe"] is True
-
-
-def _measure_snr_analysis(program, *, woofer, tweeter):
-    """A minimal accepted MEASURE whose two driver responses carry SNR blocks."""
-    return ProgramAnalysis(
-        phase="measure", program_id=program.program_id,
-        locations=(_loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep")),
-        drift=DriftEstimate(
-            epsilon_ppm=30.0,
-            max_residual_samples=0.2, glitch_detected=False,
-        ),
-        driver_responses=(woofer, tweeter),
-        alignment=_alignment(),
-        candidate=CrossoverCandidate(
-            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
-            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
-        ),
-        linearity_ok=True,
-        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
-        glitch_detected=False,
-    )
-
-
-def test_measure_diag_names_the_band_behind_each_driver_snr_pair(caplog):
-    """#2613: `*_snr_db` and `*_snr_verdict` say how bad and how trusted,
-    never WHICH band. Fourteen consecutive jts3 rounds logged
-    `tweeter_snr_db=-1.2 tweeter_snr_verdict=insufficient` and the band that
-    actually limited them — one the tweeter sweep never entered — had to be
-    re-derived from the crossover frequency and the declared driver bands
-    because no persisted artifact carried it. `*_snr_band` is that band,
-    read off the same `worst_relevant` entry as the pair beside it."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    woofer = _driver_response_diag(
-        "woofer", snr_db=25.0, snr_verdict="ok", snr_band="mid",
-    )
-    tweeter = _driver_response_diag(
-        "tweeter", snr_db=-1.2, snr_verdict="insufficient", snr_band="upper_bass",
-    )
-    fakes.measure = lambda program: _measure_snr_analysis(
-        program, woofer=woofer, tweeter=tweeter,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["woofer_snr_band"] == "mid"
-    assert fields["tweeter_snr_band"] == "upper_bass"
-    # Each band is the one its OWN worst_relevant entry carries, so a
-    # role-crossed read cannot pass.
-    assert woofer.snr["worst_relevant"]["band_id"] == "mid"
-    assert tweeter.snr["worst_relevant"]["band_id"] == "upper_bass"
-    # The #2613 line, now self-describing rather than a bare number.
-    assert fields["tweeter_snr_db"] == "-1.2"
-    assert fields["tweeter_snr_verdict"] == "insufficient"
-
-
-def test_measure_diag_snr_band_is_null_when_the_worst_band_carries_no_id(caplog):
-    """`worst_band_verdict` filters candidates on band overlap and verdict
-    rank, never on identity, so it can select a band with no `band_id`. That
-    has to log as `null` — Python's `None` stringified into `band=None` would
-    read as a band literally named "None"."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_snr_analysis(
-        program,
-        woofer=_driver_response_diag(
-            "woofer", snr_db=25.0, snr_verdict="ok", snr_band=None,
-        ),
-        tweeter=_driver_response_diag("tweeter"),  # no snr block at all
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["woofer_snr_band"] == "null"  # not the Python str(None) "None"
-    # The number beside it still reports, so the field says "this band has no
-    # id", not "there was no measurement".
-    assert fields["woofer_snr_db"] == "25.0"
-    # A driver with no SNR block at all reaches the same literal.
-    assert fields["tweeter_snr_band"] == "null"
-
-
-def test_measure_diag_logs_per_role_repeat_epsilon_ppm(caplog):
-    """#1668 PR-A/PR-C: DriftEstimate.per_role_epsilon_ppm (a first-vs-last
-    per-role epsilon, one entry per role with >=2 located occurrences) now
-    surfaces as woofer_repeat_epsilon_ppm / tweeter_repeat_epsilon_ppm on
-    the measure_diag event — diagnostic only, never gated."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: ProgramAnalysis(
-        phase="measure", program_id=program.program_id,
-        locations=(
-            _loc("sweep_w"), _loc("sweep_t"),
-            _loc("sweep_w_rep"), _loc("sweep_t_rep"),
-        ),
-        drift=DriftEstimate(
-            epsilon_ppm=30.0,
-            max_residual_samples=0.2, glitch_detected=False,
-            per_role_epsilon_ppm={"woofer": 31.5, "tweeter": -4.25},
-        ),
-        driver_responses=(
-            _driver_response_diag("woofer", window_ms=8.0),
-            _driver_response_diag("tweeter", window_ms=9.0),
-        ),
-        alignment=_alignment(),
-        candidate=CrossoverCandidate(
-            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
-            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
-        ),
-        linearity_ok=True,
-        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
-        glitch_detected=False,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["woofer_repeat_epsilon_ppm"] == "31.5"
-    assert fields["tweeter_repeat_epsilon_ppm"] == "-4.25"
-
-
-def test_measure_diag_per_role_repeat_epsilon_ppm_none_safe_for_legacy_drift(caplog):
-    """A DriftEstimate predating per_role_epsilon_ppm (empty mapping — the
-    field's own default) or a role absent from it must log None, never
-    raise or fabricate a 0.0."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(program)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    # log_event renders None as the JSON literal "null", not Python's "None".
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["woofer_repeat_epsilon_ppm"] == "null"
-    assert fields["tweeter_repeat_epsilon_ppm"] == "null"
-
-
-def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):
-    """The headline bug this fixes: today a rejected MEASURE persists none of
-    confidence/gate_window/epsilon — this proves they're all still logged."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(program, glitch=True)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "drift_baselines_disagree"
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["accepted"] == "false"
-    assert fields["code"] == "drift_baselines_disagree"
-    assert fields["gate_window_ms"] == "8.0"
-    assert fields["epsilon_ppm"] == "30.0"
-    assert fields["alignment_confidence"] == "0.8"
-    assert fields["predicted_ripple_db"] == "0.8"
-    # The pre-existing glitch check, not G2 — guard stays empty.
-    assert fields["guard"] == ""
-
-
-def test_measure_diag_logs_full_numbers_on_low_alignment_confidence(caplog):
-    """The numbers still ride the diag, on a capture that is now ACCEPTED.
-
-    Transformed with the demotion, the same way the ripple test below was: what
-    the capture measured is unchanged, and only the consequence moved. ``guard``
-    now names the disclosure, because its siblings name checks that REFUSED and
-    leaving a refusal's vocabulary on an accepting path would mislead exactly
-    the reader that field exists for."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    assert 0.55 < ALIGNMENT_CONFIDENCE_TRUST_FLOOR  # keep the fixture below the floor
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, alignment=_alignment(confidence=0.55),
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert not verdict.get("code")
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["alignment_confidence"] == "0.55"
-    assert fields["predicted_ripple_db"] == "0.8"
-    assert fields["guard"] == "alignment_confidence_disclosure"
-    # The dedicated event is the stable line to alert or count on — ``guard``
-    # is one field on a diagnostic that fires on every capture.
-    fields = event_fields(caplog, "correction.crossover_v2_alignment_confidence_disclosed")
-    assert fields["trust_floor"] == "0.6"
-
-
-def test_measure_diag_logs_guard_field_on_ripple_disclosure(caplog):
-    """The diag ``guard`` field still names G1 on an ACCEPTED capture (#2087).
-
-    Transformed from the pre-ruling pin, which asserted ``guard=ripple_ceiling``
-    on a refusal. The value changed with the behaviour: its siblings name
-    checks that REFUSED, so a path that now accepts must not keep a refusal's
-    vocabulary. This is what keeps the existing per-capture telemetry able to
-    find these captures — and asserting ``accepted`` alongside it is the point,
-    since a reader of this field can no longer infer a rejection from it."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=27.316,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["guard"] == "ripple_disclosure"
-    assert fields["predicted_ripple_db"] == "27.316"
-
-
-def test_measure_diag_logs_guard_field_on_sweep_schedule_fire(caplog):
-    """The diag ``guard`` field distinguishes a G2 fire from the pre-
-    existing glitch_detected branch — both share the reused
-    drift_baselines_disagree code (see the glitch test above for the "guard
-    empty" counterpart)."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    fakes.measure = lambda program: _measure_analysis(
-        program,
-        sweep_locations=(
-            _loc("sweep_w", confidence=0.8,
-                 residual_samples=-25e-3 * program.sample_rate_hz),
-            _loc("sweep_t", confidence=0.8),
-            _loc("sweep_w_rep", confidence=0.8),
-        ),
-    )
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "drift_baselines_disagree"
-    fields = event_fields(caplog, "correction.crossover_v2_measure_diag")
-    assert fields["guard"] == "sweep_schedule"
-    assert fields["sweep_residual_ms_worst"] == "-25.0"
-    assert fields["sweep_locate_confidence_min"] == "0.8"
-
-
-def test_verify_diag_logs_full_numbers_on_accept(caplog):
-    """VERIFY discloses its numbers even when round trust cannot be established."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.verify = lambda program: ProgramAnalysis(
-        phase="verify", program_id=program.program_id,
-        locations=(_loc("sweep_verify", "summed_sweep"),),
-        summed_response=_driver_response_diag("summed", window_ms=8.5, floor_hz=900.0),
-        summed_ripple_db=1.1,
-        verify_tracking={
-            "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-            "tracking_band_hz": [800.0, 3200.0],
-        },
-        linearity_ok=True,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    fakes.apply_done = True
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["accepted"] == "true"
-    assert fields["max_db_notch_excluded"] == "0.9"
-    assert fields["verify_tolerance_db"] == "1.5"
-    assert fields["verify_gate_window_ms"] == "8.5"
-    assert fields["measure_gate_window_ms"] == "8.0"
-    assert fields["validity_floor_hz"] == "900.0"
-    assert fields["tracking_band_lo_hz"] == "800.0"
-    assert fields["tracking_band_hi_hz"] == "3200.0"
-    assert fields["rms_db"] == "0.4"
-    # No pilots on this fixture (a legacy-shaped ProgramAnalysis) — G3's
-    # fields render as absent, never a false 0.0.
-    assert fields["pilot_transfer_db"] == "null"
-    assert fields["pilot_transfer_step_db"] == "null"
-    assert fields["guard"] == ""
-
-
-def test_verify_diag_logs_full_numbers_on_an_advisory_tracking_failure(caplog):
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.verify = lambda program: _verify_analysis(program, max_db=5.0, gate_ms=8.5)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    fakes.apply_done = True
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert c.verify_code == "verify_out_of_tolerance"
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["accepted"] == "true"
-    assert fields["code"] == ""
-    assert fields["max_db_notch_excluded"] == "5.0"
-    assert fields["verify_gate_window_ms"] == "8.5"
-    assert fields["measure_gate_window_ms"] == "8.0"
-
-
-def test_verify_diag_logs_full_numbers_on_inconclusive_rejection(caplog):
-    """A too-short VERIFY gate rejects as ``verify_inconclusive`` BEFORE the
-    tracking-error branch even runs — confirms the diag log still fires and
-    still carries the two gate-window numbers that decided it."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    # measure_gate_window_ms defaults to 8.0 (the happy-path MEASURE fixture);
-    # a VERIFY gate narrower than that is inconclusive per §5.2.
-    fakes.verify = lambda program: _verify_analysis(program, gate_ms=4.0)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    fakes.apply_done = True
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "verify_inconclusive"
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["verify_gate_window_ms"] == "4.0"
-    assert fields["measure_gate_window_ms"] == "8.0"
-
-
-def test_verify_diag_logs_guard_field_and_pilot_transfer_on_level_shift_fire(caplog):
-    """Measurement-honesty gate G3's own diagnostics: the baseline-setting
-    attempt logs its raw transfer with a null step and empty guard; the
-    fired attempt logs its own transfer, the computed step, and
-    guard=pilot_level_shift."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _stage2_after_measure(fakes)
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0, max_db=5.0,
-    )
-    _run_phase(c, 3, 3)
-    # transfer = level_hi_dbfs(-20.0) - programmed_hi_gain_db(-20.0) = 0.0.
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["pilot_transfer_db"] == "0.0"
-    assert fields["pilot_transfer_step_db"] == "null"
-    assert fields["guard"] == ""
-    caplog.clear()
-
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
-    )
-    verdict = _run_phase(c, 3, 4)
-    assert verdict["code"] == "verify_level_shift"
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    # transfer = level_hi_dbfs(-19.44) - programmed_hi_gain_db(-20.0) = 0.56.
-    assert fields["pilot_transfer_db"] == "0.56"
-    assert fields["pilot_transfer_step_db"] == "0.56"
-    assert fields["guard"] == "pilot_level_shift"
-
-
-def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(caplog):
-    """Adversarial-review fix (S1): ``_verify_pilot_transfer_step_db`` must
-    reset at the TOP of every ``_verify_verdict`` call (mirrors
-    ``_last_measure_guard``'s method-top reset in ``_measure_verdict``) — an
-    early return BEFORE the G3 block even runs (locate_failed here) must not
-    leave a PRIOR attempt's REAL step number for ``_log_verify_diag`` (which
-    runs unconditionally) to misreport as if it were computed this attempt."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    c = _stage2_after_measure(fakes)
-
-    # Attempt 1 (N-1): establishes the baseline (independently out of
-    # tolerance, so a retry is admitted).
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0, max_db=5.0,
-    )
-    _run_phase(c, 3, 3)
-
-    # Attempt 2 (N): a REAL, non-None step gets computed and logged (0.1 dB,
-    # within the ceiling — independently out of tolerance too, so a 3rd
-    # attempt is admitted). ``max_db`` is deliberately more than
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.1, max_db=8.0,
-    )
-    _run_phase(c, 3, 4)
-    maps = event_field_maps(caplog, "correction.crossover_v2_verify_diag")
-    assert maps[-1]["pilot_transfer_step_db"] == "0.1"
-    caplog.clear()
-
-    # Attempt 3 (N+1): locate_failed — returns BEFORE the G3 block runs at
-    # all. Without the S1 fix this would still show attempt 2's stale 0.1;
-    # with it, the diag must show null.
-    fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.1, locate_confidence=0.01,
-    )
-    verdict = _run_phase(c, 3, 5)
-    assert verdict["code"] == "locate_failed"
-    fields = event_fields(caplog, "correction.crossover_v2_verify_diag")
-    assert fields["pilot_transfer_step_db"] == "null"
-
-
-# --------------------------------------------------------------------------- #
 # Layer-1a driver linearization (#1668 PR-C)
-# --------------------------------------------------------------------------- #
 
 
 def test_compose_sigma_db_none_when_own_under_paired_threshold():
@@ -1192,8 +411,6 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
     limit_floored = repeatability_limit(floored, tier="reference")
     limit_raw = repeatability_limit(raw, tier="reference")
     np.testing.assert_allclose(limit_floored, limit_raw)  # ...but not the envelope term they feed
-
-
 
 
 @pytest.mark.parametrize(

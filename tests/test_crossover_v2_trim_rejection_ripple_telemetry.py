@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The anchored journal ripple and rejected decision ripple share one frame."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -41,9 +42,7 @@ FORCED_SCAN_DRIFT_DB = 8.0
 RAW_PREDICTED_RIPPLE_SENTINEL_DB = 42.5
 
 
-# --------------------------------------------------------------------------- #
 # harness
-# --------------------------------------------------------------------------- #
 
 
 @dataclass
@@ -110,12 +109,12 @@ def _planner_request(conductor, analysis) -> iv.LinearizationRequest:
         context=CandidateAcousticContext.from_sections(
             _candidate_sections(conductor, conductor._fc_hz)
         ),
-        roles=(conductor._woofer.role, conductor._tweeter.role),
+        roles=(conductor.roles_bands[0].role, conductor.roles_bands[1].role),
         excited_band_hz={
-            conductor._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
-            conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
+            conductor.roles_bands[0].role: (seg_w.f1_hz, seg_w.f2_hz),
+            conductor.roles_bands[1].role: (seg_t.f1_hz, seg_t.f2_hz),
         },
-        driver_class_by_role=conductor._driver_class_by_role,
+        driver_class_by_role={},
         cloud=None,
     )
 
@@ -158,9 +157,7 @@ def _rejected_plan(monkeypatch):
     return plan, call
 
 
-# --------------------------------------------------------------------------- #
 # the field itself
-# --------------------------------------------------------------------------- #
 
 
 def test_the_rejection_logs_the_ripple_at_the_trim_that_actually_ships(monkeypatch):
@@ -286,9 +283,7 @@ def test_the_scans_reported_ripple_is_that_same_helper_at_its_own_trim():
     )
 
 
-# --------------------------------------------------------------------------- #
 # and it decides nothing
-# --------------------------------------------------------------------------- #
 
 
 def test_the_anchored_ripple_is_telemetry_and_moves_no_decision(monkeypatch):

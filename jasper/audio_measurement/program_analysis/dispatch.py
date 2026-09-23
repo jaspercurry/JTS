@@ -665,11 +665,10 @@ def _build_candidate(
     # `predicted_aligned` — the flattest-achievable, INDEPENDENTLY ALIGNED sum.
     # It answers "how coherently can this capture's two branches sum at all?",
     # a property of the measurement and not of the delay selection. It is the
-    # ONLY input to `predicted_ripple_db`, and therefore to `crossover_v2_flow`'s
-    # `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` threshold, which that constant
-    # documents as calibrated against a fixed hardware corpus scored on THIS
-    # metric — the zero-residual ripple, not the delay-carrying one. Crossing it
-    # DISCLOSES rather than refuses.
+    # ONLY input to `predicted_ripple_db`, and therefore to the ripple
+    # disclosure threshold, which is calibrated against a fixed hardware corpus
+    # scored on THIS metric — the zero-residual ripple, not the delay-carrying
+    # one (ADR-0181). Crossing it DISCLOSES rather than refuses.
     #
     # Why the disclosure keeps this frame: a candidate's own committed delay can
     # LOWER its ripple, so pointing it at a delay-carrying curve would let a

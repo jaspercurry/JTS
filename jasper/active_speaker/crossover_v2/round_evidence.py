@@ -123,7 +123,7 @@ def measured_response_from_analysis(
     no summed response, a degenerate curve.
 
     The two reduction steps and their order are
-    ``crossover_v2_flow.spec_report_for_predicted_sum``'s: block-average onto
+    ``diagnostics.spec_report_for_predicted_sum``'s: block-average onto
     the analysis grid first (the smoother is an O(bins x window) Python loop and
     a raw grid costs seconds on a Pi), then 1/3-octave smooth. Another order or
     fraction produces a curve ``flat_spec.evaluate_flat_spec`` grades

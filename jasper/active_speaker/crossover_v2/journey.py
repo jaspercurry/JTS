@@ -196,11 +196,6 @@ class JourneyPlan:
         not group positions under, which includes every single-capture phase."""
         return self.group_indexes.get(phase, ())
 
-    def is_last_index_of_group(self, phase: str, index: int) -> bool:
-        """Is ``index`` the final prompted position of its group?"""
-        offsets = self.group_indexes.get(phase, ())
-        return bool(offsets) and index == offsets[-1]
-
 
 # --------------------------------------------------------------------------- #
 # the journey — the plan, plus how far this round has got through it
@@ -292,31 +287,6 @@ class CommissionJourney:
         unequal on disk.
         """
         return tuple(p for p in CAPTURE_PHASES if p in self._accepted)
-
-    def phase_status(self, phase: str) -> str:
-        return "accepted" if phase in self._accepted else "pending"
-
-    def pending_phases(self) -> tuple[str, ...]:
-        return tuple(p for p in self.plan.phases if p not in self._accepted)
-
-    @property
-    def current_phase(self) -> str:
-        pending = pending_capture_phase(self.plan.phases, self._accepted, applied=self._applied)
-        return pending or (PHASE_REVIEW if PHASE_MEASURE in self._accepted and not self._applied else PHASE_DONE)
-
-    def unresolved_in_group(self, phase: str, *, excluding: int) -> tuple[int, ...]:
-        """The group's positions still unwalked, ignoring the one being decided.
-
-        Curves in hand PLUS positions the household has not walked yet, never
-        the count so far, which would make "can this group still reach its
-        position floor" depend on walk order.
-        """
-        accepted: AbstractSet[int] = self._group_accepted.get(phase, frozenset())
-        return tuple(
-            other
-            for other in self.plan.group_indexes.get(phase, ())
-            if other != excluding and other not in accepted
-        )
 
 
 # --------------------------------------------------------------------------- #

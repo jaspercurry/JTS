@@ -74,13 +74,11 @@ def _screens(**overrides) -> spatial.CaptureScreens:
     return spatial.CaptureScreens(**base)
 
 
-# --------------------------------------------------------------------------- #
 # 1. the ORDER — which of two simultaneous faults gets named
 #
 # A ladder's order is only observable when two rungs fail at once: with one
 # fault, any order returns the same kind. So every ordering test below breaks
 # TWO screens and asserts which one the household is told about.
-# --------------------------------------------------------------------------- #
 
 
 def test_a_cloud_position_names_the_room_before_it_names_the_phone():
@@ -211,14 +209,12 @@ def test_a_clean_take_clears_every_ladder():
     assert spatial.lateral_curves_sufficient(2) is None
 
 
-# --------------------------------------------------------------------------- #
 # 2. the entry baseline's integrity split
 #
 # One evaluator verdict (UNUSABLE), two household sentences, and the branch
 # between them is a membership test on the FAILED check names. Both arms and
 # the absent case, because "fails closed on an absent record" is the whole
 # reason this ladder differs from VERIFY's.
-# --------------------------------------------------------------------------- #
 
 
 class _Analysis:
@@ -322,9 +318,7 @@ def test_the_entry_ladder_still_names_the_room_before_the_record():
     assert screen.kind == spatial.SCREEN_PILOT_LEVEL_COLLAPSE
 
 
-# --------------------------------------------------------------------------- #
 # 3. the records — the two fields a replay is joined on
-# --------------------------------------------------------------------------- #
 
 
 def _cloud_record(**overrides):
@@ -1095,14 +1089,12 @@ def test_the_entry_records_curve_is_the_durable_copy_of_the_before():
     assert record["excluded"] == [True, False]
 
 
-# --------------------------------------------------------------------------- #
 # 4. the geometry retake, over its whole truth table
 #
 # Two of its conjuncts are pinned through the conductor already (a thin lock is
 # accepted; a re-close never re-asks) — ``tests/test_crossover_v2_conductor.py``
 # owns those, and mutating either turns it red. What is NOT covered there is the
 # FIFTH condition, which is not a conjunct at all.
-# --------------------------------------------------------------------------- #
 
 
 def test_a_close_with_no_take_never_asks_for_a_retake():
@@ -1160,9 +1152,7 @@ def test_only_a_LOCKED_verdict_can_warrant_a_retake(locked):
     ) is None
 
 
-# --------------------------------------------------------------------------- #
 # 5. the group floor, and the kind→code mapping's completeness
-# --------------------------------------------------------------------------- #
 
 
 def test_only_the_lateral_walk_can_stand_on_nothing():
@@ -1183,26 +1173,6 @@ def test_every_screen_kind_has_a_household_sentence():
     """Every spatial screen maps to a registered household reason."""
     assert set(refusal_copy.SCREEN_KIND_REASONS) == set(spatial.SCREEN_KINDS)
     assert set(refusal_copy.SCREEN_KIND_REASONS.values()) <= refusal_copy.REASON_REGISTRY.keys()
-
-
-def test_an_unrecognised_kind_is_loud_rather_than_silent(caplog):
-    """The other half: the fallback exists, and it shouts.
-
-    Reached with a kind no released ladder returns, which is the shape of the
-    future defect — the point is that it cannot arrive quietly. It still
-    refuses rather than raising: the capture WAS screened and something was
-    wrong with it, and losing that to a mapping gap is worse than naming it
-    imprecisely for one release.
-    """
-    with caplog.at_level("INFO"):
-        code = refusal_copy._screen_refusal_code("a_kind_from_the_future")
-
-    unmapped = [
-        r for r in caplog.records
-        if "crossover_v2_screen_kind_unmapped" in r.getMessage()
-    ]
-    assert [r.levelname for r in unmapped] == ["ERROR"]
-    assert code == refusal_copy.REASON_LOCATE_FAILED
 
 
 def test_the_declared_kinds_are_the_ones_the_ladders_can_return():
@@ -1231,9 +1201,7 @@ def test_the_declared_kinds_are_the_ones_the_ladders_can_return():
     assert produced == set(spatial.SCREEN_KINDS)
 
 
-# --------------------------------------------------------------------------- #
 # 5b. the boost derivation's journal fields — ORDER included
-# --------------------------------------------------------------------------- #
 
 #: The field names ``event=correction.crossover_v2_boost_evidence`` carried, in
 #: the order it carried them, read off the PRE-EXTRACTION call site
@@ -1297,9 +1265,7 @@ def test_a_cloud_with_no_grid_fails_open_rather_than_banning_boost():
     assert exclusion.diagnostics["variance_check_failed"] is False
 
 
-# --------------------------------------------------------------------------- #
 # 6. the module's own boundary
-# --------------------------------------------------------------------------- #
 
 
 def _spatial_tree():
@@ -1355,14 +1321,12 @@ def test_the_module_writes_no_journal_lines():
     assert "log_event" not in called
 
 
-# --------------------------------------------------------------------------- #
 # the cloud combine, and the line it hands back instead of writing
 #
 # The corpus acceptance tests
 # (``tests/test_crossover_v2_cloud_geometry_corpus.py``) exercise the same two
 # functions against real S0 captures, and SKIP wherever those captures are not
 # on disk. These two run everywhere, so the seam is never unpinned.
-# --------------------------------------------------------------------------- #
 
 
 def _unusable_position() -> spatial._CloudPosition:

@@ -1000,19 +1000,18 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
     1. *Both present* — the ordinary closed session. Draw the curve, state the
        verdict.
     2. *Curve, no report* — a state written before D4, or a prediction the
-       evaluator refused (:func:`~jasper.active_speaker.crossover_v2_flow
+       evaluator refused (:func:`~jasper.active_speaker.crossover_v2.diagnostics
        .spec_report_for_predicted_sum` returned ``None``). Draw the curve, say
        the verdict is unknown; **do not** infer one from the picture.
     3. *Neither* — no session has closed a candidate. This function returns
        ``None`` outright rather than an empty shell.
-    4. *Report, no curve* — **the least obvious of the four.**
-       ``_assert_accountable`` stashes the verdict BEFORE the improvement gate
-       runs and ``_measure_predicted_sum`` only after it returns, so a refusal
-       between the two persists a report with ``predicted_sum`` still ``None``
-       — honest, not a leak: the spec verdict did evaluate that prediction. The
-       refusal that produced this shape is retired (``accountability``'s item
-       2); a pre-retirement state still carries it, and a consumer shows the
-       verdict with no curve to draw.
+    4. *Report, no curve* — **the least obvious of the four.** The verdict
+       was stashed BEFORE the improvement gate ran and the curve only after
+       it returned, so a refusal between the two persisted a report with
+       ``predicted_sum`` still ``None`` — honest, not a leak: the spec verdict
+       did evaluate that prediction. The refusal that produced this shape is
+       retired (``accountability``'s item 2); a pre-retirement state still
+       carries it, and a consumer shows the verdict with no curve to draw.
 
     So ``overall_within_target`` is ``None`` — not ``False`` — whenever no report was
     stored, under the same never-fabricate-a-clean-reading rule

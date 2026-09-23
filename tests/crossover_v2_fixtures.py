@@ -26,7 +26,6 @@ from jasper.web import correction_crossover_v2 as v2host
 
 from tests.run_manifest_fixture import write_manifest
 
-import dataclasses
 import hashlib
 import json
 import math
@@ -38,11 +37,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.active_speaker.crossover_v2 import journey
-from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.contracts import (
     REFERENCE_MARK_DESIGN_AXIS,
-    ResponseCurve,
 )
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
@@ -50,17 +46,12 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.capture_dispatch import SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-from jasper.active_speaker.crossover_v2.diagnostics import spec_report_for_predicted_sum
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    build_v2_cloud_index_phase_map,
     build_inline_session_spec,
-    resolve_plan_shape,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
@@ -84,7 +75,6 @@ from jasper.audio_measurement.program_analysis import (
     predicted_branch_sum,
     solve_branch_trims,
 )
-from jasper.active_speaker.flat_spec import spec_convergence_residual
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -100,6 +90,7 @@ HOUSEHOLD_DB = -14.0
 
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
 
+
 def plan_context() -> SimpleNamespace:
     targets = {role: f"fp-{role}" for role in CAPS}
     return SimpleNamespace(
@@ -110,19 +101,24 @@ def plan_context() -> SimpleNamespace:
         role_targets=targets,
     )
 
+
 def _roles() -> list[RoleBand]:
     return [
         RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
         RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
     ]
 
+
 def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
+
 WAY1_BAND = FrequencyBand(45.0, 18000.0)
+
 
 def _roles_way1() -> list[RoleBand]:
     return [RoleBand("full_range", 0, WAY1_BAND)]
+
 
 def _one_way_preset() -> ActiveSpeakerPreset:
     """The preset the PRODUCTION resolver answers for a subless passive box."""
@@ -133,6 +129,7 @@ def _one_way_preset() -> ActiveSpeakerPreset:
         mono_output_topology(mode="full_range_passive")
     )
 
+
 def _loc(segment_id: str, kind: str = "sweep", *, confidence: float = 0.9,
          clipped: bool = False, residual_samples: float = 0.0) -> SegmentLocation:
     return SegmentLocation(
@@ -141,15 +138,17 @@ def _loc(segment_id: str, kind: str = "sweep", *, confidence: float = 0.9,
         confidence=confidence, peak_dbfs=-12.0, clipped=clipped,
     )
 
+
 _SUMMED_FREQS_HZ = np.linspace(100.0, 20000.0, 64)
+
 
 def _in_room_summed_db() -> np.ndarray:
     octaves = np.log2(_SUMMED_FREQS_HZ / 1000.0)
     return -2.0 * octaves - 3.0 * np.exp(-0.5 * (octaves / 0.8) ** 2)
 
-_ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.626, 1.0: 4.331, 2.5: 12.787}
 
 _FIXTURE_TRUSTED_BAND_HZ = (float(_SUMMED_FREQS_HZ[0]), float(_SUMMED_FREQS_HZ[-1]))
+
 
 def _driver_response(
     role: str, window_ms: float, *, summed_db: np.ndarray | None = None,
@@ -177,9 +176,11 @@ def _driver_response(
         snr=None, validity_floor_hz=None,
     )
 
+
 _LINEARIZABLE_FREQS_HZ = np.linspace(100.0, 20000.0, 2048)
 
 _FIXTURE_FC_HZ = 1600.0
+
 
 def _linearizable_response(
     role: str, magnitude_db: np.ndarray, *,
@@ -203,6 +204,7 @@ def _linearizable_response(
         repeat_responses=repeats,
     )
 
+
 def _check_analysis(
     program, *, linearity=True, channel_map=True, snr_floor_ok=True,
     locate_confidence=0.9, pilot_snr_ok=None,
@@ -224,6 +226,7 @@ def _check_analysis(
         ),
     )
 
+
 def _alignment(
     *, delay_us=150.0, status=ALIGNMENT_OK, polarity="normal", confidence=0.8,
     anchor_delay_us=None,
@@ -234,6 +237,7 @@ def _alignment(
         polarity_agrees_with_sum=True, confidence=confidence, status=status,
         anchor_delay_us=anchor_delay_us,
     )
+
 
 def _measure_analysis(
     program, *, glitch=False, clipped=False, linearity=True,
@@ -274,6 +278,7 @@ def _measure_analysis(
         mic_calibrated=mic_calibrated,
     )
 
+
 def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> PilotObservation:
     return PilotObservation(
         role="summed", level_lo_dbfs=hi_dbfs - 10.0, level_hi_dbfs=hi_dbfs,
@@ -282,7 +287,9 @@ def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> Pi
         programmed_hi_gain_db=programmed_hi_gain_db,
     )
 
+
 _INTEGRITY_FROM_LOCATIONS = object()
+
 
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
@@ -330,22 +337,6 @@ def _verify_analysis(
         ),
     )
 
-def bank_into(
-    sink: list[Any], *, with_capture: bool = False, phase: str | None = None,
-) -> flow.BankTake:
-    def bank_take(result: Any, record: Mapping[str, Any]) -> str:
-        banked = dict(record)
-        if phase is None or banked.get("phase") == phase:
-            sink.append((result, banked) if with_capture else banked)
-        return f"crossover_v2/fixture/positions/{banked.get('take_id') or ''}.json"
-
-    return bank_take
-
-def with_records(seams: V2FlowSeams, **overrides: Any) -> V2FlowSeams:
-    """``seams`` with one or more of the five ``records`` publishers swapped."""
-    return dataclasses.replace(
-        seams, records=dataclasses.replace(seams.records, **overrides),
-    )
 
 @dataclass
 class FakeSeams:
@@ -393,6 +384,7 @@ class FakeSeams:
             applied_profile=self.applied_profile,
         )
 
+
 def _fixture_applied_profile(
     trim_db: dict[str, float] | None = None,
     *,
@@ -422,11 +414,13 @@ def _fixture_applied_profile(
         },
     }
 
+
 _ENTRY_BASELINE_SCALE = 1.5
 
 _ENTRY_BASELINE_RESIDUAL_DB = 6.877
 
 _POST_APPLY_RESIDUAL_DB = 4.331
+
 
 def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     measured = measured_response_from_analysis(
@@ -441,6 +435,7 @@ def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
         graph_fingerprint="fixture_entry_graph",
         captured_at="2026-08-10T00:00:00Z",
     )
+
 
 def _conductor(
     fakes: FakeSeams,
@@ -468,8 +463,9 @@ def _conductor(
     if not supplied_baseline and (
         journey.PHASE_ENTRY_BASELINE not in conductor.session_phases
     ):
-        conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
+        conductor.set_entry_baseline(_fixture_entry_baseline(conductor))
     return conductor
+
 
 def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     return _conductor(
@@ -482,6 +478,7 @@ def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
         **kwargs,
     )
 
+
 def _stage2_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     return _conductor(
         fakes,
@@ -490,36 +487,10 @@ def _stage2_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
         **kwargs,
     )
 
-def _stage2_after_measure(fakes: FakeSeams) -> CrossoverV2Session:
-    stage1 = _conductor(fakes)
-    _run_phase(stage1, 1, 1)
-    _run_phase(stage1, 2, 2)
-    snapshot = stage1.snapshot()
-    return _stage2_conductor(
-        fakes,
-        index_phase_map={3: PHASE_VERIFY},
-        gain_plan_db=snapshot.gain_plan_db,
-        measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
-        measure_predicted_sum=stage1.measure_predicted_sum,
-        measure_predicted_spec_report=stage1.measure_predicted_spec_report,
-        measure_commanded_delta=stage1.measure_commanded_delta,
-        measure_declared_transfer=stage1.measure_declared_transfer,
-        measure_proposal_fingerprint=stage1.measure_proposal_fingerprint,
-        measure_entry_baseline=stage1.measure_entry_baseline,
-        measure_alignment_objective=stage1.measure_alignment_objective,
-        measure_gate_window_ms=stage1.measure_gate_window_ms,
-        attempt_history=snapshot.attempt_history,
-    )
 
 def _capture() -> WiredCaptureAnswer:
     return WiredCaptureAnswer(wav=b"fake-wav")
 
-def _configured_sections(conductor, role: str) -> tuple:
-    from jasper.active_speaker.branch_chain import sections_by_role
-
-    return sections_by_role(
-        getattr(conductor._preset, "crossover_regions", ()) or ()
-    ).get(role, ())
 
 def _candidate_sections(conductor, fc_hz: float) -> dict:
     from dataclasses import replace
@@ -533,21 +504,35 @@ def _candidate_sections(conductor, fc_hz: float) -> dict:
         ).items()
     }
 
-def _plan_spy(mp) -> list:
-    plans: list = []
-    original = flow.CrossoverV2Session._plan_linearization
 
-    def spy(self, *args, **kwargs):
-        plan = original(self, *args, **kwargs)
-        plans.append(plan)
-        return plan
+def _run_phase(conductor, index, attempt, result=None):
+    from jasper.active_speaker.run_manifest import RunManifest
+    from jasper.web.correction_run_host import bind_plan_analysis
 
-    mp.setattr(flow.CrossoverV2Session, "_plan_linearization", spy)
-    return plans
-
-def _run_phase(conductor, index, attempt) -> dict:
     conductor.authorize_begin(index, attempt)
-    return conductor.consume_capture(index, attempt, _capture())
+    phase = conductor.phase_of_index(index)
+    program = conductor.program_for_phase(phase)
+    manifest = RunManifest(conductor.session_id, SimpleNamespace())
+    manifest.begin(
+        {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0}},
+        attempt=attempt,
+        pose_index=0,
+    )
+    records = SimpleNamespace()
+    analyze, assess = bind_plan_analysis(
+        conductor, records, manifest=manifest, evidence={}
+    )
+    record = {
+        "take_id": f"take-{index}-{attempt}",
+        "index": index,
+        "attempt": attempt,
+        "phase": phase,
+        "program": program.to_dict(),
+    }
+    records.enrich(result if result is not None else _capture(), record)
+    records.after_bank(record, record["take_id"])
+    return assess(analyze(record, record["take_id"]), phase=program.phase, program=program)
+
 
 def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
     return PilotObservation(
@@ -557,173 +542,18 @@ def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
         snr_valid=math.isfinite(snr_db) or snr_db > 0, snr_db=snr_db,
     )
 
+
 def _snr_analysis(*pilots: PilotObservation) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="measure", program_id="p", locations=(), pilots=pilots,
     )
 
-def _spliced_verify(program, **kwargs):
-    """A VERIFY analysis whose summed sweep landed a splice off its slot."""
-    off_slot = SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * program.sample_rate_hz * 3
-    return _verify_analysis(program, residual_samples=off_slot, **kwargs)
-
-def _verify_to_apply(fakes):
-    return _stage2_after_measure(fakes)
-
-def _rearm_conductor(fakes, **kwargs):
-    """A verify-only re-arm's conductor — the verify-only prepare's shape."""
-    return CrossoverV2Session(
-        session_id="verify_rearm_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
-        driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
-        index_phase_map={1: PHASE_VERIFY},
-        measure_gate_window_ms=8.0,
-        **kwargs,
-    )
-
-CLOUD_MAP = build_v2_cloud_index_phase_map()
-
-STAGE2_SHAPE = resolve_plan_shape()
-
-STAGE2_MAP = dict(enumerate([PHASE_VERIFY] + [PHASE_CLOUD_VERIFY] * (STAGE2_SHAPE.verify_capture_target - 1), 1))
-
-VERIFY_INDEX = next(i for i, p in STAGE2_MAP.items() if p == PHASE_VERIFY)
-
-CLOUD_VERIFY_INDEXES = tuple(
-    i for i, p in sorted(STAGE2_MAP.items()) if p == PHASE_CLOUD_VERIFY
-)
-
-SHORT_VERIFY_MAP = {1: PHASE_VERIFY, 2: PHASE_CLOUD_VERIFY}
-
-SHORT_VERIFY_CLOUD_INDEXES = tuple(
-    i for i, p in sorted(SHORT_VERIFY_MAP.items()) if p == PHASE_CLOUD_VERIFY
-)
-
-def _walk(conductor, indexes, start_attempt: int) -> int:
-    attempt = start_attempt
-    for index in indexes:
-        _run_phase(conductor, index, attempt)
-        attempt += 1
-    return attempt
-
-_COMB_N_FFT = 8192
-
-_COMB_RATE = 48_000
-
-def _comb_summed_response(seed: int, *, r: float = 0.37, delay_samples: int = 15):
-    freqs = np.fft.rfftfreq(_COMB_N_FFT, 1.0 / _COMB_RATE)
-    rng = np.random.default_rng(seed)
-    tf = 1.0 + r * np.exp(-2j * np.pi * freqs * (delay_samples / _COMB_RATE))
-    tf = tf + rng.normal(0.0, 1e-6, tf.shape)
-    tf = tf * 10.0 ** (
-        np.interp(freqs, _SUMMED_FREQS_HZ, _in_room_summed_db()) / 20.0
-    )
-    return DriverResponse(
-        role="summed", freqs_hz=freqs,
-        magnitude_db=20.0 * np.log10(np.maximum(np.abs(tf), 1e-12)),
-        complex_tf=tf.astype(complex),
-        gating={"applied": True, "window_ms": 8.0},
-        snr=None, validity_floor_hz=140.0,
-    )
-
-def _comb_cloud_analysis_factory():
-    counter = {"n": 0}
-
-    def factory(program) -> ProgramAnalysis:
-        counter["n"] += 1
-        return ProgramAnalysis(
-            phase="verify",
-            program_id=program.program_id,
-            locations=(_loc("sweep_verify", "summed_sweep", confidence=0.9),),
-            summed_response=_comb_summed_response(4000 + counter["n"]),
-            summed_ripple_db=1.1,
-            verify_tracking={
-                "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-            },
-            linearity_ok=True,
-        )
-
-    return factory
-
-def _count_builds(c) -> list:
-    builds: list = []
-    real_build = c._build_candidate
-
-    def _counting_build(analysis, cloud):
-        builds.append(1)
-        return real_build(analysis, cloud)
-
-    c._build_candidate = _counting_build
-    return builds
-
-def _lock(monkeypatch, *, thin: bool = False):
-    import jasper.active_speaker.crossover_v2_flow as flow
-
-    monkeypatch.setattr(
-        flow, "_geometry_verdict_from_combined",
-        lambda combined, n_positions: {
-            "locked": True, "reason": "geometry_locked", "thin_evidence": thin,
-            "n_positions": n_positions, "median_tau_us": 320.0,
-        },
-    )
 
 def _dummy_program():
     from jasper.audio_measurement.program import build_check_program
 
     return build_check_program(_roles(), ambient_s=0.5, pilot_duration_s=0.3)
 
-_GOLDEN_V2_PLAN_BYTES = {
-    "stage2-full": (
-        1925,
-        "485a0ab680e52625c21fda3da47a3dea0cc34e85d6c5d0a68621db08fefebdbf",
-    ),
-    "stage2-express": (
-        630,
-        "a5f499d6c1219460a377ee4cd083a45fc86aa93dff3d446bc2c1c4c58955f07b",
-    ),
-    "1-entry": (
-        329,
-        "5289e8602bfe37469abd91cc12dff53387b512c358a616dd7e2df20d79b0fccb",
-    ),
-}
-
-def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
-    from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
-    )
-
-    from tests.test_active_speaker_program_admission import _profile_and_targets
-
-    topology, profile, targets = _profile_and_targets(
-        woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
-    )
-    sv = session_measurement_volume_db(profile, targets.values())
-    caps = {"woofer": float(woofer_peak), "tweeter": float(tweeter_peak)}
-    roles = [
-        RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
-        RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
-    ]
-    c = CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=roles,
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=caps,
-        session_volume_db=sv,
-        seams=FakeSeams().seams(),
-        driver_spacing_m=0.15,
-    )
-    return c, topology, profile, targets, sv
-
-_DIAG_LOGGER = "jasper.active_speaker.crossover_v2_flow"
 
 def _pilot_obs(
     role: str, *,
@@ -748,6 +578,7 @@ def _pilot_obs(
         channel_map_cross_rise_db=cross_rise_db,
         delta_implausible=delta_implausible, mic_meter_status=mic_meter_status,
     )
+
 
 def _driver_response_diag(
     role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
@@ -775,6 +606,7 @@ def _driver_response_diag(
         snr=snr, validity_floor_hz=floor_hz,
     )
 
+
 def _gate_block(
     *,
     direct_peak_ms: float = 10.40,
@@ -793,6 +625,7 @@ def _gate_block(
         "first_reflection_ms": first_reflection_ms,
         "pre_post_gate_delta": delta,
     }
+
 
 def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
     """A CHECK analysis whose gain plan carries #1825 per-role solves."""
@@ -822,6 +655,7 @@ def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True
         ),
     )
 
+
 def _resp_with_repeats(role: str, n_repeats: int) -> DriverResponse:
     freqs = np.linspace(150.0, 20000.0, 256)
     mag = np.zeros_like(freqs)
@@ -840,6 +674,7 @@ def _resp_with_repeats(role: str, n_repeats: int) -> DriverResponse:
         gating={}, snr=None, validity_floor_hz=140.0,
         repeat_responses=repeats,
     )
+
 
 def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     from jasper.active_speaker.branch_chain import (
@@ -860,6 +695,7 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     )
     return woofer_db, tweeter_db
 
+
 def _solve_fixture_raw_trim(
     woofer_db: np.ndarray | None = None, tweeter_db: np.ndarray | None = None,
 ) -> dict[str, float]:
@@ -876,7 +712,9 @@ def _solve_fixture_raw_trim(
     )
     return {"woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3)}
 
+
 _FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
+
 
 def _fixture_raw_predicted_sum(
     *, woofer_db=None, tweeter_db=None, trim_db=None,
@@ -896,6 +734,7 @@ def _fixture_raw_predicted_sum(
         _LINEARIZABLE_FREQS_HZ,
         20.0 * np.log10(np.maximum(np.abs(summed), 1e-12)),
     )
+
 
 def _eligible_measure_analysis(
     program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
@@ -938,6 +777,7 @@ def _eligible_measure_analysis(
         glitch_detected=False,
     )
 
+
 def _way1_measure_analysis(program) -> ProgramAnalysis:
     freqs = _LINEARIZABLE_FREQS_HZ
     magnitude_db = (
@@ -962,141 +802,6 @@ def _way1_measure_analysis(program) -> ProgramAnalysis:
         glitch_detected=False,
     )
 
-def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Session:
-    return CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=[
-            RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-            RoleBand("tweeter", 1, FrequencyBand(FC_HZ, 20000.0)),
-        ],
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
-        driver_spacing_m=0.15,
-    )
-
-def _gate_residuals(conductor) -> tuple[float, float]:
-    before = spec_report_for_predicted_sum(
-        _fixture_raw_predicted_sum()
-    )
-    after = spec_report_for_predicted_sum(conductor.measure_predicted_sum)
-    return (
-        spec_convergence_residual(before).rms_db,
-        spec_convergence_residual(after).rms_db,
-    )
-
-def _tracking_curve(c, error_db):
-    freqs = np.asarray(c.measure_commanded_delta[0], dtype=float)
-    predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
-    error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
-    return freqs, predicted + error, predicted
-
-def _anchor_entry_baseline(c, error_db=0.0):
-    freqs = np.asarray(c.measure_commanded_delta[0], dtype=float)
-    commanded = np.asarray(c.measure_commanded_delta[1], dtype=float)
-    predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
-    error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
-    measured_pre = (predicted - commanded) + error
-    banked = c.measure_entry_baseline
-    assert banked is not None, "walk the session past ENTRY_BASELINE first"
-    c._measure_entry_baseline = dataclasses.replace(
-        banked,
-        curve=ResponseCurve(freqs, measured_pre),
-        excluded=tuple(False for _ in freqs),
-    )
-    return c._measure_entry_baseline
-
-def _boost_vocabulary_spy(seen: list[bool]):
-    real_fit = iv.fit_driver_linearization
-
-    def _spy(resp, envelope, **kwargs):
-        seen.append(kwargs["vocabulary"].allow_boost)
-        return real_fit(resp, envelope, **kwargs)
-
-    return _spy
-
-def _vocabularies_seen(seen: list):
-    real_fit = iv.fit_driver_linearization
-
-    def _spy(resp, envelope, **kwargs):
-        seen.append(kwargs["vocabulary"])
-        return real_fit(resp, envelope, **kwargs)
-
-    return _spy
-
-def _emitted_boosts(candidate) -> list[dict]:
-    return [
-        f
-        for fit in candidate.linearization.values()
-        for f in fit["filters"]
-        if f["gain"] > 0.0
-    ]
-
-def _healthy_crossed_over_pair(dip_db: float = 7.0):
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db,
-    )
-
-    freqs = _LINEARIZABLE_FREQS_HZ
-
-    def dip(center_hz: float) -> np.ndarray:
-        return -dip_db * np.exp(-0.5 * ((np.log2(freqs / center_hz) / 0.3) ** 2))
-
-    lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
-    highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
-    woofer_db = crossover_response_db(freqs, lowpass) + dip(400.0)
-    tweeter_db = crossover_response_db(freqs, highpass) + dip(6000.0)
-    trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs,
-        (10.0 ** (woofer_db / 20.0)).astype(complex),
-        (10.0 ** (tweeter_db / 20.0)).astype(complex),
-        _FIXTURE_FC_HZ,
-    )
-    return woofer_db, tweeter_db, {
-        "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
-    }
-
-def _tracking_with_frame(**frame_overrides):
-    frame = {
-        "offset_db": -0.75,
-        "tilt_db_per_octave": -0.79,
-        "pivot_hz": 2828.4,
-        "n_bins": 400,
-        "band_hz": [2000.0, 4000.0],
-        "raw": {"rms_db": 0.4, "max_db": 0.9},
-        "tilt_removed": {"rms_db": 0.18, "max_db": 0.31},
-    }
-    frame.update(frame_overrides)
-    return {
-        "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
-        "tracking_band_hz": [2000.0, 4000.0],
-        "frame": frame,
-    }
-
-def _moving_notch_cloud(notch_hz: list[float]):
-    from jasper.audio_measurement.spatial_combine import (
-        PositionCapture,
-        combine_positions,
-    )
-
-    freqs = np.fft.rfftfreq(4096, 1.0 / 48_000)
-    log_f = np.log2(np.maximum(freqs, 1.0))
-    baseline = 1.5 * np.sin(2.0 * np.pi * log_f / 1.7)
-    return combine_positions([
-        PositionCapture(
-            position_id=f"p{k:02d}", freqs_hz=freqs,
-            magnitude_db=baseline
-            - 18.0 * np.exp(-0.5 * ((log_f - np.log2(f0)) / 0.06) ** 2),
-            sample_rate=48_000, ir=None,
-        )
-        for k, f0 in enumerate(notch_hz)
-    ])
-
-_BLIND_SPAN_RESULT = {"validity_floor_hz": 1200.0, "null_registry": {
-    "classification": "insufficient_evidence", "reason": "no_corroborating_arrivals",
-}}
 
 def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
     """A kernel ``verify_absolute`` record, in the shape the analyzer emits."""
@@ -1109,12 +814,14 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
         "n_bins": 16384,
     }
 
+
 CAPTURE_RATE = 48_000
 
 CAPTURE_AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
 
 _PROGRAM_PHASES = ("cloud_verify", "verify")
 _DECLARED_STIMULUS_PHASE = "verify"
+
 
 def bank_capture_round(
     root: Path,
@@ -1190,6 +897,7 @@ def bank_capture_round(
     write_manifest(root)
     return root
 
+
 def fake_measurement_mic():
     from jasper.audio_measurement.wired_capture import WiredMicDevice
 
@@ -1197,6 +905,7 @@ def fake_measurement_mic():
         card_id="UMIK2", card_index=9, usb_id="2752:0072",
         model_key="minidsp_umik2", model_label="miniDSP UMIK-2",
     )
+
 
 class FakeCam:
 
@@ -1268,18 +977,10 @@ class FakeCam:
         self.volume_db = float(db)
         return True
 
+
 def _flow_seams(conductor: Any) -> Any:
     return conductor._seams
 
-def _install_commanded_delta(conductor: Any, commanded: Any) -> None:
-    conductor._measure_commanded_delta = commanded
-
-def _delta_probe_given_a_tracking_curve(conductor: Any, tracked: Any) -> Any:
-    conductor._verify_tracking_curve = tracked
-    conductor._verify_trusted_band_hz = (
-        float(min(tracked[0])), float(max(tracked[0])),
-    )
-    return conductor._run_delta_probe()
 
 _TWO_WAY_GROUP = [{
     "id": "mono",
@@ -1298,6 +999,7 @@ _TWO_WAY_GROUP = [{
     ],
 }]
 
+
 def _topology() -> OutputTopology:
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -1315,6 +1017,7 @@ def _topology() -> OutputTopology:
         "routing": {"mono_group_id": "mono"},
     })
 
+
 def _status() -> dict[str, Any]:
     return {
         "active": True,
@@ -1327,12 +1030,14 @@ def _status() -> dict[str, Any]:
         },
     }
 
+
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path):
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     yield
     v2state.set_state_path_for_tests(None)
     v2volume.set_volume_plan_for_tests(None)
+
 
 def _jasper_modules_binding(symbol: str, value: Any):
     """Every imported ``jasper`` module whose ``symbol`` attribute IS ``value``."""
@@ -1341,6 +1046,7 @@ def _jasper_modules_binding(symbol: str, value: Any):
             continue
         if getattr(module, symbol, None) is value:
             yield module
+
 
 @pytest.fixture(autouse=True)
 def _production_host_seams(monkeypatch, tmp_path):
@@ -1431,7 +1137,9 @@ def _production_host_seams(monkeypatch, tmp_path):
         for _module in _jasper_modules_binding(_symbol, _fakes[_symbol]):
             setattr(_module, _symbol, _original)
 
+
 _MINTED_CAPTURE_SESSION_ID = "wired-minted_by_this_stage"
+
 
 def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str, Any]]:
     captured: dict[str, Any] = {}
@@ -1455,15 +1163,18 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
     return captured["conductor"], (v2state.load_v2_state() or {})
 
+
 def _inline_body():
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER
     return {"plan": AngleCaptureRequest(stops=(AngleStop(0, REGIME_PER_DRIVER),)).to_dict()}
+
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     prepared = v2host.prepare_v2_session(
         _inline_body(), status=_status(), run_async=asyncio.run, camilla_factory=None
     )
     return _open_prepared(monkeypatch, prepared)
+
 
 _PILOT_AT = 1_760_000_000.0
 
@@ -1492,6 +1203,7 @@ _ENTRY_BASELINE_DB = [-2.5, -1.25, 0.0, 1.25, 2.5]
 
 _ENTRY_BASELINE_EXCLUDED = [True, False, False, False, False]
 
+
 def _entry_baseline_record() -> dict[str, Any]:
     from jasper.active_speaker.crossover_v2.round_evidence import (
         ENTRY_BASELINE_KIND,
@@ -1508,6 +1220,7 @@ def _entry_baseline_record() -> dict[str, Any]:
         "captured_at": _ENTRY_BASELINE_CAPTURED_AT,
         "artifact_ref": "entry_baseline_09_a01",
     }
+
 
 def _seed_applied_stage_1_state() -> dict[str, Any]:
     state = {
@@ -1537,6 +1250,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
     v2state.save_v2_state(state)
     return state
 
+
 class _AcceptingStore:
 
     session_id = "bundle-test"
@@ -1549,6 +1263,7 @@ class _AcceptingStore:
 
     def identify_artifact(self, relpath: str) -> Any:
         return SimpleNamespace(fingerprint=f"fp-{relpath}")
+
 
 class _RecordingCheckStore:
     """An evidence store that keeps what was published through it."""
@@ -1566,6 +1281,7 @@ class _RecordingCheckStore:
     def identify_artifact(self, relpath: str) -> Any:
         return SimpleNamespace(fingerprint="fp-check-pin")
 
+
 def _regradable_fixture() -> tuple[Any, Any, Any]:
     import numpy as np
 
@@ -1573,6 +1289,7 @@ def _regradable_fixture() -> tuple[Any, Any, Any]:
     commanded = np.full_like(freqs, 6.0)
     error = np.where((freqs >= 2_000.0) & (freqs <= 3_000.0), 6.0, 0.0)
     return freqs, commanded, error
+
 
 _PERSISTED_TOP_LEVEL_KEYS = {
     "accepted_phases",
@@ -1602,6 +1319,7 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "verify",
     "verify_priors",
 }
+
 
 def _session_from_real_open(monkeypatch, fakes) -> Any:
     from jasper.active_speaker.crossover_v2.door import OpenMeasurementDoor

@@ -98,9 +98,7 @@ def _sections_at(fc_hz: float) -> dict[str, tuple[Any, ...]]:
     return _candidate_sections(_conductor(), fc_hz)
 
 
-# --------------------------------------------------------------------------- #
 # stubs, applied identically to both namespaces
-# --------------------------------------------------------------------------- #
 
 
 def _install_stubs(
@@ -136,9 +134,7 @@ def _install_stubs(
     return seen
 
 
-# --------------------------------------------------------------------------- #
 # the two runs
-# --------------------------------------------------------------------------- #
 
 
 def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
@@ -156,12 +152,12 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
         analysis,
         analysis.candidate,
         context=CandidateAcousticContext.from_sections(sections),
-        roles=(conductor._woofer.role, conductor._tweeter.role),
+        roles=(conductor.roles_bands[0].role, conductor.roles_bands[1].role),
         excited_band_hz={
-            conductor._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
-            conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
+            conductor.roles_bands[0].role: (seg_w.f1_hz, seg_w.f2_hz),
+            conductor.roles_bands[1].role: (seg_t.f1_hz, seg_t.f2_hz),
         },
-        driver_class_by_role=conductor._driver_class_by_role,
+        driver_class_by_role={},
         cloud=None,
     )
 
@@ -262,9 +258,7 @@ def test_the_journal_reports_the_polish_delta_it_measured(
     )
 
 
-# --------------------------------------------------------------------------- #
 # class (b) — the trim policy, isolated
-# --------------------------------------------------------------------------- #
 
 
 def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkeypatch):
@@ -300,9 +294,7 @@ def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkey
     assert all(v <= 0.0 for v in plan.role_attenuations_db.values())
 
 
-# --------------------------------------------------------------------------- #
 # purity
-# --------------------------------------------------------------------------- #
 
 
 def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
@@ -327,7 +319,7 @@ def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
             "woofer": (seg_w.f1_hz, seg_w.f2_hz),
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
         },
-        driver_class_by_role=conductor._driver_class_by_role,
+        driver_class_by_role={},
     )
     before = (dict(request.raw_trim_db), dict(request.trim_band_average_db))
 
@@ -399,7 +391,7 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
             "woofer": (seg_w.f1_hz, seg_w.f2_hz),
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
         },
-        driver_class_by_role=conductor._driver_class_by_role,
+        driver_class_by_role={},
     )
     streamed: list[iv.JournalRecord] = []
     plan = iv.plan_linearization(request, journal=streamed.append)
@@ -427,9 +419,7 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
     ]
 
 
-# --------------------------------------------------------------------------- #
 # the corner cannot be smuggled in
-# --------------------------------------------------------------------------- #
 
 
 def test_a_context_cannot_be_built_from_sections_naming_two_corners():
@@ -536,9 +526,7 @@ def test_the_skipped_scan_journal_names_the_candidate_corner(monkeypatch):
     assert plan.trim.strategy is TrimStrategy.ANCHORED_COMMITTED
 
 
-# --------------------------------------------------------------------------- #
 # the margin/tolerance coupling the fallback's safety promise rests on
-# --------------------------------------------------------------------------- #
 
 
 def _request(**overrides):
@@ -639,9 +627,7 @@ def test_an_unregistered_mic_tier_is_a_named_refusal_not_a_bare_key_error():
         )
 
 
-# --------------------------------------------------------------------------- #
 # the disclosure port is genuinely write-only
-# --------------------------------------------------------------------------- #
 
 
 def test_a_raising_journal_consumer_cannot_abort_the_plan(monkeypatch):
@@ -749,9 +735,7 @@ def test_a_journal_record_detaches_the_fields_it_was_handed():
     assert list(record.fields["band_hz"]) == [100.0, 200.0]
 
 
-# --------------------------------------------------------------------------- #
 # the seventh Fc site's disclosure, relocated to its detection point
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("shape", ["empty", "absent"])
@@ -806,9 +790,7 @@ def test_both_roles_carrying_sections_names_nobody(monkeypatch):
     ]
 
 
-# --------------------------------------------------------------------------- #
 # the emitted trims are cut-only, tested on the planner's own output
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("giveback_db", [0.0, 5.0, 20.0, 60.0])
@@ -928,9 +910,7 @@ def test_no_committed_trim_is_ever_positive_however_large_the_giveback(
         assert all(v <= 0.0 for v in pair.values())
 
 
-# --------------------------------------------------------------------------- #
 # the trim policy, as a table over its own inputs
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
@@ -1071,9 +1051,7 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
         )
 
 
-# --------------------------------------------------------------------------- #
 # every door into the anchor's arithmetic, pinned
-# --------------------------------------------------------------------------- #
 #
 # **Why these exist and why they are separate tests.** ``anchor_trims.place``
 # computes ``base + giveback`` and clamps it with
@@ -1145,9 +1123,7 @@ def test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it(
         _pure(_sections_at(SELECTED_FC_HZ))
 
 
-# --------------------------------------------------------------------------- #
 # the UP half of the normalize: no headroom left on the table (#2906)
-# --------------------------------------------------------------------------- #
 
 
 def _fitted_for(filters_by_role):
@@ -1260,13 +1236,20 @@ def test_the_planner_always_discloses_what_the_normalize_gave_back():
 
 def test_bank_time_plan_uses_each_declared_driver_budget():
     conductor = _conductor()
-    conductor._fit_budget_by_role = {
+    budgets = {
         "woofer": {"max_filters": 1, "max_gain_db": 2},
         "tweeter": {"max_filters": 3, "boost_floor_hz": 3000, "max_giveback_db": 4},
     }
     analysis = _analysis(CANDIDATE_FIT["program_id"])
-    plan = conductor._plan_linearization(analysis, analysis.candidate, None)
-    for role, budget in conductor._fit_budget_by_role.items():
+    from jasper.active_speaker.crossover_v2 import planning
+    plan = planning.plan_for_candidate(
+        analysis, analysis.candidate, None, preset=conductor.source_preset,
+        program_for_phase=conductor.program_for_phase,
+        roles=tuple(role.role for role in conductor.roles_bands),
+        driver_class_by_role={}, fit_budget_by_role=budgets,
+        plan_linearization=iv.plan_linearization, journal=lambda _: None,
+    )
+    for role, budget in budgets.items():
         fit = plan.linearization[role]
         assert {key: fit["budget"][key] for key in budget} == budget
         assert len(fit["filters"]) <= budget["max_filters"]

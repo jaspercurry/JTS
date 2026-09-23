@@ -86,7 +86,7 @@ async def apply_candidate(
                 if not baseline_profile.validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
             offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
-            summary = v2durable._candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
+            summary = v2durable.candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
             change = declaration_change_for_candidate(source_preset=selected.source_preset, design_draft=draft)
             if on_candidate_verified is not None:
                 await on_candidate_verified()

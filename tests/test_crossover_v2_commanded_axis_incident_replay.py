@@ -55,7 +55,6 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_complex,
 )
-from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2 import commanded as cmd
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_MIN_BINS,
@@ -64,9 +63,7 @@ from jasper.active_speaker.delta_probe import (
 )
 from tests._log_events import event_fields, event_records
 
-# --------------------------------------------------------------------------- #
 # the incident's own numbers
-# --------------------------------------------------------------------------- #
 
 #: The round-3 profile the apply replaced.
 PREVIOUS_TWEETER_TRIM_DB = -10.2141
@@ -222,9 +219,7 @@ def _probe(commanded_db, measured_post, measured_pre):
     )
 
 
-# --------------------------------------------------------------------------- #
 # channel 1 — the level door
-# --------------------------------------------------------------------------- #
 
 
 def test_the_incidents_own_numbers_are_self_consistent():
@@ -272,9 +267,7 @@ def test_the_new_axis_leaves_no_uncommanded_level_at_all():
     assert probe.residual_offset_db == pytest.approx(0.0, abs=0.05)
 
 
-# --------------------------------------------------------------------------- #
 # channel 2 — what the axis contains
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -344,9 +337,7 @@ def test_the_retired_axis_fitted_its_frame_outside_the_band_it_graded():
     assert new.quiet_n_bins >= DELTA_PROBE_MIN_BINS
 
 
-# --------------------------------------------------------------------------- #
 # channel 3 — the rollback the incident took
-# --------------------------------------------------------------------------- #
 
 #: Curvature sweep step. Coarse on purpose: the claim is that the two axes cross
 #: the rollback bar at DIFFERENT curvatures, not where either crossing sits to
@@ -431,9 +422,7 @@ def test_an_uncommanded_shape_change_still_rolls_back_under_the_new_axis():
     assert probe.advises_against_keep is True
 
 
-# --------------------------------------------------------------------------- #
 # the wiring: profile -> graph -> previous side
-# --------------------------------------------------------------------------- #
 
 
 #: The draft declares both branches non-inverted, which is jts3's own state and
@@ -674,182 +663,7 @@ def test_the_snapshot_preset_names_the_corner_the_graph_was_built_at():
     ) is None
 
 
-def _incident_analysis():
-    from jasper.audio_measurement.program_analysis import (
-        ALIGNMENT_OK,
-        AlignmentEstimate,
-        DriverResponse,
-        ProgramAnalysis,
-    )
-
-    branch = _branch_tf()
-    return ProgramAnalysis(
-        phase="measure",
-        program_id="cap_test_2611",
-        locations=(),
-        driver_responses=tuple(
-            DriverResponse(
-                role=role,
-                freqs_hz=FREQS_HZ,
-                magnitude_db=20.0 * np.log10(np.maximum(np.abs(tf), 1e-12)),
-                complex_tf=tf,
-                gating={},
-                snr=None,
-                validity_floor_hz=None,
-            )
-            for role, tf in branch.items()
-        ),
-        alignment=AlignmentEstimate(
-            delay_us=APPLIED_DELAY_US, raw_delay_us=APPLIED_DELAY_US,
-            parallax_us=0.0, polarity="normal", polarity_sign=1,
-            polarity_agrees_with_sum=True, confidence=0.8,
-            status=ALIGNMENT_OK, anchor_delay_us=0.0,
-        ),
-    )
-
-
-def _session(seams):
-    from tests.crossover_v2_fixtures import CAPS, SESSION_VOLUME_DB, _preset, _roles
-    from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
-
-    return CrossoverV2Session(
-        session_id="cap_test_2611",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=seams,
-        driver_spacing_m=0.15,
-    )
-
-
-def test_the_session_builds_its_previous_side_from_the_applied_profile():
-    """The whole chain, wired: seam -> profile reader -> summed model.
-
-    This is the test a revert has to get past. It drives the session's own
-    method, so replacing the previous side with the retired one — or dropping
-    the polarity, the delay or the role gains on the way through the reader —
-    lands here.
-    """
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    fakes = FakeSeams(applied_profile_state=_incident_profile())
-    session = _session(fakes.seams())
-
-    built = session._previous_graph_predicted_sum(_incident_analysis(), FC_HZ)
-    assert built is not None
-    np.testing.assert_allclose(built[0], FREQS_HZ)
-    np.testing.assert_allclose(built[1], _summed(PREVIOUS_GRAPH)[1])
-
-    # ...and it is NOT the retired axis's previous side, which is what the
-    # session used to subtract.
-    assert not np.allclose(built[1], _summed(RETIRED_PREVIOUS_GRAPH)[1])
-
-
-def test_a_capture_composed_at_another_corner_has_no_nameable_previous_graph(caplog):
-    """The corner guard, and it is the PIN's door as much as ``/sound``'s.
-
-    The branches are composed through whichever crossover the capture was
-    analysed at (``topology_prescription.apply_topology_pin`` re-corners the
-    preset and opens the session AT an operator's pinned corner), while the
-    applied profile only ever ran the corner it was built at. Modelling the
-    previous graph on the wrong ``C`` omits a term measured at up to 5.88 dB
-    against a 1.5 dB tolerance, so the axis is refused and the probe reports
-    ``unavailable`` — no rollback, no pass.
-    """
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    session = _session(
-        FakeSeams(applied_profile_state=_incident_profile(fc_hz=FC_HZ)).seams()
-    )
-    # Same corner: nameable.
-    assert session._previous_graph_predicted_sum(_incident_analysis(), FC_HZ) is not None
-
-    with caplog.at_level(logging.WARNING):
-        moved = session._previous_graph_predicted_sum(
-            _incident_analysis(), FC_HZ * 1.2,
-        )
-    assert moved is None
-    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
-    assert fields["reason"] == "crossover_corner_moved"
-    assert session._commanded_delta_for(
-        _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ * 1.2,
-    ) is None
-
-
-def test_a_profile_that_cannot_name_its_corner_is_refused_too(caplog):
-    """An era-older record with no snapshot preset is "cannot check", and the
-    axis declines rather than affirming a graph whose crossover is unknown."""
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    profile = _incident_profile()
-    profile["recomposition_snapshot"].pop("preset")  # type: ignore[union-attr]
-    session = _session(FakeSeams(applied_profile_state=profile).seams())
-    with caplog.at_level(logging.WARNING):
-        assert session._previous_graph_predicted_sum(
-            _incident_analysis(), FC_HZ,
-        ) is None
-    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
-    assert fields["reason"] == "applied_profile_names_no_corner"
-
-
-def test_one_applied_profile_is_disclosed_once_across_repeated_reads(caplog):
-    """Six reads of one profile; the journal says so once (#2614).
-
-    The disclosure is per distinct ANSWER, not per call, so a session does not
-    put six identical ``previous_graph`` lines in front of a reader for one
-    fact — while a graph that genuinely differs still gets its own line.
-    """
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    session = _session(
-        FakeSeams(applied_profile_state=_incident_profile()).seams()
-    )
-    with caplog.at_level(logging.INFO):
-        for _ in range(6):
-            assert session._previous_graph_predicted_sum(
-                _incident_analysis(), FC_HZ,
-            ) is not None
-    assert len(event_records(caplog, "correction.crossover_v2_previous_graph")) == 1
-
-
-def test_an_unbound_applied_profile_seam_leaves_the_commanded_axis_unavailable(caplog):
-    """No fallback to the retired axis, and the reason is on the journal.
-
-    A session that cannot learn what the speaker is playing cannot state what an
-    apply commands. ``None`` makes the probe ``unavailable`` — no rollback, and
-    no pass either.
-    """
-    import dataclasses
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    session = _session(
-        dataclasses.replace(FakeSeams().seams(), applied_profile=None)
-    )
-    with caplog.at_level(logging.WARNING):
-        assert session._previous_graph_predicted_sum(
-            _incident_analysis(), FC_HZ,
-        ) is None
-    fields = event_fields(caplog, "correction.crossover_v2_previous_graph_unavailable")
-    assert fields["reason"] == "no_applied_profile_seam"
-
-    assert session._commanded_delta_for(
-        _incident_analysis(), _summed(APPLIED_GRAPH), FC_HZ,
-    ) is None
-
-
-# --------------------------------------------------------------------------- #
 # channel 4 — the STATE axis, and what the CHANGE axis alone stops watching
-# --------------------------------------------------------------------------- #
 #
 # #2614's blocker. Everything above is about the CHANGE the apply commands,
 # which is the right axis for "did the correction realize what it asked for".
@@ -897,37 +711,6 @@ def _repeat_round_axes():
     assert commanded is not None and declared is not None
     band = (FREQS_HZ >= _BOOST_BAND_HZ[0]) & (FREQS_HZ <= _BOOST_BAND_HZ[1])
     return applied_db, commanded[1], declared[1], band
-
-
-def _entry_baseline(session, measured_pre):
-    """A PRE-apply capture ``delta_probe_run.entry_delta_db`` can read.
-
-    The real record, not a stub: it reads ``curve``, ``excluded`` and
-    ``program_id``, and a duck-typed trio would keep passing if it started
-    reading a fourth field.
-
-    ``program_id`` is this SESSION's own VERIFY program, not a placeholder,
-    because ``entry_delta_db`` refuses an anchor measured through another
-    program (series-2 D1: an anchor is a subtraction, so a curve from a
-    different capture cancels a real finding as readily as a phantom). A
-    fixture stating a stand-in id here would exercise the refusal instead of
-    the rule under test — which is what it did before this argument was
-    written down.
-    """
-    from jasper.active_speaker.crossover_v2.contracts import (
-        REFERENCE_MARK_DESIGN_AXIS,
-        ResponseCurve,
-    )
-    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
-
-    return EntryBaseline(
-        program_id=session.program_for_phase(journey.PHASE_VERIFY).program_id,
-        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-        curve=ResponseCurve(FREQS_HZ, measured_pre),
-        excluded=tuple(False for _ in FREQS_HZ),
-        graph_fingerprint="entry-graph",
-        captured_at="2026-08-18T00:00:00Z",
-    )
 
 
 def _repeat_round_curves(*, hot_db: float):
@@ -1211,90 +994,7 @@ def test_a_malformed_state_axis_is_an_absence_not_a_grid_error():
     assert truncated.boost_overshoot_db is absent.boost_overshoot_db
 
 
-def test_the_session_hands_the_state_axis_to_the_probe_on_both_commit_paths():
-    """The wiring: the STATE axis is built from the candidate's own RAW sum.
-
-    Its previous side is ``analysis.predicted_sum`` — this capture's branches at
-    the applied candidate's own polarity, delay and trims, with no correction —
-    which is what the retired commanded axis was, kept for the one question it
-    was right for. Unlike the CHANGE axis it needs no applied profile and no
-    corner check, so it survives every door that makes the change axis
-    unavailable.
-    """
-    import dataclasses
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    session = _session(
-        dataclasses.replace(FakeSeams().seams(), applied_profile=None)
-    )
-    analysis = _incident_analysis()
-    raw_sum = _summed(RETIRED_PREVIOUS_GRAPH)
-    analysis = dataclasses.replace(analysis, candidate=None)
-    object.__setattr__(analysis, "predicted_sum", raw_sum)
-
-    declared = session._declared_transfer_for(analysis, _summed(APPLIED_GRAPH))
-    assert declared is not None
-    expected = cmd.commanded_delta(raw_sum, _summed(APPLIED_GRAPH))
-    assert expected is not None
-    np.testing.assert_allclose(declared[1], expected[1])
-    # The change axis is unavailable on this same session; the state axis is not.
-    assert session._commanded_delta_for(
-        analysis, _summed(APPLIED_GRAPH), FC_HZ,
-    ) is None
-
-
-def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(caplog):
-    """The production wiring, end to end (#2614).
-
-    ``_run_delta_probe`` is what a shipped round actually calls, and it is the
-    one place the state axis could be built, persisted, rehydrated and then
-    quietly not handed over. So the repeat-round scenario is driven through the
-    session rather than through the classifier: with the axis installed the hard
-    stop fires, and with it absent the same round grades clean AND says on the
-    journal that its safety mask narrowed.
-    """
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
-    measured_post, measured_pre = _repeat_round_curves(hot_db=4.0)
-
-    def _probe_from_session(declared):
-        session = _session(FakeSeams().seams())
-        session._measure_commanded_delta = (FREQS_HZ, commanded_db)
-        session._measure_declared_transfer = declared
-        # ``realized − commanded == measured − predicted``, which is what
-        # ``_run_delta_probe`` reconstructs from, so the tracking curve is the
-        # measured post-apply capture against the applied model.
-        session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-        session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-        # ...and the PRE-apply capture the two directional findings are
-        # differenced against (series-2 D1). Installed on the session rather
-        # than handed to the classifier, because ``_run_delta_probe`` building
-        # this curve and then quietly not passing it is exactly the wiring gap
-        # this test exists to catch.
-        session._measure_entry_baseline = _entry_baseline(session, measured_pre)
-        return session._run_delta_probe()
-
-    with_axis = _probe_from_session((FREQS_HZ, declared_db))
-    assert with_axis is not None
-    assert with_axis.boost_over_declared_bound is True
-    assert with_axis.boost_overshoot_db is not None
-
-    with caplog.at_level(logging.WARNING):
-        without = _probe_from_session(None)
-    assert without is not None
-    assert without.boost_over_declared_bound is False
-    assert without.boost_overshoot_db is None
-    fields = event_fields(caplog, "correction.crossover_v2_declared_transfer_unavailable")
-    assert fields["reason"] == "no_declared_transfer"
-
-
-# --------------------------------------------------------------------------- #
 # channel 5 — the alternative-Fc round, where there IS no change axis
-# --------------------------------------------------------------------------- #
 #
 # #2614 delta review. The corner guard refuses the previous graph on every
 # committed alternative-Fc candidate, which took the whole probe down with it:
@@ -1304,357 +1004,6 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
 # series-2 D1 what it grades there is the MODEL's departure, not the speaker's
 # delivered energy: the two directional rules still do not run, but now the
 # verdict, ``safety_anchored`` and the axis's own reason all say so.
-
-
-def _alternative_fc_probe(*, hot_db: float, declared: bool = True):
-    """A round with NO commanded axis, run through ``_run_delta_probe`` itself.
-
-    The commanded delta is absent exactly as the corner guard leaves it; the
-    declared transfer is present exactly as any re-cornered round computes it.
-    """
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    _applied, _previous, _raw = _repeat_round_graphs()
-    applied_db, _commanded_db, declared_db, band = _repeat_round_axes()
-    standing = -1.0 - 0.2 * np.log2(FREQS_HZ / 1000.0)
-    measured_post = applied_db + standing + np.where(band, hot_db, 0.0)
-
-    session = _session(FakeSeams().seams())
-    session._measure_commanded_delta = None
-    session._measure_declared_transfer = (FREQS_HZ, declared_db) if declared else None
-    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-    return session._run_delta_probe()
-
-
-def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_driver(
-    caplog,
-):
-    """(a) The 2026-07-27 class, an octave and a half above tracking's window.
-
-    No change axis — the corner moved, so there is no like-for-like previous
-    graph — and a +5 dB tweeter boost realized 4 dB hot. Before #2614's delta
-    round the probe was absent entirely and this reached the household with
-    nothing said about it; #2614 made the probe run and hard-stop here.
-
-    **Series-2 D1 keeps the disclosure and drops the hard stop, because on THIS
-    path the quantity is the model's error with no change term in it at all.**
-    A state axis has no pre-apply reference (the caller is told not to pass
-    one), so ``realized − commanded`` here is exactly
-    ``(measured_post − predicted_post)`` — how far the room sat from a
-    two-branch model that was just rebuilt at a different corner. Refusing on
-    that is what took a measured, safe, improving round off jts3 on 2026-08-17,
-    for a +3.9 dB model error in a band the graph was CUTTING.
-
-    So what the round gets is an honest half-grade: the verdict is its own word,
-    ``safety_anchored`` is False, the model's departure is a number on the
-    record, and the journal puts it in front of whoever reads the session.
-    """
-    import logging
-
-    from types import SimpleNamespace
-
-    from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
-    from jasper.active_speaker.crossover_v2.verification import (
-        CLIPPED_RUN_CHECK,
-        SAFETY_CLIPPED_CAPTURE,
-        SAFETY_NO_FINDING_UNMEASURED,
-        evaluate_applied_safety,
-    )
-    from jasper.active_speaker.delta_probe import (
-        REASON_COMMANDED_AXIS_UNAVAILABLE,
-        VERDICT_SAFETY_ONLY,
-    )
-
-    with caplog.at_level(logging.WARNING):
-        probe = _alternative_fc_probe(hot_db=4.0)
-    assert probe is not None
-    assert probe.verdict == VERDICT_SAFETY_ONLY
-    assert probe.reason == REASON_COMMANDED_AXIS_UNAVAILABLE
-    # Nothing about the driver was measured, and the map says which.
-    assert probe.safety_anchored is False
-    assert probe.boost_over_declared_bound is False
-    assert probe.boost_overshoot_db is None
-    assert probe.realized_louder_than_commanded is False
-    # What WAS measured: the model's own departure, as a number.
-    assert probe.model_departure_over_tolerance is True
-    assert probe.max_signed_error_db == pytest.approx(2.5856, abs=5e-4)
-    assert probe.advises_against_keep is False
-
-    # Exactly what a 4 dB-hot ``safety_only`` map hands the hard-stop axis
-    # (#2855). The constant's own prose used to say the two directional findings
-    # "reach ``evaluate_applied_safety`` exactly as they do on a full map, so an
-    # overshoot still comes off the speaker" — written 2026-08-16 and falsified
-    # by D1 two days later without the sentence being opened. Both findings
-    # arrive as absences, the reason says the realized-energy check could not
-    # look rather than looked-and-found-nothing, and the only thing that DID
-    # travel is the model's departure, on the quality axis where it belongs.
-    safety = evaluate_applied_safety(probe=probe, integrity=None)
-    assert safety.status is SafetyStatus.SAFE
-    assert safety.reason == SAFETY_NO_FINDING_UNMEASURED
-    assert safety.evidence["safety_anchored"] is False
-    assert safety.evidence["probe_shape_graded"] is False
-    assert safety.evidence["boost_over_declared_bound"] is False
-    assert safety.evidence["realized_louder_than_commanded"] is False
-    assert safety.evidence["model_departure_over_tolerance"] is True
-    # The reason above is a statement about the two FINDINGS, not a promise
-    # that nothing can take the graph off here: the clipped check is a
-    # different instrument, needs no probe, and still holds on this map.
-    # ``round_evidence`` passes the round's real integrity report to this axis
-    # unconditionally, so this pairing is reachable rather than theoretical.
-    clipped = evaluate_applied_safety(
-        probe=probe,
-        integrity=SimpleNamespace(failed=(CLIPPED_RUN_CHECK,), not_evaluated=()),
-    )
-    assert clipped.status is SafetyStatus.UNSAFE
-    assert clipped.reason == SAFETY_CLIPPED_CAPTURE
-    # ...and the journal put the half-grade in front of whoever reads the round.
-    fields = event_fields(caplog, "correction.crossover_v2_delta_probe")
-    assert fields["verdict"] == "safety_only"
-
-
-def test_an_alternative_fc_round_that_is_clean_is_not_reported_as_fully_graded():
-    """(b) Safe, and honest about which half looked.
-
-    The dangerous outcome is not a false alarm, it is a clean state-axis grade
-    reading as "the probe passed". Four things keep that from happening: the
-    verdict is its own word rather than ``matched``, the shape and level
-    scalars are absent rather than computed in the wrong frame, and the safety
-    evidence says both ``probe_shape_graded`` and ``safety_anchored`` are False.
-    """
-    from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
-    from jasper.active_speaker.crossover_v2.verification import (
-        evaluate_applied_safety,
-    )
-    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
-
-    probe = _alternative_fc_probe(hot_db=0.0)
-    assert probe is not None
-    assert probe.verdict == VERDICT_SAFETY_ONLY
-    assert probe.matched is False
-    assert probe.advises_against_keep is False
-    # No hazard finding, and the reason is that none was measurable — which is
-    # a different sentence from "measured, and nothing found", and the map is
-    # what tells them apart.
-    assert probe.safety_anchored is False
-    assert probe.boost_over_declared_bound is False
-    assert probe.boost_overshoot_db is None
-    # The model's departure IS measured here, and this speaker sat under it.
-    assert probe.max_signed_error_db is not None
-    assert probe.max_signed_error_db < 0.0
-    assert probe.model_departure_over_tolerance is False
-    # NOT a shape or level claim — every one of these would be stated in the
-    # state frame, where the residual is the chained-round contaminant #2611
-    # removed and the frame sits on quiet bins that mean something else.
-    assert probe.residual_offset_db is None
-    assert probe.gain_factor is None
-    assert probe.frame.fitted is False
-    assert probe.max_error_db == 0.0
-    assert probe.exceedance_octaves == 0.0
-
-    safety = evaluate_applied_safety(probe=probe, integrity=None)
-    assert safety.status is SafetyStatus.SAFE
-    assert safety.evidence["probe_graded"] is True
-    assert safety.evidence["probe_shape_graded"] is False
-    assert safety.evidence["safety_anchored"] is False
-
-
-def test_an_anchor_measured_through_another_program_is_refused(caplog):
-    """An anchor is a subtraction, so a foreign one cancels a real finding.
-
-    Series-2 D1 made the pre-apply capture the input to the adoption table's
-    hard stop, so what was a disclosed scalar's trust problem became a hazard's.
-    Measured here: the SAME 4 dB of undeclared energy, the SAME curves, one
-    variable — whether the baseline was captured through this round's VERIFY
-    program. A baseline that was not is not an anchor, and the round says
-    "not measured" rather than "measured, nothing found".
-
-    Comparability keeps its single owner: this asks ``round_evidence``'s own two
-    identity fields, the ones ``evaluate_benefit`` refuses an incomparable pair
-    on. It does not re-derive the rule.
-    """
-    import dataclasses
-    import logging
-
-    from jasper.active_speaker.crossover_v2.verification import (
-        BENEFIT_PROGRAM_MISMATCH,
-    )
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
-    measured_post, measured_pre = _repeat_round_curves(hot_db=4.0)
-
-    def _probe_with(program_id):
-        session = _session(FakeSeams().seams())
-        session._measure_commanded_delta = (FREQS_HZ, commanded_db)
-        session._measure_declared_transfer = (FREQS_HZ, declared_db)
-        session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-        session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-        baseline = _entry_baseline(session, measured_pre)
-        if program_id is not None:
-            baseline = dataclasses.replace(baseline, program_id=program_id)
-        session._measure_entry_baseline = baseline
-        return session._run_delta_probe()
-
-    comparable = _probe_with(None)
-    assert comparable.safety_anchored is True
-    assert comparable.boost_over_declared_bound is True
-    assert comparable.boost_overshoot_db == pytest.approx(4.0, abs=1e-9)
-
-    with caplog.at_level(logging.WARNING):
-        foreign = _probe_with("a-program-from-another-capture")
-    assert foreign.safety_anchored is False
-    assert foreign.boost_over_declared_bound is False
-    assert foreign.boost_overshoot_db is None
-    # ...and it is named, in the OWNER's own vocabulary rather than a second
-    # spelling of it, because a refused anchor that says nothing is the same
-    # silence the refusal exists to prevent.
-    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
-    assert fields["reason"] == BENEFIT_PROGRAM_MISMATCH
-
-
-def test_an_anchor_captured_at_another_mark_is_refused_too(caplog):
-    """The mark, and it is the MORE distorting of the two identity fields.
-
-    A different program usually changes the grid and shows up in the arithmetic.
-    A baseline captured at another mic position does not: it is the same
-    program, the same grid, the same bins — and it subtracts a different room
-    from this one, bin by bin. Since series-2 D1 that subtrahend sits under a
-    hearing-safety hard stop, and nothing else on this path would catch it.
-
-    Same fixture, same 4 dB of undeclared energy, one field moved — and the
-    record is REHYDRATED through ``EntryBaseline.from_dict``, which is the path
-    a stage-2 round actually takes and which coerces ``reference_mark`` without
-    validating it. So the foreign mark really does reach the probe, exactly as
-    it would from a state file, rather than being planted on an in-memory
-    object the production path never builds.
-    """
-    import logging
-
-    from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
-    from jasper.active_speaker.crossover_v2.verification import (
-        BENEFIT_MARK_MISMATCH,
-    )
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
-    measured_post, measured_pre = _repeat_round_curves(hot_db=4.0)
-
-    session = _session(FakeSeams().seams())
-    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
-    session._measure_declared_transfer = (FREQS_HZ, declared_db)
-    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-
-    record = _entry_baseline(session, measured_pre).to_dict()
-    record["reference_mark"] = "a_mark_from_another_position"
-    rehydrated = EntryBaseline.from_dict(record)
-    assert rehydrated is not None, "the rehydrator accepts the foreign mark"
-    assert rehydrated.reference_mark == "a_mark_from_another_position"
-    session._measure_entry_baseline = rehydrated
-
-    with caplog.at_level(logging.WARNING):
-        probe = session._run_delta_probe()
-
-    assert probe.safety_anchored is False
-    assert probe.boost_over_declared_bound is False
-    assert probe.boost_overshoot_db is None
-    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
-    assert fields["reason"] == BENEFIT_MARK_MISMATCH
-    assert fields["baseline_reference_mark"] == "a_mark_from_another_position"
-
-
-def test_a_round_with_no_entry_baseline_at_all_says_so_on_the_journal(caplog):
-    """The arm that used to return ``None`` in silence.
-
-    Reached by a round that HAS a commanded axis and no usable baseline record —
-    a state file written before that key shipped, a stage 1 whose baseline
-    capture never landed, or a truncated record
-    (``entry_baseline_prior_from_state`` enumerates the three). **Not** by a
-    first-ever round: that one has no nameable previous graph, so its commanded
-    axis is absent and ``run_delta_probe`` takes the ``state_axis_only`` branch
-    without calling ``entry_delta_db`` at all.
-
-    Since D1 this arm decides whether the realized-energy half of the safety
-    axis runs, so it is a named journal line rather than an absent field a
-    reader has to infer from. The baseline is set to ``None`` by hand here
-    because that is the state those three cases produce.
-    """
-    import logging
-
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
-    measured_post, _pre = _repeat_round_curves(hot_db=4.0)
-
-    session = _session(FakeSeams().seams())
-    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
-    session._measure_declared_transfer = (FREQS_HZ, declared_db)
-    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-    session._measure_entry_baseline = None
-
-    with caplog.at_level(logging.WARNING):
-        probe = session._run_delta_probe()
-
-    assert probe is not None
-    assert probe.safety_anchored is False
-    fields = event_fields(caplog, "correction.crossover_v2_delta_probe_no_entry_anchor")
-    assert fields["reason"] == "no_entry_baseline"
-
-
-def test_the_ordinary_round_is_untouched_by_the_state_axis_only_path():
-    """(c) A round WITH a change axis grades exactly as it did.
-
-    The same repeat-round capture through the same method, with the commanded
-    axis present: a full verdict, a fitted frame, a measured residual — none of
-    which the branch above may disturb.
-    """
-    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
-
-    full = _probe_from_repeat_round_session(hot_db=4.0)
-    assert full is not None
-    assert full.verdict != VERDICT_SAFETY_ONLY
-    assert full.verdict in (VERDICT_MODEL_ERROR, "matched")
-    assert full.gain_factor is not None
-    assert full.residual_offset_db is not None
-    # ...and the safety half IS graded here, which is the difference the
-    # state-axis-only path makes since series-2 D1: this round has a pre-apply
-    # capture and a change axis, so the same 4 dB of undeclared energy is a
-    # measurement of the speaker rather than of our model of it.
-    assert full.safety_anchored is True
-    assert full.boost_over_declared_bound is True
-    assert full.boost_overshoot_db == pytest.approx(4.0, abs=1e-9)
-
-
-def test_neither_axis_leaves_the_probe_absent_exactly_as_before(caplog):
-    """(d) No change axis AND no state axis is still ``None``.
-
-    The pre-#2614 answer for a round nothing can grade, and
-    ``declared_transfer_db`` has already named the reason on the journal — so
-    this path gains no new vocabulary and loses no disclosure.
-    """
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        assert _alternative_fc_probe(hot_db=4.0, declared=False) is None
-    assert event_records(caplog, "correction.crossover_v2_declared_transfer_unavailable")
-
-
-def _probe_from_repeat_round_session(*, hot_db: float):
-    """The ordinary path's counterpart of :func:`_alternative_fc_probe`."""
-    from tests.crossover_v2_fixtures import FakeSeams
-
-    applied_db, commanded_db, declared_db, _band = _repeat_round_axes()
-    measured_post, measured_pre = _repeat_round_curves(hot_db=hot_db)
-
-    session = _session(FakeSeams().seams())
-    session._measure_commanded_delta = (FREQS_HZ, commanded_db)
-    session._measure_declared_transfer = (FREQS_HZ, declared_db)
-    session._verify_tracking_curve = (FREQS_HZ, measured_post, applied_db)
-    session._verify_trusted_band_hz = TRUSTED_BAND_HZ
-    session._measure_entry_baseline = _entry_baseline(session, measured_pre)
-    return session._run_delta_probe()
 
 
 def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(caplog):

@@ -197,8 +197,7 @@ class Verdict(Generic[StatusT]):
 # 1. capture validity
 # --------------------------------------------------------------------------
 
-#: The integrity record was absent — the same reason the attempts ledger
-#: stamps (``crossover_v2_flow.attempt_record_from_verify``).
+#: The integrity record was absent.
 CAPTURE_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 CAPTURE_INTEGRITY_FAILED = "capture_integrity_failed"
 CAPTURE_INTEGRITY_CLEAN = "capture_integrity_clean"

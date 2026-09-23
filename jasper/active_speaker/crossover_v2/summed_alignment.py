@@ -85,18 +85,6 @@ def _unreadable(reason: str) -> SummedAlignmentReference | None:
     return None
 
 
-def cached_session_reference(session: Any) -> SummedAlignmentReference | None:
-    baseline = session._measure_entry_baseline
-    key = baseline.artifact_ref if baseline is not None else None
-    cached = getattr(session, "_summed_alignment_reference_cache", None)
-    if cached is None or cached[0] != key:
-        seam = session._seams.summed_alignment_reference
-        reference = (_unreadable("no_entry_baseline") if baseline is None else
-                     seam(baseline, session._preset) if seam else None)
-        cached = session._summed_alignment_reference_cache = (key, reference)
-    return cached[1]
-
-
 def session_reference(bundle_dir: Path, baseline: Any, preset: Any) -> SummedAlignmentReference | None:
     if baseline is None or baseline.reference_mark != REFERENCE_MARK_DESIGN_AXIS:
         return None

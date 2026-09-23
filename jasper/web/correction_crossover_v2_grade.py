@@ -6,9 +6,6 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2 import durable_state as v2durable
-
-
 import math
 from typing import Any, Mapping
 
@@ -20,6 +17,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
+from jasper.json_fields import finite_float
 
 
 # The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
@@ -220,9 +218,9 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     prediction = prediction if isinstance(prediction, Mapping) else {}
     comparison = prediction.get("comparison")
     comparison = comparison if isinstance(comparison, Mapping) else {}
-    improvement_db = v2durable._finite(comparison.get("improvement_db"))
-    required_db = v2durable._finite(comparison.get("required_db"))
-    absolute_miss_db, absolute_worst_hz = v2durable._finite(absolute.get("max_db")), v2durable._finite(absolute.get("worst_hz"))
+    improvement_db = finite_float(comparison.get("improvement_db"))
+    required_db = finite_float(comparison.get("required_db"))
+    absolute_miss_db, absolute_worst_hz = finite_float(absolute.get("max_db")), finite_float(absolute.get("worst_hz"))
     result_evidence = bool(comparison or integration or absolute)
     # The published candidate IS the corner the round executed, so there is no
     # alternative for a winner to have beaten. The fingerprint stays required —
@@ -277,25 +275,6 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     # made the fail and inconclusive arms unreachable: a re-verify that failed
     # against a carried-forward passing group reached ``GRADE_GRADED`` with
     # ``graded=True``, and every surface keying on those read it as all clear.
-    #
-    # ``verify_failed`` is a UNION of the two instruments, not a fallback
-    # between them, because neither can see the other's failure. ``outcome``
-    # grades CAPTURE and tracking health only (``crossover_v2_flow.
-    # _set_verify_outcome``; its pass call site says "Absolute remains
-    # independent"), so a crossover-region claim that missed its tolerance
-    # rides a clean ``pass`` — and the other way, an absent tracking max is an
-    # ``outcome`` pass whose integration claim reads ``not_evaluated``, which
-    # It reads ``integration`` and ``absolute`` because a
-    # VERIFY grades no others: its one summed sweep leaves both per-branch
-    # claims structurally ``not_evaluated`` (``CLAIM_NO_PER_BRANCH_CAPTURE``).
-    # A state file with no claims block is a pre-R18 build and leaves
-    # ``outcome`` standing alone: absence is never a fail, and never a
-    # pass-of-claims either.
-    #
-    # #2160's rider (ratified 2026-08-17): geometry and k-of-N facts stay
-    # un-co-located — each instrument's facts render on its own surface, and
-    # capping this badge gathers none of them. ``spatial``,
-    # ``post_apply_spec_passed`` and ``verify_outcome`` below are untouched.
     verify_failed = outcome == "fail" or CLAIM_FAIL in {
         tracking_status, absolute_status,
     }
@@ -343,11 +322,11 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
         # Only alongside a real failing grade: a number without a verdict to
         # attach it to is the fabricated reading this module forbids.
         "spatial_worst_db": (
-            v2durable._finite(flatness.get("max_db"))
+            finite_float(flatness.get("max_db"))
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "spatial_worst_hz": (
-            v2durable._finite(flatness.get("max_hz"))
+            finite_float(flatness.get("max_hz"))
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "complete": complete,

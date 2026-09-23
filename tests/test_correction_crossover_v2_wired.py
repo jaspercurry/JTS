@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Wired capture, host binding, record metadata, and frame integrity."""
+
 from __future__ import annotations
 
 from tests.crossover_v2_fixtures import _inline_spec
@@ -95,9 +96,7 @@ def _device() -> WiredMicDevice:
     )
 
 
-# --------------------------------------------------------------------------- #
 # 1. source resolution
-# --------------------------------------------------------------------------- #
 
 
 def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
@@ -190,13 +189,9 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
     assert built["signals"] is signals
 
 
-# --------------------------------------------------------------------------- #
 # 3. the wired runner (fake conductor)
-# --------------------------------------------------------------------------- #
 
-# --------------------------------------------------------------------------- #
 # 5. hosting: the local kind + the completion endpoint
-# --------------------------------------------------------------------------- #
 
 
 def _fake_handler(body: bytes = b"{}"):
@@ -310,9 +305,7 @@ def test_the_retake_signal_drops_with_the_slot():
         correction_capture._set_capture_slot(None)
 
 
-# --------------------------------------------------------------------------- #
 # layer 5: the PLAY SEAM's capture half
-# --------------------------------------------------------------------------- #
 #
 # The same box plays and records, so one stimulus is one transaction: the
 # recorder rolls before the first sample, the program plays, the recorder stops
@@ -899,7 +892,9 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     (True, 0, 0, "timing"), (True, 0, 0, "candidate"), (True, 0, 0, "applied"), (False, 0, 0, "timing"),
     (True, 20, 0, "timing"), (True, 0, 20, "timing"), (True, 0, 0, "drivers"),
 ])
-async def test_executor_retains_summed_reference_before_measure(monkeypatch, caplog, banked, position, vertical, scope):
+async def test_executor_retains_summed_reference_before_measure(
+    monkeypatch, caplog, banked, position, vertical, scope
+):
     conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "entry_baseline", 3: "measure"},
                            measure_entry_baseline=None)
     monkeypatch.setattr(conductor, "_applied_alignment", lambda: AppliedAlignment(191.6, "normal", "authored_by_model"))
@@ -937,7 +932,9 @@ async def test_executor_retains_summed_reference_before_measure(monkeypatch, cap
         record_id = await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
         analysis = analyze(saved[-1], record_id)
     available = banked and position == vertical == 0 and scope == "timing"
-    assert conductor._measure_priors().summed_alignment is (reference if available else None)
+    assert conductor.measure_priors().summed_alignment is (
+        reference if available else None
+    )
     events = event_field_maps(caplog, "active_speaker.summed_reference_unreadable")
     if available:
         build_reference.assert_called_once()
@@ -1025,7 +1022,9 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     (74.9, None),
 ])
 @pytest.mark.parametrize("offset", [0, -10, 2])
-def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anchor, sensitivity, offset):
+def test_host_binds_session_level_only_to_check_priors(
+    monkeypatch, caplog, anchor, sensitivity, offset
+):
     fakes = FlowSeams()
     conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
                            gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
@@ -1045,9 +1044,13 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
             level=LevelPolicy(level_db=-15 + offset, resolved=ResolvedLevel(anchor, -15, "1234") if anchor is not None else None),
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
-            expected = (conductor._check_priors() if phase == "check" else
-                        conductor._measure_priors() if phase == "measure" else
-                        conductor._lateral_priors())
+            expected = (
+                conductor.check_priors()
+                if phase == "check"
+                else conductor.measure_priors()
+                if phase == "measure"
+                else conductor.lateral_priors()
+            )
             if phase == "check" and target is not None:
                 expected = replace(expected, target_capture_dbfs=target)
             program = conductor.program_for_phase(phase)
@@ -1196,7 +1199,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
 
     conductor = _conductor(FakeSeams(), index_phase_map={1: "verify"})
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
-    monkeypatch.setattr(conductor, "_consume_verify", consume)
+    monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
     manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)

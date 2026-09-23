@@ -348,7 +348,7 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # jasper.active_speaker.flat_spec's cloud gauge; "did THIS crossover track
 # its prediction?" is `verify_tracking` below; "did THIS crossover hand off
 # as designed?" is `verify_absolute` below. The cloud gauge cannot own the
-# last two: it is assembled after `_verify_verdict` runs, some paths have no
+# last two: it is assembled after the VERIFY verdict, some paths have no
 # post-apply cloud at all, and its spatial mean/self-reference answer a
 # different question. `CrossoverCandidate.flatness_improvement_db` is an
 # unrelated Layer-1b metric, not a spec claim.
@@ -694,8 +694,7 @@ class CrossoverCandidate:
     (zero-residual) branch sum at the committed polarity — deliberately not
     the committed-delay model ``ProgramAnalysis.predicted_sum`` uses, since
     it asks a capture-quality question (how coherently these branches sum at
-    all) that feeds ``crossover_v2_flow``'s disclosure-only
-    ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB``.
+    all) that feeds the disclosure-only ripple threshold (ADR-0181).
 
     ``trim_db`` is the APPLIED trim (ripple-optimal where trusted, otherwise
     the band-average fallback); ``trim_band_average_db`` preserves
@@ -959,8 +958,9 @@ class ProgramAnalysis:
     # MEASURE-predicted summed magnitude at the candidate's COMMITTED trim
     # and delay, handed to VERIFY as `MeasurementPriors.predicted_sum` so
     # VERIFY's pass is |measured - predicted| <= +/-1.5 dB (design §5.2).
-    # Quality is graded separately: `crossover_v2_flow.spec_report_for_predicted_sum`
-    # and `CrossoverCandidate.predicted_ripple_db`.
+    # Quality is graded separately:
+    # `crossover_v2.diagnostics.spec_report_for_predicted_sum` and
+    # `CrossoverCandidate.predicted_ripple_db`.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     # Set by MEASURE from `drift.glitch_detected`, by VERIFY from
     # `capture_integrity.glitched` — a one-bit projection of the record that owns the fact.

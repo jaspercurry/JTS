@@ -6,17 +6,12 @@
 
 from __future__ import annotations
 
-from jasper.web import correction_crossover_v2_state as v2state
 
-import logging
 import numpy as np
 import pytest
-from dataclasses import replace
-from typing import Any
 from jasper.active_speaker import branch_chain
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import durable_state
-from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.round_evidence import (
     MEASURED_BENEFIT_MARGIN_DB,
@@ -26,14 +21,10 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     PROVENANCE_REALIZED, AttemptIntegrity, AttemptRecord,
 )
 from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, back_off_gain
-from jasper.active_speaker.crossover_v2_flow import MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB
-from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.crossover_v2.alignment_prescription import alignment_delay_search_bounds_us
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_DONE,
     PHASE_MEASURE,
-    PHASE_REVIEW,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
@@ -44,26 +35,18 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
-from tests._log_events import event_fields, event_records
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.crossover_v2_fixtures import (
     CAPS,
     FakeSeams,
-    SESSION,
-    _DIAG_LOGGER,
     _ENTRY_BASELINE_RESIDUAL_DB,
     _POST_APPLY_RESIDUAL_DB,
     _capture,
     _conductor,
-    _measure_analysis,
     _preset,
     _run_phase,
     _verify_analysis,
-    _stage2_conductor,
 )
-
-
-# --- the shared fixture's own premise ------------------------------------------
 
 
 def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one():
@@ -113,261 +96,6 @@ def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one(
     assert (before_db - after_db) > MEASURED_BENEFIT_MARGIN_DB
 
 
-# --- live attempts loop -------------------------------------------------------
-
-
-def test_accepted_apply_verify_writes_model_error_exactly_once():
-    written: list[dict[str, Any]] = []
-    fakes = FakeSeams()
-
-    def record(**observation: Any) -> bool:
-        written.append(dict(observation))
-        return True
-
-    c = _stage2_conductor(
-        fakes,
-        seams=replace(fakes.seams(), record_model_error=record),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    first = _run_phase(c, 1, 1)
-    repeated = _run_phase(c, 1, 2)
-
-    assert first["accepted"] is True
-    assert repeated["accepted"] is True
-    assert len(written) == 1
-    assert written[0] == {
-        "speaker_id": "speaker-a",
-        "attempt_id": "candidate-a",
-        "metric": contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        "predicted_db": 0.0,
-        "realized_db": 0.9,
-        "context": {
-            "session_id": SESSION,
-            "provenance": PROVENANCE_REALIZED,
-        },
-    }
-    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-
-
-def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_path):
-    """A rebuilt conductor may lack history even though the store write won."""
-    from jasper.active_speaker.model_error_store import (
-        load_state,
-        record_model_error,
-    )
-
-    path = tmp_path / "model-error.json"
-
-    def record(**observation: Any) -> bool:
-        record_model_error(path=path, **observation)
-        return True
-
-    first_fakes = FakeSeams()
-    first = _stage2_conductor(
-        first_fakes,
-        seams=replace(first_fakes.seams(), record_model_error=record),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    assert _run_phase(first, 1, 1)["accepted"] is True
-    assert len(load_state(path)["model_error"]) == 1
-
-    # Simulate a crash before the host persisted ``first.attempt_history``:
-    # rebuild with no history but the same applied-candidate identity.
-    recovered_fakes = FakeSeams()
-    recovered = _stage2_conductor(
-        recovered_fakes,
-        seams=replace(recovered_fakes.seams(), record_model_error=record),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    assert _run_phase(recovered, 1, 1)["accepted"] is True
-
-    records = load_state(path)["model_error"]
-    assert [item["attempt_id"] for item in records] == ["candidate-a"]
-    assert [item.attempt_id for item in recovered.attempt_history] == ["candidate-a"]
-
-
-def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
-    tmp_path, caplog,
-):
-    from jasper.active_speaker.model_error_store import (
-        ModelErrorConflictError,
-        load_state,
-        record_model_error,
-    )
-
-    path = tmp_path / "model-error.json"
-    state_path = tmp_path / "v2-state.json"
-    history = (
-        AttemptRecord(
-            attempt_id="candidate-base",
-            metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SESSION,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.4,
-            n_graded_bins=120,
-        ),
-        AttemptRecord(
-            attempt_id="candidate-previous",
-            metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-            provenance=PROVENANCE_REALIZED,
-            sitting_id=SESSION,
-            integrity=AttemptIntegrity(comparable=True),
-            grade_db=1.0,
-            n_graded_bins=120,
-        ),
-    )
-
-    # The store write won, then the process died before the new journey fact.
-    record_model_error(
-        speaker_id="speaker-a",
-        attempt_id="candidate-current",
-        metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        predicted_db=0.0,
-        realized_db=0.9,
-        path=path,
-    )
-
-    def record(**observation: Any) -> bool:
-        try:
-            record_model_error(path=path, **observation)
-        except ModelErrorConflictError:
-            return False
-        return True
-
-    recovered_fakes = FakeSeams()
-    recovered_fakes.verify = lambda program: _verify_analysis(
-        program, max_db=0.7, n_graded_bins=80,
-    )
-    recovered = _stage2_conductor(
-        recovered_fakes,
-        seams=replace(recovered_fakes.seams(), record_model_error=record),
-        attempt_history=history,
-        tuning_attempt_id="candidate-current",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    with caplog.at_level(logging.WARNING):
-        assert _run_phase(recovered, 1, 1)["accepted"] is True
-
-    records = load_state(path)["model_error"]
-    assert len(records) == 1
-    assert records[0]["realized_db"] == pytest.approx(0.9)
-    assert recovered.attempt_history == history
-    assert event_records(
-        caplog, "correction.crossover_v2_model_error_identity_conflict"
-    )
-    assert not event_records(
-        caplog, "correction.crossover_v2_model_error_write_failed"
-    )
-
-    v2state.set_state_path_for_tests(state_path)
-    try:
-        v2state.persist_conductor_state(recovered, failure_code=None)
-        persisted = v2state.load_v2_state()
-    finally:
-        v2state.set_state_path_for_tests(None)
-    assert [
-        item["attempt_id"] for item in persisted["attempts_loop"]["history"]
-    ] == ["candidate-base", "candidate-previous"]
-
-
-def test_model_error_store_failure_warns_without_blocking_verify(caplog):
-    def fail_write(**_observation: Any) -> None:
-        raise OSError("synthetic full disk")
-
-    fakes = FakeSeams()
-    c = _stage2_conductor(
-        fakes,
-        seams=replace(fakes.seams(), record_model_error=fail_write),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    with caplog.at_level(logging.WARNING):
-        verdict = _run_phase(c, 1, 1)
-
-    assert verdict["accepted"] is True
-    assert c.current_phase == PHASE_DONE
-    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-    assert event_records(caplog, "correction.crossover_v2_model_error_write_failed")
-
-
-def test_unexpected_store_failure_cannot_double_bank_on_a_retry(caplog):
-    """#2386: an out-of-family seam raise must not let a retry re-fire the write.
-
-    The rung that stops a second durable write is the attempt landing in
-    ``attempt_history``, which ``_grade_verify_attempt`` appends AFTER the seam
-    call. Before the fix a raise outside the named family skipped that append,
-    so a retry of the SAME applied candidate was assessed as a new attempt and
-    asked the seam a second time — measured on the shipped code as two writes
-    for two runs of one attempt. Both halves are asserted here: the write fires
-    once, and the attempt is banked, which is the mechanism that makes it once.
-    """
-    calls: list[dict[str, Any]] = []
-
-    def unexpected_write(**observation: Any) -> bool:
-        calls.append(dict(observation))
-        # Deliberately outside (OSError, RuntimeError, TypeError, ValueError,
-        # OverflowError). MemoryError is the shape a 1 GB Pi can actually
-        # produce; the property is about the interface, not this class.
-        raise MemoryError("synthetic out-of-family store failure")
-
-    fakes = FakeSeams()
-    c = _stage2_conductor(
-        fakes,
-        seams=replace(fakes.seams(), record_model_error=unexpected_write),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    # The raise is TOLERATED rather than allowed to end the test, because the
-    # original bug is a COUNT: a test that dies on the first propagating run
-    # never reaches the second write and so never observes the double-bank it
-    # claims to pin. Pre-fix this loop collects two calls and two propagated
-    # exceptions; post-fix, one call and none.
-    #
-    # caplog at WARNING, not ERROR, so the named-family event WOULD be captured
-    # if it fired — otherwise "not filed under the other arm" is vacuous.
-    verdicts: list[dict] = []
-    propagated: list[str] = []
-    with caplog.at_level(logging.WARNING):
-        for run in (1, 2):
-            try:
-                verdicts.append(_run_phase(c, 1, run))
-            except MemoryError:
-                propagated.append("MemoryError")
-
-    # The property, asserted first so a regression reddens on the count itself.
-    assert len(calls) == 1  # was 2
-    assert propagated == []  # was ["MemoryError", "MemoryError"]
-    # The mechanism that produces it.
-    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-    # The forensics failure did not reverse the VERIFY the gate accepted.
-    assert [verdict["accepted"] for verdict in verdicts] == [True, True]
-    assert c.current_phase == PHASE_DONE
-    assert event_records(
-        caplog, "correction.crossover_v2_model_error_write_unexpected"
-    )
-    assert not event_records(
-        caplog, "correction.crossover_v2_model_error_write_failed"
-    )
-
-
-def test_base_exception_from_the_store_seam_still_propagates():
-    """The broad catch is ``Exception``, deliberately not ``BaseException``.
-
-    A ``KeyboardInterrupt`` must not be swallowed by a forensics guard, and
-    containing it would buy no retry-safety anyway: nothing this method appends
-    is persisted by this method, so a dying process has no retry to protect.
-    """
-    def interrupted_write(**_observation: Any) -> bool:
-        raise KeyboardInterrupt("operator stopped the run")
-
-    fakes = FakeSeams()
-    c = _stage2_conductor(
-        fakes,
-        seams=replace(fakes.seams(), record_model_error=interrupted_write),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a", index_phase_map={1: PHASE_VERIFY})
-    with pytest.raises(KeyboardInterrupt):
-        _run_phase(c, 1, 1)
-
-
 def test_the_banked_sitting_survives_the_durable_state_round_trip():
     """A stamp the persistence layer drops is a stamp that never fired.
 
@@ -414,25 +142,6 @@ def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
     assert restored[0].sitting_id == ""
 
 
-# --- happy path -----------------------------------------------------------------
-
-
-def test_a_capture_on_a_phase_without_a_consumer_is_refused_loudly():
-    """A capture index mapped to a control-page phase is a wiring defect.
-
-    The dispatch table refuses it as a typed error. The chains it replaced
-    fell back to grading such a capture as post-apply VERIFY against empty
-    priors — banking it durably as a tuning attempt, silently.
-    """
-    fakes = FakeSeams()
-    c = _conductor(fakes, index_phase_map={1: PHASE_REVIEW})
-    with pytest.raises(CrossoverV2FlowError):
-        c.consume_capture(1, 1, _capture())
-    # Refused before any analysis, banking, or verify grading ran.
-    assert fakes.analyzed == []
-    assert c.attempt_history == ()
-
-
 def test_an_implausible_delay_never_renders_mic_placement_advice():
     """The copy separation the confidence demotion required (#2085's shape).
 
@@ -458,18 +167,6 @@ def test_an_implausible_delay_never_renders_mic_placement_advice():
     assert "low_alignment_confidence" not in REASON_REGISTRY
 
 
-def test_a_calibrated_measure_banks_no_calibration_reservation():
-    """The converse — the disclosure's own "clean measurement" counterpart."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(program, mic_calibrated=True)
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert c.measure_calibration_reservation is None
-
-
-# --- measurement-honesty disclosure G1: predicted-ripple reservation --------------
 #
 # These four tests pinned the OPPOSITE behaviour until the owner's 2026-08-03
 # ruling (#2087): crossing the threshold refused the capture and reused
@@ -477,125 +174,6 @@ def test_a_calibrated_measure_banks_no_calibration_reservation():
 # every boundary the old gate was pinned at is still pinned — the threshold,
 # its exclusive ``>``, and the trims-only skip all survive; only the
 # consequence of crossing it changed from a refusal to a disclosure.
-
-
-def test_predicted_ripple_over_threshold_accepts_and_banks_a_reservation():
-    """Owner ruling #2087: a candidate whose OWN predicted ripple is worse
-    than the calibration corpus — mirrors the 2026-07-22 corrupted-phone-chain
-    hardware evidence (27.316 dB at a confidence that cleared
-    ALIGNMENT_CONFIDENCE_TRUST_FLOOR) — now PROCEEDS carrying an honest
-    reservation instead of refusing.
-
-    The refusal this replaces told a household with a correctly placed
-    microphone to move it (#2085) and killed the session on the attempt meter
-    (#2086). What the capture measured is unchanged; what the household is
-    told about it is the whole change."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=27.316,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    # No reason code at all — an accepted verdict carries none, which is the
-    # structural difference from the refusal this replaces.
-    assert not verdict.get("code")
-    # The measured value rides WITH the threshold it was judged against, so a
-    # later constant change cannot retro-caption a banked reservation.
-    assert c.measure_ripple_reservation == {
-        "predicted_ripple_db": 27.316,
-        "threshold_db": MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
-    }
-
-
-def test_predicted_ripple_disclosure_emits_its_own_event(caplog):
-    """The disclosure has a stable ``event=`` line of its own, at WARNING.
-
-    ``guard=`` on the per-capture diag is one field on a line that fires for
-    every capture; this is the line an operator counts or alerts on."""
-    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=15.244,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    assert _run_phase(c, 2, 2)["accepted"] is True
-    fields = event_fields(caplog, "correction.crossover_v2_ripple_disclosed")
-    assert fields["predicted_ripple_db"] == "15.244"
-    assert fields["threshold_db"] == "15.0"
-    (record,) = event_records(caplog, "correction.crossover_v2_ripple_disclosed")
-    assert record.levelno == logging.WARNING
-
-
-def test_predicted_ripple_well_under_threshold_banks_nothing():
-    """A representative value from the 2026-07-22 clean-corpus worst case
-    passes with NO reservation — the threshold sits well above it, and a clean
-    capture must say nothing rather than reassure. See
-    ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB``'s comment for the corpus
-    composition AND range; neither is restated here per issue #2015 (the
-    range drifted the same way the count once did)."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=9.0,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    assert c.measure_ripple_reservation is None
-
-
-def test_predicted_ripple_threshold_boundary_exact_is_silent_just_above_discloses():
-    """The threshold is an exclusive upper bound (``>``, not ``>=``) — exactly
-    at it banks nothing, matching this file's other boundary comparators
-    (e.g. test_alignment_confidence_at_the_trust_floor_is_trusted). Both sides
-    accept now; the boundary decides whether anything is DISCLOSED."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    assert _run_phase(c, 2, 2)["accepted"] is True
-    assert c.measure_ripple_reservation is None
-
-    fakes2 = FakeSeams()
-    fakes2.measure = lambda program: _measure_analysis(
-        program,
-        predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB + 0.01,
-    )
-    c2 = _conductor(fakes2)
-    _run_phase(c2, 1, 1)
-    verdict2 = _run_phase(c2, 2, 2)
-    assert verdict2["accepted"] is True
-    assert c2.measure_ripple_reservation is not None
-
-
-def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
-    """A re-measured MEASURE that comes back clean CLEARS the reservation.
-
-    The reservation describes the ACCEPTED capture, so it must not outlive the
-    capture it was about — the same reset-at-the-top-of-``_measure_verdict``
-    lifecycle ``_last_measure_guard`` has. Pinned because the failure mode is
-    silent: a stale reservation would caption a clean measurement with a
-    caveat about a capture the household already replaced."""
-    fakes = FakeSeams()
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=27.316,
-    )
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    assert c.measure_ripple_reservation is not None
-
-    fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=9.0,
-    )
-    c._rearm_measure_after_transient(refusal_copy.PhaseVerdict(False, next="retake_same"))
-    _run_phase(c, 2, 2)
-    assert c.measure_ripple_reservation is None
 
 
 def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target():
@@ -609,7 +187,7 @@ def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target(
     c = _conductor(FakeSeams())
     expected = (0.0, 400.0)
     assert alignment_delay_search_bounds_us(_preset()) == expected
-    assert c._measure_priors().alignment_delay_bounds_us == expected
+    assert c.measure_priors().alignment_delay_bounds_us == expected
 
     raw = _two_way_preset()
     raw["crossover_regions"][0]["delay_target_driver"] = None
@@ -634,11 +212,14 @@ def test_measure_priors_carry_the_applied_alignment_and_no_other_phase_does(
     )
     c = _conductor(FakeSeams())
 
-    applied = c._measure_priors().applied_alignment
+    applied = c.measure_priors().applied_alignment
     assert applied is not None and applied.delay_us == pytest.approx(59.6)
     for factory in (
-        c._check_priors, c._verify_priors, c._cloud_priors,
-        c._lateral_priors, c._entry_baseline_priors,
+        c.check_priors,
+        c._verify_priors,
+        c._cloud_priors,
+        c.lateral_priors,
+        c._entry_baseline_priors,
     ):
         assert factory().applied_alignment is None, factory.__name__
 
@@ -656,7 +237,7 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     )
     supplied["woofer"].clear()
     supplied["tweeter"] = [woofer]
-    priors = c._measure_priors()
+    priors = c.measure_priors()
     # The measurement kernel may not import this package, so priors carry an
     # evaluated `freqs -> complex response` rather than CrossoverSections. The
     # transfer must still come from the sections the conductor copied at
@@ -684,7 +265,7 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     assert required is not None and required.keys() == {"woofer", "tweeter"}
     for role, (lo, hi) in required.items():
         assert lo <= overlap[0] and hi >= overlap[1], role
-    legacy = _conductor(FakeSeams())._measure_priors()
+    legacy = _conductor(FakeSeams()).measure_priors()
     assert legacy.measurement_protection_response_by_role is None
     assert legacy.configured_crossover_response_by_role is None
     assert legacy.configured_polarity_sign_by_role is None
@@ -725,7 +306,7 @@ def test_conductor_threads_geometry_and_result_to_analyze():
     c = _conductor(fakes)  # driver_spacing_m=0.15
     result = _capture()
     c.authorize_begin(1, 1)
-    c.consume_capture(1, 1, result)
+    _run_phase(c, 1, 1, result)
     assert len(fakes.analyzed) == 1
     phase, _prog_phase, seen_result, _priors, geometry = fakes.analyzed[0]
     assert phase == PHASE_CHECK
