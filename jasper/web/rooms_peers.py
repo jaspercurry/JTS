@@ -14,7 +14,6 @@ from __future__ import annotations
 import concurrent.futures
 import ipaddress
 import json
-import re
 import socket
 import threading
 import time
@@ -32,7 +31,7 @@ from ..platform.control_client import (
     peer_detail,
     post as control_post,
 )
-from ..net.mdns import browse_once
+from ..net.mdns import browse_once, instance_label
 from ..multiroom.config import is_private_or_loopback_ipv4
 from ..multiroom.state import (
     GROUPING_READINESS_KEY,
@@ -118,17 +117,6 @@ def _leader_handle() -> str:
 # ----------------------------------------------------------------------
 
 
-def _strip_service_type(full_name: str) -> str:
-    """Turn a full mDNS instance name into a display label: drop the trailing
-    service-type suffix and unescape avahi's `\\032` space encoding. Mirrors
-    jasper.identity.speaker_name_discovery._strip_service_type."""
-    name = full_name.rstrip(".")
-    suffix = "." + CONTROL_MDNS_TYPE.rstrip(".")
-    if name.endswith(suffix):
-        name = name[: -len(suffix)]
-    return name.replace("\\032", " ").strip()
-
-
 def _hostname_label(server: str) -> str:
     """A clean speaker label from an mDNS SRV target host, e.g.
     `"jts3.local."` -> `"jts3"`."""
@@ -136,27 +124,6 @@ def _hostname_label(server: str) -> str:
     if host.endswith(".local"):
         host = host[: -len(".local")]
     return host.strip()
-
-
-_LOCAL_HOST_LABEL_RE = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
-)
-
-
-def _local_web_host(hostname: str) -> str:
-    """Browser-safe management host for a discovered peer.
-
-    Click-through URLs use the stable mDNS hostname so DHCP churn does not
-    make the UI teach people raw IPs; the peer `address` stays the IP the
-    server-side fan-out passes through the SSRF guard. An empty or invalid
-    hostname fails closed to no link.
-    """
-    host = (hostname or "").strip().rstrip(".")
-    if host.endswith(".local"):
-        host = host[: -len(".local")]
-    if not _LOCAL_HOST_LABEL_RE.match(host):
-        return ""
-    return f"{host}.local"
 
 
 def _peer_label(props: dict, server: str, full_name: str) -> str:
@@ -172,7 +139,7 @@ def _peer_label(props: dict, server: str, full_name: str) -> str:
     host = _hostname_label(server)
     if host:
         return host
-    return _strip_service_type(full_name)
+    return instance_label(full_name, CONTROL_MDNS_TYPE)
 
 
 def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:

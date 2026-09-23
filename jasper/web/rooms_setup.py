@@ -66,6 +66,7 @@ from ._common import (
     begin_request,
     dispatch_get,
     dispatch_post,
+    local_web_host,
     read_json_body,
     restart_voice_daemon,
     restart_systemd_units,
@@ -182,7 +183,7 @@ def _build_rooms_payload() -> dict:
         peer_host = (s.get("hostname") or "").casefold()
         if self_hostname_label and peer_host == self_hostname_label:
             continue
-        web_host = rooms_peers._local_web_host(s.get("hostname") or "")
+        web_host = local_web_host(s.get("hostname") or "")
         peers.append(
             {
                 "name": s.get("name") or "",
