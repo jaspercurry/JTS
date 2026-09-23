@@ -14,6 +14,7 @@ from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 import numpy as np
 
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
+from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
 from jasper.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
@@ -156,20 +157,6 @@ def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:
     return read
 
 
-def _deviation(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
-    """One deviation reduced to scalars, and the frequency the worst bin sits
-    at. The shared reduction, so a candidate's own departure from level and a
-    pair's departure from each other are the same numbers."""
-    worst = int(np.argmax(np.abs(deviation_db)))
-    return {
-        "bins": int(deviation_db.size),
-        "mean_abs_db": float(np.mean(np.abs(deviation_db))),
-        "max_abs_db": float(abs(deviation_db[worst])),
-        "max_abs_hz": float(freqs_hz[worst]),
-        "rms_db": float(np.sqrt(np.mean(deviation_db**2))),
-    }
-
-
 def _own_deviation(curve: _Curve, band_hz: tuple[float, float]) -> dict[str, Any] | None:
     """This candidate's curve as its deviation from its OWN median level: a
     level difference between two applied graphs must not read as a shape one."""
@@ -181,7 +168,7 @@ def _own_deviation(curve: _Curve, band_hz: tuple[float, float]) -> dict[str, Any
     return {
         "take_path": curve.take_path,
         "median_db": median_db,
-        **_deviation(freqs_hz, magnitude_db - median_db),
+        **deviation_summary(freqs_hz, magnitude_db - median_db),
     }
 
 
@@ -199,16 +186,12 @@ def _pair_delta(
     ``median_db`` values differenced -- those are each over that curve's own
     bins, and the delta needs one grid.
     """
-    mask = (a.freqs_hz >= band_hz[0]) & (a.freqs_hz <= band_hz[1])
-    if not np.any(mask):
+    difference = curve_difference(a.freqs_hz, a.magnitude_db, b.freqs_hz, b.magnitude_db, band_hz=band_hz)
+    if difference is None:
         return None
-    freqs_hz = a.freqs_hz[mask]
-    a_db = a.magnitude_db[mask]
-    b_db = np.interp(freqs_hz, b.freqs_hz, b.magnitude_db)
-    offset_db = float(np.median(a_db) - np.median(b_db))
     return {
-        "level_offset_db": offset_db,
-        **_deviation(freqs_hz, (a_db - offset_db) - b_db),
+        "level_offset_db": difference.level_offset_db,
+        **deviation_summary(difference.freqs_hz, difference.delta_db),
     }
 
 

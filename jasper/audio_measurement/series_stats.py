@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Level, tilt and flatness statistics for measured response curves."""
+"""Level, tilt, flatness and difference statistics for measured response curves."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
@@ -19,6 +20,53 @@ def power_mean_db(values_db: np.ndarray) -> float:
     average of dB values."""
     linear = np.power(10.0, values_db / 10.0)
     return float(10.0 * np.log10(np.mean(linear)))
+
+
+def deviation_summary(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
+    """One deviation curve as scalars, with the frequency its worst bin sits at."""
+    worst = int(np.argmax(np.abs(deviation_db)))
+    return {
+        "bins": int(deviation_db.size),
+        "mean_abs_db": float(np.mean(np.abs(deviation_db))),
+        "max_abs_db": float(abs(deviation_db[worst])),
+        "max_abs_hz": float(freqs_hz[worst]),
+        "rms_db": float(np.sqrt(np.mean(deviation_db**2))),
+    }
+
+
+@dataclass(frozen=True)
+class CurveDifference:
+    """``a - b`` on ``a``'s grid, after ``level_offset_db`` came off ``a``."""
+
+    freqs_hz: np.ndarray
+    a_db: np.ndarray
+    b_db: np.ndarray
+    level_offset_db: float
+
+    @property
+    def delta_db(self) -> np.ndarray:
+        return (self.a_db - self.level_offset_db) - self.b_db
+
+
+def curve_difference(
+    freqs_a_hz: np.ndarray, a_db: np.ndarray, freqs_b_hz: np.ndarray, b_db: np.ndarray, *,
+    band_hz: tuple[float, float], remove_level: bool = True,
+) -> CurveDifference | None:
+    """Two magnitude curves differenced over ``band_hz``: ``b`` read onto ``a``'s grid.
+
+    With ``remove_level`` each curve's median over the band comes off before
+    subtracting, and the offset is published: two graphs, or a model with no
+    absolute reference, differ by a level that is not a difference in shape.
+    ``None`` when ``a`` has no bin in the band.
+    """
+    freqs = np.asarray(freqs_a_hz, dtype=float)
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    if not np.any(mask):
+        return None
+    a = np.asarray(a_db, dtype=float)[mask]
+    b = np.interp(freqs[mask], np.asarray(freqs_b_hz, dtype=float), np.asarray(b_db, dtype=float))
+    offset = float(np.median(a) - np.median(b)) if remove_level else 0.0
+    return CurveDifference(freqs[mask], a, b, offset)
 
 
 def series_stats(

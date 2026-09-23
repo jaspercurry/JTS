@@ -70,6 +70,11 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,), schema="jts_directivity/1"),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/1"),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>"), schema=FREQUENCY_VIEW_SCHEMA),
+    "impulse": ViewArtifact("impulse.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_impulse/1"),
+    "group-delay": ViewArtifact("group_delay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_group_delay/1"),
+    "compare": ViewArtifact("compare.json", (
+        "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
+    ), schema="jts_compare/1"),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA),
     # The batch spans one set per played candidate, so this view reads the
     # round rather than a set.

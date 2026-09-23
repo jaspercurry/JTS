@@ -130,27 +130,31 @@ def smoothed_curve(
     return curve - float(np.median(curve[band]))
 
 
-def _hold_band_edges(freqs: np.ndarray, logmag: np.ndarray) -> np.ndarray:
+def _hold_band_edges(
+    freqs: np.ndarray, logmag: np.ndarray,
+    edge_band_hz: tuple[float, float] = (EDGE_LO_HZ, EDGE_HI_HZ),
+) -> np.ndarray:
     """Blend out-of-band log-magnitude to the nearest in-band value."""
+    edge_lo, edge_hi = edge_band_hz
     out = logmag.copy()
-    lo_ref = float(np.median(logmag[(freqs >= EDGE_LO_HZ) & (freqs <= EDGE_LO_HZ * 1.3)]))
+    lo_ref = float(np.median(logmag[(freqs >= edge_lo) & (freqs <= edge_lo * 1.3)]))
     hi_ref = float(
-        np.median(logmag[(freqs >= EDGE_HI_HZ / 1.3) & (freqs <= EDGE_HI_HZ)])
+        np.median(logmag[(freqs >= edge_hi / 1.3) & (freqs <= edge_hi)])
     )
 
-    lo_start = EDGE_LO_HZ * 2 ** -EDGE_BLEND_OCT
+    lo_start = edge_lo * 2 ** -EDGE_BLEND_OCT
     out[freqs <= lo_start] = lo_ref
-    ramp = (freqs > lo_start) & (freqs < EDGE_LO_HZ)
+    ramp = (freqs > lo_start) & (freqs < edge_lo)
     if ramp.any():
         t = np.log2(freqs[ramp] / lo_start) / EDGE_BLEND_OCT
         w = 0.5 - 0.5 * np.cos(np.pi * t)
         out[ramp] = (1 - w) * lo_ref + w * logmag[ramp]
 
-    hi_end = EDGE_HI_HZ * 2 ** EDGE_BLEND_OCT
+    hi_end = edge_hi * 2 ** EDGE_BLEND_OCT
     out[freqs >= hi_end] = hi_ref
-    ramp = (freqs > EDGE_HI_HZ) & (freqs < hi_end)
+    ramp = (freqs > edge_hi) & (freqs < hi_end)
     if ramp.any():
-        t = np.log2(freqs[ramp] / EDGE_HI_HZ) / EDGE_BLEND_OCT
+        t = np.log2(freqs[ramp] / edge_hi) / EDGE_BLEND_OCT
         w = 0.5 - 0.5 * np.cos(np.pi * t)
         out[ramp] = (1 - w) * logmag[ramp] + w * hi_ref
     return out
@@ -234,6 +238,7 @@ def excess_group_delay(
     *,
     trusted_band_hz: tuple[float, float],
     fit_band_hz: tuple[float, float] = (400.0, 12000.0),
+    edge_band_hz: tuple[float, float] = (EDGE_LO_HZ, EDGE_HI_HZ),
 ) -> ExcessPhase:
     """Excess group delay of a gated response, in microseconds.
 
@@ -260,7 +265,7 @@ def excess_group_delay(
     tau0 = -float(np.polyfit(omega[fit], phase[fit], 1)[0])
     rotated = spectrum * np.exp(1j * omega * tau0)
 
-    first = max(1, int(np.searchsorted(freqs, EDGE_LO_HZ * 2 ** -EDGE_BLEND_OCT / 2)))
+    first = max(1, int(np.searchsorted(freqs, edge_band_hz[0] * 2 ** -EDGE_BLEND_OCT / 2)))
     smoothed = rotated.copy()
     smoothed[first:] = _complex_smooth(
         freqs[first:], rotated[first:], COMPLEX_SMOOTH_OCT
@@ -270,7 +275,7 @@ def excess_group_delay(
     magnitude = np.abs(smoothed)
     reference = float(np.max(magnitude[in_band])) if in_band.any() else 0.0
     magnitude = np.maximum(magnitude, reference * 10 ** (-LOGMAG_FLOOR_DB / 20))
-    logmag = _hold_band_edges(freqs, np.log(magnitude))
+    logmag = _hold_band_edges(freqs, np.log(magnitude), edge_band_hz)
 
     excess = np.unwrap(np.angle(smoothed)) - minimum_phase(logmag)
     residual = np.polyfit(omega[fit], excess[fit], 1)

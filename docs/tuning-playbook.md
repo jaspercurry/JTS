@@ -28,6 +28,13 @@ Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
 the packet did not answer. Never recompute a number it prints.
 
+To look inside one take the way you would in REW, ask `impulse` (arrival,
+onset, noise, decay), `group-delay` (phase and group delay by octave, and the
+excess that EQ cannot remove) or `compare` (b minus a in dB: two takes, two
+roles of one take, or a `judge --preview --out` forecast against its trial).
+Each reads the take's kept impulse through the window its analysis used and
+names it in `parameters`. Timing compares only within one recording.
+
 ## What we are tuning for
 
 The goal is the listening position. Measure the speaker layer at the mark:
