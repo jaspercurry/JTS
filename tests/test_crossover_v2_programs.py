@@ -66,7 +66,6 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
-from jasper.cli.measure import _bind_compose
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -229,24 +228,6 @@ def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroo
     for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
         backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
         assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
-
-
-@pytest.mark.parametrize("stimulus_dbfs", [None, -18.0])
-def test_cli_blind_measure_gains_include_only_positive_scope_backoff(monkeypatch, stimulus_dbfs):
-    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
-    box = SimpleNamespace(
-        roles_bands=excitation.roles, caps_dbfs=excitation.caps_dbfs,
-        session_volume_db=excitation.session_volume_db, fc_hz=excitation.fc_hz,
-        sweep_duration_limits_s={}, topology=None, safety_profile={}, role_targets={}, declared_sensitivities={})
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
-                        lambda **kw: kw["program_for_spec"])
-    compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
-                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None, level_reference_yaml="reference"))
-    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
-    reference = compose(spec, stimulus_dbfs)
-    played = compose(replace(spec, scope_gains_db={"woofer": -2.0, "tweeter": 21.3}), stimulus_dbfs)
-    for before, after in zip(reference.stimulus_segments(), played.stimulus_segments()):
-        assert before.gain_db - after.gain_db == pytest.approx(21.3 if before.role == "tweeter" else 0.0)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):

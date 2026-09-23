@@ -86,13 +86,12 @@ async def test_a_banked_take_is_findable_by(store, field, value):
 
 
 async def test_the_candidate_axis_separates_two_variants_of_one_pose(store):
-    """The axis ``jasper-measure`` banks FOR — two takes, one pose, one label apart.
+    """The candidate axis: two takes, one pose, one label apart.
 
-    The door refuses to bank a variant take (an inverted branch, a delayed one,
-    a level match) without a ``--candidate-id``, and this is why: the two takes
-    below differ in nothing a reader can otherwise select on, so a filter that
-    ignored the label would return both and the comparison the variant was
-    measured for could not be set up at all.
+    A one-spot compare (``jasper-round run --poses 0 --candidates``) banks takes
+    like the two below, which differ in nothing a reader can otherwise select
+    on, so a filter that ignored the label would return both and the comparison
+    could not be set up at all.
     """
     wanted = await store.bank(_builder_take(
         candidate_id="null_a1", take_id="candidate_00_a00",

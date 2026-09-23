@@ -150,24 +150,6 @@ def test_manifest_banks_resolved_measurement_purpose(purpose, record_fields, exp
     assert {key: records.banked[0][key] for key in expected} == expected
 
 
-def test_measure_specs_plan_and_bank_speaker_purpose():
-    async def run():
-        fakes = FakeSeams()
-        manifest = RunManifest("run", _Store(fakes.records))
-        async with open_session(replace(fakes, records=manifest),
-                                allocate_take_id=manifest.allocate_take_id) as (session, _):
-            result = await plan_run.run_specs(
-                (ac.design_axis_spec(_walk([0])),), session=session, manifest=manifest,
-                analyze=_analysis, aborts=_ABORTS,
-            )
-        return result, fakes
-
-    result, fakes = asyncio.run(run())
-
-    assert result.planned[0]["purpose"] == "speaker"
-    assert fakes.records.banked[0]["measurement_purpose"] == "speaker"
-
-
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
 @pytest.mark.parametrize("repeats", [1, 2, 3])
 def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidates, repeats):

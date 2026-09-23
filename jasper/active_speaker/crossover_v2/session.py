@@ -219,7 +219,6 @@ class TuningSession:
     _volume_held: bool = field(default=False, init=False)
     _spent: bool = field(default=False, init=False)
     _graph_fingerprint: str = field(default="", init=False)
-    last_playback: PlaybackObservation = field(default_factory=PlaybackObservation, init=False)
     _banked: list[str] = field(default_factory=list, init=False)
     # ---------------------------------------------------------------- lifetime
 
@@ -473,7 +472,6 @@ class TuningSession:
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
         """Prove this take's graph and level, then play and bank one stimulus."""
-        self.last_playback = PlaybackObservation(emission="not_started")
         self.seams.graph.select_scope(
             spec.graph_scope, spec.candidate_id, branch_channels_for(spec),
         )
@@ -493,14 +491,12 @@ class TuningSession:
                 stimulus_dbfs=stimulus_dbfs,
             )
         except (PlaybackInterrupted, StimulusCaptureStopped) as exc:
-            self.last_playback = exc.playback
             if isinstance(exc, StimulusCaptureStopped) or not exc.wav_path:
                 raise
             interruption = exc
             outcome = PlaybackOutcome(
                 STAGE_RESTORE, wav_path=exc.wav_path, playback=exc.playback,
             )
-        self.last_playback = outcome.playback
         record_id = ""
         incident = outcome.incident
         if outcome.played:

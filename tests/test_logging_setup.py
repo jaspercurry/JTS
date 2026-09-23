@@ -261,7 +261,7 @@ def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
 
 # The parked tuning zone (#4193 lane brief): these keep their own
 # `basicConfig` because no file in the measurement/tuning program is edited
-# without an owner-ticked row, and `cli/measure.py` is frozen until #4138
+# without an owner-ticked row, and the tuning zone is frozen until #4138
 # merges. Their journals are NOT redacted yet — a listed file is a known
 # gap, not an endorsement.
 # Removal condition: adopt each of these when the tuning zone reopens
@@ -270,7 +270,6 @@ _ALLOWLIST = frozenset({
     "jasper/cli/active_speaker_emit_bench.py",
     "jasper/cli/angle_capture.py",
     "jasper/cli/audition.py",
-    "jasper/cli/measure.py",
     "jasper/cli/seat_level.py",
     "jasper/web/correction_setup.py",
 })

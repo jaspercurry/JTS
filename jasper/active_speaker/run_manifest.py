@@ -16,7 +16,6 @@ from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.refusal_copy import TakeVerdict
-from .crossover_v2.session import MeasureOutcome
 from .crossover_v2.session_seams import RecordStore
 from .measurement_programs import resolved_measurement_purpose
 
@@ -81,7 +80,6 @@ class RunManifest:
     level: dict[str, Any] = field(default_factory=dict)
     planned: list[dict[str, Any]] = field(default_factory=list)
     specs: dict[int, MeasureSpec] = field(default_factory=dict, repr=False)
-    outcomes: list[tuple[MeasureOutcome, str]] = field(default_factory=list, repr=False)
     mic_moves: int = 0
     spl_monitor: str = ""
     wall_s: list[float] = field(default_factory=list)

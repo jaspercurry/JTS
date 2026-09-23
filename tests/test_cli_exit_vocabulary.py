@@ -175,9 +175,6 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.angle_capture": lambda tmp, mp: [
         "serve", "--attest-rig-clear", "--hostname", "jts.local", "--settle-s", "-1",
     ],
-    "jasper.cli.measure": lambda tmp, mp: [
-        "--kind", "baseline", "--specs", str(tmp / "absent-specs.json"),
-    ],
     "jasper.cli.crossover_prescriber": lambda tmp, mp: [
         "contract", "--round", str(tmp / "absent-round"),
     ],

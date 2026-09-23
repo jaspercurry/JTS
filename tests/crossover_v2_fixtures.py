@@ -95,6 +95,9 @@ FC_HZ = 1600.0
 
 SESSION_VOLUME_DB = -20.0
 
+#: The fader a measurement door must give back; unlike SESSION_VOLUME_DB, so the give-back shows.
+HOUSEHOLD_DB = -14.0
+
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
 
 def plan_context() -> SimpleNamespace:

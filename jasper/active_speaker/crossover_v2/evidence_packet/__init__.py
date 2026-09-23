@@ -176,9 +176,8 @@ def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
         return _absence("source_absent", False, "declared_geometry")
     return geometry.to_dict()
 
-#: Why there is no block at all: no banked take names a candidate. The
-#: ``jasper-measure`` door refuses to bank a variant take without one, so this
-#: is a round that cycled no candidates rather than one that lost their labels.
+#: No banked take names a candidate. A candidate scope refuses a spec without
+#: one (``MeasureSpec``), so the round cycled no candidates; none lost a label.
 NO_CANDIDATE_TAKES = "no_candidate_takes"
 
 
