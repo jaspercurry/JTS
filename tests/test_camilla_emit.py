@@ -82,7 +82,7 @@ def test_peaking_biquad_matches_correction_and_sound():
 def test_linkwitz_riley_matches_active_speaker(
     name, highpass, freq_hz, order, kind, freq_str
 ):
-    # active_speaker._emit_linkwitz_riley_filter — native BiquadCombo, both slopes.
+    # Native BiquadCombo, both slopes.
     assert emit_linkwitz_riley(
         name, highpass=highpass, freq_hz=freq_hz, order=order
     ) == [

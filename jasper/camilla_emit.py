@@ -152,10 +152,7 @@ def emit_linkwitz_riley(
 
     This is CamillaDSP's *native* LR crossover — an order-N
     ``LinkwitzRileyLowpass`` / ``LinkwitzRileyHighpass``. An LR4 (the
-    standard sub/woofer slope) is ``order=4``. Reproduces
-    `active_speaker._emit_linkwitz_riley_filter` byte-for-byte; it is
-    the canonical spelling that multi-room's crossover now uses instead
-    of two hand-cascaded ``Biquad`` sections.
+    standard sub/woofer slope) is ``order=4``.
     """
     kind = "LinkwitzRileyHighpass" if highpass else "LinkwitzRileyLowpass"
     return [
