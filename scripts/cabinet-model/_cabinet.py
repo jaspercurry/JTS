@@ -4,8 +4,8 @@
 """Shared model for the cabinet-model tools (see README.md in this folder).
 
 Woofer pair per unit front drive:  P(theta) = A_f(theta) + r(f) * A_r(theta)
-  A_i = measured near-field (minimum phase, raw driver) x BEM transfer (10 m far field over the
-        near field at the mic spot, 10 m delay removed)
+  A_i = measured near-field (minimum phase, raw driver) x BEM transfer (far field at the polar
+        radius over the near field at the mic spot, propagation delay removed)
   r   = electrical rear/front ratio of the rear stage
   v_i = cone velocity on A's scale (the BEM sources move at 1 m/s), for cone travel
 Seat: a listener in front of the cabinet face at a bearing; the wall behind the cabinet is an
@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import yaml
+from scipy.optimize import least_squares
 
-from jasper.active_speaker.branch_chain import camilla_filter_response, rear_stage_response
+from jasper.active_speaker.branch_chain import rear_stage_response
+from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.audio_measurement.excess_phase import minimum_phase
 
 C = 343.0
@@ -62,13 +63,16 @@ class Cabinet:
         t = np.load(transfer)
         nf = np.load(nearfield)
         self.grid, self.angles = grid, t["angles_deg"]
-        self.front_z, self.depth = float(t["front_z_m"]), float(t["depth_m"])
+        self.front_z, self.depth, self.radius = float(t["front_z_m"]), float(t["depth_m"]), float(t["radius_m"])
         k = 2 * np.pi * t["f"] / C
+        below = grid < t["f"][0]
         self.A, self.v = {}, {}
         for w in ("front", "rear"):
-            trans = np.conj(t[f"far_{w}"] / t[f"nf_{w}"][:, None]) * np.exp(1j * k * t["radius_m"])[:, None]
+            trans = np.conj(t[f"far_{w}"] / t[f"nf_{w}"][:, None]) * np.exp(1j * k * self.radius)[:, None]
             near = min_phase(nf["freqs"], nf[f"{w}_raw_db"], grid)
-            self.v[w] = near / interp_complex(t["f"], np.conj(t[f"nf_{w}"]), grid)
+            p_nf = interp_complex(t["f"], np.conj(t[f"nf_{w}"]), grid)
+            p_nf[below] *= grid[below] / t["f"][0]  # near-field pressure per m/s rises with f below the solve
+            self.v[w] = near / p_nf
             self.A[w] = near[:, None] * np.stack([interp_complex(t["f"], trans[:, a], grid)
                                                   for a in range(len(self.angles))], axis=1)
 
@@ -91,38 +95,35 @@ class Cabinet:
         return self.at_angle(r, deg) + reflection * mirrored * (listener_m / l_img) * np.exp(-1j * k * (l_img - listener_m))
 
 
-def _chain(cfg: dict[str, Any], channel: int, prefix: str, grid: np.ndarray) -> np.ndarray:
-    h = np.ones_like(grid, dtype=complex)
-    biquads = []
-    for step in cfg["pipeline"]:
-        if step["type"] != "Filter" or channel not in step["channels"]:
-            continue
-        for name in step["names"]:
-            if not name.startswith(prefix):
-                continue
-            spec, p = cfg["filters"][name], cfg["filters"][name].get("parameters", {})
-            if spec["type"] == "Gain":
-                h = h * 10 ** (p["gain"] / 20) * (-1 if p.get("inverted") else 1)
-            elif spec["type"] == "Delay":
-                h = h * np.exp(-2j * np.pi * grid * p["delay"] / 1000)
-            elif spec["type"] in ("Biquad", "BiquadCombo"):
-                biquads.append(spec)
-    return h * (camilla_filter_response(biquads, grid) if biquads else 1)
-
-
-def rear_ratio(dsp: Path, grid: np.ndarray, *, front: int = 0, rear: int = 2) -> tuple[np.ndarray, np.ndarray]:
-    """(rear/front electrical ratio, front chain) of the rear stage in a CamillaDSP YAML graph
-    (the emitted rear_out2_* chains) or in a rear-calibration JSON or prescription document."""
+def rear_ratio(dsp: Path, grid: np.ndarray, *, front: int = 0, rear: int = 2) -> np.ndarray:
+    """Rear/front electrical ratio of a CamillaDSP YAML graph (woofer outputs `front` and `rear`,
+    program centre on both inputs, dynamic bass at rest) or of the rear stage in a rear-calibration
+    JSON or prescription document (modelled unmuted: the design, not its on/off switch)."""
     if dsp.suffix == ".json":
         document = json.loads(dsp.read_text())
-        document = document.get("sections", {}).get("rear_calibration", document)
+        if "sections" in document:
+            if "rear_calibration" not in document["sections"]:
+                raise SystemExit(f"{dsp}: the prescription has no rear_calibration section")
+            document = document["sections"]["rear_calibration"]
         summed, front_h = rear_stage_response({**document, "rear_muted": False}, grid)
-        return summed / front_h, front_h
-    cfg = yaml.safe_load(dsp.read_text())
-    front_h = _chain(cfg, front, "rear_out2_front", grid)
-    rear_h = (_chain(cfg, rear, "rear_out2_bass", grid) + _chain(cfg, rear + 1, "rear_out2_cancellation", grid)) \
-        * _chain(cfg, rear, "rear_out2_output", grid)
-    return rear_h / front_h, front_h
+        return summed / front_h
+    out = complex_channel_transfer(yaml.safe_load(dsp.read_text()), grid, input_weights={0: 1.0, 1: 1.0},
+                                   output_channels={"front": front, "rear": rear},
+                                   allow_limiter_passthrough=True, dynamic_bass_at_rest=True)
+    return out["rear"] / out["front"]
+
+
+def sealed_fit(freqs: np.ndarray, y_db: np.ndarray, lo: float, hi: float) -> tuple[float, float, float]:
+    """2nd-order high-pass fit of a level curve over lo..hi Hz: (corner Hz, Q, rms dB)."""
+    sel = (freqs >= lo) & (freqs <= hi)
+
+    def model(p):
+        s = 1j * freqs[sel] / p[1]
+        return p[0] + 20 * np.log10(np.abs(s * s / (s * s + s / p[2] + 1)))
+
+    fit = least_squares(lambda p: model(p) - y_db[sel], x0=(np.median(y_db[sel]), 70.0, 0.7),
+                        bounds=((-300, 20, 0.3), (300, 200, 3.0)))
+    return float(fit.x[1]), float(fit.x[2]), float(np.sqrt(np.mean(fit.fun ** 2)))
 
 
 def seat_deviation(y_db: np.ndarray, grid: np.ndarray, lo: float = 45.0, hi: float = 650.0) -> np.ndarray:

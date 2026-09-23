@@ -6,8 +6,10 @@
 
 Reads a completed case of the CAD repo's Boundary Lab study (read-only), integrates the solver's
 own surface solution (Kirchhoff-Helmholtz) to the microphone spots on each woofer's axis, and
-saves the pressure there and on the case's 10 m horizontal polar. Two gates run first:
-  1. the integral must reproduce the solver's own 10 m probes (relative error < 1e-3);
+saves the pressure there and on the case's horizontal polar. The case's woofers face +z (front)
+and -z (rear), and its polar origin sits on the cabinet's front face (the seat model's
+reference). Two gates run first:
+  1. the integral must reproduce the solver's own polar probes (relative error < 1e-3);
   2. with --measured-step, the model's gap -> gap+step level change must match the measured
      one within 0.2 dB (warns otherwise).
 
@@ -80,6 +82,13 @@ def load(case: Path, run: str, max_hz: float):
     return pts, tri, tags, sorted(rows, key=lambda r: r["f"])
 
 
+def measured_step(text: str) -> tuple[str, float]:
+    woofer, _, value = text.partition("=")
+    if woofer not in ("front", "rear"):
+        raise argparse.ArgumentTypeError(f"{text!r}: expected front=DB or rear=DB")
+    return woofer, float(value)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", type=Path, required=True, help="solved Boundary Lab case folder")
@@ -89,7 +98,8 @@ def main() -> int:
                     help="mic tip to dust-cap apex; the E150HE-44 surround top sits 14.56 mm above the apex")
     ap.add_argument("--step-m", type=float, default=0.015, help="second spot this much farther out")
     ap.add_argument("--max-hz", type=float, default=1000.0)
-    ap.add_argument("--measured-step", action="append", default=[], metavar="WOOFER=DB")
+    ap.add_argument("--measured-step", action="append", default=[], type=measured_step, metavar="WOOFER=DB",
+                    help="nearfield-analyze.py --compare's printed step, e.g. front=-2.37")
     args = ap.parse_args()
 
     pts, tri, tags, rows = load(args.case, args.run, args.max_hz)
@@ -108,14 +118,17 @@ def main() -> int:
     depth = json.loads((args.case.parent / "source-facts.json").read_text())["cabinet"]["depth"] / 1000
 
     def apex(name: str, sign: float) -> np.ndarray:
-        """Axial tip of a woofer's dust cap: the source node nearest its axis, outermost along z."""
+        """Axial tip of a woofer's dust cap: on the axis through its source's centre (the woofers face
+        +z and -z), the source node nearest that axis, outermost along z."""
         nodes = pts[np.unique(tri[np.isin(tags, [groups[b] for b in comps[name]])])]
-        axial = nodes[np.hypot(nodes[:, 0], nodes[:, 1]) <= np.hypot(nodes[:, 0], nodes[:, 1]).min() + 1e-6]
-        return np.array([0.0, 0.0, axial[:, 2].max() if sign > 0 else axial[:, 2].min()])
+        centre = (nodes[:, :2].min(axis=0) + nodes[:, :2].max(axis=0)) / 2
+        off_axis = np.hypot(*(nodes[:, :2] - centre).T)
+        axial = nodes[off_axis <= off_axis.min() + 1e-6]
+        return np.array([*centre, axial[:, 2].max() if sign > 0 else axial[:, 2].min()])
 
     spots = {"front": (apex("front", 1), 1.0), "rear": (apex("rear", -1), -1.0)}
     exc_index = {e.split(":")[1]: i for i, e in enumerate(rows[0]["exc"])}
-    worst = 0.0
+    errors = []
     out = {k: [] for k in ("f", "nf_front", "nf_rear", "nf2_front", "nf2_rear", "far_front", "far_rear")}
     for row in rows:
         k = 2 * np.pi * row["f"] / C
@@ -123,7 +136,7 @@ def main() -> int:
         for idx in (0, len(ang) // 2):
             ref = row["acoustic:pressure:probe:horizontal"][:, idx]
             got = kh(probes[idx], k, xyz, area, normal, size, pn, qn)
-            worst = max(worst, float(np.max(np.abs(got - ref) / np.abs(ref))))
+            errors.append(np.max(np.abs(got - ref) / np.abs(ref)))
         out["f"].append(row["f"])
         for w, (tip, sign) in spots.items():
             e = exc_index[w]
@@ -132,22 +145,24 @@ def main() -> int:
             out[f"nf_{w}"].append(near[0])
             out[f"nf2_{w}"].append(near[1])
             out[f"far_{w}"].append(row["acoustic:pressure:probe:horizontal"][e])
+    worst = float(np.max(errors))
     print(f"gate 1: surface integral vs solver probes, max relative error {worst:.1e}")
-    if worst > 1e-3:
+    if not worst <= 1e-3:
         print("FAIL: the integral does not reproduce the solver; check the case and its normals", file=sys.stderr)
         return 1
-    measured = dict(item.split("=") for item in args.measured_step)
+    measured = dict(args.measured_step)
     f = np.array(out["f"])
     band = (f >= 35) & (f <= 400)
     for w in ("front", "rear"):
         step = 20 * np.log10(np.abs(np.array(out[f"nf2_{w}"]) / np.array(out[f"nf_{w}"])))
         line = f"gate 2: {w} {args.gap_m*1000:.1f} -> {(args.gap_m+args.step_m)*1000:.1f} mm model {np.mean(step[band]):+.2f} dB"
         if w in measured:
-            miss = abs(np.mean(step[band]) - float(measured[w]))
-            line += f", measured {float(measured[w]):+.2f} dB ({'ok' if miss <= 0.2 else 'MISS > 0.2 dB'})"
+            miss = abs(np.mean(step[band]) - measured[w])
+            line += f", measured {measured[w]:+.2f} dB ({'ok' if miss <= 0.2 else 'MISS > 0.2 dB'})"
         print(line)
-    np.savez(args.out, radius_m=radius, angles_deg=np.array(obs["angles_deg"]), front_z_m=origin[2], depth_m=depth,
-             **{k: np.array(v) for k, v in out.items()})
+    with open(args.out, "wb") as fh:
+        np.savez(fh, radius_m=radius, angles_deg=np.array(obs["angles_deg"]), front_z_m=origin[2], depth_m=depth,
+                 **{k: np.array(v) for k, v in out.items() if not k.startswith("nf2_")})
     print(f"saved {args.out}")
     return 0
 

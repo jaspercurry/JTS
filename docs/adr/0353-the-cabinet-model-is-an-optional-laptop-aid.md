@@ -20,8 +20,9 @@
 - **Consequences:** Given Boundary Lab and a solved case of the cabinet, an agent can predict the
   woofer pair without a room and at the seat, and fit the rear stage for the seat; without them
   the toolbox works as before. The scripts call the repo's own evaluators
-  (`camilla_filter_response`, `rear_stage_response`, `expected_boost_db`, `fit-rear-branches.py`),
-  so they follow those owners, and they stop on a graph stage they do not model. Proof is
+  (`complex_channel_transfer`, `rear_stage_response`, `segment_stimulus`, `expected_boost_db`,
+  `fit-rear-branches.py`), so they follow those owners, and they stop on a graph stage they do
+  not model. A rear design they write keeps the front chain at 0 dB (ADR-0327). Proof is
   reproducing the 2026-09-23 run; tests pin that the scripts load, that Boundary Lab's phasors
   are read into the repo's phase convention, and where the wall notch falls. Rejected: a
   speaker-side BEM (1 GB of RAM, and the solve belongs with the CAD), and a new tuning program

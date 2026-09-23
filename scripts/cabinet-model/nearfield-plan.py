@@ -5,9 +5,10 @@
 """Stage a v5 plan for woofer near-field takes (a stopgap until #5684 ships a near-field program).
 
 Runs ON THE SPEAKER with its venv. It plays the rear/pair program (each woofer solo, then both,
-rear stage cleared, tweeter silent) at "close" (front woofer) and "behind" (rear woofer) poses.
-Those kinds keep the round out of the EQ page's rear-pair level match. Placement is confirmed
-from the CLI:
+tweeter silent) through the applied tune with its rear stage and bass boost cleared, so the takes
+see the raw woofers, at "close" (front woofer) and "behind" (rear woofer) poses. Those kinds keep
+the round out of the EQ page's rear-pair level match. Take each spacing as its own run, so every
+take records its true distance. Placement is confirmed from the CLI:
 
     scp scripts/cabinet-model/nearfield-plan.py pi@<speaker>:/tmp/
     ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/python /tmp/nearfield-plan.py --level-db -32 --woofer front > /tmp/nf.json'
@@ -18,8 +19,8 @@ from the CLI:
 The pair check refuses near-field takes (the far woofer is ~30 dB down at the mic) and asks
 again, so one `placed` can give two recordings. Each stays in the session as a numbered attempt;
 nearfield-analyze.py reads them. Level: the mic peaks ~33 dB above the 1 m level, so pick the
-fader from one measured take, never from the seat anchor (on jts3: -32 dB gave an 82.5 dB peak
-at 15 mm, under the unchanged 85 dB stop).
+fader from one measured take, never from the seat anchor (on jts3, with the bass boost on, -32 dB
+gave an 82.5 dB peak at 15 mm, under the unchanged 85 dB stop).
 """
 from __future__ import annotations
 
@@ -29,7 +30,9 @@ from dataclasses import replace
 
 from jasper.active_speaker.angle_capture import LevelPolicy, request_for_program
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
-from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
+from jasper.active_speaker.crossover_v2.prescription_document import (
+    DOCUMENT_KIND, judge_prescription_document, saved_base,
+)
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, ProgramPose, run_program
 from jasper.active_speaker.movers import MOVER_CONFIRMED
 
@@ -51,9 +54,14 @@ def main() -> None:
     chosen = tuple(poses[w] for w in (("front", "rear") if args.woofer == "both" else (args.woofer,)))
     program = replace(run_program("rear", "rear/pair_behind"), size="custom", layout="", poses=chosen,
                       mover=MOVER_CONFIRMED)
-    candidate = publish_authored_candidate(rear_cleared_candidate()).fingerprint
-    request = request_for_program(program, candidates=(candidate,), level=LevelPolicy(level_db=args.level_db),
-                                  level_source="operator", mover=MOVER_CONFIRMED)
+    base, base_profile = saved_base()
+    raw = judge_prescription_document(
+        {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved", "sections": {"rear_calibration": {}, "bass": {}},
+         "rationale": "Near-field takes of the raw woofers: no rear stage, no bass boost."},
+        base=base, base_profile=base_profile)
+    request = request_for_program(program, candidates=(publish_authored_candidate(raw).fingerprint,),
+                                  level=LevelPolicy(level_db=args.level_db), level_source="operator",
+                                  mover=MOVER_CONFIRMED)
     print(json.dumps(request.to_dict(), indent=1, sort_keys=True))
 
 
