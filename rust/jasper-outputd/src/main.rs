@@ -20,7 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use jasper_daemon::{ConfigClassError, DaemonHooks, NotifyState, EXIT_CONFIG};
+use jasper_daemon::{watchdog_interval, ConfigClassError, DaemonHooks, NotifyState, EXIT_CONFIG};
 use jasper_outputd::alsa_backend::{
     prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters, NegotiatedPcm,
     PairedCompositeSink,
@@ -1121,17 +1121,6 @@ fn spawn_state_server(
 
 fn period_duration(period_frames: u32) -> Duration {
     Duration::from_nanos((period_frames as u64) * 1_000_000_000u64 / (SAMPLE_RATE as u64))
-}
-
-fn watchdog_interval() -> Duration {
-    let watchdog_usec = std::env::var("WATCHDOG_USEC")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(30_000_000);
-    let thirds = Duration::from_micros(watchdog_usec / 3);
-    thirds
-        .min(Duration::from_secs(10))
-        .max(Duration::from_secs(1))
 }
 
 #[cfg(test)]
