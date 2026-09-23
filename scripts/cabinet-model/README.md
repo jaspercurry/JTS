@@ -19,8 +19,9 @@ document, which goes through the same judge → compose → apply gates as any o
   with `cabinet.depth`.
 - **A calibrated measurement mic on the speaker** (the runbook's entry contract), a ruler, and a
   quiet room. Turn off the fridge and the air conditioner for the low end.
-- **The repo venv on the laptop.** Run the tools from the repo root with `.venv/bin/python`.
-  `--png` needs matplotlib (the `plots` extra).
+- **The repo venv on the laptop.** Run the tools from the repo root with `.venv/bin/python`, and
+  keep every output under `captures/` (gitignored): the recordings are private and large. The
+  steps use `D=captures/<speaker>-nearfield-<date>`. `--png` needs matplotlib (the `plots` extra).
 
 ## Steps
 
@@ -37,9 +38,9 @@ document, which goes through the same judge → compose → apply gates as any o
    printed). Read the SNR per band (trust a band above ~20 dB) and the take spread.
 
    ```bash
-   mkdir -p nf_front && ssh pi@<speaker> "sudo sh -c 'cd \$(dirname \$(dirname \$(ls -d /var/lib/jasper/active_speaker/sessions/*/crossover_v2/<run>))) && tar -cf - summed crossover_v2/<run> evidence/v1/artifacts/crossover_v2/<run>'" | tar -x -C nf_front
-   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py nf_front nf_rear --out nearfield.npz
-   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py nf_front30 nf_rear30 --out nf30.npz --compare nearfield.npz
+   mkdir -p $D/nf_front && ssh pi@<speaker> "sudo sh -c 'cd \$(dirname \$(dirname \$(ls -d /var/lib/jasper/active_speaker/sessions/*/crossover_v2/<run>))) && tar -cf - summed crossover_v2/<run> evidence/v1/artifacts/crossover_v2/<run>'" | tar -x -C $D/nf_front
+   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py $D/nf_front $D/nf_rear --out $D/nearfield.npz
+   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py $D/nf_front30 $D/nf_rear30 --out $D/nf30.npz --compare $D/nearfield.npz
    ```
 
 3. **Transfer.** Integrate the solved case to the mic spots on each woofer's axis. Gate 1 (the
@@ -48,16 +49,16 @@ document, which goes through the same judge → compose → apply gates as any o
 
    ```bash
    .venv/bin/python scripts/cabinet-model/bem-transfer.py --case "$CAD/build/workbench/boundary_lab_mac/<case>" \
-       --out transfer.npz --measured-step front=-2.37 --measured-step rear=-2.27
+       --out $D/transfer.npz --measured-step front=-2.37 --measured-step rear=-2.27
    ```
 
 4. **Predict.** Compare the live graph with any rear-calibration or prescription document:
 
    ```bash
    graph=$(curl -s http://<speaker>:8780/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["audio"]["camilla_active_config_path"])')
-   ssh pi@<speaker> "sudo cat $graph" > live.yml
-   .venv/bin/python scripts/cabinet-model/predict.py --transfer transfer.npz --nearfield nearfield.npz \
-       --dsp live.yml --png live.png --xmax-mm 14.7
+   ssh pi@<speaker> "sudo cat $graph" > $D/live.yml
+   .venv/bin/python scripts/cabinet-model/predict.py --transfer $D/transfer.npz --nearfield $D/nearfield.npz \
+       --dsp $D/live.yml --png $D/live.png --xmax-mm 14.7
    ```
 
 5. **Design the rear stage (optional).** Measure the wall gap first; the fit depends on it. The
@@ -67,8 +68,8 @@ document, which goes through the same judge → compose → apply gates as any o
    and keep the old fingerprint to go back.
 
    ```bash
-   .venv/bin/python scripts/cabinet-model/rear-design.py --transfer transfer.npz --nearfield nearfield.npz \
-       --live live.yml --out prescription.json --wall-gap-m 0.2
+   .venv/bin/python scripts/cabinet-model/rear-design.py --transfer $D/transfer.npz --nearfield $D/nearfield.npz \
+       --live $D/live.yml --out $D/prescription.json --wall-gap-m 0.2
    ```
 
 ## Last run: jts3, 2026-09-23

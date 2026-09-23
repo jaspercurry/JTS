@@ -10,10 +10,10 @@ see the raw woofers, at "close" (front woofer) and "behind" (rear woofer) poses.
 the round out of the EQ page's rear-pair level match. Take each spacing as its own run, so every
 take records its true distance. Placement is confirmed from the CLI:
 
-    scp scripts/cabinet-model/nearfield-plan.py pi@<speaker>:/tmp/
-    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/python /tmp/nearfield-plan.py --level-db -32 --woofer front > /tmp/nf.json'
-    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/jasper-round run --plan /tmp/nf.json'   # prints the run id
-    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/jasper-round placed --run <id>'          # once per take
+    scp scripts/cabinet-model/nearfield-plan.py pi@<speaker>:     # the pi home, not the shared /tmp
+    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/python -P nearfield-plan.py --level-db -32 --woofer front > nf.json'
+    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/jasper-round run --plan nf.json'   # prints the run id
+    ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/jasper-round placed --run <id>'     # once per take
     ssh pi@<speaker> 'sudo /opt/jasper/.venv/bin/jasper-round stop --run <id>'
 
 The pair check refuses near-field takes (the far woofer is ~30 dB down at the mic) and asks

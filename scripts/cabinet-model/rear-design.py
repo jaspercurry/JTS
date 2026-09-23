@@ -42,7 +42,10 @@ _spec = importlib.util.spec_from_file_location("fit_rear_branches", Path(__file_
 _fitrb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fitrb)
 branch_model, build_document, target_delay_ms = _fitrb._model, _fitrb.build_document, _fitrb.target_delay_ms
+combo, group_delay_ms = _fitrb._combo, _fitrb._group_delay_ms
 LOWER, UPPER, SAMPLE_RATE = np.array(_fitrb.PARAM_LOWER[:7]), np.array(_fitrb.PARAM_UPPER[:7]), _fitrb.DEFAULT_SAMPLE_RATE
+ORDERS = (_fitrb.BASS_ORDER, _fitrb.HIGHPASS_ORDER, _fitrb.LOWPASS_ORDER)
+SEED_HZ = (_fitrb.BASS_SEED_HZ, float(np.mean(_fitrb.DELAY_SLOPE_BAND_HZ)))
 
 SEATS = ((2.0, 0), (2.0, 20), (2.0, 30), (1.5, 0), (2.5, 0))  # (listener m, bearing deg)
 TABLE_HZ = (30, 40, 50, 63, 80, 100, 125, 160, 200, 315, 500, 800)
@@ -84,8 +87,16 @@ def main() -> None:
 
     behind = cab.index(180)
     cardioid_delay = target_delay_ms(-cab.A["front"][:, behind] / cab.A["rear"][:, behind], grid)
-    fits = [least_squares(residuals, np.clip([bass, 0.0, hp, lp, cardioid_delay, 0.0, 0.0], LOWER + 1e-6, UPPER - 1e-6),
-                          bounds=(LOWER, UPPER), x_scale="jac", max_nfev=400)
+
+    def start(bass, hp, lp):
+        """A start whose branch delays cancel each branch's own group delay, as fit-rear-branches seeds."""
+        low = camilla_filter_response([combo("ButterworthLowpass", bass, ORDERS[0])], grid)
+        band = -camilla_filter_response([combo("ButterworthHighpass", hp, ORDERS[1]),
+                                         combo("ButterworthLowpass", lp, ORDERS[2])], grid)
+        return np.clip([bass, -group_delay_ms(low, grid, SEED_HZ[0]), hp, lp,
+                        cardioid_delay - group_delay_ms(band, grid, SEED_HZ[1]), 0.0, 0.0], LOWER + 1e-6, UPPER - 1e-6)
+
+    fits = [least_squares(residuals, start(bass, hp, lp), bounds=(LOWER, UPPER), x_scale="jac", max_nfev=400)
             for bass in (70.0, 90.0, 120.0) for hp in (60.0, 80.0, 110.0) for lp in (350.0, 600.0, 900.0)]
     best = min(fits, key=lambda fit: fit.cost).x
     print("fit: " + ", ".join(f"{name} {value:.3g}" for name, value in zip(PARAMS, best)))
