@@ -9,7 +9,8 @@ import math
 from dataclasses import replace
 from typing import Any, Mapping, TYPE_CHECKING
 
-from jasper.audio_measurement.distortion import required_pre_guard_s, segment_sweep_meta
+from jasper.audio_measurement.deconv import required_pre_guard_s
+from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.program import ExcitationProgram, PILOT_AMBIENT_WINDOW_S
 from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.sweep_levels import sweep_band_sample_ranges

@@ -71,7 +71,7 @@ HARMONICS_SCHEMA_VERSION = 1
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 
 #: The orders read. Not imported from
-#: :data:`~jasper.audio_measurement.distortion.DEFAULT_HARMONIC_ORDERS`
+#: :data:`~jasper.audio_measurement.deconv.DEFAULT_HARMONIC_ORDERS`
 #: even though it holds the same pair today: that constant bounds what the
 #: ANALYSIS kernel will separate, this one is the product's choice of what
 #: to publish.

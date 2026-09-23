@@ -41,6 +41,7 @@ from jasper.audio_measurement.sweep import (
 )
 from jasper.log_event import log_event
 
+from .deconv import required_pre_guard_s
 from .room_boundary import AUDIO_BAND_TOP_HZ, ROOM_FLOOR_HZ
 
 logger = logging.getLogger(__name__)
@@ -1086,10 +1087,6 @@ def build_verify_program(
     program = _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
     if sweep_band_hz is None:
         return program
-    from .distortion import (  # lazy: harmonic analysis imports only for explicit sweep bands
-        preceding_silence_s, required_pre_guard_s, segment_sweep_meta,
-    )
-
     sweep = program.segment("sweep_verify")
     required_n = math.ceil(required_pre_guard_s(segment_sweep_meta(sweep)) * PROGRAM_SAMPLE_RATE_HZ)
     quiet_n = round(preceding_silence_s(program, sweep) * PROGRAM_SAMPLE_RATE_HZ)
@@ -1261,3 +1258,48 @@ def write_program_wav(path: str | Path, program: ExcitationProgram) -> None:
     clipped = np.clip(pcm, -1.0, 1.0)
     int16 = (clipped * 32767.0).astype(np.int16)
     wavfile.write(str(path), program.sample_rate_hz, int16)
+
+
+def segment_sweep_meta(segment: ProgramSegment) -> SweepMeta:
+    """The synchronized-sweep metadata for one scheduled stimulus segment.
+
+    Reconstructed from the schedule the same way :func:`segment_stimulus`
+    reconstructs the PCM, so ``L`` here is the ``L`` that was played.
+    """
+    if segment.f1_hz is None or segment.f2_hz is None:
+        raise ValueError(
+            f"segment {segment.segment_id!r} declares no sweep band"
+        )
+    meta = synchronized_sweep_metadata(
+        f1=float(segment.f1_hz),
+        f2=float(segment.f2_hz),
+        duration_approx_s=segment.n_samples / float(PROGRAM_SAMPLE_RATE_HZ),
+        sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        amplitude_dbfs=float(segment.gain_db),
+    )
+    if meta.n_samples != segment.n_samples:
+        raise ValueError(
+            f"segment {segment.segment_id!r} sweep reconstruction produced "
+            f"{meta.n_samples} samples, schedule says {segment.n_samples}"
+        )
+    return meta
+
+
+def preceding_silence_s(program: ExcitationProgram, segment: ProgramSegment) -> float:
+    """Seconds of scheduled silence immediately before ``segment`` starts.
+
+    Read off the schedule, never assumed from a default: the MESM gaps are sized
+    by the PRECEDING sweep's ``L`` while the FOLLOWING sweep's harmonic windows
+    are sized by its own, and on the shipped MEASURE program that difference
+    decides whether a woofer repeat's H3 window is clean. A segment with nothing
+    audible before it returns its own start time.
+    """
+    start = int(segment.start_sample)
+    ends = [
+        other.start_sample + other.n_samples
+        for other in program.known_audible_segments()
+        if other.segment_id != segment.segment_id
+        and other.start_sample + other.n_samples <= start
+    ]
+    last_end = max(ends) if ends else 0
+    return (start - last_end) / float(program.sample_rate_hz)

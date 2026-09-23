@@ -19,24 +19,29 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import deconv
+from jasper.audio_measurement.deconv import (
+    DEFAULT_HARMONIC_ORDERS,
+    PHANTOM_WINDOW_SAFETY,
+    image_half_width_s,
+    phantom_window_s,
+    required_pre_guard_s,
+)
 from jasper.audio_measurement.distortion import (
     BAND_EDGE_TRIM_OCTAVES,
-    DEFAULT_HARMONIC_ORDERS,
     DriveLevel,
     analysis_band_hz,
     capture_drive_level,
     harmonic_reading_from_ir,
     order_band_hz,
-    preceding_silence_s,
     read_segment_distortion,
-    required_pre_guard_s,
-    segment_sweep_meta,
 )
 from jasper.audio_measurement.program import (
     FrequencyBand,
     RoleBand,
     build_measure_program,
+    preceding_silence_s,
     render_program_pcm,
+    segment_sweep_meta,
 )
 from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S
 
@@ -211,21 +216,16 @@ def test_the_pre_guard_covers_every_window_the_read_cuts():
     over both window families rather than against a hardcoded number, so it
     keeps holding if either geometry moves.
     """
-    from jasper.audio_measurement.distortion import (
-        _image_half_width_s,
-        _phantom_window_s,
-    )
-
     for segment_id in ("sweep_w", "sweep_t"):
         meta = segment_sweep_meta(_program().segment(segment_id))
         guard = required_pre_guard_s(meta, DEFAULT_HARMONIC_ORDERS)
         for order in (1, *DEFAULT_HARMONIC_ORDERS):
-            edge = deconv.harmonic_time_advance_s(meta, order) + _image_half_width_s(
+            edge = deconv.harmonic_time_advance_s(meta, order) + image_half_width_s(
                 meta, order
             )
             assert guard > edge, f"{segment_id} H{order} image"
         for order in DEFAULT_HARMONIC_ORDERS:
-            centre, half = _phantom_window_s(meta, order)
+            centre, half = phantom_window_s(meta, order)
             assert half > 0.0
             assert guard > centre + half, f"{segment_id} H{order} floor"
 
@@ -239,11 +239,9 @@ def test_the_floor_window_sits_nearer_the_arrival_than_its_image():
     which is the property ``test_a_linear_path_reads_as_floor_not_as_distortion``
     depends on and the reason that test failed under the opposite placement.
     """
-    from jasper.audio_measurement.distortion import _phantom_window_s
-
     meta = segment_sweep_meta(_program().segment("sweep_w"))
     for order in DEFAULT_HARMONIC_ORDERS:
-        centre, _half = _phantom_window_s(meta, order)
+        centre, _half = phantom_window_s(meta, order)
         assert centre < deconv.harmonic_time_advance_s(meta, order)
         assert centre > deconv.harmonic_time_advance_s(meta, order - 1)
 
@@ -517,17 +515,12 @@ def test_the_phantom_window_sees_no_image_and_sits_where_it_claims():
     is ever placed on the wrong side of the arrival or at the rejected
     upper-gap advance. The taper and the safety margin are pinned with it:
     a constant input must come back Hann-shaped (zero at the edges), the
-    half-width must be exactly :data:`_PHANTOM_WINDOW_SAFETY` of the geometric
+    half-width must be exactly :data:`PHANTOM_WINDOW_SAFETY` of the geometric
     clearance, and the returned length ratio exactly the image-to-phantom
     half-width quotient in samples — the number the caller turns into the
     ``10·log10`` floor correction.
     """
-    from jasper.audio_measurement.distortion import (
-        _PHANTOM_WINDOW_SAFETY,
-        _image_half_width_s,
-        _phantom_floor_ir,
-        _phantom_window_s,
-    )
+    from jasper.audio_measurement.distortion import _phantom_floor_ir
 
     rate = 48_000
     meta = segment_sweep_meta(_program().segment("sweep_w"))
@@ -536,7 +529,7 @@ def test_the_phantom_window_sees_no_image_and_sits_where_it_claims():
         centre = peak - int(
             round(deconv.harmonic_time_advance_s(meta, order) * rate)
         )
-        hw = int(round(_image_half_width_s(meta, order) * rate))
+        hw = int(round(image_half_width_s(meta, order) * rate))
         full_ir[centre - hw : centre + hw + 1] = 1.0
 
     for order in DEFAULT_HARMONIC_ORDERS:
@@ -544,22 +537,22 @@ def test_the_phantom_window_sees_no_image_and_sits_where_it_claims():
         assert float(np.max(np.abs(windowed))) == 0.0, (
             f"H{order} phantom window overlaps an image window"
         )
-        advance, half_s = _phantom_window_s(meta, order)
+        advance, half_s = phantom_window_s(meta, order)
         assert ratio == pytest.approx(
-            int(round(_image_half_width_s(meta, order) * rate))
+            int(round(image_half_width_s(meta, order) * rate))
             / max(int(round(half_s * rate)), 1)
         )
         # The safety shrink is the exact fraction of the exact clearance.
         clearance = min(
             advance
             - deconv.harmonic_time_advance_s(meta, order - 1)
-            - _image_half_width_s(meta, order - 1),
+            - image_half_width_s(meta, order - 1),
             deconv.harmonic_time_advance_s(meta, order)
-            - _image_half_width_s(meta, order)
+            - image_half_width_s(meta, order)
             - advance,
         )
-        assert half_s == pytest.approx(_PHANTOM_WINDOW_SAFETY * clearance)
-        assert 0.0 < _PHANTOM_WINDOW_SAFETY < 1.0
+        assert half_s == pytest.approx(PHANTOM_WINDOW_SAFETY * clearance)
+        assert 0.0 < PHANTOM_WINDOW_SAFETY < 1.0
 
         # Positive control: the window is really AT its claimed pre-arrival
         # centre — a spike there is captured at the taper's full weight.

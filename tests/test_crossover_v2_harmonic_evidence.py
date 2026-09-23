@@ -1100,10 +1100,10 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
 
 def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
     """A kernel that learned a 4th order must not widen a banked schema."""
-    from jasper.audio_measurement import distortion
+    from jasper.audio_measurement import deconv
 
     assert he.HARMONIC_ORDERS == (2, 3)
-    assert he.HARMONIC_ORDERS is not distortion.DEFAULT_HARMONIC_ORDERS
+    assert he.HARMONIC_ORDERS is not deconv.DEFAULT_HARMONIC_ORDERS
 
 
 def _program_at(downstream_db: float):

@@ -36,22 +36,16 @@ import numpy as np
 from . import deconv
 from .analysis import smooth_fractional_octave, thd_curve
 from .calibration import apply_calibration_curve
-from .sweep import SweepMeta, synchronized_sweep_metadata
+from .deconv import (
+    DEFAULT_HARMONIC_ORDERS, image_half_width_s, phantom_window_s, required_pre_guard_s,
+    validated_orders,
+)
+from .program import ExcitationProgram, ProgramSegment, preceding_silence_s, segment_sweep_meta
+from .sweep import SweepMeta
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .calibration import CalibrationCurve
-    from .program import ExcitationProgram, ProgramSegment
 
-# The orders a synchronized sweep separates cleanly at the gaps the MEASURE
-# program actually schedules. Deliberately NOT imported from
-# `program.MESM_MAX_HARMONIC_ORDER`: that constant sizes the STIMULUS, this one
-# bounds the ANALYSIS.
-DEFAULT_HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
-
-# Extra pre-guard beyond the predicted window, covering `extract_harmonic_ir`'s
-# ±2 ms local-peak search: a centre refined EARLIER than predicted drags the
-# window's leading edge with it. True worst case is 0.6× this; costs ~96 samples.
-PRE_GUARD_SEARCH_MARGIN_S = deconv.HARMONIC_PEAK_SEARCH_RADIUS_S
 
 # Smoothing applied to every magnitude curve before the ratio: distortion
 # residues are noise-dominated between the harmonic's own peaks. 1/12 octave is
@@ -63,9 +57,6 @@ DEFAULT_SMOOTHING_FRACTION = 12
 # power. Points inside the margin are reported as floor-limited, never dropped.
 FLOOR_LIMITED_MARGIN_DB = 6.0
 
-# Shrink applied to the largest phantom window that clears both neighbouring
-# harmonic images, so a sub-sample rounding cannot push its edge into one.
-_PHANTOM_WINDOW_SAFETY = 0.9
 
 # Trimmed off the BOTTOM of every order's band: the sweep's fade-in and the
 # deconvolution's own band-edge shoulder put a spike at f1 that no nonlinearity
@@ -205,82 +196,6 @@ def worst_clear_of_floor(
     )
 
 
-def validated_orders(orders: Sequence[int]) -> tuple[int, ...]:
-    """The requested orders, or a refusal naming what is wrong with them."""
-    checked = tuple(int(order) for order in orders)
-    if not checked:
-        raise ValueError("at least one harmonic order is required")
-    if any(order < 2 for order in checked):
-        raise ValueError("harmonic orders must be integers of at least 2")
-    if len(set(checked)) != len(checked):
-        raise ValueError("harmonic orders must be distinct")
-    return checked
-
-
-def _image_half_width_s(meta: SweepMeta, order: int) -> float:
-    """Half-width :func:`~.deconv.extract_harmonic_ir` gives order ``order``.
-
-    Computed from the PREDICTED centre; the runtime function measures its gap
-    from the SEARCHED one, so the two differ by at most 0.6× the ±2 ms search
-    radius, which :data:`PRE_GUARD_SEARCH_MARGIN_S` absorbs.
-    """
-    return (
-        deconv.HARMONIC_WINDOW_GAP_FRACTION
-        * meta.L
-        * math.log((order + 1) / order)
-    )
-
-
-def _phantom_window_s(meta: SweepMeta, order: int) -> tuple[float, float]:
-    """``(centre_advance_s, half_width_s)`` of order ``order``'s phantom window.
-
-    Centred at ``L·ln(order − ½)`` -- the gap BELOW image ``order`` -- and
-    widened until it just clears both neighbouring image windows. The LOWER gap
-    because the deconvolution's own artefacts are strongest near the direct
-    arrival and fall away from it: an upper-gap phantom under-reports the floor,
-    and on a provably linear synthetic path it left H2's pure artefact more than
-    6 dB "clear" of its own floor. The lower gap over-estimates instead, so the
-    reading errs toward refusing to claim distortion.
-
-    The one owner of this geometry: :func:`required_pre_guard_s` sizes the
-    deconvolution from it and :func:`_phantom_floor_ir` cuts the window with it.
-    """
-    if order < 2:
-        raise ValueError("a phantom floor is only defined for orders above 1")
-    advance = meta.L * math.log(order - 0.5)
-    clearance = min(
-        advance
-        - deconv.harmonic_time_advance_s(meta, order - 1)
-        - _image_half_width_s(meta, order - 1),
-        deconv.harmonic_time_advance_s(meta, order)
-        - _image_half_width_s(meta, order)
-        - advance,
-    )
-    return advance, _PHANTOM_WINDOW_SAFETY * clearance
-
-
-def required_pre_guard_s(
-    meta: SweepMeta, orders: Sequence[int] = DEFAULT_HARMONIC_ORDERS
-) -> float:
-    """Seconds of pre-guard every window this reading cuts needs.
-
-    The order-``N`` image sits ``L·ln(N)`` ahead of the linear IR and is
-    windowed to ``±`` :func:`_image_half_width_s`, so its leading edge sits at
-    ``L·ln(N) + half_width`` before the direct arrival; the maximum over the
-    requested orders binds, plus :data:`PRE_GUARD_SEARCH_MARGIN_S` for the
-    local-peak search. The fundamental's window and the phantom-floor windows
-    are enumerated too, though neither binds, so the guard follows the window
-    geometry if it ever moves.
-    """
-    orders = validated_orders(orders)
-    edges = [
-        deconv.harmonic_time_advance_s(meta, order) + _image_half_width_s(meta, order)
-        for order in (1, *orders)
-    ]
-    edges += [sum(_phantom_window_s(meta, order)) for order in orders]
-    return max(edges) + PRE_GUARD_SEARCH_MARGIN_S
-
-
 def order_band_hz(meta: SweepMeta, order: int) -> tuple[float, float]:
     """The excitation band over which order ``order`` is real: ``[f1, f2/order]``.
 
@@ -357,8 +272,8 @@ def _phantom_floor_ir(
 
     Returns ``(windowed_ir, length_ratio)``. The window is centred at
     ``L·ln(order − ½)``, strictly between image ``order−1`` and image ``order``
-    per :func:`_phantom_window_s`, and widened until it just clears BOTH of
-    their windows (times :data:`_PHANTOM_WINDOW_SAFETY`). It is necessarily
+    per :func:`~.deconv.phantom_window_s`, and widened until it just clears BOTH of
+    their windows (times :data:`~.deconv.PHANTOM_WINDOW_SAFETY`). It is necessarily
     NARROWER than the image window it describes, so ``length_ratio`` is
     ``image_half_width / phantom_half_width`` and the caller adds
     ``10·log10(length_ratio)`` to bring the floor onto the image's scale. That
@@ -367,9 +282,9 @@ def _phantom_floor_ir(
     """
     if not 0 <= direct_peak_idx < len(full_ir):
         raise ValueError("direct peak is outside the impulse response")
-    advance, half_width_s = _phantom_window_s(meta, order)
+    advance, half_width_s = phantom_window_s(meta, order)
     half_width = int(round(half_width_s * sample_rate))
-    image_half_width = int(round(_image_half_width_s(meta, order) * sample_rate))
+    image_half_width = int(round(image_half_width_s(meta, order) * sample_rate))
     center = direct_peak_idx - int(round(advance * sample_rate))
     start, end = center - half_width, center + half_width + 1
     if half_width < 1 or start < 0 or end > len(full_ir):
@@ -518,65 +433,9 @@ def harmonic_reading_from_ir(
     )
 
 
-def segment_sweep_meta(segment: "ProgramSegment") -> SweepMeta:
-    """The synchronized-sweep metadata for one scheduled stimulus segment.
-
-    Reconstructed from the schedule the same way
-    :func:`jasper.audio_measurement.program.segment_stimulus` reconstructs the
-    PCM, so ``L`` here is the ``L`` that was played.
-    """
-    if segment.f1_hz is None or segment.f2_hz is None:
-        raise ValueError(
-            f"segment {segment.segment_id!r} declares no sweep band"
-        )
-    meta = synchronized_sweep_metadata(
-        f1=float(segment.f1_hz),
-        f2=float(segment.f2_hz),
-        duration_approx_s=segment.n_samples / float(_program_rate()),
-        sample_rate=_program_rate(),
-        amplitude_dbfs=float(segment.gain_db),
-    )
-    if meta.n_samples != segment.n_samples:
-        raise ValueError(
-            f"segment {segment.segment_id!r} sweep reconstruction produced "
-            f"{meta.n_samples} samples, schedule says {segment.n_samples}"
-        )
-    return meta
-
-
-def _program_rate() -> int:
-    """The program sample rate, imported lazily to keep `program` off the import
-    path of callers that only need the IR-level math."""
-    from .program import PROGRAM_SAMPLE_RATE_HZ
-
-    return int(PROGRAM_SAMPLE_RATE_HZ)
-
-
-def preceding_silence_s(
-    program: "ExcitationProgram", segment: "ProgramSegment"
-) -> float:
-    """Seconds of scheduled silence immediately before ``segment`` starts.
-
-    Read off the schedule, never assumed from a default: the MESM gaps are sized
-    by the PRECEDING sweep's ``L`` while the FOLLOWING sweep's harmonic windows
-    are sized by its own, and on the shipped MEASURE program that difference
-    decides whether a woofer repeat's H3 window is clean. A segment with nothing
-    audible before it returns its own start time.
-    """
-    start = int(segment.start_sample)
-    ends = [
-        other.start_sample + other.n_samples
-        for other in program.known_audible_segments()
-        if other.segment_id != segment.segment_id
-        and other.start_sample + other.n_samples <= start
-    ]
-    last_end = max(ends) if ends else 0
-    return (start - last_end) / float(program.sample_rate_hz)
-
-
 def capture_drive_level(
     capture: np.ndarray,
-    segment: "ProgramSegment",
+    segment: ProgramSegment,
     anchor: int,
     *,
     notes: Mapping[str, object] | None = None,
@@ -607,7 +466,7 @@ def capture_drive_level(
 
 
 def read_segment_distortion(
-    program: "ExcitationProgram",
+    program: ExcitationProgram,
     capture: np.ndarray,
     segment_id: str,
     anchor: int,
