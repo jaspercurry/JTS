@@ -49,20 +49,18 @@ from jasper.active_speaker.linearization_envelope import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
     SCHEMA_VERSION as REPEAT_FLOOR_SCHEMA_VERSION,
-    SHIPPED_POOL_METRIC,
-    write_repeat_floor,
 )
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
 
 @pytest.mark.parametrize("overrides, digest", [
-    ({}, "3c021aa2bb8cd487729385a4c65b0f658f708a871c8688cfc4b06c61662b84f7"),
+    ({}, "561759cfc685e99279062e8c005a8ac8fc997f812ac1f6cf2ee4aedadde9457e"),
     ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "eea77d6aeba27b761d2916d1f02ff44aafa5d4098f22230dd80ad38d532d8f68"),
+    }}, "22f06c9f6873dc9431c3ec6c884ca9eb4a4b1dece34d738f8a524eb1d2968897"),
     ({"cloud_over": {"positions": {}}},
-     "cea0756de4ffa1eff079e67c04aecd86956abe09fb4f334e50f6e3419b33228b"),
+     "2b7c770b825b5b4f71e1d224ad9984cca9ce8beef663147b59809dc0ace0f818"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
 def test_packet_json_bytes(tmp_path, overrides, digest):
     # A plain-box packet carries no rear contract (report H R3).
@@ -102,14 +100,17 @@ def test_cross_seat_component_points_at_the_positions_block_it_mirrors(tmp_path)
     assert "per_bin_sigma_db" not in entry
 
 
+AGGREGATE = "shipped_linear_pool_db"
+
+
 def _floor_record() -> dict[str, Any]:
-    """One banked record, written through the REAL writer by every test below."""
+    """One banked record, as the floor file carries it."""
     return {
         "artifact_schema_version": REPEAT_FLOOR_SCHEMA_VERSION,
         "kind": REPEAT_FLOOR_KIND,
         "measured_at": "2026-09-01T00:00:00Z",
         "n_repeats": 3,
-        "aggregate_metric": SHIPPED_POOL_METRIC,
+        "aggregate_metric": AGGREGATE,
         "rounds": [
             {"label": "r1", "bundle_session_id": "sess1",
              "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
@@ -122,7 +123,7 @@ def _floor_record() -> dict[str, Any]:
              "started_at": 3.0},
         ],
         "metrics": {
-            SHIPPED_POOL_METRIC: {
+            AGGREGATE: {
                 "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
                 "min_db": 0.5, "max_db": 1.5,
                 "pairwise_abs_delta_p95_db": 0.4,
@@ -154,15 +155,14 @@ def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_pa
     the thresholds fall back rather than deriving from a non-number."""
     session, _ = _bundle(tmp_path)
     floor_path = tmp_path / "repeat-floor.json"
-    write_repeat_floor(
-        {**_floor_record(), "metrics": {SHIPPED_POOL_METRIC: {
+    floor_path.write_text(json.dumps(
+        {**_floor_record(), "metrics": {AGGREGATE: {
             "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
             "min_db": 0.5, "max_db": 1.5,
             "pairwise_abs_delta_p95_db": float("nan"),
             "pairwise_abs_delta_median_db": 0.3,
         }}},
-        state_path=floor_path,
-    )
+    ))
     packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
 
@@ -193,16 +193,17 @@ def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
     session, _ = _bundle(tmp_path)
     floor_path = tmp_path / "repeat-floor.json"
-    record = write_repeat_floor(_floor_record(), state_path=floor_path)
+    record = _floor_record()
+    floor_path.write_text(json.dumps(record))
     packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
-    p95 = record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"]
+    p95 = record["metrics"][AGGREGATE]["pairwise_abs_delta_p95_db"]
 
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is True
     assert entry["absence"] is None
     assert entry["n_repeats"] == record["n_repeats"]
-    assert entry["aggregate_metric"] == SHIPPED_POOL_METRIC
+    assert entry["aggregate_metric"] == AGGREGATE
     assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
     assert entry["graph_fingerprints"] == ["gf1"]
     assert entry["thresholds"]["source"] == "banked_repeat_floor"
