@@ -263,22 +263,31 @@ def test_a_frequency_inside_the_declared_tolerance_is_the_same_corner():
 # --- the record the accept persists ------------------------------------------
 
 
-def test_the_record_carries_kind_and_schema_version():
-    """The envelope :func:`change_to_record` writes, named as data.
+def test_the_record_names_what_the_accept_applied_and_displaced():
+    """The record :func:`change_to_record` writes, for one known change.
 
-    Mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
+    The envelope mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
     DRIVER_PRESCRIPTION_KIND`'s shape: a reader handed this record can tell
-    what it is without guessing from its field names alone.
+    what it is without guessing from its field names alone. The change moves
+    both corner and slope, and the draft keeps the household's own "LR"
+    spelling, so every ``applied_*`` field differs from its ``previous_*`` twin.
     """
     change = declaration_change_for_candidate(
-        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+        source_preset=_preset(_region(fc_hz=2750.0, order=2)),
+        design_draft=_draft(filter_type="LR"),
     )
     assert change is not None
-    record = change_to_record(change)
-    assert record["kind"] == CROSSOVER_DECLARATION_CHANGE_KIND
-    assert record["artifact_schema_version"] == (
-        CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION
-    )
+    assert change_to_record(change) == {
+        "kind": CROSSOVER_DECLARATION_CHANGE_KIND,
+        "artifact_schema_version": CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
+        "between_roles": ["woofer", "tweeter"],
+        "applied_hz": 2750.0,
+        "previous_hz": 2500.0,
+        "applied_filter_type": "Linkwitz-Riley",
+        "previous_filter_type": "LR",
+        "applied_slope_db_per_octave": 12.0,
+        "previous_slope_db_per_octave": 24.0,
+    }
 
 
 # --- the hearing-safety boundary ---------------------------------------------

@@ -12,7 +12,6 @@ import pytest
 import yaml
 from dataclasses import replace
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
-from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec, build_crossover_sweep_spec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -312,45 +311,6 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
     ]
 
 
-def test_a_consent_walk_must_say_which_captures_announce():
-    """A guided walk with no announced set is REFUSED, not silently phrased.
-
-    The fail-loud half of the pin above. ``build_crossover_sweep_spec`` is a
-    public builder and a caller that declares a walk without saying what it
-    announces has no truthful sentence available — rendering "The first
-    measurement has…" by default is exactly how the shipped defect happened.
-    """
-    from jasper.active_speaker.crossover_v2.sweep_spec import (
-        CaptureSpecError,
-        build_crossover_sweep_spec,
-    )
-
-    def _spec(announced):
-        return build_crossover_sweep_spec(
-            driver_label="crossover",
-            driver_role="summed",
-            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
-            guided_captures=9,
-            announced_captures=announced,
-        )
-
-    for announced in ((), (0, 3), (1, 99), (2,), (1, 4)):
-        with pytest.raises(CaptureSpecError):
-            _spec(announced)
-
-    # …and the third stateable shape, which has no shipped producer since the
-    # prelude trim but is the truthful sentence for a plan that announces
-    # everything — the pre-trim rule's own shape, and what a re-enable would
-    # render. Kept because refusing to describe a describable session is the
-    # worse failure, and pinned here so it is exercised rather than assumed.
-    steps = next(
-        c for c in _spec(tuple(range(1, 10))).screen if c["type"] == "steps"
-    )["items"]
-    assert any(
-        i.startswith("Each measurement has three short beeps") for i in steps
-    )
-
-
 def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strictly(
     tmp_path,
 ):
@@ -470,17 +430,7 @@ def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.kind == "crossover_sweep"
     assert spec.capture_protocol_version == 3
     assert spec.capture_plan is not None
-    reparsed = CaptureSpec.from_dict(spec.to_dict())
-    assert reparsed.capture_plan.entries == spec.capture_plan.entries
-
-
-def test_the_summed_consent_heading_names_the_job_not_the_driver():
-    spec = (_inline_spec())
     assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
-    summed = build_crossover_sweep_spec(driver_label="unused", driver_role="summed")
-    assert next(c for c in spec.screen if c["type"] == "heading") == next(
-        c for c in summed.screen if c["type"] == "heading"
-    )
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,

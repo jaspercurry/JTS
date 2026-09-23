@@ -97,7 +97,7 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 # audit trail): the longest-lived hold any wizard takes today is
 # correction-web's crossover-v2 capture session, whose own sizing is
 # `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s — the hard cap on
-# `crossover_v2_flow.session_wall_clock_ceiling_s`. (NOT the capture
+# `crossover_v2.capture_plan.wall_clock_ceiling_s`. (NOT the capture
 # `DEFAULT_TTL_S`: a cloud session legitimately outlasts that, which is why
 # the ceiling had to be scaled per-entry in the first place.) A hold may then
 # stand a little past the cap through the terminal drain / analysis / purge

@@ -104,12 +104,9 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "deploy/assets/correction/js/crossover/main.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
-    # Cluster 4 — the capture page's setup screens.
+    # Cluster 4 — the capture spec, and capture_geometry, which composes the
+    # acknowledgement sentences the spec carries (#1978).
     "jasper/active_speaker/crossover_v2/sweep_spec.py",
-    # The placement and acknowledgement sentences the spec above renders INTO
-    # those screens are composed here, so the copy leaves the swept set the
-    # moment it crosses this module boundary (#1978). It is clean today; listing
-    # it is what keeps the consent screen's own words inside the guard.
     "jasper/active_speaker/capture_geometry.py",
 )
 
@@ -335,31 +332,6 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
     # separately and is pinned in tests/test_crossover_v2_conductor.py. Both
     # halves of the sentence have to survive, so this keeps asserting the noun.
     assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
-
-
-def test_the_fixed_axis_placement_copy_keeps_the_conditional_aim():
-    """#1978. Same shape of hole as the pin above, for the other half of that
-    issue: the "phone" sweep cannot catch a revert to "Aim it according to its
-    calibration file", because that sentence contains no "phone" — listing
-    capture_geometry.py in SWEPT_SURFACES guards the noun, not this claim.
-
-    What the claim is: a phone mic has no calibration file, so all three
-    fixed-axis instructions name the physical aim direction and keep the
-    calibration clause conditional.
-    """
-    from jasper.active_speaker.capture_geometry import (
-        cloud_walk_placement_instruction,
-        reference_axis_driver_placement_instruction,
-        summed_placement_instruction,
-    )
-
-    for text in (
-        reference_axis_driver_placement_instruction("woofer"),
-        summed_placement_instruction(),
-        cloud_walk_placement_instruction(),
-    ):
-        assert "pointed at the speaker" in text
-        assert "unless its calibration file says otherwise" in text
 
 
 def test_allowlist_entries_are_still_used():

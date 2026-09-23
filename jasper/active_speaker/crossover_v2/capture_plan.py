@@ -55,7 +55,6 @@ from .programs import (
     measurement_band_hz,
 )
 from .measure_spec import MeasureSpec, branch_channels_for
-from .spatial import GEOMETRY_RETRY_POSITIONS
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
 
@@ -145,9 +144,9 @@ DEFAULT_CLOUD_VERIFY_POSITIONS = 6
 # never a literal, so reordering the prompts moves the floor with them.
 MIN_CLOUD_VERIFY_POSITIONS = 6
 
-# Retake headroom a cloud plan carries above its entry count and its geometry
-# retries: the same ABSOLUTE spare the 3-entry flow has, not the same ratio —
-# longer sets get proportionally fewer retakes each, deliberately.
+# Retake headroom a plan carries above its entry count: the same ABSOLUTE spare
+# the 3-entry flow has, not the same ratio — longer sets get proportionally
+# fewer retakes each, deliberately.
 CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 
 
@@ -685,125 +684,12 @@ if MIN_CLOUD_VERIFY_POSITIONS != _min_positions_for_two_wide_offsets(
     )
 
 
-# What happens AFTER the walk, in one clause. Deliberately promises no tune in
-# either case: whether anything is applied is the household's call.
-CLOUD_WALK_SHAPE_TAIL = "Afterwards you decide what to do about what JTS heard."
-CLOUD_WALK_SHAPE_TAIL_POST_APPLY = (
-    "Afterwards the speaker page shows how the tune did."
-)
-
-# The granularity the orientation's REACH is quoted at. Rounded STRICTLY up so
-# the quoted number is a true ceiling: the wide rows' equidistance step-in puts
-# the capsule on a chord, so a stated 40 cm move really lands ~40.9 cm from the
-# mark at the placement copy's nominal 1 m. The geometry retake (75 cm, ~80.8 cm
-# on rung 2) is deliberately NOT absorbed and gets its own clause instead.
-CLOUD_WALK_REACH_ROUNDING_CM = 10.0
-
-
-def cloud_walk_reach_cm(positions: int) -> float:
-    """The ceiling the orientation quotes for a walk of ``positions`` captures.
-
-    The ``[:positions - 1]`` slice of :data:`CLOUD_POSITION_PROMPTS`, rounded
-    strictly up to the next :data:`CLOUD_WALK_REACH_ROUNDING_CM`.
-    """
-    walked = max(0, int(positions) - 1)
-    if walked > len(CLOUD_POSITION_PROMPTS):
-        raise CrossoverV2FlowError(
-            f"cloud walk shape needs {walked} position prompts but "
-            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
-        )
-    return cloud_walk_reach_cm_of(CLOUD_POSITION_PROMPTS[:walked])
-
-
-def cloud_geometry_retry_reach_cm() -> float:
-    """How far from the mark the geometry-locked retake can send the operator.
-
-    Rung 2 is a COMPOUND pose (:data:`GEOMETRY_RETRY_OFFSET_CM` sideways *and*
-    :data:`WIDE_OFFSET_MIN_CM` up), so its displacement is the hypotenuse.
-    """
-    return max(
-        GEOMETRY_RETRY_OFFSET_CM,
-        math.hypot(GEOMETRY_RETRY_OFFSET_CM, WIDE_OFFSET_MIN_CM),
-    )
-
-
-def cloud_walk_shape(
-    prompts: Sequence[CloudPositionPrompt], *, post_apply: bool = False,
-) -> str:
-    """The walk's SHAPE in one sentence, for the pre-session orientation screen.
-
-    ``prompts`` is the resolved table the caller handed its plan builder, not a
-    count it might slice differently, so the orientation cannot describe a reach
-    the walk does not have. ``post_apply`` selects stage 2's tail.
-    """
-    return _walk_shape(cloud_walk_reach_cm_of(prompts), post_apply=post_apply)
-
-
-def cloud_walk_reach_cm_of(prompts: Sequence[CloudPositionPrompt]) -> float:
-    """:func:`cloud_walk_reach_cm`'s rounding rule over an explicit table."""
-    if not prompts:
-        return 0.0
-    step = CLOUD_WALK_REACH_ROUNDING_CM
-    furthest = max(float(p.offset_cm) for p in prompts)
-    return math.floor(furthest / step) * step + step
-
-
-def _walk_shape(reach: float, *, post_apply: bool = False) -> str:
-    if not reach:
-        # A group with no prompted moves is not a walk and gets no shape line.
-        return ""
-    tail = (
-        CLOUD_WALK_SHAPE_TAIL_POST_APPLY if post_apply
-        else CLOUD_WALK_SHAPE_TAIL
-    )
-    # Conditional on the retake actually reaching past the quoted ceiling, so a
-    # narrowed retake drops the clause rather than keeping a stale one.
-    beyond = (
-        " though a redo can ask for one step further out,"
-        if cloud_geometry_retry_reach_cm() > reach
-        else ""
-    )
-    return (
-        f"Every spot is within {format_position_distance(reach)} of the "
-        f"mark,{beyond} and you will be told each one when it is time — "
-        f"nothing to memorise now. {tail}"
-    )
-
-
 @dataclass(frozen=True)
 class V2PlanShape:
     cloud_measure_positions: int
     cloud_verify_positions: int
     hand_released_positions: bool = False
     externally_positioned: bool = False
-
-    @property
-    def measure_capture_target(self) -> int:
-        return 1 + self.cloud_measure_positions
-
-    @property
-    def verify_capture_target(self) -> int:
-        return self.cloud_verify_positions
-
-    @property
-    def capture_target(self) -> int:
-        return self.measure_capture_target + self.verify_capture_target
-
-    @property
-    def measure_max_attempts(self) -> int:
-        return self.measure_capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-
-    @property
-    def verify_max_attempts(self) -> int:
-        return self.verify_capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-
-    @property
-    def max_attempts(self) -> int:
-        return self.capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-
-    @property
-    def has_cloud_verify_group(self) -> bool:
-        return self.cloud_verify_positions > 1
 
     @property
     def positions_gated(self) -> bool:
@@ -900,44 +786,6 @@ def _validated_cloud_counts(
             f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
         )
     return n, m
-
-
-def cloud_capture_target(
-    *,
-    plan_shape: V2PlanShape | None = None,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> int:
-    """Accepted captures one cloud session runs: CHECK + the two groups.
-
-    ``1 + N + M`` — CHECK, then the pre-apply cloud (MEASURE's anchor plus
-    ``N − 1`` prompted positions), then the post-apply cloud (VERIFY's anchor
-    plus ``M − 1``).
-    """
-    return _shape_from_kwargs(
-        plan_shape,
-        cloud_measure_positions=cloud_measure_positions,
-        cloud_verify_positions=cloud_verify_positions,
-    ).capture_target
-
-
-def cloud_plan_max_attempts(
-    *,
-    plan_shape: V2PlanShape | None = None,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> int:
-    """This flow's retry budget for a cloud plan (a POLICY number).
-
-    Entries + the bounded geometry retakes + ``CLOUD_RETAKE_ALLOWANCE``. Kept
-    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (a SANITY
-    ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states.
-    """
-    return _shape_from_kwargs(
-        plan_shape,
-        cloud_measure_positions=cloud_measure_positions,
-        cloud_verify_positions=cloud_verify_positions,
-    ).max_attempts
 
 
 # #2291: stage 1 takes ONE summed sweep at the mark immediately before the
@@ -1089,33 +937,11 @@ def capture_progress_label(index: int, capture_target: int) -> str:
     return f"Measurement {int(index)} of {int(capture_target)}"
 
 
-def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
-    """The auto-advance fields one plan entry carries, from its SHAPE.
-
-    Hand-advanced shapes get :data:`AUTO_ADVANCE_TAP` and no countdown key —
-    including a hand-RELEASED one, whose begins are gated but whose operator is
-    there to tap. Only :attr:`V2PlanShape.externally_positioned` gets the
-    countdown, and its begin is then held by the position gate until the driver
-    reports the angle reached. ``shape is None`` is the recovery re-verify.
-
-    ``countdown_s`` is a STRING because ``CapturePlanEntry.screen`` is a
-    ``str -> str`` map on the wire.
-    """
-    if shape is not None and shape.externally_positioned:
-        return {
-            "auto_advance": AUTO_ADVANCE_COUNTDOWN,
-            "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
-        }
-    return {"auto_advance": AUTO_ADVANCE_TAP}
-
-
-#: The per-entry screen keys that state a GATED entry's TARGET POSITION in
-#: machine terms, emitted only by a shape with
-#: :attr:`V2PlanShape.positions_gated`. The plan is the source of that pose;
-#: the gate and the envelope read it back off the entry. The vertical key rides
-#: only a pose that LEAVES mark height — absent IS the mark — because a walk's
-#: vertical stops sit at 0° bearing and would otherwise publish as design-axis
-#: captures.
+#: The per-entry screen keys that state an entry's TARGET POSITION in machine
+#: terms. The plan is the source of that pose; the position gate reads it back
+#: off the entry. The vertical key rides only a pose that LEAVES mark height —
+#: absent IS the mark — because a walk's vertical stops sit at 0° bearing and
+#: would otherwise publish as design-axis captures.
 POSITION_DEG_KEY = "position_deg"
 POSITION_KIND_KEY = "position_kind"
 POSITION_VERTICAL_DEG_KEY = "position_vertical_deg"
@@ -1203,10 +1029,11 @@ def verify_pose_table(
 
 
 def wall_clock_ceiling_s(capture_target: int) -> float:
-    """The ceiling for a plan of ``capture_target`` captures.
+    """The walked-away volume ceiling for a plan of ``capture_target`` captures.
 
-    The arithmetic :func:`session_wall_clock_ceiling_s` states, reachable by a
-    caller holding a capture count rather than a plan object.
+    Grows by :data:`WALL_CLOCK_CEILING_PER_ENTRY_S` for every capture beyond the
+    3-entry baseline; ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S`` owns the
+    hard cap.
     """
     from jasper.active_speaker.session_volume_plan import (
         DEFAULT_WALL_CLOCK_CEILING_S,
@@ -1218,18 +1045,6 @@ def wall_clock_ceiling_s(capture_target: int) -> float:
         MAX_WALL_CLOCK_CEILING_S,
         DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
     )
-
-
-def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
-    """The walked-away volume ceiling for one plan, scaled by its length.
-
-    The ceiling grows by :data:`WALL_CLOCK_CEILING_PER_ENTRY_S` for every
-    accepted capture beyond the 3-entry baseline and is hard-capped by
-    ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S``, which owns that bound. Each
-    STAGE arms its own ceiling from its own plan.
-    """
-    target = int(getattr(capture_plan, "capture_target", CAPTURE_PLAN_TARGET) or 0)
-    return wall_clock_ceiling_s(target)
 
 
 # Per accepted capture beyond the 3-entry baseline: covers a prompt read, a
