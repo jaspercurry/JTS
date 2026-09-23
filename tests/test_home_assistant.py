@@ -23,11 +23,17 @@ Coverage:
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+from dataclasses import asdict
+from functools import partial
 
+import httpcore
 import httpx
 import pytest
 
+from jasper.web import home_assistant_setup
 from jasper.home_assistant import (
     CONVERSATION_ID_TTL_SEC,
     HAClient,
@@ -470,6 +476,42 @@ async def test_process_timeout_is_timeout_outcome():
         await client.aclose()
 
     assert result.outcome == OUTCOME_TIMEOUT
+
+
+@pytest.mark.parametrize("token", ["ha-secret-marker\ninvalid", "ha-secret-marker\u2603"])
+@pytest.mark.parametrize("operation", ["probe_health", "process", "config", "list_agents", "verify", "ready"])
+def test_malformed_token_absent_from_logs_and_responses(token, operation, monkeypatch, caplog):
+    transport = httpx.AsyncHTTPTransport()
+    transport._pool = httpcore.AsyncConnectionPool(network_backend=httpcore.AsyncMockBackend([]))
+    monkeypatch.setattr(httpx, "AsyncClient", partial(httpx.AsyncClient, transport=transport))
+    url = "http://homeassistant.local:8123"
+
+    async def request():
+        client = HAClient(url=url, token=token)
+        try:
+            if operation == "process":
+                return asdict(await client.process("turn on the lights"))
+            result = await getattr(client, operation)()
+            return asdict(result) if operation == "probe_health" else result
+        finally:
+            await client.aclose()
+
+    with caplog.at_level(logging.DEBUG, logger="jasper"):
+        if operation in ("verify", "ready"):
+            result = getattr(home_assistant_setup, f"{operation}_sync")(url, token)
+            assert result["ok"] is False
+        else:
+            result = asyncio.run(request())
+            if operation in ("probe_health", "process"):
+                assert result["outcome"] == OUTCOME_NETWORK
+            else:
+                assert result == ([] if operation == "list_agents" else None)
+
+    assert caplog.records
+    for record in caplog.records:
+        assert "ha-secret-marker" not in repr(vars(record))
+        assert record.exc_info is None
+    assert "ha-secret-marker" not in json.dumps(result)
 
 
 async def test_empty_query_is_parse_error_without_hitting_network():
