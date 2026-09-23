@@ -32,6 +32,10 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
+#: The views that filed into a round's own evidence before ADR-0346; a round
+#: banked then may still carry their outputs there.
+LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
+
 #: The three phases a finding set is banked under, each at its own
 #: ``findings_{phase}.json``
 #: (:func:`~jasper.attribution.storage.findings_relative_path`): the two
@@ -335,24 +339,29 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
-    """The classification and H2/H3 views, read where every view files its
-    artifact: beside the round, never inside its evidence.
+def derived_view_path(beside: Path, evidence_dir: Path | None, name: str) -> tuple[Path, bool]:
+    """Where a view's artifact is read, and whether that is a legacy copy.
 
-    A round banked while these two views still wrote into its evidence
-    (``round_dir``) carries their files there, which
-    ``legacy_view_files_in_evidence`` discloses; that copy answers here until a
-    view run beside the round replaces it.
+    ``beside`` the round, where the view files it; failing that, for one of
+    :data:`LEGACY_EVIDENCE_VIEWS`, the copy a round banked before ADR-0346
+    filed in its evidence (``evidence_dir``). The packet and ``inventory``
+    both find a round's views through here.
     """
-    legacy, reads = False, {}
-    for name in (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT):
-        filed, beside = round_dir / name, view_path(inputs, name)
-        legacy = legacy or filed.exists()
-        reads[name] = _read_json(filed if filed.exists() and not beside.exists() else beside)
+    filed = evidence_dir / name if evidence_dir is not None and name in LEGACY_EVIDENCE_VIEWS else None
+    if filed is not None and filed.exists() and not beside.exists():
+        return filed, True
+    return beside, False
+
+
+def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
+    """The classification and H2/H3 views, read where
+    :func:`derived_view_path` finds them. ``legacy_view_files_in_evidence``
+    says one came from a copy inside the round's evidence (``round_dir``)."""
+    reads = {name: derived_view_path(view_path(inputs, name), round_dir, name) for name in LEGACY_EVIDENCE_VIEWS}
     return {
-        "legacy_view_files_in_evidence": legacy,
-        "feature_classification": _classification_block(*reads[CLASSIFICATION_ARTIFACT]),
-        "harmonics": _harmonics_block(*reads[HARMONICS_ARTIFACT]),
+        "legacy_view_files_in_evidence": any(legacy for _, legacy in reads.values()),
+        "feature_classification": _classification_block(*_read_json(reads[CLASSIFICATION_ARTIFACT][0])),
+        "harmonics": _harmonics_block(*_read_json(reads[HARMONICS_ARTIFACT][0])),
     }
 
 

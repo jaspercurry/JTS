@@ -4,9 +4,11 @@
 
 """One round's banked evidence, gathered into one document a reader can answer.
 
-Grades nothing and writes nothing. Its one impurity is reading JSON files —
-the round's own, and the views filed beside it (:data:`DERIVED_VIEWS`, which
-the fingerprint skips): no clock, no network, no CamillaDSP handle, no session. It
+Grades nothing and writes nothing. Its one impurity is reading JSON files:
+the round's own, and views filed beside it — the classification and H2/H3
+views into :data:`DERIVED_VIEWS`, which the fingerprint skips, and the room
+view's ``room.json`` into ``contracts``, which it covers (ADR-0346's named
+exception). No clock, no network, no CamillaDSP handle, no session. It
 DERIVES exactly two things — :func:`_cross_seat_sigma_block`'s per-bin spread
 across seats, and :func:`_reflections_block`'s tau-to-path-length multiply.
 
