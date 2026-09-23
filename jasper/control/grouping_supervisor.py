@@ -80,6 +80,7 @@ from ..multiroom.config import (
     is_active_member,
     load_config,
 )
+from ..multiroom.grouping_env import output_topology_state
 from ..multiroom.state import parse_grouping_response
 from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 
@@ -408,8 +409,6 @@ class GroupingSupervisor:
         return load_config()
 
     def output_topology_state(self) -> tuple[bool | None, bool]:
-        from ..multiroom.reconcile import output_topology_state  # lazy: keep the oneshot reconciler off control's startup import path (#3697)
-
         return output_topology_state()
 
     async def outputd_status(self) -> dict | None:

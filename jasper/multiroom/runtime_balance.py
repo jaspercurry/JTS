@@ -30,6 +30,7 @@ from .config import (
     TRIM_DB_MAX,
     TRIM_DB_MIN,
 )
+from .grouping_env import is_active_speaker_box
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,6 @@ async def apply_local_trim(
         return LiveTrimApplyResult(False, "not_bonded", trim, "grouping is not active")
 
     if active_box_reader is None:
-        from .reconcile import is_active_speaker_box
-
         active_box_reader = is_active_speaker_box
 
     if active_endpoint(cfg, active_box_reader=active_box_reader):

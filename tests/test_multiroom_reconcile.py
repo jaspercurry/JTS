@@ -49,6 +49,7 @@ from jasper import systemd_probe
 from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
+from jasper.multiroom import grouping_env as grouping_env_mod
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
@@ -66,7 +67,6 @@ from jasper.multiroom.reconcile import (
     RoleDecision,
     _write_args_file,
     decide_role,
-    desired_snapfifo_path,
     main,
 )
 from jasper.multiroom.reconcile_plan import (
@@ -76,6 +76,7 @@ from jasper.multiroom.reconcile_plan import (
     ReconcilePlan,
     UnitIntent,
     _assemble_args,
+    desired_snapfifo_path,
     plan,
     snapclient_argv,
     snapserver_argv,
@@ -573,8 +574,11 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
     ADR-0112's "passive bonded NON-SUB member", implemented. A LEADER is the
     reachable shape: a follower additionally parks voice.
     """
-    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
-    from jasper.multiroom.reconcile import output_topology_state
+    from jasper.multiroom.grouping_env import (
+        output_topology_state,
+        outputd_grouping_env,
+        voice_grouping_env,
+    )
     from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
@@ -2707,11 +2711,11 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
 
     monkeypatch.setattr(topology_mod, "load_output_topology_strict", fail_load)
 
-    with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
-        assert reconcile_mod.output_topology_state()[0] is None
-        assert reconcile_mod.is_active_speaker_box() is False
+    with caplog.at_level("WARNING", logger=grouping_env_mod.logger.name):
+        assert grouping_env_mod.output_topology_state()[0] is None
+        assert grouping_env_mod.is_active_speaker_box() is False
 
-    maps = event_field_maps(caplog, "multiroom.reconcile.active_speaker_probe_failed")
+    maps = event_field_maps(caplog, "multiroom.grouping_env.active_speaker_probe_failed")
     assert len(maps) == 2
     assert all(fields["error"] == "corrupt topology" for fields in maps)
 
