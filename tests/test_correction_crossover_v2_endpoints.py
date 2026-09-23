@@ -4374,7 +4374,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 
 def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch, tmp_path):
     from jasper.active_speaker.crossover_v2 import composition, door
-    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
+    from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
 
     bound = {}
     graph = SimpleNamespace(installed_graph_yaml=lambda: "graph", level_reference_yaml="graph")

@@ -135,7 +135,6 @@ def test_guard_detects_a_reintroduced_literal(tmp_path) -> None:
 _LIGHT_CONSUMERS = (
     "jasper.web.sound_setup",
     "jasper.web.sync_flow",
-    "jasper.active_speaker.web_commissioning",
 )
 
 # Poisoned so a transitive re-import can't hide behind an already-installed

@@ -25,9 +25,8 @@ def test_pad_kinds_is_the_closed_four_value_vocabulary():
 # effective_impedance_ohm into the record it returns, then REJECTED those
 # same fields as unknown/forbidden input when that returned record was fed
 # back in. Live failure: crossover-v2 session-start rebuilds the design
-# draft from the saved manual_settings on every prepare
-# (web_commissioning.regenerate_crossover_preview_from_current_draft), so a
-# saved l_pad/series_resistor pad 400ed on the very next session start. One
+# draft from the saved manual_settings on every prepare, so a saved
+# l_pad/series_resistor pad 400ed on the very next session start. One
 # normalisation must be a fixed point of itself for every kind.
 
 

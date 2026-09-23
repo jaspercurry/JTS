@@ -1050,10 +1050,9 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
     # effective_impedance_ohm into the pad record it returned, then rejected
     # those same fields as unknown input when that returned record was fed
     # back in as fresh input. This reproduces the exact live JTS3 failure
-    # shape: crossover-v2 session-start calls
-    # web_commissioning.regenerate_crossover_preview_from_current_draft,
-    # which reloads the saved design draft and rebuilds it via (read
-    # verbatim from that function, ~line 276-284 as of #1665):
+    # shape: crossover-v2 session-start reloads the saved design draft and
+    # rebuilds it via (read verbatim from that code path, ~line 276-284 as
+    # of #1665):
     #
     #     draft = build_design_draft(
     #         topology,
