@@ -57,7 +57,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
     max_q_for_gain,
-    positional_support,
     prescription_response_format,
     read_blend_prescription,
     read_prescription_bytes,
@@ -1589,7 +1588,6 @@ def test_the_rationale_changes_no_observable_on_an_accepted_prescription(packet)
             "filters": [dict(f) for f in accepted.filters],
             "prescription_class": accepted.prescription_class,
             "band_hz": list(accepted.band_hz),
-            "positional_support": [s.to_dict() for s in accepted.positional_support],
             "packet_fingerprint": accepted.packet_fingerprint,
             "candidate_fields": blend_prescription_to_candidate_fields(accepted),
         }
@@ -1877,79 +1875,14 @@ def _edit_artifact(session: Path, name: str, mutate) -> None:
     """Rewrite one banked artifact through a structural edit.
 
     Structural rather than textual: the first textual occurrence of a field
-    name is rarely the one that matters (``validity_floor_hz`` exists both at
-    the cloud's top level and on every position row, and only the second
-    reaches ``positional_support``). A hand-edited banked artifact is a real
-    input — the packet builder reads whatever is on disk and its allowlist
-    copies position rows verbatim.
+    name is rarely the one that matters. A hand-edited banked artifact is a
+    real input — the packet builder reads whatever is on disk and its
+    allowlist copies position rows verbatim.
     """
     path = session / _ROUND_REL / name
     document = json.loads(path.read_text())
     mutate(document)
     path.write_text(json.dumps(document))
-
-
-def test_a_bignum_position_floor_refuses_rather_than_crashing(tmp_path):
-    """R1: the site that crashed the CLI end to end.
-
-    ``validity_floor_hz`` reaches ``positional_support`` verbatim, so a bignum
-    there raised ``OverflowError`` out of the gate — a traceback and the
-    evidence-unreadable exit code, for a fault in a banked number.
-    """
-    session, _ = _bundle(tmp_path)
-    _edit_artifact(
-        session,
-        "cloud_verify.json",
-        lambda d: d["positions"]["positions"][0].update(validity_floor_hz=_BIGNUM),
-    )
-    packet = build_crossover_evidence_packet(session)
-    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
-    support = positional_support(
-        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
-    )
-    # A floor that WAS recorded and cannot be read leaves the denominator: it
-    # is a bin this function cannot read, not a position with no floor. The
-    # three intact positions still testify, and the denominator discloses it.
-    assert support.n_positions == 4
-    assert support.n_testifying == 3
-    assert "unreadable" in support.excluded_reason
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    # Three testifying positions still clear the floor and the all-but-one
-    # rule, so it reaches the route — the point being that it got there at all
-    # instead of raising OverflowError out of the gate.
-    assert excinfo.value.reason == "boost_route_unavailable"
-
-
-def test_an_unreadable_floor_leaves_the_denominator_rather_than_voting(tmp_path):
-    """Fail-closed, and visible: two bad floors drop it under the bar.
-
-    The direction that matters — an unreadable floor must not silently become
-    "no floor", which would let a position vouch for a frequency its own gate
-    may have excluded.
-    """
-    session, _ = _bundle(tmp_path)
-    _edit_artifact(
-        session,
-        "cloud_verify.json",
-        lambda d: [
-            row.update(validity_floor_hz=_BIGNUM)
-            for row in d["positions"]["positions"][:2]
-        ],
-    )
-    packet = build_crossover_evidence_packet(session)
-    # It reaches the ROUTE: a blend boost is refused before this gate ever
-    # asks for positional evidence, whatever the floors say.
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-    # …and the count this test exists for survives as the finding: two
-    # positions could testify, which is the direction that matters.
-    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
-    support = positional_support(
-        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
-    )
-    assert support.n_testifying == 2
 
 
 def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_path):
@@ -1965,8 +1898,7 @@ def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_p
     )
     packet = build_crossover_evidence_packet(session)
     assert packet_positional_evidence(packet) is None
-    # Unavailable evidence still reaches the route: a blend boost is refused
-    # before this gate ever asks for positional evidence.
+    # Unavailable evidence still reaches the route.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
     assert excinfo.value.reason == "boost_route_unavailable"
@@ -1997,31 +1929,6 @@ def test_a_bignum_region_band_makes_the_region_unavailable(tmp_path):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(-1.5)], packet))
     assert excinfo.value.reason == "region_unavailable"
-
-
-def test_the_public_positional_support_api_survives_hostile_numbers():
-    """R1: the three public-API sites, guarded as defence in depth.
-
-    Nothing in this module still calls ``positional_support`` — a blend boost
-    is refused before this gate ever asks for positional evidence — but the
-    function is public, and a caller reading a hand-edited artifact can hand
-    it anything JSON admits.
-    """
-    bignum = 10 ** 400
-    grid = [1000.0, 1100.0, 1200.0]
-    row = {"magnitude_db": [0.0, -6.0, 0.0], "validity_floor_hz": 10.0}
-    for kwargs in (
-        {"freqs_hz": grid, "reference_db": 0.0},
-        {"freqs_hz": [bignum, 1100.0, 1200.0], "reference_db": 0.0},
-        {"freqs_hz": grid, "reference_db": bignum},
-    ):
-        support = positional_support(1100.0, positions=[row] * 4, **kwargs)
-        assert isinstance(support.to_dict(), dict)
-    # A bignum centre frequency is reported, not raised.
-    support = positional_support(bignum, positions=[row] * 4, freqs_hz=grid,
-                                 reference_db=0.0)
-    assert support.n_testifying == 0
-    assert support.supported is False
 
 
 def test_a_packet_with_no_region_refuses_rather_than_inventing_a_band(tmp_path):
@@ -2128,89 +2035,11 @@ def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
     }
 
 
-@pytest.mark.parametrize("filters,expected", [
-    pytest.param([_cut(gain=2.0, freq=1000.0)], "boost_route_unavailable", id="boost"),
-    pytest.param([_cut(gain=-1.5)], "cut", id="cut"),
-])
-def test_a_boost_is_refused_before_positional_evidence_and_a_cut_is_not(
-    packet, filters, expected,
-):
-    """R2-F28: a blend boost is refused as soon as it is classified, before
-    this gate ever asks for positional evidence — the positional bar cannot
-    change an answer no route will ever consult. A cut is unaffected.
-    """
-    if expected == "cut":
-        assert _gate(packet, _document(filters, packet)).prescription_class == "cut"
-        return
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(filters, packet))
-    assert excinfo.value.reason == expected
-
-
-def test_the_positional_boost_bar_is_gone(tmp_path):
-    """R2-F28: dead code, once a boost is refused before it could ever run."""
-    assert not hasattr(bp, "_check_boost_evidence")
-
-
-def test_a_single_position_dip_is_reported_unsupported_not_refused(tmp_path):
-    """``positional_support`` itself, independent of the (closed) boost route.
-
-    A single-position dip is not evidence a boost is safe — the fraction
-    still reports it unsupported — but it no longer matters to the route
-    either way, since a blend boost is refused before this gate ever asks for
-    positional evidence.
-    """
-    session, _ = _bundle(tmp_path, dip_at=[1000.0, None, None, None])
-    packet = build_crossover_evidence_packet(session)
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
-    support = positional_support(
-        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
-    )
-    assert support.n_with_dip == 1
-    assert support.n_testifying == 4
-    assert support.supported is False
-
-
 def test_a_cut_needs_no_positional_evidence(tmp_path):
     """Cutting a null flattens the region everywhere; feeding one does not."""
     session, _ = _bundle(tmp_path, dip_at=[None, None])
     packet = build_crossover_evidence_packet(session)
     assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
-
-
-def test_positions_that_cannot_testify_leave_the_denominator_and_say_so():
-    """Denominator visibility: a fraction whose denominator moved silently is
-    a different measurement wearing the same number."""
-    grid = [1000.0, 1100.0, 1200.0]
-    dipped = {"magnitude_db": [0.0, -6.0, 0.0], "validity_floor_hz": 5000.0}
-    support = positional_support(
-        1100.0, positions=[dipped] * 4, freqs_hz=grid, reference_db=0.0
-    )
-    assert support.n_positions == 4
-    assert support.n_testifying == 0
-    assert support.supported is False
-    assert "validity floor" in support.excluded_reason
-
-
-def test_the_all_but_one_rule_is_vacuous_below_three_positions():
-    """Why BOOST_MIN_TESTIFYING_POSITIONS is 3 — the arithmetic, asserted.
-
-    At two positions "present at all but one" admits a dip seen at exactly
-    one, which is the single-point artifact the rule exists to exclude.
-    """
-    grid = [1000.0, 1100.0, 1200.0]
-    dip = {"magnitude_db": [0.0, -6.0, 0.0], "validity_floor_hz": 10.0}
-    flat = {"magnitude_db": [0.0, 0.0, 0.0], "validity_floor_hz": 10.0}
-    two = positional_support(1100.0, positions=[dip, flat], freqs_hz=grid,
-                             reference_db=0.0)
-    assert two.n_with_dip == 1 and two.n_testifying == 2
-    assert two.supported is False, "the rule must refuse where it is vacuous"
-    three = positional_support(1100.0, positions=[dip, dip, flat], freqs_hz=grid,
-                               reference_db=0.0)
-    assert three.supported is True
 
 
 # --------------------------------------------------------------------------- #
@@ -2513,10 +2342,10 @@ def test_a_supplied_gate_written_field_is_ignored_not_trusted(packet):
     """Round-tripping through one parser must not become a way to dictate.
 
     ``prescription_class``, ``band_hz`` and ``positional_support`` are accepted
-    on the way in so the receipt reads back through the same parser — so a
+    on the way in so a receipt reads back through the same parser — so a
     prescriber can supply them. None of the three may be believed: the class is
     re-derived from the gains, the band comes from the packet, and the finding
-    is recomputed.
+    is dropped.
     """
     document = _document(
         [_cut(gain=-1.5)],
@@ -2528,7 +2357,7 @@ def test_a_supplied_gate_written_field_is_ignored_not_trusted(packet):
     accepted = _gate(packet, document)
     assert accepted.prescription_class == "cut"
     assert accepted.band_hz == BAND
-    assert accepted.positional_support == ()
+    assert "positional_support" not in accepted.to_dict()
 
 
 def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):

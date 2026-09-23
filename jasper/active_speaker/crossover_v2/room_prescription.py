@@ -651,9 +651,8 @@ def _check_boosts(
 ) -> tuple[BoostAdmission, ...]:
     """The spatial bar, per boosting filter. **It refuses on the first miss.**
 
-    Unlike the summed blend class's positional finding, this one is a GATE:
-    feeding an interference null spends headroom on a cancellation that
-    swallows it (`See docs/room-correction-regime-plan.md` D5).
+    A GATE, because feeding an interference null spends headroom on a
+    cancellation that swallows it (`See docs/room-correction-regime-plan.md` D5).
     """
     findings: list[BoostAdmission] = []
     for entries in sides.values():

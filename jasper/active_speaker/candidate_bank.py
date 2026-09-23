@@ -241,12 +241,13 @@ def find_banked_candidate(
     ``fingerprint_required`` or ``not_found`` (no artifact both matches and
     verifies).
 
-    Two lineages that carry the same fingerprint are the same candidate, not
-    an ambiguity: the fingerprint hashes every field
+    Copies that carry the same fingerprint are the same candidate, not an
+    ambiguity: the fingerprint hashes every field
     :class:`~.measured_crossover_candidate.MeasuredCrossoverCandidate`
-    persists. This resolves to the campaign-store lineage -- the same
-    preference :func:`publish_authored_candidate` gives a freshly authored
-    one -- and discloses every lineage examined on the log event.
+    persists. A campaign-store copy wins, as it does for
+    :func:`publish_authored_candidate`: ``bank_round`` copies a bundle there
+    under the same identity, and retention deletes only the live copy. The
+    log event names each matching lineage once.
     """
     wanted = str(fingerprint or "").strip()
     if not wanted:
@@ -261,31 +262,23 @@ def find_banked_candidate(
         None,
     )
 
-    lineages: list[BankedCandidate] = []
+    matches: list[BankedCandidate] = []
     examined = unverified = 0
     for path in _iter_candidate_paths(bank_root):
         rows = _verified_candidates([path])
         if not rows:
             unverified += 1
             continue
-        one = rows[0]
         examined += 1
-        if one.fingerprint != wanted:
-            continue
-        if not any(
-            (one.bundle_session_id, one.capture_session_id) == (m.bundle_session_id, m.capture_session_id)
-            for m in lineages
-        ):
-            lineages.append(one)
-    if not lineages:
+        if rows[0].fingerprint == wanted:
+            matches.append(rows[0])
+    if not matches:
         raise CandidateBankRefusal(
             "not_found", f"no banked candidate matches ({examined} examined; {unverified} unverified)",
         )
 
-    found = next(
-        (m for m in lineages if campaign_root is not None and campaign_root in m.path.parents),
-        lineages[0],
-    )
+    campaign_copies = [m for m in matches if campaign_root is not None and m.path.is_relative_to(campaign_root)]
+    found = (campaign_copies or matches)[-1]
     log_event(
         logger,
         "correction.crossover_v2_banked_candidate_found",
@@ -293,6 +286,6 @@ def find_banked_candidate(
         bundle_session_id=found.bundle_session_id,
         capture_session_id=found.capture_session_id,
         examined=examined,
-        lineages=",".join(f"{m.bundle_session_id}/{m.capture_session_id}" for m in lineages),
+        lineages=",".join(dict.fromkeys(f"{m.bundle_session_id}/{m.capture_session_id}" for m in matches)),
     )
     return found

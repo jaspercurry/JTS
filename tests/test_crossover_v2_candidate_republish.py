@@ -38,7 +38,7 @@ def test_default_candidate_lookup_survives_live_session_retention(bank):
     live = _publish(bank, candidate)
     saved = _publish(bank.parent / "campaigns" / "round-1" / "bundle", candidate)
     assert len(banked_candidates()) == 2
-    assert find_banked_candidate(candidate.fingerprint).fingerprint == candidate.fingerprint
+    assert find_banked_candidate(candidate.fingerprint).path == saved
     live.unlink()
     for index in range(65):
         _publish(bank, _candidate(program_id=f"new-{index}"), bundle=f"new-{index:03}")
@@ -63,21 +63,23 @@ def test_bank_refuses_an_unresolved_identity(bank, fault, code):
     assert refusal.value.code == code
 
 
-def test_two_lineages_sharing_a_fingerprint_resolve_to_the_campaign_store(bank, caplog):
-    """R2-F15: the fingerprint hashes the whole candidate, so two lineages
-    that carry it are one candidate, not an ambiguity. The campaign-store
-    lineage wins -- the same preference ``publish_authored_candidate`` gives
-    a freshly authored one -- and both lineages are disclosed on the event.
+@pytest.mark.parametrize("live_bundle", [
+    pytest.param("live-only", id="two-lineages"),
+    pytest.param("banked-round", id="bank-round-copy"),
+])
+def test_copies_sharing_a_fingerprint_resolve_to_the_campaign_store(bank, caplog, live_bundle):
+    """R2-F15: the fingerprint hashes the whole candidate, so every copy that
+    carries it is one candidate, not an ambiguity. The campaign-store copy
+    wins: ``bank_round`` copies a bundle there under the same id, and
+    retention deletes only the live copy. The event names each lineage once.
     """
     caplog.set_level(logging.INFO, logger="jasper.active_speaker.candidate_bank")
     candidate = _candidate()
-    _publish(bank, candidate, bundle="live-only")
+    _publish(bank, candidate, bundle=live_bundle)
     campaign = _publish(
         bank.parent / "campaigns" / "round-1" / "bundle", candidate, bundle="banked-round",
     )
-    found = find_banked_candidate(candidate.fingerprint)
-    assert found.path == campaign
-    assert found.bundle_session_id == "banked-round"
+    assert find_banked_candidate(candidate.fingerprint).path == campaign
     fields = event_fields(caplog, "correction.crossover_v2_banked_candidate_found")
-    lineages = set(fields["lineages"].split(","))
-    assert lineages == {f"live-only/{CAPTURE}", f"banked-round/{CAPTURE}"}
+    lineages = {f"{live_bundle}/{CAPTURE}", f"banked-round/{CAPTURE}"}
+    assert sorted(fields["lineages"].split(",")) == sorted(lineages)
