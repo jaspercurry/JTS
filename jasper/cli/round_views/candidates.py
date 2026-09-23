@@ -25,6 +25,7 @@ from ._common import (
     answer,
     default_out,
     refused_by_name,
+    subject,
 )
 
 
@@ -39,10 +40,8 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
     except CandidateLadderRefused as refusal:
         return refused_by_name(refusal.reason, refusal.detail)
     summary = document["summary"]
-    written = _write(
-        document, args.out,
-        default_out(inputs, round_dir, ARTIFACT_BY_VIEW[args.command].artifact),
-    )
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(document, args.out, default_out(inputs, round_dir, spec.artifact), schema=spec.schema)
     worst = (
         "no pair shared a role" if summary["max_abs_delta_db"] is None else
         f"widest gap {summary['max_abs_delta_between'][0]} vs "
@@ -53,7 +52,7 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
         f"{summary['max_abs_delta_position_deg']}deg)"
     )
     return answer(
-        args.command, out=written, **summary,
+        args.command, schema=spec.schema, subject=subject(inputs), parameters={}, out=written, **summary,
         line=(
             f"candidates: {len(summary['candidates'])} candidate(s) over "
             f"{summary['poses']} held pose(s), {summary['pairs']} pair(s); "

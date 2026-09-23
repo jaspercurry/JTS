@@ -18,7 +18,7 @@ from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, add_set_argument, answer, default_out, refused_by_name,
+    _write, add_set_argument, answer, calibration_id, default_out, refused_by_name, subject,
 )
 
 
@@ -32,7 +32,8 @@ def write_room(
         raise
     except _ROUND_TOOL_ERRORS as exc:
         raise StageFailed(EXIT_UNREADABLE, exc) from exc
-    return payload, _write(payload, None, default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id))
+    spec = ARTIFACT_BY_VIEW["room"]
+    return payload, _write(payload, None, default_out(inputs, directory, spec.artifact, set_id), schema=spec.schema)
 
 
 def _cmd_room(args: argparse.Namespace) -> int:
@@ -45,8 +46,13 @@ def _cmd_room(args: argparse.Namespace) -> int:
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     median, features = payload["median"], payload["persistence"]["features"]
+    evidence = median["evidence"]
     return answer(
-        args.command, out=written, set_id=median["set_id"], ceiling_hz=median["ceiling_hz"],
+        args.command, schema=ARTIFACT_BY_VIEW[args.command].schema,
+        subject=subject(inputs, set_id=median["set_id"], take_ids=evidence["take_ids"],
+                        candidate_id=evidence["basis"].get("candidate_id")),
+        parameters={"calibration_id": calibration_id(evidence["basis"].get("capture_calibration"))},
+        out=written, set_id=median["set_id"], ceiling_hz=median["ceiling_hz"],
         n_positions=median["n_positions"], spatial_support=median["spatial_support"],
         coverage_hz=median["coverage_hz"], features=len(features), incumbent=payload["incumbent"],
         incumbent_reason=payload["incumbent_reason"],

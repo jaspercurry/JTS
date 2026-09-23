@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 import wave
 
+from jasper.active_speaker.bench.render import RenderError
+from jasper.active_speaker.bench.replay import replay_graph, replay_levels
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.cli._report import output_path
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -18,9 +20,6 @@ from ._common import ARTIFACT_BY_VIEW, _ROUND_TOOL_ERRORS, _write, answer
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bench.replay import replay_graph  # lazy: isolated native DSP work
-    from jasper.active_speaker.bench.render import RenderError  # lazy: native renderer dependencies
-
     def replay():
         if args.bass_descriptor is not None:
             from jasper.active_speaker.bench.bass_replay import replay_bass  # lazy: native bass attribution
@@ -33,8 +32,11 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         return replay_graph(args.graph, args.stimulus, args.out, main_db=args.main_db,
                             bass_reference_db=args.bass_reference_db)
     payload = stage(EXIT_UNREADABLE, (*_ROUND_TOOL_ERRORS, RenderError, wave.Error), replay)
-    written = _write(payload, str(args.out / ARTIFACT_BY_VIEW[args.command].artifact), args.out / "dsp_replay.json")
-    return answer(args.command, out=written, output=payload["output"], line=f"dsp-replay -> {written}")
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(payload, None, args.out / spec.artifact, schema=spec.schema)
+    return answer(args.command, schema=spec.schema, subject={},
+                  parameters={"main_db": args.main_db, "bass_reference_db": args.bass_reference_db},
+                  out=written, output=payload["output"], line=f"dsp-replay -> {written}")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -57,8 +59,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_levels(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bench.replay import replay_levels  # lazy: laptop FFT analysis
-
     def levels():
         manifest = json.loads(args.manifest.read_text())
         if 'bass_attribution' in manifest:
@@ -66,5 +66,7 @@ def _cmd_levels(args: argparse.Namespace) -> int:
             return bass_replay_levels(manifest, args.raw, tuple(args.window_s))
         return replay_levels(manifest, args.raw, tuple(args.window_s))
     payload = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, levels)
-    written = _write(payload, args.out, args.manifest.parent / ARTIFACT_BY_VIEW[args.command].artifact)
-    return answer(args.command, out=written, channels=payload["channels"], line=f"dsp-levels -> {written}")
+    spec = ARTIFACT_BY_VIEW[args.command]
+    written = _write(payload, args.out, args.manifest.parent / spec.artifact, schema=spec.schema)
+    return answer(args.command, schema=spec.schema, subject={}, parameters={"window_s": payload["window_s"]},
+                  out=written, channels=payload["channels"], line=f"dsp-levels -> {written}")

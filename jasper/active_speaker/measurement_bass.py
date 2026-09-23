@@ -21,6 +21,8 @@ from jasper.audio_measurement.repeated_sweep import sweep_ambient_id
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import AnalyzedMeasurement, analyzed_measurements
 
+BASS_VIEW_SCHEMA = "jts_bass_view/1"
+
 
 def _finite(values: np.ndarray) -> list[float | None]:
     return [float(value) if np.isfinite(value) else None for value in values]
@@ -129,7 +131,7 @@ def bass_view(
     if not takes:
         raise ValueError("measurement_captures_missing")
     return {
-        "schema": "jts_bass_view/1", "bundle_dir": str(bundle_dir), "takes": takes,
+        "schema": BASS_VIEW_SCHEMA, "bundle_dir": str(bundle_dir), "takes": takes,
         "units": {"fundamental_db": "deconvolution magnitude; compare compatible takes only",
                   "relative_db": "received harmonic minus fundamental at the excitation frequency"},
         "limits": [

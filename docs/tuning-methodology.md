@@ -141,7 +141,7 @@ different candidates and then claim their full configurations were compared.
 ## 6. Linearize per driver
 
 Is this a speaker feature the filter can control? `classify-features`,
-`jasper-round-views sweep --scope round|verdict|take`, `close-reference`, and
+`jasper-round-views sweep --scope round|take`, `close-reference`, and
 `distortion` give distinct evidence. Run useful views before freezing the
 prescription packet. Unavailable classification is not a negative verdict.
 

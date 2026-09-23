@@ -20,19 +20,23 @@ from ._common import (
     _write,
     add_set_argument,
     answer,
+    calibration_id,
     default_out,
     resolve_set,
     round_inputs,
+    subject,
 )
 
 
 def _cmd_directivity(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
-    document = set_directivity(resolve_set(inputs, args.set))
+    selected = resolve_set(inputs, args.set)
+    document = set_directivity(selected)
+    spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(
         {"round_dir": str(round_dir), **document}, args.out,
-        default_out(inputs, round_dir, ARTIFACT_BY_VIEW[args.command].artifact, args.set),
+        default_out(inputs, round_dir, spec.artifact, args.set), schema=spec.schema,
     )
     poses = [
         {
@@ -48,8 +52,10 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
     ]
     lo, hi = document["parameters"]["band_hz"]
     return answer(
-        args.command, out=written, set_id=document["set_id"], role=document["role"],
-        parameters=document["parameters"], reference_take_ids=document["reference_take_ids"],
+        args.command, schema=spec.schema, subject=subject(inputs, selected, take_ids=document["poses"].keys()),
+        parameters={**document["parameters"], "calibration_id": calibration_id(selected.capture_basis.get("capture_calibration"))},
+        out=written, set_id=document["set_id"], role=document["role"],
+        reference_take_ids=document["reference_take_ids"],
         omitted_take_ids=document["omitted_take_ids"], poses=poses,
         line=(
             f"directivity: {len(poses)} off-axis take(s) against "

@@ -29,6 +29,8 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
+    round_inputs,
+    subject,
 )
 
 def _cmd_distortion(args: argparse.Namespace) -> int:
@@ -42,14 +44,24 @@ def _cmd_distortion(args: argparse.Namespace) -> int:
         },
         calibration_path=args.calibration,
     )
+    captures = artifact["captures"]
+    read = subject(round_inputs(args.bundle_dir), take_ids=[take["take_id"] for take in captures["read"]])
+    # Only the swept roles, each over the band it was read: a candidate-branch
+    # capture reads its own recorded program's band, not the flag's.
+    band_hz: dict[str, list[list[float]]] = {}
+    for block in artifact["roles"]:
+        read_bands = band_hz.setdefault(block["role"], [])
+        if block["sweep"]["read_band_hz"] not in read_bands:
+            read_bands.append(block["sweep"]["read_band_hz"])
+    spec = ARTIFACT_BY_VIEW[args.command]
     # The bundle's own round directory, never `default_out`: this reading is
     # filed where the packet reader looks for it, and that is a banked tree.
-    written = _write(
-        artifact, args.out, round_dir / ARTIFACT_BY_VIEW[args.command].artifact
-    )
-    captures = artifact["captures"]
+    written = _write(artifact, args.out, round_dir / spec.artifact, schema=spec.schema)
     return answer(
-        args.command, out=written, orders=artifact["orders"],
+        args.command, schema=spec.schema, subject=read,
+        parameters={"band_hz": band_hz,
+                    "setup_calibration_id": artifact["calibration"].get("setup_calibration_id") or None},
+        out=written, orders=artifact["orders"],
         blocks=len(artifact["roles"]), captures_read=captures["n_read"],
         captures_refused=captures["n_refused"],
         line=(

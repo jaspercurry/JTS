@@ -1011,7 +1011,8 @@ def test_cli_gate_sweep_writes_its_report_beside_the_round(gate_sweep_round, set
     from jasper.cli._report import render_report
     from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 
-    expected = sweep_round(gate_sweep_round, rungs_ms=[5, 20], take_ids=ids)
+    expected = {**sweep_round(gate_sweep_round, rungs_ms=[5, 20], take_ids=ids),
+                "schema": cli.ARTIFACT_BY_VIEW["sweep --scope round"].schema}
     flags = ["--set", set_id] if set_id else []
     rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20", *flags])
     assert rc == cli.EXIT_OK

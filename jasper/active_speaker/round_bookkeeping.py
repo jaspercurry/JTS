@@ -70,7 +70,7 @@ def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
     except ROUND_INPUT_ERRORS as exc:
         return {"view": view, "status": "unavailable", "reason": REASON_UNREADABLE, "detail": str(exc)}
     try:
-        atomic_write_json(path, payload)
+        atomic_write_json(path, {**payload, "schema": row.schema})
         if view == "frequency":
             summary.update(frequency_image(payload, target / "frequency.png", low_end=True))
     except OSError as exc:

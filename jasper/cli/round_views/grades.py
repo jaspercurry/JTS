@@ -20,12 +20,14 @@ from jasper.active_speaker.crossover_v2.round_views import entry_state_grade
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
+    ARTIFACT_BY_VIEW,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _load_round,
     _view_out,
     _write,
     answer,
+    subject,
 )
 
 def _cmd_entry(args: argparse.Namespace) -> int:
@@ -33,8 +35,10 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     # A packet missing `entry_baseline` is a corrupt packet, which this grade's
     # own docstring puts in the unreadable arm — not a view declining a round.
     grade = stage(EXIT_UNREADABLE, (KeyError, TypeError), entry_state_grade, banked)
-    written = _write(grade.to_dict(), args.out, _view_out(args, banked))
+    schema = ARTIFACT_BY_VIEW[args.command].schema
+    written = _write(grade.to_dict(), args.out, _view_out(args, banked), schema=schema)
     report = grade.report
+    read = subject(banked.inputs)
     # ``report is None`` IS ``not available`` — the two move together on
     # ``EntryStateGrade`` — and testing the report narrows it for the summary
     # below without a second, unfalsifiable assertion that they agree.
@@ -44,7 +48,8 @@ def _cmd_entry(args: argparse.Namespace) -> int:
         # hand-rolled evaluation — not a failure to read the round, which is
         # what the unreadable exit is for.
         return answer(
-            args.command, out=written, graded=False, reason=grade.reason,
+            args.command, schema=schema, subject=read, parameters={}, out=written,
+            graded=False, reason=grade.reason,
             line=f"entry-state: NOT GRADED — {grade.reason}",
         )
     n_failed = sum(1 for band in report.bands if band.within_target is False)
@@ -52,7 +57,10 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal
     epoch = "?" if grade.round_ordinal_epoch is None else grade.round_ordinal_epoch
     return answer(
-        args.command, out=written, graded=True, bands=len(report.bands),
+        args.command, schema=schema, subject=read, parameters={
+            "smoothing_fraction": report.smoothing_fraction, "band_hz": list(report.graded_band_hz),
+            "reference_band_hz": list(report.reference_band_hz),
+        }, out=written, graded=True, bands=len(report.bands),
         outside_target=n_failed, unevaluable=n_unevaluable,
         overall_within_target=report.overall_within_target, round_ordinal=grade.round_ordinal,
         round_ordinal_epoch=grade.round_ordinal_epoch,

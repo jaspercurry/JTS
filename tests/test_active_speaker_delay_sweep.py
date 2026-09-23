@@ -220,14 +220,14 @@ def test_a_lateral_pose_answers_when_the_caller_asks_for_one(
     tmp_path, capsys,
 ) -> None:
     """A per-driver walk pose carries the same curve shape a design-axis
-    MEASURE capture does; which phase answers is the caller's to state."""
+    MEASURE capture does; which take answers is the caller's to name."""
 
     bundle = _bank(
         tmp_path,
         curves=[_curve("woofer", arrival_us=200.0), _curve("tweeter")],
         phase=PHASE_LATERAL,
     )
-    code, payload, err = _propose(bundle, capsys, "--phase", PHASE_LATERAL)
+    code, payload, err = _propose(bundle, capsys, "--take", "p0_a01")
     assert code == 0
     assert payload["best_coordinate_us"] == pytest.approx(200.0, abs=50.0)
 
@@ -238,7 +238,7 @@ def test_the_proposal_echoes_the_composition_its_take_was_banked_under(
     """docs/tuning-methodology.md §4 step 1, stated by the tool.
 
     Whether the analysis divided the emitted protection out and multiplied the
-    configured crossover in is a fact about the take, not about `--phase`, and
+    configured crossover in is a fact about the take, not about its phase, and
     a protection-retained optimum is contaminated evidence. So the proposal
     echoes what the take stamped — and `None` for a take banked before the
     field existed, which is unknown rather than either one.
@@ -315,7 +315,7 @@ def test_delay_proposal_selects_one_take_and_reports_coordinate_basis(tmp_path, 
     _bank(tmp_path, curves=[_curve("woofer", arrival_us=-100), _curve("tweeter")],
           phase="lateral", composition=composition, take_id="p0_a02")
     take = "crossover_v2/capture-1/positions/p0_a01.json"
-    code, payload, _err = _propose(tmp_path, capsys, "--phase", "lateral", "--take-path", take)
+    code, payload, _err = _propose(tmp_path, capsys, "--take", "p0_a01")
     assert code == 0
     assert payload["take_path"] == take
     assert payload["best_coordinate_us"] == pytest.approx(100)
@@ -347,7 +347,7 @@ def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, ove
     profile["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = FC_HZ
     bank = bundle.parent.parent
     (bank / "applied-profile.json").write_text(json.dumps(profile))
-    flags = ["--fc-hz", "2000", "--position-deg", "15", "--inverted-role", "tweeter", "--phase", "lateral"] if override else []
+    flags = ["--fc-hz", "2000", "--take", "lateral", "--inverted-role", "tweeter"] if override else []
     assert main(["delay-landscape", str(bank), *flags]) == 0
     output = _banked(json.loads(capsys.readouterr().out))
     assert output["phase"] == ("lateral" if override else "measure")
