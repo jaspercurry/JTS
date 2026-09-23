@@ -88,7 +88,6 @@ DOCS_TEST_FILES = (
     "tests/test_crossover_v2_prescriber_status.py",
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
-    "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",

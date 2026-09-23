@@ -58,7 +58,6 @@ source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
-source "${REPO_DIR}/deploy/lib/install/first-party-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/rust-daemons.sh"
 # Ring platform: builds the jts_ring ALSA ioplug + ships its conf.d/tmpfiles
 # assets. Sourced after build-sandbox.sh (uses run_contained_build).
@@ -138,10 +137,6 @@ Environment:
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
                              forwards this automatically.
-  JASPER_FIRST_PARTY_RUNTIME_BUNDLE=<directory>
-                             Optional extracted, local ARM64 runtime bundle.
-                             Verification is fail-closed; unset preserves the
-                             existing source-build path.
 EOF
 }
 

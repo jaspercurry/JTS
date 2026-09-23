@@ -109,15 +109,10 @@ docs = [
 ]
 
 [[subsystem]]
-id = "first-party-arm64-release"
+id = "native-dependency-licenses"
 safety = "boot-risk"
 code = [
-  ".github/workflows/first-party-arm64-release.yml",
-  "release/first-party-arm64/**",
-  "scripts/_first_party_arm64_release.py",
-  "scripts/build-first-party-arm64-release.py",
-  "scripts/verify-first-party-arm64-release.py",
-  "deploy/lib/install/first-party-runtime.sh",
+  "rust/Cargo.lock",
   "c/jts-ring-ioplug/Makefile",
 ]
 docs = [

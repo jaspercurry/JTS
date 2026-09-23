@@ -111,5 +111,5 @@ def test_install_restarts_not_just_starts_the_camillagui_socket():
     # loop's restart (deploy/lib/install/systemd-units.sh) — a failed
     # rebind here leaves a security-relevant posture unchanged (still
     # LAN-reachable) and must abort the install loudly, not continue
-    # past it. Precedent idiom: tests/test_first_party_arm64_release.py.
+    # past it.
     assert "systemctl restart camillagui.socket 2>/dev/null || true" not in install

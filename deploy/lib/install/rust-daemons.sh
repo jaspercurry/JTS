@@ -144,26 +144,9 @@ build_install_rust_daemon() {
 }
 
 build_install_jasper_fanin() {
-    # A staged image/bootstrap bundle installs all coupled first-party runtime
-    # files together. Invalid configured bundles fail closed; an unset bundle
-    # preserves the existing source-build path.
-    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
-        prepare_first_party_runtime_bundle || return 1
-        if first_party_runtime_artifact_installed "jasper-fanin"; then
-            echo "  jasper-fanin: using verified first-party ARM64 runtime bundle"
-            return 0
-        fi
-    fi
     build_install_rust_daemon "jasper-fanin"
 }
 
 build_install_jasper_outputd() {
-    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
-        prepare_first_party_runtime_bundle || return 1
-        if first_party_runtime_artifact_installed "jasper-outputd"; then
-            echo "  jasper-outputd: using verified first-party ARM64 runtime bundle"
-            return 0
-        fi
-    fi
     build_install_rust_daemon "jasper-outputd"
 }
