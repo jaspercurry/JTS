@@ -10,7 +10,8 @@ import pytest
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
+from jasper.active_speaker.round_packet_report import packet_index
 from jasper.active_speaker.round_verdicts import common_measured_band, round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
 from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS

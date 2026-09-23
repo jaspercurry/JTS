@@ -65,6 +65,9 @@ APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
+PACKET_FILENAME = "packet.json"
+PICTURE_FILENAME = "frequency.png"
+INDEX_FILENAME = "index.md"
 ROOM_ARTIFACT = "room.json"
 
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
@@ -243,8 +246,6 @@ def read_banked_round(directory: Path, modified_at: float) -> tuple[dict[str, An
 
     ``modified_at`` dates only a round whose provenance and packet name no time.
     """
-    from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
-
     if not (directory / "bundle").is_dir():
         return None
     packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
@@ -354,8 +355,6 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
 def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = None) -> dict[str, Any]:
     if inputs is None:
         return {"bass_evidence": {}}
-    from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: round_packet_report imports round_inputs.SetTakes
-
     if set_id is not None:
         resolve_set(inputs, set_id)
     sources = contract_sources(inputs, set_id=set_id)

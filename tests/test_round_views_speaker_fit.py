@@ -42,7 +42,8 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
-from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
+from jasper.active_speaker.round_packet import _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker import candidate_parts, commissioning_experiment

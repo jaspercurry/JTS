@@ -43,7 +43,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import load_round_cap
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
 from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
-from jasper.active_speaker.round_packet import INDEX_FILENAME
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401

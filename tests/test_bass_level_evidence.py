@@ -16,7 +16,8 @@ from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.round_packet import finish_bass_packet
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME, bass_table_markdown
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
+from jasper.active_speaker.round_packet_report import bass_table_markdown
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor

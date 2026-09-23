@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.active_speaker.round_packet_report import PACKET_FILENAME
+from jasper.active_speaker.crossover_v2.round_inputs import PACKET_FILENAME
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
