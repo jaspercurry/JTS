@@ -1578,14 +1578,6 @@ install_camillagui() {
             bundle="bundle_linux_aarch64.tar.gz"
             bundle_sha256="9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7"
             ;;
-        x86_64)
-            bundle="bundle_linux_amd64.tar.gz"
-            bundle_sha256="86fd3cde575038f312ede7bad0910dc5e46b974cafc048c26115ec3cb9f54792"
-            ;;
-        armv7l)
-            bundle="bundle_linux_armv7.tar.gz"
-            bundle_sha256="22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1"
-            ;;
         *)
             echo "  WARNING: no CamillaGUI bundle for ${arch} — skipping"
             return 0
