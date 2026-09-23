@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._log_events import event_field_maps
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.multiroom_reconcile_fixtures import _FakeCamilla
 
@@ -805,8 +806,11 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
 
     assert restored is None
     assert cam.loaded == []
-    assert "classification=unavailable" in caplog.text
-    assert "candidate_unavailable" in caplog.text
+    (fields,) = event_field_maps(
+        caplog, "multiroom.camilla_apply", result="active_follower_restore_skip_unsafe"
+    )
+    assert fields["classification"] == "unavailable"
+    assert "candidate_unavailable" in fields["issues"]
 
 
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:
