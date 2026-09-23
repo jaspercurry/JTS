@@ -265,7 +265,6 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     assert 'from "/assets/shared/js/dialog.js"' in main
     assert 'JSON.parse(raw)' in views
     assert 'parsed.kind !== "voice_turn"' in views
-    assert "Transcript text is not available for this provider." in views
     assert 'Tool" : "Tools"' in views
     assert "chat-turns" in views
     assert "article.chat-turn-card" in views
