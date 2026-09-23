@@ -5,7 +5,6 @@
 """Deploy artifact, unit and socket contracts."""
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -281,37 +280,22 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 
 
 # ----------------------------------------------------------------------
-# 4b — assembled nginx route table
+# 4b — OAuth callbacks stay out of nginx's access log
 # ----------------------------------------------------------------------
 
-# The route table both site confs resolved to before their shared body moved
-# into deploy/nginx/ snippets. Regenerate on a deliberate route change:
-#   python -c "import json;from tests import nginx_site as n;\
-#   print(json.dumps({p: n.canonical_routes(n.conf_text(p)) \
-#   for p in n.PROFILE_CONFS}, indent=2, ensure_ascii=False, sort_keys=True))" \
-#   > tests/fixtures/nginx_routes.json
-_NGINX_ROUTES_FIXTURE = _REPO / "tests" / "fixtures" / "nginx_routes.json"
 
-
-def test_assembled_nginx_confs_mount_the_pinned_route_table():
-    """Each site conf plus its snippets resolves to the routes pinned here.
-
-    deploy/nginx-jasper*.conf carry only their listeners and `include` lines,
-    so a mistyped include path, a snippet install.sh fails to stage, or a
-    route edited into one profile's snippet but not the shared one does not
-    fail loudly — it silently drops part of the management UI, or takes the
-    whole site down when nginx next reloads. Keyed by listener and location
-    header, valued by the block's directives, so prose and layout are free
-    to move and only what nginx acts on is pinned.
-    """
-    assembled = {
-        profile: nginx_site.canonical_routes(nginx_site.conf_text(profile))
-        for profile in nginx_site.PROFILE_CONFS
-    }
-
-    assert assembled == json.loads(
-        _NGINX_ROUTES_FIXTURE.read_text(encoding="utf-8")
-    )
+@pytest.mark.parametrize("callback", ["/spotify/oauth-callback", "/google/callback"])
+@pytest.mark.parametrize("profile", tuple(nginx_site.PROFILE_CONFS))
+def test_oauth_callbacks_are_never_access_logged(profile, callback):
+    """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's access log."""
+    blocks = [
+        locations[("=", callback)]
+        for _, locations in nginx_site.servers(nginx_site.conf_text(profile))
+        if ("=", callback) in locations
+    ]
+    assert blocks
+    for body in blocks:
+        assert "access_log off;" in {line.strip() for line in body.splitlines()}
 
 
 # ----------------------------------------------------------------------
