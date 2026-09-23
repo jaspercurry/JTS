@@ -17,7 +17,9 @@ from jasper.fanin.status import (
     DIRECT_HEALTH_CAPTURING,
     extract_direct_sample,
     fanin_usbsink_lane_is_direct,
+    read_fanin_status,
 )
+from tests.status_socket_fixtures import JsonStatusSocket
 
 
 def _status(usbsink_source: str) -> dict:
@@ -107,3 +109,14 @@ def test_inputs_by_label_projects_the_raw_status_fail_soft(
     status, expected_labels,
 ):
     assert sorted(fanin_inputs_by_label(status)) == sorted(expected_labels)
+
+
+def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
+    server = JsonStatusSocket(
+        {"ok": True},
+        name="control.sock",
+        accept_delay_seconds=0.35,
+    )
+    with server as socket_path:
+        assert read_fanin_status(str(socket_path)) == {"ok": True}
+    assert server.requests == [b"STATUS\n"]

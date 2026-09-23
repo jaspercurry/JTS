@@ -24,14 +24,9 @@ from jasper.control._health_fields import (
     _nonneg_rate,
     _sum_or_none,
 )
-from jasper.fanin.status import fanin_inputs_by_label
+from jasper.fanin.status import fanin_inputs_by_label, read_fanin_status
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from jasper.platform.status_socket import (
-    FANIN_STATUS_SOCKET,
-    read_status_socket_or_none,
-)
 
-FANIN_TIMEOUT_SEC = 1.0
 # Fallback mixer rate when fan-in STATUS omits output.sample_rate.
 DEFAULT_MIXER_RATE_HZ = 48000
 
@@ -44,7 +39,7 @@ class FaninView:
     def __init__(
         self, *, probe: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
-        self._probe = probe or self._read_fanin_status
+        self._probe = probe or read_fanin_status
         self._current: dict[str, Any] | None = None
         self._last_counts: dict[str, Any] | None = None
 
@@ -397,14 +392,3 @@ class FaninView:
             ),
         }
         self._current = current
-
-    @staticmethod
-    def _read_fanin_status(
-        socket_path: str = FANIN_STATUS_SOCKET,
-        timeout_sec: float = FANIN_TIMEOUT_SEC,
-    ) -> dict[str, Any] | None:
-        return read_status_socket_or_none(
-            socket_path,
-            timeout=timeout_sec,
-            event="airplay_health.fanin_status_unavailable",
-        )

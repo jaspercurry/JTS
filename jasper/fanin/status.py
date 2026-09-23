@@ -11,8 +11,8 @@ aggregator, the route-latency harness, the mux source arbiter, jasper-doctor —
 so the load-bearing field contracts live here, once, rather than as a copy of a
 magic string in each caller.
 
-Import-light on purpose (no daemon/socket I/O, no heavy deps) so any surface can
-use it, including the socket-activated wizard process and CI without hardware.
+Import-light on purpose (no heavy deps) so any surface can use it, including the
+socket-activated wizard process and CI without hardware.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def extract_direct_sample(
 def read_fanin_status(
     socket_path: str = FANIN_STATUS_SOCKET,
     *,
-    timeout_sec: float = 0.5,
+    timeout_sec: float = 1.0,
     max_bytes: int = 64 * 1024,
 ) -> dict[str, Any] | None:
     if timeout_sec <= 0 or max_bytes <= 0:

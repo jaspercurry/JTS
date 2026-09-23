@@ -23,7 +23,6 @@ import pytest
 from jasper import audio_validation
 from jasper.cli import system_soak
 from jasper.control import audio_health_sampler
-from jasper.control.fanin_view import FaninView
 from jasper.fanin.status import read_fanin_status
 from jasper.platform import status_socket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
@@ -224,10 +223,6 @@ def _call_audio_validation(sock_path: Path) -> dict | None:
     return audio_validation.query_outputd_status(sock_path, timeout=_DRIBBLE_TIMEOUT_SEC)
 
 
-def _call_fanin_view(sock_path: Path) -> dict | None:
-    return FaninView._read_fanin_status(str(sock_path), timeout_sec=_DRIBBLE_TIMEOUT_SEC)
-
-
 def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
     """Run `call(sock_path)` on a daemon thread; return (finished, result).
 
@@ -249,7 +244,6 @@ def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
     "label, call",
     [
         ("audio_validation.query_outputd_status", _call_audio_validation),
-        ("fanin_view.FaninView._read_fanin_status", _call_fanin_view),
         ("fanin.read_fanin_status", lambda path: read_fanin_status(
             str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
         )),
