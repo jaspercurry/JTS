@@ -410,9 +410,8 @@ _NON_PORTABLE_SPELLINGS = (
         # accepted spelling.
         re.compile(r"\bsed\b[^\n|;&]*?\s(?:-i(?=['\"]|[\s\\]|$)|--in-place)"),
         "sed_inplace FILE EXPRESSION... from deploy/lib/jasper-sed-inplace.sh "
-        "— but only install-time shell can source it (install.sh reads it "
-        "from the deploy checkout; unlike its deploy/lib siblings it is NOT "
-        "installed to /usr/local/lib/jasper/). A deploy/bin script that runs "
+        "— but only install-time shell can source it from the deploy checkout; "
+        "it is NOT installed to /usr/local/lib/jasper/. A deploy/bin script that runs "
         "on the Pi must inline `sed -i.bak` + `rm -f` instead",
     ),
     (
