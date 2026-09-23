@@ -1147,12 +1147,14 @@ def test_exec_main_status_parses_systemctl_show_and_fails_soft(
 
     def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="2\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="ExecMainStatus=2\n", stderr="",
+        )
 
     monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
     assert bridge_session._aec_init_exec_main_status() == 2
     assert calls == [[
-        "systemctl", "show", "-p", "ExecMainStatus", "--value",
+        "systemctl", "show", "--no-page", "--property=ExecMainStatus",
         bridge_session.AEC_INIT_UNIT,
     ]]
 
@@ -1160,7 +1162,7 @@ def test_exec_main_status_parses_systemctl_show_and_fails_soft(
         bridge_session.subprocess,
         "run",
         lambda argv, **kwargs: subprocess.CompletedProcess(
-            argv, 0, stdout="[not set]\n", stderr="",
+            argv, 0, stdout="ExecMainStatus=[not set]\n", stderr="",
         ),
     )
     assert bridge_session._aec_init_exec_main_status() is None

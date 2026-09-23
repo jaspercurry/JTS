@@ -29,7 +29,7 @@ import numpy as np
 
 from jasper.control import restart_broker
 from jasper.log_event import log_event
-from jasper.service_units import OUTPUTD_SERVICE
+from jasper.service_units import OUTPUTD_SERVICE, read_unit_property, systemd_int
 from jasper.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
@@ -642,24 +642,10 @@ def _aec_init_exec_main_status() -> int | None:
     only place that distinction survives. A read-only `systemctl show` — no
     privilege, no broker.
     """
-    try:
-        result = subprocess.run(
-            [
-                "systemctl", "show",
-                "-p", "ExecMainStatus", "--value", AEC_INIT_UNIT,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=UNIT_STATE_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        return int((result.stdout or "").strip())
-    except ValueError:
-        return None
+    values = read_unit_property(
+        "ExecMainStatus", [AEC_INIT_UNIT], timeout=UNIT_STATE_TIMEOUT_SEC,
+    )
+    return systemd_int(values[0]) if values else None
 
 
 def _aec_init_parked_for_commissioning() -> bool:

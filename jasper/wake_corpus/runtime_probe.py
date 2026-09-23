@@ -59,6 +59,7 @@ from jasper.mics.xvf3800 import (
 from jasper.env_file import read_env_file
 from jasper.env_load import parse_bool_value
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.systemd_probe import unit_query, unit_state
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -757,27 +758,21 @@ def systemd_unit_active(unit: str) -> bool:
     otherwise unrecognized responses raise so those callers can fail closed.
     Observational callers use the fail-soft wrappers instead.
     """
-    rc = subprocess.run(
-        ["systemctl", "is-active", unit],
-        capture_output=True,
-        text=True,
-        timeout=UNIT_STATE_TIMEOUT_SEC,
-    )
-    state = (rc.stdout or "").strip().lower()
-    detail = (rc.stderr or "").strip()
-    if detail:
+    result = unit_state("is-active", unit, timeout=UNIT_STATE_TIMEOUT_SEC)
+    if result.error is not None:
+        raise result.error
+    if result.stderr:
         raise OSError(
-            f"systemctl is-active {unit} returned rc={rc.returncode}: "
-            f"{detail[-300:]}",
+            f"systemctl is-active {unit} returned rc={result.rc}: "
+            f"{result.stderr[-300:]}",
         )
-    if rc.returncode == 0 and state == "active":
-        return True
-    if state in {"inactive", "failed"}:
-        return False
-    raise OSError(
-        f"systemctl is-active {unit} returned rc={rc.returncode}, "
-        f"state={state or '<empty>'}",
-    )
+    verdict = unit_query(result)
+    if verdict is None or (verdict and result.rc != 0):
+        raise OSError(
+            f"systemctl is-active {unit} returned rc={result.rc}, "
+            f"state={result.word or '<empty>'}",
+        )
+    return verdict
 
 
 def aec_bridge_active() -> bool:

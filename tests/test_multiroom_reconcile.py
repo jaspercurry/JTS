@@ -1399,27 +1399,26 @@ def test_plan_leader_owns_only_snap_units():
     ("returncode", "state", "expected"),
     [
         (0, "active", True),
-        (0, "activating", True),
+        (3, "activating", True),
         (0, "reloading", True),
-        (0, "deactivating", True),
-        (0, "inactive", False),
-        (0, "failed", False),
-        (0, "unknown", None),
-        (1, "active", None),
+        (3, "deactivating", True),
+        (3, "inactive", False),
+        (3, "failed", False),
+        (4, "unknown", None),
+        (1, "", None),
     ],
 )
-def test_unit_active_barrier_requires_successful_show(
+def test_unit_active_barrier_reads_the_state_word_and_fails_soft(
     monkeypatch, returncode, state, expected,
 ):
     import subprocess as sp
 
     def fake_run(argv, **kwargs):
-        assert argv[1] == "show"
-        assert "u.service" in argv
+        assert argv == ["systemctl", "is-active", "u.service"]
         assert kwargs["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
-        stdout = state if "--value" in argv else f"ActiveState={state}"
         return sp.CompletedProcess(
-            argv, returncode, stdout=f"{stdout}\n", stderr="",
+            argv, returncode, stdout=f"{state}\n",
+            stderr="" if state else "Failed to connect to bus\n",
         )
 
     monkeypatch.setattr(

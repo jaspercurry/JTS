@@ -47,12 +47,12 @@ from ..env_load import (
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import OUTPUTD_SERVICE, run_systemctl
+from ..service_units import OUTPUTD_SERVICE
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
-from ..systemd_probe import unit_query, unit_state
+from ..systemd_probe import state_is_live, unit_query, unit_state
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
@@ -547,26 +547,18 @@ def _unit_absent_stderr(stderr: str) -> bool:
 
 
 def _unit_active(unit: str) -> bool | None:
-    """Return whether `unit`'s live ``ActiveState`` counts as active.
+    """Return whether `unit`'s live ``ActiveState`` counts as active: running,
+    starting, reloading or stopping.
 
     ``None`` on a probe failure or an unrecognized state; callers treat that
     as unproven and take the safe branch.
     """
-    try:
-        proc = run_systemctl(
-            ["show", unit, "--property=ActiveState", "--value"],
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    state = (proc.stdout or "").strip().lower()
-    if proc.returncode != 0:
-        return None
-    if state in {"active", "activating", "reloading", "deactivating"}:
+    result = unit_state("is-active", unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
+    if state_is_live(
+        result.word or "", activating_is_live=True, deactivating_is_live=True,
+    ):
         return True
-    if state in {"inactive", "failed"}:
-        return False
-    return None
+    return unit_query(result)
 
 
 def _plan_changes_units(intents: tuple[UnitIntent, ...]) -> bool:
@@ -785,9 +777,10 @@ def _restart_unit(
 def _source_reconciler_activation_busy() -> bool | None:
     """Return whether the source owner has an activation that can absorb a start.
 
-    ``systemctl is-active`` does not distinguish every oneshot state, so read
-    ``ActiveState`` directly via :func:`_unit_active`. Unknown / probe failure
-    returns ``None``; the caller handles it in the safe direction.
+    Reads the ``is-active`` state word via :func:`_unit_active`, never its exit
+    code, which is non-zero for an ``activating`` oneshot and a stopped one
+    alike. Unknown / probe failure returns ``None``; the caller handles it in
+    the safe direction.
     """
 
     state = _unit_active(SOURCE_INTENT_RECONCILE_UNIT)
