@@ -30,6 +30,8 @@ import shutil
 import subprocess
 
 
+from jasper import aec_sweep
+from jasper.wake_corpus import recording_backend, runtime_probe
 from jasper.web import wake_corpus_setup as wc
 
 _ASSETS = Path(__file__).resolve().parents[1] / "deploy" / "assets" / "wake-corpus"
@@ -138,10 +140,10 @@ def test_config_island_carries_python_leg_data() -> None:
     assert set(config) == {
         "leg_labels", "aec3_sweep_order", "usb_aec3_sweep_baseline_label",
     }
-    assert config["leg_labels"] == wc.LEG_LABELS
-    for variant in wc.AEC3_SWEEP_VARIANTS:
+    assert config["leg_labels"] == runtime_probe.LEG_LABELS
+    for variant in aec_sweep.AEC3_SWEEP_VARIANTS:
         assert variant.leg in config["aec3_sweep_order"]
-    assert config["usb_aec3_sweep_baseline_label"] == wc.USB_AEC3_SWEEP_BASELINE_LABEL
+    assert config["usb_aec3_sweep_baseline_label"] == aec_sweep.USB_AEC3_SWEEP_BASELINE_LABEL
 
 
 def test_config_island_cannot_close_script_early() -> None:
@@ -179,24 +181,22 @@ def test_leg_label_contract_and_runtime_xss_sinks() -> None:
 
 def test_public_surface_and_lazy_load_contract_preserved() -> None:
     """jasper.web.__main__'s lazy loader calls RecordingBackend +
-    _make_handler_class(backend, csrf_token); make_server/main are CLI
-    entrypoints. Migrating presentation must not move these names."""
+    _make_handler_class(backend); make_server/main are CLI entrypoints.
+    Migrating presentation must not move these names."""
     assert hasattr(wc, "RecordingBackend")
     assert callable(wc._make_handler_class)
     assert callable(wc.make_server)
     assert callable(wc.main)
     assert callable(wc._render_index_html)
-    assert wc.CSRF_HEADER == "X-CSRF-Token"
 
 
-def test_make_handler_class_binds_backend_and_token(tmp_path) -> None:
-    """_make_handler_class returns a handler subclass with backend + token
+def test_make_handler_class_binds_backend(tmp_path) -> None:
+    """_make_handler_class returns a handler subclass with the backend
     bound, without starting the asyncio loop / opening any UDP socket."""
-    backend = wc.RecordingBackend(output_dir=tmp_path / "out")  # no .start()
-    handler_cls = wc._make_handler_class(backend, "tok-123")
+    backend = recording_backend.RecordingBackend(output_dir=tmp_path / "out")  # no .start()
+    handler_cls = wc._make_handler_class(backend)
     assert issubclass(handler_cls, BaseHTTPRequestHandler)
     assert handler_cls.backend is backend
-    assert handler_cls.csrf_token == "tok-123"
 
 
 def test_get_routes_resolve_via_render_and_module() -> None:

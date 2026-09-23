@@ -18,8 +18,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.wake_corpus import runtime_probe
-from jasper.wake_corpus import recording_backend
+from jasper import audio_profile_state, wake_conditions
+from jasper.cli import wake_enroll
+from jasper.wake_corpus import bridge_session, recording_backend, runtime_probe
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
@@ -44,7 +45,7 @@ _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 async def test_recording_task_collects_frames_per_leg() -> None:
     _FakeUdpMicCapture.port_to_value = {9876: 11, 9877: 22, 9878: 33}
-    task = wake_corpus_setup.RecordingTask(
+    task = recording_backend.RecordingTask(
         ports={"on": 9876, "off": 9877, "dtln": 9878},
     )
     await task.start()
@@ -63,7 +64,7 @@ async def test_recording_task_collects_frames_per_leg() -> None:
 
 
 async def test_recording_task_elapsed_grows() -> None:
-    task = wake_corpus_setup.RecordingTask(ports={"on": 9876})
+    task = recording_backend.RecordingTask(ports={"on": 9876})
     await task.start()
     assert task.elapsed_sec() < 0.05
     await asyncio.sleep(0.1)
@@ -77,17 +78,17 @@ async def test_recording_task_elapsed_grows() -> None:
 
 
 def test_backend_start_is_idempotent(tmp_path: Path) -> None:
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     b.start()
     b.start()  # second call must not raise + not spawn a 2nd thread
     b.shutdown()
 
 
 def test_shutdown_before_start_makes_backend_terminal(tmp_path: Path) -> None:
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     b.shutdown()
 
-    with pytest.raises(wake_corpus_setup.StateError, match="shutting down"):
+    with pytest.raises(recording_backend.StateError, match="shutting down"):
         b.start()
     assert b._loop is None
     assert b._loop_thread is None
@@ -153,7 +154,7 @@ def test_begin_session_rejects_during_recording(backend) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     try:
-        with pytest.raises(wake_corpus_setup.StateError):
+        with pytest.raises(recording_backend.StateError):
             backend.begin_session("brittany")
     finally:
         backend.stop_recording()
@@ -185,7 +186,7 @@ def test_begin_session_rejects_concurrent_initialization(
     assert entered.wait(timeout=2)
     try:
         with pytest.raises(
-            wake_corpus_setup.StateError,
+            recording_backend.StateError,
             match="initialization in progress",
         ):
             backend.begin_session("brittany")
@@ -215,7 +216,7 @@ def test_start_recording_validates_distance(backend) -> None:
 
 
 def test_start_recording_requires_session(backend) -> None:
-    with pytest.raises(wake_corpus_setup.StateError, match="begin_session"):
+    with pytest.raises(recording_backend.StateError, match="begin_session"):
         backend.start_recording("quiet", "near")
 
 
@@ -223,7 +224,7 @@ def test_start_recording_rejects_double_start(backend) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     try:
-        with pytest.raises(wake_corpus_setup.StateError, match="in progress"):
+        with pytest.raises(recording_backend.StateError, match="in progress"):
             backend.start_recording("quiet", "near")
     finally:
         backend.stop_recording()
@@ -277,9 +278,9 @@ def test_start_stop_writes_wav_in_correct_format(
     wavs = list((tmp_path / "out").rglob("*.aec-on.wav"))
     assert len(wavs) == 1
     with wave.open(str(wavs[0])) as w:
-        assert w.getnchannels() == wake_corpus_setup.CHANNELS
-        assert w.getsampwidth() == wake_corpus_setup.SAMPLE_WIDTH_BYTES
-        assert w.getframerate() == wake_corpus_setup.SAMPLE_RATE_HZ
+        assert w.getnchannels() == wake_enroll.CHANNELS
+        assert w.getsampwidth() == wake_enroll.SAMPLE_WIDTH_BYTES
+        assert w.getframerate() == wake_enroll.SAMPLE_RATE_HZ
         assert w.getnframes() > 0  # actual audio captured
 
 
@@ -487,7 +488,7 @@ def test_metadata_records_audio_context_snapshot(
 
     backend.begin_session(
         "jasper",
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
     )
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
@@ -496,12 +497,12 @@ def test_metadata_records_audio_context_snapshot(
     _, data = _session_metadata(tmp_path)
     assert (
         data["metadata_schema_version"]
-        == wake_corpus_setup.METADATA_SCHEMA_VERSION
+        == recording_backend.METADATA_SCHEMA_VERSION
     )
     context = data["audio_context"]
     assert (
         context["schema_version"]
-        == wake_corpus_setup.AUDIO_CONTEXT_SCHEMA_VERSION
+        == bridge_session.AUDIO_CONTEXT_SCHEMA_VERSION
     )
     assert context["production_audio_profile"]["requested"] == "xvf_chip_aec"
     assert context["production_audio_profile"]["active"] == "xvf_chip_aec"
@@ -647,10 +648,10 @@ def test_validation_artifact_summary_rejects_wrong_current_dac(
         "recommendation": "chip_aec_validated",
     }))
 
-    summary = wake_corpus_setup._validation_artifact_summary(
+    summary = runtime_probe.validation_artifact_summary(
         validation_path,
         requested_profile="xvf_chip_aec",
-        mic_probe=wake_corpus_setup.MicProbe(
+        mic_probe=audio_profile_state.MicProbe(
             xvf_present=True,
             capture_channels=6,
         ),
@@ -699,13 +700,13 @@ def test_mic_chip_aec_available_reads_chip_aec_supported_field() -> None:
     _mic_chip_aec_available reads MicProbe.chip_aec_supported directly
     rather than re-deriving bool(xvf_present and chip_beam_plan), which
     ignored production_validated."""
-    unvalidated = wake_corpus_setup.MicProbe(
+    unvalidated = audio_profile_state.MicProbe(
         xvf_present=True,
         capture_channels=6,
         chip_beam_plan="experimental_unvalidated",
         chip_aec_supported=False,
     )
-    validated = wake_corpus_setup.MicProbe(
+    validated = audio_profile_state.MicProbe(
         xvf_present=True,
         capture_channels=6,
         chip_beam_plan="xvf_square_fixed_150_210",
@@ -727,7 +728,7 @@ def test_auto_stop_fires_on_max_duration(
     """A forgotten Stop click should auto-stop at MAX_DURATION_SEC
     with the auto_stopped flag set so the operator notices."""
     _allow_capture_plan_conformance(monkeypatch)
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={"on": 9876},
         max_duration_sec=0.3,  # short for the test
@@ -806,15 +807,12 @@ def test_make_server_accepts_host_port_tuple(backend) -> None:
     from http.server import ThreadingHTTPServer
     server = wake_corpus_setup.make_server(
         ("127.0.0.1", 0),  # port=0 → OS picks a free port (no clash in CI)
-        csrf_token="test-token",
         backend=backend,
     )
     try:
         assert isinstance(server, ThreadingHTTPServer)
-        # Handler must have backend + csrf_token bound for request handling
-        handler_cls = server.RequestHandlerClass
-        assert handler_cls.backend is backend
-        assert handler_cls.csrf_token == "test-token"
+        # Handler must have the backend bound for request handling
+        assert server.RequestHandlerClass.backend is backend
     finally:
         server.server_close()
 
@@ -831,9 +829,7 @@ def test_make_server_accepts_prebound_socket(backend) -> None:
     s.bind(("127.0.0.1", 0))
     s.listen(5)
     try:
-        server = wake_corpus_setup.make_server(
-            s, csrf_token="test-token", backend=backend,
-        )
+        server = wake_corpus_setup.make_server(s, backend=backend)
         try:
             assert isinstance(server, ThreadingHTTPServer)
             # The server adopted our pre-bound socket — same fd, same address
@@ -856,7 +852,7 @@ async def test_recording_task_stop_idempotent() -> None:
     double-await of a cancelled task. Defensive against state-machine
     bugs in callers."""
     _FakeUdpMicCapture.port_to_value = {9876: 7}
-    task = wake_corpus_setup.RecordingTask(ports={"on": 9876})
+    task = recording_backend.RecordingTask(ports={"on": 9876})
     await task.start()
     await asyncio.sleep(0.05)
     pcm_first = await task.stop()
@@ -901,11 +897,11 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
     }
     md_file = md_dir / "enroll_jasper_20260525T120000Z.json"
     md_file.write_text(json.dumps(session_data))
-    (md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "20260525T120000Z",
     }))
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.session_id() == "20260525T120000Z"
@@ -934,7 +930,7 @@ def test_recovery_ignores_recent_session_without_active_marker(
         "ports": {}, "clips": [],
     }))
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.session_id() is None
@@ -954,14 +950,14 @@ def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
     md_file.write_text(json.dumps({
         "session_id": "old", "member": "jasper", "ports": {}, "clips": [],
     }))
-    marker = md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER
+    marker = md_dir / recording_backend.ACTIVE_SESSION_MARKER
     marker.write_text(json.dumps({"session_id": "old"}))
     # Force mtime to be old
-    old_mtime = time.time() - (wake_corpus_setup.RESUME_WINDOW_SEC + 60)
+    old_mtime = time.time() - (recording_backend.RESUME_WINDOW_SEC + 60)
     os.utime(md_file, (old_mtime, old_mtime))
     os.utime(marker, (old_mtime, old_mtime))
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.session_id() is None
@@ -978,7 +974,7 @@ def test_recovery_ignores_corrupt_json(tmp_path: Path) -> None:
     md_dir.mkdir(parents=True)
     (md_dir / "enroll_jasper_corrupt.json").write_text("{not json")
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.session_id() is None
@@ -988,7 +984,7 @@ def test_recovery_ignores_corrupt_json(tmp_path: Path) -> None:
 
 def test_recovery_handles_missing_metadata_dir(tmp_path: Path) -> None:
     """No metadata dir → no crash, no session loaded."""
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     b.start()
     try:
         assert b.session_id() is None
@@ -1009,11 +1005,11 @@ def test_begin_session_after_recovery_starts_fresh(
         "session_id": "recovered", "member": "jasper",
         "ports": {}, "clips": [],
     }))
-    (md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "recovered",
     }))
 
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         # Recovery loaded the old session
@@ -1049,7 +1045,7 @@ def test_start_recording_refuses_during_starting_window(backend) -> None:
         backend._starting_clip_id = "concurrent-fake-id"
     try:
         with pytest.raises(
-            wake_corpus_setup.StateError, match="in progress",
+            recording_backend.StateError, match="in progress",
         ):
             backend.start_recording("quiet", "near")
     finally:
@@ -1098,7 +1094,7 @@ def test_begin_session_refuses_while_recording_start_is_reserved(
     try:
         assert backend.is_recording() is True
         with pytest.raises(
-            wake_corpus_setup.StateError,
+            recording_backend.StateError,
             match="initialization in progress",
         ):
             backend.begin_session("brittany")
@@ -1397,7 +1393,7 @@ def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
     stop_thread = threading.Thread(target=lambda: stopped.append(backend.stop_recording()))
     stop_thread.start()
     assert cleanup_entered.wait(timeout=2)
-    with pytest.raises(wake_corpus_setup.StateError, match="in progress"):
+    with pytest.raises(recording_backend.StateError, match="in progress"):
         backend.start_recording("quiet", "near")
     release_cleanup.set()
     stop_thread.join(timeout=2)
@@ -1667,7 +1663,7 @@ def test_shutdown_terminal_rejects_start_and_retry_admission(backend) -> None:
     assert task._task.done()
     backend.shutdown()
 
-    with pytest.raises(wake_corpus_setup.StateError, match="shutting down"):
+    with pytest.raises(recording_backend.StateError, match="shutting down"):
         backend.start_recording("quiet", "near")
     backend._schedule_stop_retry(
         generation, auto=True, mute_stopped=False,
@@ -1754,7 +1750,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
         original_write_wav(path, pcm)
 
     monkeypatch.setattr(recording_backend, "write_wav", blocking_write_wav)
-    stopped: list[wake_corpus_setup.ClipMetadata] = []
+    stopped: list[recording_backend.ClipMetadata] = []
     errors: list[BaseException] = []
 
     def stop_clip() -> None:
@@ -1768,7 +1764,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
     assert entered.wait(timeout=2)
     try:
         with pytest.raises(
-            wake_corpus_setup.StateError,
+            recording_backend.StateError,
             match="initialization in progress",
         ):
             backend.begin_session("brittany")
@@ -1795,7 +1791,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
 def test_conditions_includes_ambient() -> None:
     """The CONDITIONS tuple must expose 'ambient' so the wizard's
     radio button + the backend's validation both line up."""
-    assert "ambient" in wake_corpus_setup.CONDITIONS
+    assert "ambient" in wake_conditions.CONDITIONS
 
 
 def test_start_recording_accepts_ambient(backend) -> None:
@@ -1851,19 +1847,19 @@ def test_compute_rms_dbfs_silent_returns_floor() -> None:
     """All-zeros frame returns the -100 dBFS floor (avoids -inf
     from log(0); UI clamps below this anyway)."""
     frame = np.zeros(1280, dtype=np.int16)
-    assert wake_corpus_setup.compute_rms_dbfs(frame) == -100.0
+    assert recording_backend.compute_rms_dbfs(frame) == -100.0
 
 
 def test_compute_rms_dbfs_empty_returns_floor() -> None:
     """Zero-length frame returns the floor instead of NaN."""
     frame = np.zeros(0, dtype=np.int16)
-    assert wake_corpus_setup.compute_rms_dbfs(frame) == -100.0
+    assert recording_backend.compute_rms_dbfs(frame) == -100.0
 
 
 def test_compute_rms_dbfs_full_scale_is_zero() -> None:
     """A constant int16 max-amplitude frame is ~0 dBFS."""
     frame = np.full(1280, 32767, dtype=np.int16)
-    dbfs = wake_corpus_setup.compute_rms_dbfs(frame)
+    dbfs = recording_backend.compute_rms_dbfs(frame)
     # Within rounding of 0 dBFS
     assert -0.01 < dbfs <= 0.0
 
@@ -1872,7 +1868,7 @@ def test_compute_rms_dbfs_half_scale_is_about_minus_6() -> None:
     """A constant int16 half-amplitude frame is ~-6 dBFS
     (20*log10(0.5) ≈ -6.02)."""
     frame = np.full(1280, 16384, dtype=np.int16)
-    dbfs = wake_corpus_setup.compute_rms_dbfs(frame)
+    dbfs = recording_backend.compute_rms_dbfs(frame)
     assert -6.1 < dbfs < -5.9
 
 
@@ -1883,9 +1879,9 @@ def test_compute_rms_dbfs_monotonic_with_amplitude() -> None:
     medium = np.full(1280, 3000, dtype=np.int16)
     loud = np.full(1280, 20000, dtype=np.int16)
     assert (
-        wake_corpus_setup.compute_rms_dbfs(quiet)
-        < wake_corpus_setup.compute_rms_dbfs(medium)
-        < wake_corpus_setup.compute_rms_dbfs(loud)
+        recording_backend.compute_rms_dbfs(quiet)
+        < recording_backend.compute_rms_dbfs(medium)
+        < recording_backend.compute_rms_dbfs(loud)
     )
 
 

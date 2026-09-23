@@ -14,11 +14,15 @@ from pathlib import Path
 
 import pytest
 
+from jasper import aec_sweep
+from jasper.cli import wake_enroll
 from jasper.env_file import read_env_file
-from jasper.wake_corpus import bridge_session, runtime_probe
+from jasper.wake_corpus import bridge_session, recording_backend, runtime_probe
 from jasper.web import wake_corpus_setup
+from jasper.web._common import CSRF_COOKIE_NAME
 
 from tests.wake_corpus_setup_fixtures import (
+    CSRF_HEADERS,
     TEST_CSRF_TOKEN,
     _corpus_post_handler,
     _backend_fixture,
@@ -111,7 +115,7 @@ def test_post_known_path_without_token_403s(running_server_port: int) -> None:
 def test_post_known_path_disallowed_host_403s(running_server_port: int) -> None:
     """guard_mutating_host rejects on the Host axis even carrying a
     token that would otherwise pass — the host guard runs before the
-    token compare (_check_csrf's documented ordering)."""
+    token compare (guard_mutating_request's documented ordering)."""
     assert (
         _mutating_status(
             running_server_port,
@@ -139,13 +143,54 @@ def test_post_known_path_with_non_ascii_token_403s(running_server_port):
     )
 
 
+def test_page_token_passes_the_guard_on_a_respawned_server(
+    backend, running_server_port: int,
+) -> None:
+    """jasper-web idle-exits after 10 min: the token a tab was rendered
+    with must still pass the double-submit guard on the next process."""
+    import http.client
+    import re
+    import threading
+
+    first = wake_corpus_setup.make_server(("127.0.0.1", 0), backend=backend)
+    serving = threading.Thread(target=first.handle_request, daemon=True)
+    serving.start()
+    conn = http.client.HTTPConnection("127.0.0.1", first.server_address[1], timeout=2)
+    try:
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        page = resp.read().decode()
+        cookie = resp.getheader("Set-Cookie", "").split(";")[0]
+    finally:
+        conn.close()
+        serving.join(timeout=2)
+        first.server_close()
+    meta = re.search(r'<meta name="jts-csrf" content="([^"]+)">', page)
+    assert meta is not None
+    assert cookie == f"{CSRF_COOKIE_NAME}={meta.group(1)}"
+
+    conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
+    try:
+        conn.request(
+            "POST", "/api/session/unload", b"{}",
+            {
+                "Content-Type": "application/json",
+                "Cookie": cookie,
+                "X-CSRF-Token": meta.group(1),
+            },
+        )
+        assert conn.getresponse().status == 200
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("body", "content_length", "expected_error", "expected_reads"),
     [
         (b"{", 1, "invalid JSON body", [1]),
         (b"\xff", 1, "invalid JSON body", [1]),
         (b"[]", 2, "body must be a JSON object", [2]),
-        (b"{}", 3, "invalid JSON body", [3]),
+        (b"{}", 3, "incomplete body", [3]),
         (b"{}", "invalid", "invalid Content-Length", []),
         (b"{}", -1, "invalid body length", []),
         (b"{}", wake_corpus_setup._JSON_BODY_LIMIT + 1, "invalid body length", []),
@@ -234,7 +279,7 @@ def test_api_session_load_round_trip(backend, running_server_port: int) -> None:
     conn.request(
         "POST", "/api/session/load",
         json.dumps({"session_id": first_id}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -249,7 +294,7 @@ def test_api_session_load_round_trip(backend, running_server_port: int) -> None:
     marker = (
         backend._output_dir  # noqa: SLF001
         / "metadata"
-        / wake_corpus_setup.ACTIVE_SESSION_MARKER
+        / recording_backend.ACTIVE_SESSION_MARKER
     )
     assert json.loads(marker.read_text())["session_id"] == first_id
 
@@ -264,7 +309,7 @@ def test_api_session_unload_round_trip(backend, running_server_port: int) -> Non
     conn.request(
         "POST", "/api/session/unload",
         json.dumps({}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -288,7 +333,7 @@ def test_api_session_delete_round_trip(backend, running_server_port: int) -> Non
     conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
     conn.request(
         "DELETE", f"/api/session/{sid}",
-        headers={"X-CSRF-Token": "test-token"},
+        headers=CSRF_HEADERS,
     )
     resp = conn.getresponse()
     try:
@@ -369,12 +414,12 @@ def test_api_capture_plan_previews_selected_layers(
     conn.request(
         "POST", "/api/capture-plan",
         json.dumps({
-            "corpus_profile": wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+            "corpus_profile": runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
             "include_usb_mic": True,
             "include_usb_dtln": True,
             "include_xvf_raw0_dtln": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -409,7 +454,7 @@ def test_api_session_stores_applied_capture_plan(
             "member": "jasper",
             "include_dtln": False,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -450,12 +495,12 @@ def test_api_status_includes_aec3_sweep(
         assert body["include_aec3_sweep"] is True
         assert body["include_usb_mic"] is True
         assert body["aec3_sweep_source"] == "usb"
-        assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+        assert body["aec3_sweep_variants"] == aec_sweep.variant_metadata(
             input_source="usb",
         )
         assert body["enabled_legs"] == [
             "on", "off", "ref", "usb_raw", "usb_webrtc",
-            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+            *runtime_probe.AEC3_SWEEP_LEGS,
         ]
     finally:
         conn.close()
@@ -481,7 +526,7 @@ def test_api_session_begin_accepts_dtln_flags(
             "include_usb_dtln": True,
             "enable_bridge_outputs": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -524,7 +569,7 @@ def test_api_session_begin_accepts_aec3_sweep(
             "include_dtln": False,
             "include_aec3_sweep": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -535,7 +580,7 @@ def test_api_session_begin_accepts_aec3_sweep(
         assert body["aec3_sweep_source"] == "usb"
         assert body["enabled_legs"] == [
             "on", "off", "ref", "usb_raw", "usb_webrtc",
-            *wake_corpus_setup.AEC3_SWEEP_LEGS,
+            *runtime_probe.AEC3_SWEEP_LEGS,
         ]
     finally:
         conn.close()
@@ -615,7 +660,7 @@ def test_api_bridge_outputs_disable(
     conn.request(
         "POST", "/api/bridge-outputs",
         json.dumps({"action": "disable"}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -833,7 +878,7 @@ def test_api_corpus_test_mode_enter_reports_voice_probe_timeout_without_mutation
         "POST",
         "/api/corpus-test-mode",
         json.dumps({"action": "enter", "include_dtln": False}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -886,7 +931,7 @@ def test_api_corpus_test_mode_enter_rejects_manager_error_without_mutation(
         "POST",
         "/api/corpus-test-mode",
         json.dumps({"action": "enter", "include_dtln": False}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -947,7 +992,7 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
             "include_usb_mic": True,
             "include_usb_dtln": False,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -997,7 +1042,7 @@ def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
             "include_dtln": False,
             "include_aec3_sweep": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -1047,7 +1092,7 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
     conn.request(
         "POST", "/api/corpus-test-mode",
         json.dumps({"action": "exit"}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -1092,14 +1137,14 @@ def test_voice_start_can_disable_bridge_outputs_first(
 
     monkeypatch.setattr(wake_corpus_setup, "manage_units", fake_manage)
     monkeypatch.setattr(
-        wake_corpus_setup.subprocess, "run",
+        runtime_probe.subprocess, "run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="active\n"),
     )
     conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
     conn.request(
         "POST", "/api/voice-daemon",
         json.dumps({"action": "start", "disable_bridge_outputs": True}),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -1107,7 +1152,7 @@ def test_voice_start_can_disable_bridge_outputs_first(
         assert resp.status == 200
         assert body["bridge_outputs"]["active"] is False
         assert restarts == ["restart"]
-        assert voice_calls == [((wake_corpus_setup.VOICE_UNIT,), "start")]
+        assert voice_calls == [((wake_enroll.VOICE_UNIT,), "start")]
     finally:
         conn.close()
 
@@ -1162,7 +1207,7 @@ def test_api_session_offers_bridge_enable_for_missing_outputs(
             "include_usb_mic": True,
             "include_usb_dtln": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:
@@ -1203,7 +1248,7 @@ def test_api_session_enable_bridge_outputs_then_begins(
             "include_usb_dtln": True,
             "enable_bridge_outputs": True,
         }),
-        {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        {"Content-Type": "application/json", **CSRF_HEADERS},
     )
     resp = conn.getresponse()
     try:

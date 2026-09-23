@@ -43,7 +43,7 @@ def test_begin_session_refused_while_muted(
     mute_backend, mute_path: Path, caplog,
 ) -> None:
     _write_mute(mute_path, True)
-    with pytest.raises(wake_corpus_setup.MicMutedError, match="muted"):
+    with pytest.raises(recording_backend.MicMutedError, match="muted"):
         mute_backend.begin_session("jasper")
     assert mute_backend.session_id() is None
     assert event_records(caplog, "wake_corpus.mute_refused")
@@ -54,7 +54,7 @@ def test_start_recording_refused_when_mute_flips_after_session_begin(
 ) -> None:
     mute_backend.begin_session("jasper")
     _write_mute(mute_path, True)
-    with pytest.raises(wake_corpus_setup.MicMutedError, match="muted"):
+    with pytest.raises(recording_backend.MicMutedError, match="muted"):
         mute_backend.start_recording("quiet", "near")
     assert not mute_backend.is_recording()
 
@@ -131,11 +131,11 @@ def test_post_session_handler_refuses_while_muted(
     """The wizard surfaces the refusal as an HTTP 409 BEFORE any
     bridge-output side effects (no backend loop needed)."""
     _write_mute(mute_path, True)
-    backend = wake_corpus_setup.RecordingBackend(
+    backend = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         mic_mute_path=mute_path,
     )  # intentionally not started — refusal must come first
-    handler_cls = wake_corpus_setup._make_handler_class(backend, "tok")
+    handler_cls = wake_corpus_setup._make_handler_class(backend)
     handler = handler_cls.__new__(handler_cls)
     body = json.dumps({"member": "jasper"}).encode()
     handler.headers = Message()

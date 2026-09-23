@@ -14,11 +14,10 @@
 //
 // Moved from the page's old inline <script> when /wake-corpus/ moved onto the
 // canonical design system. The important ownership seams are:
-//   * api() now builds its headers via jsonHeaders() from the shared http.js
-//     module (was a hand-rolled {'Content-Type': 'application/json'} +
-//     X-CSRF-Token). jsonHeaders() reads the token from the <meta name=
-//     "jts-csrf"> tag canonical_page() renders; the server's _check_csrf
-//     still compares that X-CSRF-Token header to its per-process token.
+//   * api() builds its headers via jsonHeaders() from the shared http.js
+//     module: X-CSRF-Token from the <meta name="jts-csrf"> tag
+//     canonical_page() renders, which the server's shared double-submit
+//     guard matches against the jts_csrf cookie.
 //   * jtsConfirm comes from the shared dialog.js module — never
 //     window.confirm, which the browser can suppress.
 //   * The Python-owned leg labels/order + USB AEC3 sweep-baseline label

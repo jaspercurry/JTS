@@ -29,17 +29,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# One constant shared with tests that rely on holding the VALID token
-# (e.g. the host-axis 403 pin, whose premise breaks silently if the
-# fixture token drifts from what the test sends).
-TEST_CSRF_TOKEN = "test-token"
-
+from jasper import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.wake_corpus import runtime_probe
 from jasper.wake_corpus.capture_plan import PlanConformance
 from jasper.wake_corpus import recording_backend
 from jasper.mics import xvf3800
 from jasper.web import wake_corpus_setup
+from jasper.web._common import CSRF_COOKIE_NAME
+
+# A valid double-submit pair (base64url, 32..128 chars). Tests that rely on
+# holding it (e.g. the host-axis 403 pin) share this one constant, so their
+# premise cannot drift from what the guard accepts.
+TEST_CSRF_TOKEN = "wake-corpus-test-csrf-token-0123456789"
+CSRF_HEADERS = {
+    "Cookie": f"{CSRF_COOKIE_NAME}={TEST_CSRF_TOKEN}",
+    "X-CSRF-Token": TEST_CSRF_TOKEN,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +204,7 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={
             "on": 9876,
@@ -213,7 +219,7 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
             "chip_aec_210": 9888,
             "xvf_raw0_webrtc_aec3": 9889,
             "xvf_raw0_dtln": 9890,
-            **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
+            **wake_ports.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
     )
@@ -224,11 +230,7 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
 @pytest.fixture(name="running_server_port")
 def _running_server_port_fixture(backend) -> Iterator[int]:
     """Run one recorder HTTP server and own its complete lifecycle."""
-    server = wake_corpus_setup.make_server(
-        ("127.0.0.1", 0),
-        csrf_token=TEST_CSRF_TOKEN,
-        backend=backend,
-    )
+    server = wake_corpus_setup.make_server(("127.0.0.1", 0), backend=backend)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -245,7 +247,7 @@ def _use_tmp_bridge_env(
     system_env: str = "",
     corpus_env: str = "",
 ) -> tuple[Path, Path]:
-    """Point wake_corpus_setup's bridge env helpers at temp files."""
+    """Point runtime_probe's bridge env paths at temp files."""
     system_path = tmp_path / "jasper.env"
     bridge_path = tmp_path / "wake_corpus_bridge.env"
     if system_env:
@@ -266,12 +268,14 @@ def _mutating_status(
     *,
     extra_headers: dict[str, str] | None = None,
 ) -> int:
-    """Issue one POST/DELETE against the fixture-owned live server."""
+    """Issue one POST/DELETE against the fixture-owned live server. A
+    `token` rides the header beside the fixture's valid cookie."""
     import http.client
 
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
     headers = {"Content-Length": "0"}
     if token:
+        headers["Cookie"] = CSRF_HEADERS["Cookie"]
         headers["X-CSRF-Token"] = token
     if extra_headers:
         headers.update(extra_headers)
@@ -301,12 +305,13 @@ def _corpus_post_handler(
     content_length: int | str,
     read_fails: bool = False,
 ):
-    handler_cls = wake_corpus_setup._make_handler_class(object(), "tok")
+    handler_cls = wake_corpus_setup._make_handler_class(object())
     handler = handler_cls.__new__(handler_cls)
     handler.path = "/api/session"
     handler.headers = Message()
     handler.headers["Content-Length"] = str(content_length)
-    handler.headers[wake_corpus_setup.CSRF_HEADER] = "tok"
+    for name, value in CSRF_HEADERS.items():
+        handler.headers[name] = value
     handler.rfile = _TrackingReader(body, fail=read_fails)
     handler.wfile = BytesIO()
     handler.client_address = ("127.0.0.1", 0)
@@ -335,7 +340,7 @@ def _mute_backend_fixture(monkeypatch, tmp_path: Path, mute_path: Path):
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = wake_corpus_setup.RecordingBackend(
+    b = recording_backend.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={"on": 9876, "off": 9877, "dtln": 9878},
         max_duration_sec=10.0,

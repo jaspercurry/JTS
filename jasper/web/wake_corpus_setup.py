@@ -9,7 +9,8 @@ gold corpus. Much better operator UX than running `jasper-wake-enroll`
 30 times across 6 conditions with terminal countdowns.
 
 Mechanics:
-  - Single-file HTML+JS frontend (no external assets)
+  - Page shell from `canonical_page()`; behaviour in the ES module
+    /assets/wake-corpus/js/main.js
   - stdlib `http.server` backend on a configurable port (default 8782)
   - Recording happens on the server via UdpMicCapture — same UDP
     streams (`:9876` AEC ON + `:9877` raw + `:9878` DTLN if present)
@@ -40,30 +41,25 @@ What this adds:
     exit
 
 Usage:
-  sudo /opt/jasper/.venv/bin/jasper-wake-corpus-web
-  # binds loopback (127.0.0.1:8782) by default; reach it via nginx at
-  # http://jts.local/wake-corpus/ from any browser on the LAN
-
-  # the bind is overridable (it already defaults to loopback):
-  sudo jasper-wake-corpus-web --host 127.0.0.1 --port 8782
+  An installed speaker serves this page from jasper-web at
+  http://jts.local/wake-corpus/ (nginx -> 127.0.0.1:8782, a port
+  jasper-web.socket holds). The `jasper-wake-corpus-web` CLI runs the
+  same page standalone; on a speaker, give it a free `--port`.
 
 Module layout: this file is a thin HTTP adapter. The recording engine
 (``RecordingBackend`` + capture task + clip/metadata writing + test-mode
 marker recovery) lives in ``jasper.wake_corpus.recording_backend``; the
 bridge env / leg-plan / systemctl + enter/exit corpus-test-mode layer
-lives in ``jasper.wake_corpus.bridge_session``. Both are re-exported below
-so every ``wake_corpus_setup.NAME`` keeps resolving for existing callers.
+lives in ``jasper.wake_corpus.bridge_session``.
 """
 from __future__ import annotations
 
 import argparse
-import functools
 import html
 import json
 import logging
 import os
-import secrets
-import subprocess  # used directly by the adapter; tests patch wake_corpus_setup.subprocess
+import subprocess
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -74,31 +70,15 @@ from urllib.parse import parse_qs, urlparse
 
 from jasper.control.restart_broker import manage_units
 from jasper.log_event import log_event
-
-# CONDITIONS / DISTANCES come from the shared single source of truth
-# (jasper.wake_conditions); test_wake_conditions asserts the recorder
-# re-exports the SAME singleton objects (no local redefinition).
-from jasper.wake_conditions import CONDITIONS, DISTANCES  # noqa: F401
-from jasper.aec_sweep import (  # noqa: F401 - re-exported for tests/consumers
+from jasper.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
     AEC3_SWEEP_VARIANTS,
     Aec3SweepConfigError,
-    USB_AEC3_CORPUS_LABEL,
     USB_AEC3_SWEEP_BASELINE_LABEL,
-    variant_metadata,
 )
-# Reuse audio I/O + systemctl helpers from the CLI. Single source of
-# truth for the WAV format + the "stop jasper-voice to free UDP" dance.
-from jasper.cli.wake_enroll import (  # noqa: F401 - re-exported for tests/consumers
-    CHANNELS,
-    SAMPLE_RATE_HZ,
-    SAMPLE_WIDTH_BYTES,
-    VOICE_UNIT,
-    require_root,
-    write_wav,
-)
-from jasper.wake_ports import (  # noqa: F401 - re-exported for tests/consumers
+from jasper.cli.wake_enroll import VOICE_UNIT, require_root
+from jasper.wake_ports import (
     DEFAULT_AEC_CHIP_AEC_150_PORT,
     DEFAULT_AEC_CHIP_AEC_210_PORT,
     DEFAULT_AEC_DTLN_PORT,
@@ -114,111 +94,40 @@ from jasper.wake_ports import (  # noqa: F401 - re-exported for tests/consumers
     DEFAULT_AEC_USB_WEBRTC_PORT,
     build_ports,
 )
-from jasper.audio_profile_state import MicProbe  # noqa: F401 - re-exported
 
 # `bridge_session` is imported as a module so the handler's voice/bridge
 # calls stay patchable on it; the env and hardware probe seams live in
 # `jasper.wake_corpus.runtime_probe` and are patched there instead.
 from jasper.wake_corpus import bridge_session, runtime_probe
-from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
+from jasper.wake_corpus.bridge_session import (
     AEC3_SWEEP_LEGS,
-    AEC_INIT_UNIT,
-    AEC_MODE_PATH,
-    AUDIO_CONTEXT_SCHEMA_VERSION,
-    AUDIO_VALIDATION_ARTIFACT_PATH,
-    BASE_LEGS,
-    BRIDGE_CORPUS_ENV_PATH,
-    BRIDGE_CORPUS_OUTPUT_VARS,
     BRIDGE_OUTPUT_LABELS,
-    BRIDGE_RESTART_TIMEOUT_SEC,
     BRIDGE_UNIT,
-    CAPTURE_PLAN_SCHEMA_VERSION,
-    CHIP_AEC_LEGS,
-    CHIP_AEC_PROFILE_BASE_LEGS,
     CORPUS_PROFILES,
-    DEFAULT_CHIP_REF_BUFFER_FRAMES,
-    DEFAULT_CHIP_REF_PCM,
-    DEFAULT_CHIP_REF_PERIOD_FRAMES,
-    DEFAULT_CHIP_REF_SAMPLE_RATE,
-    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-    DEFAULT_USB_MIC_DEVICE,
-    DEFAULT_USB_MIXER_CARD,
-    DTLN_LEG,
     LEG_LABELS,
     LEGACY_AEC3_SWEEP_LEGS,
     LEGS,
-    OUTPUTD_REF_UDP_PORT,
-    OUTPUTD_REF_UDP_TARGET,
-    OUTPUTD_UNIT,
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
-    RAW0_LEG,
-    SYSTEM_ENV_PATH,
-    USB_AGC_CONTROL,
-    USB_CORPUS_LEGS,
-    USB_DTLN_LEG,
-    XVF_RAW0_DTLN_LEG,
-    _enabled_legs_from_metadata,
-    _parse_amixer_bool,
-    _validation_artifact_summary,
-    aec_bridge_active,
-    bridge_output_status,
-    build_capture_health,
-    build_capture_plan,
-    build_session_audio_context,
-    chip_aec_config_metadata,
-    disable_bridge_corpus_outputs,
-    enter_corpus_test_mode,
-    exit_corpus_test_mode,
-    missing_bridge_outputs_for_session,
-    read_bridge_stats_snapshot,
-    restart_aec_bridge,
-    restart_unit,
-    set_bridge_outputs_for_plan,
-    set_bridge_outputs_for_session,
-    set_voice_daemon_state,
-    usb_mic_status,
-    validate_active_capture_plan,
-    voice_daemon_active,
 )
-from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
-    ACTIVE_SESSION_MARKER,
-    DEFAULT_METADATA_SUBDIR,
-    DEFAULT_OUTPUT_DIR,
-    MAX_RECORDING_DURATION_SEC,
-    METADATA_SCHEMA_VERSION,
-    RESUME_WINDOW_SEC,
+from jasper.wake_corpus.recording_backend import (
     MIC_MUTED_MESSAGE,
-    TEST_MODE_MARKER,
-    TEST_MODE_STALE_SEC,
-    ClipMetadata,
-    MicMutedError,
     RecordingBackend,
-    RecordingTask,
     StateError,
-    compute_rms_dbfs,
 )
-
-# Canonical design system. The recorder renders its document shell through
-# `canonical_page()` (the shared /assets/app.css look) with `canonical_header()`
-# for the top bar — the same seam every migrated wizard reuses. Page behaviour
-# lives in the static ES module at /assets/wake-corpus/js/main.js (loaded as
-# `type="module"`), and the bespoke recorder visuals live in the page
-# stylesheet at /assets/wake-corpus/wake-corpus.css; the "← Home" link and the
-# confirm dialog are provided by the canonical header and the shared
-# dialog.js module respectively, so this page no longer embeds the old
-# one-page chrome or dialog snippets.
+from jasper.platform import systemd
 from jasper.web._common import (
-    JsonBodyError,
-    RouteFn,
+    begin_request,
     dispatch_get,
     dispatch_post,
-    guard_mutating_host,
+    guard_mutating_request,
     json_body,
     prefix_route,
-    read_json_object,
+    read_json_body,
+    reject_csrf,
     resolve_samples,
     route_path,
+    send_html_response,
     send_json_response,
 )
 from jasper.web.chrome import canonical_header, canonical_page, json_island, toggle_html
@@ -288,12 +197,6 @@ CAPTURE_OPTIONS: tuple[CaptureOption, ...] = (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8782
 
-# CSRF header name. Matches common JS framework conventions; the page's
-# ES module (/assets/wake-corpus/js/main.js) reads `<meta name="jts-csrf">`
-# and sends this header
-# on every mutating request.
-CSRF_HEADER = "X-CSRF-Token"
-
 
 # ---------------------------------------------------------------------------
 # HTTP handlers
@@ -302,7 +205,6 @@ CSRF_HEADER = "X-CSRF-Token"
 
 class _Handler(BaseHTTPRequestHandler):
     backend: RecordingBackend
-    csrf_token: str
 
     # ----- helpers --------------------------------------------------
 
@@ -318,70 +220,17 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_json(self) -> dict[str, Any] | None:
         """Parsed JSON body, or None after answering the client with a
         400 — every POST body starts by reading it and returning on None."""
-        try:
-            return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
-        except JsonBodyError as exc:
-            if exc.code == "invalid_content_length":
-                message = "invalid Content-Length"
-            elif exc.code in {"negative_content_length", "body_too_large"}:
-                message = "invalid body length"
-            elif exc.code == "non_object":
-                message = "body must be a JSON object"
-            elif exc.code == "invalid_json" and exc.__cause__:
-                message = f"invalid JSON body: {exc.__cause__}"
-            else:
-                message = "invalid JSON body"
-            self._send_error_json(400, message)
+        body, err = read_json_body(self, max_bytes=_JSON_BODY_LIMIT)
+        if err is not None:
+            self._send_error_json(400, err)
             return None
-
-    def _check_csrf(self) -> bool:
-        """Verify the request's Host/Origin, then its X-CSRF-Token header.
-
-        Calls `guard_mutating_host` first — the same DNS-rebinding /
-        cross-site Host/Origin allowlist `guard_mutating_request` applies
-        for every other wizard — before comparing the X-CSRF-Token header
-        against the server-held token. Returns True if both pass, False
-        (having sent the 403 itself) otherwise.
-
-        The CSRF token is embedded in the served HTML page via a meta
-        tag; the page's JS reads it and sends it on every mutating
-        request. Defense against a malicious cross-origin site triggering
-        recordings or daemon toggles from the operator's browser.
-
-        Uses `secrets.compare_digest` for timing-safe comparison
-        (defense-in-depth — the attacker probably can't observe
-        latency in practice, but it's a one-line free win).
-        """
-        if not guard_mutating_host(self):
-            self._send_error_json(
-                403,
-                "request rejected: Host/Origin not allowed for "
-                "mutating requests",
-            )
-            return False
-        header_token = self.headers.get(CSRF_HEADER, "")
-        # http.server decodes headers latin-1, so a non-ASCII header byte
-        # still arrives as a str; compare_digest raises TypeError on a
-        # non-ASCII str operand, so reject one before the compare.
-        if not header_token.isascii() or not secrets.compare_digest(
-            header_token, self.csrf_token,
-        ):
-            self._send_error_json(
-                403,
-                f"missing or invalid {CSRF_HEADER} header — reload "
-                "the page to refresh the token",
-            )
-            return False
-        return True
+        return body
 
     # ----- routing --------------------------------------------------
     #
     # GET and POST ride the shared seam. do_DELETE stays hand-rolled: its
     # `/api/clip|session/<id>` shapes are prefix routes with no table, and
-    # the seam covers GET/POST only. GET is read-guarded but NOT
-    # CSRF-protected (read-only); every POST route body wears
-    # `_csrf_guarded`, this recorder's sanctioned bespoke scheme, which
-    # runs before `@json_body` reads anything.
+    # the seam covers GET/POST only.
 
     def do_GET(self) -> None:  # noqa: N802
         dispatch_get(self, _GET_ROUTES, resolve=_resolve_clip_wav)
@@ -471,7 +320,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- POST -------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
-        dispatch_post(self, _POST_ROUTES, guard="per-body")
+        dispatch_post(self, _POST_ROUTES, guard="header")
 
     # ----- DELETE -----------------------------------------------------
 
@@ -488,7 +337,8 @@ class _Handler(BaseHTTPRequestHandler):
         ):
             self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
             return
-        if not self._check_csrf():
+        if not guard_mutating_request(self):
+            reject_csrf(self)
             return
         # /api/clip/<id>
         if parts[2] == "clip":
@@ -561,6 +411,28 @@ def _get_usb_mic_status(handler: _Handler) -> None:
     handler._send_json(bridge_session.usb_mic_status())
 
 
+def _send_bridge_output_error(
+    handler: _Handler, verb: str, exc: Exception,
+) -> None:
+    """Answer the 500 for a failed bridge-output `enable` / `disable`."""
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        message = (
+            f"could not {verb} bridge outputs; {BRIDGE_UNIT} "
+            "restart failed and the env was rolled back"
+        )
+        if detail:
+            message = f"{message}: {detail[-500:]}"
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        message = (
+            f"could not {verb} bridge outputs; {BRIDGE_UNIT} "
+            "restart timed out and the env was rolled back"
+        )
+    else:
+        message = f"failed to {verb} bridge outputs: {exc}"
+    handler._send_error_json(500, message)
+
+
 @json_body
 def _post_session(handler: _Handler, body: dict[str, Any]) -> None:
     member = (body.get("member") or "").strip()
@@ -616,20 +488,25 @@ def _post_session(handler: _Handler, body: dict[str, Any]) -> None:
         )
         handler._send_error_json(409, MIC_MUTED_MESSAGE)
         return
+    selection: dict[str, Any] = {
+        "corpus_profile": corpus_profile,
+        "include_raw_mic_0": include_raw_mic_0,
+        "include_dtln": include_dtln,
+        "include_usb_mic": include_usb_mic,
+        "include_usb_dtln": include_usb_dtln,
+        "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
+        "include_aec3_sweep": include_aec3_sweep,
+        "aec3_sweep_source": aec3_sweep_source,
+    }
+    plan_kwargs: dict[str, Any] = {
+        **selection,
+        "include_bridge_readiness": True,
+        "include_runtime_profile": True,
+        "plan_state": bridge_session.CAPTURE_PLAN_STATE_SESSION,
+    }
     try:
         capture_plan = bridge_session.build_capture_plan(
-            handler.backend.ports(),
-            corpus_profile=corpus_profile,
-            include_dtln=include_dtln,
-            include_raw_mic_0=include_raw_mic_0,
-            include_usb_mic=include_usb_mic,
-            include_usb_dtln=include_usb_dtln,
-            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-            include_aec3_sweep=include_aec3_sweep,
-            aec3_sweep_source=aec3_sweep_source,
-            include_bridge_readiness=True,
-            include_runtime_profile=True,
-            plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+            handler.backend.ports(), **plan_kwargs,
         )
     except (ValueError, Aec3SweepConfigError) as e:
         handler._send_error_json(400, str(e))
@@ -657,69 +534,22 @@ def _post_session(handler: _Handler, body: dict[str, Any]) -> None:
     try:
         bridge_session.set_bridge_outputs_for_plan(capture_plan)
         capture_plan = bridge_session.build_capture_plan(
-            handler.backend.ports(),
-            corpus_profile=corpus_profile,
-            include_dtln=include_dtln,
-            include_raw_mic_0=include_raw_mic_0,
-            include_usb_mic=include_usb_mic,
-            include_usb_dtln=include_usb_dtln,
-            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-            include_aec3_sweep=include_aec3_sweep,
-            aec3_sweep_source=aec3_sweep_source,
-            include_bridge_readiness=True,
-            include_runtime_profile=True,
-            plan_state=bridge_session.CAPTURE_PLAN_STATE_SESSION,
+            handler.backend.ports(), **plan_kwargs,
         )
-    except subprocess.CalledProcessError as e:
-        detail = (e.stderr or e.stdout or str(e)).strip()
-        msg = (
-            f"could not enable bridge outputs; {BRIDGE_UNIT} "
-            "restart failed and the env was rolled back"
-        )
-        if detail:
-            msg = f"{msg}: {detail[-500:]}"
-        handler._send_error_json(500, msg)
-        return
-    except subprocess.TimeoutExpired:
-        handler._send_error_json(
-            500,
-            f"could not enable bridge outputs; {BRIDGE_UNIT} "
-            "restart timed out and the env was rolled back",
-        )
-        return
-    except OSError as e:
-        handler._send_error_json(
-            500,
-            f"failed to enable bridge outputs: {e}",
-        )
+    except bridge_session.BRIDGE_RESTART_ERRORS as e:
+        _send_bridge_output_error(handler, "enable", e)
         return
     try:
         session_id = handler.backend.begin_session(
-            member,
-            corpus_profile=corpus_profile,
-            include_raw_mic_0=include_raw_mic_0,
-            include_dtln=include_dtln,
-            include_usb_mic=include_usb_mic,
-            include_usb_dtln=include_usb_dtln,
-            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-            include_aec3_sweep=include_aec3_sweep,
-            aec3_sweep_source=aec3_sweep_source,
-            capture_plan=capture_plan,
+            member, **selection, capture_plan=capture_plan,
         )
     except (ValueError, StateError) as e:
         handler._send_error_json(400, str(e))
         return
     handler._send_json({
         "session_id": session_id, "member": member,
-        "include_raw_mic_0": include_raw_mic_0,
-        "include_dtln": include_dtln,
-        "include_usb_mic": include_usb_mic,
-        "include_usb_dtln": include_usb_dtln,
-        "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
-        "include_aec3_sweep": include_aec3_sweep,
-        "corpus_profile": corpus_profile,
+        **selection,
         "chip_aec_config": handler.backend.chip_aec_config(),
-        "aec3_sweep_source": aec3_sweep_source,
         "aec3_sweep_variants": handler.backend.aec3_sweep_variants(),
         "aec3_sweep_config": handler.backend.aec3_sweep_config(),
         "enabled_legs": list(handler.backend.enabled_legs()),
@@ -818,28 +648,8 @@ def _post_bridge_outputs(handler: _Handler, body: dict[str, Any]) -> None:
         return
     try:
         bridge_session.disable_bridge_corpus_outputs()
-    except subprocess.CalledProcessError as e:
-        detail = (e.stderr or e.stdout or str(e)).strip()
-        msg = (
-            f"could not disable bridge outputs; {BRIDGE_UNIT} "
-            "restart failed and the env was rolled back"
-        )
-        if detail:
-            msg = f"{msg}: {detail[-500:]}"
-        handler._send_error_json(500, msg)
-        return
-    except subprocess.TimeoutExpired:
-        handler._send_error_json(
-            500,
-            f"could not disable bridge outputs; {BRIDGE_UNIT} "
-            "restart timed out and the env was rolled back",
-        )
-        return
-    except OSError as e:
-        handler._send_error_json(
-            500,
-            f"failed to disable bridge outputs: {e}",
-        )
+    except bridge_session.BRIDGE_RESTART_ERRORS as e:
+        _send_bridge_output_error(handler, "disable", e)
         return
     handler._send_json({"bridge_outputs": bridge_session.bridge_output_status()})
 
@@ -936,32 +746,10 @@ def _post_voice_daemon(handler: _Handler, body: dict[str, Any]) -> None:
     if action == "start" and disable_outputs:
         try:
             bridge_session.disable_bridge_corpus_outputs()
-        except subprocess.CalledProcessError as e:
-            detail = (e.stderr or e.stdout or str(e)).strip()
-            msg = (
-                f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                "restart failed and the env was rolled back"
-            )
-            if detail:
-                msg = f"{msg}: {detail[-500:]}"
-            handler._send_error_json(500, msg)
+        except bridge_session.BRIDGE_RESTART_ERRORS as e:
+            _send_bridge_output_error(handler, "disable", e)
             return
-        except subprocess.TimeoutExpired:
-            handler._send_error_json(
-                500,
-                f"could not disable bridge outputs; {BRIDGE_UNIT} "
-                "restart timed out and the env was rolled back",
-            )
-            return
-        except OSError as e:
-            handler._send_error_json(
-                500,
-                f"failed to disable bridge outputs: {e}",
-            )
-            return
-    # WS1 Phase 3: start/stop voice via the restart broker (blocking so
-    # the corpus session sees the daemon settle) — surfaces a 500 on
-    # failure, same as the previous check=True systemctl.
+    # Blocking, so the corpus session sees the daemon settle.
     resp = manage_units(
         VOICE_UNIT, verb=action, reason="wake-corpus session",
         no_block=False, timeout=30.0,
@@ -978,13 +766,10 @@ def _post_voice_daemon(handler: _Handler, body: dict[str, Any]) -> None:
 
 
 def _get_index(handler: _Handler) -> None:
-    data = _render_index_html(handler.csrf_token).encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.end_headers()
-    handler.wfile.write(data)
+    ctx = begin_request(handler)
+    send_html_response(
+        handler, _render_index_html(ctx["csrf_token"]).encode("utf-8"),
+    )
 
 
 def _get_recording_level(handler: _Handler) -> None:
@@ -1003,19 +788,6 @@ _resolve_clip_wav = resolve_samples({"/api/clip/sample/wav": _get_clip_wav})(
 )
 
 
-def _csrf_guarded(fn: RouteFn) -> RouteFn:
-    """Run this recorder's bespoke server-token CSRF check before the route
-    body — the sanctioned exception to the shared double-submit chokepoint.
-    `_check_csrf` sends its own 403; a rejected POST reads no body."""
-    @functools.wraps(fn)
-    def route(handler: Any) -> None:
-        if not handler._check_csrf():
-            return
-        fn(handler)
-    setattr(route, "csrf_mode", "header")
-    return route
-
-
 # ----- route tables (exact path -> callable taking the handler) -----
 # test_get_routes_resolve_via_render_and_module asserts the ES module's
 # relative api paths stay in sync.
@@ -1029,50 +801,36 @@ _GET_ROUTES = {
     "/api/recording/level": _get_recording_level,
 }
 _POST_ROUTES = {
-    "/api/session": _csrf_guarded(_post_session),
-    "/api/capture-plan": _csrf_guarded(_post_capture_plan),
-    "/api/session/load": _csrf_guarded(_post_session_load),
-    "/api/session/unload": _csrf_guarded(_post_session_unload),
-    "/api/clip/start": _csrf_guarded(_post_clip_start),
-    "/api/clip/stop": _csrf_guarded(_post_clip_stop),
-    "/api/bridge-outputs": _csrf_guarded(_post_bridge_outputs),
-    "/api/corpus-test-mode": _csrf_guarded(_post_corpus_test_mode),
-    "/api/voice-daemon": _csrf_guarded(_post_voice_daemon),
+    "/api/session": _post_session,
+    "/api/capture-plan": _post_capture_plan,
+    "/api/session/load": _post_session_load,
+    "/api/session/unload": _post_session_unload,
+    "/api/clip/start": _post_clip_start,
+    "/api/clip/stop": _post_clip_stop,
+    "/api/bridge-outputs": _post_bridge_outputs,
+    "/api/corpus-test-mode": _post_corpus_test_mode,
+    "/api/voice-daemon": _post_voice_daemon,
 }
 
 
-def _make_handler_class(
-    backend: RecordingBackend, csrf_token: str,
-) -> type[_Handler]:
+def _make_handler_class(backend: RecordingBackend) -> type[_Handler]:
     class _BoundHandler(_Handler):
         pass
     _BoundHandler.backend = backend
-    _BoundHandler.csrf_token = csrf_token
     return _BoundHandler
 
 
 def make_server(
     target,
     *,
-    csrf_token: str,
     backend: RecordingBackend,
 ) -> ThreadingHTTPServer:
-    """Construct the recorder's HTTP server bound to `target`.
-
-    `target` is either:
-      - an `(host, port)` tuple for direct binding (CLI use)
-      - a `socket.socket` already bound by systemd (socket-activation
-        path via `jasper.web.__main__`)
-      - an `int` port (legacy direct-bind shortcut)
-
-    Pairs with `jasper.platform.systemd.make_http_server` to handle the
-    socket-vs-bind branching. The backend must already be `start()`ed
-    by the caller (the asyncio loop thread + crash-recovery state both
-    depend on it).
+    """Construct the recorder's HTTP server bound to `target` — any target
+    `jasper.platform.systemd.make_http_server` accepts. The backend must
+    already be `start()`ed by the caller (the asyncio loop thread +
+    crash-recovery state both depend on it).
     """
-    from ..platform import systemd
-    handler_cls = _make_handler_class(backend, csrf_token)
-    return systemd.make_http_server(target, handler_cls)
+    return systemd.make_http_server(target, _make_handler_class(backend))
 
 
 # ---------------------------------------------------------------------------
@@ -1400,17 +1158,8 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = RecordingBackend(args.output, ports=ports)
     backend.start()
-    # CSRF token regenerated each process startup. If you reload the
-    # tab the page picks up the current token; old tabs keep their
-    # stale token and get 403s until reload — acceptable UX for an
-    # operator tool that runs for a single session.
-    csrf_token = secrets.token_hex(16)
     try:
-        server = make_server(
-            (args.host, args.port),
-            csrf_token=csrf_token,
-            backend=backend,
-        )
+        server = make_server((args.host, args.port), backend=backend)
         logger.info(
             "jasper-wake-corpus-web on http://%s:%d  output=%s  legs=%s",
             args.host, args.port, args.output,

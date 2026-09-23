@@ -17,10 +17,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper import aec_sweep, wake_ports
 from jasper.chip_aec.policy import ChipAecGate
 from jasper.env_file import read_env_file
-from jasper.wake_corpus import bridge_session, capture_plan, runtime_probe
-from jasper.web import wake_corpus_setup
+from jasper.wake_corpus import (
+    bridge_session,
+    capture_plan,
+    recording_backend,
+    runtime_probe,
+)
 
 from tests._log_events import event_fields, event_records
 from tests.wake_corpus_setup_fixtures import (
@@ -40,14 +45,14 @@ _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 def test_legs_includes_raw0_in_tuple() -> None:
     """The LEGS tuple must include raw0 so downstream tools that
     iterate over it pick up the new quadrant directories."""
-    assert "raw0" in wake_corpus_setup.LEGS
-    assert wake_corpus_setup.BASE_LEGS == ("on", "off")
-    assert wake_corpus_setup.DTLN_LEG == "dtln"
+    assert "raw0" in runtime_probe.LEGS
+    assert runtime_probe.BASE_LEGS == ("on", "off")
+    assert runtime_probe.DTLN_LEG == "dtln"
 
 
 def test_default_aec_raw0_port_constant_exposed() -> None:
-    """Recorder re-exports the shared default port so socket-activation
-    + CLI both see the same number."""
+    """One shared default port, so socket-activation + CLI both see the
+    same number."""
     from jasper.cli.wake_enroll import DEFAULT_AEC_RAW0_PORT
     assert DEFAULT_AEC_RAW0_PORT == 9879
 
@@ -55,19 +60,19 @@ def test_default_aec_raw0_port_constant_exposed() -> None:
 def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
     """A backend constructed without explicit ports defaults to all
     known leg ports (recorder subscribes to a session-selected subset)."""
-    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
     assert set(b._ports.keys()) == {
         "on", "off", "dtln", "raw0", "ref", "usb_raw",
         "usb_webrtc", "usb_dtln",
         "chip_aec_150", "chip_aec_210",
         "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
-        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        *runtime_probe.AEC3_SWEEP_LEGS,
     }
 
 
 def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
     """Low-RAM installs can skip DTLN without losing the raw0 corpus leg."""
-    ports = wake_corpus_setup.build_ports(
+    ports = wake_ports.build_ports(
         aec_on_port=1111,
         aec_off_port=2222,
         aec_dtln_port=3333,
@@ -87,7 +92,7 @@ def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
         "usb_raw": 6666,
         "usb_webrtc": 7777,
         "usb_dtln": 8888,
-        **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
+        **wake_ports.DEFAULT_AEC3_SWEEP_PORTS,
     }
 
 
@@ -151,9 +156,9 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     ports = web_main._wake_corpus_ports_from_env()
     assert "dtln" not in ports
     assert ports["raw0"] == 4400
-    assert ports["ref"] == wake_corpus_setup.DEFAULT_AEC_REF_PORT
-    assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
-    assert ports["aec3_variant_1"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
+    assert ports["ref"] == wake_ports.DEFAULT_AEC_REF_PORT
+    assert ports["usb_dtln"] == wake_ports.DEFAULT_AEC_USB_DTLN_PORT
+    assert ports["aec3_variant_1"] == wake_ports.DEFAULT_AEC3_SWEEP_PORTS[
         "aec3_variant_1"
     ]
 
@@ -190,7 +195,6 @@ def test_combined_web_lazy_wake_corpus_serves_after_first_request(
         ("127.0.0.1", 0),
         output_dir=tmp_path / "out",
         ports={"on": 9876, "off": 9877},
-        csrf_token="test-token",
     )
     port = server.server_address[1]
     th = threading.Thread(target=server.serve_forever, daemon=True)
@@ -363,7 +367,7 @@ def test_begin_session_with_xvf_raw0_dtln_records_companion_legs(backend) -> Non
 def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
     backend.begin_session(
         "jasper",
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
         include_dtln=True,  # ignored here; this is not the raw0 DTLN path.
         include_raw_mic_0=False,  # forced by the chip profile.
         include_usb_mic=False,
@@ -372,7 +376,7 @@ def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
         include_aec3_sweep=True,  # incompatible pilot sweep is parked.
     )
 
-    assert backend.corpus_profile() == wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON
+    assert backend.corpus_profile() == runtime_probe.PROFILE_CHIP_AEC_COMPARISON
     assert backend.include_raw_mic_0() is True
     assert backend.include_usb_mic() is False
     assert backend.include_aec3_sweep() is False
@@ -391,7 +395,7 @@ def test_begin_session_chip_profile_records_usb_legs_when_requested(
 ) -> None:
     backend.begin_session(
         "jasper",
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
         include_usb_mic=True,
         include_usb_dtln=True,
     )
@@ -480,7 +484,7 @@ def test_begin_session_with_aec3_sweep_records_variant_legs(
     assert backend.include_aec3_sweep() is True
     assert backend.enabled_legs() == (
         "on", "off", "ref", "usb_raw", "usb_webrtc",
-        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        *runtime_probe.AEC3_SWEEP_LEGS,
     )
 
     backend.start_recording("music", "far")
@@ -490,14 +494,14 @@ def test_begin_session_with_aec3_sweep_records_variant_legs(
     out = tmp_path / "out"
     for leg in (
         "on", "off", "ref", "usb_raw", "usb_webrtc",
-        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        *runtime_probe.AEC3_SWEEP_LEGS,
     ):
         d = out / f"aec_{leg}_music"
         assert d.is_dir(), f"missing dir: {d}"
         assert len(list(d.glob("*.aec-*.wav"))) == 1
     assert set(clip.files.keys()) == {
         "on", "off", "ref", "usb_raw", "usb_webrtc",
-        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        *runtime_probe.AEC3_SWEEP_LEGS,
     }
     assert "dtln" not in clip.files
 
@@ -507,7 +511,7 @@ def test_missing_bridge_outputs_detects_disabled_usb_and_dtln(
 ) -> None:
     _use_tmp_bridge_env(monkeypatch, tmp_path)
 
-    assert wake_corpus_setup.missing_bridge_outputs_for_session(
+    assert bridge_session.missing_bridge_outputs_for_session(
         include_dtln=True,
         include_usb_mic=True,
         include_usb_dtln=True,
@@ -538,7 +542,7 @@ def test_missing_bridge_outputs_honors_overlay_order(
         ),
     )
 
-    assert wake_corpus_setup.missing_bridge_outputs_for_session(
+    assert bridge_session.missing_bridge_outputs_for_session(
         include_dtln=True,
         include_usb_mic=True,
         include_usb_dtln=True,
@@ -547,9 +551,9 @@ def test_missing_bridge_outputs_honors_overlay_order(
 
 
 def test_parse_amixer_bool_accepts_common_forms() -> None:
-    assert wake_corpus_setup._parse_amixer_bool("Mono: Capture [on]") is True
-    assert wake_corpus_setup._parse_amixer_bool(": values=off") is False
-    assert wake_corpus_setup._parse_amixer_bool("no boolean here") is None
+    assert bridge_session._parse_amixer_bool("Mono: Capture [on]") is True
+    assert bridge_session._parse_amixer_bool(": values=off") is False
+    assert bridge_session._parse_amixer_bool("no boolean here") is None
 
 
 def test_usb_mic_status_reports_hardware_agc(
@@ -571,9 +575,9 @@ def test_usb_mic_status_reports_hardware_agc(
             cmd, 0, stdout="Mono: Capture [on]\n", stderr="",
         )
 
-    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+    monkeypatch.setattr(bridge_session.subprocess, "run", fake_run)
 
-    status = wake_corpus_setup.usb_mic_status()
+    status = bridge_session.usb_mic_status()
 
     assert status["device"] == "USB PnP Sound Device"
     assert status["hardware_agc"]["mixer_card"] == "4"
@@ -599,11 +603,11 @@ def test_restart_aec_bridge_resets_start_limit_before_restart(
 
     monkeypatch.setattr(restart_broker, "manage_units", fake_manage)
 
-    wake_corpus_setup.restart_aec_bridge()
+    bridge_session.restart_aec_bridge()
 
     assert calls == [
-        ((wake_corpus_setup.BRIDGE_UNIT,), "reset-failed"),
-        ((wake_corpus_setup.BRIDGE_UNIT,), "restart"),
+        ((runtime_probe.BRIDGE_UNIT,), "reset-failed"),
+        ((runtime_probe.BRIDGE_UNIT,), "restart"),
     ]
 
 
@@ -629,7 +633,7 @@ def test_set_bridge_outputs_matches_selected_session_outputs(
         lambda: restarts.append("restart"),
     )
 
-    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+    changed = bridge_session.set_bridge_outputs_for_session(
         include_dtln=False,
         include_usb_mic=True,
         include_usb_dtln=False,
@@ -656,7 +660,7 @@ def test_set_bridge_outputs_enables_aec3_sweep_and_parks_dtln(
     )
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
-    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+    changed = bridge_session.set_bridge_outputs_for_session(
         include_dtln=False,
         include_usb_mic=False,
         include_usb_dtln=False,
@@ -677,18 +681,18 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     monkeypatch.setattr(
         bridge_session,
         "restart_unit",
-        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+        lambda unit, timeout=bridge_session.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
         bridge_session,
         "restart_aec_bridge",
-        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+        lambda: restarts.append(runtime_probe.BRIDGE_UNIT),
     )
 
-    changed = wake_corpus_setup.set_bridge_outputs_for_session(
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+    changed = bridge_session.set_bridge_outputs_for_session(
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
         include_dtln=False,
         include_usb_mic=False,
         include_usb_dtln=True,
@@ -705,25 +709,25 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
-    assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == wake_corpus_setup.DEFAULT_CHIP_REF_PCM
-    assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+    assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == runtime_probe.DEFAULT_CHIP_REF_PCM
+    assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == runtime_probe.OUTPUTD_REF_UDP_TARGET
     assert (
         values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"]
-        == wake_corpus_setup.DEFAULT_CHIP_REF_SAMPLE_RATE
+        == runtime_probe.DEFAULT_CHIP_REF_SAMPLE_RATE
     )
     assert (
         values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"]
-        == wake_corpus_setup.DEFAULT_CHIP_REF_PERIOD_FRAMES
+        == runtime_probe.DEFAULT_CHIP_REF_PERIOD_FRAMES
     )
     assert (
         values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"]
-        == wake_corpus_setup.DEFAULT_CHIP_REF_BUFFER_FRAMES
+        == runtime_probe.DEFAULT_CHIP_REF_BUFFER_FRAMES
     )
     assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
     assert restarts == [
-        wake_corpus_setup.OUTPUTD_UNIT,
-        wake_corpus_setup.AEC_INIT_UNIT,
-        wake_corpus_setup.BRIDGE_UNIT,
+        bridge_session.OUTPUTD_UNIT,
+        bridge_session.AEC_INIT_UNIT,
+        runtime_probe.BRIDGE_UNIT,
     ]
 
 
@@ -744,18 +748,18 @@ def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
     monkeypatch.setattr(
         bridge_session,
         "restart_unit",
-        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+        lambda unit, timeout=bridge_session.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
         bridge_session,
         "restart_aec_bridge",
-        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+        lambda: restarts.append(runtime_probe.BRIDGE_UNIT),
     )
 
-    changed = wake_corpus_setup.set_bridge_outputs_for_session(
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+    changed = bridge_session.set_bridge_outputs_for_session(
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
         include_dtln=False,
         include_usb_mic=False,
         include_usb_dtln=False,
@@ -772,12 +776,12 @@ def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
-        wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+        runtime_probe.OUTPUTD_REF_UDP_TARGET
     )
     assert restarts == [
-        wake_corpus_setup.OUTPUTD_UNIT,
-        wake_corpus_setup.AEC_INIT_UNIT,
-        wake_corpus_setup.BRIDGE_UNIT,
+        bridge_session.OUTPUTD_UNIT,
+        bridge_session.AEC_INIT_UNIT,
+        runtime_probe.BRIDGE_UNIT,
     ]
 
 
@@ -792,8 +796,8 @@ def test_set_bridge_outputs_chip_profile_parks_production_dtln(
     monkeypatch.setattr(bridge_session, "restart_unit", lambda *args, **kwargs: None)
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
-    changed = wake_corpus_setup.set_bridge_outputs_for_session(
-        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+    changed = bridge_session.set_bridge_outputs_for_session(
+        corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
         include_dtln=False,
         include_usb_mic=True,
         include_usb_dtln=True,
@@ -832,7 +836,7 @@ def test_set_bridge_outputs_rolls_back_when_restart_fails(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        wake_corpus_setup.set_bridge_outputs_for_session(
+        bridge_session.set_bridge_outputs_for_session(
             include_dtln=True,
             include_usb_mic=True,
             include_usb_dtln=True,
@@ -865,7 +869,7 @@ def test_disable_bridge_outputs_rolls_back_when_restart_fails(
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", fake_restart)
 
     with pytest.raises(OSError, match="bridge unavailable"):
-        wake_corpus_setup.disable_bridge_corpus_outputs()
+        bridge_session.disable_bridge_corpus_outputs()
 
     assert read_env_file(bridge_path) == original
     assert attempts == 2
@@ -919,14 +923,14 @@ def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
     monkeypatch.setattr(
         bridge_session,
         "restart_unit",
-        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+        lambda unit, timeout=bridge_session.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
         bridge_session,
         "restart_aec_bridge",
-        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+        lambda: restarts.append(runtime_probe.BRIDGE_UNIT),
     )
     kicks: list[str] = []
     monkeypatch.setattr(
@@ -935,13 +939,13 @@ def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
         lambda *, reason: kicks.append(reason),
     )
 
-    assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+    assert bridge_session.disable_bridge_corpus_outputs() is True
 
     assert not bridge_path.exists()
     assert restarts == [
-        wake_corpus_setup.OUTPUTD_UNIT,
-        wake_corpus_setup.AEC_INIT_UNIT,
-        wake_corpus_setup.BRIDGE_UNIT,
+        bridge_session.OUTPUTD_UNIT,
+        bridge_session.AEC_INIT_UNIT,
+        runtime_probe.BRIDGE_UNIT,
     ]
     # A commissioned box converges on its own: nothing is handed to the
     # reconciler, so the #2254 park branch stays off the healthy path.
@@ -972,10 +976,10 @@ def _chip_corpus_disable_env(
     kicks: list[str] = []
 
     def fake_restart_unit(
-        unit: str, timeout: float = wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC,
+        unit: str, timeout: float = bridge_session.BRIDGE_RESTART_TIMEOUT_SEC,
     ) -> None:
         restarts.append(unit)
-        if unit == wake_corpus_setup.AEC_INIT_UNIT:
+        if unit == bridge_session.AEC_INIT_UNIT:
             raise subprocess.CalledProcessError(
                 1,
                 ["systemctl", "restart", unit],
@@ -986,7 +990,7 @@ def _chip_corpus_disable_env(
     monkeypatch.setattr(
         bridge_session,
         "restart_aec_bridge",
-        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+        lambda: restarts.append(runtime_probe.BRIDGE_UNIT),
     )
     if stub_handoff:
         monkeypatch.setattr(
@@ -1010,14 +1014,14 @@ def test_disable_on_a_box_with_no_corpus_overrides_touches_nothing(
     monkeypatch.setattr(
         bridge_session,
         "restart_unit",
-        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+        lambda unit, timeout=bridge_session.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
         bridge_session,
         "restart_aec_bridge",
-        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+        lambda: restarts.append(runtime_probe.BRIDGE_UNIT),
     )
     kicks: list[str] = []
     monkeypatch.setattr(
@@ -1026,7 +1030,7 @@ def test_disable_on_a_box_with_no_corpus_overrides_touches_nothing(
         lambda *, reason: kicks.append(reason),
     )
 
-    assert wake_corpus_setup.disable_bridge_corpus_outputs() is False
+    assert bridge_session.disable_bridge_corpus_outputs() is False
 
     assert restarts == []
     assert kicks == []
@@ -1054,14 +1058,14 @@ def test_corpus_exit_survives_the_designed_commissioning_park(
     )
 
     with caplog.at_level(logging.WARNING):
-        assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+        assert bridge_session.disable_bridge_corpus_outputs() is True
 
     # The corpus overrides are gone and stayed gone: no rollback write.
     assert not bridge_path.exists()
     # The bridge is left to the reconciler's park, which stops it.
     assert restarts == [
-        wake_corpus_setup.OUTPUTD_UNIT,
-        wake_corpus_setup.AEC_INIT_UNIT,
+        bridge_session.OUTPUTD_UNIT,
+        bridge_session.AEC_INIT_UNIT,
     ]
     # The park is loud and names an operator action, and its owner is asked to
     # converge rather than this surface deciding locally.
@@ -1084,12 +1088,12 @@ def test_corpus_exit_still_rolls_back_a_genuine_aec_init_failure(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        wake_corpus_setup.disable_bridge_corpus_outputs()
+        bridge_session.disable_bridge_corpus_outputs()
 
     assert read_env_file(bridge_path) == original
     assert kicks == []
     # Rollback re-runs the same closure, so aec-init is attempted twice.
-    assert restarts.count(wake_corpus_setup.AEC_INIT_UNIT) == 2
+    assert restarts.count(bridge_session.AEC_INIT_UNIT) == 2
 
 
 def test_corpus_exit_rolls_back_when_the_park_cannot_be_confirmed(
@@ -1109,7 +1113,7 @@ def test_corpus_exit_rolls_back_when_the_park_cannot_be_confirmed(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        wake_corpus_setup.disable_bridge_corpus_outputs()
+        bridge_session.disable_bridge_corpus_outputs()
 
     assert read_env_file(bridge_path) == original
     assert kicks == []
@@ -1149,7 +1153,7 @@ def test_exec_main_status_parses_systemctl_show_and_fails_soft(
     assert bridge_session._aec_init_exec_main_status() == 2
     assert calls == [[
         "systemctl", "show", "-p", "ExecMainStatus", "--value",
-        wake_corpus_setup.AEC_INIT_UNIT,
+        bridge_session.AEC_INIT_UNIT,
     ]]
 
     monkeypatch.setattr(
@@ -1228,7 +1232,7 @@ def test_a_broken_reconciler_kick_cannot_resurrect_the_rollback(
         bridge_session.restart_broker, "manage_units", exploding_manage_units,
     )
 
-    assert wake_corpus_setup.disable_bridge_corpus_outputs() is True
+    assert bridge_session.disable_bridge_corpus_outputs() is True
     assert not bridge_path.exists()
 
 
@@ -1260,9 +1264,9 @@ def test_session_configure_keeps_rollback_when_leaving_a_chip_profile(
     original = read_env_file(bridge_path)
 
     def fake_restart_unit(
-        unit: str, timeout: float = wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC,
+        unit: str, timeout: float = bridge_session.BRIDGE_RESTART_TIMEOUT_SEC,
     ) -> None:
-        if unit == wake_corpus_setup.AEC_INIT_UNIT:
+        if unit == bridge_session.AEC_INIT_UNIT:
             raise subprocess.CalledProcessError(
                 1, ["systemctl", "restart", unit],
             )
@@ -1274,8 +1278,8 @@ def test_session_configure_keeps_rollback_when_leaving_a_chip_profile(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        wake_corpus_setup.set_bridge_outputs_for_session(
-            corpus_profile=wake_corpus_setup.PROFILE_STANDARD,
+        bridge_session.set_bridge_outputs_for_session(
+            corpus_profile=runtime_probe.PROFILE_STANDARD,
             include_dtln=False,
             include_usb_mic=False,
             include_usb_dtln=False,
@@ -1305,7 +1309,7 @@ def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
         lambda: restarts.append("restart"),
     )
 
-    wake_corpus_setup.disable_bridge_corpus_outputs()
+    bridge_session.disable_bridge_corpus_outputs()
 
     values = read_env_file(bridge_path)
     assert "JASPER_AEC_DTLN_ENABLED" not in values
@@ -1330,9 +1334,9 @@ def test_disable_bridge_outputs_restores_system_dtln_intent(
     )
     monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
-    before = wake_corpus_setup.bridge_output_status()
-    wake_corpus_setup.disable_bridge_corpus_outputs()
-    after = wake_corpus_setup.bridge_output_status()
+    before = runtime_probe.bridge_output_status()
+    bridge_session.disable_bridge_corpus_outputs()
+    after = runtime_probe.bridge_output_status()
 
     assert before["active"] is True
     assert before["dtln"] is False
@@ -1367,7 +1371,7 @@ def test_build_capture_health_marks_bridge_drop_compromised() -> None:
         },
     }
 
-    health = wake_corpus_setup.build_capture_health(
+    health = bridge_session.build_capture_health(
         wall_duration_sec=0.08,
         buffers={"on": [frame]},
         bridge_start=start,
@@ -1383,7 +1387,7 @@ def test_build_capture_health_marks_bridge_drop_compromised() -> None:
 def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
     """AEC3 sweep legs use the same XVF mic/ref frames as the baseline
     AEC leg, so their per-leg health must inherit mic/ref bridge drops."""
-    leg = wake_corpus_setup.AEC3_SWEEP_LEGS[0]
+    leg = runtime_probe.AEC3_SWEEP_LEGS[0]
     frame = np.zeros(1280, dtype=np.int16)
     start = {
         "pid": 123,
@@ -1410,7 +1414,7 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
         },
     }
 
-    health = wake_corpus_setup.build_capture_health(
+    health = bridge_session.build_capture_health(
         wall_duration_sec=0.08,
         buffers={leg: [frame]},
         bridge_start=start,
@@ -1427,7 +1431,7 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
 def test_build_capture_health_marks_usb_aec3_sweep_bridge_drops() -> None:
     """When the sweep source is USB, variant legs inherit USB/ref drops
     instead of XVF mic drops."""
-    leg = wake_corpus_setup.AEC3_SWEEP_LEGS[0]
+    leg = runtime_probe.AEC3_SWEEP_LEGS[0]
     frame = np.zeros(1280, dtype=np.int16)
     start = {
         "pid": 123,
@@ -1454,7 +1458,7 @@ def test_build_capture_health_marks_usb_aec3_sweep_bridge_drops() -> None:
         },
     }
 
-    health = wake_corpus_setup.build_capture_health(
+    health = bridge_session.build_capture_health(
         wall_duration_sec=0.08,
         buffers={leg: [frame]},
         bridge_start=start,
@@ -1472,7 +1476,7 @@ def test_build_capture_health_marks_usb_aec3_sweep_bridge_drops() -> None:
 def test_build_capture_health_unknown_without_bridge_stats() -> None:
     frame = np.zeros(1280, dtype=np.int16)
 
-    health = wake_corpus_setup.build_capture_health(
+    health = bridge_session.build_capture_health(
         wall_duration_sec=0.08,
         buffers={"on": [frame]},
         bridge_start=None,
@@ -1548,9 +1552,9 @@ def test_metadata_persists_aec3_sweep_flags(
     assert data["aec3_sweep_source"] == "usb"
     assert data["enabled_legs"] == [
         "on", "off", "ref", "usb_raw", "usb_webrtc",
-        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        *runtime_probe.AEC3_SWEEP_LEGS,
     ]
-    assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+    assert data["aec3_sweep_variants"] == aec_sweep.variant_metadata(
         input_source="usb",
     )
     assert data["aec3_sweep_config"]["input_source"] == "usb"
@@ -1564,7 +1568,7 @@ def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
         "off": 9877,
         **{
             leg: 9884 + index
-            for index, leg in enumerate(wake_corpus_setup.AEC3_SWEEP_LEGS)
+            for index, leg in enumerate(runtime_probe.AEC3_SWEEP_LEGS)
         },
     }
     data = {
@@ -1578,8 +1582,8 @@ def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
         ],
     }
 
-    assert wake_corpus_setup._enabled_legs_from_metadata(data, ports) == (
-        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    assert bridge_session._enabled_legs_from_metadata(data, ports) == (
+        "on", *runtime_probe.AEC3_SWEEP_LEGS, "off",
     )
 
 
@@ -1596,10 +1600,10 @@ def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
         "include_raw_mic_0": True,
         "clips": [],
     }))
-    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.include_raw_mic_0() is True
@@ -1622,10 +1626,10 @@ def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
         "include_usb_dtln": True,
         "clips": [],
     }))
-    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.include_dtln() is False
@@ -1648,10 +1652,10 @@ def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
         "clips": [],
         # NO include_raw_mic_0 key
     }))
-    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.include_raw_mic_0() is False
@@ -1675,10 +1679,10 @@ def test_recovery_handles_pre_audio_context_session_metadata(tmp_path: Path) -> 
              "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
         ],
     }))
-    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b = recording_backend.RecordingBackend(output_dir=out)
     b.start()
     try:
         assert b.audio_context() is None

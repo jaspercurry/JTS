@@ -52,13 +52,3 @@ def test_normalize_condition_tolerates_unknown_and_none():
     assert normalize_condition("tv") == DEFAULT_CONDITION
     assert normalize_condition("") == DEFAULT_CONDITION
     assert normalize_condition(None) == DEFAULT_CONDITION
-
-
-def test_corpus_tool_uses_the_ssot_not_a_private_copy():
-    # The corpus wizard must share THE taxonomy by identity, not redeclare a
-    # copy that can silently drift — exactly the drift this module exists to
-    # prevent (cf. jasper/cli/noise_capture.py's narrower private set). If
-    # someone re-adds a local CONDITIONS to wake_corpus_setup, this fails.
-    from jasper.web import wake_corpus_setup
-    assert wake_corpus_setup.CONDITIONS is CONDITIONS
-    assert wake_corpus_setup.DISTANCES is DISTANCES
