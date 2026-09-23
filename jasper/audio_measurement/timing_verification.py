@@ -33,6 +33,7 @@ def timing_next_action(
     verification = timing.get("verification") or {}
     residual, noise = (finite_float(verification.get(key)) for key in ("residual_rms_db", "repeat_noise_db"))
     if timing.get("saved") is not None:
+        # See ADR-0345
         if REASON_GRAPH_MISMATCH in (verification.get("reasons") or {}):
             return {"id": "remeasure_timing", "label": "measure timing again: the take played a driver the check leaves out"}
         if verification.get("status") == TIMING_NOT_COMPARABLE:
