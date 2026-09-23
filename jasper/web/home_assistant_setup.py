@@ -131,6 +131,25 @@ ENV_RECENT_URLS = _ha_mod.ENV_RECENT_URLS
 
 # ---- URL normalization ------------------------------------------------------
 
+def _bracket_ipv6(host: str) -> str:
+    """Wrap an IPv6 literal in brackets for RFC 3986 URL embedding.
+
+    `http://fe80::1:8123` is not a valid URL — the colons in the v6
+    literal collide with the host:port separator. The bracketed form
+    `http://[fe80::1]:8123` is unambiguous. Pass IPv4 or mDNS hostnames
+    through unchanged. Pass already-bracketed literals through too
+    (idempotent).
+    """
+    s = str(host)
+    if not s or s.startswith("["):
+        return s
+    # IPv6 literals always contain `:`; v4 dotted-quads never do; mDNS
+    # hostnames ("uuid.local.") never do. So a colon in `s` means v6.
+    if ":" in s:
+        return f"[{s}]"
+    return s
+
+
 def _normalize_url(raw: str) -> str:
     """Accept any of: 'homeassistant.local', 'homeassistant.local:8123',
     'http://homeassistant.local:8123', 'http://homeassistant.local:8123/',
@@ -205,7 +224,8 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
     """Browse the LAN for `_home-assistant._tcp.local.` instances and map
     each to {name, host, port, location_name, version, url}.
 
-    `jasper.net.mdns.browse_once` supplies IPv4-only resolved services. This
+    `jasper.net.mdns.browse_once` browses over IPv4 mDNS; a resolved address
+    may still be an IPv6 literal (AAAA record). This
     function applies HA policy: SRV host as `host`, port defaulting to 8123,
     the first resolved address in the URL, and location/version from TXT.
 
@@ -222,8 +242,9 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
             # strings in practice.
             host = (svc.server or "").rstrip(".")
             port = svc.port or 8123
-            # browse_once drops address-less instances and resolves IPv4 only.
-            target_host = svc.addresses[0]
+            # The mDNS transport is IPv4-only, but a responder may still
+            # advertise AAAA records, so an address can be an IPv6 literal.
+            target_host = _bracket_ipv6(svc.addresses[0]) if svc.addresses else host
             if not target_host:
                 continue
             url = _normalize_url(f"http://{target_host}:{port}")
