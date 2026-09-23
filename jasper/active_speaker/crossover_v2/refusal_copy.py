@@ -617,8 +617,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_CAPTURE_OVERRUN: _retriable_reason(
         REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy("The wizard could not keep up with the microphone.",
-                            "Stop polling it during a take."),
+        RetryableReasonCopy("JTS was busy and missed part of the recording.", "measuring again.",
+                            joiner=" — ", strip_before_join="."),
         auto_retry=True, capture_quality=True,
     ),
     REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(

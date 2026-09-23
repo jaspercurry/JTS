@@ -170,7 +170,7 @@ def box(tmp_path, monkeypatch):
         amplitude = 10 ** ((spl - 94.0) / 20)
         signal = np.sqrt(2) * np.sin(2 * np.pi * tone_hz * np.arange(frames) / 48000) if tone_hz else np.ones(frames)
         data = np.asarray(signal * amplitude * np.iinfo(np.int32).max, dtype="<i4")
-        monitor.observe(data.tobytes(), len(data), 1, sample_rate_hz=48000)
+        monitor.observe([data.tobytes()], 1, sample_rate_hz=48000)
         return data.tobytes()
     class Recorder:
         failure = None

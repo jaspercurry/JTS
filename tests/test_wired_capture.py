@@ -30,10 +30,14 @@ What is pinned, and why each pin exists:
 from __future__ import annotations
 
 import io
+import math
 import struct
+import sys
+import threading
+import time
 import wave
 from dataclasses import replace
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -49,7 +53,9 @@ from jasper.audio_measurement.frame_ledger import (
     reconcile_capture_frames,
 )
 from jasper.audio_measurement.wired_capture import (
+    CAPTURE_RING_PERIODS,
     CODE_WIRED_MIC_MISSING,
+    SPL_BATCH_S,
     WiredCaptureError,
     WiredMicDevice,
     WiredMicMissing,
@@ -61,6 +67,7 @@ from jasper.audio_measurement.wired_capture import (
     build_capture_integrity_report,
     decode_wav_to_mono,
     encode_wav_s32,
+    make_wired_recorder,
     mint_wired_answer,
     require_wired_mic,
     resolve_wired_mic,
@@ -152,29 +159,60 @@ RATE = 48_000
 CHANNELS = 2
 
 
-class FakeClockNs:
-    """Monotonic-ns clock the test advances explicitly per read."""
-
-    def __init__(self, step_ns):
-        self._now = 0
-        self._step = step_ns
-
-    def __call__(self):
-        self._now += self._step
-        return self._now
-
-
-def _record(script, *, max_capture_s=10.0, clock_ns=None, tail_s=0.0):
+def _record(script, *, max_capture_s=10.0, clock_ns=time.monotonic_ns, tail_s=0.0):
     recorder = WiredRecorder(
         "fake:pcm",
         sample_rate_hz=RATE,
         channels=CHANNELS,
         max_capture_s=max_capture_s,
         pcm_factory=lambda: FakePcm(script),
-        clock_ns=clock_ns or FakeClockNs(1_000_000),  # 1 ms per read
+        clock_ns=clock_ns,
     )
     recorder.start(ready_timeout_s=5.0)
     return recorder.finish(tail_s=tail_s)
+
+
+class _PacedMic:
+    """A mic whose clock runs with its audio. A step ``(samples, late_s)`` returns an int32
+    ``(frames, channels)`` block once it was captured, and ``late_s`` later still (a reader held
+    off the GIL while ALSA's ring filled); a negative int is the overrun that caused. After the
+    script it trickles silence, one 1 ms read per 20 ms, so a test can stop the reader between
+    reads."""
+
+    def __init__(self, script):
+        self.now_ns = 0
+        self.drained = threading.Event()
+        self._script = list(script)
+
+    def clock_ns(self):
+        return self.now_ns
+
+    def read(self):
+        if self._script:
+            samples, late_s = self._script.pop(0)
+        else:
+            self.drained.set()
+            time.sleep(0.02)
+            samples, late_s = _silence(48), 0.0
+        if isinstance(samples, int):
+            self.now_ns += round(late_s * 1e9)
+            return samples, b""
+        self.now_ns += round((len(samples) / RATE + late_s) * 1e9)
+        return len(samples), samples.tobytes()
+
+    def close(self):
+        pass
+
+
+def _silence(frames):
+    return np.zeros((frames, CHANNELS), dtype="<i4")
+
+
+def _paced_recorder(mic, **kwargs):
+    return WiredRecorder(
+        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS, pcm_factory=lambda: mic,
+        clock_ns=mic.clock_ns, **{"max_capture_s": 10.0, **kwargs},
+    )
 
 
 def test_clean_capture_counts_exactly_and_balances():
@@ -198,30 +236,33 @@ def test_clean_capture_counts_exactly_and_balances():
     assert ledger.capture_gap_frames == 0
 
 
-def test_an_injected_overrun_books_exactly_one_gap_with_clock_frames():
-    # 1 ms clock step per read; the overrun's window is one step, so the
-    # clock-derived loss estimate is exactly 48 frames (1 ms at 48 kHz).
-    good = [(0, 0)] * 32
-    recording = _record([(32, good), "overrun", (32, good)])
-    assert recording.gap_count == 1
-    assert recording.gap_frames == 48
+@pytest.mark.parametrize("gaps,script", [
+    # One read returns 0.75 s late: its audio is good, the ring behind it overflowed.
+    (1, [(_silence(480), 0.0), (_silence(480), 0.75), (-32, 0.0)]),
+    # The reader falls 25 ms further behind on every read until the ring overflows.
+    (1, [(_silence(480), 0.025)] * 30 + [(-32, 0.0)]),
+    # Two overruns: each loss counts from its own restart, never from the first.
+    (2, [(_silence(480), 0.5), (-32, 0.0), (_silence(480), 0.25), (-32, 0.0)]),
+])
+def test_an_overrun_books_the_audio_the_stall_lost(gaps, script):
+    # Each script loses 0.75 s: 36,000 frames at 48 kHz (#5632: a stall used to book 1).
+    mic = _PacedMic(script)
+    recorder = _paced_recorder(mic)
+    recorder.start(ready_timeout_s=5.0)
+    assert mic.drained.wait(5.0)
+    recording = recorder.finish(tail_s=0)
+    assert recording.gap_count == gaps
+    assert recording.gap_frames == 36_000
     report = build_capture_integrity_report(
         recording, encoded_frames=recording.frames,
         zero_run_count=0, zero_runs=[],
     )
-    assert report[REPORT_KEY_CAPTURE_GAPS] == 1
-    assert report[REPORT_KEY_CAPTURE_GAP_FRAMES] == 48
+    assert report[REPORT_KEY_CAPTURE_GAPS] == gaps
+    assert report[REPORT_KEY_CAPTURE_GAP_FRAMES] == 36_000
     # The ledger grades it exactly as a browser render gap: FAIL material.
     ledger = reconcile_capture_frames(report, received_frames=recording.frames)
-    assert ledger.capture_gap_frames == 48
+    assert ledger.capture_gap_frames == 36_000
     assert "capture_overrun" in ledger.lost_at
-
-
-def test_two_overruns_book_two_gaps():
-    good = [(0, 0)] * 32
-    recording = _record([(32, good), "overrun", (16, good[:16]), "overrun", (32, good)])
-    assert recording.gap_count == 2
-    assert recording.gap_frames == 96  # two 1 ms windows at 48 kHz
 
 
 def test_gap_frames_floor_is_one_even_on_a_frozen_clock():
@@ -312,17 +353,77 @@ def test_guarded_recorder_failure_is_visible_before_playback_can_start(stop):
     assert monitor.exceeded.is_set() == (stop == "spl")
 
 
+def _noise(rng, frames, loud=False):
+    """Uniform noise on both channels: ≈ 53 dB SPL quiet, ≈ 89 dB SPL loud on channel 0."""
+    block = rng.integers(-(2 ** 24), 2 ** 24, size=(frames, CHANNELS)).astype("<i4")
+    if loud:
+        block[:, 0] = rng.integers(-(2 ** 30), 2 ** 30, size=frames)
+    return block
+
+
+def _judged_alone(periods):
+    """The pre-batching watch: one observe per period, stopped by its first trip."""
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    for period in periods:
+        if monitor.error is None:
+            monitor.observe([period.tobytes()], CHANNELS, sample_rate_hz=RATE)
+    return monitor
+
+
+@pytest.mark.parametrize("sizes", [(1024,) * 5, (1024, 1024, 377, 1024, 1024)])
+@pytest.mark.parametrize("loud", [(), (0,), (2,), (4,), (1, 3)])
+def test_a_batch_judges_each_period_as_if_it_arrived_alone(sizes, loud):
+    for seed in range(16):
+        rng = np.random.default_rng(seed)
+        periods = [_noise(rng, frames, loud=index in loud) for index, frames in enumerate(sizes)]
+        batched = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+        batched.observe([period.tobytes() for period in periods], CHANNELS, sample_rate_hz=RATE)
+        alone = _judged_alone(periods)
+        # Bit-identical, not approximate: this is the value the commissioning stop compares.
+        assert batched.max_window_db_spl == alone.max_window_db_spl
+        assert batched.exceeded.is_set() == alone.exceeded.is_set() == bool(loud)
+        if loud:
+            assert batched.error.observed_db_spl == alone.error.observed_db_spl
+
+
+@pytest.mark.parametrize("loud_at", ["batch_first", "batch_middle", "batch_last", "stop", "budget"])
+def test_the_recorder_stops_on_the_same_period_within_one_batch(loud_at):
+    period = 1024
+    batch = math.ceil(SPL_BATCH_S * RATE / period)  # reads per judgement after the first
+    # Read 0 is judged alone (the pre-roll refusal); reads 1..batch are the first batch. At
+    # "stop" (finish) and "budget" the loop ends with the loud read still unjudged.
+    loud = {"batch_first": 1, "batch_middle": 1 + batch // 2, "batch_last": batch, "stop": 1, "budget": 2}[loud_at]
+    rng = np.random.default_rng(loud)
+    periods = [_noise(rng, period, loud=index == loud) for index in range(loud + 1 if loud_at == "stop" else 3 * batch)]
+    mic = _PacedMic([(block, 0.0) for block in periods])
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    budget = {"max_capture_s": (loud + 1) * period / RATE} if loud_at == "budget" else {}
+    recorder = _paced_recorder(mic, spl_monitor=monitor, **budget)
+    with pytest.raises(WiredSplCeilingExceeded) as caught:
+        # The unpaced script can trip before start() returns; either call then raises it.
+        recorder.start(ready_timeout_s=5.0)
+        deadline = time.monotonic() + 5.0
+        while recorder.failure is None and not mic.drained.is_set() and time.monotonic() < deadline:
+            time.sleep(0.001)
+        recorder.finish(tail_s=0)
+    alone = _judged_alone(periods)
+    assert caught.value.observed_db_spl == alone.error.observed_db_spl
+    assert monitor.max_window_db_spl == alone.max_window_db_spl
+    # "At most one batch later": less than SPL_BATCH_S of audio was read past the loud period.
+    assert 0 <= recorder._frames - (loud + 1) * period < SPL_BATCH_S * RATE
+
+
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():
     monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
     quiet = (2 ** 26).to_bytes(4, "little", signed=True) * 32
-    monitor.observe(quiet, 32, 1, sample_rate_hz=RATE)
+    monitor.observe([quiet], 1, sample_rate_hz=RATE)
     assert not monitor.exceeded.is_set()
     assert monitor.max_window_db_spl == pytest.approx(69.9, abs=0.1)
 
 
 def test_spl_monitor_accepts_a_one_hz_sample_clock():
     monitor = WiredSplMonitor(_Sensitivity(), 80.0, 0)
-    monitor.observe((2 ** 26).to_bytes(4, "little", signed=True), 1, 1, sample_rate_hz=1)
+    monitor.observe([(2 ** 26).to_bytes(4, "little", signed=True)], 1, sample_rate_hz=1)
     assert monitor.loudest_half_second_db_spl == pytest.approx(69.9, abs=0.1)
 
 
@@ -335,11 +436,11 @@ def test_spl_level_follows_the_loud_region_and_resets(rate, block_frames, channe
     pcm = (signal * np.iinfo(np.int32).max).astype("<i4")
     for offset in range(0, len(pcm), block_frames):
         block = pcm[offset:offset + block_frames]
-        monitor.observe(block.tobytes(), len(block), 2, sample_rate_hz=rate)
+        monitor.observe([block.tobytes()], 2, sample_rate_hz=rate)
     assert monitor.loudest_half_second_db_spl == pytest.approx(60, abs=0.1)
     assert not monitor.exceeded.is_set()
     hot = np.full((1024, 2), 0.5 * np.iinfo(np.int32).max, dtype="<i4")
-    monitor.observe(hot.tobytes(), len(hot), 2, sample_rate_hz=rate)
+    monitor.observe([hot.tobytes()], 2, sample_rate_hz=rate)
     assert monitor.exceeded.is_set()
     assert isinstance(monitor.error, WiredSplCeilingExceeded)
     assert monitor.error.observed_db_spl == monitor.max_window_db_spl == pytest.approx(94, abs=0.1)
@@ -348,7 +449,7 @@ def test_spl_level_follows_the_loud_region_and_resets(rate, block_frames, channe
     assert monitor.loudest_half_second_db_spl == monitor.max_window_db_spl == -np.inf
     assert monitor.error is None and not monitor.exceeded.is_set()
     quiet = pcm[:rate // 2].copy()
-    monitor.observe(quiet.tobytes(), len(quiet), 2, sample_rate_hz=rate)
+    monitor.observe([quiet.tobytes()], 2, sample_rate_hz=rate)
     assert monitor.loudest_half_second_db_spl == pytest.approx(40, abs=0.1)
 
 
@@ -359,7 +460,7 @@ def test_spl_level_averages_sparse_clicks_over_the_room_floor():
     pcm = (signal * np.iinfo(np.int32).max).astype("<i4")
     for offset in range(0, len(pcm), 1024):
         block = pcm[offset:offset + 1024]
-        monitor.observe(block.tobytes(), len(block), 1, sample_rate_hz=48000)
+        monitor.observe([block.tobytes()], 1, sample_rate_hz=48000)
     assert monitor.loudest_half_second_db_spl == pytest.approx(40, abs=1.0)
     assert monitor.max_window_db_spl > 47
 
@@ -369,7 +470,7 @@ def test_spl_level_counts_only_a_long_enough_final_window(tail_frames, expected)
     monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
     for frames, amplitude in ((24000, .001), (tail_frames, .01)):
         pcm = np.full(frames, amplitude * np.iinfo(np.int32).max, dtype="<i4")
-        monitor.observe(pcm.tobytes(), frames, 1, sample_rate_hz=48000)
+        monitor.observe([pcm.tobytes()], 1, sample_rate_hz=48000)
     assert monitor.loudest_half_second_db_spl == pytest.approx(expected, abs=.1)
 
 
@@ -377,7 +478,7 @@ def test_reading_a_partial_level_does_not_bank_it_as_a_complete_window():
     monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
     for amplitude, expected in ((.01, 60), (0, 57)):
         pcm = np.full(12000, amplitude * np.iinfo(np.int32).max, dtype="<i4")
-        monitor.observe(pcm.tobytes(), len(pcm), 1, sample_rate_hz=48000)
+        monitor.observe([pcm.tobytes()], 1, sample_rate_hz=48000)
         assert monitor.loudest_half_second_db_spl == pytest.approx(expected, abs=.1)
 
 
@@ -417,6 +518,25 @@ def test_open_failure_raises_wired_capture_error():
     )
     with pytest.raises(WiredCaptureError):
         recorder.start()
+
+
+def test_the_capture_opens_a_deep_alsa_ring(monkeypatch):
+    """The ring, not the reader, absorbs a stall under web load (#5632)."""
+    opened = []
+    alsaaudio = ModuleType("alsaaudio")
+    alsaaudio.PCM_CAPTURE, alsaaudio.PCM_NORMAL, alsaaudio.PCM_FORMAT_S32_LE = "capture", "normal", "s32"
+    alsaaudio.ALSAAudioError = RuntimeError
+    alsaaudio.PCM = lambda **kwargs: opened.append(kwargs) or FakePcm([])
+    monkeypatch.setitem(sys.modules, "alsaaudio", alsaaudio)
+    device = WiredMicDevice("UMIK2", 2, UMIK2_USB_ID, "minidsp_umik2", "miniDSP UMIK-2")
+    recorder = make_wired_recorder(device, sample_rate_hz=RATE, max_capture_s=1.0)
+    recorder.start(ready_timeout_s=5.0)
+    recorder.abort()
+    assert opened == [{
+        "type": "capture", "mode": "normal", "device": "hw:CARD=UMIK2,DEV=0", "rate": RATE,
+        "channels": 2, "format": "s32", "periodsize": 1024, "periods": CAPTURE_RING_PERIODS,
+    }]
+    assert CAPTURE_RING_PERIODS * 1024 / RATE >= 0.5  # seconds of ring
 
 
 # --------------------------------------------------------------------------- #

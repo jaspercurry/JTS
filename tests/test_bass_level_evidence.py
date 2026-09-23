@@ -215,7 +215,7 @@ def test_spl_uses_each_takes_calibrated_capture_statistic(pair, calibrated):
         if calibrated:
             monitor = WiredSplMonitor(MicSensitivity(sensitivity), ceiling_db_spl=85, channel=0)
             samples = np.full(1000, round(.01 * np.iinfo(np.int32).max), dtype="<i4")
-            monitor.observe(samples.tobytes(), len(samples), 1, sample_rate_hz=1000)
+            monitor.observe([samples.tobytes()], 1, sample_rate_hz=1000)
             take["record"]["capture_integrity"] = {"spl": {"loudest_half_second_db_spl": monitor.loudest_half_second_db_spl}}
     row, = table([pair])["levels"]
     assert row["base_db_spl_at_mark"] == (pytest.approx(64) if calibrated else None)
