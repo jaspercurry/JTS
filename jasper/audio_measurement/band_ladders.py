@@ -38,6 +38,19 @@ SNR_BANDS_HZ = (("sub_bass", 20.0, 80.0), ("bass", 80.0, 160.0),
                 ("upper_bass", 160.0, 350.0), ("transition", 350.0, 1000.0))
 CROSSOVER_SNR_BANDS_HZ = (*SNR_BANDS_HZ, ("mid", 1000.0, 4000.0), ("treble", 4000.0, 12000.0))
 
+# Low-end plot ladder (frequency_plot.py's per-decade band-mean rows). A flat
+# edge list, not lo/hi pairs, so it is not a BAND_LADDERS entry below.
+LOW_BANDS_HZ = (20, 30, 40, 50, 60, 80, 120, 200, 500)
+
+# One 0 dB reference/normalisation band per site. Each fixes its own edges for
+# its own purpose; they are not interchangeable and must not be merged.
+PLOT_REFERENCE_BAND_HZ = (200.0, 5000.0)
+EXCESS_PHASE_NORMALISE_BAND_HZ = (400.0, 8000.0)
+BASS_FIT_REFERENCE_BAND_HZ = (300.0, 1000.0)
+GATE_SWEEP_REFERENCE_BAND_HZ = (2500.0, 8000.0)
+SERIES_STATS_TILT_BAND_HZ = (100.0, 10000.0)
+SERIES_STATS_FLATNESS_BAND_HZ = (400.0, 10000)
+
 BAND_LADDERS = MappingProxyType({
     "rear_upper": UPPER_BANDS_HZ,
     "rear_level": LEVEL_BANDS_HZ,

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.band_ladders import BASS_FIT_REFERENCE_BAND_HZ
 
 from .bass_comparison import CHANGE_FIELDS, COMPARISON_FIELDS, bass_capture_context, common_bass_bins
 from .crossover_v2.measurement_context import compare_capture_basis
@@ -17,7 +18,7 @@ from .crossover_v2.round_captures import doc_pose_key
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measurement_bass import BASS_BANDS_HZ
 
-REFERENCE_BAND_HZ = (300.0, 1000.0)
+REFERENCE_BAND_HZ = BASS_FIT_REFERENCE_BAND_HZ
 BASS_GRID_POINTS = 121
 
 
