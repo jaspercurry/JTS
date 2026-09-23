@@ -29,6 +29,7 @@ DERIVED_VIEWS = "derived_views"
 
 
 def _fingerprint(packet: dict[str, Any]) -> str:
+    # See ADR-0346
     try:
         return json_fingerprint(
             {key: value for key, value in packet.items() if key not in ("packet_fingerprint", DERIVED_VIEWS)},
