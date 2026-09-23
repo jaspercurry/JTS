@@ -22,7 +22,7 @@ Re-run room after any upstream change, even when round history is unavailable.
 The rear program's hand loop of record is the [Seat trial](tuning-playbook.md#seat):
 preview from the pair at the mark, compare at the seats, then fit room from the chosen set.
 
-1. Run `jasper-round run --program <speaker|rear|bass|room>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves; add `--poses 0` to compare them at one spot. See the playbook's Document section. Use `run --dry-run` to inspect a custom plan without sound.
+1. Run `jasper-round run --program <speaker|rear|bass|room>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. A trial runs the program its document states and banks under it; a document that spans programs trials the first it states of rear, bass, room, speaker. `trial` takes composed documents; trial a fitted or migrated candidate with `run --program <program> --candidates base,<fp>`. `trial` also takes `run`'s plan flags: `--mover` picks that program's trial layout the mover can walk, and `--poses` names another. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves; add `--poses 0` to compare them at one spot. See the playbook's Document section. Add `--dry-run` to `run` or `trial` to price the plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With the arm, run `sudo -n /opt/jasper/.venv/bin/jasper-round run --mover arm --attest-rig-clear --wait`; add the plan flags from step 1. The flag is the person’s statement that the full sweep path is clear. `jasper-round run --mover arm --attest-rig-clear --wait` owns the arm. The retired `jasper-angle-capture serve` keeps its menu row until that path is proven on jts3 hardware, and is then deleted. Never start `serve` next to a waited arm round: two walkers would drive one arm. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement. A layout can pin its mover (for example, `rear/pair_behind` pins `human`); another `--mover` is refused with `walk_mover_mismatch`. End a run nobody joins with `jasper-round stop --run <id>`.
 3. If the run omitted `--wait`, run `jasper-round wait --run <id>`. Read `index.md` first; the packet holds applied layers, set limits, series statistics, and a fit for each selected Speaker take and role. Add `--verbose` to see the view results. Use `status` to inspect progress without granting placement.
 4. Select evidence by set. `jasper-round list` shows banked rounds and `jasper-round show <round-id>` their set and take ids; views take a round id or path. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json>`. `inventory` lists exact available commands.
@@ -33,7 +33,7 @@ Use `jasper-round reset` to reset everything, including the rear stage, or `jasp
 
 ## Speaker
 
-`speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
+`speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply. A speaker document's trial plays each candidate summed at the mark and banks `speaker/mark`.
 
 All measurement programs refuse before sound with `walk_layout_unsupported_for_per_driver_programs` when the layout declares three driver roles (woofer, mid and tweeter); these programs are not built for that layout yet.
 
@@ -50,6 +50,8 @@ The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 `jasper-round run --program bass --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
 `jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
+
+`bass/axis` pins the arm. By hand, add `--poses bass/nearfield --mover human` (microphone 3 cm from the woofer); `trial --mover human` picks it. Its admission still predicts SPL from the 1 m seat anchor and says so in `rung_admission.predicted_spl_basis`; the near-field microphone reads louder. The 85 dB SPL stop still watches every take.
 
 ## Room
 

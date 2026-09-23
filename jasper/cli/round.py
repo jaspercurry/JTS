@@ -118,7 +118,8 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
         build_parser().error("--mover arm requires --wait")
     if args.dry_run:
-        answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
+        answered({"verb": args.command, "dry_run": args.dry_run, "program": report.plan.program,
+                  "mover": report.plan.mover, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
     if any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues):
         issue = report.blocking_issue
@@ -165,11 +166,14 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
     except CandidateBankRefusal as exc:
         return failed(EXIT_REFUSED, exc.code, exc.detail, code=exc.code)
     sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
-                      if source == "document")
+                      if source in ("document", "cleared"))
     declared = banked.candidate.program_id == DECLARED_CROSSOVER_PROGRAM_ID
     selected = run_program("speaker") if declared else trial_program(sections, args.mover)
-    args.program, args.poses = selected.program_id, selected.layout
-    if not declared: args.mover = selected.mover
+    if selected is None:
+        run = f"jasper-round run --program <program> --candidates base,{banked.fingerprint}"
+        return failed(EXIT_REFUSED, "trial_program_unknown", {"fingerprint": banked.fingerprint, "sections": sections},
+                      code="trial_program_unknown", next_action={"id": "run_program", "label": f"name the program: {run}"})
+    args.program, args.poses = selected.program_id, args.poses or selected.layout
     args.candidates = args.candidates or (None if declared else f"base,{banked.fingerprint}")
     return _cmd_run(client, args)
 
@@ -367,21 +371,21 @@ def build_parser() -> argparse.ArgumentParser:
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     run_args.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     run_args.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
-    run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
-    run.add_argument("--program", choices=RUNNABLE_PROGRAMS)
-    poses = run.add_mutually_exclusive_group()
+    poses = run_args.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
-    run.add_argument("--repeats", type=int, help="takes per pose and configuration")
-    run.add_argument("--mover", choices=MOVERS)
+    run_args.add_argument("--repeats", type=int, help="takes per pose and configuration")
+    run_args.add_argument("--mover", choices=MOVERS)
+    run_args.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
+    run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
+    run.add_argument("--program", choices=RUNNABLE_PROGRAMS)
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
-    run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run.set_defaults(func=_cmd_run)
-    trial_help = "Test a banked candidate; declared crossovers start the speaker experiment."
+    trial_help = ("Test a banked candidate with the program its document states; --mover picks that program's "
+                  "layout the mover can walk. Declared crossovers start the speaker experiment.")
     trial = sub.add_parser("trial", parents=[run_args], help=trial_help, description=trial_help)
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
-    trial.add_argument("--mover", choices=("arm", "human"))
-    trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, dry_run=False)
+    trial.set_defaults(func=_cmd_trial, plan=None)
     for verb, function, help_line in (
         ("placed", _cmd_placed, "Confirm microphone placement at the pending pose."),
         ("stop", _cmd_stop, "Stop the current run."),
@@ -420,7 +424,7 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     args = parser.parse_args(argv)
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
-    if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
+    if args.command in ("run", "trial") and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
     if args.command in ("list", "show"):

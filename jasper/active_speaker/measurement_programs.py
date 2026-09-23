@@ -68,7 +68,8 @@ class ProgramDefinition:
     description: str
     measure_label: str
     applied_name: str
-    trial: tuple[str, str | None] | None = None
+    #: Layouts a trial of this program's documents may walk; the first is the default.
+    trial: tuple[str, ...]
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
@@ -87,7 +88,7 @@ _PROGRAM_SECTIONS = (
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization", "Measure each driver and refine its response and crossover.",
-        "Measure the baseline", "driver", preview=(2, "emitted_graph", ("driver", "blend")),
+        "Measure the baseline", "driver", trial=("speaker_mark",), preview=(2, "emitted_graph", ("driver", "blend")),
     ),
     ProgramDefinition(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
@@ -100,7 +101,7 @@ _PROGRAM_SECTIONS = (
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED, REGIME_NEAR_FIELD), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
-        trial=("bass_axis", None), graph_evidence=True,
+        trial=("bass_axis", "bass_nearfield"), graph_evidence=True,
     ),
     ProgramDefinition(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
@@ -124,10 +125,6 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-_TRIAL_PROGRAMS: dict[str | None, tuple[str, str, str | None]] = {
-    section.name: (row.purpose, *row.trial) for row in _PROGRAM_SECTIONS if row.trial for section in row.sections
-}
-_TRIAL_PROGRAMS[None] = _TRIAL_PROGRAMS[PURPOSE_ROOM]
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 
 
@@ -555,9 +552,12 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
     ))
 
 
-def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram:
-    """Rear precedes bass, then room and speaker-layer candidates."""
-    purpose, layout, arm_layout = next(value for section, value in _TRIAL_PROGRAMS.items()
-                                     if section is None or section in sections)
-    selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)
-    return replace(selected, mover=mover or selected.mover)
+def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram | None:
+    """The first program the document states of rear, bass, room, speaker (reverse document
+    order), at its first trial layout ``mover`` can walk; ``None`` when it states none."""
+    row = next((row for row in reversed(PROGRAM_DOCUMENT_ORDER)
+                if any(section.name in sections for section in row.sections)), None)
+    if row is None:
+        return None
+    trials = [run_program(row.purpose, layout) for layout in row.trial]
+    return next((trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])

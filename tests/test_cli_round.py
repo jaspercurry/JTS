@@ -43,6 +43,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, Cro
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -475,40 +476,35 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     return bank
 
 
-@pytest.mark.parametrize("mover", [None, "arm", "human"])
-@pytest.mark.parametrize("sections,program,layout,default_mover", [
-    (("driver",), "room", "seat_express", "human"),
-    (("blend",), "room", "seat_express", "human"),
-    (("driver", "blend"), "room", "seat_express", "human"),
-    (("alignment",), "room", "seat_express", "human"),
-    (("topology",), "room", "seat_express", "human"),
-    (("room",), "room", "seat_express", "human"),
-    (("bass",), "bass", "bass_axis", "arm"),
-    (("driver", "room"), "room", "seat_express", "human"),
-    (("rear_calibration",), "rear", "seat_express", "human"),
+@pytest.mark.parametrize("resolution,flags,program,mover", [
+    ({"driver": "document", "room": "base"}, (), "speaker/mark", "human"),
+    ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "arm"),
+    ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "arm"),
+    ({"alignment": "cleared"}, (), "speaker/mark", "human"),
+    ({"bass": "document"}, ("--mover", "human"), "bass/nearfield", "human"),
+    ({"room": "document"}, ("--mover", "arm"), "room/arm", "arm"),
+    ({"room": "document"}, ("--layout", "seat_cloud"), "room/cloud", "human"),
+    ({"driver": "document", "room": "document"}, (), "room/seat", "human"),
+    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "arm"),
+    ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "human"),
+    ({"driver": "base", "alignment": "saved"}, (), None, None),
 ])
-def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
-    bank_trial, banked_session_level, monkeypatch, capsys, sections, program,
-    layout, default_mover, mover, arm_plan_answer,
+def test_trial_runs_the_program_its_document_states(
+    bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags, program, mover, arm_plan_answer,
 ):
-    resolution = dict.fromkeys(("driver", "blend", "alignment", "topology", "room", "bass"), "base")
-    fingerprint = bank_trial({**resolution, **dict.fromkeys(sections, "document")})
+    fingerprint = bank_trial(resolution)
     opener = _opener(session='{"session_id": "trial-1"}')
-    argv = ["trial", fingerprint, "--wait", "--attest-rig-clear", *(["--mover", mover] if mover else [])]
-    code, body = _run(argv, opener, monkeypatch, capsys)
-    if mover == "human" and default_mover == "arm":
-        assert code == 1 and body["reason"] == "walk_mover_mismatch"
+    code, body = _run(["trial", fingerprint, "--wait", "--attest-rig-clear", *flags], opener, monkeypatch, capsys)
+    if program is None:
+        assert (code, body["code"], opener.posts()) == (cli.EXIT_REFUSED, "trial_program_unknown", [])
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    arm_layout = {"room": "room_quick", "rear": "rear_express"}.get(program, layout)
-    expected = run_program(program, arm_layout if mover == "arm" else layout)
-    assert plan.program == f"{program}/{expected.size}"
-    assert plan.mover == (mover or default_mover)
-    assert plan.candidates == ("base", fingerprint)
+    expected = run_program(program.partition("/")[0], program)
+    assert (plan.program, plan.mover, plan.candidates) == (program, mover, ("base", fingerprint))
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
-        (pose.place, candidate, "summed") for pose in expected.poses
-        for _ in range(pose.repeats) for candidate in ("", fingerprint)
+        (pose.place, candidate, "near_field" if program == "bass/nearfield" else "summed")
+        for pose in expected.poses for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
     if expected.levels is None:
         assert plan.level.level_db == -20
@@ -536,17 +532,24 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
     assert plan.candidates == () and body["shape"] == "measure"
 
 
-@pytest.mark.parametrize("sections,program", [
-    ((), "room/seat"), (("driver", "blend"), "room/seat"),
-    (("driver", "room", "bass"), "bass/axis"),
-    (("rear_calibration", "bass", "room"), "rear/seat"),
+@pytest.mark.parametrize("resolution,flags,near_field", [
+    ({"driver": "document"}, (), False),
+    ({"bass": "document"}, ("--mover", "human"), True),
 ])
-def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program, arm_plan_answer):
-    fingerprint = bank_trial(dict.fromkeys(sections, "document"))
-    opener = _opener(session='{"session_id": "whole-document"}')
-    code, body = _run(["trial", fingerprint, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
-    assert code == 0 and body["shape"] == "trial"
-    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]["program"] == program
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys,
+                                               resolution, flags, near_field):
+    fingerprint = bank_trial(resolution)
+    silent = _opener()
+    code, priced = _run(["trial", fingerprint, "--dry-run", *flags], silent, monkeypatch, capsys)
+    assert (code, priced["verb"], priced["dry_run"], silent.requests) == (0, "trial", True, [])
+    opener = _opener(session='{"session_id": "trial-1"}')
+    code, ran = _run(["trial", fingerprint, *flags], opener, monkeypatch, capsys)
+    posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
+    assert code == 0 and (priced.pop("program"), priced.pop("mover")) == (posted["program"], posted["mover"])
+    assert {key: value for key, value in priced.items() if key not in ("verb", "dry_run")} == ran["schedule"]
+    rungs = priced.get("levels", [priced])
+    assert rungs and all(rung["rung_admission"].get("predicted_spl_basis") == (
+        NEAR_FIELD_SPL_BASIS if near_field else None) for rung in rungs)
 
 
 def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):
@@ -556,8 +559,8 @@ def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_pl
     code, _ = _run(["trial", first, "--wait", "--attest-rig-clear", "--candidates", f"{second},base,{first}"], opener, monkeypatch, capsys)
     assert code == 0
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    assert plan.candidates == (second, "base", first)
-    assert [stop.candidate_id for stop in plan.stops] == [second, "", first] * 3
+    assert (plan.program, plan.candidates) == ("speaker/mark", (second, "base", first))
+    assert [stop.candidate_id for stop in plan.stops] == [second, "", first] * 2
 
 
 def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, capsys):
@@ -1058,13 +1061,14 @@ def test_status_fault_history_keeps_each_code_once():
     assert gate.published()["run"]["faults"] == ["capture_clipped"]
 
 
+@pytest.mark.parametrize("verb", [["run"], ["trial", _FINGERPRINT]])
 @pytest.mark.parametrize("address", ["http://jts3.local", "http://192.168.1.8", "http://[2001:db8::1]"])
-def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, address):
+def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, address, verb):
     def no_facts(*args, **kwargs):
         pytest.fail("remote dry-run read local facts")
     monkeypatch.setattr(_run_request, "read_preflight_facts", no_facts)
     opener = _opener()
-    code = cli.main(["run", "--dry-run", "--base-url", address], opener=opener)
+    code = cli.main([*verb, "--dry-run", "--base-url", address], opener=opener)
     body = json.loads(capsys.readouterr().out)
     assert code == 1 and body["reason"] == "dry_run_requires_local_host"
     assert not opener.requests
