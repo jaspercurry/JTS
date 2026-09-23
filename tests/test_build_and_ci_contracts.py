@@ -361,15 +361,14 @@ def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
 
 def test_ci_compiles_both_host_safe_ring_benchmarks() -> None:
     """Keep the C benchmarks and the plugin compile check inside the host
-    build gate, and keep CI from ever installing the plugin (Pi-only, via
-    build-on-pi.sh)."""
+    build gate; the .so is only ever installed by
+    deploy/lib/install/ring-platform.sh, on the Pi."""
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     makefile = (ROOT / "c" / "jts-ring-ioplug" / "Makefile").read_text(
         encoding="utf-8"
     )
 
     assert "run: make test bench plugin" in workflow
-    assert "run: make install" not in workflow
     assert "bench: ring_writer_bench ring_reader_bench" in makefile
 
 

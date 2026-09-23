@@ -94,7 +94,7 @@ fn ring_wire(format: SampleFormat) -> io::Result<(u32, WireKind)> {
 /// ring slot carries.
 ///
 /// **Deliberately monomorphic in [`ProgramSample`]**, for the same reason
-/// `main.rs`'s `i16_bytes` is monomorphic in `i16`: a type-adaptive helper here
+/// [`crate::types::i16_bytes`] is monomorphic in `i16`: a type-adaptive helper here
 /// would happily accept an `&mut [i16]` and hand [`RingReader::try_consume_slot_bytes`]
 /// a view HALF the slot's length, which the byte path would then fill short —
 /// silently, with every counter still reporting a filled slot. The signature is

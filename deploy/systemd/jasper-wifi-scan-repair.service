@@ -1,6 +1,6 @@
 [Unit]
 Description=Repair Pi 5 brcmfmac Wi-Fi scan suppression
-Documentation=file:/opt/jasper/AGENTS.md
+Documentation=https://github.com/jaspercurry/JTS/blob/main/jasper/net/wifi_scan_repair.py
 After=NetworkManager.service
 Wants=NetworkManager.service
 

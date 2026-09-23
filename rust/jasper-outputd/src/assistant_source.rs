@@ -9,7 +9,8 @@
 //! here: it is the per-period gain-ramp/mute/reference render path
 //! `OutputCore` runs on every real assistant reply, on both the
 //! ALSA daemon path (`OutputCore::new_for_daemon`, `main.rs::run_alsa`) and
-//! the safe-developer-run path (`main.rs::run_fake`).
+//! the parked runtime (`main.rs::run_fake`) the audio-hardware reconciler
+//! selects when it recognizes no output DAC.
 //!
 //! `FakeDacSink` keeps its name: the only daemon-reachable construction
 //! (`OutputCore::new_for_daemon`, used by both `run_alsa` and `run_fake`)
@@ -18,7 +19,7 @@
 //! inert in every configuration the real binary can reach. The plain
 //! accumulating constructor (`FakeDacSink::new()`, `max_periods = None`) is
 //! reachable only from direct unit-test construction via `OutputCore::new()`,
-//! never from `main.rs`. See #1717.
+//! never from `main.rs`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

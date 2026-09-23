@@ -17,11 +17,10 @@ pub use jasper_daemon::HELPER_STACK_BYTES;
 
 pub mod aec_clock;
 pub mod alsa_backend;
-// The real per-period assistant render/gain engine (`AssistantSource`) plus
-// the DAC-write sink `OutputCore` calls unconditionally each period
-// (`FakeDacSink`) — both reachable from the real ALSA daemon path, not just
-// tests. See the module doc and #1717.
+// `OutputCore`'s assistant engine and DAC sink: daemon code in both the ALSA
+// and the parked runtime (`OutputCore::new_for_daemon`), not test doubles.
 pub mod assistant_source;
+pub mod chip_ref;
 pub mod config;
 // Edge-triggered "the output stage is emitting silence it did not intend"
 // detector over whichever content source is live (#3458).

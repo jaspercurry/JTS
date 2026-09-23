@@ -213,7 +213,7 @@ changes normal listening volume**.
 ## Correction capture diagnostic
 
 ```sh
-python3 scripts/capture-correction-diagnostic.py [--ssh-host <host>] …
+python3 scripts/capture-correction-diagnostic.py --speaker http://<speaker>.local [--ssh-host <host>] …
 python3 scripts/analyze-correction-diagnostic.py <bundle>
 ```
 
