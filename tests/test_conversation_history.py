@@ -12,7 +12,6 @@ import pytest
 from jasper import conversation_history as history_module
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
-    CAPTURE_ALIAS_ENV,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_RETENTION_MAX_ROWS,
     ConversationStore,
@@ -238,25 +237,13 @@ def test_read_settings_merges_process_env_and_fresh_wizard_file(tmp_path):
     assert settings.retention == {"days": 14, "max_rows": 250}
 
 
-def test_read_settings_supports_capture_alias(tmp_path):
+def test_read_settings_capture_flag_falls_back_to_process_env(tmp_path):
     settings_file = tmp_path / "conversation_history.env"
     settings_file.write_text("", encoding="utf-8")
 
     settings = read_settings(
         path=str(settings_file),
-        environ={CAPTURE_ALIAS_ENV: "1"},
-    )
-
-    assert settings.capture_enabled is True
-
-
-def test_read_settings_wizard_file_capture_flag_wins_over_env_alias(tmp_path):
-    settings_file = tmp_path / "conversation_history.env"
-    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=1\n", encoding="utf-8")
-
-    settings = read_settings(
-        path=str(settings_file),
-        environ={CAPTURE_ALIAS_ENV: "0"},
+        environ={CAPTURE_ENABLED_ENV: "1"},
     )
 
     assert settings.capture_enabled is True
@@ -264,7 +251,7 @@ def test_read_settings_wizard_file_capture_flag_wins_over_env_alias(tmp_path):
 
 def test_read_settings_uses_code_defaults_when_retention_env_absent(tmp_path):
     settings_file = tmp_path / "conversation_history.env"
-    settings_file.write_text(f"{CAPTURE_ALIAS_ENV}=1\n", encoding="utf-8")
+    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=1\n", encoding="utf-8")
 
     settings = read_settings(path=str(settings_file), environ={})
 
@@ -304,7 +291,7 @@ def test_prune_for_settings_bounds_store_with_absent_retention_env(tmp_path):
     # retention vars must still prune via the code defaults. Before the fix
     # read_settings() returned days=None/max_rows=None here and prune no-oped.
     settings_file = tmp_path / "conversation_history.env"
-    settings_file.write_text(f"{CAPTURE_ALIAS_ENV}=1\n", encoding="utf-8")
+    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=1\n", encoding="utf-8")
     settings = read_settings(path=str(settings_file), environ={})
 
     store = ConversationStore(str(tmp_path / "history.db"))

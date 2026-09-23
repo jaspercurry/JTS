@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from jasper.conversation_history import (
-    CAPTURE_ALIAS_ENV,
     CAPTURE_ENABLED_ENV,
     ConversationStore,
     ConversationTurn,
@@ -332,7 +331,7 @@ def test_capture_enable_writes_settings_file_and_initializes_db(
     assert db_path.exists() is True
     assert stat.S_IMODE(db_path.stat().st_mode) & stat.S_IWGRP
     text = settings_path.read_text(encoding="utf-8")
-    assert f"{CAPTURE_ALIAS_ENV}=1" in text
+    assert f"{CAPTURE_ENABLED_ENV}=1" in text
     assert f"{DB_PATH_ENV}={db_path}" in text
     assert read_settings(path=str(settings_path), environ={}).capture_enabled is True
 
