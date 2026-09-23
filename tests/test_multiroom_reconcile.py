@@ -1496,13 +1496,9 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(), absent=()):
                 stderr="",
             )
         if unit in absent:
-            if kw.get("check"):
-                raise sp.CalledProcessError(
-                    5,
-                    argv,
-                    stderr=f"Failed to {verb} {unit}: Unit not loaded.",
-                )
-            return sp.CompletedProcess(argv, 5)
+            return sp.CompletedProcess(
+                argv, 5, stderr=f"Failed to {verb} {unit}: Unit not loaded.",
+            )
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
@@ -1535,7 +1531,7 @@ def test_apply_real_failure_still_flips_rc(monkeypatch):
     from jasper.multiroom.reconcile_plan import ReconcilePlan, UnitIntent
 
     def fake_run(argv, **kw):
-        raise sp.CalledProcessError(1, argv, stderr="Job failed. See logs.")
+        return sp.CompletedProcess(argv, 1, stderr="Job failed. See logs.")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
     rc = _apply(

@@ -1516,7 +1516,6 @@ def test_converge_sources_drains_old_activation_before_fresh_pass(monkeypatch):
     assert barrier_kwargs["timeout"] == (
         reconcile_mod.SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
     )
-    assert barrier_kwargs["check"] is True
     assert calls[-1][1]["timeout"] == (
         reconcile_mod._SOURCE_RECONCILE_START_TIMEOUT_SEC
     )
@@ -1552,9 +1551,8 @@ def test_converge_sources_unknown_state_uses_safe_barrier(monkeypatch):
     ]
 
 
-def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
-    monkeypatch,
-):
+@pytest.mark.parametrize("failure", ["timeout", "nonzero"])
+def test_converge_sources_barrier_failure_stops_without_fresh_pass(monkeypatch, failure):
     """A wedged old source pass is not interrupted or falsely acknowledged."""
     import subprocess as sp
 
@@ -1563,14 +1561,11 @@ def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
     def fake_run(argv, **kw):
         calls.append(list(argv))
         if _is_active_state_probe(argv):
-            return sp.CompletedProcess(
-                argv,
-                3,
-                stdout="activating\n",
-                stderr="",
-            )
+            return sp.CompletedProcess(argv, 3, stdout="activating\n", stderr="")
         if argv[1:2] == ["start"]:
-            raise sp.TimeoutExpired(argv, kw["timeout"])
+            if failure == "timeout":
+                raise sp.TimeoutExpired(argv, kw["timeout"])
+            return sp.CompletedProcess(argv, 1, stdout="", stderr="failed")
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
