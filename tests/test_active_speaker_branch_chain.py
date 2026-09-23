@@ -47,7 +47,7 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # The runtime re-proof's own float slack, imported rather than restated so the
 # migration corpus asserts the condition the contract actually applies.
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph.active_verifier import (
     _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
 )
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
@@ -749,7 +749,7 @@ def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
     A migration bound stated only as "moved less than the margin" is therefore
     not the condition, and a corpus asserting it would call this class safe.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph.active_verifier import (
         _LINEARIZATION_BOOST_EPS_DB,
     )
 

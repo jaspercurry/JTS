@@ -800,7 +800,7 @@ ensure_crossover_camilla_statefile() {
     # (Layer-A-intact) baseline / all-muted active startup graph and NEVER
     # the flat fallback (the contract's `select_flat` branch is gated by
     # `topology_allows_flat_dac_graph`; see
-    # jasper/active_speaker/runtime_contract.py). So an active box gets a
+    # jasper/active_speaker/output_contract.py). So an active box gets a
     # tweeter-safe driver-domain seed.
     #
     # PARKED DEFAULT (issue #2135): a roleful box that has staged no startup

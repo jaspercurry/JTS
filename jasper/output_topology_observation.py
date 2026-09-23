@@ -268,7 +268,7 @@ def _composite_repin_pairs(
         return None
     hardware = topology.hardware
     # Two or more child DACs is what "composite" means in a saved topology
-    # (mirrors ``active_speaker.runtime_contract.topology_sink_is_composite``);
+    # (mirrors ``active_speaker.output_contract.topology_sink_is_composite``);
     # a single-child DAC has no serial-keyed pairing contract to repair.
     if len(hardware.child_devices) < 2:
         return None
@@ -648,7 +648,7 @@ def _saved_topology_requires_roleful_graph(
     the partly present composite this policy covers.
     """
 
-    from .active_speaker.runtime_contract import active_topology_requires_roleful_graph  # lazy: import cost only on a composite mismatch
+    from .active_speaker.output_contract import active_topology_requires_roleful_graph  # lazy: import cost only on a composite mismatch
 
     return active_topology_requires_roleful_graph(load_output_topology(path))
 

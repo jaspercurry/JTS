@@ -772,9 +772,8 @@ def flat_graph_channel_plan(
 
     # Lazy: the active-speaker package imports THIS module at module scope, so
     # a top-level edge back would be circular.
+    from jasper.active_speaker.output_contract import CONTRACT_NORMAL_MONO_FULL_RANGE, classify_output_contract
     from jasper.active_speaker.runtime_contract import (
-        CONTRACT_NORMAL_MONO_FULL_RANGE,
-        classify_output_contract,
         flat_full_range_outputs,
         flat_graph_muted_outputs,
         flat_graph_program_dest_map,

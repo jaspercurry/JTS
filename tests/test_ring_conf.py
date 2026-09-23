@@ -392,7 +392,7 @@ def test_render_leaves_the_shipped_conf_byte_identical_for_every_ring_topology()
         _full_range_stereo,
         _topology,
     )
-    from tests.test_runtime_contract_ring import _dual_apple_stereo
+    from tests.test_output_contract import _dual_apple_stereo
 
     topologies = {
         "none": None,

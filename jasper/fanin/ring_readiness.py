@@ -967,7 +967,7 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: import cost
     from jasper.active_speaker.measurement_emit import load_tuning_declaration, require_candidate_speaker_identity  # lazy: import cost
-    from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost
+    from jasper.active_speaker.output_contract import classify_output_contract  # lazy: import cost
     from jasper.output_topology import OutputTopologyError  # lazy: import cost
     from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
 

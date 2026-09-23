@@ -856,7 +856,7 @@ def _requires_roleful_graph() -> bool:
     Fail-soft to False: it only ever softens a message, never gates anything.
     Every caller that ACTS on rolefulness reads the fail-CLOSED loaders instead.
     """
-    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.active_speaker.output_contract import classify_output_contract
     from jasper.output_topology import OutputTopologyError
 
     try:

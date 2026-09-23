@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from jasper.output_topology import OutputTopology, topology_config_fingerprint
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
-from .runtime_contract import (
+from .output_contract import (
     CONTRACT_UNCONFIGURED,
     classify_output_contract,
     topology_allows_flat_dac_graph,

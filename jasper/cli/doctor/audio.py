@@ -518,7 +518,7 @@ def check_output_hardware_stray_apple_dongle() -> CheckResult:
 def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
-    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.active_speaker.output_contract import classify_output_contract
     from jasper.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
     from jasper.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
 

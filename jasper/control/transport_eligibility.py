@@ -22,7 +22,7 @@ because that box is silent and the household must be told.
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in
-:mod:`jasper.active_speaker.runtime_contract` own the question "can a ring
+:mod:`jasper.active_speaker.output_contract` own the question "can a ring
 carry this topology, and how wide"; this module only NAMES the refusal they
 already return. A predicate here that re-derived ring eligibility would be the
 second implementation that drifts.
@@ -229,7 +229,7 @@ def _assess(
     topology: "OutputTopology | None",
     env: Mapping[str, str] | None,
 ) -> _Assessment:
-    from ..active_speaker.runtime_contract import (
+    from ..active_speaker.output_contract import (  # lazy: import cost
         CONTRACT_NORMAL_MONO_FULL_RANGE,
         active_ring_channels_for_topology,
         classify_output_contract,

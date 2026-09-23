@@ -489,15 +489,15 @@ exhaustive_ignores = [
   "output_topology",
   # Store consumes the held schema and hardware owners above.
   "output_topology_store",
-  # Observation consumes active_speaker.runtime_contract, whose graph helpers
-  # still reach cli/web. Rank it after that upward dependency is removed.
+  # Observation consumes output_hardware and active_speaker.output_contract,
+  # which still reach cli. Rank it after that upward dependency is removed.
   "output_topology_observation",
   "output_topology_runtime",
   "outputd_failure_reconcile_state",
   "peering",
   "renderer",
   "ring_assets",
-  # fanin_coupling -> active_speaker.runtime_contract -> output_topology -> cli;
+  # fanin_coupling -> active_speaker.output_contract -> output_topology -> cli;
   # ring_conf ranks when its geometry constants no longer import that chain.
   "ring_conf",
   "sound",

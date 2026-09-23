@@ -18,7 +18,7 @@ the single home of the shared scalar matchers no verifier may re-implement.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -591,6 +591,53 @@ def output_terminally_muted(
                 return False
             muted = True
     return muted
+
+
+def mixer_output_proved(
+    payload: dict[str, Any], mixer_name: str | None, output: int,
+    sources: Sequence[tuple[int, float, bool]],
+) -> bool:
+    steps = [step for step in payload.get("pipeline", [])
+             if isinstance(step, dict) and step.get("type") == "Mixer"
+             and step.get("name") == mixer_name]
+    if len(steps) != 1 or truthy_bool(steps[0].get("bypassed")):
+        return False
+    mixers = payload.get("mixers")
+    mixer = mixers.get(mixer_name) if isinstance(mixers, dict) else None
+    if not isinstance(mixer, dict):
+        return False
+    mapping = mixer.get("mapping")
+    if not isinstance(mapping, list):
+        return False
+    entries = [
+        entry
+        for entry in mapping
+        if isinstance(entry, dict)
+        and type(entry.get("dest")) is int
+        and entry["dest"] == output
+    ]
+    if len(entries) != 1 or truthy_bool(entries[0].get("mute")):
+        return False
+    expected = {
+        channel: (gain_db, inverted) for channel, gain_db, inverted in sources
+    }
+    feeds = entries[0].get("sources")
+    if not isinstance(feeds, list) or len(feeds) != len(expected):
+        return False
+    for source in feeds:
+        if not isinstance(source, dict) or truthy_bool(source.get("mute")):
+            return False
+        channel = source.get("channel")
+        # `pop` also makes a duplicated feed fail: the second occurrence of a
+        # channel is no longer expected.
+        if type(channel) is not int or channel not in expected:
+            return False
+        gain_db, inverted = expected.pop(channel)
+        if not float_matches(source.get("gain"), gain_db):
+            return False
+        if truthy_bool(source.get("inverted")) is not inverted:
+            return False
+    return not expected
 
 
 def output_unmuted_and_wired(view: GraphView, index: int, *, mute_name: str) -> bool:

@@ -162,7 +162,7 @@ RING_WIRE_FORMAT_ENV_VAR = "JASPER_FANIN_RING_WIRE_FORMAT"
 # Ring A's channel count. fan-in's mixer is stereo and not configurable
 # (``mixer.rs``'s ``CHANNELS: u32 = 2``), so Ring A is 2 on every box — unlike
 # Ring B's, this is not a per-topology axis. Mirrors
-# ``jasper.active_speaker.runtime_contract.RING_STEREO_PROGRAM_CHANNELS``, the
+# ``jasper.active_speaker.output_contract.RING_STEREO_PROGRAM_CHANNELS``, the
 # same number reached from the topology side; a contract test pins them equal.
 RING_A_CHANNELS = 2
 
@@ -482,14 +482,14 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       would mean the opposite of what the resolver answers.
     - ``ring_a_channels`` — :data:`RING_A_CHANNELS` on every box.
     - ``ring_b_channels`` — from
-      :func:`~jasper.active_speaker.runtime_contract.ring_channels_for_topology`.
+      :func:`~jasper.active_speaker.output_contract.ring_channels_for_topology`.
       A topology with no ring width (roleful, composite, explicit mono) falls
       back to the shipped stereo declaration, which is what that box's conf.d
       says and what an open-probe of it must ask for.
     - ``period_frames`` — :data:`RING_SLOT_FRAMES`, fan-in's compile-time slot
       size.
     - ``ring_active_channels`` — from
-      :func:`~jasper.active_speaker.runtime_contract.active_ring_channels_for_topology`,
+      :func:`~jasper.active_speaker.output_contract.active_ring_channels_for_topology`,
       and ``None`` on every box that is not roleful. A different question from
       ``ring_b_channels``: the two rings coexist on a roleful box and carry
       different programs, and a single answer would stamp the active width into
@@ -498,7 +498,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
     ring_b_channels = RING_A_CHANNELS
     ring_active_channels: int | None = None
     if topology is not None:
-        from jasper.active_speaker.runtime_contract import (  # lazy: import cost, this module is imported by the socket-activated wizards
+        from jasper.active_speaker.output_contract import (  # lazy: import cost, this module is imported by the socket-activated wizards
             active_ring_channels_for_topology,
             ring_channels_for_topology,
         )

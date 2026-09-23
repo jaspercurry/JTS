@@ -38,15 +38,13 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
+from jasper.active_speaker.output_contract import active_ring_channels_for_topology, ring_channels_for_topology
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
     OUTPUTD_LEGAL_ENDPOINT_DEVICES,
     _outputd_endpoint_width,
-    active_ring_channels_for_topology,
-    ring_channels_for_topology,
-    topology_supports_shm_ring,
 )
 from jasper.fanin_coupling import (
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
@@ -520,28 +518,6 @@ def test_neither_ring_exists_for_composite_or_sub_only_topologies(name, factory)
     topo = factory()
     assert ring_channels_for_topology(topo) is None, name
     assert active_ring_channels_for_topology(topo) is None, name
-
-
-def test_topology_supports_shm_ring_stays_false_for_roleful():
-    """THE FORBIDDEN ONE-LINER, named so a future reader does not "fix" it.
-
-    Making ``topology_supports_shm_ring`` return True for a roleful topology is
-    the obvious-looking way to give those boxes a ring. It is forbidden, and the
-    damage is not in this function — it is in its two other consumers:
-
-    - the unattended ``--auto`` default pass would find every remaining gate
-      passing on a roleful box and ARM IT with no operator present; the marker
-      would be absent, so outputd would refuse the pairing and park a silent
-      speaker (C-B2);
-    - ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
-      the boxes the widening would re-expose to a full-range stereo graph on a
-      compression driver.
-    """
-    for layout, mode, _width in ROLEFUL_CASES:
-        topo = _active_topology(layout, mode)
-        assert topology_supports_shm_ring(topo) is False
-        # ...even though an active ring genuinely exists for it.
-        assert active_ring_channels_for_topology(topo) is not None
 
 
 def test_the_resolved_wire_carries_the_active_width_as_its_own_field():

@@ -45,6 +45,7 @@ TRUTH_LAYER = (
     "jasper.active_speaker.linearization_envelope",
     "jasper.active_speaker.linearization_fit",
     "jasper.active_speaker.measurement",
+    "jasper.active_speaker.output_contract",
     "jasper.active_speaker.path_safety",
     "jasper.active_speaker.profile",
     "jasper.active_speaker.runtime_contract",

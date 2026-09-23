@@ -256,7 +256,7 @@ def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
     """Parking is gated on the missing startup graph, not on the blockers, so
     the parked row still has to name the layout blockers a household must clear.
     Asserted on the contract's own blocker CODES, not on the sentence."""
-    from jasper.active_speaker.runtime_contract import classify_output_contract
+    from jasper.active_speaker.output_contract import classify_output_contract
 
     topology = _blocker_bearing_roleful_topology()
     _stage_parked(monkeypatch, tmp_path, topology)

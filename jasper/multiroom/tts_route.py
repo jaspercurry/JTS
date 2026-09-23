@@ -69,7 +69,7 @@ def expected_grouping_tts_route(
     crossover/protection the mixer would bypass (#2380).
 
     ``flat_output_allowed`` is
-    :func:`~jasper.active_speaker.runtime_contract.topology_allows_flat_dac_graph`.
+    :func:`~jasper.active_speaker.output_contract.topology_allows_flat_dac_graph`.
     Its default is FAIL-CLOSED: a caller that cannot answer gets fan-in.
     """
     if not config.is_active_member(cfg):
