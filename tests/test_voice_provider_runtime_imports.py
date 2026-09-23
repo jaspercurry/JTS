@@ -7,7 +7,7 @@ that consumes it.
 
 Background (issue #2197). Nothing verified that the *configured* voice
 provider's code could be imported. The ``/voice`` wizard offers every
-provider in the catalog and ``switch-voice-provider.sh`` will select any of
+provider in the catalog and ``jasper-settings voice`` will select any of
 them; a venv missing one package surfaced only as a jasper-voice that would
 not start. ``check_provider_importable`` closes that, and it is only as good
 as the ``runtime_imports`` declaration it reads — so both halves of that

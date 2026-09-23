@@ -286,11 +286,12 @@ provider/model/voice selection (mode 0640, group `jasper`), and
 `jasper-secrets`). `jasper-voice.service` loads both. Use this wizard for
 voice keys; do not put them in `/etc/jasper/jasper.env`.
 
-The page is also available scriptably from your laptop:
+An agent or a shell changes the same settings with `jasper-settings`
+(`--help` has the contract), which calls the wizard's own save:
 
 ```sh
-bash scripts/switch-voice-provider.sh           # show current
-bash scripts/switch-voice-provider.sh openai    # switch
+ssh $PI_USER@$PI_HOST sudo /opt/jasper/.venv/bin/jasper-settings voice                    # show current
+ssh $PI_USER@$PI_HOST sudo /opt/jasper/.venv/bin/jasper-settings voice --provider openai  # switch
 ```
 
 Save the destination provider's key through the wizard before switching.
@@ -680,7 +681,7 @@ triggers it). Try the shorter form first:
 You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/assistant/wake/` from any LAN device, or run
-`bash scripts/switch-wake-word.sh <key>` from your laptop. The model registry (and how to add one) lives in
+`sudo /opt/jasper/.venv/bin/jasper-settings wake --model <key>` on the speaker. The model registry (and how to add one) lives in
 [`jasper/wake_models.py`](../jasper/wake_models.py).
 
 If wake isn't firing:

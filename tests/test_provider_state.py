@@ -104,7 +104,7 @@ def test_model_falls_back_to_catalog_default(tmp_path):
 #
 # The model's documented home is EITHER jasper.env (the operator base
 # file — .env.example ships the keys there) or this module's own wizard
-# file (scripts/switch-gemini-model.sh writes that one), so unlike reading
+# file (select_voice, via the wizard or jasper-settings, writes that one), so unlike reading
 # PROVIDER_FILE alone this reads the merged env-file set —
 # jasper.env_load.merged_env_files — and must ignore os.environ entirely: a
 # calling-shell export outranks both files there (load_env_files uses
