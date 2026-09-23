@@ -823,16 +823,21 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
 
 
 @pytest.mark.parametrize("route", ["save", "save-test"])
-@pytest.mark.parametrize("fields", [
+@pytest.mark.parametrize(("fields", "saved_keys"), [
     pytest.param(
-        {"grok_key": "invalid-key with-whitespace", "grok_model": "custom-model"},
+        {"grok_key": "invalid-key with-whitespace", "grok_model": "custom-model"}, {},
         id="malformed_key",
     ),
-    pytest.param({"grok_model": "custom-model"}, id="model_not_offered"),
-    pytest.param({"grok_model": "grok-voice-think-fast-1.0"}, id="no_key"),
+    pytest.param({"grok_model": "custom-model"}, {}, id="model_not_offered"),
+    pytest.param({"grok_model": "grok-voice-think-fast-1.0"}, {}, id="no_key"),
+    pytest.param(
+        {"grok_key": "xai-valid-0123456789", "grok_model": "custom-model"},
+        {"XAI_API_KEY": "xai-valid-0123456789"},
+        id="key_saved_before_the_selection_refusal",
+    ),
 ])
 def test_e2e_rejected_save_keeps_choices_without_echoing_key(
-    tmp_path, monkeypatch, route, fields,
+    tmp_path, monkeypatch, route, fields, saved_keys,
 ):
     monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
     restarts = []
@@ -843,13 +848,14 @@ def test_e2e_rejected_save_keeps_choices_without_echoing_key(
             "active": "grok", "grok_voice": "rex", **fields,
         })
         assert status == 422
-        assert "invalid-key with-whitespace" not in body
+        if "grok_key" in fields:
+            assert fields["grok_key"] not in body
         assert f'value="{fields["grok_model"]}" selected' in body
         assert 'value="rex" selected' in body
         assert 'name="active" value="grok"' in body
         assert restarts == []
         assert not (tmp_path / "voice_provider.env").exists()
-        assert not (tmp_path / "voice_keys.env").exists()
+        assert env_file.read_env_file(str(tmp_path / "voice_keys.env")) == saved_keys
     finally:
         server.shutdown()
         server.server_close()

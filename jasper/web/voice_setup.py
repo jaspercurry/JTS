@@ -270,12 +270,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         provider = provider_by_id(form.get("provider", ""))
         return f"costs?provider={provider.id}" if provider else "costs"
 
-    def _reject_save(handler, form: dict[str, str], error: str) -> None:
+    def _reject_save(
+        handler, form: dict[str, str], error: str, *, key_saved: bool = False,
+    ) -> None:
         state = _load_merged(cfg)
         provider = provider_by_id(form.get("active", ""))
         if provider:
             state.update(submitted_settings(provider, form))
-            if form.get(f"{provider.id}_key"):
+            if form.get(f"{provider.id}_key") and not key_saved:
                 error += " Enter the new key again."
         send_rejected_form(
             handler, _page(state, provider.id if provider else ""), flash=error,
@@ -283,11 +285,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     def _save_provider_state(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
-    ) -> tuple[dict[str, str] | None, str | None]:
+    ) -> dict[str, str] | None:
+        """The merged state saved, or None once the rejection is answered."""
         current = _load_merged(cfg)
         new, err = _apply_save(form, current)
         if err is not None:
-            return None, err
+            _reject_save(handler, form, err)
+            return None
         provider = provider_by_id(new["JASPER_VOICE_PROVIDER"])
         assert provider is not None  # _apply_save refused an unknown one
         # select_voice writes these two; the halves below leave them as found.
@@ -306,19 +310,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             _write_half(cfg, current, settings, secret=False)
         except VoiceSelectionRefused as e:
-            return None, str(e)
+            # The keys half is saved by now: the page must not ask for the key again.
+            _reject_save(handler, form, str(e), key_saved=True)
+            return None
         except OSError as e:
             logger.exception("could not write voice provider env file")
-            return None, f"Could not save: {e}"
-        return new, None
+            _reject_save(handler, form, f"Could not save: {e}")
+            return None
+        return new
 
     @form_guarded
     def _post_save(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        new, err = _save_provider_state(handler, form)
-        if err is not None or new is None:
-            _reject_save(handler, form, err or "Could not save.")
+        new = _save_provider_state(handler, form)
+        if new is None:
             return
         outcome = restart_voice_daemon()
         active = new.get("JASPER_VOICE_PROVIDER", "")
@@ -331,9 +337,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_save_test(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        new, err = _save_provider_state(handler, form)
-        if err is not None or new is None:
-            _reject_save(handler, form, err or "Could not save.")
+        new = _save_provider_state(handler, form)
+        if new is None:
             return
         active = new.get("JASPER_VOICE_PROVIDER", "")
         label = _provider_label(active)
