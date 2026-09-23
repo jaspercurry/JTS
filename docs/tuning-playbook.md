@@ -230,11 +230,25 @@ The shelf has a fixed corner near 70 Hz and slope 12.
 Choose `low_boost_db` to match the measured roll-off: compare the base corner
 and per-band `realized_boost_db` in `bass_table.tables[].levels[]`; overshoot
 above the corner beyond repeat spread means too much boost for the box.
-Keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz protection, never
-at the extension target: a high corner tilts boost up and discards extension.
+For the shelf, keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz
+protection, never at the extension target: a high corner tilts boost up and
+discards extension.
 Set `detector_lowpass_hz` at the top of the boosted band.
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail.
+
+When the shelf cannot match the box, add `linkwitz_transform`
+(`0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md`).
+At full boost the block then plays the Linkwitz transform from the woofers'
+measured alignment (`source_hz`, `source_q`) to the target (`target_hz`,
+`target_q`); the volume taper and the compressor act on it as on the shelf.
+A shape needs `delta_highpass_hz` below the target: 15 Hz under a 22 Hz
+target adds about 1 dB near 80 Hz, and a corner nearer the target trades a
+little extension for less drive below 20 Hz. The detector still reads the
+shelf at `low_boost_db`, not the shaped output, so set `low_boost_db` at or
+just above the shape's peak boost (the reserve at full boost). Below it the
+compressor acts late by the difference; far above it, early. The judge does
+not yet check this (#5704).
 
 `prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
 `compression_db` includes compressor and driver action in the boost band.
@@ -590,6 +604,8 @@ Bass
 | compressor_release | {"type":"number","minimum":0.01,"maximum":2.0,"default":0.25} | s | contract.bass.schema.properties.compressor_release_s |
 | delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
+| linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
+| linkwitz_transform_rules | {"adr":"ADR-0352","requires_field":"delta_highpass_hz","target_hz_exclusive_upper_field":"source_hz","delta_zero_hz":"(source_hz**2 - target_hz**2) / (source_hz/source_q - target_hz/target_q)","delta_zero_hz_exclusive_minimum":0.0,"delta_zero_hz_maximum":20000.0} | rule | contract.bass.bounds.linkwitz_transform |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
 
 Rear

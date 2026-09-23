@@ -358,6 +358,12 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "compressor_attack_s": _number(bass.COMPRESSOR_ATTACK_S_MIN, bass.COMPRESSOR_ATTACK_S_MAX),
         "compressor_release_s": _number(bass.COMPRESSOR_RELEASE_S_MIN, bass.COMPRESSOR_RELEASE_S_MAX),
         "delta_highpass_hz": {"type": ["number", "null"], "minimum": bass.DELTA_HIGHPASS_HZ_MIN},
+        "linkwitz_transform": {**_object({
+            "source_hz": _number(bass.LINKWITZ_SOURCE_HZ_MIN, bass.LINKWITZ_SOURCE_HZ_MAX),
+            "source_q": _number(bass.LINKWITZ_Q_MIN, bass.LINKWITZ_Q_MAX),
+            "target_hz": _number(bass.LINKWITZ_TARGET_HZ_MIN),
+            "target_q": _number(bass.LINKWITZ_Q_MIN, bass.LINKWITZ_Q_MAX),
+        }, sorted(field.name for field in fields(bass.LinkwitzTransform))), "type": ["object", "null"]},
     }
     for field in fields(bass.DynamicBassDescriptor):
         if field.default is not MISSING:
@@ -366,7 +372,14 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
                        for name, description in format_["optional_top_level"].items()})
     return {
         "schema": _object(properties, sorted(bass._REQUIRED_FIELDS)),
-        "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz"},
+        "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
+                   "linkwitz_transform": {
+                       "adr": "ADR-0352", "requires_field": "delta_highpass_hz",
+                       "target_hz_exclusive_upper_field": "source_hz",
+                       "delta_zero_hz": "(source_hz**2 - target_hz**2) / (source_hz/source_q - target_hz/target_q)",
+                       "delta_zero_hz_exclusive_minimum": 0.0,
+                       "delta_zero_hz_maximum": bass.LINKWITZ_DELTA_ZERO_HZ_MAX,
+                   }},
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {
