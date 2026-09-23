@@ -49,14 +49,14 @@ echo "     Spotify, BT). It doesn't matter what; we just need the"
 echo "     bridge's ref pipeline to have content flowing through it."
 echo ""
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" true; then
+if ! ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" true; then
     echo "ERROR: cannot reach ${PI_USER}@${PI_HOST}" >&2
     exit 1
 fi
 
 # Use the bridge's existing JASPER_AEC_DEBUG_RECORD_DIR mode. Inject
 # via a transient systemd drop-in, restart bridge, capture, clean up.
-ssh "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/run.log"
+ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/run.log"
 set -euo pipefail
 DURATION="$1"
 OUT="$2"

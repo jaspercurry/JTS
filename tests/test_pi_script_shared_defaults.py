@@ -122,7 +122,7 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
                     printf 'gemini\tGEMINI_API_KEY\tJASPER_GEMINI_MODEL\n'
                     ;;
                 *"GEMINI_API_KEY=.*"*)
-                    printf 'GEMINI_API_KEY=fake123\n'
+                    printf 'set\n'
                     ;;
             esac
             """
