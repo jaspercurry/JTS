@@ -2,26 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /assistant/ha/ wizard after its migration to the canonical look.
-
-Two things this guards:
-
-1. Each of the three states (none / partial / connected) renders canonical
-   design-system bytes (links /assets/app.css, carries the shared .app-header,
-   embeds the CSRF meta tag) and delivers its behaviour as an ES module -- no
-   inline <script> beyond the typed #ha-page-data JSON island.
-2. The migration was presentation-only: the server-rendered POST flow
-   (/discover, /save, /disconnect, /credentials-for-copy, /reset), the CSRF
-   checks, the restart-on-save, and the public module surface (render fn,
-   make_server, main) are unchanged.
-
-Network (httpx) and subprocess (systemctl) are mocked, mirroring the other
-hardware-free web tests.
-"""
 from __future__ import annotations
 
 import http
 import json
+import shutil
+import subprocess
 from typing import Any
 
 import pytest
@@ -435,3 +421,15 @@ def test_credentials_for_copy_returns_creds_with_csrf(monkeypatch):
     payload = json.loads(h.wfile.getvalue().decode())
     assert payload["url"] == "http://homeassistant.local:8123"
     assert payload["token"].startswith("eyJ0eXAi")
+
+
+def test_confirm_copy_and_ha_credentials_via_node():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    result = subprocess.run(
+        [node, "tests/js/confirm_forms_copy_test.mjs"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["ok"] is True
