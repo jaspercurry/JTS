@@ -44,7 +44,7 @@ from ...local_sources import (
     local_source_park_units,
 )
 from ...log_event import log_event
-from ...service_units import JASPER_VOICE_SERVICE
+from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
 from .. import aec_endpoints
 from .. import debug_control
 from .. import restart_broker
@@ -255,7 +255,6 @@ def _camilla_topology_gate_field(action: str) -> dict[str, Any]:
 
 
 def _safe(label: str, read: Callable[[], Any], fallback: Any = None) -> Any:
-    """One optional dashboard field: log and fall back, never fail the page."""
     try:
         return read()
     except Exception:  # noqa: BLE001
@@ -287,7 +286,7 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
-CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
+CORE_AUDIO_RESTART_UNITS = [CAMILLA_SERVICE]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
 
 _USB_LATENCY_APPLY_GRACE_SEC = 30.0

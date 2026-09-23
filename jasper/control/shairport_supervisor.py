@@ -13,8 +13,7 @@ this; the only existing fix is the manual `scripts/airplay-reset.sh`.
 This supervisor talks RTSP `OPTIONS *` to localhost:7000 on a
 cadence. After a confidence threshold of consecutive failures, gated
 on "no active session", it restarts shairport-sync + nqptp — the same
-units the manual fix already touches. The detection mechanism is
-symmetric with the manual path; no new failure modes introduced.
+units the manual fix already touches.
 
 A deliberately disabled unit is not a wedge: when the household turns
 AirPlay off at /sources/ (`systemctl is-enabled` reports disabled or
@@ -35,6 +34,7 @@ import time
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.service_units import SHAIRPORT_SYNC_SERVICE
 from jasper.source_state import airplay_playbackstatus_observed
 
 from . import restart_broker
@@ -244,8 +244,6 @@ class ShairportSupervisor:
             level=logging.ERROR,
         )
 
-    # ---- overridable IO ----
-
     async def probe(self) -> bool:
         """Open localhost:port, send OPTIONS, expect RTSP/1.0 200."""
         try:
@@ -350,7 +348,7 @@ class ShairportSupervisor:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "systemctl", verb, "shairport-sync.service",
+                "systemctl", verb, SHAIRPORT_SYNC_SERVICE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -420,7 +418,7 @@ class ShairportSupervisor:
         """
         result = await asyncio.to_thread(
             restart_broker.reset_then_manage,
-            "shairport-sync.service", "nqptp.service",
+            SHAIRPORT_SYNC_SERVICE, "nqptp.service",
             verb="restart",
             reason="shairport_supervisor",
         )

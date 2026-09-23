@@ -15,12 +15,12 @@ import subprocess
 import time
 from typing import Any, Mapping, Sequence
 
-# Import these instead of re-spelling the literal.
 JASPER_VOICE_SERVICE = "jasper-voice.service"
 OUTPUTD_SERVICE = "jasper-outputd.service"
 FANIN_SERVICE = "jasper-fanin.service"
 LIBRESPOT_SERVICE = "librespot.service"
 CAMILLA_SERVICE = "jasper-camilla.service"
+GROUPING_RECONCILE_SERVICE = "jasper-grouping-reconcile.service"
 AEC_RECONCILE_SERVICE = "jasper-aec-reconcile.service"
 AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 USBGADGET_SERVICE = "jasper-usbgadget.service"
@@ -67,11 +67,8 @@ EXTRA_SERVICE_GROUPS = {
 # check asks about that is on neither list is read on demand.
 DOCTOR_EXTRA_UNITS = (
     "jasper-fanin-coupling-auto.service",
-    # #2802 item 3: peer reconcile oneshots tracked by
-    # cli.doctor._shared._RUNTIME_STATE_UNITS, same as the coupling unit
-    # above — without a roster entry they never appear in unit_states() and
-    # check_service_runtime_state silently no-ops on them.
-    "jasper-grouping-reconcile.service",
+    # See #2802: runtime-state checks need these oneshots in the roster.
+    GROUPING_RECONCILE_SERVICE,
     "jasper-source-intent-reconcile.service",
     "jasper-aec-commission.service",
     "jasper-enhanced-aec-install.service",

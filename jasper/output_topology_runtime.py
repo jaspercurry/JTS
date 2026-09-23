@@ -25,6 +25,7 @@ from jasper.output_topology_store import (
 )
 from jasper.service_units import (
     AUDIO_HARDWARE_RECONCILE_UNIT,
+    GROUPING_RECONCILE_SERVICE,
     read_unit_states,
     unit_activating,
 )
@@ -32,13 +33,11 @@ from jasper.service_units import (
 logger = logging.getLogger("jasper.output_topology_runtime")
 
 RECONCILE_UNIT = AUDIO_HARDWARE_RECONCILE_UNIT
-GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+GROUPING_RECONCILE_UNIT = GROUPING_RECONCILE_SERVICE
 RECONCILE_UNITS = (GROUPING_RECONCILE_UNIT, RECONCILE_UNIT)
 
 
 def topology_summary(topology: OutputTopology) -> dict[str, Any]:
-    """Return the small durable-topology summary used by runtime callers."""
-
     return {
         "readable": True,
         "name": topology.name,
