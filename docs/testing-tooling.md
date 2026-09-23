@@ -849,15 +849,13 @@ core in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views/__i
 # through the same flat-spec evaluator a round grades its own result with
 jasper-round-views entry <round-dir>
 
-# grade a round shipped AND frozen to a baseline's own reference level
-jasper-round-views frozen <baseline-round-dir> <target-round-dir>
+# each spec band's level and shape at every bearing of one set, against the
+# power mean of its 0°/0° takes; a raised take is its own row
+jasper-round-views directivity <round-dir> --set <set-id>
 
-# every banked position plus the VERIFY pose on one comparable basis (each curve
-# as its own deviation from its own median level), plus feature testimony
-jasper-round-views per-seat <round-dir> --include agreement
-
-# session-to-session spread of the pooled honest figures — the stop criterion
-jasper-round-views repeat <round-dir> [<round-dir> ...]
+# each driver's 0°/0° mark-take spread within and between rounds, on the fit
+# verdict's own statistic (ADR-0341)
+jasper-round-views repeat <round-dir> <round-dir> [<round-dir> ...]
 ```
 
 - **Input shapes.** Every subcommand reads either a *banked round directory*
@@ -866,37 +864,17 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
   [`round_inputs`](../jasper/active_speaker/crossover_v2/round_inputs.py); a
   live bundle borrows the speaker's flow state only when that state names the
   same session.
-- **This module performs no DSP of its own.** Positions and the graded spec come
-  from `evidence_packet.build_crossover_evidence_packet`, grading from
-  `flat_spec.evaluate_flat_spec` and the `flat_spec_views` building blocks, and
-  the VERIFY pose is READ from `verify_priors.verify_measured` in the round's
-  banked `state.json`, not re-derived. A round that banked no VERIFY curve gets
-  a NAMED reason rather than an exception — `verify pose ABSENT (<reason>)`.
-- **`entry` needs no cloud group, and that is what makes it reachable.** A cloud
-  group is banked by VERIFY; the MEASURE stage banks the per-driver solos and
-  the entry baseline and no cloud, so a stage-1 round has neither cloud
-  positions nor a graded `spec` — and it is the only round shape that produces
-  an entry baseline. The four position-graded views raise on that themselves.
-- **A `position_id` stopped naming a FIXED bearing across the 2026-08-24
-  geometry ruling**, so `repeat` discloses bearings beside the numbers: every
-  per-position row carries `degrees` and `bearings_agree`. Read
-  `bearings_agree` as THREE-VALUED — `true` all recording rounds agreed,
-  `false` they differ (read the spread as instrument noise at your peril), and
-  **`null` means nothing was COMPARABLE** (fewer than two rounds recorded a
-  bearing), which must never be read as "nothing disagreed". A cloud position
-  and a LATERAL walk pose must **never be joined by index**: both count from the
-  front of their own table, so a matching number is a coincidence.
-- **Agreement's sign rule is a literal threshold** (`testify >= 3` and
-  `dissent <= 1`), not scaled to seat count — below 3 seats the verdict is
-  `common_mode: null`, a named not-evaluable state, never a fabricated pass.
-  `--lo` defaults to the round's own `trusted_floor_hz`.
+- **`entry` needs no cloud group, and that is what makes it reachable.** The
+  MEASURE stage banks the per-driver solos and the entry baseline and no
+  cloud, so it is the only round shape that produces an entry baseline.
+- **`directivity` and `repeat` read the run manifest's take curves** (ADR-0299)
+  and compare them as banked, unsmoothed, over the band every compared take
+  measured. Each answer names the takes it used.
 - Each subcommand writes its JSON beside a round by default —
   `jasper-round-views inventory <round-dir>` names those artifacts, and the
   subcommand that produces each one, from the CLI's own `ARTIFACT_BY_VIEW`, so
-  they are not enumerated here. `repeat-floor` is the exception: it publishes
-  nowhere by default — pass `--install`, `--out PATH`, or both. On failure it
-  publishes the shared refusal record; that record's own fields and each tool's
-  `--help` are the reference.
+  they are not enumerated here. On failure it publishes the shared refusal
+  record; that record's own fields and each tool's `--help` are the reference.
 
 ---
 

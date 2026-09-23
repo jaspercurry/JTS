@@ -16,7 +16,6 @@ from jasper.active_speaker.crossover_v2 import rear_preview, rear_views
 from jasper.active_speaker.crossover_v2.verification import evaluate_spec
 from jasper.active_speaker.crossover_v2.room_grade import grade_room_median, read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import SeatTake
-from jasper.active_speaker.crossover_v2.round_views import cloud_binding_view, load_banked_round
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.flat_spec_views import directivity_table, log_pooled_residual
@@ -29,9 +28,7 @@ from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.snr_policy import band_snr_verdicts, framed_ambient_band_report
 from jasper.cli.round_views import main
 from tests.room_median_fixture import room_median_document
-from tests.test_active_speaker_crossover_v2_round_views import (
-    _bank_fitted_round, _flat_curve, _make_round_dir, gate_sweep_round as gate_sweep_round,
-)
+from tests.test_active_speaker_crossover_v2_round_views import gate_sweep_round as gate_sweep_round
 from tests.test_bass_level_evidence import pair as pair
 from tests.test_crossover_v2_frequency_view import (
     bass_fit_pairs as bass_fit_pairs,
@@ -81,7 +78,6 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
     ("rear_pair", "third_octave_bass", "bands", ("band_hz",)),
     ("bass_take", "bass", "bands", ("band_hz",)),
     ("bass_level", "bass", "realized_boost_db", ("band_hz",)),
-    ("cloud_binding", "octave", "bands", ("f_lo_hz", "f_hi_hz")),
     ("room_grade", "room", "bands", ("lo_hz", "hi_hz")),
     ("rear_preview", "rear_level", "bands", ("band_hz",)),
     ("bass_comparison", "bass", "bands", ("band_hz",)),
@@ -98,7 +94,6 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
     ("speaker_envelope", "octave", "bands", ("band_hz",)),
     ("replay", "bass", "bands", ("band_hz",)),
     ("bass_replay", "bass", "bands", ("band_hz",)),
-    ("spec_sweep_cli", "speaker_spec", "bands", ("band_hz",)),
     ("gate_sweep_cli", "speaker_spec", "bands", ("band_hz",)),
 ])
 def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_keys, request, tmp_path, capsys):
@@ -133,14 +128,10 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload = bass_level_evidence(aligned, descriptor=None, prescribed_boost_db=None)
     elif builder == "bass_comparison":
         payload = compare_bass_takes(*request.getfixturevalue("pair"), change="candidate")
-    elif builder in ("cloud_binding", "speaker_envelope"):
-        if builder == "cloud_binding":
-            banked = load_banked_round(_bank_fitted_round(tmp_path, "round", nulls_hz=((600., 820.),)))
-            payload = cloud_binding_view(banked).to_dict()["roles"][0]
-        else:
-            payload = _envelope_answer(EnvelopeCurve(
-                "woofer", DEFAULT_ENVELOPE_GRID_HZ, np.ones_like(DEFAULT_ENVELOPE_GRID_HZ),
-                (), {}, None, 1, "reference", "unknown"))
+    elif builder == "speaker_envelope":
+        payload = _envelope_answer(EnvelopeCurve(
+            "woofer", DEFAULT_ENVELOPE_GRID_HZ, np.ones_like(DEFAULT_ENVELOPE_GRID_HZ),
+            (), {}, None, 1, "reference", "unknown"))
         low, high = DEFAULT_ENVELOPE_GRID_HZ[[0, -1]]
         expected = tuple((max(lo, low), min(hi, high)) for lo, hi in expected if lo < high and hi > low)
     elif builder == "room_grade":
@@ -163,11 +154,9 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             payload = evaluate_spec(report).evidence
     elif builder == "gate_sweep":
         payload = request.getfixturevalue("direct_only_report")
-    elif builder in ("spec_sweep_cli", "gate_sweep_cli"):
-        root = (_make_round_dir(tmp_path, "round", position_curves={"axis": ("onax", _flat_curve())})
-                if builder == "spec_sweep_cli" else request.getfixturevalue("gate_sweep_round"))
-        scope = "verdict" if builder == "spec_sweep_cli" else "round"
-        assert main(["sweep", "--scope", scope, str(root), "--rungs-ms", "5", "20"]) == 0
+    elif builder == "gate_sweep_cli":
+        root = request.getfixturevalue("gate_sweep_round")
+        assert main(["sweep", "--scope", "round", str(root), "--rungs-ms", "5", "20"]) == 0
         payload = json.loads(capsys.readouterr().out)
     elif builder == "close_reference":
         out = tmp_path / "close.json"

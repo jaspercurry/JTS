@@ -50,7 +50,6 @@ from ..round_inputs import (
 from .incumbent import (
     STRUCTURAL_HISTORY_AXES,
     _incumbent_block,
-    _read_candidate,
     _structural_history_block,
     applied_profile_source,
 )
@@ -116,8 +115,6 @@ __all__ = [
     "round_artifact_dir",
     "round_program_dir",
     "applied_profile_source",
-    "_mapping",
-    "_read_candidate",
     "PacketSchemaUnsupported",
     "REPEAT_FLOOR_UNMEASURED",
     "REPEAT_FLOOR_UNREADABLE",

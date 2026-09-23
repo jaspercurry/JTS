@@ -105,7 +105,7 @@ def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | 
     ``None`` for either field the record does not carry — "not recorded", never
     zero. Read here rather than off the evidence packet because the packet's
     ``round_receipt`` block publishes identities and not the ordinal. ``bool`` is
-    rejected before ``int`` for :func:`_row_degrees`' reason.
+    rejected before ``int`` because it subclasses it.
     """
 
     def _count(value: Any) -> int | None:

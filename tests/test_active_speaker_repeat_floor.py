@@ -9,26 +9,16 @@ import json
 import pytest
 
 from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE, percentile
-from jasper.active_speaker.crossover_v2.round_views import (
-    load_banked_round,
-    repeat_floor_provenance,
-    repeatability_spread,
-)
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
     SCHEMA_VERSION,
-    SHIPPED_POOL_METRIC,
     derive_repeat_floor,
     load_repeat_floor,
     pairwise_abs_deltas,
     stopping_thresholds,
-    write_repeat_floor,
 )
 
-from tests.test_active_speaker_crossover_v2_round_views import (
-    _flat_curve,
-    _make_round_dir,
-)
+AGGREGATE = "shipped_linear_pool_db"
 
 
 def _record(p95: float) -> dict:
@@ -37,10 +27,10 @@ def _record(p95: float) -> dict:
         "kind": REPEAT_FLOOR_KIND,
         "measured_at": "2026-09-01T00:00:00Z",
         "n_repeats": 4,
-        "aggregate_metric": SHIPPED_POOL_METRIC,
+        "aggregate_metric": AGGREGATE,
         "rounds": [],
         "metrics": {
-            SHIPPED_POOL_METRIC: {
+            AGGREGATE: {
                 "n": 4, "mean_db": 1.5, "sd_db": 1.29, "range_db": 3.0,
                 "min_db": 0.0, "max_db": 3.0,
                 "pairwise_abs_delta_p95_db": p95,
@@ -77,7 +67,7 @@ def test_stopping_thresholds_derive_plateau_and_margin_from_the_aggregate_p95():
 @pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), "0.4", True, 0.0])
 def test_stopping_thresholds_refuse_a_row_that_is_not_a_usable_number(bad):
     record = _record(0.4)
-    record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"] = bad
+    record["metrics"][AGGREGATE]["pairwise_abs_delta_p95_db"] = bad
     assert stopping_thresholds(record) is None
 
 
@@ -87,12 +77,10 @@ def test_stopping_thresholds_refuse_a_record_with_no_aggregate_row():
     assert stopping_thresholds(record) is None
 
 
-def test_write_then_load_round_trips_the_record(tmp_path):
+def test_load_reads_back_the_record_it_owns(tmp_path):
     path = tmp_path / "repeat-floor.json"
-    written = write_repeat_floor(_record(0.4), state_path=path)
-    assert "state_path" not in written
-    loaded = load_repeat_floor(state_path=path)
-    assert loaded == written
+    path.write_text(json.dumps(_record(0.4)), encoding="utf-8")
+    assert load_repeat_floor(state_path=path) == _record(0.4)
 
 
 @pytest.mark.parametrize("on_disk", [
@@ -117,47 +105,10 @@ def test_load_answers_none_for_anything_it_does_not_own(tmp_path, on_disk):
     assert load_repeat_floor(state_path=path) is None
 
 
-def _rounds(tmp_path, names):
-    return [
-        (
-            name,
-            load_banked_round(
-                _make_round_dir(
-                    tmp_path, name,
-                    position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=ripple))},
-                )
-            ),
-        )
-        for name, ripple in names
-    ]
-
-
-def test_derive_reads_every_metric_the_repeatability_view_graded(tmp_path):
-    rounds = _rounds(tmp_path, [("r1", 0.0), ("r2", 0.6), ("r3", 1.2)])
-    result = repeatability_spread(rounds)
-    payload = derive_repeat_floor(
-        result,
-        rounds=[repeat_floor_provenance(label, banked) for label, banked in rounds],
-    )
-
-    assert payload["kind"] == REPEAT_FLOOR_KIND
-    assert payload["artifact_schema_version"] == SCHEMA_VERSION
-    assert payload["n_repeats"] == len(rounds)
-    assert payload["aggregate_metric"] == SHIPPED_POOL_METRIC
-    assert [row["label"] for row in payload["rounds"]] == ["r1", "r2", "r3"]
-    assert SHIPPED_POOL_METRIC in payload["metrics"]
-    for row in payload["metrics"].values():
-        assert set(row) >= {
-            "n", "sd_db", "pairwise_abs_delta_p95_db", "pairwise_abs_delta_median_db",
-        }
-    assert stopping_thresholds(payload) is not None
-
-
-def test_derive_refuses_a_single_round_which_has_no_spread(tmp_path):
-    rounds = _rounds(tmp_path, [("only", 0.0)])
-    result = repeatability_spread(rounds)
+def test_derive_refuses_a_single_observation_which_has_no_spread():
     with pytest.raises(ValueError):
-        derive_repeat_floor(result, rounds=[])
+        derive_repeat_floor(samples={"role_metric": [1.0]}, rounds=[{}])
+
 
 @pytest.mark.parametrize("unit", ["db", "us"])
 def test_floor_accepts_per_take_samples_in_native_units(unit):

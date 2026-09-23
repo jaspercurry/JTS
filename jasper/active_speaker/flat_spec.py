@@ -60,10 +60,9 @@ class BandResult:
     (disclosure only). ``room_entangled_below_hz``: upper edge of this
     band's room-entangled sub-span, disclosure only.
 
-    The seven ``gate_*`` fields are DISCLOSURE ONLY, stamped after the fact
-    by
-    :func:`~jasper.active_speaker.crossover_v2.round_views.spec_with_gate_sensitivity`
-    — nothing here computes or reads them. ``gate_sensitivity_db``: the
+    The seven ``gate_*`` fields are DISCLOSURE ONLY, carried by a report
+    that was stamped with a gate sweep — nothing here computes or reads
+    them. ``gate_sensitivity_db``: the
     gate sweep's null-model-corrected delta at this band's worst bin.
     ``sigma_growth_ratio``: across-pose sigma at the longest
     resolution-valid rung over the shortest, same bin. ``n_valid_rungs``:

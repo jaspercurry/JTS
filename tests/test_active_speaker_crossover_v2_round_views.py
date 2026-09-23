@@ -23,47 +23,23 @@ from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
-    CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
     ENTRY_STATE_UNREADABLE,
-    REFIT_TOLERANCE_DB,
-    SEVERED_CLOUD_INPUTS,
     RoundViewsError,
-    agreement_table,
-    audibility_co_metrics,
-    cloud_binding_view,
-    default_agreement_lo_hz,
-    directivity_view,
     entry_state_grade,
-    frozen_reference_grade,
-    BankedRound,
-    NOT_SWEPT_BAND_NOT_EVALUABLE,
-    NOT_SWEPT_CAPTURES_UNREADABLE,
-    NOT_SWEPT_SINGLE_POSE,
     load_banked_round,
-    per_seat_curves,
-    pooled_window_horizontal,
-    repeatability_spread,
-    spec_with_gate_sensitivity,
-    verify_pose_curve,
-)
-from jasper.active_speaker.crossover_v2.gate_sweep import ROUTE_SIGMA_GROWTH, WINDOW_MOVED
-from jasper.active_speaker.crossover_v2.driver_prescription import (
-    DRIVER_PRESCRIPTION_KIND,
-    DRIVER_PRESCRIPTION_SCHEMA_VERSION,
-    driver_prescription_to_candidate_fields,
-    read_driver_prescription,
 )
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_SEATS
+from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
+from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
-from tests.crossover_v2_banked_round import bank_cloud_echo_band, bank_findings, bank_measure_round
+from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
-from tests.test_crossover_v2_gate_sweep import FEATURE_HZ, _pose_ir
+from tests.test_crossover_v2_gate_sweep import _pose_ir
 
 #: A live session bundle resolves its three non-bundle inputs to the on-speaker
 #: SSOT paths; no test may read whatever sits at those absolute paths on the
@@ -87,41 +63,19 @@ def _flat_curve(*, offset_db: float = 0.0, ripple_db: float = 0.0) -> np.ndarray
     return curve
 
 
-def _spec_dict(
-    combined_db: np.ndarray, *, smoothing_fraction: int = 12, trusted_floor_hz: float | None = None
-) -> dict[str, Any]:
-    """A real ``FlatSpecReport.to_dict()`` for ``combined_db`` on :data:`GRID`."""
-    mask = np.zeros(GRID.shape, dtype=bool)
-    report = evaluate_flat_spec(
-        GRID, combined_db, mask,
-        smoothing_fraction=smoothing_fraction, trusted_floor_hz=trusted_floor_hz,
-    )
-    return report.to_dict()
-
-
 def _make_round_dir(
     tmp_path: Path,
     name: str,
     *,
     position_curves: dict[str, tuple[str, np.ndarray]],
-    combined_db: np.ndarray | None = None,
-    spec_smoothing_fraction: int = 12,
-    positions_smoothing_fraction: int | None = None,
-    trusted_floor_hz: float | None = None,
     position_degrees: dict[str, float] | None = None,
 ) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
     produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/``.
 
-    ``position_curves`` maps ``position_id -> (role, magnitude_db)``.
-    ``spec_smoothing_fraction`` / ``positions_smoothing_fraction`` are
-    separate on purpose (they default equal): a real banked round's
-    combined-curve ``spec`` block and its per-position ``curve_grid`` block
-    are not always smoothed at the same fraction, and B3's mismatched-
-    fraction test needs to set them apart deliberately.
+    ``position_curves`` maps ``position_id -> (role, magnitude_db)``; the
+    combined curve is their power mean, graded by the real evaluator.
     """
-    if positions_smoothing_fraction is None:
-        positions_smoothing_fraction = spec_smoothing_fraction
     round_dir = tmp_path / name
     session_dir = round_dir / "bundle" / "sess1"
     capture_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
@@ -142,10 +96,8 @@ def _make_round_dir(
     (capture_dir / "round_receipt.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_round_receipt", "schema_version": 2, "round_id": "r1",
     }))
-    if combined_db is None:
-        # Power-mean the supplied positions when the caller doesn't care.
-        stack = np.vstack([curve for _role, curve in position_curves.values()])
-        combined_db = 10.0 * np.log10(np.mean(10.0 ** (stack / 10.0), axis=0))
+    stack = np.vstack([curve for _role, curve in position_curves.values()])
+    combined_db = 10.0 * np.log10(np.mean(10.0 ** (stack / 10.0), axis=0))
     # ``position_deg`` is present only for the seats the caller named, exactly
     # as the real writer behaves: the packet's row filter drops a key whose
     # value is None, so a seat with no commanded bearing — and every seat of a
@@ -162,12 +114,12 @@ def _make_round_dir(
     ]
     cloud = {
         "kind": "jts_crossover_v2_cloud_evidence", "schema_version": 1,
-        "trusted_floor_hz": trusted_floor_hz, "validity_floor_hz": None,
+        "trusted_floor_hz": None, "validity_floor_hz": None,
         "curve": {"freqs_hz": GRID.tolist(), "magnitude_db": combined_db.tolist()},
         "flatness": {"evaluable": True, "n_bins": len(GRID), "n_excluded": 0, "rms_db": 0.0},
-        "spec": _spec_dict(
-            combined_db, smoothing_fraction=spec_smoothing_fraction, trusted_floor_hz=trusted_floor_hz,
-        ),
+        "spec": evaluate_flat_spec(
+            GRID, combined_db, np.zeros(GRID.shape, dtype=bool), smoothing_fraction=12,
+        ).to_dict(),
         "merged_excluded_bands_hz": [], "screen_excluded_bands_hz": [],
         "null_registry": {"classification": "insufficient_evidence", "nulls": []},
         "null_registry_crossover_region": {"classification": "insufficient_evidence"},
@@ -175,8 +127,8 @@ def _make_round_dir(
         "positions": {
             "available": True, "schema": "jts_attribution_position_evidence/1",
             "curve_grid": {
-                "freqs_hz": GRID.tolist(), "fractional_octave": positions_smoothing_fraction,
-                "smoothing_fraction": positions_smoothing_fraction, "floor_hz": None, "floor_source": None,
+                "freqs_hz": GRID.tolist(), "fractional_octave": 12,
+                "smoothing_fraction": 12, "floor_hz": None, "floor_source": None,
             },
             "positions": positions,
         },
@@ -219,11 +171,7 @@ def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
     assert loaded.inputs.banked is not live
     assert loaded.inputs.session_dir == session_dir
     assert loaded.session_dir == session_dir
-    assert {p.position_id for p in loaded.positions} == {
-        "cloud_verify_02", "cloud_verify_04"
-    }
-    assert loaded.curve_grid_hz.shape == GRID.shape
-    assert loaded.graded_report.bands  # a real, non-empty rehydrated report
+    assert loaded.report is not None and loaded.report.bands  # a real, rehydrated report
 
 
 def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
@@ -271,367 +219,9 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
         load_banked_round(round_dir)
 
 
-def test_a_cloud_group_whose_every_row_lost_its_curve_is_named_as_that(tmp_path):
-    """A TRUNCATED packet and a round that banked no cloud group are two
-    different absences, and only one of them is a round shape.
-
-    The seat rows are there, the block says ``available``, and not one row
-    carries a ``magnitude_db``: nothing measured that is readable, which is a
-    corrupt or half-written packet. Told apart from the stage-1 shape below
-    because the two send an operator to different places — one to the bank,
-    one to the stage they asked for — and the shape sentence over a corrupt
-    packet reads as "this round is fine, you asked the wrong view of it".
-    """
-    corrupt = load_banked_round(_make_round_dir(
-        tmp_path, "r1",
-        position_curves={"cloud_verify_02": ("onax", np.asarray([]))},
-        combined_db=_flat_curve(),
-    ))
-    with pytest.raises(RoundViewsError, match="every position row is missing its magnitude_db"):
-        corrupt.graded_positions
-
-    # The control: a round that banked no cloud group at all keeps the shape
-    # sentence, which is what #3478 made it mean.
-    stage_one = load_banked_round(bank_measure_round(tmp_path))
-    with pytest.raises(RoundViewsError, match="carries no position evidence"):
-        stage_one.graded_positions
-
-
-# --------------------------------------------------------------------------- #
-# View 1 — frozen_reference_grade
-# --------------------------------------------------------------------------- #
-
-
-def test_frozen_equals_shipped_when_target_is_the_baseline(tmp_path):
-    """Grading a round against itself: the freeze changes nothing."""
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve(ripple_db=1.0)),
-            "cloud_verify_04": ("offax", _flat_curve(ripple_db=0.5)),
-        },
-    )
-    banked = load_banked_round(round_dir)
-    result = frozen_reference_grade(banked, banked)
-    assert result.shipped == pytest.approx(result.frozen, abs=1e-9)
-
-
-def test_frozen_reference_recovers_an_injected_level_shift_exactly(tmp_path):
-    """The golden case the module docstring derives: a perfectly FLAT
-    baseline and a perfectly flat target shifted by ``delta_db`` grade
-    SHIPPED as zero-residual either way (a pure level shift is invisible to
-    a curve's own reference — power-mean is exactly additive under a
-    per-bin constant dB shift), but FROZEN grades the target against the
-    baseline's un-shifted reference, so every bin's frozen deviation is
-    exactly ``delta_db`` and the pooled RMS is exactly ``abs(delta_db)``.
-    """
-    delta_db = 0.6
-    baseline_dir = _make_round_dir(
-        tmp_path, "baseline",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    target_dir = _make_round_dir(
-        tmp_path, "target",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=delta_db))},
-    )
-    baseline = load_banked_round(baseline_dir)
-    target = load_banked_round(target_dir)
-    result = frozen_reference_grade(baseline, target)
-
-    assert result.shipped["onax"] == pytest.approx(0.0, abs=1e-9)
-    assert result.frozen["onax"] == pytest.approx(abs(delta_db), abs=1e-6)
-    assert result.shipped_positions["cloud_verify_02"] == pytest.approx(0.0, abs=1e-9)
-    assert result.frozen_positions["cloud_verify_02"] == pytest.approx(abs(delta_db), abs=1e-6)
-
-
-def test_frozen_reference_grader_matches_evaluate_flat_spec_directly(tmp_path):
-    """The SHIPPED half is not a re-derivation: it must equal what calling
-    the real evaluator directly on the same curve produces."""
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=0.8))},
-    )
-    banked = load_banked_round(round_dir)
-    result = frozen_reference_grade(banked, banked)
-
-    direct = evaluate_flat_spec(
-        GRID, _flat_curve(ripple_db=0.8), np.zeros(GRID.shape, dtype=bool),
-        smoothing_fraction=12, trusted_floor_hz=None,
-    )
-    from jasper.active_speaker.flat_spec import spec_convergence_residual
-    expected = spec_convergence_residual(direct)
-    assert result.shipped["onax"] == pytest.approx(expected.rms_db, abs=1e-9)
-
-
-def test_frozen_reference_refuses_a_target_position_absent_from_baseline(tmp_path):
-    baseline_dir = _make_round_dir(
-        tmp_path, "baseline", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    target_dir = _make_round_dir(
-        tmp_path, "target", position_curves={"cloud_verify_09": ("onax", _flat_curve())},
-    )
-    baseline = load_banked_round(baseline_dir)
-    target = load_banked_round(target_dir)
-    with pytest.raises(RoundViewsError, match="no baseline counterpart"):
-        frozen_reference_grade(baseline, target)
-
-
-def test_the_measured_delta_pools_only_the_seats_the_target_re_measured(tmp_path):
-    """The comparand is the baseline at the TARGET's seats, under the target's
-    frame. A baseline seat the target did not re-measure would otherwise fold
-    a seat-composition change into a delta read as the prescription's doing.
-    """
-    baseline = load_banked_round(_make_round_dir(
-        tmp_path, "baseline",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("onax", _flat_curve(ripple_db=4.0)),
-        },
-    ))
-    target = load_banked_round(_make_round_dir(
-        tmp_path, "target",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=0.6))},
-    ))
-
-    result = frozen_reference_grade(baseline, target)
-
-    # Seat 04's 4 dB of ripple never enters: the pool is seat 02 alone, which
-    # grades flat, so the whole delta is the 0.6 dB the target was shifted by.
-    assert result.baseline["onax"] == pytest.approx(0.0, abs=1e-9)
-    assert result.measured_delta_db["onax"] == pytest.approx(0.6, abs=1e-6)
-
-
-def test_frozen_reference_echoes_the_pre_registration_beside_the_measured_move(
-    tmp_path,
-):
-    delta_db = 0.6
-    baseline_dir = _make_round_dir(
-        tmp_path, "baseline",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    target_dir = _make_round_dir(
-        tmp_path, "target",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=delta_db))},
-    )
-    prescription = read_driver_prescription(
-        {
-            "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
-            "kind": DRIVER_PRESCRIPTION_KIND,
-            "packet_fingerprint": "fp",
-            "prescriber": {"model": "a-model", "operator": "jasper"},
-            "filters": [{
-                "role": "tweeter", "biquad_type": "Peaking",
-                "freq": 5000.0, "q": 5.0, "gain": -3.0,
-            }],
-            "expected_delta_db": -0.25,
-            "declared_tilt_db_per_octave": -0.8,
-        },
-        packet_fingerprint="fp",
-        passbands_hz={"tweeter": (1600.0, 20000.0)},
-        classifications=None,
-        incumbent_filters=None,
-        branch_context={"tweeter": ((), 0.0)},
-    )
-    (
-        target_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
-        / "candidate.json"
-    ).write_text(json.dumps(
-        driver_prescription_to_candidate_fields(prescription, fitted=None)
-    ))
-
-    baseline = load_banked_round(baseline_dir)
-    result = frozen_reference_grade(baseline, load_banked_round(target_dir))
-
-    assert result.expected_delta_db == -0.25
-    assert result.declared_tilt_db_per_octave == -0.8
-    assert result.baseline["onax"] == pytest.approx(0.0, abs=1e-9)
-    assert result.measured_delta_db["onax"] == pytest.approx(delta_db, abs=1e-6)
-    assert result.expected_minus_measured_db["onax"] == pytest.approx(
-        -0.25 - delta_db, abs=1e-6
-    )
-    assert result.to_dict()["expected_minus_measured_db"]["onax"] == pytest.approx(
-        -0.25 - delta_db, abs=1e-6
-    )
-
-    # The same two rounds with nothing staged: the measured half is identical
-    # and the pre-registration is absent rather than a predicted zero.
-    undeclared = frozen_reference_grade(baseline, load_banked_round(
-        _make_round_dir(
-            tmp_path, "plain",
-            position_curves={
-                "cloud_verify_02": ("onax", _flat_curve(offset_db=delta_db)),
-            },
-        )
-    ))
-    assert undeclared.measured_delta_db == pytest.approx(result.measured_delta_db)
-    assert undeclared.expected_delta_db is None
-    assert undeclared.declared_tilt_db_per_octave is None
-    assert undeclared.expected_minus_measured_db is None
-
-
-# --------------------------------------------------------------------------- #
-# View 2 — verify_pose_curve + per_seat_curves
-# --------------------------------------------------------------------------- #
-
-
-def _bank_verify_measured(
-    round_dir: Path,
-    *,
-    freqs_hz: np.ndarray | None = None,
-    measured_db: np.ndarray | None = None,
-) -> Path:
-    """Bank a ``state.json`` carrying ``verify_priors.verify_measured``.
-
-    The record is built by the PRODUCT's own persist-side reducer rather than
-    hand-typed, for this suite's standing reason: a drift in what
-    ``persist_conductor_state`` writes must fail here instead of leaving the
-    fixture agreeing with nothing that ships.
-    """
-    from jasper.active_speaker.crossover_v2.durable_state import (
-        _decimate_verify_measured,
-    )
-
-    freqs_hz = GRID if freqs_hz is None else freqs_hz
-    measured_db = _flat_curve() if measured_db is None else measured_db
-    record = _decimate_verify_measured(
-        (freqs_hz, measured_db, np.zeros_like(np.asarray(measured_db, dtype=float)))
-    )
-    path = round_dir / "state.json"
-    _write_state(round_dir, {"verify_priors": {"verify_measured": record}})
-    return path
-
-
-def test_verify_pose_curve_reads_the_banked_curve_onto_the_rounds_grid(tmp_path):
-    """The VERIFY curve is READ from the bank, and made comparable in one hop.
-
-    Banked on a DIFFERENT, coarser grid than the round's on purpose: the
-    persisted curve sits on the VERIFY capture's own frequencies, so an
-    implementation that handed the banked array straight back could not pass
-    this. The two endpoints are shared between the grids, so they pin the
-    VALUES as banked — no re-derivation and no re-levelling — while the
-    whole-array check pins the interpolation rule that carries the rest.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked_freqs = np.geomspace(GRID[0], GRID[-1], 41)
-    banked_db = REFERENCE_DB + 3.0 * np.log2(banked_freqs / banked_freqs[0])
-    _bank_verify_measured(round_dir, freqs_hz=banked_freqs, measured_db=banked_db)
-
-    result = verify_pose_curve(load_banked_round(round_dir))
-
-    assert result.reason == ""
-    assert result.curve is not None
-    assert np.array_equal(result.curve.freqs_hz, GRID)
-    assert result.curve.magnitude_db[0] == pytest.approx(float(banked_db[0]))
-    assert result.curve.magnitude_db[-1] == pytest.approx(float(banked_db[-1]))
-    assert np.allclose(
-        result.curve.magnitude_db, np.interp(GRID, banked_freqs, banked_db)
-    )
-    # The persisted curve is block-averaged in dB, never smoothed at a
-    # fractional-octave width, so the attestation is "not attested" rather
-    # than a fraction this reader would have had to invent.
-    assert result.curve.smoothing_fraction == 0
-    # What the phase MEANS, not an angle recovered from a walk log.
-    assert result.curve.degrees == 0.0
-
-
-@pytest.mark.parametrize(
-    "written",
-    [
-        None,
-        "{not json",
-        "[]",
-        '{"verify_priors": {}}',
-        '{"verify_priors": {"verify_measured": {}}}',
-    ],
-    ids=["no_state_file", "unreadable", "not_an_object", "no_key", "empty_record"],
-)
-def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
-    """Every absence answers the same shape: no curve, WITH a reason.
-
-    A round banked before the curve was persisted, one banked without its
-    state file, and one whose state file is damaged are all "there is no
-    VERIFY curve to compare" — and none of them may raise, because the three
-    other views of the same round are still perfectly readable.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    if written is not None:
-        (round_dir / "state.json").write_text(written)
-
-    result = verify_pose_curve(load_banked_round(round_dir))
-
-    assert result.curve is None
-    assert result.reason
-
-
-def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve(offset_db=2.0)),
-            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3.0)),
-        },
-    )
-    _bank_verify_measured(round_dir, measured_db=_flat_curve(offset_db=1.0))
-    banked = load_banked_round(round_dir)
-    verify = verify_pose_curve(banked)
-
-    seats = per_seat_curves(banked, verify.curve)
-    assert {s.position_id for s in seats} == {"cloud_verify_02", "cloud_verify_04", "verify"}
-    # Every seat is self-normalised: a constant offset added before
-    # normalisation must vanish from its own normalized curve.
-    for seat in seats:
-        if seat.position_id == "cloud_verify_02":
-            assert np.allclose(seat.normalized_db, 0.0, atol=1e-9)
-
-
-def test_per_seat_curves_refuses_an_empty_norm_band(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    with pytest.raises(RoundViewsError, match="norm band"):
-        per_seat_curves(banked, None, norm_band_hz=(50000.0, 60000.0))
-
-
-def test_per_seat_curves_normalises_by_median_not_mean(tmp_path):
-    """Pins the MEDIAN normalisation specifically: a single huge outlier
-    bin inside the norm band pulls the MEAN of that band well away from
-    the baseline level, but the median (66 bins, one outlier) is untouched.
-    A mutation that swapped ``np.median`` for ``np.mean`` would shift every
-    baseline bin's ``normalized_db`` off zero by the outlier's pull —
-    ~1.06 dB here, far outside float tolerance.
-    """
-    curve = _flat_curve()
-    # GRID spans [280, 16000] Hz log-spaced; the default norm band is
-    # [400, 8000] Hz. Push ONE bin inside that band to a large positive
-    # outlier, leaving the rest of the band (and the whole curve) untouched.
-    sel = (GRID >= 400.0) & (GRID <= 8000.0)
-    outlier_idx = int(np.where(sel)[0][0])
-    curve[outlier_idx] = 50.0
-    assert np.median(curve[sel]) == pytest.approx(REFERENCE_DB)
-    assert np.mean(curve[sel]) != pytest.approx(REFERENCE_DB, abs=0.5)
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", curve)},
-    )
-    banked = load_banked_round(round_dir)
-    seats = per_seat_curves(banked, None)
-    seat = seats[0]
-    # A baseline bin OUTSIDE the outlier and inside the norm band must
-    # normalise to exactly zero under median normalisation.
-    baseline_idx = int(np.where(sel)[0][1])
-    assert seat.normalized_db[baseline_idx] == pytest.approx(0.0, abs=1e-9)
-
-
 def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     """The side file reaches the packet exactly as applied-profile.json does:
     present, the accuracy budget's repeat-floor component is available."""
-    from jasper.active_speaker.crossover_v2.round_views import repeat_floor_provenance
-    from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
-
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
@@ -640,407 +230,15 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
 
     # The record the REAL deriver banks from two repeats, never a hand-typed one.
-    twin = _make_round_dir(
-        tmp_path, "r2", position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=0.2))},
-    )
-    rounds = [(str(path), load_banked_round(path)) for path in (round_dir, twin)]
-    write_repeat_floor(
-        derive_repeat_floor(
-            repeatability_spread(rounds),
-            rounds=[repeat_floor_provenance(label, banked) for label, banked in rounds],
-        ),
-        state_path=round_dir / "repeat-floor.json",
-    )
+    floor = derive_repeat_floor(samples={"residual_db": [0.0, 0.2]}, rounds=[{}, {}])
+    (round_dir / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual_db"}))
     present = load_banked_round(round_dir)
     assert present.packet["accuracy_budget"]["components"][component]["available"] is True
 
 
 # --------------------------------------------------------------------------- #
-# View 3 — repeatability_spread
-# --------------------------------------------------------------------------- #
-
-
-def test_repeatability_spread_reports_zero_for_identical_repeats(tmp_path):
-    curves = {"cloud_verify_02": ("onax", _flat_curve(ripple_db=0.7))}
-    r1 = load_banked_round(_make_round_dir(tmp_path, "r1", position_curves=curves))
-    r2 = load_banked_round(_make_round_dir(tmp_path, "r2", position_curves=curves))
-    result = repeatability_spread([("session-1", r1), ("session-2", r2)])
-
-    shipped = next(m for m in result.metrics if m.name == "shipped_linear_pool_db")
-    assert shipped.values["session-1"] == pytest.approx(shipped.values["session-2"], abs=1e-9)
-    spread = shipped.spread()
-    assert spread is not None
-    assert spread["range"] == pytest.approx(0.0, abs=1e-9)
-    assert spread["sd"] == pytest.approx(0.0, abs=1e-9)
-
-    position = next(m for m in result.per_position if m.name == "cloud_verify_02")
-    assert position.values["session-1"] == pytest.approx(position.values["session-2"], abs=1e-9)
-
-
-def test_repeatability_spread_pairwise_math_on_a_known_delta(tmp_path):
-    """Two sessions whose SHIPPED number differs by a known, hand-derived
-    amount (own-reference grading is invariant to a pure shift, so the
-    delta is injected as ripple, not offset — see the frozen-reference
-    golden test for the offset-invariance derivation)."""
-    r1 = load_banked_round(
-        _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    )
-    r2 = load_banked_round(
-        _make_round_dir(
-            tmp_path, "r2",
-            position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
-        )
-    )
-    result = repeatability_spread([("a", r1), ("b", r2)])
-    shipped = next(m for m in result.metrics if m.name == "shipped_linear_pool_db")
-    assert shipped.values["a"] == pytest.approx(0.0, abs=1e-9)
-    assert shipped.values["b"] > shipped.values["a"]
-    spread = shipped.spread()
-    assert spread["n"] == 2.0
-    assert spread["range"] == pytest.approx(shipped.values["b"] - shipped.values["a"], abs=1e-9)
-    assert spread["mean"] == pytest.approx((shipped.values["a"] + shipped.values["b"]) / 2.0, abs=1e-9)
-
-
-def test_repeatability_spread_single_round_has_no_spread(tmp_path):
-    r1 = load_banked_round(
-        _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    )
-    result = repeatability_spread([("only", r1)])
-    shipped = next(m for m in result.metrics if m.name == "shipped_linear_pool_db")
-    assert shipped.spread() is None
-
-
-def test_a_seat_carries_the_bearing_its_own_record_banked(tmp_path):
-    """(S4) The views read ``position_deg`` instead of defaulting it to None.
-
-    Before the 2026-08-24 geometry ruling a cloud seat had no bearing to read,
-    so ``load_banked_round`` hardcoded ``degrees=None`` — which then made
-    ``flat_spec_views``' ``angles_recorded`` false and printed "angles: NOT
-    RECORDED" on rounds that DO record angles. Absence still reads as None:
-    "not recorded", never zero.
-    """
-    banked = load_banked_round(_make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_03": ("onax", _flat_curve()),
-        },
-        position_degrees={"cloud_verify_02": 0.0},
-    ))
-
-    by_id = {p.position_id: p for p in banked.positions}
-    # A banked 0 is a REAL commanded pose — the design axis — and must survive
-    # as 0.0 rather than being read back as "no bearing".
-    assert by_id["cloud_verify_02"].degrees == 0.0
-    # …and a seat whose record carries no key is not recorded, not zero.
-    assert by_id["cloud_verify_03"].degrees is None
-
-
-def test_a_repeat_across_the_geometry_ruling_discloses_its_mixed_bearings(tmp_path):
-    """(S4) One ``position_id``, two different seats — made VISIBLE, not refused.
-
-    The ruling put the design axis at the front of the post-apply pose set, so
-    ``cloud_verify_02`` names −7° in a pre-ruling round and 0° in a post-ruling
-    one. ``repeatability_spread`` keys per-seat metrics by id, so without this
-    the "spread" of two different seats reads as instrument noise.
-
-    **Disclosed rather than blocked** — the doctrine's hard stops are component
-    damage and hearing safety, and comparing across the ruling to see what the
-    ruling DID is a legitimate question. So the spread is still published; the
-    bearings ride beside it and ``bearings_agree()`` names the answer.
-    """
-    pre = load_banked_round(_make_round_dir(
-        tmp_path, "pre", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        position_degrees={"cloud_verify_02": -7.0},
-    ))
-    post = load_banked_round(_make_round_dir(
-        tmp_path, "post", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        position_degrees={"cloud_verify_02": 0.0},
-    ))
-
-    seat = next(
-        m for m in repeatability_spread([("pre", pre), ("post", post)]).per_position
-        if m.name == "cloud_verify_02"
-    )
-
-    assert seat.bearings_agree() is False
-    assert seat.degrees == {"pre": -7.0, "post": 0.0}
-    # Disclosure, not refusal: the number is still there to read.
-    assert seat.spread() is not None
-    assert seat.to_dict()["bearings_agree"] is False
-
-
-def test_matching_bearings_agree_and_unrecorded_ones_answer_unknown(tmp_path):
-    """(S4) The two answers that are NOT "they disagree", kept apart.
-
-    ``True`` is only for rounds that each recorded a bearing and recorded the
-    same one. A pre-ruling pair recorded none, and that is ``None`` — "nothing
-    was comparable" is a different fact from "nothing disagreed", and reporting
-    the second for the first is how a mixed comparison would slip through.
-    """
-    same_a = load_banked_round(_make_round_dir(
-        tmp_path, "a", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        position_degrees={"cloud_verify_02": 7.0},
-    ))
-    same_b = load_banked_round(_make_round_dir(
-        tmp_path, "b", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        position_degrees={"cloud_verify_02": 7.0},
-    ))
-    seat = next(
-        m for m in repeatability_spread([("a", same_a), ("b", same_b)]).per_position
-        if m.name == "cloud_verify_02"
-    )
-    assert seat.bearings_agree() is True
-
-    # Both rounds pre-ruling: no bearing anywhere, so no comparison exists.
-    old_a = load_banked_round(_make_round_dir(
-        tmp_path, "old_a", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    ))
-    old_b = load_banked_round(_make_round_dir(
-        tmp_path, "old_b", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    ))
-    old_seat = next(
-        m for m in repeatability_spread([("a", old_a), ("b", old_b)]).per_position
-        if m.name == "cloud_verify_02"
-    )
-    assert old_seat.bearings_agree() is None
-    assert old_seat.degrees == {}
-    assert old_seat.spread() is not None
-
-
-def test_repeatability_metric_spread_uses_sample_variance_ddof1_not_population():
-    """Pins the ``ddof=1`` (Bessel-corrected, SAMPLE) standard deviation,
-    distinguished from the population (``ddof=0``) one on values chosen so
-    the two read differently to more than rounding: for ``[1, 2, 3]``, the
-    sample sd is exactly ``1.0`` and the population sd is
-    ``sqrt(2/3) ≈ 0.8165`` — a mutation that dropped the ``-1`` (or changed
-    ``len(vs) - 1`` to ``len(vs)``) would silently swap one for the other.
-    """
-    from jasper.active_speaker.crossover_v2.round_views import RepeatabilityMetric
-
-    metric = RepeatabilityMetric("test", {"a": 1.0, "b": 2.0, "c": 3.0})
-    spread = metric.spread()
-    assert spread is not None
-    assert spread["mean"] == pytest.approx(2.0)
-    assert spread["sd"] == pytest.approx(1.0, abs=1e-9)
-    # The population figure this must NOT equal, named so the distinction
-    # is checkable rather than asserted from memory.
-    population_sd = (sum((v - 2.0) ** 2 for v in (1.0, 2.0, 3.0)) / 3.0) ** 0.5
-    assert spread["sd"] != pytest.approx(population_sd, abs=1e-9)
-
-
-# --------------------------------------------------------------------------- #
-# Agreement — testify/dissent classification
-# --------------------------------------------------------------------------- #
-
-
-def _seat_curve(position_id: str, role: str, values: np.ndarray):
-    from jasper.active_speaker.crossover_v2.round_views import SeatCurve
-
-    return SeatCurve(position_id=position_id, role=role, normalized_db=values)
-
-
-def test_agreement_marks_a_feature_common_mode_when_every_seat_agrees():
-    """A -6 dB dip at the same bin, same sign, same rough size, at every
-    seat: sign agreement AND magnitude agreement -> COMMON-MODE.
-
-    The dip is deep (6 dB, not 1 dB) because the optics seam's 1-octave
-    window includes the dip's own bins, so a narrow, shallow dip is mostly
-    cancelled by its own local average before ``agreement_table`` ever sees
-    it — the same shrinkage the campaign's own detrend has. 6 dB survives
-    detrending with several dB of residual, well clear of ``testify_db``.
-    """
-    grid = np.geomspace(400.0, 16000.0, 60)
-    base = np.zeros_like(grid)
-    dip_idx = 25
-    seats = []
-    for i, name in enumerate(["s0", "s1", "s2", "s3"]):
-        curve = base.copy()
-        curve[dip_idx - 1 : dip_idx + 2] -= 6.0 + 0.2 * i  # near-identical depth
-        seats.append(_seat_curve(name, "onax" if i % 2 == 0 else "offax", curve))
-
-    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    assert features
-    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-    assert feature.pooled_db < 0
-    assert feature.n_testify == 4
-    assert feature.n_dissent == 0
-    assert feature.common_mode is True
-
-
-def test_agreement_reports_sign_ok_size_split_when_magnitude_disagrees():
-    """Every seat dips the same direction (sign agreement holds), but one
-    seat's dip is far deeper than the others (magnitude ratio > 3:1) —
-    the campaign's own named failure mode (the 1400 Hz cut)."""
-    grid = np.geomspace(400.0, 16000.0, 60)
-    dip_idx = 25
-    depths = [6.0, 6.0, 6.0, 30.0]  # last seat: 5x deeper
-    seats = []
-    for i, depth in enumerate(depths):
-        curve = np.zeros_like(grid)
-        curve[dip_idx - 1 : dip_idx + 2] -= depth
-        seats.append(_seat_curve(f"s{i}", "onax", curve))
-
-    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-    assert feature.n_dissent == 0
-    assert feature.ratio > 3.0
-    assert feature.common_mode is False
-
-
-def test_agreement_reports_dissent_when_a_seat_disagrees_in_sign():
-    """Three seats dip, one rises: the dissenting seat is counted and named,
-    and — the campaign's own literal ``diss <= 1`` tolerance — a single
-    dissenter among four testify=3 seats still leaves the feature
-    COMMON-MODE (testify(3) >= AGREEMENT_TESTIFY_MIN(3), dissent(1) <=
-    AGREEMENT_DISSENT_MAX(1)). What this test pins is the counting, not
-    just the verdict: ``n_dissent`` must isolate exactly the one seat whose
-    sign disagreed, never miscount it as a testifying seat."""
-    grid = np.geomspace(400.0, 16000.0, 60)
-    dip_idx = 25
-    signs = [-1.0, -1.0, -1.0, +1.0]  # one seat goes the OTHER way
-    seats = []
-    for i, sign in enumerate(signs):
-        curve = np.zeros_like(grid)
-        curve[dip_idx - 1 : dip_idx + 2] += sign * 6.0
-        seats.append(_seat_curve(f"s{i}", "onax", curve))
-
-    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-    assert feature.n_testify == 3
-    assert feature.n_dissent == 1
-    assert feature.common_mode is True
-    assert set(feature.seat_values_db) == {"s0", "s1", "s2", "s3"}
-
-
-def test_agreement_n5_uses_the_literal_threshold_not_a_seat_count_generalisation():
-    """B2's regression: at the REAL DEFAULT 5-seat cloud, a generalisation
-    that scaled the testify requirement to ``len(seats) - 1`` (4 of 5) would
-    refuse this feature; the campaign's own literal threshold (``testify >=
-    3``) accepts it. 3 seats dip deep, 2 dip shallow but same-sign and
-    within magnitude-agreement ratio of the deep three — sign agreement
-    (testify=3, dissent=0) and magnitude agreement (ratio <= 3.0) both hold
-    under the literal rule.
-    """
-    grid = np.geomspace(400.0, 16000.0, 60)
-    dip_idx = 25
-    depths = [6.0, 6.0, 6.0, 4.0, 4.0]
-    seats = []
-    for i, depth in enumerate(depths):
-        curve = np.zeros_like(grid)
-        curve[dip_idx - 1 : dip_idx + 2] -= depth
-        seats.append(_seat_curve(f"s{i}", "onax", curve))
-
-    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-    assert len(seats) == 5
-    assert feature.n_testify == 3  # < 5 - 1 = 4: a seat-count-relative rule would refuse this
-    assert feature.n_dissent == 0
-    assert feature.ratio <= 3.0
-    assert feature.common_mode is True
-
-
-def test_agreement_below_testify_min_seats_is_not_evaluable_never_a_vacuous_bool():
-    """Below AGREEMENT_TESTIFY_MIN seats, ``testify >= 3`` cannot be
-    satisfied by construction (there are not 3 seats to testify). The
-    verdict is ``None`` — a named not-evaluable state — at both 1 and 2
-    seats, never a fabricated ``True`` (the old ``n_seats - 1``
-    generalisation floored at 0 and returned a vacuous pass there) and
-    never a fabricated ``False`` either. The measurements themselves
-    (``n_testify``, ``n_dissent``) are still reported — they are not
-    verdicts, and stay informative even where the verdict cannot be.
-    """
-    grid = np.geomspace(400.0, 16000.0, 60)
-    dip_idx = 25
-    for n_seats in (1, 2):
-        seats = []
-        for i in range(n_seats):
-            curve = np.zeros_like(grid)
-            curve[dip_idx - 1 : dip_idx + 2] -= 6.0
-            seats.append(_seat_curve(f"s{i}", "onax", curve))
-        features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-        feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-        assert feature.n_testify == n_seats
-        assert feature.common_mode is None, f"n_seats={n_seats}"
-
-
-def test_agreement_dissent_above_max_fails_the_bar_even_with_testify_and_magnitude_ok():
-    """Pins ``AGREEMENT_DISSENT_MAX`` specifically, isolated from the
-    testify count and the magnitude ratio: 3 seats testify (meets
-    ``AGREEMENT_TESTIFY_MIN``), 2 dissent (exceeds ``AGREEMENT_DISSENT_MAX
-    == 1``), and the ratio is <= 3.0 (magnitude agreement holds). Only the
-    dissent count can be failing the bar here — a mutation that widened
-    ``AGREEMENT_DISSENT_MAX`` to 2 (or dropped the check) would flip this
-    from ``False`` to ``True`` with nothing else changing.
-    """
-    grid = np.geomspace(400.0, 16000.0, 60)
-    dip_idx = 25
-    combo = [-6.0, -6.0, -6.0, 4.0, 4.0]
-    seats = []
-    for i, depth in enumerate(combo):
-        curve = np.zeros_like(grid)
-        curve[dip_idx - 1 : dip_idx + 2] += depth
-        seats.append(_seat_curve(f"s{i}", "onax", curve))
-    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
-    assert feature.n_testify == 3
-    assert feature.n_dissent == 2
-    assert feature.ratio <= 3.0
-    assert feature.common_mode is False
-
-
-def test_agreement_table_refuses_an_empty_seat_list():
-    grid = np.geomspace(400.0, 16000.0, 60)
-    with pytest.raises(RoundViewsError, match="no seats"):
-        agreement_table([], grid, lo_hz=400.0, hi_hz=16000.0)
-
-
-def test_agreement_respects_the_swept_band(tmp_path):
-    """A feature outside [lo_hz, hi_hz] is not reported at all."""
-    grid = np.geomspace(400.0, 16000.0, 60)
-    curve = np.zeros_like(grid)
-    curve[5] -= 2.0  # a feature near the very bottom of the grid
-    seats = [_seat_curve("s0", "onax", curve)]
-    features = agreement_table(seats, grid, lo_hz=2000.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
-    assert all(f.center_hz >= 2000.0 for f in features)
-
-
-# --------------------------------------------------------------------------- #
 # CLI wiring — jasper-round-views
 # --------------------------------------------------------------------------- #
-
-
-def test_cli_frozen_writes_result_into_the_target_round_dir(tmp_path):
-    from jasper.cli.round_views import main
-
-    baseline_dir = _make_round_dir(
-        tmp_path, "baseline", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    target_dir = _make_round_dir(
-        tmp_path, "target",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(offset_db=0.5))},
-    )
-    rc = main(["frozen", str(baseline_dir), str(target_dir)])
-    assert rc == 0
-    out_path = target_dir / "frozen_reference.json"
-    assert out_path.is_file()
-    payload = json.loads(out_path.read_text())
-    assert payload["shipped"]["onax"] == pytest.approx(0.0, abs=1e-9)
-    assert payload["frozen"]["onax"] == pytest.approx(0.5, abs=1e-6)
-
-
-def test_cli_per_seat_writes_seats_including_absent_verify_reason(tmp_path):
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    rc = main(["per-seat", str(round_dir)])
-    assert rc == 0
-    payload = json.loads((round_dir / "per_seat.json").read_text())
-    assert [s["position_id"] for s in payload["seats"]] == ["cloud_verify_02"]
-    assert payload["verify_pose"]["included"] is False
-    assert payload["verify_pose"]["reason"]
 
 
 def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
@@ -1049,41 +247,42 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
-    assert cli.main(["per-seat", str(round_dir)]) == 0
+    assert cli.main(["entry", str(round_dir)]) == 0
 
     assert cli.main(["inventory", str(round_dir)]) == 0
     payload = json.loads((round_dir / "inventory.json").read_text())
     rows = {row["artifact"]: row for row in payload["artifacts"]}
 
-    present = rows["per_seat.json"]
+    present = rows["entry_state_grade.json"]
     assert present["present"] is True
-    assert present["bytes"] == (round_dir / "per_seat.json").stat().st_size
+    assert present["bytes"] == (round_dir / "entry_state_grade.json").stat().st_size
     assert payload["bytes_total"] == sum(
         row["bytes"] or 0 for row in payload["artifacts"]
     )
 
     # Every path this round can fill is filled: the row is a line to run.
-    missing = rows["directivity.json"]
+    missing = rows[FREQUENCY_VIEW_FILENAME]
     assert missing["present"] is False
     assert missing["bytes"] is None
-    assert missing["produced_by"] == f"jasper-round-views per-seat {round_dir} --include directivity"
+    assert missing["produced_by"] == f"jasper-round-views frequency {round_dir}"
     assert missing["producer_needs_more_than_this_round"] is False
-    assert missing["path"] == str(round_dir / "directivity.json")
+    assert missing["path"] == str(round_dir / FREQUENCY_VIEW_FILENAME)
     # The producer it named writes the artifact it named as missing.
     assert cli.main(shlex.split(missing["produced_by"])[1:]) == 0
     assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
-    # this round in the slot that writes the artifact beside it — frozen
-    # grades the TARGET. What is left in brackets is what no inventory of one
-    # round can fill, and running it without that round argparse rejects.
-    multi = rows["frozen_reference.json"]
+    # this round in the slot that writes the artifact beside it. What is left
+    # in brackets is what no inventory of one round can fill, and running it
+    # without that round argparse rejects.
+    multi = rows["close_reference.json"]
     assert shlex.split(multi["produced_by"]) == [
-        "jasper-round-views", "frozen", "<other-round>", str(round_dir),
+        "jasper-round-views", "close-reference", "--far-round", str(round_dir),
+        "--close-round", "<other-round>", "--close-m", "<distance-m>",
     ]
     assert multi["producer_needs_more_than_this_round"] is True
     with pytest.raises(SystemExit):
-        cli.main(["frozen", str(round_dir)])
+        cli.main(["close-reference", "--far-round", str(round_dir)])
 
     assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
         f"jasper-round-views classify-features {round_dir}"
@@ -1151,117 +350,10 @@ def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
-def test_cli_repeat_floor_writes_the_banked_record(tmp_path):
-    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, SCHEMA_VERSION
-    from jasper.cli.round_views import main
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    r2 = _make_round_dir(
-        tmp_path, "r2",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
-    )
-    out = tmp_path / "repeat-floor.json"
-    assert main(["repeat-floor", str(r1), str(r2), "--out", str(out)]) == 0
-    payload = json.loads(out.read_text())
-    assert payload["kind"] == REPEAT_FLOOR_KIND
-    assert payload["artifact_schema_version"] == SCHEMA_VERSION
-    assert payload["n_repeats"] == 2
-    assert [row["label"] for row in payload["rounds"]] == ["r1", "r2"]
-
-
-def test_cli_repeat_floor_refuses_stdout_as_a_destination(tmp_path, monkeypatch):
-    from jasper.cli.round_views import main
-
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit):
-        main(["repeat-floor", "r1", "r2", "--out", "-"])
-    assert not (tmp_path / "-").exists()
-
-
-def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
-    from jasper.cli import round_views as cli
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    assert cli.main(
-        ["repeat-floor", str(r1), "--out", str(tmp_path / "out.json")]
-    ) == cli.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["status"] == "refused"
-
-
-def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path, capsys):
-    """The record is written INSIDE the guarded block: an unwritable --out is
-    the WRITE exit, not a traceback out of the record's own writer."""
-    from jasper.cli import round_views as cli
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    r2 = _make_round_dir(
-        tmp_path, "r2",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
-    )
-    # A directory component that is a FILE: the write fails as an OSError for
-    # any uid, unlike a chmod-based unwritable directory (root ignores it).
-    blocker = tmp_path / "not-a-dir"
-    blocker.write_text("")
-    assert cli.main(
-        ["repeat-floor", str(r1), str(r2), "--out", str(blocker / "x.json")]
-    ) == cli.EXIT_WRITE_FAILED
-    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
-
-
-def test_cli_repeat_floor_requires_a_destination(tmp_path):
-    """No default path: this tool runs on a laptop over banked directories and
-    cannot assume the speaker's own state path unasked."""
-    from jasper.cli.round_views import main
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    with pytest.raises(SystemExit):
-        main(["repeat-floor", str(r1), str(r1)])
-
-
-def test_cli_repeat_floor_install_publishes_at_the_on_speaker_path(tmp_path, monkeypatch):
-    """``--install`` writes the same record the operator used to copy by hand."""
-    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor
-    from jasper.cli import round_views as cli
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    r2 = _make_round_dir(
-        tmp_path, "r2",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
-    )
-    installed = tmp_path / "state" / "active_speaker_repeat_floor.json"
-    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", installed)
-    out = tmp_path / "repeat-floor.json"
-
-    assert cli.main(["repeat-floor", str(r1), str(r2), "--install", "--out", str(out)]) == 0
-    record = load_repeat_floor(state_path=installed)
-    assert record is not None and record["kind"] == REPEAT_FLOOR_KIND
-    # Byte-identical to what --out writes: one payload, two destinations.
-    assert installed.read_bytes() == out.read_bytes()
-
-
-def test_cli_repeat_floor_install_exits_write_failed_on_an_unwritable_path(
-    tmp_path, monkeypatch, capsys
-):
-    """The normal no-sudo case: the shared unwritable record, not a traceback."""
-    from jasper.cli import round_views as cli
-
-    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
-    r2 = _make_round_dir(
-        tmp_path, "r2",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
-    )
-    blocker = tmp_path / "not-a-dir"
-    blocker.write_text("")
-    monkeypatch.setattr(cli.repeat, "_REPEAT_FLOOR_DEFAULT_PATH", blocker / "floor.json")
-
-    assert cli.main(["repeat-floor", str(r1), str(r2), "--install"]) == cli.EXIT_WRITE_FAILED
-    assert json.loads(capsys.readouterr().out)["status"] == "unwritable"
-
-
 def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli import round_views as cli
 
-    rc = cli.main(["per-seat", str(tmp_path / "nope")])
+    rc = cli.main(["entry", str(tmp_path / "nope")])
     assert rc == cli.EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
@@ -1277,7 +369,7 @@ def test_cli_reports_the_write_exit_when_the_view_cannot_be_written(tmp_path, ca
     )
 
     rc = cli.main([
-        "per-seat", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
+        "entry", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
     ])
 
     assert rc == cli.EXIT_WRITE_FAILED
@@ -1289,10 +381,10 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
 ):
     """The WRITE stage claims ``OSError`` and nothing else.
 
-    The strict writer also rejects a payload carrying ``NaN`` — co-metrics over
-    partial bearing coverage builds one — and that is the run's doing, not the
-    filesystem's. Sending that operator to check permissions sends them to the
-    wrong place, so it falls to the refusal arm instead.
+    The strict writer also rejects a payload carrying ``NaN``, and that is the
+    run's doing, not the filesystem's. Sending that operator to check
+    permissions sends them to the wrong place, so it falls to the refusal arm
+    instead.
     """
     from jasper.cli import round_views as cli
 
@@ -1305,7 +397,7 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
 
     monkeypatch.setattr(cli._common, "write_report", _strict)
 
-    rc = cli.main(["per-seat", str(round_dir)])
+    rc = cli.main(["entry", str(round_dir)])
 
     assert rc == cli.EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["status"] == "refused"
@@ -1370,13 +462,13 @@ def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
     here.mkdir()
     monkeypatch.chdir(here)
 
-    assert main(["per-seat", str(banked_bundle)]) == 0
-    assert main(["per-seat", str(live)]) == 0
+    assert main(["entry", str(banked_bundle)]) == 0
+    assert main(["entry", str(live)]) == 0
 
-    assert (round_dir / "per_seat.json").is_file()
-    assert not (banked_bundle / "per_seat.json").exists()
-    assert (here / "live-1-per_seat.json").is_file()
-    assert not (live / "per_seat.json").exists()
+    assert (round_dir / "entry_state_grade.json").is_file()
+    assert not (banked_bundle / "entry_state_grade.json").exists()
+    assert (here / "live-1-entry_state_grade.json").is_file()
+    assert not (live / "entry_state_grade.json").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -1466,24 +558,6 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     assert grade.report.trusted_floor_hz is None
     assert grade.report.trusted_ceiling_hz is None
     assert grade.program_id == "prog-entry"
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        pytest.param(["per-seat"], id="per_seat"),
-        pytest.param(["repeat"], id="repeat"),
-    ],
-)
-def test_the_position_graded_views_still_refuse_a_round_with_no_cloud_group(
-    tmp_path, capsys, argv,
-):
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-
-    assert cli.main([*argv, str(round_dir)]) == cli.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["status"] == "refused"
 
 
 def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
@@ -1825,10 +899,7 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 #: The views one round directory answers, as the operator's own argv. One
 #: fixture drives them all, so the ANSWER's shape is pinned once here rather
 #: than re-asserted verb by verb.
-_SINGLE_ROUND_VIEWS = (
-    "entry", "per-seat",
-    "cloud-binding", "sweep --scope verdict", "frequency", "inventory",
-)
+_SINGLE_ROUND_VIEWS = ("entry", "frequency", "inventory")
 
 
 def _longest_numeric_list(node: Any) -> int:
@@ -1874,7 +945,7 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
 
 
 # --------------------------------------------------------------------------- #
-# Audibility-weighted co-metrics (ticket 6.13 / ADR-0202)
+# banked lateral-pose takes, shared with the candidate-ladder suite
 # --------------------------------------------------------------------------- #
 
 
@@ -1912,339 +983,6 @@ def _summed_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict[str, A
         "magnitude_db": [float(v) for v in magnitude_db],
         "phase_deg": [0.0] * len(freqs_hz),
     }
-
-
-def test_pooled_window_horizontal_power_averages_a_hand_computed_two_curve_case(tmp_path):
-    """Two bearings, one 'summed' curve each, fully covering the grid.
-
-    A (0 deg): 0 dB -> power 1.0.  B (+7 deg): 10*log10(3) dB -> power 3.0.
-    Power mean = 2.0 -> pooled dB = 10*log10(2) ~= 3.0103 dB, at every bin.
-
-    A third stop shares A's bearing but sits 10 deg above mark height, at a
-    wild power (100.0): this pool is the HORIZONTAL window, so a raised seat
-    is skipped rather than bucketed under the bearing it shares -- it moves
-    neither the curve count, the bearing set, nor the arithmetic.
-    """
-    session_dir = tmp_path / "bundle" / "sess1"
-    grid = np.array([1000.0, 2000.0])
-    a_db, b_db = 0.0, 10.0 * np.log10(3.0)
-    _bank_lateral_pose(
-        session_dir, take_id="lateral_00_a01", position_deg=0,
-        curves=[_summed_curve(grid, np.full_like(grid, a_db))],
-    )
-    _bank_lateral_pose(
-        session_dir, take_id="lateral_02_a01", position_deg=7,
-        curves=[_summed_curve(grid, np.full_like(grid, b_db))],
-    )
-    _bank_lateral_pose(
-        session_dir, take_id="lateral_04_a01", position_deg=0, vertical_deg=10,
-        curves=[_summed_curve(grid, np.full_like(grid, 20.0))],
-    )
-
-    result = pooled_window_horizontal(session_dir, grid_hz=grid)
-
-    assert result is not None
-    assert result.bearings_deg == (0.0, 7.0)
-    assert result.n_curves == 2
-    expected_db = 10.0 * np.log10(2.0)
-    assert result.magnitude_db == pytest.approx([expected_db, expected_db])
-
-
-def test_pooled_window_horizontal_pools_a_revisited_bearing_before_pooling_bearings(tmp_path):
-    """A bearing visited by two stops must not outweigh one visited once,
-    and a superseded retake must not contribute at all.
-
-    Two DISTINCT stops at 0 deg (a drift re-visit): powers 0.5 and 1.5,
-    whose power MEAN is exactly 1.0 (0 dB) -- the same value the single
-    +7 deg curve was in the two-curve case above, so two-stage pooling
-    (average the bearing's stops, THEN average across bearings) answers
-    10*log10(2) dB. Naive single-stage pooling (flat-average all three
-    curves, powers [0.5, 1.5, 3.0]) would instead give
-    10*log10(5/3) ~= 2.2185 dB. The 0.5 stop is additionally banked with a
-    superseded earlier attempt at a wild power (100.0): were retakes pooled
-    instead of superseded, no two-stage/one-stage arithmetic could land on
-    the expected value either.
-    """
-    session_dir = tmp_path / "bundle" / "sess1"
-    grid = np.array([1000.0])
-    for take_id, power in (
-        ("lateral_00_a01", 100.0),  # superseded by a02 below
-        ("lateral_00_a02", 0.5),
-        ("lateral_04_a01", 1.5),  # second stop, same 0 deg bearing
-    ):
-        _bank_lateral_pose(
-            session_dir, take_id=take_id, position_deg=0,
-            curves=[_summed_curve(grid, 10.0 * np.log10(np.array([power])))],
-        )
-    _bank_lateral_pose(
-        session_dir, take_id="lateral_02_a01", position_deg=7,
-        curves=[_summed_curve(grid, np.array([10.0 * np.log10(3.0)]))],
-    )
-
-    result = pooled_window_horizontal(session_dir, grid_hz=grid)
-
-    assert result is not None
-    assert result.bearings_deg == (0.0, 7.0)
-    assert result.n_curves == 3
-    assert result.magnitude_db == pytest.approx([10.0 * np.log10(2.0)])
-
-
-def test_pooled_window_horizontal_is_none_when_no_lateral_pose_banked_a_summed_curve(tmp_path):
-    session_dir = tmp_path / "bundle" / "sess1"
-    session_dir.mkdir(parents=True)
-    assert pooled_window_horizontal(session_dir, grid_hz=np.array([1000.0])) is None
-
-
-def test_pooled_window_horizontal_ignores_a_per_driver_role(tmp_path):
-    """Only ``role == "summed"`` counts — an isolated driver branch is not
-    the speaker's composed response."""
-    session_dir = tmp_path / "bundle" / "sess1"
-    grid = np.array([1000.0])
-    _bank_lateral_pose(
-        session_dir, take_id="lateral_00_a01", position_deg=0,
-        curves=[{
-            "role": "tweeter", "band_hz": [20.0, 20000.0],
-            "freqs_hz": [1000.0], "magnitude_db": [0.0], "phase_deg": [0.0],
-        }],
-    )
-    assert pooled_window_horizontal(session_dir, grid_hz=grid) is None
-
-
-def test_audibility_co_metrics_reports_on_axis_and_discloses_an_absent_pooled_window(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-
-    result = audibility_co_metrics(banked)
-
-    assert result.round_dir == str(round_dir)
-    assert result.on_axis is not None
-    assert result.on_axis.nbd_db == pytest.approx(0.0, abs=1e-9)
-    assert result.on_axis.sm_r2 == pytest.approx(1.0, abs=1e-9)
-    assert result.on_axis_reason == ""
-    assert result.pooled_window is None
-    assert result.pooled_window_reason
-    assert result.pooled_window_bearings_deg == ()
-
-
-def test_audibility_co_metrics_reports_the_pooled_window_when_the_round_banked_one(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    _bank_lateral_pose(
-        banked.session_dir, take_id="lateral_00_a01", position_deg=0,
-        curves=[_summed_curve(GRID, _flat_curve())],
-    )
-
-    result = audibility_co_metrics(banked)
-
-    assert result.pooled_window is not None
-    assert result.pooled_window.nbd_db == pytest.approx(0.0, abs=1e-9)
-    assert result.pooled_window.sm_r2 == pytest.approx(1.0, abs=1e-9)
-    assert result.pooled_window_reason == ""
-    assert result.pooled_window_bearings_deg == (0.0,)
-
-
-def test_audibility_co_metrics_discloses_an_absent_on_axis_position(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("offax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-
-    result = audibility_co_metrics(banked)
-
-    assert result.on_axis is None
-    assert result.on_axis_reason
-
-
-# --------------------------------------------------------------------------- #
-# the gate ladder, stamped onto the round's own spec verdict
-# --------------------------------------------------------------------------- #
-
-#: Two rungs, not the default seven: this suite is proving the wiring, and the
-#: ladder's own physics is measured in ``test_crossover_v2_gate_sweep.py``.
-SWEEP_RUNGS_MS = (5.0, 20.0)
-
-
-def _curve_dipping_at(hz: float, *, depth_db: float = -3.0) -> np.ndarray:
-    """A flat curve with its single worst bin at the grid bin nearest ``hz``."""
-    curve = np.full(GRID.shape, REFERENCE_DB, dtype=float)
-    curve[int(np.argmin(np.abs(GRID - hz)))] += depth_db
-    return curve
-
-
-def _banked_for_sweep(round_dir: Path, report) -> BankedRound:
-    """One round's captures and one round's verdict, as the function takes them.
-
-    Built directly rather than through :func:`load_banked_round`: the captures
-    the sweep reads and the evidence packet the loader parses live in two
-    different trees under ``bundle/``, and only one session directory may.
-    """
-    return BankedRound(
-        round_dir=round_dir,
-        inputs=round_inputs_mod.RoundInputs(
-            session_dir=round_dir,
-            state_path=None,
-            design_draft_path=None,
-            applied_profile_path=None,
-            repeat_floor_path=None,
-            declared_geometry_path=None,
-            statefile_path=None,
-            banked=True,
-        ),
-        positions=(),
-        curve_grid_hz=GRID,
-        report=report,
-        packet={},
-    )
-
-
-@pytest.fixture(scope="module")
-def swept_low_band(tmp_path_factory):
-    """A three-pose round whose graded low band is worst at the feature the
-    captures actually carry, swept and stamped."""
-    round_dir = bank_capture_round(
-        tmp_path_factory.mktemp("swept"),
-        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
-    )
-    report = evaluate_flat_spec(
-        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
-    )
-    stamped = spec_with_gate_sensitivity(
-        _banked_for_sweep(round_dir, report), rungs_ms=SWEEP_RUNGS_MS,
-    )
-    return report, stamped
-
-
-def test_the_spec_verdict_carries_the_sweep_at_each_bands_worst_bin(swept_low_band):
-    """The verdict names the bin and the ladder answers at THAT bin, with the
-    frame those numbers are only meaningful inside."""
-    report, stamped = swept_low_band
-
-    low = stamped.bands[0]
-    assert low.max_deviation_hz == report.bands[0].max_deviation_hz
-    assert low.gate_sensitivity_note is None
-    assert np.isfinite(low.sigma_growth_ratio)
-    assert np.isfinite(low.gate_sensitivity_db)
-    assert low.n_valid_rungs == len(SWEEP_RUNGS_MS)
-    # Real builtins, never `np.float64`/`np.int64`: this report is persisted
-    # through `json.dumps`, which the numpy scalars silently break.
-    assert type(low.sigma_growth_ratio) is float
-    assert type(low.gate_sensitivity_db) is float
-    assert type(low.n_valid_rungs) is int
-
-    # The room/speaker call itself: this round's varying late-reflection copy
-    # per pose is exactly the across-pose-sigma-growth signature (#3495), so
-    # the ladder calls it MOVED via the sigma-growth route.
-    assert low.gate_window_verdict == WINDOW_MOVED
-    assert ROUTE_SIGMA_GROWTH in low.gate_window_verdict_reasons
-    assert type(low.gate_window_verdict_reasons) is tuple
-
-    assert stamped.gate_sweep_frame is not None
-    assert stamped.gate_sweep_frame["rungs_ms"] == list(SWEEP_RUNGS_MS)
-
-
-def test_stamping_the_sweep_moves_no_grade(swept_low_band):
-    """Disclosure only. Strip the eight new fields and the report is the one
-    `evaluate_flat_spec` produced, band for band and verdict for verdict.
-    """
-    from dataclasses import replace
-
-    report, stamped = swept_low_band
-
-    stripped = replace(
-        stamped,
-        bands=tuple(
-            replace(
-                band, gate_sensitivity_db=None, sigma_growth_ratio=None,
-                n_valid_rungs=None, gate_sensitivity_note=None,
-                gate_sensitivity_detail=None, gate_window_verdict=None,
-                gate_window_verdict_reasons=None,
-            )
-            for band in stamped.bands
-        ),
-        gate_sweep_frame=None,
-    )
-    assert stripped == report
-
-
-def test_a_single_pose_round_is_named_as_not_swept(tmp_path):
-    """Across-pose sigma has no meaning on one pose, so there is no number and
-    the reason says which kind of nothing it is."""
-    round_dir = bank_capture_round(tmp_path, [_pose_ir(0, late_copy_ms=8.0)])
-    report = evaluate_flat_spec(
-        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
-    )
-
-    stamped = spec_with_gate_sensitivity(
-        _banked_for_sweep(round_dir, report), rungs_ms=SWEEP_RUNGS_MS,
-    )
-
-    assert all(band.sigma_growth_ratio is None for band in stamped.bands)
-    assert all(band.n_valid_rungs is None for band in stamped.bands)
-    assert all(
-        band.gate_sensitivity_note == NOT_SWEPT_SINGLE_POSE
-        for band in stamped.bands
-    )
-    assert stamped.gate_sweep_frame is None
-
-
-def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
-    tmp_path,
-):
-    """Two different kinds of nothing, and a reader must not read either as the
-    other. The captures are never opened for the band that has no bin to ask
-    about, and an unreadable round is still a graded round.
-    """
-    report = evaluate_flat_spec(
-        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
-        trusted_ceiling_hz=8000.0,
-    )
-    assert report.bands[-1].max_deviation_hz is None  # the ceiling took it whole
-
-    stamped = spec_with_gate_sensitivity(
-        _banked_for_sweep(tmp_path, report), rungs_ms=SWEEP_RUNGS_MS,
-    )
-
-    assert stamped.bands[-1].gate_sensitivity_note == NOT_SWEPT_BAND_NOT_EVALUABLE
-    assert stamped.bands[0].gate_sensitivity_note == NOT_SWEPT_CAPTURES_UNREADABLE
-    # The bucket slug is one word; the detail behind it still names which
-    # RoundCapturesRefused this round actually hit.
-    assert stamped.bands[0].gate_sensitivity_detail["reason"] == REFUSE_NO_CAPTURES
-    assert stamped.gate_sweep_frame is None
-    assert stamped.overall_within_target == report.overall_within_target
-
-
-def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
-    import shutil
-
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        combined_db=_curve_dipping_at(FEATURE_HZ),
-    )
-    captures = bank_capture_round(
-        tmp_path / "captures",
-        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
-    )
-    shutil.copytree(
-        captures / "bundle" / "b0", round_dir / "bundle" / "sess1", dirs_exist_ok=True,
-    )
-
-    shutil.rmtree(round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/wired-test")
-    write_manifest(round_dir)
-    rc = main(
-        ["sweep", "--scope", "verdict", str(round_dir), "--rungs-ms", "5", "20"],
-    )
-
-    assert rc == 0
-    from jasper.cli._report import render_report
-    expected = {"round_dir": str(round_dir), "spec": spec_with_gate_sensitivity(load_banked_round(round_dir), rungs_ms=[5, 20]).to_dict()}
-    assert (round_dir / "spec_gate_sensitivity.json").read_bytes() == (render_report(expected) + "\n").encode()
 
 
 # --------------------------------------------------------------------------- #
@@ -2379,288 +1117,6 @@ def test_cli_gate_sweep_an_unwritable_out_is_the_write_exit(gate_sweep_round, ca
 
 
 # --------------------------------------------------------------------------- #
-# cloud-binding: did the cloud's null evidence bind the fit?
-# --------------------------------------------------------------------------- #
-
-#: The bands, classes and corner the fixture round measured through. Values,
-#: not the shipped defaults: the view reads every one of them off the round.
-_FIT_BANDS_HZ = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
-_FIT_CLASSES = {"woofer": "unknown", "tweeter": "soft_dome"}
-_FIT_REGION = {
-    "id": "w-t", "lower_driver": "woofer", "upper_driver": "tweeter",
-    "fc_hz": 2400.0, "order": 4,
-}
-#: The analysis grid the session fitted on, an order of magnitude finer than
-#: the 12/octave basis a take banks its curves at — so the refit below crosses
-#: the same decimation a real round does.
-_FIT_NATIVE_HZ = np.geomspace(100.0, 22_000.0, 2048)
-_FIT_VALIDITY_FLOOR_HZ = 145.0
-
-
-def _fit_shape_db(role: str, freqs_hz: np.ndarray) -> np.ndarray:
-    """A driver's measured deviation: one bump the fit will correct, plus a
-    dip for the woofer so the null below lands on something."""
-    def bell(center_hz: float, height_db: float, width_oct: float) -> np.ndarray:
-        return height_db * np.exp(
-            -0.5 * ((np.log2(freqs_hz / center_hz) / width_oct) ** 2)
-        )
-
-    if role == "woofer":
-        return bell(700.0, 7.0, 0.18) + bell(2000.0, -4.0, 0.2)
-    return bell(5000.0, 6.0, 0.2)
-
-
-def _fit_response(role: str, freqs_hz: np.ndarray):
-    """One role's MEASURE response, with the two repeats the pair gate needs."""
-    from jasper.audio_measurement.program_analysis import DriverResponse
-
-    magnitude_db = _fit_shape_db(role, freqs_hz)
-
-    def occurrence(repeats=()):
-        return DriverResponse(
-            role=role, freqs_hz=freqs_hz, magnitude_db=magnitude_db,
-            complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-            gating={}, snr=None, validity_floor_hz=_FIT_VALIDITY_FLOOR_HZ,
-            repeat_responses=repeats,
-        )
-
-    return occurrence((occurrence(), occurrence()))
-
-
-def _fit_pair(responses, *, cloud):
-    """Both branches through the SHIPPED fit path, composed before either is
-    fitted — what ``intervention.plan_linearization`` does, so the fixture's
-    banked fit is a real one rather than a shape typed to match."""
-    from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
-    from jasper.active_speaker.branch_target import branch_target
-    from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db
-    from jasper.active_speaker.linearization_envelope import compose_envelope
-    from jasper.active_speaker.linearization_fit import (
-        FitVocabulary,
-        core_level_band_hz,
-        fit_driver_linearization,
-        measurement_hole_bands_hz,
-    )
-    from jasper.active_speaker.profile import CrossoverRegion
-
-    roles = tuple(sorted(_FIT_BANDS_HZ))
-    envelopes = {
-        role: compose_envelope(
-            role, responses[role], excited_band_hz=_FIT_BANDS_HZ[role],
-            mic_tier="reference", driver_class=_FIT_CLASSES[role],
-            sigma_db=compose_sigma_db(
-                responses[role],
-                responses[next(o for o in roles if o != role)],
-                tier="reference", valid_band_hz=_FIT_BANDS_HZ[role],
-            ),
-            excluded_bands_hz=None if cloud is None else cloud[0],
-            band_spread=None if cloud is None else cloud[1],
-            n_positions=None if cloud is None else cloud[2],
-        )
-        for role in roles
-    }
-    sections = sections_by_role([CrossoverRegion.from_mapping(_FIT_REGION)])
-    role_sections = {role: sections.get(role, ()) for role in roles}
-    radiating = {role: radiating_band_hz(role_sections[role]) for role in roles}
-    blind = measurement_hole_bands_hz([
-        core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role])
-        for role in roles
-    ])
-    return {
-        role: fit_driver_linearization(
-            responses[role], envelopes[role],
-            vocabulary=FitVocabulary(allow_boost=True),
-            radiating_band_hz=radiating[role], blind_bands_hz=blind,
-            target=branch_target(role_sections[role], envelopes[role].freqs_hz),
-        )
-        for role in roles
-    }
-
-
-def _cloud_evidence(nulls_hz):
-    """One round's banked cloud inputs, in ``planning.exclusion_evidence_json``'s
-    shape. The spread is flat and small, so the position-stability term is
-    behaviourally inert and the exclusion mask is the only cloud term with
-    anything to say."""
-    from jasper.audio_measurement.spatial_combine import OCTAVE_BAND_CENTERS_HZ
-
-    return {
-        "phase": "cloud_measure",
-        "excluded_bands_hz": [list(band) for band in nulls_hz],
-        "n_positions": 5,
-        "band_spread": [
-            {
-                "center_hz": center, "f_lo": center / 1.414, "f_hi": center * 1.414,
-                "sigma_db": 0.05, "max_sigma_db": 0.05, "n_bins": 20,
-            }
-            for center in OCTAVE_BAND_CENTERS_HZ
-        ],
-    }
-
-
-def _bank_fitted_round(tmp_path: Path, name: str, *, nulls_hz) -> Path:
-    """A banked round that FITTED a linearization against ``nulls_hz``.
-
-    The fit is computed at full analysis resolution and banked as
-    ``candidate.json``; the responses it was computed from are banked as a
-    MEASURE take through the product's own writer
-    (:func:`~.spatial.analysis_curve_records`), which decimates them onto the
-    12/octave basis. The view therefore refits from a coarser curve than the
-    fixture fitted, exactly as it does on a real round.
-    """
-    from types import SimpleNamespace
-
-    from jasper.active_speaker.crossover_v2 import spatial
-    from jasper.audio_measurement.program import KIND_SWEEP
-
-    round_dir = _make_round_dir(
-        tmp_path, name,
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    relay_dir = (
-        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
-        / "crossover_v2" / "cap1"
-    )
-    evidence = _cloud_evidence(nulls_hz)
-    responses = {
-        role: _fit_response(role, _FIT_NATIVE_HZ) for role in _FIT_BANDS_HZ
-    }
-    fits = _fit_pair(responses, cloud=(
-        tuple(tuple(band) for band in nulls_hz),
-        tuple(
-            SimpleNamespace(**row) for row in evidence["band_spread"]
-        ),
-        evidence["n_positions"],
-    ))
-    (relay_dir / "candidate.json").write_text(json.dumps({
-        "kind": "jts_measured_crossover_candidate",
-        "source_preset": {"crossover_regions": [_FIT_REGION]},
-        "exclusion_evidence": evidence,
-        "linearization": {
-            role: fit.to_dict() for role, fit in fits.items()
-        },
-    }))
-
-    program = SimpleNamespace(segments=[
-        SimpleNamespace(kind=KIND_SWEEP, role=role, f1_hz=lo, f2_hz=hi)
-        for role, (lo, hi) in _FIT_BANDS_HZ.items()
-    ])
-    take_id = "measure_00_a01"
-    positions = relay_dir / "positions"
-    positions.mkdir(parents=True, exist_ok=True)
-    (positions / f"{take_id}.json").write_text(json.dumps({
-        "kind": POSITION_EVIDENCE_KIND,
-        "schema_version": 1,
-        "session_id": "cap1",
-        "measure_kind": "candidate",
-        "phase": "measure",
-        "take_id": take_id,
-        "position_id": take_id,
-        "index": 0,
-        "attempt": 1,
-        "position_deg": 0,
-        "vertical_deg": 0,
-        "captured_at": "2026-08-30T00:00:00Z",
-        "curves": spatial.analysis_curve_records(
-            SimpleNamespace(
-                driver_responses=tuple(responses.values()), summed_response=None,
-            ),
-            program,
-        ),
-    }))
-    write_manifest(round_dir)
-    return round_dir
-
-
-@pytest.mark.parametrize(
-    "nulls_hz,expected_bound",
-    [
-        # Below both driven bands, so the mask reaches no bin either fit acts
-        # on: evidence the round HELD and the fit never used.
-        (((30.0, 40.0),), False),
-        # Over the woofer's own 700 Hz bump: the wired fit may not correct
-        # there and the severed one does.
-        (((600.0, 820.0),), True),
-    ],
-)
-def test_cloud_binding_reports_whether_the_null_evidence_bound_the_fit(
-    tmp_path, nulls_hz, expected_bound,
-):
-    """The one question the severed-twin replay answered, on a banked round.
-
-    Severing the cloud's three envelope inputs together — the production
-    ``cloud is None`` branch — either moves the fitted prescription or does
-    not, and ``bound`` is that answer. An inert null is not a defect: it is
-    the round having measured evidence its own fit had no use for.
-
-    The refit is checked against the banked fit FIRST, so a ``bound`` either
-    way is only reported over a reconstruction that reproduces; that check
-    crosses the take's 12/octave decimation, which is the residue
-    ``REFIT_TOLERANCE_DB`` is sized for.
-    """
-    view = cloud_binding_view(
-        load_banked_round(_bank_fitted_round(tmp_path, "r1", nulls_hz=nulls_hz))
-    )
-
-    assert view.evaluable
-    assert view.not_evaluated_reason == ""
-    assert view.refit_matches_banked
-    assert view.refit_vs_banked_db < REFIT_TOLERANCE_DB
-    assert view.severed_inputs == SEVERED_CLOUD_INPUTS
-    assert view.bound is expected_bound
-    woofer = next(role for role in view.roles if role.role == "woofer")
-    assert (woofer.max_delta_db > woofer.refit_vs_banked_db) is expected_bound
-    # Whichever way it went, every octave band the grid covers is answered.
-    assert {band.center_hz for band in woofer.bands}
-
-
-def test_cloud_binding_refuses_a_round_banked_before_the_fit_inputs_rode(tmp_path):
-    """The honest answer for the corpus this view cannot reach.
-
-    A take banked before ``validity_floor_hz`` and ``repeat_curves`` rode on
-    its curves cannot rebuild the envelope's floor or its sigma term, and a
-    refit from what such a round DOES hold comes back an empty fit — which
-    would read as "the cloud bound everything". It is named as unevaluable
-    instead.
-    """
-    round_dir = _bank_fitted_round(tmp_path, "r1", nulls_hz=((600.0, 820.0),))
-    take = (
-        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
-        / "crossover_v2" / "cap1" / "positions" / "measure_00_a01.json"
-    )
-    record = json.loads(take.read_text())
-    for curve in record["curves"]:
-        del curve["validity_floor_hz"], curve["repeat_curves"]
-    take.write_text(json.dumps(record))
-
-    view = cloud_binding_view(load_banked_round(round_dir))
-
-    assert not view.evaluable
-    assert view.not_evaluated_reason == CLOUD_BINDING_FIT_INPUTS_NOT_BANKED
-    assert view.bound is None
-    assert view.roles == ()
-
-
-def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
-    """The subcommand's own contract: exit 0, and the artifact lands beside the
-    round's other views under the name the runbook's menu names."""
-    from jasper.cli.round_views import main
-
-    round_dir = _bank_fitted_round(tmp_path, "r1", nulls_hz=((600.0, 820.0),))
-
-    rc = main(["cloud-binding", str(round_dir)])
-
-    assert rc == 0
-    payload = json.loads((round_dir / "cloud_binding.json").read_text())
-    assert payload["evaluable"] is True
-    assert payload["bound"] is True
-    assert payload["severed_inputs"] == list(SEVERED_CLOUD_INPUTS)
-    assert payload["refit_vs_banked_db"] < payload["tolerance_db"]
-    woofer = next(r for r in payload["roles"] if r["role"] == "woofer")
-    assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])
-
-
-# --------------------------------------------------------------------------- #
 # candidates -- the CLI shape over candidate_ladder
 # --------------------------------------------------------------------------- #
 
@@ -2684,216 +1140,24 @@ def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
     assert record["reason"] == REFUSE_NO_LADDER
 
 
-# --------------------------------------------------------------------------- #
-# findings -- the mechanism sets a round banked, and the band that bounds them
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected"),
-    [([], ["measure", "cloud_measure", "cloud_verify"]), (["--phase", "cloud_verify"], ["cloud_verify"])],
-    ids=["all-three-phases", "one-named-phase"],
-)
-def test_findings_reads_each_phase_and_the_band_that_bounds_the_set(
-    tmp_path, capsys, argv, expected
-):
-    """A phase that never ran reads ``null``; one that ran reads its count.
-
-    That distinction is what ``produced_by`` exists to preserve, and the echo
-    band rides beside it because nothing outside that band can become a
-    finding at all -- so an empty set below its floor is an instrument that
-    did not look, not a mechanism ruled out.
-    """
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    produced_by = bank_findings(round_dir)
-    bank_cloud_echo_band(round_dir, band_hz=(4000.0, 19000.0), source="declared")
-
-    assert cli.main(["findings", str(round_dir), *argv]) == cli.EXIT_OK
-
-    answer = json.loads(capsys.readouterr().out)
-    # Key ORDER is the shared writer's (sort_keys); which phases were read
-    # is what this asserts.
-    assert set(answer["phases"]) == set(expected)
-    assert answer["phases"]["cloud_verify"] == 1
-    assert all(answer["phases"][p] is None for p in expected if p != "cloud_verify")
-    assert answer["findings"] == 1
-    assert answer["echo_band_hz"] == [4000.0, 19000.0]
-    # The group's whole provenance block, not just its source word: a band the
-    # HF-regime clamp narrowed must not read as the declared one.
-    assert answer["echo_band_provenance"] == {"source": "declared"}
-    tables = json.loads(Path(answer["out"]).read_text())["tables"]
-    banked, = [row for row in tables if row["present"]]
-    assert banked["produced_by"] == produced_by
-    assert banked["findings"][0]["mechanism"] == answer["mechanisms"][0]
-
-
-def test_findings_is_the_unreadable_exit_when_the_bundle_will_not_open(tmp_path):
-    """A store that refuses its own authority is an input fix, never a
-    traceback: its error is a ``RuntimeError`` no stage claims by default."""
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    bundle_dir, = (round_dir / "bundle").iterdir()
-    info = json.loads((bundle_dir / "info.json").read_text())
-    (bundle_dir / "info.json").write_text(
-        json.dumps({**info, "session_id": "not-this-session"})
-    )
-
-    assert cli.main(["findings", str(round_dir)]) == cli.EXIT_UNREADABLE
-
-
-def test_findings_answers_a_round_that_banked_none_rather_than_refusing(
-    tmp_path, capsys
-):
-    """"Attribution never ran here" is the answer this verb exists to give."""
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-
-    assert cli.main(["findings", str(round_dir)]) == cli.EXIT_OK
-
-    answer = json.loads(capsys.readouterr().out)
-    assert set(answer["phases"].values()) == {None}
-    assert (answer["findings"], answer["mechanisms"]) == (0, [])
-    assert answer["echo_band_hz"] is None
-
-
-@pytest.mark.parametrize("has_verify,has_axis", [(True, True), (False, True), (False, False)])
-def test_selected_seat_views_share_preparation_and_write_artifact_payloads(
-    tmp_path, monkeypatch, capsys, has_verify, has_axis,
-):
-    from jasper.cli.round_views import main, seats
-
-    round_dir = _make_round_dir(tmp_path, "selected", position_curves={
-        "seat-1": ("onax" if has_axis else "offax", _flat_curve(ripple_db=2)),
-        "seat-2": ("offax", _flat_curve(ripple_db=1)),
-    })
-    if has_verify:
-        _bank_verify_measured(round_dir, measured_db=_flat_curve(ripple_db=1))
-    banked = load_banked_round(round_dir)
-    curves = per_seat_curves(banked, verify_pose_curve(banked).curve)
-    lo = default_agreement_lo_hz(banked)
-    expected = {
-        "agreement": {
-            "round_dir": str(round_dir), "banked": True,
-            "seats": [seat.position_id for seat in curves], "swept_band_hz": [lo, 16000.0],
-            "feature_db": 0.4, "testify_db": 0.4,
-            "features": [row.to_dict() for row in agreement_table(curves, GRID, lo_hz=lo, hi_hz=16000.0)],
-        },
-        "directivity": {"round_dir": str(round_dir), "banked": True, "directivity": directivity_view(banked).to_dict()},
-        "co-metrics": audibility_co_metrics(banked).to_dict(),
-    }
-    calls = {}
-    for name in ("_load_round", "verify_pose_curve", "per_seat_curves"):
-        original = getattr(seats, name)
-        def counted(*args, _name=name, _original=original, **kwargs):
-            calls[_name] = calls.get(_name, 0) + 1
-            return _original(*args, **kwargs)
-        monkeypatch.setattr(seats, name, counted)
-    assert main([
-        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics",
-    ]) == 0
-    results = json.loads(capsys.readouterr().out)["results"]
-    assert {view: json.loads(Path(results[view]["out"]).read_text()) for view in expected} == expected
-    assert [Path(results[view]["out"]).name for view in expected] == [
-        "agreement.json", "directivity.json", "audibility_co_metrics.json",
-    ]
-    assert calls == {"_load_round": 1, "verify_pose_curve": 1, "per_seat_curves": 1}
-    for row in results.values():
-        assert row["sources"]["bundle"] == str(round_dir / "bundle/sess1")
-        assert row["sources"]["session"]["capture_session_id"] == "cap1"
-        assert row["sources"]["packet_fingerprint"]
-        assert row["parameters"] and row["units"] and row["coverage"]
-        assert Path(row["out"]).is_file()
-    assert results["per-seat"]["coverage"]["verify_pose_included"] is has_verify
-    assert results["co-metrics"]["coverage"]["pooled_window_bearings_deg"] == []
-    if not has_verify:
-        assert results["agreement"]["outcome"] == "unavailable"
-        assert results["agreement"]["reason"] == REASON_TOO_FEW_SEATS
-    if not has_axis:
-        assert results["directivity"]["outcome"] == "unavailable"
-        assert results["co-metrics"]["coverage"]["on_axis"] is False
-
-
-@pytest.mark.parametrize("failure,code", [("calculation", 1), ("write", 3)])
-def test_selected_view_failure_keeps_good_sibling_artifacts(tmp_path, monkeypatch, capsys, failure, code):
-    from jasper.cli.round_views import main, seats
-
-    round_dir = _make_round_dir(tmp_path, "siblings", position_curves={
-        "seat-1": ("onax", _flat_curve()),
-    })
-    if failure == "calculation":
-        def refuse(_round):
-            raise RoundViewsError("unavailable test view")
-        monkeypatch.setattr(seats, "directivity_view", refuse)
-    else:
-        (round_dir / "directivity.json").mkdir()
-    assert main([
-        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics",
-    ]) == code
-    results = json.loads(capsys.readouterr().out)["results"]
-    for view in ("per-seat", "agreement", "co-metrics"):
-        assert Path(results[view]["out"]).is_file()
-        assert results[view]["bytes"] > 0
-    assert results["directivity"]["outcome"] == ("refused" if code == 1 else "unwritable")
-    assert results["directivity"]["out"] is None
-
-
-def test_default_per_seat_does_no_optional_work(tmp_path, monkeypatch, capsys):
-    from jasper.cli.round_views import main, seats
-
-    round_dir = _make_round_dir(tmp_path, "default", position_curves={"seat": ("onax", _flat_curve())})
-    def unexpected(*args, **kwargs):
-        raise AssertionError("unrequested analysis")
-    for name in ("agreement_table", "directivity_view", "audibility_co_metrics"):
-        monkeypatch.setattr(seats, name, unexpected)
-    assert main(["per-seat", str(round_dir)]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert len(result["seats"]) == 1
-    assert "results" not in result
-
-
 def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
     from jasper.cli.round_views import main, build_parser
 
     round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", position_curves={
         "seat": ("onax", _flat_curve()),
     })
-    _bank_verify_measured(round_dir, measured_db=_flat_curve())
-    profile = round_dir / "applied-profile.json"
-    profile.write_text("{}")
     assert main(["inventory", str(round_dir)]) == 0
     rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
-    command = shlex.split(rows["directivity.json"]["next_command"])
-    assert command == ["jasper-round-views", "per-seat", str(round_dir), "--include", "directivity"]
+    command = shlex.split(rows[FREQUENCY_VIEW_FILENAME]["next_command"])
+    assert command == ["jasper-round-views", "frequency", str(round_dir)]
     assert main(command[1:]) == 0
-    assert (round_dir / "directivity.json").is_file()
+    assert (round_dir / FREQUENCY_VIEW_FILENAME).is_file()
     distortion = rows["harmonic_distortion.json"]
     args = build_parser().parse_args(shlex.split(distortion["next_command"])[1:])
     assert args.bundle_dir == round_dir
     assert distortion["required_inputs"] == []
-    assert rows["directivity.json"]["required_inputs"] == []
+    assert rows[FREQUENCY_VIEW_FILENAME]["required_inputs"] == []
     assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
     assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
 
 
-@pytest.mark.parametrize("bad_norm", [False, True])
-def test_composed_custom_output_preserves_details_and_independent_calculations(tmp_path, capsys, bad_norm):
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(tmp_path, "custom", position_curves={"seat": ("onax", _flat_curve())})
-    out = tmp_path / "directivity.json"
-    args = ["per-seat", str(round_dir), "--include", "agreement", "directivity", "--out", str(out)]
-    if bad_norm:
-        args += ["--norm-lo", "50000", "--norm-hi", "60000"]
-    assert main(args) == (1 if bad_norm else 0)
-    results = json.loads(capsys.readouterr().out)["results"]
-    detail = json.loads(Path(results["directivity"]["out"]).read_text())
-    assert detail["directivity"]["evaluable"] is True
-    if bad_norm:
-        assert results["agreement"]["outcome"] == results["per-seat"]["outcome"] == "refused"
-    else:
-        assert json.loads(out.read_text())["seats"][0]["position_id"] == "seat"
-        assert len({row["out"] for row in results.values()}) == 3

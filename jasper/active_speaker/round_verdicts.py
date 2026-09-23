@@ -27,7 +27,7 @@ from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .crossover_v2.commanded import profile_crossover_regions
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.position_cycle import parse_curve_magnitude
+from .crossover_v2.position_cycle import measured_curve_band, parse_curve_magnitude
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes
 from .linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from .profile import CrossoverRegion
@@ -104,38 +104,52 @@ def _null_ceilings(
     return rows
 
 
-def _mark_repeat_spread(fit: Mapping[str, Any], group: Mapping[str, Any]) -> dict[str, Any]:
+def mark_takes(selected: SetTakes, role: str | None) -> list[Mapping[str, Any]]:
+    """One driver's selected MEASURE takes at exactly 0°/0° (ADR-0341)."""
+    return [take for take in selected.on_axis if take.get("phase") == "measure" and take.get("role") == role]
+
+
+def held_pairs(takes: Sequence[Mapping[str, Any]]) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    """Every unordered pair held at one placement of one run (ADR-0341)."""
     placements: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
-    for take in SetTakes.from_row(group).on_axis:
-        if take.get("phase") == "measure" and take.get("role") == fit["role"]:
-            key = (take.get("run_id"), take.get("pose_index"), json.dumps(take["pose"], sort_keys=True))
-            placements.setdefault(key, []).append(take)
-    pairs = [pair for takes in placements.values() for pair in combinations(takes, 2)]
+    for take in takes:
+        key = (take.get("run_id"), take.get("pose_index"), json.dumps(take["pose"], sort_keys=True))
+        placements.setdefault(key, []).append(take)
+    return [pair for held in placements.values() for pair in combinations(held, 2)]
+
+
+def pair_spread(
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], band_hz: Sequence[float] | None,
+) -> dict[str, Any]:
+    """The largest per-pair RMS dB difference over ``band_hz``, edges included,
+    on the fit's grid, with no level removal or smoothing (ADR-0341)."""
     result: dict[str, Any] = {"repeat_spread_db": None, "n_pairs": len(pairs),
                               "repeat_basis": "mark_pairs_max_rms" if pairs else REASON_NO_MARK_PAIRS}
     if not pairs:
         return {**result, "reason": REASON_NO_MARK_PAIRS}
-    lo, hi = fit.get("fit_band_hz") or (0, 0)
+    lo, hi = band_hz or (0, 0)
     grid = DEFAULT_ENVELOPE_GRID_HZ[(DEFAULT_ENVELOPE_GRID_HZ >= lo) & (DEFAULT_ENVELOPE_GRID_HZ <= hi)]
     if not grid.size:
         return {**result, "reason": REASON_FIT_BAND_UNAVAILABLE}
     curves = {}
-    for take in {take["take_id"]: take for pair in pairs for take in pair}.values():
-        curve = take.get("curve") or {}
-        parsed = parse_curve_magnitude(curve)
-        if parsed is None:
+    for take in {id(take): take for pair in pairs for take in pair}.values():
+        measured = measured_curve_band(take.get("curve") or {})
+        if measured is None:
             return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
-        freqs, magnitude, band = parsed
-        floor = curve.get("trusted_floor_hz") or curve.get("validity_floor_hz") or 0
-        if grid[0] < max(freqs[0], band[0], floor) or grid[-1] > min(freqs[-1], band[1]):
+        freqs, magnitude, (covered_lo, covered_hi) = measured
+        if grid[0] < covered_lo or grid[-1] > covered_hi:
             return {**result, "reason": REASON_MARK_FIT_BAND_UNAVAILABLE}
-        curves[take["take_id"]] = np.interp(grid, freqs, magnitude)
-    # The fit includes its upper edge; seat_figures uses half-open bands.
-    spreads = [finite_float(spread_rms_db(curves[a["take_id"]] - curves[b["take_id"]], grid,
+        curves[id(take)] = np.interp(grid, freqs, magnitude)
+    # The band includes its upper edge; seat_figures uses half-open bands.
+    spreads = [finite_float(spread_rms_db(curves[id(a)] - curves[id(b)], grid,
                                         band_hz=(lo, np.nextafter(hi, np.inf)))) for a, b in pairs]
     if any(spread is None for spread in spreads):
         return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
     return {**result, "repeat_spread_db": max(spread for spread in spreads if spread is not None), "reason": None}
+
+
+def _mark_repeat_spread(fit: Mapping[str, Any], group: Mapping[str, Any]) -> dict[str, Any]:
+    return pair_spread(held_pairs(mark_takes(SetTakes.from_row(group), fit["role"])), fit.get("fit_band_hz"))
 
 
 def round_verdicts(

@@ -23,9 +23,6 @@ from tests.test_seat_figures import COVERAGE_HZ, FREQS_HZ
     ('jasper.audio_measurement.spatial_combine', 'REFUSAL_'),
     ('jasper.audio_measurement.interference_nulls', ('REASON_', 'CANDIDATE_', 'CLASSIFICATION_')),
     ('jasper.audio_measurement.room_limits', 'REASON_'),
-    ('jasper.active_speaker.crossover_v2.round_views', ('NOT_SWEPT_', 'CLOUD_BINDING_')),
-    ('jasper.active_speaker.crossover_v2.round_views.cloud_binding', 'CLOUD_BINDING_'),
-    ('jasper.active_speaker.crossover_v2.round_views.gate_sensitivity', 'NOT_SWEPT_'),
     ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
@@ -34,7 +31,8 @@ from tests.test_seat_figures import COVERAGE_HZ, FREQS_HZ
     ('jasper.active_speaker.round_verdicts', 'REASON_'),
     ('jasper.active_speaker.round_view_artifacts', 'REASON_'),
     ('jasper.cli.round_views._common', 'REASON_'),
-    ('jasper.cli.round_views.seats', 'REASON_'),
+    ('jasper.cli.round_views.repeat', 'REASON_'),
+    ('jasper.active_speaker.crossover_v2.round_views.directivity', 'REASON_'),
 ])
 def test_analysis_reason_constants_have_one_frozen_registry(module_name, prefixes):
     constants = {name: value for name, value in vars(evidence_reasons).items()

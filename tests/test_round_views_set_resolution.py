@@ -130,11 +130,10 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
 
 @pytest.mark.parametrize("program,excluded", [
     ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
-    ("room", {"entry", "frozen", "cloud-binding", "delay-landscape",
+    ("room", {"entry", "directivity", "delay-landscape",
               "close-reference", "distortion", "classify-features",
               "bass", "bass-compare", "bass-fit-table"}),
-    ("bass", {"entry", "frozen", "per-seat", "agreement", "co-metrics", "directivity",
-              "cloud-binding", "delay-landscape",
+    ("bass", {"entry", "directivity", "delay-landscape",
               "close-reference", "distortion", "classify-features", "room", "room-grade"}),
 ])
 def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, excluded):
@@ -184,6 +183,8 @@ def test_registered_view_producer_tokens_are_accepted(view, takes):
 
 @pytest.mark.parametrize("argv", [
     ["windows", "round"], ["gate-sweep", "round"], ["spec-sweep", "round"],
+    ["frozen", "baseline", "round"], ["per-seat", "round"], ["repeat-floor", "a", "b", "--install"],
+    ["cloud-binding", "round"], ["findings", "round"], ["sweep", "round", "--scope", "verdict"],
     ["sweep", "round", "--scope", "take", "--capture-id", "take"],
     ["room", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
@@ -196,8 +197,8 @@ def test_retired_verbs_and_selectors_are_unknown(argv):
 
 
 @pytest.mark.parametrize("argv", [
-    ["entry", "round"], ["per-seat", "round", "--include", "agreement"],
-    ["repeat-floor", "a", "b"], ["delay-landscape", "bundle", "--fc-hz", "1800"],
+    ["entry", "round"], ["directivity", "round"],
+    ["repeat", "a", "b"], ["delay-landscape", "bundle", "--fc-hz", "1800"],
     ["dsp-replay", "graph", "stimulus", "--main-db", "-30", "--bass-reference-db", "-30"],
     ["dsp-levels", "manifest.json", "--raw", "output.f64le", "--window-s", "0", "1"],
 ])
