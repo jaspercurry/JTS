@@ -146,12 +146,11 @@ def test_a_positive_trim_is_refused_and_never_banked_as_a_boost(tmp_path: Path):
     """Attenuation-only BY CONSTRUCTION, and refused rather than clamped.
 
     No path reaching this writer can produce a positive per-role trim — both
-    measured-candidate types refuse one at construction and
-    ``attenuation_from_group_deltas`` normalizes its maximum to exactly 0 dB —
-    so a positive value is a fault, and clamping it would bank a trim no
-    measurement produced. Downstream, the reverse-null door's branch-gap depth
-    ceiling and the per-role caps argument must stay two independent legs; a
-    banked positive trim would couple them.
+    measured-candidate types refuse one at construction — so a positive value
+    is a fault, and clamping it would bank a trim no measurement produced.
+    Downstream, the reverse-null door's branch-gap depth ceiling and the
+    per-role caps argument must stay two independent legs; a banked positive
+    trim would couple them.
     """
     state = _bank(tmp_path)  # a good record is already on disk
     with pytest.raises(dbt.DriverBaseTrimError) as excinfo:

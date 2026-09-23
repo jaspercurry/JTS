@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
 
 # Pure-data threshold profiles only (no numpy/scipy), so top-level import is safe.
 from jasper.audio_measurement.excitation import (
@@ -350,32 +350,6 @@ def _validity_floor(
     ):
         return False, None
     return True, float(value)
-
-
-def usable_overlap_level_db(
-    overlap_levels: Sequence[Mapping[str, Any]],
-    fc: float,
-    *,
-    tol_hz: float = 1.0,
-) -> float | None:
-    """The usable persisted overlap-band level at ``fc`` in dB, or ``None``."""
-    for entry in overlap_levels or ():
-        if not isinstance(entry, Mapping) or not entry.get("usable"):
-            continue
-        raw_fc = entry.get("fc_hz")
-        if isinstance(raw_fc, bool) or not isinstance(raw_fc, (int, float)):
-            continue
-        entry_fc = float(raw_fc)
-        if not math.isfinite(entry_fc):
-            continue
-        if abs(entry_fc - fc) > max(tol_hz, fc * 0.01):
-            continue
-        level = entry.get("level_db")
-        if isinstance(level, bool) or not isinstance(level, (int, float)):
-            return None
-        value = float(level)
-        return value if math.isfinite(value) else None
-    return None
 
 
 @dataclass(frozen=True)
