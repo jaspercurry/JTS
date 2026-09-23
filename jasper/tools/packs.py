@@ -4,24 +4,24 @@
 
 """Capability-pack registry (Pattern 2 — registry, not typed Config).
 
-`_build_registry` in jasper/voice/daemon_main.py used to hardcode one
-`for fn in make_X_tools(...): registry.register(fn)` per subsystem, with
-inline `if`-gating interleaved. This module lifts that into a flat,
-ordered tuple of CapabilityPack records the daemon WALKS — mirroring
-jasper.transit.active_transit's per-provider guard so one broken pack
-contributes no tools instead of crashing the daemon.
+`_build_registry` in jasper/voice/daemon_main.py builds one `ToolDeps`
+bundle and hands it to `register_packs`, which WALKS the ordered
+TOOL_PACKS tuple below — mirroring jasper.transit.active_transit's
+per-provider guard so one broken pack contributes no tools instead of
+crashing the daemon.
 
 The order of TOOL_PACKS is load-bearing: models over-rely on tool
-ordering, so it MUST match the legacy _build_registry registration
-order byte-for-byte. test_tool_packs_registry.py pins that invariant.
+ordering. tests/_tool_pack_contract.py's PACK_ORDER and
+EXPECTED_TOOL_NAMES pin the pack order and the full shipped tool set;
+test_tool_packs_registry.py asserts against them.
 
-This is NOT a DI container. `deps` is exactly the bundle
-_build_registry already received, frozen into one typed object. Ordinary
-tools own no connection pool, so there is deliberately NO managed-result
-/ aclose lifecycle here (that lives in jasper.transit.ActiveTransit for
-the one subsystem that needs it). A capability pack is the copyable
-contributor boundary: metadata, setup gate, runtime builder, tool
-definitions/executors, and catalog grouping live together here.
+This is NOT a DI container. `deps` (`ToolDeps`) is the one typed bundle
+every pack's `gate`/`build` reads. Ordinary tools own no connection pool,
+so there is deliberately NO managed-result / aclose lifecycle here (that
+lives in jasper.transit.ActiveTransit for the one subsystem that needs
+it). A capability pack is the copyable contributor boundary: metadata,
+setup gate, runtime builder, tool definitions/executors, and catalog
+grouping live together here.
 """
 from __future__ import annotations
 
@@ -30,8 +30,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from . import PackOutcome
+from . import PackOutcome, Tool, build_tool
 from ..log_event import log_event
+from ..tool_state import read_tool_state
 from .audio import make_audio_tools
 from .calendar import make_calendar_tools
 from .diagnostic import make_diagnostic_tools
@@ -133,10 +134,11 @@ class CapabilityPack:
     definition/executor boundary the unit future generated or contributor
     packs compile into.
 
-    `gate(deps)` lifts the inline `if` that used to wrap the call in
-    _build_registry. Default gate is always-on — the common case where the
-    factory self-gates on a None dep (home_assistant, diagnostic, transit's
-    per-provider build).
+    `gate(deps)` decides whether this pack attempts `build` at all — for
+    packs like timer/calendar/gmail where the daemon must not even try
+    without a scheduler or a linked account. Default gate is always-on —
+    the common case where the factory self-gates on a None dep instead
+    (home_assistant, diagnostic, transit's per-provider build).
     """
     name: str
     build: Callable[[Any], Iterable[ToolBuildItem]]
@@ -232,8 +234,8 @@ DIAGNOSTIC_PACK = CatalogPack(
 )
 
 
-# Order is load-bearing — see module docstring. Mirrors the legacy
-# _build_registry sequence exactly.
+# Order is load-bearing — see module docstring; PACK_ORDER in
+# tests/_tool_pack_contract.py pins it.
 TOOL_PACKS: tuple[CapabilityPack, ...] = (
     CapabilityPack(
         "audio", lambda d: make_audio_tools(d.volume_coordinator),
@@ -360,7 +362,6 @@ def register_packs(
     (after user-disabled removals), so sum(tool_count) == len(registry.tools).
     The return is additive: existing callers that ignore it are unaffected."""
     if disabled is None or disabled_packs is None:
-        from ..tool_state import read_tool_state
         state = read_tool_state()
         if disabled is None:
             disabled = state.disabled_tools
@@ -397,7 +398,6 @@ def register_packs(
             registered = 0
             seen_in_pack: set[str] = set()
             for item in fns:
-                from . import Tool, build_tool
                 t = item if isinstance(item, Tool) else build_tool(item)
                 declared_name = t.name
                 if declared_name in claimed_names or declared_name in seen_in_pack:

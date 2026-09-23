@@ -28,11 +28,12 @@ descriptions.
 Prompt-injection seam (see below): ``fence_untrusted`` wraps attacker-controllable
 third-party text, ``UntrustedContentMonitor`` tracks the taint window, and
 each ``Tool`` carries declarative ``untrusted_output`` / ``consequential``
-risk flags (set via ``@tool(...)`` or ``ToolDefinition``) for the planned
-tool store's policy layer. A tool that returns third-party text declares
-``untrusted_output``,
-fences its output, and arms the taint window (gmail and calendar do all
-three). A tool that takes a real-world action declares ``consequential``.
+risk flags (set via ``@tool(...)`` or ``ToolDefinition``) as metadata surfaced
+in the manifest and catalog — not extra prompt text and not a permission
+boundary (ADR-0338). A tool that returns third-party text declares
+``untrusted_output``, fences its output, and arms the taint window (gmail and
+calendar do all three). A tool that takes a real-world action declares
+``consequential``.
 """
 from __future__ import annotations
 
@@ -71,7 +72,8 @@ logger = logging.getLogger(__name__)
 # tells the model everything inside the envelope is DATA to relay or
 # summarize — never instructions, and never a reason to call a tool.
 # Every tool that returns third-party text routes it through here (gmail
-# today); the next such tool DECLARES the fence rather than re-inventing it.
+# and calendar today); the next such tool DECLARES the fence rather than
+# re-inventing it.
 # This is a baseline (the "delimiting" technique) — for tools that take a
 # real-world ACTION, the durable control is a consequential-action
 # confirmation, not fencing (see jasper/tools/home_assistant.py). Keep this
@@ -225,18 +227,18 @@ class ToolDefinition:
     # This takes precedence over the code default at runtime, but the code
     # default remains available for UI diff/reset and docs.
     user_description_override: str | None = None
-    # Catalog facet for the future tools UI / marketplace (never sent to
+    # Catalog facet for the /assistant/tools/ catalog (never sent to
     # the model — zero token cost). See `tool()`'s `labels` param and
     # docs/extensibility.md.
     labels: tuple[str, ...] = ()
-    # Prompt-injection risk category. DECLARATIVE metadata for the planned
-    # tool store's policy/permission layer — NOT yet wired to runtime
-    # behavior (today's fencing, taint-marking, and the consequential-action
-    # confirmation are wired explicitly inside the tools). A test pins these
-    # to current reality so they don't drift; the enforcement layer reads
-    # them when the store lands. They are also surfaced in `to_manifest_entry()`
-    # below as a `risk_flags` block (manifest schema v2) so the catalog/store
-    # can read them without sending the model extra text.
+    # Prompt-injection risk category. DECLARATIVE metadata, not extra prompt
+    # text and not a permission boundary (ADR-0338): today's fencing,
+    # taint-marking, and the consequential-action confirmation are wired
+    # explicitly inside the tools, not read from these flags. A test pins
+    # these to current reality so they don't drift. They are also surfaced
+    # in `to_manifest_entry()` below as a `risk_flags` block (manifest
+    # schema v2) so the catalog can read them without sending the model
+    # extra text.
     #   untrusted_output — the tool's RESULT can contain attacker-controllable
     #     third-party text (an injection SOURCE: gmail, calendar, a future
     #     web-fetch). Such tools fence their output and arm the taint window.
@@ -592,9 +594,9 @@ def tool(
     """Tag a function for registration.
 
     `providers` may be an iterable of provider names (`"gemini"`,
-    `"openai"`, `"grok"`) — when set, the tool is hidden from any
-    provider not in the set. None (default) means visible to every
-    provider.
+    `"openai"`, `"openai_live"`, `"grok"`) — when set, the tool is hidden
+    from any provider not in the set. None (default) means visible to
+    every provider.
 
     `timeout` bounds queue and execution wait in the shared registry, in
     seconds. None keeps `DEFAULT_TOOL_TIMEOUT_SEC`.
@@ -605,9 +607,9 @@ def tool(
     model needs; the docstring stays the source of truth for humans.
 
     `labels` are free-form catalog tags (e.g. ("transit", "nyc",
-    "subway")) for the future tools UI to sort/filter/search on. They are
-    NOT sent to the model — organizational metadata surfaced only in the
-    derived manifest.
+    "subway")) for the /assistant/tools/ catalog to sort/filter/search on.
+    They are NOT sent to the model — organizational metadata surfaced only
+    in the derived manifest.
 
     `log_payload=False` keeps the INFO dispatch line redacted for
     content-bearing tool results; `log_args=False` does the same for
@@ -616,9 +618,9 @@ def tool(
     `untrusted_output=True` declares the tool's RESULT can carry
     attacker-controllable third-party text (an injection SOURCE);
     `consequential=True` declares the tool takes a real-world / irreversible
-    ACTION (a SINK). These are declarative risk categories for the planned
-    tool store (see `ToolDefinition`); they don't change runtime
-    behavior today.
+    ACTION (a SINK). These are declarative risk categories (see
+    `ToolDefinition`), surfaced in the manifest and catalog; they don't
+    change runtime behavior today.
 
     Use with `ToolRegistry.register()`."""
 
@@ -781,9 +783,9 @@ async def dispatch_tool(
     the model should see back.
 
     This is the single, cross-provider home for the tool-dispatch
-    contract. Every session adapter — Gemini, OpenAI, and Grok via the
-    OpenAI subclass — routes through it, so the behaviour the model
-    observes when a tool runs cannot drift between providers. Each
+    contract. Every session adapter — Gemini, OpenAI, Grok via the OpenAI
+    subclass, and OpenAI Live — routes through it, so the behaviour the
+    model observes when a tool runs cannot drift between providers. Each
     adapter keeps only its genuinely provider-specific parts: parsing the
     call's arguments (Gemini hands us a dict, OpenAI a JSON string) and
     packaging the returned `payload` onto the wire
