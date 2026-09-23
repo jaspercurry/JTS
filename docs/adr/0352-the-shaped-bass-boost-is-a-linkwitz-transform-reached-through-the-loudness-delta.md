@@ -59,9 +59,13 @@ result is −3 dB at 22.7 Hz and within −2.0/+1.1 dB from 25 to 250 Hz.
 - A document without the field emits the same graph bytes as before. It
   gives the same model, reserve and payload, so banked fingerprints do not
   move (tests pin this).
-- With a shape, `low_boost_db` sets only how the boost fades; 20 fades most
-  evenly in dB. The delta high-pass is now required for a shape, and its
-  phase adds about 1 dB near 80 Hz at 15 Hz under a 22 Hz target.
+- With a shape, `low_boost_db` sets how the boost fades and what the
+  detector reads: the detector sees the shelf at `low_boost_db`, not the
+  shape. It belongs at or just above the shape's peak boost (the reserve at
+  full boost); below it the compressor acts late by the difference. Nothing
+  bounds that yet (#5704); the owner limiter, admission's reserve charge and the SPL
+  stop hold either way. The delta high-pass is now required for a shape,
+  and its phase adds about 1 dB near 80 Hz at 15 Hz under a 22 Hz target.
 - The static graph proof and `graph_transfer` do not model
   `LinkwitzTransform` or `LowshelfFO`. They skip or strip the dynamic block,
   as before.

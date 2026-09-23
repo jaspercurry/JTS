@@ -230,8 +230,9 @@ The shelf has a fixed corner near 70 Hz and slope 12.
 Choose `low_boost_db` to match the measured roll-off: compare the base corner
 and per-band `realized_boost_db` in `bass_table.tables[].levels[]`; overshoot
 above the corner beyond repeat spread means too much boost for the box.
-Keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz protection, never
-at the extension target: a high corner tilts boost up and discards extension.
+For the shelf, keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz
+protection, never at the extension target: a high corner tilts boost up and
+discards extension.
 Set `detector_lowpass_hz` at the top of the boosted band.
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail.
@@ -241,10 +242,13 @@ When the shelf cannot match the box, add `linkwitz_transform`
 At full boost the block then plays the Linkwitz transform from the woofers'
 measured alignment (`source_hz`, `source_q`) to the target (`target_hz`,
 `target_q`); the volume taper and the compressor act on it as on the shelf.
-A shape needs `delta_highpass_hz`, below the target: 15 Hz under a 22 Hz
-target adds about 1 dB near 80 Hz. With a shape, `low_boost_db` sets only how
-the boost fades (20 fades most evenly), and the detector still reads the
-shelf-boosted woofer, not the shaped output.
+A shape needs `delta_highpass_hz` below the target: 15 Hz under a 22 Hz
+target adds about 1 dB near 80 Hz, and a corner nearer the target trades a
+little extension for less drive below 20 Hz. The detector still reads the
+shelf at `low_boost_db`, not the shaped output, so set `low_boost_db` at or
+just above the shape's peak boost (the reserve at full boost). Below it the
+compressor acts late by the difference; far above it, early. The judge does
+not yet check this (#5704).
 
 `prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
 `compression_db` includes compressor and driver action in the boost band.
