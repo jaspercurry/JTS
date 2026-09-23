@@ -242,10 +242,9 @@ def write_base_trim(
     module cannot read) is banked as no frame, which refuses a comparison.
 
     ``measured_at`` is WHEN THE EVIDENCE WAS MEASURED (the newest capture that
-    fed the trim), not when this record was written: the S20 supersede compares
-    capture times against it, so a write time would let a re-persist of a frozen
-    candidate re-date old evidence past newer captures. Minted as now only when
-    the caller has no dated evidence at all.
+    fed the trim), not when this record was written, so a re-persist of a frozen
+    candidate never re-dates old evidence. Minted as now only when the caller
+    has no dated evidence at all.
 
     Attenuation-only by construction and REFUSED rather than clamped: no path
     reaching this writer can legitimately produce a positive per-role trim, so a

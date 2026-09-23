@@ -12,8 +12,8 @@ fields, retention policy and core-artifact list) lives here.
 
 Two invariants keep ownership explicit:
 
-- **Split authority.** Capture, proposal and apply payloads in ``info.json`` are
-  a fail-soft forensic mirror, never reconstructed into measurement or candidate
+- **Split authority.** Capture payloads in ``info.json`` are a fail-soft
+  forensic mirror, never reconstructed into measurement or candidate
   authority. A FRESH bundle directory additionally owns Shared's exact admission
   marker; a missing or historical marker refuses audible production work.
   Nothing in ``measurement.py`` imports this module.
@@ -443,13 +443,6 @@ def open_bundle(
         "captures": [],
         "summed_captures": [],
         "repeat_progress": {},
-        "proposal": None,
-        "previous_values": None,
-        "proposed_values": None,
-        "corrections_provenance": None,
-        "compile_validation": None,
-        "apply": None,
-        "rollback_target": None,
         "verification": None,
     }
     ensure_directory_mode(bundle_dir)
@@ -892,8 +885,6 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     info["bundle_size_bytes"] = _bundle_byte_size(bundle_dir)
     info["capture_count"] = len(info.get("captures") or [])
     info["summed_capture_count"] = len(info.get("summed_captures") or [])
-    info["has_proposal"] = (bundle_dir / "proposal.json").exists()
-    info["has_apply"] = (bundle_dir / "apply.json").exists()
     manifest_path = bundle_dir / "artifact_manifest.json"
     info["has_artifact_manifest"] = manifest_path.exists()
     if manifest_path.exists():

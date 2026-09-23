@@ -158,17 +158,7 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     assert info["captures"] == []
     assert info["summed_captures"] == []
     assert info["repeat_progress"] == {}
-    for reserved in (
-        "proposal",
-        "previous_values",
-        "proposed_values",
-        "corrections_provenance",
-        "compile_validation",
-        "apply",
-        "rollback_target",
-        "verification",
-    ):
-        assert info[reserved] is None
+    assert info["verification"] is None
 
     # Persisted to disk, not just returned in-memory.
     on_disk = bundles._read_info(Path(info["bundle_dir"]))
