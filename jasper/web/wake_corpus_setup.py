@@ -371,29 +371,12 @@ class _Handler(BaseHTTPRequestHandler):
 # client's 400 itself, so a malformed body never reaches one.
 
 def _get_status(handler: _Handler) -> None:
+    # status_snapshot() reads every backend field under one lock acquisition
+    # so a session switch mid-read can never mix fields from two sessions.
     handler._send_json({
         "voice_daemon_active": bridge_session.voice_daemon_active(),
-        "session_id": handler.backend.session_id(),
-        "member": handler.backend.member(),
-        "include_raw_mic_0": handler.backend.include_raw_mic_0(),
-        "include_dtln": handler.backend.include_dtln(),
-        "include_usb_mic": handler.backend.include_usb_mic(),
-        "include_usb_dtln": handler.backend.include_usb_dtln(),
-        "include_xvf_raw0_dtln": handler.backend.include_xvf_raw0_dtln(),
-        "include_aec3_sweep": handler.backend.include_aec3_sweep(),
-        "corpus_profile": handler.backend.corpus_profile(),
-        "chip_aec_config": handler.backend.chip_aec_config(),
-        "aec3_sweep_source": handler.backend.aec3_sweep_source(),
-        "aec3_sweep_variants": handler.backend.aec3_sweep_variants(),
-        "aec3_sweep_config": handler.backend.aec3_sweep_config(),
-        "enabled_legs": list(handler.backend.enabled_legs()),
-        "capture_plan": handler.backend.capture_plan(),
-        "capture_plan_conformance": handler.backend.capture_plan_conformance(),
-        "audio_context": handler.backend.audio_context(),
+        **handler.backend.status_snapshot(),
         "bridge_outputs": bridge_session.bridge_output_status(),
-        "is_recording": handler.backend.is_recording(),
-        "elapsed_sec": handler.backend.elapsed_recording_sec(),
-        "clip_count": len(handler.backend.list_clips()),
     })
 
 

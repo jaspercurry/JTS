@@ -97,6 +97,18 @@ test('failed import keeps pasted text; failed apply never reports an active setu
   assert.match(failed.status.textContent, /could not be applied/);
 });
 
+test('failed apply with a server issue shows its message and code', async () => {
+  const ui = setup(state('apply'), async () => ({
+    result: {status: 'needs_attention', issues: [
+      {code: 'output_route_not_ready', message: 'The audio output is not ready.'},
+    ]},
+    setup: state('apply'),
+  }));
+  await flush();
+  await ui.button('Save to speaker').click();
+  assert.equal(ui.status.textContent, 'The audio output is not ready. (output_route_not_ready)');
+});
+
 for (const stage of ['research', 'tune']) test(`${stage} prompt can be copied manually if clipboard access fails`, async () => {
   const clipboard = {ok: false};
   const ui = setup(state(stage), undefined, clipboard);
