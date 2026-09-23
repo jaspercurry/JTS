@@ -19,7 +19,7 @@ from pathlib import Path
 DEFAULT_UDC_CLASS_DIR = "/sys/class/udc"
 
 # The gadget's ConfigFS composition point and the ALSA card its uac2 function
-# registers once composed. Both were previously respelled at every call site.
+# registers once composed.
 GADGET_CONFIGFS_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
 UAC2_CARD_NAME = "UAC2Gadget"
 UAC2_CARD_PATH = f"/proc/asound/{UAC2_CARD_NAME}"
