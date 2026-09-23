@@ -24,7 +24,7 @@ from tests.crossover_v2_fixtures import _roles
 
 def test_choices_use_registry_and_engine_counts(monkeypatch):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
@@ -49,7 +49,7 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):
     """#5321: picking a ``regime: branches`` row 500'd the page."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
@@ -101,7 +101,7 @@ def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
     registered and keep resolving (ADR-0277: registry ids are banked-round
     identities)."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})

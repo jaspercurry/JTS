@@ -64,9 +64,19 @@ from jasper.active_speaker.crossover_v2.programs import (
     courtesy_prelude_for_phase,
     program_for_phase,
 )
-from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.active_speaker import graph_safety as gs
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, solo_target
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
+from jasper.audio_measurement.program import (
+    KIND_COURTESY_TONE,
+    RoleBand,
+)
+from jasper.output_topology import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
+from tests.test_active_speaker_audition import ACTIVE_PCM
 from tests.test_active_speaker_program_admission import _profile_and_targets
+from tests.test_rear_output_foundation import _rear_pair
 
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -657,3 +667,56 @@ def test_summed_room_band_reads_resolved_driver_bands(floor):
     assert room_sweep_band_hz(
         roles, (CloudPositionPrompt("room", purpose="room"),)
     ) == (20.0, 20000.0)
+
+
+@pytest.mark.parametrize("scope,ids,refused", [
+    ("drivers", ("woofer:rear",), False),
+    ("drivers", ("woofer", "tweeter"), True),
+    ("drivers", ("",), True),
+    ("candidate_branches", ("woofer",), True),
+    ("candidate", ("woofer",), True),
+])
+def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
+    """A drivers take plays one named target alone or the session's own roles;
+    two named targets are a branch take, which needs the candidate graph."""
+    def make():
+        return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids,
+                           candidate_id="" if scope == "drivers" else "trial")
+
+    if refused:
+        with pytest.raises(ValueError):
+            make()
+        return
+    assert solo_target(make()) == ids[0]
+
+
+@pytest.mark.parametrize("rear,target", [
+    (False, "woofer"), (False, "tweeter"),
+    (True, "woofer"), (True, "woofer:rear"), (True, "tweeter"),
+])
+def test_a_one_driver_take_routes_its_target_alone(rear, target):
+    """The protected neutral graph a one-driver take plays through sources that
+    target's output from program channel 0 and parks every other declared
+    output. An unfitted rear keeps its terminal mute unless it is the target.
+    The capture stays at the ring's width and the volume ceiling at 0 dB."""
+    topology, safety, targets = _profile_and_targets(rear=rear, woofer_floor=20, woofer_upper=4000)
+    preset = _rear_pair("mono")[0] if rear else _preset()
+    profile = MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,))
+
+    payload = yaml.safe_load(emit_measurement_graph(profile, excited_channels=branch_channels_for(spec)))
+
+    outputs = {o.index: measurement_target_id(o.driver_role, o.output_variant)
+               for o in preset.channel_map.outputs}
+    assert {entry["dest"]: [source["channel"] for source in entry["sources"]]
+            for entry in payload["mixers"]["split_active_2way"]["mapping"]} == {
+        index: [0] if target_id == target else [] for index, target_id in outputs.items()}
+    assert payload["devices"]["capture"]["channels"] == 2
+    assert payload["devices"]["volume_limit"] == 0.0
+    if rear:
+        assert gs.output_terminally_muted(
+            payload, gs.view_from_yaml_dict(payload), 2,
+            mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+        ) is (target != "woofer:rear")

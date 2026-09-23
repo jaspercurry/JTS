@@ -51,10 +51,11 @@ from .journey import (
 )
 from .programs import (
     SessionExcitation,
+    compose_target_program,
     courtesy_prelude_for_phase,
     measurement_band_hz,
 )
-from .measure_spec import MeasureSpec, branch_channels_for
+from .measure_spec import MeasureSpec, branch_channels_for, solo_target
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
 
@@ -65,6 +66,7 @@ def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
     safety_profile: Mapping[str, Any] | None = None, role_targets: Mapping[str, str] | None = None,
+    excitation: SessionExcitation | None = None,
     acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
@@ -73,7 +75,10 @@ def build_inline_session_spec(
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
-        if spec.stimulus is not None:
+        if solo_target(spec):
+            assert excitation is not None
+            program = compose_target_program(excitation, spec)  # never played; duration only
+        elif spec.stimulus is not None:
             from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
             program = build_bass_program(

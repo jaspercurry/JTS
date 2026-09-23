@@ -27,11 +27,12 @@ _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
 
 __all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anchor"]
 
-#: ``(inverted_roles, measurement_delays_us, level_trims_db) -> yaml``. The
-#: three axes of the measurement VARIANT: each makes a different graph with a
-#: different fingerprint.
+#: ``(inverted_roles, measurement_delays_us, level_trims_db, excited_channels)
+#: -> yaml``. The axes of the measurement VARIANT: each makes a different graph
+#: with a different fingerprint. ``excited_channels`` is ``None`` unless the
+#: take names the one target it plays.
 EmitYaml = Callable[
-    [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
+    [tuple[str, ...], Mapping[str, float], Mapping[str, float], Mapping[str, int] | None], str
 ]
 EmitScopedYaml = Callable[[str, str, Mapping[str, int]], str]
 #: ``(scope, candidate, branch pair, inverted_roles, delays, level trims)`` —
@@ -166,10 +167,11 @@ class MeasurementSessionGraph:
         if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
             raise SessionGraphError("no scoped graph emitter is bound")
         channels = dict(branch_channels or {})
-        if (len(channels) == 2) != (scope == "candidate_branches"):
+        allowed = {"candidate_branches": (2,), GRAPH_SCOPE_DRIVERS: (0, 1)}.get(scope, (0,))
+        if len(channels) not in allowed:
             raise SessionGraphError(
-                f"exactly a candidate_branches scope names two branch channels, got "
-                f"{scope} with {sorted(channels)}"
+                "a candidate_branches scope names two branch channels and a drivers "
+                f"scope at most one, got {scope} with {sorted(channels)}"
             )
         self._scope = scope
         self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
@@ -196,7 +198,7 @@ class MeasurementSessionGraph:
         cached = self._yaml.get(key)
         if cached is None:
             if self._scope == GRAPH_SCOPE_DRIVERS:
-                cached = self._emit(inverted_roles, delays, trims)
+                cached = self._emit(inverted_roles, delays, trims, self._branch_channels or None)
             else:
                 assert self._emit_scoped is not None
                 cached = self._emit_scoped(self._scope, self._candidate_id, self._branch_channels)

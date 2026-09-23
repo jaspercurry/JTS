@@ -57,6 +57,7 @@ from .pipeline import (
     _emit_commissioning_pipeline,
     _emit_role_routed_mixer,
     _validated_measurement_trims,
+    program_channel_count,
 )
 from .topology import _output_count
 
@@ -281,7 +282,7 @@ def emit_active_speaker_program_config(
     # rather than let the ioplug attach crash on it (see
     # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
-    program_channels = 1 + max(role_channels.values())
+    program_channels = program_channel_count(role_channels)
     # Program headroom is the commissioning headroom (0 dB), so
     # the effective-peak ledger the session-volume plan and admission share is
     # main_volume + program peak with no hidden graph attenuation.

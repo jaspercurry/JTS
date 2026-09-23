@@ -193,11 +193,12 @@ class MeasureSpec:
     scope_gains_db: Mapping[str, float] | None = None
     program_phase: str = ""
     stimulus: Mapping[str, Any] | None = None
-    #: The two measurement target ids a ``candidate_branches`` take excites, in
-    #: program-channel order (:func:`branch_channels_for`). Which two is the
-    #: take's own choice — the declared driver pair, or a cabinet's front and
-    #: rear woofer — so it travels on the spec rather than being re-derived from
-    #: the box's acoustic roles. Empty on every other scope.
+    #: The measurement target ids this take excites, in program-channel order
+    #: (:func:`branch_channels_for`): two on a ``candidate_branches`` take — the
+    #: declared driver pair, or a cabinet's front and rear woofer — or ONE on a
+    #: drivers take that plays that target alone, every other declared target
+    #: parked. The take's own choice, so it travels on the spec rather than
+    #: being re-derived from the box's acoustic roles. Empty otherwise.
     branch_target_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -214,9 +215,12 @@ class MeasureSpec:
                     "a candidate_branches capture names two distinct measurement "
                     f"target ids, got {ids!r}"
                 )
+        elif self.graph_scope == GRAPH_SCOPE_DRIVERS:
+            if len(ids) > 1 or not all(ids):
+                raise ValueError(f"a drivers capture excites at most one named target, got {ids!r}")
         elif ids:
             raise ValueError(
-                f"branch_target_ids requires the candidate_branches graph_scope, got {self.graph_scope!r}"
+                f"branch_target_ids requires the candidate_branches or drivers graph_scope, got {self.graph_scope!r}"
             )
         if self.sweep_band_hz:
             if self.graph_scope == GRAPH_SCOPE_DRIVERS:
@@ -436,13 +440,19 @@ def branch_target_ids_for(branch_pair: str, roles_bands: Sequence[Any]) -> tuple
     return tuple(band.role for band in roles_bands)
 
 
+def solo_target(spec: MeasureSpec) -> str:
+    """The one target a drivers take plays alone, or ``""`` when it plays the
+    session's own driver roles."""
+    return spec.branch_target_ids[0] if spec.graph_scope == GRAPH_SCOPE_DRIVERS and spec.branch_target_ids else ""
+
+
 def branch_channels_for(spec: MeasureSpec) -> dict[str, int]:
-    """Which stereo program channel carries each of this take's two branches.
+    """Which program channel carries each target this take names.
 
     THE single owner: the composers, the capture-window sizer and the graph
-    emitter all read this, so no two of them can disagree about what a branch
-    take excites. Empty off ``candidate_branches``, where one mono program
-    reaches every driver.
+    emitter all read this, so no two of them can disagree about what a take
+    excites. Empty when the take names no target: one mono program then
+    reaches every driver, or a drivers take plays the session's own roles.
     """
     return {target_id: channel for channel, target_id in enumerate(spec.branch_target_ids)}
 

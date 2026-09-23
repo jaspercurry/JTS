@@ -818,36 +818,36 @@ _PARK_TEST_ONE_WAY = _one_way_stereo_preset()
 _PARK_TEST_REAR_PAIR = _rear_pair("mono")[0]
 
 
-@pytest.mark.parametrize("preset,role_channels,parked,refuses", [
-    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "tweeter": 1}, (), False, id="2ch"),
-    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, (), True, id="2ch_forgotten_role_refuses"),
-    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, ("tweeter",), False, id="2ch_named_park"),
-    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "midrange": 1}, (), True, id="2ch_unknown_role_refuses"),
-    pytest.param(_PARK_TEST_ONE_WAY, {"full_range": 0}, (), False, id="1ch_one_way"),
-    pytest.param(_PARK_TEST_REAR_PAIR, {"woofer": 0, "tweeter": 1, "woofer:rear": 2}, (), False, id="3ch_rear_pair"),
+@pytest.mark.parametrize("preset,role_channels,parked,capture_channels", [
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "tweeter": 1}, (), 2, id="2ch"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, (), None, id="2ch_forgotten_role_refuses"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, ("tweeter",), 2, id="2ch_named_park"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "midrange": 1}, (), None, id="2ch_unknown_role_refuses"),
+    pytest.param(_PARK_TEST_ONE_WAY, {"full_range": 0}, (), 2, id="1ch_one_way"),
+    pytest.param(_PARK_TEST_REAR_PAIR, {"woofer": 0, "tweeter": 1, "woofer:rear": 2}, (), 3, id="3ch_rear_pair"),
 ])
-def test_a_program_take_may_park_a_role_only_by_naming_it(preset, role_channels, parked, refuses):
+def test_a_program_take_may_park_a_role_only_by_naming_it(preset, role_channels, parked, capture_channels):
     """Silence is a decision, never an omission: a role with no program channel
     refuses unless the take names its targets as parked. A graph emitted from a
     forgotten role would capture at the wrong width and route a live step to a
     channel the program never fills.
 
-    Also pins #5321 item B at capture widths 1, 2 and 3: every pipeline step
+    Also pins #5321 item B at capture widths 2 and 3: every pipeline step
     before the first Mixer step must stay inside the actual capture width, and
     together they must cover it exactly -- a wider or narrower pre-Mixer step
-    is a graph CamillaDSP refuses to load.
+    is a graph CamillaDSP refuses to load. A take routing one channel still
+    captures the ring's full width, which the ring's attach demands.
     """
     emit = lambda: camilla_yaml.emit_active_speaker_program_config(
         preset, role_channels=role_channels, playback_device=ACTIVE_PCM,
         parked_target_ids=parked,
     )
-    if refuses:
+    if capture_channels is None:
         with pytest.raises(ActiveSpeakerConfigError):
             emit()
         return
     payload = yaml.safe_load(emit())
-    capture_channels = payload["devices"]["capture"]["channels"]
-    assert capture_channels == 1 + max(role_channels.values())
+    assert payload["devices"]["capture"]["channels"] == capture_channels
 
     pre_mixer_steps = []
     for step in payload["pipeline"]:

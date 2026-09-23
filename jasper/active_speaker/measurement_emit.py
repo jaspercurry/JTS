@@ -56,7 +56,7 @@ class MeasurementGraphProfile:
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None
     #: Physical targets this take deliberately silences. A role absent from
     #: ``role_channels`` must be named here or the graph refuses to emit —
-    #: silence is a decision, never an omission. No production plan sets this yet.
+    #: silence is a decision, never an omission.
     parked_target_ids: tuple[str, ...] = ()
 
 
@@ -217,12 +217,23 @@ def emit_measurement_graph(
     inverted_roles: tuple[str, ...] = (),
     measurement_delays_us: Mapping[str, float] | None = None,
     level_trims_db: Mapping[str, float] | None = None,
+    excited_channels: Mapping[str, int] | None = None,
 ) -> str:
     """Compile the protected neutral graph for separate driver analysis.
 
     Trims arrive resolved by ``driver_base_trim.measured_level_trims``. Device
     fields travel together because ring capture and playback share one wire.
+
+    ``excited_channels`` is one take's own choice of target, keyed by
+    measurement target id (:func:`~.crossover_v2.measure_spec.branch_channels_for`):
+    that take routes exactly those targets and parks every other declared one.
+    ``None`` routes the session's :attr:`MeasurementGraphProfile.role_channels`.
     """
+    if excited_channels:
+        profile = replace(
+            profile, role_channels=dict(excited_channels),
+            parked_target_ids=tuple(sorted(camilla_yaml.preset_target_ids(profile.preset) - set(excited_channels))),
+        )
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
     return camilla_yaml.emit_active_speaker_program_config(
         profile.preset,

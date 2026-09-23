@@ -158,8 +158,9 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
 
 
 def test_the_one_way_preset_emits_a_protected_neutral_program_graph():
-    """One program channel to the one physical output; the tweeter protection
-    proof is ABSENT rather than waived — no branch here is what it protects."""
+    """One program channel to the one physical output, captured at the ring's
+    full width; the tweeter protection proof is ABSENT rather than waived — no
+    branch here is what it protects."""
     from jasper.active_speaker.branch_chain import CrossoverSection
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_program_config
 
@@ -172,7 +173,7 @@ def test_the_one_way_preset_emits_a_protected_neutral_program_graph():
         },
     ))
 
-    assert config["devices"]["capture"]["channels"] == 1
+    assert config["devices"]["capture"]["channels"] == 2
     assert config["devices"]["volume_limit"] == 0.0
     assert [
         entry["dest"] for entry in config["mixers"]["split_active_1way"]["mapping"]

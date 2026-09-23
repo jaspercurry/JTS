@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
+from jasper.fanin_coupling import RING_A_CHANNELS
 from jasper.output_topology import measurement_target_id
 
 from ..camilla_names import (
@@ -498,6 +499,17 @@ def _validated_measurement_trims(
     return validated
 
 
+def program_channel_count(role_channels: Mapping[str, int]) -> int:
+    """A program graph's capture width: every channel the program routes, and
+    never fewer than Ring A carries.
+
+    Capture is always Ring A (:func:`~.devices.capture_device_for_playback`),
+    whose ioplug accepts only its own width, so a take routing one channel
+    still captures the whole ring; its unrouted channel reaches no output.
+    """
+    return max(RING_A_CHANNELS, 1 + max(role_channels.values()))
+
+
 def _emit_role_routed_mixer(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
@@ -527,7 +539,7 @@ def _emit_role_routed_mixer(
     source, which is silence. A rear is never reached by its role's entry: an
     unfitted rear ends in a terminal mute, and routing signal into a muted
     output would record silence as if it were a measurement.
-    ``channels_in`` is the program channel count (max mapped channel + 1).
+    ``channels_in`` is :func:`program_channel_count`.
 
     The mixer is named ``split_active_{way_count}way`` — the SAME name
     :func:`_emit_split_mixer` uses — for two reasons landing on one spelling:
@@ -547,7 +559,7 @@ def _emit_role_routed_mixer(
     trims = _validated_measurement_trims(preset, level_trims_db)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
-    channels_in = 1 + max(role_channels.values())
+    channels_in = program_channel_count(role_channels)
     mapping: list[tuple[int, list[tuple[int, float, bool]]]] = []
     for output in outputs:
         role = output.driver_role

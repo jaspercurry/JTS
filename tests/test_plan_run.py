@@ -755,7 +755,7 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
 def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_program(run_program(purpose, layout))
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     assert any(c.spec.program_phase == "entry_baseline" for c in captures) is entry
     assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
@@ -1169,7 +1169,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
     program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
     if trial:
         context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                                  driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                                  driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
         preview = plan_run.preview_schedule(request, captures, context)
         assert (preview["measurements"], preview["measurements_per_pose"], preview["sweeps"]) == (trial, counts, trial * 3)
     gate = AnsweredGate()
@@ -1214,7 +1214,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)

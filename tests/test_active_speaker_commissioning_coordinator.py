@@ -357,7 +357,7 @@ def test_household_experiment_reads_packet_alignment(monkeypatch, tmp_path, pack
 @pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark"])
 def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
     status = {"active": True, "setup": {"active": True, "status": "ready"},
