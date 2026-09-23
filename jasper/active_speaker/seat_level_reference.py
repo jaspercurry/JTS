@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -58,11 +58,7 @@ def validate_ramp_target_spl(level_db_spl: float, *, ceiling_db_spl: float) -> N
 
 def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any], fader_db: float) -> float:
     def reserve(raw: Mapping[str, Any]) -> float:
-        if not raw:
-            return 0.0
-        descriptor = DynamicBassDescriptor(**raw)
-        boost = loudness_boost_db(fader_db, descriptor)
-        return dynamic_bass_gain_reserve_db(replace(descriptor, low_boost_db=boost)) if boost > 0 else 0.0
+        return dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**raw), fader_db) if raw else 0.0
 
     return max(0.0, reserve(candidate) - reserve(applied))
 

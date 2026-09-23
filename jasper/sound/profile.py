@@ -998,11 +998,16 @@ def _filter_response_complex(
     floor only bites at unphysical ~-120 dB nulls a peaking/shelf correction
     never produces, and flooring a complex value would break the phase.)
     """
-    b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
-        spec.biquad_type, spec.freq, spec.gain, spec.q
-    )
-    if trig is None:
-        trig = _freq_trig(freqs)
+    coeffs = _biquad_coeffs(spec.biquad_type, spec.freq, spec.gain, spec.q)
+    return _biquad_response_complex(coeffs, _freq_trig(freqs) if trig is None else trig)
+
+
+def _biquad_response_complex(
+    coeffs: tuple[float, float, float, float, float, float],
+    trig: list[tuple[float, float, float, float]],
+) -> list[complex]:
+    """Complex response of raw ``(b0, b1, b2, a0, a1, a2)`` over a :func:`_freq_trig` grid."""
+    b0, b1, b2, a0, a1, a2 = coeffs
     out: list[complex] = []
     for c1, s1, c2, s2 in trig:
         num = complex(b0 + b1 * c1 + b2 * c2, -(b1 * s1 + b2 * s2))

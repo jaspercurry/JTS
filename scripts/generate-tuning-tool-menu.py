@@ -101,6 +101,8 @@ BOUND_SOURCES = {
         ("compressor_release", "s", "contract.bass.schema.properties.compressor_release_s"),
         ("delta_highpass", "Hz", "contract.bass.schema.properties.delta_highpass_hz"),
         ("delta_highpass_exclusive_upper", "field", "contract.bass.bounds.delta_highpass_hz_exclusive_upper_field"),
+        ("linkwitz_transform", "Hz, Q", "contract.bass.schema.properties.linkwitz_transform.properties"),
+        ("linkwitz_transform_rules", "rule", "contract.bass.bounds.linkwitz_transform"),
         ("shared_headroom_layers", "layers", "contract.bass.shared_headroom.layers"),
     ),
     "Rear": (

@@ -53,10 +53,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "6229b53f78122eab1207a01d27ae1e2b4b8893cbeb251958ecaa3ca35b487ef3"),
-    ("mono", True, "4781fa511907647c688b2bbdab076d77f0ad3e27216f9e8f9aae660c17f248ed"),
-    ("stereo", False, "5c3feed73934e668e2d19a9ccfc8fa258307dced66a80c842498a799b18d3fa0"),
-    ("stereo", True, "497da17ca80aff842e70c45b890ffc87b5389bc16a1ca942a1e105cb51843615"),
+    ("mono", False, "3d1fe6c0cafbd3d2f08051ace88ab7cde77b0a38125043d7d6a9826443b752e5"),
+    ("mono", True, "80cc08d641194f01f131a0d19e884151e145b93de5b9da4a53fb6ed4a8c0c1be"),
+    ("stereo", False, "550e0aa7876e6f1d113dc68036a7024004b83d3d8735915a2f498da8957b5f1b"),
+    ("stereo", True, "ace0081c1edd9c1fafde17f8f548759c015e734922f1961cd8aaa36e02e7fa63"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -337,6 +337,30 @@ def test_bass_schema_edges_match_the_unchanged_validator(name):
         with pytest.raises(ValueError):
             dynamic.validate_dynamic_bass_descriptor({**baseline, name: upper})
         assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: math.nextafter(upper, -math.inf)})[name] < upper
+
+
+@pytest.mark.parametrize("name", ["source_hz", "source_q", "target_hz", "target_q"])
+def test_linkwitz_schema_edges_match_the_validator(name):
+    contract = prescription_contracts()["bass"]
+    prop = contract["schema"]["properties"]["linkwitz_transform"]["properties"][name]
+    rules = contract["bounds"]["linkwitz_transform"]
+    # A low target keeps every single-field edge inside the cross-field rules.
+    shape = {"source_hz": 90.0, "source_q": 0.6, "target_hz": 12.0, "target_q": 0.707}
+    baseline = {**asdict(_descriptor()), "detector_lowpass_hz": 125.0, rules["requires_field"]: 15.0}
+
+    def validate(value, **changes):
+        return dynamic.validate_dynamic_bass_descriptor({**baseline, **changes, "linkwitz_transform": {**shape, name: value}})
+
+    for bound, direction in (("minimum", -math.inf), ("maximum", math.inf)):
+        if bound in prop:
+            assert validate(prop[bound])["linkwitz_transform"][name] == prop[bound]
+            with pytest.raises(ValueError):
+                validate(math.nextafter(prop[bound], direction))
+    with pytest.raises(ValueError):
+        validate(shape[name], **{rules["requires_field"]: None})
+    if name == "target_hz":
+        with pytest.raises(ValueError):
+            validate(shape[rules["target_hz_exclusive_upper_field"]])
 
 
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):

@@ -236,6 +236,16 @@ Set `detector_lowpass_hz` at the top of the boosted band.
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail.
 
+When the shelf cannot match the box, add `linkwitz_transform`
+(`0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md`).
+At full boost the block then plays the Linkwitz transform from the woofers'
+measured alignment (`source_hz`, `source_q`) to the target (`target_hz`,
+`target_q`); the volume taper and the compressor act on it as on the shelf.
+A shape needs `delta_highpass_hz`, below the target: 15 Hz under a 22 Hz
+target adds about 1 dB near 80 Hz. With a shape, `low_boost_db` sets only how
+the boost fades (20 fades most evenly), and the detector still reads the
+shelf-boosted woofer, not the shaped output.
+
 `prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
 `compression_db` includes compressor and driver action in the boost band.
 H2/H3 show `harmonics_flat`, `harmonics_rose` with band and delta, or `unknown`.
@@ -590,6 +600,8 @@ Bass
 | compressor_release | {"type":"number","minimum":0.01,"maximum":2.0,"default":0.25} | s | contract.bass.schema.properties.compressor_release_s |
 | delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
+| linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
+| linkwitz_transform_rules | {"adr":"ADR-0352","requires_field":"delta_highpass_hz","target_hz_exclusive_upper_field":"source_hz","delta_zero_hz":"(source_hz**2 - target_hz**2) / (source_hz/source_q - target_hz/target_q)","delta_zero_hz_exclusive_minimum":0.0,"delta_zero_hz_maximum":20000.0} | rule | contract.bass.bounds.linkwitz_transform |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
 
 Rear

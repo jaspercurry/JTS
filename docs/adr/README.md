@@ -324,3 +324,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | accepted |
 | [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | accepted |
 | [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | accepted |
+| [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | accepted |

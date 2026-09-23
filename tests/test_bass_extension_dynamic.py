@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
+
 import numpy as np
 import pytest
 
 from jasper.camilla_config_contract import SHELF_Q, FilterSpec
-from jasper.sound.profile import _filter_response_complex
+from jasper.sound.profile import _biquad_response_complex, _filter_response_complex, _freq_trig
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,
+    DynamicBassDescriptorError,
+    LOUDNESS_TAPER_DB,
     NATIVE_LOUDNESS_CORNER_HZ,
+    _delta_response,
+    _linkwitz_coeffs,
+    _lowshelf_fo_coeffs,
     expected_boost_db,
     loudness_boost_db,
     dynamic_bass_gain_reserve_db,
@@ -30,6 +39,15 @@ def _descriptor(**changes) -> DynamicBassDescriptor:
     }
     values.update(changes)
     return DynamicBassDescriptor(**values)
+
+
+# jts3's woofer pair on axis with its rear stage, moved to a 22 Hz Butterworth (#5692).
+JTS3_SHAPE = {"source_hz": 90.0, "source_q": 0.6, "target_hz": 22.0, "target_q": 0.707}
+
+
+def _shaped(**changes) -> DynamicBassDescriptor:
+    return _descriptor(**{"low_boost_db": 20.0, "detector_lowpass_hz": 125.0, "delta_highpass_hz": 15.0,
+                          "linkwitz_transform": JTS3_SHAPE, **changes})
 
 
 @pytest.mark.parametrize("boost_db", [6.0, 12.0, 15.0, 20.0])
@@ -204,14 +222,15 @@ def _base_graph() -> dict:
     }
 
 
+@pytest.mark.parametrize("descriptor", [_descriptor(), _shaped()], ids=["shelf", "shaped"])
 @pytest.mark.parametrize("groups", [(), ((0, 2),), ((2, 0),)])
-def test_decorator_is_exactly_reversible_for_static_graph_proof(groups) -> None:
+def test_decorator_is_exactly_reversible_for_static_graph_proof(descriptor, groups) -> None:
     base = _base_graph()
 
-    decorated = apply_dynamic_bass_graph(base, _descriptor(), (0, 2), groups)
+    decorated = apply_dynamic_bass_graph(base, descriptor, (0, 2), groups)
 
     assert base == _base_graph()
-    assert validated_base_graph(decorated, _descriptor(), (0, 2), groups) == base
+    assert validated_base_graph(decorated, descriptor, (0, 2), groups) == base
 
 
 def test_projection_refuses_a_changed_native_definition() -> None:
@@ -246,3 +265,132 @@ def test_projection_requires_the_owner_limiter_immediately_after_block() -> None
 
     with pytest.raises(ValueError, match="immediately before"):
         validated_base_graph(decorated, _descriptor(), (0, 2))
+
+
+@pytest.mark.parametrize(("changes", "groups", "digest"), [
+    ({}, (), "17db5563133976d3d1d9780a53becd3a654766f05a0554e973318da6831a7042"),
+    ({"delta_highpass_hz": 25.0}, (), "ecd3dbebd8f6a4aa7056fff24827e7c5e1568cf0dee187e65f31e8b971170152"),
+    ({"delta_highpass_hz": 25.0}, ((0, 2),), "92c74dfd2a374c2d4930dd519bdefa9ae60b09110917be697c84ab514774f537"),
+])
+def test_an_unshaped_descriptor_emits_the_same_bytes_as_before_the_shape(changes, groups, digest) -> None:
+    graph = build_native_dynamic_bass_graph(
+        channels=4, owner_channels=(0, 2), descriptor=_descriptor(low_boost_db=12.0, **changes), owner_groups=groups,
+    )
+    assert hashlib.sha256(json.dumps(dataclasses.asdict(graph)).encode()).hexdigest() == digest
+
+
+def _closed_form_db(freqs: np.ndarray, shape: dict, highpass_hz: float) -> np.ndarray:
+    """Analog 1 + HP(T - 1): T the Linkwitz transform, HP a 2nd-order Butterworth high-pass."""
+    s = 2j * np.pi * freqs
+    w0, wt, wh = (2 * np.pi * value for value in (shape["source_hz"], shape["target_hz"], highpass_hz))
+    transform = (s * s + w0 / shape["source_q"] * s + w0 * w0) / (s * s + wt / shape["target_q"] * s + wt * wt)
+    highpass = s * s / (s * s + np.sqrt(2.0) * wh * s + wh * wh)
+    return 20 * np.log10(np.abs(1 + highpass * (transform - 1)))
+
+
+@pytest.mark.parametrize("shape", [
+    JTS3_SHAPE,
+    {"source_hz": 60.0, "source_q": 1.0, "target_hz": 30.0, "target_q": 0.707},
+    {"source_hz": 150.0, "source_q": 0.4, "target_hz": 40.0, "target_q": 1.2},
+])
+@pytest.mark.parametrize("boost_db", [1.0, 12.0, 20.0])
+def test_full_boost_is_the_closed_form_linkwitz_transform(shape, boost_db) -> None:
+    descriptor = _shaped(low_boost_db=boost_db, linkwitz_transform=shape)
+    freqs = np.geomspace(5.0, 20000.0, 2000)
+    full = expected_boost_db(descriptor, descriptor.reference_level_db - LOUDNESS_TAPER_DB, freqs)
+    # The 48 kHz biquads sit within 0.005 dB of the analog transform across the band.
+    assert full == pytest.approx(_closed_form_db(freqs, shape, 15.0), abs=0.01)
+
+
+def _response(definition: dict, descriptor: DynamicBassDescriptor, fader_db: float, freqs, trig):
+    parameters = definition["parameters"]
+    kind = parameters.get("type", definition["type"])
+    if kind == "Loudness":
+        boost = loudness_boost_db(fader_db, descriptor)
+        return _filter_response_complex(FilterSpec("l", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost), freqs, trig)
+    if kind == "LinkwitzTransform":
+        return _biquad_response_complex(_linkwitz_coeffs(parameters), trig)
+    if kind == "LowshelfFO":
+        return _biquad_response_complex(_lowshelf_fo_coeffs(parameters), trig)
+    if kind == "ButterworthHighpass" and parameters["order"] == 2:
+        return _filter_response_complex(FilterSpec("h", "Highpass", parameters["freq"], 0.0, SHELF_Q), freqs, trig)
+    assert kind in {"Volume", "LinkwitzRileyLowpass"}  # Aux1's silent ramp and the detector reach no output.
+    return 1.0
+
+
+def _fragment_output(graph, descriptor: DynamicBassDescriptor, fader_db: float, freqs: np.ndarray) -> np.ndarray:
+    """Owner 0 alone through the emitted fragment, compressors idle, at every output."""
+    trig = _freq_trig(freqs)
+    state = np.zeros((4, len(freqs)), dtype=complex)
+    state[0] = 1.0
+    for step in graph.pipeline:
+        if step["type"] == "Mixer":
+            mixer = graph.mixers[step["name"]]
+            mixed = np.zeros((mixer["channels"]["out"], len(freqs)), dtype=complex)
+            for row in mixer["mapping"]:
+                for source in row["sources"]:
+                    sign = -1.0 if source["inverted"] else 1.0
+                    mixed[row["dest"]] += sign * 10 ** (source["gain"] / 20) * state[source["channel"]]
+            state = mixed
+        elif step["type"] == "Filter":
+            for name in step["names"]:
+                state[step["channels"]] *= np.asarray(_response(graph.filters[name], descriptor, fader_db, freqs, trig))
+    return state
+
+
+@pytest.mark.parametrize("descriptor", [_descriptor(delta_highpass_hz=25.0), _shaped()], ids=["shelf", "shaped"])
+@pytest.mark.parametrize("groups", [(), ((0, 2),)])
+@pytest.mark.parametrize("fader_db", [-40.0, -26.0, -16.0, -8.0, -6.0])
+def test_emitted_graph_realizes_the_model_at_every_fader(descriptor, groups, fader_db) -> None:
+    graph = build_native_dynamic_bass_graph(channels=4, owner_channels=(0, 2), descriptor=descriptor, owner_groups=groups)
+    freqs = np.geomspace(5.0, 20000.0, 400)
+
+    output = _fragment_output(graph, descriptor, fader_db, freqs)
+
+    assert 20 * np.log10(np.abs(output[0])) == pytest.approx(expected_boost_db(descriptor, fader_db, freqs), abs=1e-9)
+    assert not np.any(output[1:])
+
+
+def test_shaped_reserve_bounds_the_boost_and_fades_with_it() -> None:
+    descriptor = _shaped()
+    freqs = np.geomspace(1.0, 24000.0, 4000).tolist()
+    trig = _freq_trig(freqs)
+    faders = np.arange(-30.0, 1.0, 2.0)
+    reserves = [dynamic_bass_gain_reserve_db(descriptor, fader) for fader in faders]
+
+    for fader, reserve in zip(faders, reserves):
+        delta = np.abs(_delta_response(descriptor, loudness_boost_db(fader, descriptor), freqs, trig))
+        assert reserve >= 20 * np.log10(1 + delta.max())
+    assert reserves[0] == dynamic_bass_gain_reserve_db(descriptor)
+    assert all(later <= earlier for earlier, later in zip(reserves, reserves[1:])) and reserves[-1] == 0.0
+    assert expected_boost_db(descriptor, descriptor.reference_level_db, freqs) == [0.0] * len(freqs)
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    ({"delta_highpass_hz": None}, "bass_delta_highpass_hz_invalid"),
+    ({"linkwitz_transform": {**JTS3_SHAPE, "target_hz": 90.0}}, "bass_linkwitz_transform_invalid"),
+    ({"linkwitz_transform": {**JTS3_SHAPE, "source_q": 0.29}}, "bass_linkwitz_transform_invalid"),
+    # 90/1.5 is below 60/0.3: T - 1 has no left-half-plane zero for a LowshelfFO to place.
+    ({"linkwitz_transform": {**JTS3_SHAPE, "source_q": 1.5, "target_hz": 60.0, "target_q": 0.3}},
+     "bass_linkwitz_transform_invalid"),
+    # A 0.05 Hz damping margin puts that zero near 37 kHz.
+    ({"linkwitz_transform": {"source_hz": 60.0, "source_q": 1.0, "target_hz": 41.965, "target_q": 0.7}},
+     "bass_linkwitz_transform_invalid"),
+    ({"linkwitz_transform": {**JTS3_SHAPE, "gain_db": 3.0}}, "bass_linkwitz_transform_invalid"),
+    ({"linkwitz_transform": [90.0, 0.6, 22.0, 0.707]}, "bass_linkwitz_transform_invalid"),
+    ({"linkwitz_transform": {**JTS3_SHAPE, "source_hz": True}}, "bass_linkwitz_transform_invalid"),
+])
+def test_a_shape_the_block_cannot_realize_is_refused(changes, reason) -> None:
+    raw = {**validate_dynamic_bass_descriptor(dataclasses.asdict(_shaped())), **changes}
+
+    with pytest.raises(DynamicBassDescriptorError) as refused:
+        validate_dynamic_bass_descriptor(raw)
+    assert refused.value.reason == reason
+
+
+def test_a_shape_round_trips_and_an_absent_shape_adds_no_key() -> None:
+    shaped = validate_dynamic_bass_descriptor(dataclasses.asdict(_shaped()))
+
+    assert shaped["linkwitz_transform"] == JTS3_SHAPE
+    assert validate_dynamic_bass_descriptor(shaped) == shaped
+    assert "linkwitz_transform" not in validate_dynamic_bass_descriptor(dataclasses.asdict(_descriptor()))

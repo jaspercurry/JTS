@@ -66,7 +66,7 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     includes = ", ".join(sorted({cause.replace("_", " ") for row in rows
                                  for cause in row.get("compression_includes") or ()})) or "unknown"
-    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed boost models CamillaDSP's shelf and delta high-pass at the recorded fader. "
+    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed boost models CamillaDSP's shelf, any Linkwitz shape and the delta high-pass at the recorded fader. "
               f"Band means use the same qualified bins as realized boost; their difference includes: {includes}. "
               "Within-level harmonic deltas use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold. "
               "Across-level knees use repeat spread or level uncertainty from the worst SNR; headroom uses measured SPL and marks an unreached knee as extrapolated."]

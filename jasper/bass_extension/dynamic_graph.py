@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .dynamic import DynamicBassDescriptor, validate_dynamic_bass_descriptor
+from .dynamic import DynamicBassDescriptor, delta_shape, validate_dynamic_bass_descriptor
 
 
 PREFIX = "bass_ext_dynamic"
@@ -44,8 +44,8 @@ class NativeDynamicBassGraph:
     pipeline: tuple[dict[str, Any], ...]
 
 
-def _source(channel: int, *, inverted: bool = False) -> dict[str, Any]:
-    return {"channel": channel, "gain": 0.0, "inverted": inverted}
+def _source(channel: int, *, inverted: bool = False, gain: float = 0.0) -> dict[str, Any]:
+    return {"channel": channel, "gain": gain, "inverted": inverted}
 
 
 def _mixer(channels_in: int, channels_out: int, sources: list[list[dict[str, Any]]]) -> dict[str, Any]:
@@ -119,6 +119,11 @@ def build_native_dynamic_bass_graph(
         },
     }
     delta_filters: list[str] = []
+    shape = delta_shape(descriptor)
+    if shape is not None:
+        for part, parameters in (("poles", shape.poles), ("zero", shape.zero)):
+            filters[f"{PREFIX}_shape_{part}"] = {"type": "Biquad", "parameters": parameters}
+            delta_filters.append(f"{PREFIX}_shape_{part}")
     if descriptor.delta_highpass_hz is not None:
         name = f"{PREFIX}_delta_highpass"
         filters[name] = {
@@ -135,8 +140,9 @@ def build_native_dynamic_bass_graph(
     expand_sources.extend([[_source(owner)] for owner in owners])
     expand_sources.append([])
     form_sources = [[_source(channel)] for channel in range(channels)]
+    delta_gain = shape.gain_db if shape is not None else 0.0
     form_sources.extend(
-        [_source(loud), _source(owner, inverted=True)]
+        [_source(loud, gain=delta_gain), _source(owner, inverted=True, gain=delta_gain)]
         for owner, loud in zip(owners, loud_channels, strict=True)
     )
     form_sources.extend([[_source(loud_by_owner[group[0]])] for group in groups])
