@@ -47,6 +47,11 @@ def _ladder(round_dir: Path) -> dict:
     return candidate_ladder(round_dir, round_inputs(round_dir))
 
 
+def _gated_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict:
+    """A summed curve as a gated take banks it, with its gate's window."""
+    return {**_summed_curve(freqs_hz, magnitude_db), "gate_window_ms": 5.0}
+
+
 @pytest.mark.parametrize("source", ["records", "frequency"])
 @pytest.mark.parametrize("layout", ["seat", "bearing"])
 def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
@@ -72,7 +77,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
         expected[doc_pose_key(metadata)] = (position, float(index + 1))
         for candidate, scale in (("cfg-a", 0), ("cfg-b", index + 1)):
             take_id = f"lateral_{index:02d}_{candidate}"
-            curve = _summed_curve(grid, np.array([0.0, 0.0, float(scale)]))
+            curve = _gated_curve(grid, np.array([0.0, 0.0, float(scale)]))
             _bank_lateral_pose(
                 session_dir, take_id=take_id, position_deg=pose.azimuth_deg,
                 vertical_deg=pose.elevation_deg, candidate_id=candidate, curves=[curve],
@@ -122,15 +127,15 @@ def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_pa
     b_db[3] += 2.0
     _bank_lateral_pose(
         session_dir, take_id="lateral_00_a01", position_deg=7,
-        candidate_id="cfg-a", curves=[_summed_curve(grid, a_db)],
+        candidate_id="cfg-a", curves=[_gated_curve(grid, a_db)],
     )
     _bank_lateral_pose(
         session_dir, take_id="lateral_01_a01", position_deg=7,
-        candidate_id="cfg-b", curves=[_summed_curve(grid, np.full_like(grid, 40.0))],
+        candidate_id="cfg-b", curves=[_gated_curve(grid, np.full_like(grid, 40.0))],
     )
     _bank_lateral_pose(
         session_dir, take_id="lateral_01_a02", position_deg=7,
-        candidate_id="cfg-b", curves=[_summed_curve(grid, b_db)],
+        candidate_id="cfg-b", curves=[_gated_curve(grid, b_db)],
     )
 
     summary = (document := _ladder(round_dir))["summary"]
@@ -174,35 +179,45 @@ def test_every_take_no_table_compares_is_listed_under_why(tmp_path):
     ]
 
 
-def test_the_headline_is_the_widest_trusted_gap_and_the_ungated_table_stays_labelled(tmp_path):
-    """A seat take is banked gated and ungated. The ungated pair keeps the room
-    and the sweep's low edge, where two candidates can differ by tens of dB in
-    noise: it stays in the tables, marked untrusted, and never headlines."""
+@pytest.mark.parametrize("gate,headline", [
+    pytest.param({"gate_window_ms": 5.0, "trusted_floor_hz": 357.0}, (2.0, 1000.0, [357.0, 19700.0]),
+                 id="gated_from_its_trusted_floor"),
+    pytest.param({"gate_window_ms": None, "trusted_floor_hz": None}, (None, None, None), id="gate_failed"),
+])
+def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline):
+    """A seat take is banked ungated and through the reference gate. The
+    ungated pair keeps the room and the sweep's low edge (54 dB at 22 Hz), and
+    a gated pair below its own trusted floor is the same noise (9 dB at 295
+    Hz): neither headlines. A series the gate could not window is still
+    labelled gated, so trust is the gate's own result, never the label."""
     round_dir = tmp_path / "r1"
     session_dir = round_dir / "bundle" / "sess1"
-    full, gated = np.array([22.0, 200.0, 1000.0, 4000.0, 19700.0]), np.array([200.0, 1000.0, 4000.0, 19700.0])
+    full = np.array([22.0, 200.0, 295.0, 1000.0, 4000.0, 19700.0])
     series = []
-    for index, (candidate, edge_db, gap_db) in enumerate((("cfg-a", 0.0, 0.0), ("cfg-b", 54.0, 2.0))):
+    for index, (candidate, edge_db, low_db, gap_db) in enumerate((("cfg-a", 0.0, 0.0, 0.0),
+                                                                  ("cfg-b", 54.0, 9.0, 2.0))):
         take_id = f"lateral_{index:02d}_a01"
         _bank_lateral_pose(session_dir, take_id=take_id, position_deg=0, candidate_id=candidate, curves=[])
-        for window, freqs, magnitude in (("ungated", full, [edge_db, 0.0, 0.0, 0.0, 0.0]),
-                                         ("gated", gated, [0.0, gap_db, 0.0, 0.0])):
+        for window, freqs, magnitude, fields in (
+            ("ungated", full, [edge_db, 0.0, 0.0, 0.0, 0.0, 0.0], {"gate_window_ms": None}),
+            ("gated", full[1:], [0.0, low_db, gap_db, 0.0, 0.0], gate),
+        ):
             series.append(FrequencySeries(
                 f"{take_id}:{window}", candidate, "measurement", tuple(freqs), tuple(magnitude),
                 details={"role": "summed", "phase": "lateral", "take_id": take_id,
-                         "candidate_id": candidate, "window": window},
+                         "candidate_id": candidate, "window": window, **fields},
             ))
     view = build_frequency_view(FrequencyRun("room", "room", tuple(series)))
     (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
 
     document = _ladder(round_dir)
 
-    summary = document["summary"]
+    summary, (db, hz, band_hz) = document["summary"], headline
     assert summary["pairs"] == 2
-    assert (summary["max_abs_delta_db"], summary["max_abs_delta_hz"]) == (pytest.approx(2.0), 1000.0)
-    assert (summary["max_abs_delta_window"], summary["max_abs_delta_band_hz"]) == ("gated", [200.0, 19700.0])
+    assert (summary["max_abs_delta_db"], summary["max_abs_delta_hz"], summary["max_abs_delta_band_hz"]) == (
+        None if db is None else pytest.approx(db), hz, band_hz)
     roles = {role["window"]: role for role in document["tables"][0]["roles"]}
-    assert (roles["gated"]["trusted"], roles["ungated"]["trusted"]) == (True, False)
+    assert (roles["gated"]["trusted"], roles["ungated"]["trusted"]) == (gate["gate_window_ms"] is not None, False)
     assert roles["ungated"]["deltas"][0]["max_abs_db"] == pytest.approx(54.0)
 
 
@@ -258,11 +273,11 @@ def test_the_ladder_compares_only_the_span_both_configs_actually_measured(tmp_pa
     short = np.array([200.0, 1000.0])
     _bank_lateral_pose(
         session_dir, take_id="lateral_00_a01", position_deg=0,
-        candidate_id="cfg-a", curves=[_summed_curve(wide, np.zeros_like(wide))],
+        candidate_id="cfg-a", curves=[_gated_curve(wide, np.zeros_like(wide))],
     )
     _bank_lateral_pose(
         session_dir, take_id="lateral_01_a01", position_deg=0,
-        candidate_id="cfg-b", curves=[_summed_curve(short, np.array([0.0, 12.0]))],
+        candidate_id="cfg-b", curves=[_gated_curve(short, np.array([0.0, 12.0]))],
     )
 
     document = _ladder(round_dir)

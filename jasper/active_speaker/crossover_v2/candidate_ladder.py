@@ -14,10 +14,11 @@ from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 import numpy as np
 
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
+from jasper.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
 from .position_cycle import (
-    parse_curve_magnitude,
+    measured_curve_band,
     read_take_curves,
     take_artifact_path,
 )
@@ -46,19 +47,16 @@ class CandidateLadderRefused(Exception):
         self.detail = dict(detail)
 
 
-#: The frequency view's label for a window that keeps the room: its pairs stay
-#: in the tables but never make the headline.
-UNGATED_WINDOW = "ungated"
-
-
 class _Curve(NamedTuple):
-    """One candidate's banked curve for one role at one pose."""
+    """One candidate's banked curve for one role at one pose; ``trusted``
+    when its own gate windowed it."""
 
     take_id: str
     take_path: str
     freqs_hz: np.ndarray
     magnitude_db: np.ndarray
     band_hz: tuple[float, float]
+    trusted: bool
 
 
 _Roles = dict[tuple[str, str], dict[str, _Curve]]
@@ -131,10 +129,10 @@ def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:
         usable = False
         for curve in take.curves or ():
             role = str(curve.get("role") or "")
-            parsed = parse_curve_magnitude(curve)
-            if not role or parsed is None:
+            measured = measured_curve_band(curve)
+            if not role or measured is None:
                 continue
-            freqs_hz, magnitude_db, swept_hz = parsed
+            freqs_hz, magnitude_db, band_hz = measured
             # In-record curves can carry -inf at a perfect cancellation.
             finite = np.isfinite(magnitude_db)
             if not np.any(finite):
@@ -143,13 +141,15 @@ def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:
             freqs_hz, magnitude_db = freqs_hz[finite], magnitude_db[finite]
             by_role.setdefault((role, str(curve.get("window") or "")), {})[row.candidate_id] = _Curve(
                 take.take_id, take.take_path, freqs_hz, magnitude_db,
-                # The DECLARED sweep clamped to the grid actually banked. What
-                # the intersection below spans is then covered by every
-                # curve's own bins, so resampling one onto another can never
-                # reach past its measured span -- where ``np.interp`` holds
-                # the endpoint value and would publish an invented difference.
-                (max(swept_hz[0], float(freqs_hz.min())),
-                 min(swept_hz[1], float(freqs_hz.max()))),
+                # The band the take can speak for, above its trusted floor,
+                # clamped to the bins actually banked. What the intersection
+                # below spans is then covered by every curve's own bins, so
+                # resampling one onto another can never reach past its
+                # measured span -- where ``np.interp`` holds the endpoint
+                # value and would publish an invented difference.
+                (max(band_hz[0], float(freqs_hz.min())),
+                 min(band_hz[1], float(freqs_hz.max()))),
+                finite_float(curve.get("gate_window_ms")) is not None,
             )
         (read.usable if usable else read.unreadable).append(take.take_id)
     return read
@@ -240,6 +240,7 @@ def _role_table(by_candidate: dict[str, _Curve]) -> dict[str, Any] | None:
         return None
     return {
         "band_hz": list(band_hz),
+        "trusted": all(curve.trusted for curve in by_candidate.values()),
         "candidates": [
             {"candidate_id": candidate_id, **row} for candidate_id, row in rows.items()
         ],
@@ -273,8 +274,7 @@ def _tables(poses: _Poses) -> list[dict[str, Any]]:
             # configs WERE played here and refusing that as "no ladder" would
             # send the operator to an instrument for a different question.
             "roles": [
-                {"role": role, **({"window": window} if window else {}),
-                 "trusted": window != UNGATED_WINDOW, **table}
+                {"role": role, **({"window": window} if window else {}), **table}
                 for role, window in sorted(by_role)
                 if (table := _role_table(by_role[role, window])) is not None
             ],
@@ -285,10 +285,11 @@ def _tables(poses: _Poses) -> list[dict[str, Any]]:
 def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
     """The largest pairwise departure in a trusted window, and where.
 
-    An ungated pair keeps the room and the sweep's edges, so it is counted in
-    ``pairs`` but never headlines. Empty values when no trusted pair shared a
-    role: two candidates measured at one pose through different roles have
-    nothing to difference, which is an answer rather than a refusal.
+    A pair with a curve its gate did not window keeps the room and the sweep's
+    edges, so it is counted in ``pairs`` but never headlines. Empty values
+    when no trusted pair shared a role: two candidates measured at one pose
+    through different roles have nothing to difference, which is an answer
+    rather than a refusal.
     """
     deltas = [
         (delta, table, role)
