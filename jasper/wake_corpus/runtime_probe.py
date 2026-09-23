@@ -57,6 +57,7 @@ from jasper.mics.xvf3800 import (
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
 from jasper.env_file import read_env_file
+from jasper.env_load import parse_bool_value
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -243,13 +244,6 @@ def legacy_aec3_sweep_source(value: str | None = None) -> str:
     return normalize_aec3_sweep_source(value, default=AEC3_SWEEP_SOURCE_XVF)
 
 
-def env_truthy(value: str | None, *, default: bool = False) -> bool:
-    """Parse the bool vocabulary used by jasper-aec-bridge."""
-    if value is None:
-        return default
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
 def read_system_env() -> dict[str, str]:
     """Read the production env file the daemons are started with."""
     return read_env_file(str(SYSTEM_ENV_PATH))
@@ -264,6 +258,31 @@ def read_bridge_env() -> dict[str, str]:
     env.update(read_system_env())
     env.update(read_env_file(str(BRIDGE_CORPUS_ENV_PATH)))
     return env
+
+
+#: UI key -> bridge env flag, for each boolean corpus output.
+_OUTPUT_FLAG_ENVS = (
+    ("dtln", DTLN_ENABLED_ENV),
+    ("ref", "JASPER_AEC_CORPUS_REF_ENABLED"),
+    ("usb", "JASPER_AEC_CORPUS_USB_ENABLED"),
+    ("usb_dtln", CORPUS_USB_DTLN_ENABLED_ENV),
+    ("chip_aec", CORPUS_CHIP_AEC_ENABLED_ENV),
+    ("xvf_raw0_webrtc_aec3", "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
+    ("xvf_raw0_dtln", "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
+)
+
+
+def _output_flags(values: Mapping[str, str], aec3_sweep_source: str) -> dict[str, Any]:
+    flags: dict[str, Any] = {
+        key: parse_bool_value(values.get(name)) is True
+        for key, name in _OUTPUT_FLAG_ENVS
+    }
+    flags["outputd_ref"] = bool(values.get("JASPER_OUTPUTD_CHIP_REF_PCM")) and (
+        values.get("JASPER_OUTPUTD_REFERENCE_UDP_TARGET") == OUTPUTD_REF_UDP_TARGET
+    )
+    flags["aec3_sweep"] = parse_bool_value(values.get(AEC3_SWEEP_ENV_FLAG)) is True
+    flags["aec3_sweep_source"] = aec3_sweep_source
+    return flags
 
 
 def bridge_output_status() -> dict[str, Any]:
@@ -288,41 +307,10 @@ def bridge_output_status() -> dict[str, Any]:
             level=logging.WARNING,
         )
         aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
-    recorder_outputs = {
-        "dtln": env_truthy(corpus_env.get(DTLN_ENABLED_ENV)),
-        "ref": env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
-        "usb": env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
-        "usb_dtln": env_truthy(corpus_env.get(CORPUS_USB_DTLN_ENABLED_ENV)),
-        "chip_aec": env_truthy(corpus_env.get(CORPUS_CHIP_AEC_ENABLED_ENV)),
-        "xvf_raw0_webrtc_aec3": env_truthy(
-            corpus_env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
-        ),
-        "xvf_raw0_dtln": env_truthy(
-            corpus_env.get("JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
-        ),
-        "outputd_ref": bool(corpus_env.get("JASPER_OUTPUTD_CHIP_REF_PCM"))
-        and corpus_env.get("JASPER_OUTPUTD_REFERENCE_UDP_TARGET") == OUTPUTD_REF_UDP_TARGET,
-        "aec3_sweep": env_truthy(corpus_env.get(AEC3_SWEEP_ENV_FLAG)),
-        "aec3_sweep_source": aec3_sweep_source,
-    }
     status = {
-        "dtln": env_truthy(env.get(DTLN_ENABLED_ENV)),
-        "ref": env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
-        "usb": env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
-        "usb_dtln": env_truthy(env.get(CORPUS_USB_DTLN_ENABLED_ENV)),
-        "chip_aec": env_truthy(env.get(CORPUS_CHIP_AEC_ENABLED_ENV)),
-        "xvf_raw0_webrtc_aec3": env_truthy(
-            env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
-        ),
-        "xvf_raw0_dtln": env_truthy(
-            env.get("JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
-        ),
-        "outputd_ref": bool(env.get("JASPER_OUTPUTD_CHIP_REF_PCM"))
-        and env.get("JASPER_OUTPUTD_REFERENCE_UDP_TARGET") == OUTPUTD_REF_UDP_TARGET,
-        "aec3_sweep": env_truthy(env.get(AEC3_SWEEP_ENV_FLAG)),
-        "aec3_sweep_source": aec3_sweep_source,
+        **_output_flags(env, aec3_sweep_source),
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
-        "recorder_outputs": recorder_outputs,
+        "recorder_outputs": _output_flags(corpus_env, aec3_sweep_source),
     }
     status["active"] = any(
         key in corpus_env

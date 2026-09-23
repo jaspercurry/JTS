@@ -21,6 +21,8 @@ from math import pi
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.env_load import parse_bool_value
+
 
 # ---------------------------------------------------------------------
 # Identity
@@ -795,11 +797,9 @@ def chip_beam_plan_from_env(env: Mapping[str, str]) -> ChipBeamPlan | None:
         variant is not None and chip_beam_plan_for_variant(variant) is None
     ):
         return None
-    truthy = {"1", "true", "yes", "on"}
-    if (
-        str(env.get(CHIP_AEC_ENABLED_ENV, "")).strip().lower() in truthy
-        or str(env.get(CORPUS_CHIP_AEC_ENABLED_ENV, "")).strip().lower()
-        in truthy
+    if any(
+        parse_bool_value(env.get(name))
+        for name in (CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_ENV)
     ):
         return SQUARE_FIXED_150_210_PLAN
     return None

@@ -41,7 +41,7 @@ from ...chip_aec.policy import (
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
-from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
+from ...env_load import env_file_path, parse_bool_value, parse_env_file as _shared_parse_env_file
 from ...json_fields import finite_float, sha256_file
 from ...service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (
@@ -1668,8 +1668,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     parked = _parked_follower_result("DTLN engine")
     if parked is not None:
         return parked
-    enabled = os.environ.get(DTLN_ENABLED_ENV, "0").strip().lower()
-    if enabled not in ("1", "true", "yes", "on"):
+    if not parse_bool_value(os.environ.get(DTLN_ENABLED_ENV)):
         return CheckResult(
             "DTLN-aec engine", "ok",
             "JASPER_AEC_DTLN_ENABLED not set (dual-stream mode)",
