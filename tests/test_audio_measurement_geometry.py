@@ -199,6 +199,7 @@ _ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
         pytest.param({"distance_m": "tall"}, "distance_m", id="not_a_number"),
         pytest.param({"distance_m": float("nan")}, "distance_m", id="nan"),
         pytest.param({"ceiling_height_m": float("inf")}, "ceiling_height_m", id="inf"),
+        pytest.param({"distance_m": 10**400}, "distance_m", id="huge_int"),
         pytest.param(
             {"front_wall_m": 0.85, "side_wall_m": 1.4}, "", id="with_walls",
         ),

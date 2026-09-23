@@ -115,26 +115,19 @@ def test_prove_static_delay_binding_passes_for_a_matching_graph():
     assert delay_ms == pytest.approx(0.34)
 
 
-def test_prove_static_delay_binding_rejects_negative_delay_us():
+@pytest.mark.parametrize(
+    "delay_us",
+    [-1.0, MAX_DSP_DELAY_US + 1.0, float("inf"), float("nan"), "340", True, 10**400],
+    ids=["negative", "above_dsp_ceiling", "inf", "nan", "text", "bool", "huge_int"],
+)
+def test_prove_static_delay_binding_rejects_an_unusable_delay_us(delay_us):
     graph = _graph(POSITIVE_IDENTITY_FILTER, NEGATIVE_IDENTITY_FILTER)
     with pytest.raises(DelayGraphProofError) as caught:
         prove_static_delay_binding(
             graph,
             delay_filter_name="cut_only",
             channels=(0,),
-            delay_us=-1.0,
-        )
-    assert caught.value.code == "candidate_invalid"
-
-
-def test_prove_static_delay_binding_rejects_delay_us_above_dsp_ceiling():
-    graph = _graph(POSITIVE_IDENTITY_FILTER, NEGATIVE_IDENTITY_FILTER)
-    with pytest.raises(DelayGraphProofError) as caught:
-        prove_static_delay_binding(
-            graph,
-            delay_filter_name="cut_only",
-            channels=(0,),
-            delay_us=MAX_DSP_DELAY_US + 1.0,
+            delay_us=delay_us,
         )
     assert caught.value.code == "candidate_invalid"
 
@@ -205,6 +198,7 @@ def test_prove_static_delay_binding_rejects_non_delay_filter():
         (True, "volume_limit_invalid"),
         ("0.0", "volume_limit_invalid"),
         (float("nan"), "snapshot_invalid"),
+        pytest.param(10**400, "volume_limit_invalid", id="huge_int"),
         (1.0, "volume_limit_invalid"),
         (0.0, None),
         (-12.5, None),

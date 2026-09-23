@@ -19,6 +19,7 @@ import yaml
 
 from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.json_fields import finite_float
 
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
     {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}
@@ -131,11 +132,9 @@ def _positive_int(value: Any, what: str) -> int:
 
 
 def _finite_float(value: Any, what: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EmitDerivationError(f"{what} is not a number")
-    number = float(value)
-    if number != number or number in (float("inf"), float("-inf")):
-        raise EmitDerivationError(f"{what} is not finite")
+    number = finite_float(value)
+    if number is None:
+        raise EmitDerivationError(f"{what} is not a finite number")
     return number
 
 

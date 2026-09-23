@@ -22,7 +22,7 @@ import numpy as np
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.sweep import read_wav_mono
-from jasper.json_fields import sha256_file
+from jasper.json_fields import finite_float, sha256_file
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
@@ -92,9 +92,9 @@ def doc_pose_key(doc: Mapping[str, Any]) -> str:
     the doc can still name the ones it passed over (#3503).
     """
     return _pose_key(
-        _number(doc.get("position_deg")),
-        _number(doc.get("vertical_deg")),
-        _number(doc.get("mark_distance_m")),
+        finite_float(doc.get("position_deg")),
+        finite_float(doc.get("vertical_deg")),
+        finite_float(doc.get("mark_distance_m")),
         *_doc_pose_category(doc),
     )
 
@@ -109,7 +109,7 @@ def _doc_pose_category(doc: Mapping[str, Any]) -> tuple[str, tuple[float, ...] |
     offset = doc.get("seat_offset_m")
     if kind != POSE_KIND_SEAT or not isinstance(offset, Sequence):
         return kind, None
-    numbers = [_number(v) for v in offset]
+    numbers = [finite_float(v) for v in offset]
     if len(numbers) != 3 or any(v is None for v in numbers):
         return kind, None
     return kind, tuple(numbers)  # type: ignore[arg-type]
@@ -377,9 +377,9 @@ def _bind_record(
             wav=wav,
             program=program,
             program_sha256=str(sha),
-            azimuth_deg=_number(doc.get("position_deg")),
-            vertical_deg=_number(doc.get("vertical_deg")),
-            mark_distance_m=_number(doc.get("mark_distance_m")),
+            azimuth_deg=finite_float(doc.get("position_deg")),
+            vertical_deg=finite_float(doc.get("vertical_deg")),
+            mark_distance_m=finite_float(doc.get("mark_distance_m")),
             radiated_band_hz=retained_band or band,
             sample_rate=int(rate),
             ir=ir,
@@ -448,10 +448,6 @@ def _capture_response(
         raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {
             "capture": str(wav), "role": role, "detail": str(exc),
         }) from exc
-
-
-def _number(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) else None
 
 
 # Published close-reference refusal names also serve the shared selector.

@@ -83,7 +83,7 @@ def test_sweep_generation_golden_shape():
 
 @pytest.mark.parametrize(
     "amplitude_dbfs",
-    (3.0, float("nan"), float("inf"), True, "-12"),
+    (3.0, float("nan"), float("inf"), True, "-12", pytest.param(-(10**400), id="huge_int")),
 )
 def test_sweep_generation_rejects_invalid_amplitude(amplitude_dbfs) -> None:
     with pytest.raises(ValueError, match="finite non-positive"):

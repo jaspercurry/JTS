@@ -192,6 +192,11 @@ def test_declared_geometry_reads_the_matching_entry():
     pytest.param(_draft(slope=None), id="no_slope"),
     pytest.param(_draft(filter_type=None), id="no_filter_type"),
     pytest.param(_draft(fc_hz=None), id="no_frequency"),
+    pytest.param(_draft(fc_hz=float("inf")), id="infinite_frequency"),
+    pytest.param(_draft(fc_hz=float("nan")), id="nan_frequency"),
+    pytest.param(_draft(fc_hz="2500"), id="text_frequency"),
+    pytest.param(_draft(fc_hz=True), id="bool_frequency"),
+    pytest.param(_draft(fc_hz=10**400), id="huge_int_frequency"),
 ])
 def test_declared_geometry_refuses_an_entry_it_cannot_fully_read(draft):
     """An entry missing any of the three fields is left alone, not completed.
