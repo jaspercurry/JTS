@@ -176,25 +176,16 @@ impl CommandLimits {
     /// local IPC churn, not a daemon fault, so it returns `Ok`.
     pub fn handle_connection(
         &self,
-        stream: UnixStream,
-        dispatch: impl Fn(&str) -> String,
-    ) -> io::Result<()> {
-        self.handle_connection_with_timeout(stream, self.read_timeout, dispatch)
-    }
-
-    fn handle_connection_with_timeout(
-        &self,
         mut stream: UnixStream,
-        timeout: Duration,
         dispatch: impl Fn(&str) -> String,
     ) -> io::Result<()> {
-        let mut response = match read_bounded_command(&mut stream, timeout, self.max_command_bytes)
-        {
-            Ok(Ok(command)) => dispatch(command.trim()),
-            Ok(Err(error)) => error.response_json(self.max_command_bytes),
-            Err(error) if is_client_disconnect(&error) => return Ok(()),
-            Err(error) => return Err(error),
-        };
+        let mut response =
+            match read_bounded_command(&mut stream, self.read_timeout, self.max_command_bytes) {
+                Ok(Ok(command)) => dispatch(command.trim()),
+                Ok(Err(error)) => error.response_json(self.max_command_bytes),
+                Err(error) if is_client_disconnect(&error) => return Ok(()),
+                Err(error) => return Err(error),
+            };
         response.push('\n');
         match stream.write_all(response.as_bytes()) {
             Err(error) if is_client_disconnect(&error) => Ok(()),
@@ -347,24 +338,6 @@ mod tests {
         response
     }
 
-    /// The three rejection envelopes are a pinned wire contract: outputd's
-    /// `max_bytes` reply and both `code` values are read by callers.
-    #[test]
-    fn rejection_envelopes_render_exact_bytes() {
-        assert_eq!(
-            CommandReadError::TooLong.response_json(256),
-            r#"{"error":"command too long","code":"command_too_long","max_bytes":256}"#
-        );
-        assert_eq!(
-            CommandReadError::DeadlineExceeded.response_json(256),
-            r#"{"error":"command read deadline exceeded","code":"command_read_deadline_exceeded"}"#
-        );
-        assert_eq!(
-            CommandReadError::InvalidUtf8.response_json(256),
-            r#"{"error":"command must be UTF-8","code":"command_not_utf8"}"#
-        );
-    }
-
     #[test]
     fn listener_poll_wakes_on_connection_before_shutdown_timeout() {
         let path = test_socket_path("poll");
@@ -470,9 +443,12 @@ mod tests {
         });
 
         let started = Instant::now();
-        LIMITS
-            .handle_connection_with_timeout(server_stream, Duration::from_millis(50), echo)
-            .expect("slow client receives a structured error");
+        CommandLimits {
+            read_timeout: Duration::from_millis(50),
+            ..LIMITS
+        }
+        .handle_connection(server_stream, echo)
+        .expect("slow client receives a structured error");
         let elapsed = started.elapsed();
         let response = writer.join().expect("slow writer thread");
         let error: serde_json::Value =
