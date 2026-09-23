@@ -29,24 +29,27 @@ Acceptable.
 """
 from __future__ import annotations
 
+import json
 import logging
 import types
 from typing import Any, Iterable
 
+from ..atomic_io import atomic_write_text
 from ..log_event import log_event
-# Pack-payload assembly lives in the LIGHT read-side module so the
-# socket-activated /assistant/tools/ wizard can group tools without importing
-# jasper.tools. The heavy bake-side writer here reuses the same helper so the
-# baked /run/jasper/tools.json `packs` and the wizard's re-derived view can't
-# drift (they were two copies that already had).
-from ..tool_catalog_view import _build_pack_payloads
+# Path, schema version, and pack-payload assembly live in the LIGHT read-side
+# module so the socket-activated /assistant/tools/ wizard can use them without
+# importing jasper.tools. The heavy bake-side writer here reuses the same
+# three so the baked /run/jasper/tools.json and the wizard's re-derived view
+# can't drift (they were two copies that already had).
+from ..tool_catalog_view import (
+    CATALOG_SCHEMA_VERSION,
+    DEFAULT_CATALOG_PATH,
+    build_pack_payloads,
+)
 from . import ToolRegistry
 from .packs import TOOL_PACKS, CapabilityPack, CatalogPack, ToolDeps, register_packs
 
 logger = logging.getLogger(__name__)
-
-CATALOG_SCHEMA_VERSION = 2
-DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 
 # Tools that are REAL registry/manifest entries but are NOT independently
 # user-toggleable, so they get no /assistant/tools/ card. home_assistant_confirm
@@ -211,7 +214,7 @@ def build_catalog(
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "tools": tools,
-        "packs": _build_pack_payloads(tools),
+        "packs": build_pack_payloads(tools),
     }
 
 
@@ -226,9 +229,6 @@ def write_catalog(
     """Atomically write the catalog to `path` (world-readable 0644).
     Fail-soft: a write error logs and never raises — the daemon must
     boot even if /run isn't writable in a dev environment."""
-    import json
-
-    from ..atomic_io import atomic_write_text
     try:
         catalog = build_catalog(
             live_registry,
