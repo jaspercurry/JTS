@@ -36,6 +36,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
 )
 from tests._lock_holder import spawn_lock_holder
+from tests._log_events import event_field_maps, event_fields
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.output_topology_store import save_output_topology
 
@@ -635,7 +636,8 @@ def test_entry_lock_fails_open_when_unopenable(tmp_path, caplog):
             tmp_path / "missing-dir" / "l.lock", timeout_seconds=0.1
         )
     assert lock.outcome == "unavailable" and lock.fh is None
-    assert "entry_lock_unavailable" in caplog.text
+    fields = event_fields(caplog, "fanin.coupling_reconcile")
+    assert fields["result"] == "entry_lock_unavailable"
 
 
 def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
@@ -750,7 +752,8 @@ def test_cli_auto_aborts_loudly_on_entry_lock_contention(
     assert rc == 1
     err = capsys.readouterr().err
     assert str(lock_path) in err and "another reconcile pass" in err
-    assert "entry_lock_contended" in caplog.text
+    fields = event_fields(caplog, "fanin.coupling_reconcile")
+    assert fields["result"] == "entry_lock_contended"
 
 
 # --- shm_ring coupling (Ring A + Ring B, P2) ---------------------------------
@@ -2057,7 +2060,7 @@ def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
         OUTPUTD_RING_PATH_ENV_VAR,
     )
 
-    def _pass(marker: str, ring_path: str) -> tuple[str, str]:
+    def _pass(marker: str, ring_path: str) -> tuple[str, list[dict[str, str]]]:
         # monkeypatch.setenv first so the reconciler's in-process env sync is
         # unwound at teardown rather than leaking into the next test.
         monkeypatch.setenv(OUTPUTD_RING_PATH_ENV_VAR, ring_path)
@@ -2078,22 +2081,25 @@ def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
                 restart_fanin=rf,
                 reconcile_camilla=rc,
             )
-        return outputd_env.read_text(encoding="utf-8"), caplog.text
+        converged = event_field_maps(
+            caplog, "fanin.coupling_reconcile", result="ring_path_converged"
+        )
+        return outputd_env.read_text(encoding="utf-8"), converged
 
-    armed_text, armed_log = _pass("1", DEFAULT_OUTPUTD_RING_PATH)
+    armed_text, armed_converged = _pass("1", DEFAULT_OUTPUTD_RING_PATH)
     assert (
         f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_ACTIVE_RING_PATH}" in armed_text
     ), armed_text
-    assert "result=ring_path_converged" in armed_log, armed_log
-    assert DEFAULT_OUTPUTD_RING_PATH in armed_log, armed_log
+    (armed_fields,) = armed_converged
+    assert armed_fields["was"] == DEFAULT_OUTPUTD_RING_PATH
 
-    cleared_text, cleared_log = _pass("", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
+    cleared_text, cleared_converged = _pass("", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
     assert (
         f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}" in cleared_text
     ), cleared_text
-    assert "result=ring_path_converged" in cleared_log, cleared_log
+    (_cleared_fields,) = cleared_converged
 
     # ...and an already-converged box does NOT claim a heal. Without this the
     # event would fire on every pass and mean nothing.
-    _steady_text, steady_log = _pass("1", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
-    assert "result=ring_path_converged" not in steady_log, steady_log
+    _steady_text, steady_converged = _pass("1", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
+    assert steady_converged == []

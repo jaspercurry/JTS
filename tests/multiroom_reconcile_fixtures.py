@@ -4,10 +4,12 @@
 
 """Shared test doubles for jasper.multiroom.reconcile's test suite.
 
-Synthetic GroupingConfig builders and the main()-I/O / active-leader patch
-helpers. Consumed by tests/test_multiroom_reconcile.py and by the
-cross-module decision-trace pin in docs/adr and PLAN documents for the
-reconcile.py split — both import these by name rather than redefining them.
+Synthetic GroupingConfig builders, a CamillaDSP test double, and the
+main()-I/O / active-leader patch helpers. Consumed by
+tests/test_multiroom_reconcile.py, tests/test_multiroom_active_leader_config.py,
+tests/test_multiroom_follower_config.py, and by the cross-module
+decision-trace pin in docs/adr and PLAN documents for the reconcile.py
+split — all import these by name rather than redefining them.
 """
 
 from __future__ import annotations
@@ -84,6 +86,23 @@ def _invalid() -> GroupingConfig:
         codec=DEFAULT_CODEC,
         error="JASPER_GROUPING_BOND_ID is empty (grouping is on)",
     )
+
+
+# ---------- CamillaDSP test double ----------
+
+
+class _FakeCamilla:
+    def __init__(self, current: str | None) -> None:
+        self._current = current
+        self.loaded: list[str] = []
+
+    async def get_config_file_path(self, *, best_effort: bool = True):
+        return self._current
+
+    async def set_config_file_path(self, path, *, best_effort: bool = False):
+        self.loaded.append(str(path))
+        self._current = str(path)
+        return True
 
 
 # ---------- main(): assembles + writes args BEFORE applying the plan ----------

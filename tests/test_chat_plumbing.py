@@ -9,6 +9,7 @@ from pathlib import Path
 from jasper.web.nav import entry
 
 from . import nginx_site
+from .systemd_unit_helpers import assignments_for, value_for, values_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,26 +24,25 @@ def test_chat_web_is_socket_nginx_and_entrypoint_wired():
         ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
     ).read_text()
 
-    assert "ListenStream=127.0.0.1:8787" in socket_unit
-    assert "Type=notify" in service_unit
-    assert "WatchdogSec=30s" in service_unit
-    assert "User=jasper-web" in service_unit
-    assert "Group=jasper" in service_unit
-    assert "UMask=0007" in service_unit
-    assert (
-        "ExecStart=/opt/jasper/.venv/bin/jasper-chat-web "
-        "--host 127.0.0.1 --port 8787"
-    ) in service_unit
-    for hardening in (
-        "ProtectSystem=strict",
-        "ReadWritePaths=/var/lib/jasper",
-        "ProtectHome=true",
-        "PrivateTmp=true",
-        "NoNewPrivileges=true",
-        "CapabilityBoundingSet=",
-        "SystemCallFilter=@system-service",
+    assert "127.0.0.1:8787" in assignments_for(socket_unit, "ListenStream")
+    assert value_for(service_unit, "Type") == "notify"
+    assert value_for(service_unit, "WatchdogSec") == "30s"
+    assert value_for(service_unit, "User") == "jasper-web"
+    assert value_for(service_unit, "Group") == "jasper"
+    assert value_for(service_unit, "UMask") == "0007"
+    assert value_for(service_unit, "ExecStart") == (
+        "/opt/jasper/.venv/bin/jasper-chat-web --host 127.0.0.1 --port 8787"
+    )
+    assert "/var/lib/jasper" in values_for(service_unit, "ReadWritePaths")
+    for key, expected in (
+        ("ProtectSystem", "strict"),
+        ("ProtectHome", "true"),
+        ("PrivateTmp", "true"),
+        ("NoNewPrivileges", "true"),
+        ("CapabilityBoundingSet", ""),
+        ("SystemCallFilter", "@system-service"),
     ):
-        assert hardening in service_unit
+        assert value_for(service_unit, key) == expected
     assert "location /assistant/chat/" in nginx
     assert "location = /assistant/chat { return 308 /assistant/chat/; }" in nginx
     assert "proxy_pass http://127.0.0.1:8787/;" in nginx

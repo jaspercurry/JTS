@@ -14,6 +14,7 @@ from jasper import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+from tests.multiroom_reconcile_fixtures import _FakeCamilla
 
 
 import asyncio
@@ -90,20 +91,6 @@ def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
         trim_db=trim_db,
         error=None,
     )
-
-
-class _FakeCamilla:
-    def __init__(self, current: str | None) -> None:
-        self._current = current
-        self.loaded: list[str] = []
-
-    async def get_config_file_path(self, *, best_effort: bool = True):
-        return self._current
-
-    async def set_config_file_path(self, path, *, best_effort: bool = False):
-        self.loaded.append(str(path))
-        self._current = str(path)
-        return True
 
 
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview):
