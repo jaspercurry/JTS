@@ -47,7 +47,10 @@ from ..env_load import (
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import OUTPUTD_SERVICE
+from ..service_units import (
+    AEC_RECONCILE_SERVICE, CAMILLA_SERVICE, OUTPUTD_SERVICE,
+    SHAIRPORT_SYNC_SERVICE, run_systemctl,
+)
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
@@ -95,15 +98,10 @@ logger = logging.getLogger(__name__)
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
 
 
-# ---------- Unit names (single source of truth) ----------
-#
-# SNAPSERVER_UNIT / SNAPCLIENT_UNIT live in reconcile_plan.py beside plan(),
-# which needs them; imported above so this stays their only definition.
-
 # The AirPlay receiver. A FOLLOWER parks it; a LEADER keeps it running and gets
 # its backend latency offset re-derived on bond/unbond (a bonded leader folds in
 # the Snapcast round-trip buffer — see airplay_grouping_env).
-SHAIRPORT_UNIT = "shairport-sync.service"
+SHAIRPORT_UNIT = SHAIRPORT_SYNC_SERVICE
 # Short manager requests (probes, reset-failed) return promptly. Blocking
 # starts/restarts may wait for a normal service job, but must remain finite when
 # this module is run directly during install or repair, outside the grouping
@@ -169,13 +167,13 @@ _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
 # which outputd owns.
 
 OUTPUTD_UNIT = OUTPUTD_SERVICE
-CAMILLA_UNIT = "jasper-camilla.service"
+CAMILLA_UNIT = CAMILLA_SERVICE
 
 # jasper-aec-reconcile is the SINGLE owner of jasper-voice + jasper-aec-bridge
 # unit state. Role changes therefore KICK it rather than touching those units
 # here: it reads the derived park flag below and restarts-or-parks voice per
 # role + provider + mic, one writer total.
-AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
+AEC_RECONCILE_UNIT = AEC_RECONCILE_SERVICE
 AUDIO_HARDWARE_RECONCILE = "/usr/local/sbin/jasper-audio-hardware-reconcile"
 
 # camilla#2 — the endpoint-crossover CamillaDSP instance (:1235), armed ONLY on
@@ -588,13 +586,9 @@ def _apply(plan_: ReconcilePlan) -> int:
     for it in plan_.intents:
         verb = it.desired
         try:
-            subprocess.run(
-                ["systemctl", verb, it.unit],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
-            )
+            run_systemctl(
+                [verb, it.unit], timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+            ).check_returncode()
             log_event(
                 logger,
                 "multiroom.reconcile.unit",
@@ -702,12 +696,8 @@ def _reset_failed_unit(unit: str) -> None:
     Fail-soft and BEST-EFFORT: a reset-failed failure must never block the
     start/restart it precedes."""
     try:
-        subprocess.run(
-            ["systemctl", "reset-failed", unit],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        run_systemctl(
+            ["reset-failed", unit], timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
         )
     except (OSError, subprocess.SubprocessError) as e:
         log_event(
@@ -823,15 +813,10 @@ def _converge_sources_after_role(*, grouping_active: bool, units_changed: bool) 
     _reset_failed_unit(unit)
     busy = _source_reconciler_activation_busy()
     if busy is not False:
-        barrier_cmd = ["systemctl", "start", unit]
         try:
-            subprocess.run(
-                barrier_cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
-            )
+            run_systemctl(
+                ["start", unit], timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
+            ).check_returncode()
         except (OSError, subprocess.SubprocessError) as exc:
             stderr = getattr(exc, "stderr", "") or ""
             log_event(
@@ -850,15 +835,10 @@ def _converge_sources_after_role(*, grouping_active: bool, units_changed: bool) 
             state_was_unknown=busy is None,
         )
 
-    cmd = ["systemctl", "start", unit]
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
-        )
+        run_systemctl(
+            ["start", unit], timeout=_SOURCE_RECONCILE_START_TIMEOUT_SEC,
+        ).check_returncode()
     except (OSError, subprocess.SubprocessError) as exc:
         stderr = getattr(exc, "stderr", "") or ""
         log_event(
@@ -892,13 +872,9 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
         return True
     _reset_failed_unit(unit)
     try:
-        subprocess.run(
-            ["systemctl", "start", unit],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
-        )
+        run_systemctl(
+            ["start", unit], timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+        ).check_returncode()
     except FileNotFoundError:
         log_event(
             logger,
@@ -981,13 +957,9 @@ def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
     surfaces a unit left un-armed). camilla#2 carries NO
     StartLimitAction=reboot, so a failed arm fails closed to silence."""
     try:
-        subprocess.run(
-            ["systemctl", *verb, CROSSOVER_UNIT],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
-        )
+        run_systemctl(
+            [*verb, CROSSOVER_UNIT], timeout=_SYSTEMCTL_BLOCKING_TIMEOUT_SEC,
+        ).check_returncode()
     except (OSError, subprocess.SubprocessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         log_event(

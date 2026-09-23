@@ -362,69 +362,40 @@ async def test_probe_idle_logs_once_per_disable_edge(caplog):
         assert len(idle_lines) == 2
 
 
-async def test_is_shairport_unit_active_parses_systemctl_statuses(monkeypatch):
-    class _Proc:
-        def __init__(self, returncode: int, stdout: bytes) -> None:
-            self.returncode = returncode
-            self._stdout = stdout
-
+@pytest.mark.parametrize(
+    ("probe", "returncode", "stdout", "expected"),
+    [
+        ("active", 0, b"active\n", True),
+        ("active", 3, b"inactive\n", False),
+        ("active", 3, b"failed\n", False),
+        ("active", 3, b"deactivating\n", False),
+        ("active", 3, b"dead\n", False),
+        ("active", 1, b"unknown\n", False),
+        ("active", 1, b"", None),
+        ("disabled", 0, b"enabled\n", False),
+        ("disabled", 0, b"enabled-runtime\n", False),
+        ("disabled", 1, b"disabled\n", True),
+        ("disabled", 1, b"masked\n", True),
+        ("disabled", 1, b"masked-runtime\n", True),
+        ("disabled", 0, b"static\n", False),
+        ("disabled", 0, b"alias\n", False),
+        ("disabled", 1, b"", False),
+    ],
+)
+async def test_shairport_unit_probe_verdicts(monkeypatch, probe, returncode, stdout, expected):
+    class Proc:
         async def communicate(self):
-            return self._stdout, b""
+            return stdout, b""
 
-    cases = [
-        (0, b"active\n", True),
-        (3, b"inactive\n", False),
-        (3, b"failed\n", False),
-        (3, b"deactivating\n", False),
-        (3, b"dead\n", False),
-        (1, b"unknown\n", False),
-        (1, b"", None),
-    ]
+    proc = Proc()
+    proc.returncode = returncode
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr("jasper.systemd_probe.asyncio.create_subprocess_exec", fake_exec)
     sup = ShairportSupervisor()
-
-    for returncode, stdout, expected in cases:
-        async def fake_exec(*args, **kwargs):  # noqa: ARG001
-            return _Proc(returncode, stdout)
-
-        monkeypatch.setattr(
-            "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
-            fake_exec,
-        )
-        assert await sup.is_shairport_unit_active() is expected
-
-
-async def test_is_shairport_unit_disabled_parses_systemctl_states(monkeypatch):
-    """Only explicit deliberate-off states idle the supervisor; every
-    other state (or an unreadable one) keeps Tier 3 supervising."""
-    class _Proc:
-        def __init__(self, returncode: int, stdout: bytes) -> None:
-            self.returncode = returncode
-            self._stdout = stdout
-
-        async def communicate(self):
-            return self._stdout, b""
-
-    cases = [
-        (0, b"enabled\n", False),
-        (0, b"enabled-runtime\n", False),
-        (1, b"disabled\n", True),
-        (1, b"masked\n", True),
-        (1, b"masked-runtime\n", True),
-        (0, b"static\n", False),
-        (0, b"alias\n", False),
-        (1, b"", False),  # not-found / unreadable → keep supervising
-    ]
-    sup = ShairportSupervisor()
-
-    for returncode, stdout, expected in cases:
-        async def fake_exec(*args, **kwargs):  # noqa: ARG001
-            return _Proc(returncode, stdout)
-
-        monkeypatch.setattr(
-            "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
-            fake_exec,
-        )
-        assert await sup.is_shairport_unit_disabled() is expected
+    assert await getattr(sup, f"is_shairport_unit_{probe}")() is expected
 
 
 async def test_is_shairport_unit_disabled_fails_open_without_systemctl(
@@ -436,7 +407,7 @@ async def test_is_shairport_unit_disabled_fails_open_without_systemctl(
         raise FileNotFoundError("no such file: systemctl")
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
+        "jasper.systemd_probe.asyncio.create_subprocess_exec",
         boom,
     )
     sup = ShairportSupervisor()

@@ -16,54 +16,31 @@ from jasper.music_sources import Source
 ROOT = Path(__file__).resolve().parents[1]
 HOST = "jasper-input.service"
 HOST_REFRESH = ("try-restart", HOST)
-HOST_ACTIVE_PROBE = ("show", HOST, "--property=ActiveState")
+HOST_ACTIVE_PROBE = ("is-active", HOST)
 
 
 def _variant(value):
     return SimpleNamespace(value=value)
 
 
-def _recording_systemctl(calls, *, host_active: bool = True):
-    """Fake that accepts every verb and reports no loadable gate owner."""
-
+def _recording_systemctl(monkeypatch, calls, *, host_active=True, voice_active=False):
     def fake_systemctl(args):
         command = tuple(args)
         calls.append(command)
-        if command == HOST_ACTIVE_PROBE:
-            state = "active" if host_active else "failed"
-            return SimpleNamespace(
-                returncode=0, stdout=f"ActiveState={state}\n", stderr="",
-            )
+        if command[0] == "is-active":
+            active = voice_active if command[1] == reconcile.VOICE_UNIT else host_active
+            state = "active" if active else "inactive"
+            return SimpleNamespace(returncode=0, stdout=f"{state}\n", stderr="")
         if command[0] == "show":
             return SimpleNamespace(
                 returncode=0, stdout="LoadState=not-found\n", stderr="",
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    return fake_systemctl
-
-
-def _voice_owner_systemctl(calls, *, voice_active: bool = False):
-    """Fake that answers `show` for jasper-voice and reports no gate owner."""
-
-    def fake_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        if command[0] != "show":
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if command[1] == reconcile.VOICE_UNIT:
-            state = "active" if voice_active else "inactive"
-            return SimpleNamespace(
-                returncode=0, stdout=f"ActiveState={state}\n", stderr="",
-            )
-        if command == HOST_ACTIVE_PROBE:
-            return SimpleNamespace(
-                returncode=0, stdout="ActiveState=active\n", stderr="",
-            )
-        return SimpleNamespace(
-            returncode=0, stdout="LoadState=not-found\n", stderr="",
-        )
-
+    monkeypatch.setattr(
+        "jasper.systemd_probe.subprocess.run",
+        lambda args, **kwargs: fake_systemctl(args[1:]),
+    )
     return fake_systemctl
 
 
@@ -166,7 +143,7 @@ def test_no_change_boot_reconcile_does_not_restart_the_adapter_host(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_recording_systemctl(calls),
+            systemctl=_recording_systemctl(monkeypatch, calls),
             reason="boot",
         ),
     )
@@ -279,7 +256,7 @@ def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
     async def fail_bluez():
         pytest.fail("Bluetooth Off must not query BlueZ")
 
-    fake_systemctl = _recording_systemctl(calls)
+    fake_systemctl = _recording_systemctl(monkeypatch, calls)
 
     monkeypatch.setattr(
         reconcile,
@@ -326,7 +303,7 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
     async def fail_bluez():
         pytest.fail("malformed intent must fail closed before querying BlueZ")
 
-    fake_systemctl = _recording_systemctl(calls)
+    fake_systemctl = _recording_systemctl(monkeypatch, calls)
 
     monkeypatch.setattr(reconcile, "source_intent_enabled", invalid_intent)
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
@@ -368,7 +345,7 @@ def test_role_park_preserves_enabled_intent_but_withdraws_the_mic_source(
     async def fail_bluez():
         pytest.fail("a role-parked source must not query BlueZ")
 
-    fake_systemctl = _recording_systemctl(calls)
+    fake_systemctl = _recording_systemctl(monkeypatch, calls)
 
     monkeypatch.setattr(
         reconcile,
@@ -807,10 +784,10 @@ def test_refresh_voice_input_stays_within_its_declared_systemctl_budget():
     ],
 )
 def test_converge_voice_unit_runs_voice_for_as_long_as_a_mic_is_published(
-    wanted, env_changed, voice_active, action, command,
+    monkeypatch, wanted, env_changed, voice_active, action, command,
 ):
     calls = []
-    systemctl = _voice_owner_systemctl(calls, voice_active=voice_active)
+    systemctl = _recording_systemctl(monkeypatch, calls, voice_active=voice_active)
 
     assert reconcile.converge_voice_unit(
         wanted=wanted,
@@ -873,7 +850,7 @@ def test_reconciler_owns_voice_where_it_follows_the_accessory_mic(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(calls),
+            systemctl=_recording_systemctl(monkeypatch, calls),
             reason="pair",
         ),
     )
@@ -909,7 +886,7 @@ def test_owned_voice_restarts_when_published_sources_change_under_it(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(calls, voice_active=True),
+            systemctl=_recording_systemctl(monkeypatch, calls, voice_active=True),
             reason="pair",
         ),
     )
@@ -939,7 +916,7 @@ def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(calls),
+            systemctl=_recording_systemctl(monkeypatch, calls),
             reason="pair",
         ),
     )
@@ -1092,7 +1069,7 @@ def test_a_published_source_with_a_dead_host_is_not_a_clean_pass(
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(env_file),
-                    systemctl=_recording_systemctl(calls, host_active=False),
+                    systemctl=_recording_systemctl(monkeypatch, calls, host_active=False),
                     reason="pair",
                 ),
             )
@@ -1102,7 +1079,7 @@ def test_a_published_source_with_a_dead_host_is_not_a_clean_pass(
     assert _host_never_disarmed(calls)
 
 
-def test_withdrawing_the_source_does_not_require_a_running_host():
+def test_withdrawing_the_source_does_not_require_a_running_host(monkeypatch):
     """The teardown direction must stay quiet on a box whose bridge is stopped:
     with nothing published there is no producer to be missing."""
     calls = []
@@ -1111,7 +1088,7 @@ def test_withdrawing_the_source_does_not_require_a_running_host():
         (HOST,),
         restart=True,
         require_active=False,
-        systemctl=_recording_systemctl(calls, host_active=False),
+        systemctl=_recording_systemctl(monkeypatch, calls, host_active=False),
     ) == ()
     assert HOST_ACTIVE_PROBE not in calls
 
@@ -1141,3 +1118,18 @@ def test_the_installer_retires_the_deleted_adapter_unit_on_upgrade():
 
     assert "systemctl disable --now jasper-wiim-remote-mic.service" in body
     assert 'rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"' in body
+
+
+@pytest.mark.parametrize(
+    ("state", "returncode", "expected"),
+    [("active", 0, True), ("active", 1, False), ("reloading", 0, False),
+     ("activating", 3, False), ("deactivating", 3, False), ("inactive", 3, False)],
+)
+def test_active_probe_preserves_strict_readiness(monkeypatch, state, returncode, expected):
+    def run(args, **kwargs):
+        assert args == ["systemctl", "is-active", HOST]
+        assert kwargs["timeout"] == reconcile.SYSTEMCTL_TIMEOUT_SEC
+        return SimpleNamespace(returncode=returncode, stdout=state, stderr="")
+
+    monkeypatch.setattr("jasper.systemd_probe.subprocess.run", run)
+    assert reconcile._unit_active(HOST) is expected
