@@ -12,11 +12,16 @@ real Pi.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from jasper.aec_engines import dtln_models
+
+
+SCRIPT = Path(__file__).parents[1] / "scripts" / "convert-dtln-aec.sh"
 
 
 def test_registry_is_nonempty():
@@ -89,3 +94,59 @@ def test_files_method_honors_explicit_base_dir(tmp_path: Path):
     entry = dtln_models.default()
     files = entry.files(base_dir=tmp_path)
     assert all(p.parent == tmp_path for p, _, _ in files)
+
+
+@pytest.mark.parametrize("destination", [None, "relative output", "{tmp}/absolute output"])
+def test_conversion_stages_models_in_requested_directory(
+    tmp_path: Path, destination: str | None
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python3.11"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -eu
+if [[ ${1:-} == -m && ${2:-} == venv ]]; then
+    mkdir -p "$3/bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$3/bin/pip"
+    cp "$0" "$3/bin/python"
+    chmod +x "$3/bin/pip" "$3/bin/python"
+elif [[ ${1:-} == -m && ${2:-} == tf2onnx.convert ]]; then
+    while [[ $# -gt 0 ]]; do
+        if [[ $1 == --output ]]; then
+            printf converted > "$2"
+            break
+        fi
+        shift
+    done
+    echo Successfully converted
+fi
+"""
+    )
+    fake_python.chmod(0o755)
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nprintf downloaded > \"$2\"\n")
+    fake_curl.chmod(0o755)
+
+    workdir = tmp_path / "caller"
+    workdir.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    if destination is None:
+        expected = workdir / "dtln-aec-onnx"
+        env.pop("OUT_DIR", None)
+    else:
+        rendered = destination.format(tmp=tmp_path)
+        expected = Path(rendered)
+        if not expected.is_absolute():
+            expected = workdir / expected
+        env["OUT_DIR"] = rendered
+
+    subprocess.run(
+        ["bash", str(SCRIPT), "128"], cwd=workdir, env=env, timeout=30, check=True
+    )
+
+    assert {path.name for path in expected.iterdir()} == {
+        "dtln_aec_128_1.onnx",
+        "dtln_aec_128_2.onnx",
+    }

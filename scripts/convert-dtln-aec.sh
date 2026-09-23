@@ -33,6 +33,7 @@ SIZES_ARG="${1:-128 256}"
 TFLITE_URL_BASE="https://github.com/breizhn/DTLN-aec/raw/main/pretrained_models"
 
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 WORK_DIR="$(mktemp -d -t dtln-conversion.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -121,11 +122,10 @@ for stage in [1, 2]:
 sys.exit(0 if all_ok else 1)
 PYEOF
 
-    # Copy verified ONNX out of the temp dir
-    cp "dtln_aec_${SIZE}_1.onnx" "dtln_aec_${SIZE}_2.onnx" "$OLDPWD/$OUT_DIR/"
+    cp "dtln_aec_${SIZE}_1.onnx" "dtln_aec_${SIZE}_2.onnx" "$OUT_DIR/"
     echo "→ Staged: $OUT_DIR/dtln_aec_${SIZE}_{1,2}.onnx"
     echo ""
 done
 
 echo "Done. ONNX files:"
-ls -lh "$OLDPWD/$OUT_DIR/"*.onnx
+ls -lh "$OUT_DIR/"*.onnx
