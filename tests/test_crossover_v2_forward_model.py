@@ -626,7 +626,7 @@ def test_preview_matches_the_old_forward_model_exactly(emitted_preview, capsys):
 
 
 @pytest.mark.parametrize("fault,code,section,status", [
-    ("no-diagnostic", "round_capture_unreadable", "driver", 1),
+    ("no-diagnostic", "round_branch_diagnostic_missing", "driver", 1),
     ("wrong-base", "forward_model_candidate_mismatch", "driver", 1),
     ("corrupt-graph", "forward_model_graph_mismatch", "driver", 1),
     ("no-round", "evidence_unreadable", "driver", 2),
