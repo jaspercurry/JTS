@@ -5,9 +5,9 @@
 # touching any sound card, so the sound-control-node triggers above do not
 # cover it.
 #
-# DEVTYPE=="host" matches the controller node itself (hci0), not the
+# ENV{DEVTYPE}=="host" matches the controller node itself (hci0), not the
 # per-connection "link" device bluetoothd creates for each paired peer —
 # keyed generically so any adapter's arrival re-derives intent, not a
 # specific USB id.
 
-ACTION=="add", SUBSYSTEM=="bluetooth", DEVTYPE=="host", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"
+ACTION=="add", SUBSYSTEM=="bluetooth", ENV{DEVTYPE}=="host", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-source-intent-reconcile.service"
