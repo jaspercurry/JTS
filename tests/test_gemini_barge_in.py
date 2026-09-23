@@ -8,25 +8,16 @@ import asyncio
 
 import pytest
 
+try:
+    from google.genai import types as genai_types
+except ImportError:
+    pytest.skip("google-genai not installed in this environment", allow_module_level=True)
+
+from jasper.tools import ToolRegistry, tool
+from jasper.voice.gemini_session import GeminiLiveConnection, GeminiLiveTurn
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ServerContent as _SC
 from tests._live_turn_fake import drain_audio_chunks
-
-try:
-    from google.genai import types as genai_types
-
-    from jasper.voice.gemini_session import (
-        GeminiLiveConnection,
-        GeminiLiveTurn,
-    )
-
-    _HAVE_GENAI = True
-except ImportError:
-    _HAVE_GENAI = False
-
-pytestmark = pytest.mark.skipif(
-    not _HAVE_GENAI, reason="google-genai not installed in this environment"
-)
 
 
 def _turn(conn: "GeminiLiveConnection") -> "GeminiLiveTurn":
@@ -71,8 +62,6 @@ def test_build_config_uses_typed_enums_and_validated_tool_declarations():
     and ``FunctionDeclaration`` models (not raw strings/dicts). Pydantic
     coerces the old raw forms into the same models, so the assertions below
     prove the typed rewrite changes nothing on the wire."""
-    from jasper.tools import ToolRegistry, tool
-
     @tool()
     def sample_tool() -> dict:
         """A sample tool for the structured config pin."""
