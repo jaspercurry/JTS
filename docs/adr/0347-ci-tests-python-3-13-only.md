@@ -5,9 +5,10 @@
 - **Context:** The Pi runs Python 3.13, the interpreter PiOS Trixie ships.
   The 2026-08 right-sizing cut CI's 3.11/3.12/3.13 test matrix to 3.13 as a
   speed measure and left restoring it as an owner call. It left behind a
-  single-entry matrix, a `pytest` aggregate job that only re-checked that
-  matrix, and a 3.11 floor (`requires-python`, ruff's target, mypy's
-  `python_version`) that nothing tested. The owner decided on #5643 (D-32).
+  single-entry matrix, a `pytest` aggregate job that only re-checked the
+  policy preflight and that matrix, and a 3.11 floor (`requires-python`,
+  ruff's target, mypy's `python_version`) that nothing tested. The owner
+  decided on #5643 (D-32).
 - **Decision:** CI runs the suite on Python 3.13 only, the interpreter the Pi
   runs; there is no version matrix. `requires-python`, ruff's
   `target-version` and mypy's `python_version` all floor at 3.13.

@@ -149,13 +149,13 @@ Two operational notes:
   to it and must be added by hand with a note saying why.
 - **Emergency override.** If CI is wedged or GitHub Actions is down and a
   fix genuinely cannot wait, do not leave `main` unprotected. If the
-  aggregate itself is broken, first restore the prior `pytest` and `rust`
-  contexts, then diagnose. The rollback API shape is:
+  aggregate itself is broken, first restore the `pytest`, `python policy`
+  and `rust` contexts, then diagnose. The rollback API shape is:
 
   ```sh
   gh api -X PUT repos/<owner>/<repo>/branches/main/protection \
     -H "Accept: application/vnd.github+json" --input - <<'JSON'
-  {"required_status_checks":{"strict":false,"contexts":["pytest","rust"]},
+  {"required_status_checks":{"strict":false,"contexts":["pytest","python policy","rust"]},
    "enforce_admins":true,"required_pull_request_reviews":null,
    "restrictions":null,"allow_force_pushes":false,"allow_deletions":false,
    "required_conversation_resolution":true}
