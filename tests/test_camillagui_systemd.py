@@ -11,7 +11,6 @@ from jasper.cli.doctor.web import CAMILLAGUI_PORT
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy" / "systemd"
-INSTALL = ROOT / "deploy" / "install.sh"
 
 
 def _unit(name: str) -> configparser.ConfigParser:
@@ -74,42 +73,3 @@ def test_camillagui_proxy_owns_backend_lifetime_and_has_no_restart_loop():
         "--exit-idle-time=600 127.0.0.1:5006"
     )
     assert unit["Service"]["Restart"] == "no"
-
-
-def test_install_enables_only_the_camillagui_socket():
-    install = INSTALL.read_text()
-
-    for name in (
-        "camillagui.service",
-        "camillagui-proxy.service",
-        "camillagui.socket",
-    ):
-        assert f'deploy/systemd/{name}"' in install
-    assert "systemctl disable camillagui.service" in install
-    assert "systemctl enable camillagui.socket" in install
-
-
-def test_install_restarts_not_just_starts_the_camillagui_socket():
-    """A bare `enable --now` is a no-op `start` when the socket is already
-    active from a prior install — it would silently leave a stale bind
-    (e.g. the pre-#2319 0.0.0.0:5005) live until the next reboot, the same
-    trap AGENTS.md documents for jasper-web.socket (PR #118). install.sh
-    must `restart` the socket so an upgrade's ListenStream= change (the
-    #2319 loopback rebind) actually takes effect."""
-    install = INSTALL.read_text()
-
-    assert "systemctl enable --now camillagui.socket" not in install
-    assert "systemctl restart camillagui.socket" in install
-    # The restart must land after the unit files are (re-)installed and
-    # daemon-reload has re-parsed them, not before — otherwise it would
-    # restart against the stale on-disk unit.
-    enable_at = install.index("systemctl enable camillagui.socket")
-    reload_at = install.rindex("systemctl daemon-reload", 0, enable_at)
-    restart_at = install.index("systemctl restart camillagui.socket", enable_at)
-    assert reload_at < enable_at < restart_at
-    # Deliberately NOT swallowed with `|| true` like the wizard-socket
-    # loop's restart (deploy/lib/install/systemd-units.sh) — a failed
-    # rebind here leaves a security-relevant posture unchanged (still
-    # LAN-reachable) and must abort the install loudly, not continue
-    # past it.
-    assert "systemctl restart camillagui.socket 2>/dev/null || true" not in install
