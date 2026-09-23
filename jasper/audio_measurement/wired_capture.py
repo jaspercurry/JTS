@@ -22,19 +22,21 @@ registry and stays there (``active_speaker.crossover_v2.wired_stimulus``).
 reconciler's voice-candidate exclusion, #2703), so a voice array or USB DAC can never be
 selected. Probed fresh at session prepare, no reconciler: presence is a per-session fact.
 
-**CLOCK RULE** (inherited from :mod:`jasper.route_latency.mic_readers`): the mic is its own USB
-clock master (ASYNC endpoint), drifting against both ``CLOCK_MONOTONIC`` and the DAC clock. The
-reader takes a fresh ``time.monotonic_ns()`` after every blocking read rather than extrapolating
-from a stream-start anchor; cross-clock drift within one capture is the analyzer's business, not
-"corrected" here.
+**Loss sizing.** The mic is its own USB clock master (ASYNC endpoint), drifting against both
+``CLOCK_MONOTONIC`` and the DAC clock; that drift is the analyzer's business, not "corrected"
+here. An overrun loses everything from the last delivered frame to the read that restarts the
+stream, the ring ALSA discards included, so a loss is the monotonic time since that stretch of
+stream started minus the audio it delivered. A read's return time is no anchor: a reader
+starved of the GIL returns late with audio captured long before (#5632). Drift over one capture
+is milliseconds; any real overrun loses at least the ring.
 
 **Frame accounting mirrors the browser's, into the same wire keys** (the seam contract,
 :mod:`jasper.active_speaker.crossover_v2.capture_source`): ``frames`` (ALSA-accumulated,
 counted in the read loop), ``encoded_frames`` (counted INDEPENDENTLY at encode time so a
 dropped frame unbalances the ledger instead of vanishing), ``capture_gaps`` (EXACT discontinuity
-count: overruns and zero-length reads), and ``capture_gap_frames`` (an ESTIMATE derived from
-per-chunk monotonic timestamps, floored at 1/event — an upper bound, but its bias can't change
-a verdict since the ledger fails on ANY nonzero value).
+count: overruns and zero-length reads), and ``capture_gap_frames`` (an ESTIMATE sized as above,
+floored at 1/event; its error can't change a verdict since the ledger fails on ANY nonzero
+value).
 
 **The zero-run scan is the browser's dropout detector, re-homed** (#2557: a capture-FIFO
 dropout writes an unbroken run of >=128 exact digital zeros into a live room's noise floor,
@@ -60,7 +62,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
@@ -122,6 +124,16 @@ START_TIMEOUT_S = 5.0
 # Consecutive failed reads before the reader gives up. pyalsaaudio recovers an overrun
 # internally and returns the negative once, so a chain this long means the device is gone.
 MAX_CONSECUTIVE_READ_FAILURES = 8
+
+#: Periods in the ALSA capture ring: 32 x 1024 frames ≈ 683 ms at 48 kHz. A reader stalled
+#: that long (#5632) reads the backlog late instead of losing it, so the SPL stop judges that
+#: audio late instead of never. Takes are analyzed offline, so only continuity counts.
+CAPTURE_RING_PERIODS = 32
+
+#: Audio the reader collects before the SPL stop judges it (5 reads of 1024 frames at
+#: 48 kHz). One numpy pass per batch, not per read, keeps the reader's GIL turns under web
+#: load (#5632). The stop still judges every period; a batch delays a trip by less than this.
+SPL_BATCH_S = 0.1
 
 #: Post-roll recorded after the play call returns. Derivation, evidence
 #: named: the composed programs already END with 0.5 s of in-program tail
@@ -210,26 +222,36 @@ class WiredSplMonitor:
         dbfs = 10.0 * math.log10(mean_square) if mean_square > 0 else float("-inf")
         return self.sensitivity.db_spl_from_dbfs(dbfs)
 
-    def observe(self, data: bytes, frames: int, channels: int, *, sample_rate_hz: int) -> None:
+    def observe(self, periods: Sequence[bytes], channels: int, *, sample_rate_hz: int) -> None:
+        """Judge each period (one read) as if it arrived alone: the first one over the ceiling
+        stops the watch, and only the samples up to it reach the level."""
         import numpy as np
 
-        samples = np.frombuffer(data, dtype="<i4", count=frames * channels)
-        column = samples.reshape(-1, channels)[:, self.channel].astype(np.float64)
-        rms = float(np.sqrt(np.mean(np.square(column / np.iinfo(np.int32).max))))
-        dbfs = 20.0 * math.log10(rms) if rms > 0 else float("-inf")
-        observed = self.sensitivity.db_spl_from_dbfs(dbfs)
-        self.max_window_db_spl = max(self.max_window_db_spl, observed)
-        if observed > self.ceiling_db_spl:
-            self.error = WiredSplCeilingExceeded(observed, self.ceiling_db_spl)
-            self.exceeded.set()
+        sizes = [len(period) // (channels * BYTES_PER_SAMPLE) for period in periods]
+        column = np.frombuffer(b"".join(periods), dtype="<i4").reshape(-1, channels)[:, self.channel]
+        squares = np.square(column.astype(np.float64) / np.iinfo(np.int32).max)
+        if len(set(sizes)) == 1:
+            # A row mean is the same pairwise sum as a lone period's mean: bit-identical values.
+            mean_squares = squares.reshape(len(sizes), -1).mean(axis=1)
+        else:
+            mean_squares = [part.mean() for part in np.split(squares, np.cumsum(sizes)[:-1])]
+        frames = 0
+        for size, mean_square in zip(sizes, mean_squares):
+            frames += size
+            rms = math.sqrt(mean_square)
+            dbfs = 20.0 * math.log10(rms) if rms > 0 else float("-inf")
+            observed = self.sensitivity.db_spl_from_dbfs(dbfs)
+            self.max_window_db_spl = max(self.max_window_db_spl, observed)
+            if observed > self.ceiling_db_spl:
+                self.error = WiredSplCeilingExceeded(observed, self.ceiling_db_spl)
+                self.exceeded.set()
+                break
 
         self._level_window_frames = max(1, round(LEVEL_WINDOW_S * sample_rate_hz))
         offset = 0
         while offset < frames:
             count = min(frames - offset, self._level_window_frames - self._level_frames)
-            self._level_sum_squares += float(np.sum(np.square(
-                column[offset:offset + count] / np.iinfo(np.int32).max,
-            )))
+            self._level_sum_squares += float(np.sum(squares[offset:offset + count]))
             self._level_frames += count
             offset += count
             if self._level_frames == self._level_window_frames:
@@ -360,6 +382,7 @@ def open_alsa_capture_pcm(
             channels=channels,
             format=alsaaudio.PCM_FORMAT_S32_LE,
             periodsize=period_frames,
+            periods=CAPTURE_RING_PERIODS,
         )
     except alsaaudio.ALSAAudioError as exc:
         raise WiredCaptureError(
@@ -368,6 +391,16 @@ def open_alsa_capture_pcm(
             "measurement microphone still plugged in, and is another "
             "process holding it?"
         ) from exc
+
+
+def _read_errors() -> tuple[type[Exception], ...]:
+    """What a failed capture read raises. ``ALSAAudioError`` derives from ``Exception``, so
+    uncaught, an unplugged mic would end the reader silently, SPL watch and all."""
+    try:
+        from alsaaudio import ALSAAudioError  # lazy: ALSA-only dependency, capture path only
+    except ImportError:  # no ALSA on this host, so the PCM is a test double
+        return (OSError, RuntimeError)
+    return (OSError, RuntimeError, ALSAAudioError)
 
 
 @dataclass(frozen=True)
@@ -438,24 +471,28 @@ class WiredRecorder:
         assert self._pcm is not None
         frame_bytes = self._channels * BYTES_PER_SAMPLE
         rate = self._sample_rate_hz
-        # CLOCK RULE: every loss estimate is fresh per-read timestamps, never extrapolated.
-        last_read_ns = self._clock_ns()
+        batch_bytes = round(SPL_BATCH_S * rate) * frame_bytes
+        unjudged: list[bytes] = []
+        # Loss sizing (module docstring): the stream starts on the first read and restarts on
+        # the read after an overrun.
+        started_ns, delivered = self._clock_ns(), 0
         consecutive_failures = 0
+        read_errors = _read_errors()
         try:
             while not self._stop.is_set():
                 try:
                     length, data = self._pcm.read()
-                except (OSError, RuntimeError) as exc:
+                except read_errors as exc:
                     raise WiredCaptureError(
                         f"wired capture read failed on {self._device}: {exc}"
                     ) from exc
-                now = self._clock_ns()
                 if length <= 0:
-                    # Overrun or empty read: one discontinuity, sized from the clock.
-                    elapsed_s = max(0.0, (now - last_read_ns) / 1e9)
+                    # Overrun or empty read: one discontinuity.
+                    now = self._clock_ns()
+                    lost_s = (now - started_ns) / 1e9 - delivered / rate
                     self._gap_count += 1
-                    self._gap_frames += max(1, int(round(elapsed_s * rate)))
-                    last_read_ns = now
+                    self._gap_frames += max(1, int(round(lost_s * rate)))
+                    started_ns, delivered = now, 0
                     consecutive_failures += 1
                     if consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
                         raise WiredCaptureError(
@@ -465,13 +502,14 @@ class WiredRecorder:
                         )
                     continue
                 consecutive_failures = 0
-                last_read_ns = now
-                self._chunks.append(data[: length * frame_bytes])
+                delivered += length
+                chunk = data[: length * frame_bytes]
+                self._chunks.append(chunk)
                 self._frames += length
-                if self.spl_monitor is not None:
-                    self.spl_monitor.observe(data, length, self._channels, sample_rate_hz=rate)
-                    if self.spl_monitor.error is not None:
-                        raise self.spl_monitor.error
+                unjudged.append(chunk)
+                # The first chunk goes alone, so start() still refuses a room over the stop.
+                if not self._first_chunk.is_set() or sum(map(len, unjudged)) >= batch_bytes:
+                    self._judge(unjudged)
                 if self._frames >= self._max_frames:
                     # Budget guard, not a normal stop — tripping this means the caller's
                     # play/tail schedule broke. BOOKED as a discontinuity (unknowable size,
@@ -485,10 +523,28 @@ class WiredRecorder:
                     self._first_chunk.set()
                     return
                 self._first_chunk.set()
+            self._judge(unjudged)  # the take's tail, shorter than a batch
         except WiredCaptureError as exc:
-            self._reader_error = exc
+            error = exc
+            try:
+                # Periods still unjudged came before this failure: a period-by-period watch
+                # would have stopped on them first. Judged before the error is published, so
+                # the watcher never sees the lesser failure.
+                self._judge(unjudged)
+            except WiredCaptureError as stop:
+                error = stop
+            self._reader_error = error
             # Wake a start() still waiting on the first chunk so it fails now, not at timeout.
             self._first_chunk.set()
+
+    def _judge(self, unjudged: list[bytes]) -> None:
+        """Hand the unjudged periods to the SPL stop; raise its error if one went over."""
+        periods = unjudged[:]
+        unjudged.clear()
+        if self.spl_monitor is not None and periods:
+            self.spl_monitor.observe(periods, self._channels, sample_rate_hz=self._sample_rate_hz)
+            if self.spl_monitor.error is not None:
+                raise self.spl_monitor.error
 
     # -- caller side -------------------------------------------------------- #
 
