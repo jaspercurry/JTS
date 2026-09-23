@@ -238,18 +238,32 @@ def find_banked_candidate(
     fingerprint: str, *, root: Path | None = None
 ) -> BankedCandidate:
     """The one banked candidate with this fingerprint, or a typed refusal:
-    ``fingerprint_required``, ``not_found`` (no artifact both matches and verifies), or
-    ``ambiguous`` (two lineages carry this fingerprint).
+    ``fingerprint_required`` or ``not_found`` (no artifact both matches and
+    verifies).
+
+    Two lineages that carry the same fingerprint are the same candidate, not
+    an ambiguity: the fingerprint hashes every field
+    :class:`~.measured_crossover_candidate.MeasuredCrossoverCandidate`
+    persists. This resolves to the campaign-store lineage -- the same
+    preference :func:`publish_authored_candidate` gives a freshly authored
+    one -- and discloses every lineage examined on the log event.
     """
     wanted = str(fingerprint or "").strip()
     if not wanted:
         raise CandidateBankRefusal(
             "fingerprint_required", "a candidate fingerprint is required"
         )
+    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: commissioning import cost
 
-    found: BankedCandidate | None = None
+    bank_root = _bank_root(root)
+    campaign_root = next(
+        (store for store in _candidate_roots(bank_root) if store.name == DEFAULT_CAMPAIGN_ROOT.name),
+        None,
+    )
+
+    lineages: list[BankedCandidate] = []
     examined = unverified = 0
-    for path in _iter_candidate_paths(_bank_root(root)):
+    for path in _iter_candidate_paths(bank_root):
         rows = _verified_candidates([path])
         if not rows:
             unverified += 1
@@ -258,16 +272,20 @@ def find_banked_candidate(
         examined += 1
         if one.fingerprint != wanted:
             continue
-        if found is not None and (
-            one.bundle_session_id, one.capture_session_id
-        ) != (found.bundle_session_id, found.capture_session_id):
-            raise CandidateBankRefusal("ambiguous", "multiple banked lineages claim this fingerprint")
-        found = one
-    if found is None:
+        if not any(
+            (one.bundle_session_id, one.capture_session_id) == (m.bundle_session_id, m.capture_session_id)
+            for m in lineages
+        ):
+            lineages.append(one)
+    if not lineages:
         raise CandidateBankRefusal(
             "not_found", f"no banked candidate matches ({examined} examined; {unverified} unverified)",
         )
 
+    found = next(
+        (m for m in lineages if campaign_root is not None and campaign_root in m.path.parents),
+        lineages[0],
+    )
     log_event(
         logger,
         "correction.crossover_v2_banked_candidate_found",
@@ -275,5 +293,6 @@ def find_banked_candidate(
         bundle_session_id=found.bundle_session_id,
         capture_session_id=found.capture_session_id,
         examined=examined,
+        lineages=",".join(f"{m.bundle_session_id}/{m.capture_session_id}" for m in lineages),
     )
     return found
