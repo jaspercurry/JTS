@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
+from jasper.active_speaker.round_copy import pose_line, round_lines
+from jasper.active_speaker.timing_status import timing_status_lines
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, measurement_view, plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -152,3 +155,30 @@ def test_a_retake_names_its_release_only_while_it_waits_for_one(mover, action, h
     line = measurement_view.round_status({"run": facts, **({"position_pending": hold} if held else {})})[0]
     assert refusal_copy_for("anchor_ambiguous")[0] in line
     assert (release in line) is names_release
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_round_counts_of_one_read_in_the_singular(n):
+    """#5632 F13: "1 measurements in total" and "Allow about 1 minutes"."""
+    before = {"poses": 1, "mover": "human", "measurements_per_pose": [n], "measurements": n, "estimated_seconds": 50 * n}
+    after = {"status": "partial", "takes": n, "not_measured": n}
+    text = " ".join(round_lines(before) + round_lines(after))
+    plural_after_n = re.findall(rf"\b{n} (?:[a-z]+ )?[a-z]+s\b", text)
+    assert (plural_after_n == []) is (n == 1), plural_after_n
+
+
+def test_a_one_measurement_pose_names_its_measurement_once():
+    """#5632 F13: "measurements 2–2"."""
+    facts = {"pose": 2, "poses": 3, "mover": "human", "measurements_per_pose": [1, 1, 1],
+             "pose_details": [{"kind": "seat"}] * 3}
+    assert re.findall(r"\d+", pose_line(facts)) == ["2", "3", "2"]
+
+
+def test_page_figures_are_rounded_for_reading():
+    """#5632 F13: "within 10.6152 dB; repeat noise 0.426631 dB"."""
+    profile = {"timing": {"delay_us": -186.04, "polarity": "normal", "provenance": "set_by_user"}}
+    round_ = {"alignment_verdict": {"verification": {"residual_rms_db": 10.6152, "repeat_noise_db": 0.426631}}}
+    lines = timing_status_lines(profile, round_)
+    figures = r"-?\d+(?:\.\d+)?"
+    assert re.findall(figures, lines["saved"] + lines["verification"]) == ["-186.04", "10.62", "0.43"]
+    assert re.findall(figures, round_lines({"level_raise_dbfs": -21.345678})[0]) == ["-21.3"]

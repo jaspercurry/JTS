@@ -12,7 +12,7 @@ from jasper.json_fields import finite_float
 
 def _number(value: Any) -> str | None:
     number = finite_float(value)
-    return f"{number:g}" if number is not None else None
+    return f"{round(number, 2):g}" if number is not None else None
 
 
 def timing_status_lines(

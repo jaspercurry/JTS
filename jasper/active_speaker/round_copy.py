@@ -31,8 +31,11 @@ def pose_name(pose: Mapping[str, Any]) -> str:
 def pose_line(facts: Mapping[str, Any]) -> str:
     pose = facts["pose_details"][facts["pose"] - 1]
     counts = facts.get("measurements_per_pose") or []
-    end = sum(counts[:facts["pose"]])
-    span = f", measurements {end - counts[facts['pose'] - 1] + 1}–{end}" if counts else ""
+    span = ""
+    if counts:
+        end = sum(counts[:facts["pose"]])
+        start = end - counts[facts["pose"] - 1] + 1
+        span = f", measurement {end}" if start == end else f", measurements {start}–{end}"
     return f"Pose {facts['pose']} of {facts['poses']}{span}: {pose_name(pose)} ({facts['mover']})."
 
 
@@ -46,16 +49,18 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
 
     lines = []
     if facts.get("status") in {"complete", "partial", "cancelled", "failed", "stopped"}:
-        lines = [measured_line(facts.get("takes", 0), facts.get("retakes", 0)), f"Not measured: {facts.get('not_measured', 0)} planned measurements."]
+        lines = [measured_line(facts.get("takes", 0), facts.get("retakes", 0)),
+                 f"Not measured: {_count(facts.get('not_measured', 0), 'planned measurement')}."]
         if facts.get("packet_error"):
             lines.append("The round packet could not be saved. Run jasper-round wait to try again.")
         return lines
     counts = facts.get("measurements_per_pose") or []
     if counts and not facts.get("pose"):
         lines.append(f"Microphone positions: {facts['poses']}.")
-        lines.append("Measurements per position: " + ", ".join(str(n) for n in counts) + f"; {facts['measurements']} measurements in total.")
+        lines.append("Measurements per position: " + ", ".join(str(n) for n in counts)
+                     + f"; {_count(facts['measurements'], 'measurement')} in total.")
         lines += ["A measurement that is too quiet can be taken again louder.",
-                  f"Allow about {math.ceil(facts['estimated_seconds'] / 60)} minutes, plus time for retakes."]
+                  f"Allow about {_count(math.ceil(facts['estimated_seconds'] / 60), 'minute')}, plus time for retakes."]
     if facts.get("pose") and facts.get("pose_details"):
         if pending:
             lines += [pose_line(facts), PLACE_MICROPHONE]
@@ -75,7 +80,7 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
             line += f" Taking it again{' louder' if action == 'retake_louder' else ''}."
         lines.append(line)
     if facts.get("level_raise_dbfs") is not None:
-        lines.append(f"Raising the measurement level to {facts['level_raise_dbfs']:g} dBFS.")
+        lines.append(f"Raising the measurement level to {round(facts['level_raise_dbfs'], 1):g} dBFS.")
     return lines + ([PLACE_MICROPHONE] if pending and not facts.get("pose") else [])
 
 
@@ -85,8 +90,12 @@ def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
             "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1})}
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
 def measured_line(count: int, retakes: int = 0) -> str:
-    return f"Measured: {count} kept {'take' if count == 1 else 'takes'}. Retakes: {retakes}."
+    return f"Measured: {_count(count, 'kept take')}. Retakes: {retakes}."
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:

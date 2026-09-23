@@ -81,7 +81,13 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_json(
         self, payload: dict[str, Any], *, status: int = 200,
     ) -> None:
-        send_json_response(self, payload, status=status)
+        try:
+            send_json_response(self, payload, status=status)
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # A poller that hung up (a closed tab) has nobody left to answer;
+            # a route's 500 net writing to the dead socket only journals a traceback.
+            log_event(logger, "correction.client_disconnected",
+                      path=route_path(self.path), error=type(exc).__name__)
 
     def _serve_json_route(
         self, label: str,
@@ -105,14 +111,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_html(self, body: bytes, *, status: int = 200) -> None:
         send_html_response(self, body, status=status)
-
-    def _send_text(self, text: str, *, status: int = 200) -> None:
-        body = text.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
     def _send_client_error(
         self, exc: BaseException, *, status: int = 400,
