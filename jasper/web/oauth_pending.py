@@ -2,7 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Process-local, single-use OAuth state for the threaded setup wizards."""
+"""Process-local, single-use OAuth state for the threaded setup wizards.
+
+The nonce is the provider's OAuth ``state``: the only defence against a
+login-CSRF callback, so it is unguessable, consumed once, and expires.
+"""
 from __future__ import annotations
 
 import secrets
@@ -11,7 +15,7 @@ from threading import Lock
 from typing import Generic, TypeVar
 
 _T = TypeVar("_T")
-_FLOW_TTL_SEC = 600.0
+_FLOW_TTL_SEC = 600.0  # Google and Spotify auth codes live 10 min
 
 
 def new_nonce() -> str:

@@ -53,15 +53,13 @@ def test_new_nonce_unique_and_url_safe():
         assert len(nonce) >= 16
 
 
-def test_provider_stores_are_isolated(monkeypatch):
-    for wizard in (spotify_setup, google_setup):
-        monkeypatch.setattr(wizard, "_PENDING_FLOWS", PendingFlows())
-    spotify_setup._PENDING_FLOWS.add("spotify", ("a", "v", "c"))
-    google_setup._PENDING_FLOWS.add("google", ("b", "w"))
-    assert google_setup._PENDING_FLOWS.consume("spotify") is None
-    assert spotify_setup._PENDING_FLOWS.consume("google") is None
-    assert spotify_setup._PENDING_FLOWS.consume("spotify") == ("a", "v", "c")
-    assert google_setup._PENDING_FLOWS.consume("google") == ("b", "w")
+def test_provider_stores_are_isolated():
+    spotify_setup._PENDING_FLOWS.add("spotify-state", ("a", "v", "c"))
+    google_setup._PENDING_FLOWS.add("google-state", ("b", "w"))
+    assert google_setup._PENDING_FLOWS.consume("spotify-state") is None
+    assert spotify_setup._PENDING_FLOWS.consume("google-state") is None
+    assert spotify_setup._PENDING_FLOWS.consume("spotify-state") == ("a", "v", "c")
+    assert google_setup._PENDING_FLOWS.consume("google-state") == ("b", "w")
 
 
 def test_concurrent_callbacks_consume_once():

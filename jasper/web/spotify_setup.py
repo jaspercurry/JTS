@@ -146,6 +146,9 @@ def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
     return cfg["bounce_redirect_uri"]
 
 
+# (account, code_verifier, code_challenge). Keep both PKCE halves: spotipy's
+# SpotifyPKCE.get_access_token regenerates both when either is None, and
+# Spotify then rejects the exchange with invalid_grant.
 _PENDING_FLOWS = PendingFlows[tuple[str, str, str]]()
 
 
