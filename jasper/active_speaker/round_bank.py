@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bank one live commissioning session into the on-box campaign home.
+"""Bank one live commissioning session into the on-box campaign home, and
+catalog the rounds banked there.
 
 The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
 on the box itself so a round outlives session retention (#3498, #2882). It is
@@ -26,6 +27,12 @@ reads, plus the bookkeeping views the round-view table declares::
 formatted as ``scripts/bank-crossover-round.sh`` writes it, and each path adds
 only what it alone knows. Nothing here evicts — the campaign store is
 operator-pruned.
+
+A banked round's id is its directory name in the campaign store, the name
+:func:`bank_round` gave it. The catalog (:func:`list_rounds`,
+:func:`resolve_round`, :func:`show_round`) reads only what each round stored,
+through the reader's own walk
+(:func:`~jasper.active_speaker.crossover_v2.round_inputs.banked_rounds`).
 
 The banked names and their SSOT paths belong to the reader
 (:mod:`~jasper.active_speaker.crossover_v2.round_inputs`) and are imported
@@ -63,11 +70,16 @@ __all__ = [
     "DEFAULT_CAMPAIGN_ROOT",
     "REASON_ALREADY_BANKED",
     "REASON_NOT_A_BUNDLE",
+    "REASON_ROUND_AMBIGUOUS",
+    "REASON_ROUND_NOT_FOUND",
     "REASON_SESSION_UNFINISHED",
     "BankedRound",
     "RoundBankError",
     "bank_round",
     "bundle_session_id",
+    "list_rounds",
+    "resolve_round",
+    "show_round",
     "CAPTURE_RING_DIR",
     "SKIP_NO_CAPTURED_AT",
     "SKIP_NO_PHASE",
@@ -91,6 +103,8 @@ SKIP_WAV_MISSING = "wav_missing"
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
 REASON_SESSION_UNFINISHED = "session_unfinished"
+REASON_ROUND_NOT_FOUND = "round_not_found"
+REASON_ROUND_AMBIGUOUS = "round_ambiguous"
 
 
 class BankedRound(NamedTuple):
@@ -103,7 +117,8 @@ class BankedRound(NamedTuple):
 
 
 class RoundBankError(Exception):
-    """A session could not be banked; ``reason`` is the machine-readable slug."""
+    """A session could not be banked, or a round could not be named;
+    ``reason`` is the machine-readable slug."""
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(detail)
@@ -477,3 +492,91 @@ def finish_round(bundle: Path) -> tuple[BankedRound | None, Exception | None]:
                 path = artifacts / RUN_MANIFEST_FILENAME
                 atomic_write_json(path, {**json.loads(path.read_text()), "packet_error_detail": detail})
         return None, exc
+
+
+def _catalog_row(round_dir: Path, packet: Mapping[str, Any], banked_at: float | None) -> dict[str, Any]:
+    from .crossover_v2.round_inputs import packet_purposes  # lazy: the reader's import cost
+
+    identity = {key: value for key, value in (packet.get("applied") or {}).items() if key != "layers"}
+    return {
+        "round_id": round_dir.name, "round_dir": str(round_dir),
+        "program": packet.get("program"), "purposes": list(packet_purposes(packet)),
+        "banked_at": banked_at, "status": packet.get("result"),
+        "applied_identity": identity if any(identity.values()) else None,
+    }
+
+
+def _round_sets(round_dir: Path) -> list[dict[str, Any]]:
+    """Each set a view accepts, with the selected takes it accepts by ``--set``/``--take``."""
+    from .crossover_v2.round_inputs import SetTakes, read_run_manifest, round_inputs  # lazy: the reader's import cost
+    from .run_manifest import view_sets  # lazy: measurement types
+
+    sets = []
+    for group in view_sets(read_run_manifest(round_inputs(round_dir))):
+        takes = SetTakes.from_row(group)
+        sets.append({
+            "set_id": takes.set_id, "candidate_id": takes.capture_basis.get("candidate_id"),
+            "base": bool(group.get("base")),
+            "takes": [{key: take.get(key) for key in ("take_id", "pose", "role")}
+                      for take in takes.takes if take["selected"]],
+        })
+    return sets
+
+
+def list_rounds(*, program: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+    """This box's banked rounds, newest first, as each one's packet and provenance recorded it.
+
+    ``program`` keeps the rounds that count for it (``purposes``), as the
+    prescriber's ``last_banked`` credits them. ``sets`` maps each set id a view
+    accepts to its selected take count; ``None`` when the run manifest cannot
+    be read (:func:`show_round` says why).
+    """
+    from .crossover_v2.round_inputs import ROUND_INPUT_ERRORS, banked_rounds  # lazy: the reader's import cost
+
+    rows = [_catalog_row(*read) for read in banked_rounds()]
+    rows.sort(key=lambda row: (row["banked_at"], row["round_dir"]), reverse=True)
+    rows = [row for row in rows if program is None or program in row["purposes"]][:limit]
+    for row in rows:
+        try:
+            row["sets"] = {group["set_id"]: len(group["takes"]) for group in _round_sets(Path(row["round_dir"]))}
+        except ROUND_INPUT_ERRORS:
+            row["sets"] = None
+    return rows
+
+
+def resolve_round(ref: str) -> Path:
+    """The round ``ref`` names: a banked round id, or a path.
+
+    Raises :class:`RoundBankError`: :data:`REASON_ROUND_NOT_FOUND` when neither
+    exists, :data:`REASON_ROUND_AMBIGUOUS` when the id is also another path
+    here (``./<id>`` names the path; the round's full path names the round).
+    """
+    from .crossover_v2.round_inputs import round_stores  # lazy: the reader's import cost
+
+    path = Path(ref)
+    found = [path] if path.exists() else []
+    if _ROUND_ID_RE.fullmatch(ref):
+        found += [store / ref for store in round_stores() if (store / ref / "bundle").is_dir()]
+    named = {candidate.resolve(): candidate for candidate in found}
+    if len(named) == 1:
+        return found[0]
+    if not named:
+        raise RoundBankError(REASON_ROUND_NOT_FOUND, f"{ref}: no banked round has this id and no path has this name")
+    raise RoundBankError(
+        REASON_ROUND_AMBIGUOUS,
+        f"{ref} names both {' and '.join(map(str, named.values()))}; pass ./{ref} for the path or the round's full path",
+    )
+
+
+def show_round(ref: str) -> dict[str, Any]:
+    """One round's catalog row, its ``sets`` expanded to the takes a view accepts.
+
+    Raises what :func:`resolve_round` and the round reader raise, so a round a
+    view would refuse is refused here for the same reason.
+    """
+    from .crossover_v2.round_inputs import read_banked_round  # lazy: the reader's import cost
+
+    round_dir = resolve_round(ref)
+    sets = _round_sets(round_dir)
+    packet, banked_at = read_banked_round(round_dir, round_dir.stat().st_mtime) or ({}, None)
+    return {**_catalog_row(round_dir, packet, banked_at), "sets": sets}

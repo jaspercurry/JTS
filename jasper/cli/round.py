@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a plan, bank its packet, commission a speaker and apply candidates."""
+"""Run a plan, bank its packet, list and show banked rounds, commission a speaker and apply candidates."""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
@@ -34,7 +35,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status` reads)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status`/`list`/`show` read)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 _BEARING_LIST = re.compile(r"-\d+(\.\d+)?(,[+-]?\d+(\.\d+)?)*")
 
@@ -307,6 +308,31 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_list(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.round_bank import list_rounds  # lazy: keeps the CLI parser numpy-free
+
+    rows = list_rounds(program=args.program, limit=args.limit + 1)
+    shown = rows[:args.limit]
+    return _answer("list", f"{len(shown)} banked round(s)" + (f", newest {shown[0]['round_id']}" if shown else ""),
+                   rounds=shown, truncated=len(rows) > args.limit)
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused  # lazy: keeps the CLI parser numpy-free
+    from jasper.active_speaker.round_bank import RoundBankError, show_round  # lazy: keeps the CLI parser numpy-free
+
+    try:
+        shown = show_round(args.round)
+    except RoundBankError as exc:
+        return failed(EXIT_UNREADABLE, exc.reason, str(exc))
+    except RoundSetRefused as exc:
+        return failed(EXIT_REFUSED, exc.reason, exc.detail)
+    except ROUND_INPUT_ERRORS as exc:
+        return failed(EXIT_UNREADABLE, getattr(exc, "code", REASON_UNREADABLE), str(exc))
+    takes = sum(len(group["takes"]) for group in shown["sets"])
+    return _answer("show", f"{shown['round_id']}: {len(shown['sets'])} set(s), {takes} take(s)", **shown)
+
+
 def _connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--hostname", help="Host header override (default: derived from --base-url)",
@@ -318,6 +344,13 @@ def _timeout(value: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result < 0:
         raise argparse.ArgumentTypeError("timeout must be finite and nonnegative")
+    return result
+
+
+def _limit(value: str) -> int:
+    result = int(value)
+    if result < 1:
+        raise argparse.ArgumentTypeError("limit must be at least 1")
     return result
 
 
@@ -370,6 +403,15 @@ def build_parser() -> argparse.ArgumentParser:
     reset.add_argument("--program", choices=RUNNABLE_PROGRAMS, help="reset only this program; omitted resets everything")
     reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance (all tuning or speaker only)")
     reset.set_defaults(func=_cmd_reset)
+    list_help = "List banked rounds, newest first: id, directory, program, status, sets and applied identity."
+    listing = sub.add_parser("list", help=list_help, description=list_help)
+    listing.add_argument("--program", choices=RUNNABLE_PROGRAMS, help="only rounds that count for this program")
+    listing.add_argument("--limit", type=_limit, default=20, help="at most this many rounds (default 20)")
+    listing.set_defaults(func=_cmd_list)
+    show_help = "Show one round's sets and selected takes, by the ids every jasper-round-views verb accepts."
+    show = sub.add_parser("show", help=show_help, description=show_help)
+    show.add_argument("round", metavar="<round-id|path>", help="a banked round id from list, or a round directory")
+    show.set_defaults(func=_cmd_show)
     return parser
 
 
@@ -381,6 +423,8 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
+    if args.command in ("list", "show"):
+        return int(args.func(args))
     client = WizardClient(
         host_header=args.hostname,
         base_url=args.base_url, csrf_page_path=CSRF_PAGE_PATH, opener=opener,

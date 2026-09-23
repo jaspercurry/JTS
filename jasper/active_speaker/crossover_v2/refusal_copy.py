@@ -488,6 +488,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
     "round_not_found": ReasonSpec("round_not_found", TEMPLATE_HARD_STOP, 0, "", "Select a banked round or live session directory."),
+    "round_ambiguous": ReasonSpec("round_ambiguous", TEMPLATE_HARD_STOP, 0, "", "Name the round by its full path, or ./<id> for the local directory."),
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
     "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),

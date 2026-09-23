@@ -51,8 +51,9 @@ __all__ = [
     'DRIVERS_DEFAULT_PATH', 'REPEAT_FLOOR_DEFAULT_PATH', 'REPEAT_FLOOR_FILENAME',
     'RoundInputs', 'RoundViewsError', 'STATE_DEFAULT_PATH',
     'STATE_FILENAME', 'STATE_SESSION_UNKNOWN', 'STATEFILE_DEFAULT_PATH',
-    'STATEFILE_FILENAME', 'banked_round_of', 'iter_round_sessions',
-    'matching_state_path', 'recent_round_sessions', 'latest_banked_rounds', 'state_matches_capture',
+    'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
+    'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
+    'state_matches_capture',
     'round_inputs', 'contract_sources', 'prescription_sources', 'default_out',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
@@ -200,33 +201,26 @@ def banked_round_of(session_dir: Path) -> Path | None:
         return None
 
 
-def iter_round_sessions(session_dir: Path | None = None) -> Iterator[Path]:
-    """Search retained stores without a recent window or a materialized history."""
-    bank = banked_round_of(session_dir) if session_dir else None
-    root = bank.parent if bank else session_dir.parent if session_dir else bundles.sessions_dir()
-    for store in _candidate_roots(root):
-        for directory in _directories(store):
-            try:
-                yield round_inputs(directory).session_dir
-            except (OSError, CrossoverEvidencePacketError):
-                continue
-
-
-def _recent_round_directories(session_dir: Path | None, *, limit: int) -> list[tuple[float, Path]]:
+def round_stores(session_dir: Path | None = None) -> tuple[Path, ...]:
+    """The live session store and the campaign store ``session_dir`` belongs to; this box's by default."""
     bank = banked_round_of(session_dir) if session_dir is not None else None
-    root = (bank.parent if bank else session_dir.parent) if session_dir else bundles.sessions_dir()
+    root = (bank.parent if bank else session_dir.parent) if session_dir is not None else bundles.sessions_dir()
+    return _candidate_roots(root)
+
+
+def _recent_round_directories(session_dir: Path | None, *, limit: int | None) -> list[tuple[float, Path]]:
     directories = []
-    for store in _candidate_roots(root):
+    for store in round_stores(session_dir):
         directories.extend(sorted(
             ((path.stat().st_mtime, path) for path in _directories(store)), reverse=True,
-        )[:max(0, limit)])
+        )[:limit])
     return sorted(directories, reverse=True)
 
 
 def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -> list[Path]:
     """Read recent live and banked rounds."""
     sessions: dict[str, tuple[float, Path]] = {}
-    for _modified_at, directory in _recent_round_directories(session_dir, limit=limit):
+    for _modified_at, directory in _recent_round_directories(session_dir, limit=max(0, limit)):
         try:
             bundle = round_inputs(directory).session_dir
         except (OSError, CrossoverEvidencePacketError):
@@ -240,41 +234,62 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
     return [bundle for _started_at, bundle in sorted(sessions.values(), reverse=True)][:max(0, limit)]
 
 
+def read_banked_round(directory: Path, modified_at: float) -> tuple[dict[str, Any], float] | None:
+    """A banked round's packet and when it was banked; ``None`` for any other directory.
+
+    ``modified_at`` dates only a round whose provenance and packet name no time.
+    """
+    from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
+
+    if not (directory / "bundle").is_dir():
+        return None
+    packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
+    provenance = _read_json_mapping(directory / "provenance.json") or {}
+    # Packet/view rewrites change directory mtime; the bank owns this timestamp.
+    return packet, next((value for value in (
+        parse_utc_iso(str(provenance.get("banked_at_utc") or "")),
+        finite_float(packet.get("finalized_at")), finite_float(packet.get("started_at")),
+        finite_float((packet.get("session") or {}).get("started_at")),
+    ) if value is not None), modified_at)
+
+
+def banked_rounds(
+    session_dir: Path | None = None, *, limit: int | None = None,
+) -> Iterator[tuple[Path, dict[str, Any], float]]:
+    """Each banked round among the stores' ``limit`` latest-modified directories (all when ``None``)."""
+    stop = None if limit is None else max(0, limit)
+    for modified_at, directory in _recent_round_directories(session_dir, limit=stop)[:stop]:
+        read = read_banked_round(directory, modified_at)
+        if read is not None:
+            packet, banked_at = read
+            yield directory, packet, banked_at
+
+
+def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
+    """The programs a banked packet counts for: its own, and room when it carries room views."""
+    try:
+        purpose = run_purpose(packet.get("program"))
+    except ValueError:
+        return ()
+    return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
+
+
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
     programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Latest packet per program within a bounded window; current identity by default."""
-    from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
-
     applied_at = parse_utc_iso(str(identity.get("applied_at") or ""))
     found: dict[str, dict[str, Any]] = {}
-    for modified_at, directory in _recent_round_directories(session_dir, limit=limit)[:max(0, limit)]:
-        if not (directory / "bundle").is_dir():
-            continue
-        packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
+    for directory, packet, banked_at in banked_rounds(session_dir, limit=limit):
         applied = packet.get("applied") or {}
         stale = any(applied.get(key) != identity.get(key) for key in ("candidate", "record"))
-        if stale and not include_stale:
-            continue
-        try:
-            purpose = run_purpose(packet.get("program"))
-        except ValueError:
-            continue
-        provenance = _read_json_mapping(directory / "provenance.json") or {}
-        # Packet/view rewrites change directory mtime; the bank owns this timestamp.
-        banked_at = next((value for value in (
-            parse_utc_iso(str(provenance.get("banked_at_utc") or "")),
-            finite_float(packet.get("finalized_at")), finite_float(packet.get("started_at")),
-            finite_float((packet.get("session") or {}).get("started_at")),
-        ) if value is not None), modified_at)
         stale = stale or (applied_at is not None and banked_at <= applied_at)
         if stale and not include_stale:
             continue
-        record = {"round_dir": str(directory), "started_at": banked_at,
-                  "round_id": packet.get("round_id") or directory.name,
+        record = {"round_dir": str(directory), "started_at": banked_at, "round_id": directory.name,
                   "banked_at": banked_at, "status": packet.get("result"), "stale": stale}
-        for name in (purpose, PURPOSE_ROOM) if packet.get("room") else (purpose,):
+        for name in packet_purposes(packet):
             prior = found.get(name)
             if name in programs and (prior is None or (banked_at, str(directory)) >
                                      (prior["started_at"], prior["round_dir"])):

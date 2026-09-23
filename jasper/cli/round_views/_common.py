@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker import round_bank
 from jasper.active_speaker.round_view_artifacts import (
     PROG as PROG,
     ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
@@ -51,15 +52,34 @@ from jasper.cli._report import report_answer, write_report
 
 AUTHORITY_TIER = "advisory (analysis views save artifacts)"
 
-#: What every round-directory positional takes, said once. Both shapes, named
-#: in the order an operator meets them: the live one is what a round leaves on
-#: the speaker, the banked one is what ``bank-crossover-round.sh`` made of it.
-_ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
+#: What every round-directory positional takes, said once. Both shapes: the
+#: live one is what a round leaves on the speaker, the banked one is what the
+#: bank made of it, named by its id or its directory.
+_ROUND_DIR_HELP = "a banked round id or directory, or a live session bundle"
 
 #: What the usage line calls a directory positional, so ``--help`` reads as
 #: the shape to type rather than as this module's own parameter names.
 _ROUND_DIR_METAVAR = "<round-dir>"
 _BUNDLE_DIR_METAVAR = "<bundle-dir>"
+
+#: Every argument, by dest, that names a round; ``build_parser`` lets each take
+#: a banked round id through :func:`round_ref`.
+ROUND_ARGUMENTS = frozenset({
+    "round_dir", "round_dirs", "baseline_dir", "target_dir", "bundle_dir",
+    "source_a", "source_b", "before", "after", "far_round", "close_round",
+})
+
+
+def round_ref(convert: Callable[[str], Any], value: str) -> Any:
+    """``value`` as ``convert`` reads it, a banked round id first swapped for
+    its directory. A ref that names nothing passes as typed, so the view says
+    what it could not read; an id that is also another path is a usage error."""
+    try:
+        return convert(str(round_bank.resolve_round(value)))
+    except round_bank.RoundBankError as exc:
+        if exc.reason == round_bank.REASON_ROUND_AMBIGUOUS:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+        return convert(value)
 
 
 #: The named ``reason`` each failing stage publishes. The bucket is the STAGE,

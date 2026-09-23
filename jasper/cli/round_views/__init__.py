@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from functools import partial
 from importlib import import_module
 from typing import Sequence
 
@@ -28,6 +29,7 @@ from ._common import (
     ARTIFACT_BY_VIEW,
     AUTHORITY_TIER,
     PROG,
+    ROUND_ARGUMENTS,
     RoundSetRefused,
     REASON_REFUSED,
     REASON_UNREADABLE,
@@ -38,6 +40,7 @@ from ._common import (
     add_rungs_ms_argument,
     default_out,
     refused_by_name,
+    round_ref,
 )
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping as run_bookkeeping
 
@@ -121,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
         for action in child._actions:
             if "--out" in action.option_strings:
                 action.type = output_path
+            elif action.dest in ROUND_ARGUMENTS:
+                action.type = partial(round_ref, action.type if callable(action.type) else str)
     return parser
 
 
