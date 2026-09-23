@@ -32,7 +32,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.audio_measurement.series_stats import _power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
 from jasper.output_topology import OutputTopology
 
@@ -233,7 +233,7 @@ def speaker_fit(
             for section in sections.get(role, ())
         ])) if sections.get(role) else np.array([])
         correction_db = 20 * np.log10(np.maximum(np.abs(complex_correction_response(fit.filters, grid)), 1e-12))
-        handover_shifts[role] = _power_mean_db(correction_db) if grid.size else None
+        handover_shifts[role] = power_mean_db(correction_db) if grid.size else None
     linearization = {driver.role: {
         "boost_evidence": {"design_poses": clouds[driver.role].n_positions,
                   "band_spread": [asdict(band) for band in clouds[driver.role].band_spread]}

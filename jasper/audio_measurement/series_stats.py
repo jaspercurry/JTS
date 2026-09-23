@@ -13,7 +13,7 @@ import numpy as np
 from .spatial_combine import octave_bands_hz
 
 
-def _power_mean_db(values_db: np.ndarray) -> float:
+def power_mean_db(values_db: np.ndarray) -> float:
     """``10*log10(mean(10**(dB/10)))`` — power (energy) mean, NOT a linear
     average of dB values."""
     linear = np.power(10.0, values_db / 10.0)
@@ -40,7 +40,7 @@ def series_stats(
     bands = {}
     for center, lo, hi in octave_bands_hz(20, 20000):
         band = values[valid & (freqs >= lo) & (freqs < hi)]
-        bands[f"{center:g}"] = number(_power_mean_db(band) if band.size else None, lo)
+        bands[f"{center:g}"] = number(power_mean_db(band) if band.size else None, lo)
     return {
         "tilt_db_per_decade": number(float(np.polyfit(np.log10(freqs[measured]), values[measured], 1)[0])
                                      if np.unique(freqs[measured]).size >= 2 else None, tilt_lo_hz),

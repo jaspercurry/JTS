@@ -29,6 +29,7 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
+from jasper.audio_measurement.series_stats import power_mean_db
 
 
 def _pool(pairs: list[tuple[float, float]]) -> float | None:
@@ -40,12 +41,6 @@ def _pool(pairs: list[tuple[float, float]]) -> float | None:
     if total <= 0.0:
         return None
     return math.sqrt(sum(weight * rms ** 2 for weight, rms in pairs) / total)
-
-
-def _power_mean_scalar(values_db: np.ndarray) -> float:
-    """``10*log10(mean(10**(dB/10)))`` — power (energy) mean, NOT a linear
-    mean of dB values."""
-    return float(10.0 * np.log10(np.mean(np.power(10.0, values_db / 10.0))))
 
 
 def _band_octaves(band: BandResult) -> float:
@@ -461,7 +456,7 @@ def role_split_flatness(
 def _power_mean_across(stack_db: np.ndarray) -> np.ndarray:
     """Per-column power (energy) mean across rows of a dB matrix — the
     same reduction ``combine_positions`` applies across positions. Distinct
-    from ``flat_spec._power_mean_db``, which pools one curve across
+    from ``series_stats.power_mean_db``, which pools one curve across
     FREQUENCY to a scalar; this pools curves across POSITIONS to a curve.
     """
     return 10.0 * np.log10(np.mean(np.power(10.0, stack_db / 10.0), axis=0))
@@ -617,7 +612,7 @@ def _directivity_band(
                 "no bin of this grid survives the graded edge and the exclusion mask"
             ),
         )
-    level_offset_db = _power_mean_scalar(position_db[inside]) - _power_mean_scalar(
+    level_offset_db = power_mean_db(position_db[inside]) - power_mean_db(
         reference_db[inside],
     )
     shape = (position_db[inside] - reference_db[inside]) - level_offset_db
@@ -716,9 +711,9 @@ def directivity_table(
         in_band = included & (grid >= ref_lo) & (grid < ref_hi)
         level_offset_db: float | None = None
         if bool(in_band.any()):
-            level_offset_db = _power_mean_scalar(
+            level_offset_db = power_mean_db(
                 position_db[in_band],
-            ) - _power_mean_scalar(reference_db[in_band])
+            ) - power_mean_db(reference_db[in_band])
         rows.append(
             DirectivityRow(
                 position_id=position.position_id,

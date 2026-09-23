@@ -33,6 +33,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import program_analysis, snr_policy, sweep
+from jasper.audio_measurement.quality import dbfs
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 
@@ -262,7 +263,7 @@ def test_band_snr_verdicts_are_unchanged_by_the_band_power_rescale():
             rows.append({
                 "band_id": band_id,
                 "band_hz": [lo, hi],
-                "level_dbfs": round(snr_policy._dbfs(float(rms_like)), 2),
+                "level_dbfs": round(dbfs(float(rms_like), floor=snr_policy.DBFS_FLOOR), 2),
             })
         return rows
 
