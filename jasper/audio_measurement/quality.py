@@ -59,9 +59,6 @@ class CaptureQuality:
     def warning_count(self) -> int:
         return sum(1 for issue in self.issues if issue.severity == "warn")
 
-    def fail_messages(self) -> list[str]:
-        return [issue.message for issue in self.issues if issue.severity == "fail"]
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample_rate": self.sample_rate,
@@ -73,16 +70,6 @@ class CaptureQuality:
             "warning_count": self.warning_count,
             "issues": [issue.to_dict() for issue in self.issues],
         }
-
-
-class CaptureQualityError(ValueError):
-    """Raised when a capture has blocking quality failures."""
-
-    def __init__(self, report: CaptureQuality) -> None:
-        self.report = report
-        super().__init__(
-            "capture quality failed: " + "; ".join(report.fail_messages())
-        )
 
 
 def dbfs(value: float, floor: float = DBFS_FLOOR) -> float:

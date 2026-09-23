@@ -268,7 +268,7 @@ def normalize_to_band(
     return (magnitude_db - ref).astype(np.float64)
 
 
-from typing import Mapping, Sequence
+from typing import Mapping
 
 
 def band_levels_from_magnitude(
@@ -334,28 +334,6 @@ def thd_curve(
         interpolated_noise = np.interp(output_freqs, noise_freqs, noise_db)
         ratio[fundamental_db[mask] - interpolated_noise <= min_fund_snr_db] = np.nan
     return output_freqs, ratio
-
-
-def compression_curve(
-    rungs: Sequence[tuple[float, tuple[float, ...]]],
-) -> tuple[tuple[float, ...], ...]:
-    """Return measured-minus-linear-extrapolation compression per rung."""
-
-    if not rungs:
-        return ()
-    first_command, first_levels = rungs[0]
-    width = len(first_levels)
-    if any(len(levels) != width for _, levels in rungs):
-        raise ValueError("all compression rungs must have the same band count")
-    if any(rungs[index][0] <= rungs[index - 1][0] for index in range(1, len(rungs))):
-        raise ValueError("compression rungs must be in ascending commanded order")
-    return tuple(
-        tuple(
-            float(measured) - (float(baseline) + command - first_command)
-            for measured, baseline in zip(levels, first_levels)
-        )
-        for command, levels in rungs
-    )
 
 
 def _offset_invariant_rms_and_max(

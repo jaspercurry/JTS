@@ -7,7 +7,7 @@
 compared, and the one place their difference becomes an instruction. The change
 is derived from the candidate, never from an advisory selection record, so the
 declaration and the emitted graph cannot disagree. Nothing here writes:
-``sound_setup`` owns the single durable writer in both directions.
+``sound_setup`` owns the single durable writer.
 
 **Why the comparison has to exist at all.**
 ``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard compares
@@ -29,7 +29,7 @@ whatever supersedes it will be another — stays what it is: evidence a screen
 may render, and not a gate it was never able to keep honest.
 
 **Nothing here writes.** This module derives and refuses; ``sound_setup`` owns
-the single durable writer, in both directions.
+the single durable writer.
 """
 
 from __future__ import annotations
@@ -56,7 +56,6 @@ __all__ = [
     "CrossoverDeclarationChange",
     "CrossoverGeometry",
     "assert_crossover_honours_declared_floor",
-    "change_from_record",
     "change_to_record",
     "declaration_change_for_candidate",
     "declared_crossover_geometry",
@@ -85,13 +84,11 @@ _PROTECTED_ROLE = "tweeter"
 #: this may not.
 CROSSOVER_BELOW_DECLARED_FLOOR = "crossover_below_declared_protection_floor"
 
-#: The document version :func:`change_to_record` answers. A record naming a
-#: version this build does not speak reads as no change to reverse — see
-#: :func:`change_from_record`.
+#: The document version :func:`change_to_record` writes.
 CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION = 1
 
-#: The ``kind`` discriminator: this record is the Undo inverse of a
-#: Sound-declaration write, not a prescription.
+#: The ``kind`` discriminator: this record describes a Sound-declaration
+#: write, not a prescription.
 CROSSOVER_DECLARATION_CHANGE_KIND = "jts_crossover_declaration_change"
 
 
@@ -148,7 +145,6 @@ class CrossoverDeclarationChange:
 
     ``configured`` is read from the live draft and is what the writer's
     compare-and-swap checks; ``selected`` is read off the candidate's preset.
-    Undo is this value with the two swapped.
     """
 
     between_roles: tuple[str, str]
@@ -284,7 +280,7 @@ def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
     """One change as the plain JSON the review state persists.
 
     ``applied_*`` is what the accept put into ``/sound``; ``previous_*`` is what
-    it displaced. Undo reads this back and runs the write with the two swapped.
+    it displaced.
     """
 
     return {
@@ -298,67 +294,6 @@ def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
         "applied_slope_db_per_octave": float(change.selected.slope_db_per_octave),
         "previous_slope_db_per_octave": float(change.configured.slope_db_per_octave),
     }
-
-
-def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
-    """:func:`change_to_record` run backwards, or ``None`` for a bad record.
-
-    Every field is required; a record missing any reads as ``None`` rather than
-    as a partial change completed with a guess.
-
-    One exception: a record naming NEITHER ``kind`` nor
-    ``artifact_schema_version`` is the pre-envelope shape a deployed speaker may
-    still hold, and reads as this module's own kind at version 1. A record
-    naming EITHER, with the other missing or wrong, tried to speak the envelope
-    and got it wrong, so it reads as ``None``.
-    """
-
-    if not isinstance(record, Mapping):
-        return None
-    pre_envelope = (
-        "kind" not in record and "artifact_schema_version" not in record
-    )
-    if not pre_envelope and (
-        record.get("kind") != CROSSOVER_DECLARATION_CHANGE_KIND
-        or record.get("artifact_schema_version")
-        != CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION
-    ):
-        return None
-    roles = record.get("between_roles")
-    applied_hz = _finite_positive(record.get("applied_hz"))
-    previous_hz = _finite_positive(record.get("previous_hz"))
-    applied_type = record.get("applied_filter_type")
-    previous_type = record.get("previous_filter_type")
-    applied_slope = _finite_positive(record.get("applied_slope_db_per_octave"))
-    previous_slope = _finite_positive(record.get("previous_slope_db_per_octave"))
-    if (
-        not isinstance(roles, Sequence)
-        or isinstance(roles, (str, bytes))
-        or len(roles) != 2
-        or not all(isinstance(role, str) and role for role in roles)
-        or applied_hz is None
-        or previous_hz is None
-        or applied_slope is None
-        or previous_slope is None
-        or not isinstance(applied_type, str)
-        or not applied_type
-        or not isinstance(previous_type, str)
-        or not previous_type
-    ):
-        return None
-    return CrossoverDeclarationChange(
-        between_roles=(str(roles[0]), str(roles[1])),
-        configured=CrossoverGeometry(
-            fc_hz=previous_hz,
-            filter_type=previous_type,
-            slope_db_per_octave=previous_slope,
-        ),
-        selected=CrossoverGeometry(
-            fc_hz=applied_hz,
-            filter_type=applied_type,
-            slope_db_per_octave=applied_slope,
-        ),
-    )
 
 
 def assert_crossover_honours_declared_floor(preset: Any) -> None:

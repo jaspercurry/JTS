@@ -11,6 +11,7 @@ from scipy.signal import fftconvolve
 
 from jasper.audio_measurement import analysis, deconv, quality, sweep
 from jasper.audio_measurement.quality_model import DRIVER, ROOM, QualityModel
+from tests._deconvolve import deconvolve
 
 SR = 48000
 SMOOTH_EQUIVALENCE_ATOL_DB = 2e-9
@@ -62,7 +63,7 @@ def _golden_pipeline():
     ir[10] = 1.0
     ir[120] = 0.4
     captured = fftconvolve(sig.astype(np.float64), ir, mode="full")
-    recovered = deconv.deconvolve(captured, sig.astype(np.float64), sample_rate=SR)
+    recovered = deconvolve(captured, sig.astype(np.float64), sample_rate=SR)
     freqs, mag = deconv.magnitude_response(recovered, SR, normalize=True)
     smoothed = analysis.smooth_fractional_octave(freqs, mag, 24)
     return sig, meta, recovered, freqs, mag, smoothed

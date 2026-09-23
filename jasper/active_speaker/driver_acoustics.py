@@ -33,8 +33,7 @@ DEFAULT_SMOOTHING_FRACTION = 24
 
 # Lead before the located sweep arrival at which the equal-length quiet
 # reference begins. Sets the analyzer's real minimum ambient requirement:
-# ambient_duration_s >= kernel sweep duration + this lead, which
-# test_signal_plan.AMBIENT_DURATION_MARGIN_S must stay above.
+# ambient_duration_s >= kernel sweep duration + this lead.
 AMBIENT_CONTROLLED_LEAD_S = 1.0
 
 DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "present"

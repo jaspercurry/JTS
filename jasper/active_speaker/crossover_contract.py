@@ -109,62 +109,6 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def preset_matches_applied_profile(
-    preset: ActiveSpeakerPreset,
-    applied_profile: Mapping[str, Any] | None,
-    *,
-    candidate_corrections: Mapping[str, Any] | None = None,
-) -> bool:
-    """Return whether ``preset`` is the exact graph context that was measured.
-
-    The comparison-set ``profile_context_id`` binds captures to the protected
-    applied profile, but Fc/role identity alone cannot detect a mutable preview
-    that changed family, order, trim, polarity, or delay at the same Fc.  The
-    immutable recomposition snapshot is the canonical applied preset; fail
-    closed when it is absent or cannot be parsed.
-    """
-
-    profile = _mapping(applied_profile)
-    snapshot = _mapping(profile.get("recomposition_snapshot"))
-    raw_preset = snapshot.get("preset")
-    if not isinstance(raw_preset, dict):
-        return False
-    try:
-        applied_preset = ActiveSpeakerPreset.from_mapping(raw_preset)
-        applied_preset.validate()
-        preset.validate()
-    except (ActiveSpeakerConfigError, TypeError, ValueError):
-        return False
-    if preset.to_dict() != applied_preset.to_dict():
-        return False
-    if candidate_corrections is None:
-        return True
-    applied_corrections = snapshot.get("corrections")
-    if not isinstance(applied_corrections, Mapping):
-        return False
-    roles = required_driver_roles(preset.way_count)
-    for role in roles:
-        candidate = _mapping(candidate_corrections.get(role))
-        applied = _mapping(applied_corrections.get(role))
-        candidate_gain = _finite_float(candidate.get("gain_db"))
-        candidate_delay = _finite_float(candidate.get("delay_ms"))
-        applied_gain = _finite_float(applied.get("gain_db"))
-        applied_delay = _finite_float(applied.get("delay_ms"))
-        if (
-            candidate_gain is None
-            or candidate_delay is None
-            or applied_gain is None
-            or applied_delay is None
-            or abs(candidate_gain - applied_gain) > 1e-6
-            or abs(candidate_delay - applied_delay) > 1e-6
-            or not isinstance(candidate.get("inverted"), bool)
-            or not isinstance(applied.get("inverted"), bool)
-            or candidate.get("inverted") is not applied.get("inverted")
-        ):
-            return False
-    return True
-
-
 def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
     """Does this profile carry an applied level match backed by measurement?
 

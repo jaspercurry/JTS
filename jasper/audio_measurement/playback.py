@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Policy-free WAV and continuous-tone process mechanics.
+"""Policy-free WAV process mechanics.
 
-Feature owners choose the ALSA lane, cache directory, target, frequency band,
-level, admission evidence, and repeat policy.  This leaf validates structural
-resource bounds, emits an already-admitted WAV, bounds process diagnostics and
-cleanup, and generates deterministic sine WAVs without retaining a powerful
-audio or DSP host object.
+Feature owners choose the ALSA lane, target, admission evidence, and repeat
+policy.  This leaf validates structural resource bounds, emits an
+already-admitted WAV, and bounds process diagnostics and cleanup without
+retaining a powerful audio or DSP host object.
 """
 
 from __future__ import annotations
@@ -21,10 +20,8 @@ import logging
 import math
 import os
 import stat
-import struct
 import sys
 import tempfile
-import uuid
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -32,10 +29,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
-import numpy as np
-
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -156,18 +150,11 @@ class WavPlaybackCancelledBeforeSpawn(asyncio.CancelledError):
 
 
 _DIAGNOSTIC_TAIL_BYTES = 8 * 1024
-_TONE_CHUNK_SAMPLES = 64 * 1024
 _PROCESS_CLEANUP_TIMEOUT_S = 2.0
 _WAV_HASH_CHUNK_BYTES = 64 * 1024
 _WAV_FRAME_CHUNK = 64 * 1024
 MAX_VERIFIED_WAV_BYTES = 64 * 1024 * 1024
 MAX_VERIFIED_WAV_CHANNELS = 8
-
-# The longest shipped consumer is Room crossover leveling: 90 s at the program
-# rate. This bounds disk/CPU work before any allocation or file creation while
-# still preserving every current call shape. The rate is imported rather than
-# re-typed so a rate change moves this bound with it.
-MAX_TONE_SAMPLES = 90 * PROGRAM_SAMPLE_RATE_HZ
 MAX_TONE_SAMPLE_RATE = 192_000
 MAX_TONE_DURATION_S = 90.0
 
@@ -1079,163 +1066,3 @@ async def play_verified_wav(
         alsa_device=alsa_device,
         timeout_s=timeout,
     )
-
-
-def _finite_number(value: object, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be a finite number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{field} must be a finite number")
-    return number
-
-
-def _legacy_filename_key(value: float, *, units_per_step: float) -> int | None:
-    scaled = value * units_per_step
-    rounded = round(scaled)
-    return int(rounded) if scaled == rounded else None
-
-
-def _tone_cache_filename(
-    *,
-    frequency: float,
-    duration: float,
-    level_dbfs: float,
-    sample_rate: int,
-) -> str:
-    frequency_key = _legacy_filename_key(frequency, units_per_step=1.0)
-    duration_ms_key = _legacy_filename_key(duration, units_per_step=1000.0)
-    level_tenths_key = _legacy_filename_key(
-        abs(level_dbfs),
-        units_per_step=10.0,
-    )
-    if (
-        frequency_key is not None
-        and duration_ms_key is not None
-        and level_tenths_key is not None
-    ):
-        return (
-            f"tone_{frequency_key}Hz_{duration_ms_key}ms_"
-            f"{level_tenths_key}dbm_{sample_rate}Hz.wav"
-        )
-    exact_key = "_".join(
-        struct.pack("!d", value).hex() for value in (frequency, duration, level_dbfs)
-    )
-    return f"tone_exact_{exact_key}_{sample_rate}Hz.wav"
-
-
-def _validated_tone_shape(
-    *,
-    freq_hz: float,
-    duration_s: float,
-    dbfs: float,
-    sample_rate: int,
-) -> tuple[float, float, float, int, int]:
-    frequency = _finite_number(freq_hz, field="freq_hz")
-    duration = _finite_number(duration_s, field="duration_s")
-    level_dbfs = _finite_number(dbfs, field="dbfs")
-    if frequency <= 0:
-        raise ValueError("freq_hz must be positive")
-    if not 0 < duration <= MAX_TONE_DURATION_S:
-        raise ValueError(
-            f"duration_s must be positive and at most {MAX_TONE_DURATION_S:g}"
-        )
-    if level_dbfs > 0:
-        raise ValueError("dbfs must not exceed full scale (0 dBFS)")
-    if type(sample_rate) is not int or not 1 <= sample_rate <= MAX_TONE_SAMPLE_RATE:
-        raise ValueError(
-            f"sample_rate must be an integer between 1 and {MAX_TONE_SAMPLE_RATE}"
-        )
-    if frequency >= sample_rate / 2:
-        raise ValueError("freq_hz must be below the sample-rate Nyquist frequency")
-
-    sample_count = int(round(duration * sample_rate))
-    if not 1 <= sample_count <= MAX_TONE_SAMPLES:
-        raise ValueError(f"tone sample count must be between 1 and {MAX_TONE_SAMPLES}")
-    return frequency, duration, level_dbfs, sample_rate, sample_count
-
-
-def ensure_sine_wav(
-    *,
-    freq_hz: float,
-    duration_s: float,
-    dbfs: float,
-    sample_rate: int,
-    cache_dir: Path,
-) -> Path:
-    """Generate one structurally bounded deterministic mono sine WAV."""
-
-    (
-        frequency,
-        duration,
-        level_dbfs,
-        rate,
-        sample_count,
-    ) = _validated_tone_shape(
-        freq_hz=freq_hz,
-        duration_s=duration_s,
-        dbfs=dbfs,
-        sample_rate=sample_rate,
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    wav_path = cache_dir / _tone_cache_filename(
-        frequency=frequency,
-        duration=duration,
-        level_dbfs=level_dbfs,
-        sample_rate=rate,
-    )
-    if wav_path.exists():
-        try:
-            with wave.open(str(wav_path), "rb") as existing:
-                valid_header = (
-                    existing.getnchannels() == 1
-                    and existing.getsampwidth() == 2
-                    and existing.getframerate() == rate
-                    and existing.getnframes() == sample_count
-                )
-            if valid_header and wav_path.stat().st_size == 44 + sample_count * 2:
-                return wav_path
-        except (OSError, EOFError, wave.Error):
-            pass
-
-    amp = 10 ** (level_dbfs / 20.0)
-    fade = max(8, int(0.005 * rate))
-    fade_in = np.linspace(0.0, 1.0, fade) ** 2
-    fade_out = np.linspace(1.0, 0.0, fade) ** 2
-    tmp_path = cache_dir / f".{wav_path.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        with tmp_path.open("xb") as raw_stream:
-            with wave.open(raw_stream, "wb") as writer:
-                writer.setnchannels(1)
-                writer.setsampwidth(2)
-                writer.setframerate(rate)
-                for start in range(0, sample_count, _TONE_CHUNK_SAMPLES):
-                    stop = min(sample_count, start + _TONE_CHUNK_SAMPLES)
-                    t = np.arange(start, stop, dtype=np.float64) / rate
-                    signal = amp * np.sin(2 * math.pi * frequency * t)
-                    if fade * 2 < sample_count and start < fade:
-                        fade_stop = min(stop, fade)
-                        signal[: fade_stop - start] *= fade_in[start:fade_stop]
-                    fade_start = sample_count - fade
-                    if fade * 2 < sample_count and stop > fade_start:
-                        overlap_start = max(start, fade_start)
-                        signal[overlap_start - start :] *= fade_out[
-                            overlap_start - fade_start : stop - fade_start
-                        ]
-                    int16 = (np.clip(signal, -1.0, 1.0) * 32767.0).astype("<i2")
-                    writer.writeframesraw(int16.tobytes())
-        tmp_path.replace(wav_path)
-    finally:
-        try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
-    log_event(
-        logger,
-        "audio_measurement.tone_cached",
-        frequency_hz=frequency,
-        duration_s=duration,
-        level_dbfs=level_dbfs,
-        sample_rate=rate,
-    )
-    return wav_path
