@@ -20,6 +20,7 @@ jobs:
     outputs:
       lane: ${{ steps.classifier.outputs.lane }}
       reason: ${{ steps.classifier.outputs.reason }}
+      rust: ${{ steps.classifier.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -329,46 +330,42 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Decide whether Rust gate is needed
-        id: rust-needed
-        run: scripts/rust-ci-needed
-
       - name: Skip Rust gate when unrelated
-        if: steps.rust-needed.outputs.run != 'true'
-        run: echo "${{ steps.rust-needed.outputs.reason }}"
+        if: needs.classify.outputs.rust != 'true'
+        run: echo "No Rust paths changed"
 
       - name: Install pinned Rust toolchain
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
 
       - name: System deps for the ALSA crate
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         # Bounded against apt-mirror hangs (#2727).
         timeout-minutes: 6
         run: scripts/ci-apt-install.sh libasound2-dev
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         with:
           workspaces: rust
 
       - name: Rust formatting + Clippy
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         run: scripts/check-rust.sh
 
       - name: Rust workspace — build + test
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         working-directory: rust
         run: cargo +"$RUST_TOOLCHAIN" test --workspace --release --locked
 
       - name: Host clock without ALSA
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         # A workspace build enables fan-in's ALSA feature on the host clock.
         working-directory: rust
         run: cargo +"$RUST_TOOLCHAIN" test -p jasper-host-clock --release --locked
 
       - name: jts-ring-ioplug — C core host test + plugin compile check
-        if: steps.rust-needed.outputs.run == 'true'
+        if: needs.classify.outputs.rust == 'true'
         # The C HALF of the golden-layout drift pin. `make test` compiles
         # jts_ring_shm.c (which pulls in jts_ring_shm.h's offsetof/_Static_assert
         # gates and the ATOMIC_LLONG_LOCK_FREE==2 assert) and runs test_ring_core;
