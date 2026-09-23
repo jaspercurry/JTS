@@ -42,6 +42,7 @@ __all__ = [
     "BranchFits", "CloudFitTerms",
     "DriverEvidence",
     "LINEARIZATION_MIN_PAIRED_OCCURRENCES",
+    "NonFiniteTrimError",
     "PlannerError",
     "PlannerInputError",
     "anchor_trims",
@@ -63,6 +64,12 @@ class PlannerInputError(PlannerError):
     """A required planner input is missing or malformed."""
 
     refusal_reason = "contract_invalid"
+
+
+class NonFiniteTrimError(PlannerError):
+    """A fitted trim term is NaN or infinite, so no trim is resolved."""
+
+    refusal_reason = "trim_not_finite"
 
 
 # Minimum paired in-capture occurrences (primary + repeats) per driver before
@@ -210,10 +217,13 @@ def resolve_trims_after_fit(
         grid, responses[0], responses[1], region.fc_hz,
         woofer_span_hz=spans[0], tweeter_span_hz=spans[1],
     ) for responses in (raw, corrected)]
-    trims, _ = anchor_trims(
-        roles=roles, anchor_base_db=dict(zip(roles, before[:2])),
-        giveback_db=dict(zip(roles, (before[2] - after[2], before[3] - after[3]))),
-    )
+    base = dict(zip(roles, before[:2]))
+    giveback = dict(zip(roles, (before[2] - after[2], before[3] - after[3])))
+    # The anchor's non-positive normalize is a max(): a NaN term compares False
+    # and would reach the emitted trim unclamped.
+    if not np.isfinite([*base.values(), *giveback.values()]).all():
+        raise NonFiniteTrimError(f"trim base {base} or give-back {giveback} is not finite")
+    trims, _ = anchor_trims(roles=roles, anchor_base_db=base, giveback_db=giveback)
     return trims
 
 

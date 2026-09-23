@@ -18,7 +18,7 @@ from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches, resolve_trims_after_fit
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
@@ -224,6 +224,8 @@ def speaker_fit(
     if len(drivers) == 2:
         try:
             trim_decision = {"committed_db": resolve_trims_after_fit(drivers, branches.fits, regions)}
+        except NonFiniteTrimError as exc:
+            trim_decision = {"status": "unavailable", "reason": exc.refusal_reason}
         except ValueError:
             trim_decision = {"status": "unavailable", "reason": "handover_band_unmeasured"}
     handover_shifts = {}
