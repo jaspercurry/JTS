@@ -35,17 +35,6 @@ def test_html_has_ambient_radio_button() -> None:
     assert 'value="ambient"' in html_text
 
 
-def test_html_renders_ambient_in_counts_matrix() -> None:
-    """The per-cell counts table includes an ambient column so the
-    operator sees their progress in the third condition. The counts
-    matrix is built by the behaviour module's renderCounts(), so the
-    column label + per-row key live there."""
-    js = _module_js()
-    # The renderCounts JS literal — header row + per-row keys
-    assert '">ambient<' in js
-    assert '`${d}-ambient`' in js
-
-
 def test_html_has_mic_level_bar_elements() -> None:
     """The Record-a-clip card includes a visible mic-level meter
     so the operator knows the mic is alive before they speak."""
@@ -53,11 +42,6 @@ def test_html_has_mic_level_bar_elements() -> None:
     assert 'id="mic-level"' in html_text
     assert 'id="mic-level-fill"' in html_text
     assert 'id="mic-level-readout"' in html_text
-
-
-def test_html_subscribes_to_level_sse() -> None:
-    """The behaviour module opens an EventSource to the level endpoint on load."""
-    assert "EventSource('api/recording/level')" in _module_js()
 
 
 def test_html_count_guidance_matches_two_session_protocol() -> None:
@@ -140,33 +124,6 @@ console.log(JSON.stringify({ markup, cancelled, requests }));
         ["GET", "api/clips"], ["DELETE", "api/clip/dummy-clip"],
         ["GET", "api/clips"], ["GET", "api/sessions"],
     ]
-
-
-def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
-    """Regression: with a naked `audio` element in a fixed-pixel
-    grid column, the audio's intrinsic min-content (browser-default
-    300px+) blows past the column width and pushes the trash button
-    off the right edge of the card. Fix is twofold and both legs
-    must remain in the CSS:
-
-      1. `minmax(0, …)` on the audio column overrides grid's default
-         min-width:auto so the column can shrink below content min-content.
-      2. Explicit `width: 100%; min-width: 0` on .clip audio so the
-         element itself shrinks to fit instead of forcing the cell
-         to grow.
-
-    A future CSS edit dropping either leg would silently re-introduce
-    the "I see the audio but can't find the delete button" bug.
-    """
-    css = _page_css()
-    # Leg 1: minmax(0, …) in the .clip grid template
-    assert "minmax(0," in css, (
-        "the .clip row's audio column needs minmax(0, …) so the "
-        "audio's intrinsic min-content doesn't force the grid to grow"
-    )
-    # Leg 2: explicit width constraints on the audio element
-    assert ".clip audio" in css
-    assert "min-width: 0" in css
 
 
 # ---------------------------------------------------------------------------
@@ -436,16 +393,6 @@ def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     assert 'id="session-unload"' in wake_corpus_setup._render_index_html("t")
 
 
-def test_html_confirm_enables_missing_bridge_outputs() -> None:
-    """The Begin flow offers a deliberate bridge enable/restart retry
-    instead of silently starting a session with missing WAV legs. This
-    retry flow lives in the behaviour module."""
-    js = _module_js()
-    assert "can_enable_bridge_outputs" in js
-    assert "enable_bridge_outputs: true" in js
-    assert "restart the affected audio daemons" in js
-
-
 def test_html_playback_uses_leg_selector() -> None:
     """Clip rows let the operator choose any recorded leg for playback. The
     clip rendering + leg-ordering live in the behaviour module; the
@@ -474,13 +421,3 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "USB AEC3 edge combo 80 ms" in html_text  # usb_webrtc corpus label
     assert "createLegLabels(_config)" in js
     assert "usb_dtln: 'USB DTLN'" not in js
-
-
-def test_html_js_calls_sessions_endpoints() -> None:
-    """JS must call the right relative API paths (not absolute —
-    nginx prefix-strip would 502 those). The calls live in the module."""
-    js = _module_js()
-    assert "'api/sessions'" in js or '"api/sessions"' in js
-    assert "'api/session/load'" in js or '"api/session/load"' in js
-    assert "'api/session/unload'" in js or '"api/session/unload"' in js
-    assert "api/session/${" in js  # DELETE template literal

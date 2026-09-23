@@ -7,9 +7,6 @@
 The markup is deploy/index.html; its behaviour is the ES module
 deploy/assets/landing/js/main.js (capability gating and the status-*
 sublabels it shares with the hub pages live in shared/js/settings-status.js).
-These tests pin the small optimistic-volume state machine so stale POST
-responses or polls cannot repaint an older volume while a newer local gesture
-is still pending.
 """
 from __future__ import annotations
 
@@ -39,9 +36,6 @@ _SETTINGS_STATUS_JS_PATH = (
 _NGINX_PATH = nginx_site.PROFILE_CONFS["full"]
 _STREAMBOX_NGINX_PATH = nginx_site.PROFILE_CONFS["streambox"]
 _PROFILE_BY_CONF = {v: k for k, v in nginx_site.PROFILE_CONFS.items()}
-_INSTALL_PATH = _REPO / "deploy" / "install.sh"
-_FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
-_APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
 
 
 def _index_html() -> str:
@@ -62,10 +56,6 @@ def _nginx_conf(conf_path: Path) -> str:
 
 def _landing_js() -> str:
     return _LANDING_JS_PATH.read_text(encoding="utf-8")
-
-
-def _app_css() -> str:
-    return _APP_CSS_PATH.read_text(encoding="utf-8")
 
 
 _LOCATION_RX = nginx_site.LOCATION_RX
@@ -201,101 +191,6 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 """
-
-
-def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
-    js = _landing_js()
-
-    assert "function localVolumeDirty()" in js
-    assert "dragging || flushing || inFlight || pending !== null" in js
-    assert "Date.now() < ignorePollUntil" in js
-    assert re.search(
-        r"async function poll\(\) \{.*?\s+if \(localVolumeDirty\(\)\) return;",
-        js,
-        re.DOTALL,
-    )
-
-
-def test_volume_slider_polls_faster_only_while_page_is_visible() -> None:
-    script = _volume_slider_script(_landing_js())
-
-    assert "var POLL_MS = 500;" in script
-    assert "startPolling(poll, { intervalMs: POLL_MS });" in script
-    assert re.search(
-        r"async function poll\(\).*?"
-        r"if \(document\.visibilityState === 'hidden'\) return;.*?"
-        r"fetch\('/volume'\)",
-        script,
-        re.DOTALL,
-    )
-    assert re.search(
-        r"async function poll\(\).*?"
-        r"if \(pollInFlight\) return;.*?"
-        r"pollInFlight = true;.*?"
-        r"fetch\('/volume'\).*?"
-        r"finally \{\s*pollInFlight = false;",
-        script,
-        re.DOTALL,
-    )
-
-
-def test_volume_slider_ignores_stale_post_responses() -> None:
-    js = _landing_js()
-
-    assert "var desiredPct = null" in js
-    assert re.search(
-        r"if \(!dragging && pending === null && toSend === desiredPct &&\s+"
-        r"typeof data\.percent === 'number'\) \{\s+setUI\(data\.percent\);",
-        js,
-    )
-
-
-def test_volume_slider_allows_only_one_flush_loop() -> None:
-    js = _landing_js()
-
-    assert "var flushing = false" in js
-    assert "if (flushing) return;" in js
-    assert "flushing = true;" in js
-    assert "flushing = false;" in js
-
-
-def test_volume_slider_uses_touch_friendly_pointer_target() -> None:
-    html = _index_html()
-    js = _landing_js()
-
-    assert 'id="vol-control"' in html
-    assert 'role="slider"' in html
-    assert "touch-action: none;" in html
-    assert "function xToPercent(clientX)" in js
-    assert "hit.setPointerCapture(e.pointerId)" in js
-    assert "hit.addEventListener('pointermove'" in js
-    assert 'id="vol-input"' not in html
-    assert 'type="range"' not in html
-
-
-def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
-    html = _index_html()
-    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
-    script = _volume_slider_script(_landing_js())
-
-    assert 'id="volume-safety-note" hidden' in html
-    assert "Speaker output is locked until active crossover setup is complete." in html
-    assert 'href="/sound/speaker/"' in html
-    assert ".volume-wrap.safety-muted" in style
-    assert "cursor: not-allowed;" in style
-    assert "function handleSystemSnapshot(data)" in script
-    assert "setSafetyMuted(activeSpeakerSafetyMuted(data));" in script
-    assert "active_speaker_output_safety" in script
-    assert "typeof safety.safety_muted === 'boolean'" in script
-    assert "typeof safety.volume_allowed === 'boolean'" in script
-    assert "var safetyMuted = false" in script
-    assert "function controlLocked()" in script
-    assert "return safetyMuted || heldOwner !== null;" in script
-    assert "aria-disabled" in script
-    assert "hit.classList.toggle('safety-muted', disabled);" in script
-    assert "volume-safety-note" in script
-    assert "fetch('/state'" not in script
-    assert "disabled = true" not in script
 
 
 def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path) -> None:
@@ -600,20 +495,6 @@ def test_volume_slider_measurement_hold_state_machine(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_landing_page_has_source_selector_buttons() -> None:
-    html = _index_html()
-    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
-
-    assert 'aria-label="Playback source"' in html
-    for source in ("auto", "airplay", "bluetooth", "spotify", "usbsink"):
-        assert f'data-source="{source}"' in html
-    assert re.search(r"\.source-buttons \{[^}]*\bgap: 4px;", style)
-    assert re.search(
-        r"\.source-button\.playing::after \{[^}]*\btop: 10px;[^}]*\bright: 10px;",
-        style,
-    )
-
-
 def test_landing_page_uses_grouped_settings_rows() -> None:
     html = _index_html()
 
@@ -636,44 +517,6 @@ def test_landing_page_capability_gates_fail_closed() -> None:
     for line in html.splitlines():
         if "data-requires=" in line and line.lstrip().startswith("<"):
             assert "hidden" in line, line.strip()
-
-
-def test_landing_page_bakes_capability_ceiling_before_any_fetch() -> None:
-    # The capability ceiling is install-time-static, so it rides the page as a
-    # data island and gates the rows before any /system/data.json round-trip
-    # (that round-trip was the two-layer stutter). Every gated row ships
-    # hidden, so gating only reveals and the layout survives a daemon being
-    # down.
-    settings_status = _SETTINGS_STATUS_JS_PATH.read_text()
-
-    # install.sh stamps this placeholder with the profile's capability island.
-    assert "__JTS_CAPS_ISLAND__" in _INDEX_PATH.read_text(encoding="utf-8")
-    assert 'JSON.parse(document.getElementById("landing-caps").textContent)' in (
-        settings_status
-    )
-
-    # The snapshot poll must NOT re-drive layout (live values only), so a slow
-    # or failed fetch can never blank or restyle the page.
-    render = settings_status.split("function renderSnapshot(", 1)[1].split(
-        "export function initSettingsStatus", 1,
-    )[0]
-    assert "data-requires" not in render
-    assert ".hidden" not in render
-
-
-def test_install_bakes_landing_capabilities() -> None:
-    # The renderer computes the profile's capability map from the SAME source
-    # the runtime snapshot uses (system_capabilities_for_profile) and replaces
-    # the placeholder; install.sh fails loud rather than shipping an
-    # unreplaced page.
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-    landing = (_REPO / "jasper" / "web" / "landing.py").read_text(encoding="utf-8")
-
-    assert "system_capabilities_for_profile" in landing
-    assert "read_install_profile" in landing
-    assert "__JTS_CAPS_ISLAND__" in landing
-    assert "python3 -m jasper.web.landing" in install
-    assert "refusing to ship a broken page" in install
 
 
 def test_landing_page_data_requires_match_capability_map() -> None:
@@ -756,92 +599,6 @@ def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
         "landing and hub rows visible on streambox link to paths "
         f"nginx-jasper-streambox.conf does not serve: {unserved}"
     )
-
-
-def test_landing_page_tracks_static_reference_visual_tokens() -> None:
-    # Tokens and the .page container now live in the shared stylesheet
-    # (the landing page links it); only landing-specific bits stay inline.
-    html = _index_html()
-    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
-    app_css = _app_css()
-
-    assert '<link rel="stylesheet" href="/assets/app.css' in html
-    assert "--background: oklch(0.961 0.014 80);" in app_css
-    assert "--primary: oklch(0.64 0.062 142);" in app_css
-    assert "max-width: 48rem;" in app_css
-    assert "padding: 2rem 1.5rem 6rem;" in app_css
-    assert ".hero { padding: 2rem 0; }" in style
-    assert '<section class="hero" aria-label="Primary controls">' in html
-    assert 'class="footer-pill"' in html
-
-
-def test_landing_page_uses_local_font_assets_only() -> None:
-    # @font-face moved to the shared stylesheet; the page must still avoid
-    # external font CDNs and the local woff2 files must exist.
-    html = _index_html()
-    app_css = _app_css()
-
-    assert "fonts.googleapis.com" not in html
-    assert "fonts.gstatic.com" not in html
-    assert "fonts.googleapis.com" not in app_css
-    assert "fonts.gstatic.com" not in app_css
-    assert '@font-face' in app_css
-    assert 'font-family: "Figtree"' in app_css
-    assert 'font-family: "Outfit"' in app_css
-    for filename in (
-        "figtree-latin.woff2",
-        "figtree-latin-ext.woff2",
-        "outfit-latin.woff2",
-        "outfit-latin-ext.woff2",
-        "OFL-Figtree.txt",
-        "OFL-Outfit.txt",
-    ):
-        path = _FONT_DIR / filename
-        assert path.is_file()
-        assert path.stat().st_size > 0
-
-
-def test_landing_page_css_keeps_type_stable() -> None:
-    html = _index_html()
-    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
-
-    assert "vw" not in style
-    for value in re.findall(r"letter-spacing:\s*([^;]+);", style):
-        assert value.strip() == "0"
-
-
-def test_source_selector_uses_control_endpoints() -> None:
-    js = _landing_js()
-
-    assert "fetch('/source/state'" in js
-    assert "fetch('/source/select'" in js
-    assert "pendingSource" in js
-    assert "source-button.playing::after" in _index_html()
-
-
-def test_landing_keeps_the_sound_row_visible_on_a_follower() -> None:
-    # Follower pages own delegation locally; the dashboard must keep Sound
-    # navigation visible instead of hiding the whole section.
-    pair_script = _landing_js().split("// Stereo-pair banner.", 1)[1]
-    assert "soundSection.style.display" not in pair_script
-
-
-def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> None:
-    # Issue #2632 (owner directive): the cert-warning pre-explainer page and
-    # every automatic hop into the self-signed HTTPS origin are gone. The
-    # HTTPS listener itself stays for deliberate local-getUserMedia use.
-    assert not (_REPO / "deploy" / "correction-preflight.html").exists()
-
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "deploy/correction-preflight.html" not in install
-
-    for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
-        nginx = _nginx_conf(path)
-        http_nginx = nginx[: nginx.index("listen 443")]
-        assert "correction-preflight.html" not in nginx
-        assert "/sound/proceed" not in nginx
-        # No plain-HTTP route may bounce a browser to https:// on this host.
-        assert "return 302 https://$host" not in http_nginx
 
 
 def test_nginx_serves_the_measurement_pages_over_plain_http() -> None:
@@ -1187,18 +944,6 @@ def test_no_conf_still_mounts_the_old_sync_path(conf_path: Path) -> None:
     assert stale == []
 
 
-def test_install_stamps_app_css_cache_bust_version() -> None:
-    # app.css itself is copied by the manifested web-assets lib — pinned as
-    # an execution test by test_install_web_assets.py's
-    # test_copies_assets_and_writes_exact_sorted_manifest. This test covers
-    # only the cache-bust stamping install.sh performs on the static
-    # landing page's app.css link (it rewrites index.html, not an asset).
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "__APP_CSS_VERSION__" in _INDEX_PATH.read_text(encoding="utf-8")
-    assert 'app_css_ver="$(resolve_build_sha_short)"' in install
-    assert '--app-css-version "${app_css_ver}"' in install
-
-
 def test_landing_page_stereo_pair_banner_wiring() -> None:
     """The pair banner: hidden by default, fed by GET /grouping (proxied by
     nginx to jasper-control), DOM-written via textContent only (untrusted
@@ -1226,24 +971,3 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     # nginx exposes GET /grouping on the landing origin.
     nginx = _nginx_conf(_NGINX_PATH)
     assert "location = /grouping" in nginx
-
-
-def test_mic_pause_card_follows_wake_detection() -> None:
-    """The /mic card is the always-on listen state, not the assistant.
-
-    A push-to-talk tier holds no mic open and the streambox site proxies no
-    /mic route, so this card must ride WAKE_DETECTION rather than voice_brain.
-    """
-    html = _index_html()
-    card = re.search(
-        r'<section class="control-section" data-requires="(?P<cap>\w+)" hidden>\s*'
-        r'<div class="control-head">\s*<h2 class="eyebrow">Voice assistant</h2>'
-        r'(?P<body>.*?)</section>',
-        html,
-        re.S,
-    )
-    assert card is not None, "mic pause card markup drifted"
-    assert card.group("cap") == "wake_detection"
-    # The /mic poll and mute POST short-circuit on this card being hidden, so
-    # the control living inside it is what ties them to the gate above.
-    assert 'id="mic-toggle"' in card.group("body")

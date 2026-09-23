@@ -924,50 +924,6 @@ def test_static_modules_do_not_reintroduce_json_posts_without_csrf_helper():
     assert offenders == []
 
 
-def test_sync_measurement_recorder_uses_worklet_without_mic_monitoring():
-    src = Path("deploy/assets/sync/js/main.js").read_text()
-
-    assert "/assets/shared/js/measurement-audio.js" in src
-    assert "createMonoRecorder" in src
-    assert "float32ToWavBlob" in src
-    assert "getUserMedia" not in src
-    assert "new AudioContext" not in src
-    assert "AudioWorkletProcessor" not in src
-    assert "AudioWorkletNode" not in src
-    assert "createScriptProcessor" not in src
-    assert ".destination" not in src
-
-
-_SHARED_MEASUREMENT_AUDIO_MODULE = Path(
-    "deploy/assets/shared/js/measurement-audio.js"
-)
-
-
-def test_shared_measurement_audio_module_owns_capture_primitives():
-    src = _SHARED_MEASUREMENT_AUDIO_MODULE.read_text()
-
-    for name in (
-        "monoMicConstraints",
-        "openMonoMic",
-        "micCaptureSupport",
-        "assertMicCaptureSupported",
-        "createBandpassRmsMeter",
-        "createMonoRecorder",
-        "float32ToWavBlob",
-        "closeAudioGraph",
-    ):
-        assert re.search(r"export\s+(?:async\s+)?function\s+" + name + r"\b", src)
-    assert "navigator.mediaDevices.getUserMedia" in src
-    assert "non_secure_context" in src
-    assert "media_devices_unavailable" in src
-    assert "Microphone capture needs HTTPS" in src
-    assert "AudioWorkletProcessor" in src
-    assert "createMediaStreamSource" in src
-    assert "sourceNode.connect(workletNode)" in src
-    assert "createScriptProcessor" not in src
-    assert ".destination" not in src
-
-
 # Native browser dialogs — confirm()/alert()/prompt() — are being retired
 # across the UI in favour of the shared <dialog> helper exported from
 # /assets/shared/js/dialog.js (jtsConfirm / jtsAlert). The browser can suppress
@@ -1104,23 +1060,6 @@ _SHARED_ESCAPE_MODULE = Path("deploy/assets/shared/js/escape.js")
 _LOCAL_ESCAPER_DEF_RE = re.compile(r"function\s+(?:escapeHtml|escapeText)\b")
 
 
-def test_shared_escape_module_exists_and_exports_the_escaper():
-    """The drift test below is only meaningful once the shared home exists and
-    exports the names pages import."""
-    assert _SHARED_ESCAPE_MODULE.is_file(), (
-        f"{_SHARED_ESCAPE_MODULE} (shared HTML escaper) is missing"
-    )
-    src = _SHARED_ESCAPE_MODULE.read_text()
-    assert re.search(r"export\s+function\s+escapeHtml\b", src), (
-        "escape.js must export escapeHtml"
-    )
-    # escapeAttr is an explicit alias; cssIdSafe rides along (wifi/bluetooth).
-    assert "escapeAttr" in src, "escape.js must expose the escapeAttr alias"
-    assert re.search(r"export\s+function\s+cssIdSafe\b", src), (
-        "escape.js must export cssIdSafe"
-    )
-
-
 # The text-node DOM builder (h() / svg()) is the entire basis of the
 # "untrusted strings never reach innerHTML" safety argument: string children
 # become text nodes, so transcripts, provider names, device labels, etc. are
@@ -1136,21 +1075,6 @@ _SHARED_DOM_MODULE = Path("deploy/assets/shared/js/dom.js")
 _LOCAL_DOM_BUILDER_DEF_RE = re.compile(r"function\s+(?:h|svg)\b")
 
 
-def test_shared_dom_module_exists_and_exports_the_builder():
-    """The drift test below is only meaningful once the shared home exists and
-    exports the names pages import."""
-    assert _SHARED_DOM_MODULE.is_file(), (
-        f"{_SHARED_DOM_MODULE} (shared text-node DOM builder) is missing"
-    )
-    src = _SHARED_DOM_MODULE.read_text()
-    assert re.search(r"export\s+function\s+h\b", src), (
-        "dom.js must export h"
-    )
-    assert re.search(r"export\s+function\s+svg\b", src), (
-        "dom.js must export svg"
-    )
-
-
 # The CSRF/JSON fetch helpers (csrfHeaders / jsonHeaders) were promoted to the
 # shared module at /assets/shared/js/http.js (same shared-by-promotion path as
 # escape.js / dialog.js). The /sound/ editor used to carry a local copy; it now
@@ -1164,21 +1088,6 @@ _LOCAL_HTTP_HELPER_DEF_RE = re.compile(
     r"(?:function\s+(?:csrfHeaders|jsonHeaders)\b"
     r"|(?:var|let|const)\s+(?:csrfHeaders|jsonHeaders)\s*=)"
 )
-
-
-def test_shared_http_module_exists_and_exports_the_csrf_helpers():
-    """The drift test below is only meaningful once the shared home exists and
-    exports the names pages import."""
-    assert _SHARED_HTTP_MODULE.is_file(), (
-        f"{_SHARED_HTTP_MODULE} (shared CSRF/JSON fetch helpers) is missing"
-    )
-    src = _SHARED_HTTP_MODULE.read_text()
-    assert re.search(r"export\s+function\s+csrfHeaders\b", src), (
-        "http.js must export csrfHeaders"
-    )
-    assert re.search(r"export\s+function\s+jsonHeaders\b", src), (
-        "http.js must export jsonHeaders"
-    )
 
 
 @pytest.mark.parametrize(

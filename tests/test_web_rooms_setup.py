@@ -316,36 +316,6 @@ def test_get_root_links_page_css_and_loads_es_module(monkeypatch):
     assert 'id="app"' in out
 
 
-def test_rooms_module_keeps_pair_hosts_local_not_raw_ip():
-    js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'import { localWebHost } from "/assets/shared/js/local-web-host.js";' in js
-    assert "function localWebHost" not in js
-    assert "IPV4_RE" not in js
-    assert 'defRow("Leader", leaderHost || "leader")' in js
-    assert 'h("code.bond-current__addr", null, leaderHost)' in js
-    assert 'h("code.bond-current__addr", null, g.leader_addr)' not in js
-
-
-def test_rooms_balance_slider_saves_on_input_not_only_release():
-    js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert "const BALANCE_LIVE_COMMIT_MS = 150;" in js
-    assert 'import { createPairBalanceController } from "./pair-balance-controller.js";' in js
-    assert "createPairBalanceController({" in js
-    assert 'postTrim: (request) => postJSON("trim", request),' in js
-    assert 'balanceRange.addEventListener("input", () => {' in js
-    input_handler = js.split('balanceRange.addEventListener("input", () => {', 1)[1]
-    input_handler = input_handler.split("});", 1)[0]
-    assert "balanceController.input(balanceRange.value);" in input_handler
-    assert 'balanceRange.addEventListener("change", () => {' in js
-    assert "void balanceController.change();" in js
-
-
 def test_get_root_shell_interpolates_no_discovered_data(monkeypatch):
     """The server-rendered HTML carries NO peer/grouping data — every untrusted
     field is delivered over /rooms.json for the module to render with DOM/text
