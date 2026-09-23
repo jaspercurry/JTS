@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from ...bus import parse_bus_stops
 from ...config import Config
+from ...env_load import parse_bool_value
+from ...secret_redaction import redact_secrets
 from ...transit import enabled_pack_ids
 from ...transit._mta_stations import stations_by_id
 from ...voice.catalog import (
@@ -24,7 +26,6 @@ from ...voice.provider_state import (
 )
 from ._evidence import evidence
 from ._registry import doctor_check
-from ...secret_redaction import redact_secrets
 from ._shared import (
     _EXCEPTION_DETAIL_LIMIT,
     CheckResult,
@@ -922,10 +923,9 @@ def check_citibike(cfg: Config) -> CheckResult:
             f"Re-pick at {setup_url}.",
             reason=REASON_CITIBIKE_STATIONS_RETIRED,
         )
-    ebike_only = (
-        os.environ.get("JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
-        in {"1", "true", "yes"}
-    )
+    ebike_only = parse_bool_value(
+        os.environ.get("JASPER_CITIBIKE_EBIKE_ONLY"),
+    ) is True
     extra = " (e-bike-only mode)" if ebike_only else ""
     return CheckResult(
         label, "ok",

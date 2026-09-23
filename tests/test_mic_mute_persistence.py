@@ -89,7 +89,7 @@ def test_no_temp_files_leak_on_success(tmp_path):
         ("1", True),
         ("true", True),
         ("True", True),
-        ("yes", True),
+        ("enabled", True),
         ("on", True),
         ("0", False),
         ("false", False),

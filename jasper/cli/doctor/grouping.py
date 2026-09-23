@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 from ...env_file import parse_env_mapping
+from ...env_load import parse_bool_value
+from ...service_units import JASPER_VOICE_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -21,7 +23,6 @@ from ._shared import (
     _parse_systemd_environment,
     _run,
 )
-from ...service_units import JASPER_VOICE_SERVICE
 
 REASON_GROUPING_OFF = "grouping_off"
 REASON_NOT_APPLICABLE = "not_applicable"
@@ -82,14 +83,7 @@ def _devices_rate_adjust_from_text(text: str) -> bool | None:
     None when absent / unparseable. Reads via the shared
     :func:`_camilla_block_field` scanner."""
     value = _camilla_block_field(text, "devices", "enable_rate_adjust")
-    if value is None:
-        return None
-    value = value.lower()
-    if value in {"true", "yes", "on", "1"}:
-        return True
-    if value in {"false", "no", "off", "0"}:
-        return False
-    return None
+    return parse_bool_value(value)
 
 
 def _unit_active_word(unit: str) -> str:

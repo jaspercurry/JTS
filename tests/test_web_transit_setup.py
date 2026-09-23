@@ -201,7 +201,7 @@ def test_ebike_only_checkbox_checked_when_set(monkeypatch):
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: {"data": {"stations": []}},
     )
-    state = dict(NYC_STATE, JASPER_CITIBIKE_EBIKE_ONLY="1")
+    state = dict(NYC_STATE, JASPER_CITIBIKE_EBIKE_ONLY="enabled")
     out = _render(state)
     assert 'name="citibike_ebike_only" form="save-form" checked' in out
 

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
+from ..env_load import parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -591,10 +592,9 @@ def _citibike_card_html(
 
     saved_picks = parse_saved_stations(_value_for(state, "JASPER_CITIBIKE_STATIONS"))
     saved_ids = {sid for sid, _ in saved_picks}
-    ebike_only = (
-        _value_for(state, "JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
-        in {"1", "true", "yes"}
-    )
+    ebike_only = parse_bool_value(
+        _value_for(state, "JASPER_CITIBIKE_EBIKE_ONLY", ""),
+    ) is True
 
     badge = _badge_html(bool(saved_picks))
 
@@ -1031,4 +1031,3 @@ def _index_html(
     return _wrap_transit_page(
         "Transit", body, status_msg=status_msg, back_href=back_href,
     )
-
