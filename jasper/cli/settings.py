@@ -5,8 +5,9 @@
 """``jasper-settings`` -- read or change a speaker setting from a shell.
 
 One verb per ``/assistant/`` wizard page, each calling the owner function that
-page calls, so a change from an agent is validated, logged and applied the way
-a change from the page is (ADR-0350). ``--help`` is the contract (ADR-0204);
+page calls, so a change from an agent is validated and applied the way a change
+from the page is (ADR-0350). Its ``event=`` line prints on the caller's stderr;
+the journal records sudo's command line. ``--help`` is the contract (ADR-0204);
 stdout is one JSON document and the exit codes are ``_refusal``'s (ADR-0237).
 """
 from __future__ import annotations
@@ -145,9 +146,17 @@ def _voice(args: argparse.Namespace) -> int:
     if args.provider is None and args.model is None:
         return _answer(_voice_view)
     try:
+        # The files select_voice reads, read first: unreadable is exit 2, not 3.
+        keys_set(voice_env_files())
+    except OSError as exc:
+        return failed(EXIT_UNREADABLE, "unreadable", str(exc))
+    try:
         selection = select_voice(args.provider, args.model, via="cli")
     except VoiceSelectionRefused as exc:
         return refused(exc.reason, str(exc), exit_code=EXIT_REFUSED)
+    except ValueError as exc:
+        # A discovered model id no env file can hold (an inner newline).
+        return failed(EXIT_UNREADABLE, "unreadable", str(exc))
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "save_failed", str(exc))
     return _restart({
@@ -176,8 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Read or change the speaker's settings the way its /assistant/ wizard "
             "pages do: one verb per page, calling the page's own owner function, "
-            "so a change is validated, logged (event=voice.save, event=wake.model) "
-            "and applied exactly as from the page. With no flags a verb only reads."
+            "so a change is validated and applied exactly as from the page. Its "
+            "event= line (event=voice.save or event=wake.model, via=cli) prints on "
+            "your stderr; the journal records sudo's command line. With no flags a "
+            "verb only reads."
         ),
         epilog=_EPILOG,
     )

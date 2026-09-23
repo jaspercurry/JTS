@@ -70,14 +70,10 @@ DELIBERATELY_UNLOGGED: dict[tuple[str, str], str] = {
 }
 
 # Settings owners every front end calls, each emitting its setting's `event=`
-# line itself (ADR-0350), and the one wizard helper both voice save handlers
-# reach select_voice through; a handler's call to any is its audit line. The
-# test below fails if one stops emitting it.
-AUDITING_OWNERS = {
-    "select_voice": ROOT / "jasper" / "voice" / "provider_state.py",
-    "select_wake_model": ROOT / "jasper" / "wake_models.py",
-    "_save_provider_state": WEB_DIR / "voice_setup.py",
-}
+# line itself (ADR-0350; tests/test_settings_cli.py runs them and checks it),
+# and the one wizard helper both voice save handlers reach select_voice
+# through; a handler's call to any is its audit line.
+AUDITING_OWNERS = {"select_voice", "select_wake_model", "_save_provider_state"}
 
 
 def _calls_restart(fn: ast.FunctionDef) -> bool:
@@ -107,13 +103,13 @@ def _emits_event_log(fn: ast.FunctionDef) -> bool:
         # starts with "event=". Accept both a bare `log_event(...)` and an
         # attribute form (e.g. `mod.log_event(...)`).
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
-        if name in AUDITING_OWNERS:
-            return True
         if name == "log_event" and len(n.args) >= 2:
             event_name = n.args[1]
             if (isinstance(event_name, ast.Constant)
                     and isinstance(event_name.value, str)):
                 return True
+        if name in AUDITING_OWNERS:
+            return True
     return False
 
 
@@ -161,20 +157,6 @@ def test_deliberately_unlogged_allowlist_is_not_stale():
         assert not _emits_event_log(by_key[key]), (
             f"{key[0]}.{key[1]} now emits an event= log — remove it from "
             "DELIBERATELY_UNLOGGED (it's audited; no allowlist needed)."
-        )
-
-
-def test_auditing_owners_still_emit_their_event():
-    for name, path in AUDITING_OWNERS.items():
-        owner = next(
-            (fn for fn in ast.walk(ast.parse(path.read_text()))
-             if isinstance(fn, ast.FunctionDef) and fn.name == name),
-            None,
-        )
-        assert owner is not None, f"{name} left {path.name} — update AUDITING_OWNERS."
-        assert _emits_event_log(owner), (
-            f"{name} no longer emits its event= line, so the wizard handlers "
-            "that call it restart unaudited."
         )
 
 

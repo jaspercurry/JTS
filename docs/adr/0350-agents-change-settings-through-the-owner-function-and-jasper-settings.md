@@ -42,9 +42,10 @@
      `restart: "skipped"` and its reason, and a refused one exits 1 with
      `detail.saved: true`.
 - **Consequences:** An agent reads the same choices and gets the same
-  refusals as the page, and every change leaves the page's `event=` line
-  (the CLI's prints on the ssh session's stderr, not in the journal). On a
-  bonded follower an agent's change is saved but voice does not restart.
+  refusals as the page, and every change emits the page's `event=` line;
+  the CLI's prints on the caller's stderr, and the journal records sudo's
+  command line. On a bonded follower an agent's change is saved but voice
+  does not restart.
   Scope: `voice` and `wake` now; `voice --voice`, `voice --barge-in` and
   `wake --threshold` next, in settings PR 2, which also moves
   `restart_voice_daemon` out of `web/` and so deletes the one

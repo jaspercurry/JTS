@@ -5,13 +5,14 @@
 """jasper-settings: verb x fixture -> exit code and JSON fields (ADR-0350).
 
 Every case runs the real ``main`` over tmp settings files seeded with two fake
-API keys, and checks that neither key reaches stdout or stderr, that the CLI
-never touches the keys file, and that a write lands in its file at the mode the
-wizard writes it.
+API keys, and checks that neither key reaches stdout, stderr or the log, that
+the CLI never touches the keys file, and that a write lands in its file at the
+mode the wizard writes it.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from pathlib import Path
@@ -27,6 +28,7 @@ from jasper.web._common import RestartOutcome
 
 OPENAI_KEY = "sk-test-0123456789abcdef-never-printed"
 GEMINI_KEY = "AIza-test-0123456789abcdef-never-printed"
+KEYS_FILE_TEXT = f"OPENAI_API_KEY={OPENAI_KEY}\n".encode()
 MODES = {"provider": 0o640, "wake": 0o644}
 RAN, SKIPPED, REFUSED = RestartOutcome.RAN, RestartOutcome.SKIPPED, RestartOutcome.REFUSED
 
@@ -39,6 +41,8 @@ class Case(NamedTuple):
     provider: str = "openai"
     restart: RestartOutcome = RAN
     euid: int = 0
+    keys: bytes = KEYS_FILE_TEXT
+    event: str | None = None
 
 
 CASES = {
@@ -56,7 +60,7 @@ CASES = {
     "voice_provider_writes_and_restarts": Case(
         ["voice", "--provider", "gemini"], 0,
         {"provider": "gemini", "changed": ["provider", "model"], "restart": "ran"},
-        writes={"JASPER_VOICE_PROVIDER": "gemini"},
+        writes={"JASPER_VOICE_PROVIDER": "gemini"}, event="voice.save",
     ),
     "voice_model_the_wizard_discovered": Case(
         ["voice", "--model", "gpt-realtime-new"], 0,
@@ -72,6 +76,12 @@ CASES = {
     "provider_without_a_key_is_refused": Case(
         ["voice", "--provider", "grok"], 1, {"reason": "key_unset"},
     ),
+    "unreadable_keys_file_exits_2_before_any_write": Case(
+        ["voice", "--provider", "gemini"], 2, {"reason": "unreadable"}, keys=b"\xff\xfe\n",
+    ),
+    "discovered_model_no_env_file_can_hold_exits_2": Case(
+        ["voice", "--model", "gpt-realtime\nbroken"], 2, {"reason": "unreadable"},
+    ),
     "skipped_restart_still_saves": Case(
         ["voice", "--provider", "gemini"], 0,
         {"restart": "skipped", "restart_reason": "bonded_follower"},
@@ -84,7 +94,7 @@ CASES = {
     ),
     "wake_model_writes_and_restarts": Case(
         ["wake", "--model", "alexa"], 0, {"model": "alexa", "restart": "ran"},
-        writes={"JASPER_WAKE_MODEL": "alexa"},
+        writes={"JASPER_WAKE_MODEL": "alexa"}, event="wake.model",
     ),
     "wake_with_no_provider_skips_the_restart": Case(
         ["wake", "--model", "alexa"], 0,
@@ -112,15 +122,17 @@ def _snapshot(paths: dict[str, Path]) -> dict[str, bytes | None]:
 
 
 @pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
-def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys):
+def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys, caplog):
     paths = {name: tmp_path / f"{name}.env" for name in ("provider", "keys", "wake")}
-    paths["keys"].write_text(f"OPENAI_API_KEY={OPENAI_KEY}\n")
+    paths["keys"].write_bytes(case.keys)
     if case.provider:
         paths["provider"].write_text(f"JASPER_VOICE_PROVIDER={case.provider}\n")
     (tmp_path / "jasper.env").write_text(f"GEMINI_API_KEY={GEMINI_KEY}\n")
     (tmp_path / "discovery.json").write_text(json.dumps(
-        {"providers": {"openai": {"models": ["gpt-realtime-new"]}}},
+        {"providers": {"openai": {"models": ["gpt-realtime-new", "gpt-realtime\nbroken"]}}},
     ))
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
     monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(paths["provider"]))
     monkeypatch.setattr(provider_state, "KEYS_FILE", str(paths["keys"]))
@@ -142,7 +154,13 @@ def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys):
     if code:
         assert document["status"] == _refusal.STATUS_BY_CODE[code]
     for key in (OPENAI_KEY, GEMINI_KEY):
-        assert key not in out and key not in err
+        assert key not in out and key not in err and key not in caplog.text
+    if case.event:
+        emitted = [
+            json.loads(record.getMessage()) for record in caplog.records
+            if getattr(record, "jasper_event", None) == case.event
+        ]
+        assert [(line["event"], line["via"]) for line in emitted] == [(case.event, "cli")]
     after = _snapshot(paths)
     assert after["keys"] == before["keys"]
     if case.writes is None:
