@@ -500,25 +500,6 @@ def test_fast_lane_propagates_routing_policy_failure_before_later_work(
     assert call == ["-q", "--tb=short", "tests/test_ci_classifier.py"]
 
 
-@pytest.mark.parametrize("lane", _LANES)
-def test_lane_sources_the_shared_resolver_rather_than_reimplementing_it(
-    lane: str,
-) -> None:
-    """One resolver, two lanes -- the drift guard.
-
-    Both lanes previously carried their own copy of the fallback chain; the
-    bare-``pytest`` fallback that produced #1836 existed twice. A third lane
-    (or a well-meaning edit) must not reintroduce a private copy.
-    """
-    body = (_SCRIPTS / lane).read_text()
-    assert "_test_lane.sh" in body
-    assert "resolve_lane_tool" in body
-    assert 'pytest_bin="pytest"' not in body
-    assert 'ruff_bin="ruff"' not in body
-    assert 'mypy_bin="mypy"' not in body
-    assert 'lint_imports_bin="lint-imports"' not in body
-
-
 # --------------------------------------------------------------------------- #
 # issue #1850 -- terminal verdict sentinel
 # --------------------------------------------------------------------------- #

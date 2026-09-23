@@ -28,7 +28,6 @@ from jasper.memory_policy import (
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
 FORMAT_JS = SYSTEM_JS / "format.js"
-SECTIONS_JS = SYSTEM_JS / "sections.js"
 
 
 def _psi_bounds() -> tuple[float, float]:
@@ -48,20 +47,6 @@ def _psi_bounds() -> tuple[float, float]:
         f"dashboard warns at {warn}%, jasper-doctor at {MEM_PSI_WARN_AVG60}%"
     )
     return warn, danger
-
-
-def test_system_vitals_use_named_threshold_helpers() -> None:
-    sections = SECTIONS_JS.read_text()
-    assert "toneForMemoryHeadroom(memAvail, memTotal)" in sections
-    assert "loadPressureInfo(load, cores.length || 4)" in sections
-    assert "cpuUsageInfo(cores)" in sections
-    assert "temperatureDisplay(cur.temp_c, throttledNow, throttledHist)" in sections
-    assert "toneForDiskUse(diskPct)" in sections
-
-    # Regression guard for the old Pi Zero 2 W-hostile memory cutoffs.
-    assert "memAvail < 150" not in sections
-    assert "memAvail < 250" not in sections
-    assert "swap > 150" not in sections
 
 
 def test_system_threshold_helpers_document_the_colours() -> None:

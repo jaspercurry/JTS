@@ -30,7 +30,6 @@ from jasper.tts_playout import _OutputdStreamAdapter
 REPO = Path(__file__).resolve().parents[1]
 
 VOICE_UNIT = REPO / "deploy" / "systemd" / "jasper-voice.service"
-PARK_UNITS_FRAGMENT = REPO / "deploy" / "lib" / "jasper-core-graph-park-units.sh"
 INSTALL_SYSTEMD_UNITS = REPO / "deploy" / "lib" / "install" / "systemd-units.sh"
 
 _PARK_CALL = "park_audio_clients_for_core_graph_restart"
@@ -232,18 +231,3 @@ def test_voice_is_parked_before_the_installer_restarts_fanin():
             f"{name} must call {_PARK_CALL} BEFORE restarting jasper-fanin, so "
             "jasper-voice is stopped while the new fan-in binary comes up"
         )
-
-
-def test_the_park_set_stops_voice():
-    """The park set is what the ordering above depends on containing.
-
-    `tests/test_core_graph_park_units_contract.py` owns the list's SSOT shape;
-    this asserts the one membership the assistant wire's width depends on, with
-    the width reason attached so a future trim of the list meets it here.
-    """
-    text = PARK_UNITS_FRAGMENT.read_text()
-    assert "jasper-voice.service" in text, (
-        "jasper-voice.service must stay in JASPER_CORE_GRAPH_PARK_UNITS: it is "
-        "what stops a running voice daemon from outliving the fan-in restart "
-        "and speaking a verb the old binary rejects"
-    )

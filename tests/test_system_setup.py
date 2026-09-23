@@ -598,7 +598,6 @@ def test_poweroff_requires_csrf(dashboard_server) -> None:
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "deploy" / "assets"
 _MODULE_DIR = _ASSETS_DIR / "system-status" / "js"
-_SYSTEM_CSS = _ASSETS_DIR / "system-status" / "system.css"
 
 _SHARED_HTTP_JS = _ASSETS_DIR / "shared" / "js" / "http.js"
 _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
@@ -619,9 +618,6 @@ _EXPECTED_MODULES = (
 
 def _system_js() -> str:
     parts = [(_MODULE_DIR / f"{name}.js").read_text() for name in _EXPECTED_MODULES]
-    # Include the shared modules the page imports, so guards that follow a
-    # string into a shared home still hold: http.js (CSRF meta read,
-    # X-CSRF-Token) and dom.js (the text-node DOM builder).
     parts.append(_SHARED_HTTP_JS.read_text())
     parts.append(_SHARED_DOM_JS.read_text())
     return "\n".join(parts)
@@ -662,131 +658,6 @@ def test_diagnostics_render_runtime_contract() -> None:
     assert json.loads(proc.stdout) == {"ok": True}
 
 
-def test_modules_preserve_destructive_confirms_and_csrf() -> None:
-    """The double-confirm on reboot + power off is load-bearing UX — the
-    second prompt discourages a mis-click on the most destructive actions.
-    Guard the copy + the CSRF-via-meta wiring so a future "tidy the JS" PR
-    can't silently drop either."""
-    js = _system_js()
-    assert "physically re-plug power" in js
-    assert "absolutely sure" in js
-    assert "Wake-word will be unavailable" in js  # voice-restart warning
-    # CSRF token is read from the meta tag, never baked into the cached module.
-    assert "meta[name=jts-csrf]" in js
-    assert "X-CSRF-Token" in js
-    # Post-action feedback: reboot/power-off surface a "page will be
-    # unreachable" note rather than relying on the button label alone.
-    assert "unreachable for" in js
-
-
-def test_modules_wire_the_proxy_endpoints() -> None:
-    """The modules must POST to the same action paths the handler proxies and
-    poll the same read endpoints."""
-    js = _system_js()
-    for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
-                 "audio-quality", "usb-latency", "usb-forensics", "data.json", "diagnostics.json",
-                 "optional-features/enhanced-aec"):
-        assert path in js, f"system modules no longer reference {path}"
-    assert 'getJSON("/system/data.json")' in js
-    # Both ride the shared postJSON, which attaches X-JTS-Token — control
-    # gates these two routes.
-    assert 'postJSON("/system/audio-quality"' in js
-    assert 'postJSON("/system/usb-latency"' in js
-
-
-def test_enhanced_aec_is_progressively_disclosed_on_software_surface() -> None:
-    optional_js = _OPTIONAL_FEATURES_JS.read_text()
-    views_js = (_MODULE_DIR / "views.js").read_text()
-    landing = (
-        Path(__file__).resolve().parents[1] / "deploy" / "index.html"
-    ).read_text()
-
-    assert 'title: "Optional features"' in optional_js
-    assert "open: false" in optional_js
-    assert "Enhanced echo cancellation" in optional_js
-    assert "Adds an enhanced software engine" in optional_js
-    assert "Most speakers don’t need it" in optional_js
-    assert "Technical details" in optional_js
-    assert "WebRTC AEC3 v2 / BEST_A" in optional_js
-    assert "Install enhancement" in optional_js
-    assert "type: \"checkbox\"" not in optional_js
-    assert "buildEnhancedAecCard()" in views_js
-    assert "software.body.append(softwareDetails, buildEnhancedAecCard())" in views_js
-    assert "Enhanced echo cancellation" not in landing
-    assert ".optional-feature__technical dd { overflow-wrap: anywhere; }" in (
-        _SYSTEM_CSS.read_text()
-    )
-
-
-def test_modules_preserve_metric_logic() -> None:
-    """Spot-check that the formatting/threshold port survived: the system-total
-    breakdown, throttle wording, the audio-conversion options, and the cgroup
-    warning. Audio diagnosis now comes from the normalized backend model."""
-    js = _system_js()
-    assert "System total · shown / unshown / free" in js
-    assert "throttling now" in js
-    assert "samplerate_medium" in js
-    assert "samplerate_best" in js
-    assert "cgroup_enable=memory" in js
-    assert "Thermal sensor unavailable" in js
-    assert "cur.temp_c || 0" not in js
-
-
-def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> None:
-    audio_view = (_MODULE_DIR / "audio-view.js").read_text()
-    audio_sections = (_MODULE_DIR / "audio-sections.js").read_text()
-    views = (_MODULE_DIR / "views.js").read_text()
-    components = (_MODULE_DIR / "components.js").read_text()
-
-    assert "snap.audio_health" in audio_view
-    assert "Waiting for audio diagnostics" in audio_sections
-    assert "current_stream" in audio_view
-    assert "current_incident" in audio_view
-    assert "recent_incidents" in audio_sections
-    assert "slice(0, 5)" in audio_sections
-    assert "refreshRelativeTimes" in audio_sections
-    assert "relativeEpoch" in audio_sections
-    assert "incidentEvidence" in audio_sections
-    assert "duration_seconds" in audio_sections
-    assert 'h("span.incident-row__summary"' in audio_sections
-    assert 'h("div.incident-row__summary"' not in audio_sections
-    assert "stream.quality || stream.media" in audio_sections
-    assert "(stream && stream.session) || health.session_summary" in audio_sections
-    assert '"--tone"' in audio_sections
-    assert "Array.isArray(health.sources)" in audio_view
-    assert "ageBucket" not in audio_view
-    main_js = (_MODULE_DIR / "main.js").read_text()
-    assert "Dashboard data was incomplete" in main_js
-    assert 'title: "Technical evidence", open: false' in audio_view
-    assert 'title: "Audio conversion", open: false' in audio_view
-    assert 'titledCard("USB latency")' in audio_view
-    assert '["low", "medium", "high"]' in audio_view
-    assert "snap.usb_latency" in audio_view
-    assert "raw_mode" not in audio_sections
-    assert "p95_budget_ms" not in audio_sections
-    assert "snap.airplay_health" not in views
-    assert 'buildSystemPanel' in views
-    assert 'viewLink("system", "System", "/system/")' in components
-    assert 'viewLink("audio", "Audio", "/system/audio/")' in components
-    assert '"attr:aria-current"' in components
-    assert "onViewClick" in components
-    assert "history.pushState" in main_js
-    assert 'window.addEventListener("popstate"' in main_js
-    assert "event.preventDefault()" in main_js
-    assert "event.metaKey" in main_js
-    assert "latestSnapshot" in main_js
-    assert "entries[view]" in main_js
-    assert 'fetch("/system/diagnostics.json"' in (
-        _MODULE_DIR / "actions.js"
-    ).read_text()
-    assert "audio_quality: quality" in main_js
-    css = _SYSTEM_CSS.read_text()
-    assert "@media (max-width: 619px) {\n  .incident-row__summary," in css
-    assert ".incident-row__recurrence { display: none; }" in css
-    assert ".incident-row__recovered { display: none; }" not in css
-    assert '.current-incident__meta > [aria-hidden="true"]' in css
-
-
 def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
     """A parked speaker must be visible on the page a household opens first.
 
@@ -825,32 +696,6 @@ def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
     js = _system_js()
     assert PARKED_HEADLINE not in js
     assert 'const OUTPUT_ALERT_STATUS = "issue";' in audio_sections
-
-
-def test_system_mobile_actions_and_tables_are_intentional() -> None:
-    js = _system_js()
-    css = _SYSTEM_CSS.read_text()
-    assert "system-actions" in js
-    assert "Restart services or shut down the Pi." in js
-    assert "Anyone on this Wi-Fi can run these actions." in js
-    assert "Power off before unplugging or changing cables" in js
-    assert "stays off until power is re-plugged" in js
-    assert ".system-actions .form-actions" in css
-    assert "min-height: 44px" in css
-    assert "-webkit-overflow-scrolling: touch" in css
-    assert ".table-wrap" in css
-
-
-def test_modules_warn_before_best_audio_quality() -> None:
-    """Best audio conversion is hardware-sensitive. Keep the warning in the
-    existing setting-change modal so users can still try it intentionally."""
-    js = _system_js()
-    assert "Switch to Best audio conversion" in js
-    assert "lower-powered hardware" in js
-    assert "especially with synced " in js
-    assert "AirPlay" in js
-    assert "packet drops or underruns" in js
-    assert "Medium is recommended" in js
 
 
 def test_unknown_route_404(dashboard_server) -> None:

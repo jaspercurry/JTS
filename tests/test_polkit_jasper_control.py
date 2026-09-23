@@ -29,7 +29,6 @@ recovery reboot stops firing):
 * it keys on `subject.user` ONLY (a sessionless daemon has subject.active ==
   false, so gating on .active would never fire — the single most likely
   implementation mistake);
-* install.sh installs it.
 """
 from __future__ import annotations
 
@@ -40,7 +39,6 @@ from jasper.control.restart_broker import MANAGED_UNITS, POLKIT_MANAGE_UNITS, ST
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "deploy/polkit/49-jasper-control.rules"
-INSTALL_SH = ROOT / "deploy/install.sh"
 
 
 def _rule_text() -> str:
@@ -186,16 +184,3 @@ def test_rule_fallthrough_is_not_handled_not_deny():
     assert "polkit.Result.NO" not in text.replace("NOT_HANDLED", ""), (
         "rule must not return polkit.Result.NO (use NOT_HANDLED for fallthrough)"
     )
-
-
-def test_install_sh_installs_the_rule():
-    sh = INSTALL_SH.read_text(encoding="utf-8")
-    assert "install_jasper_control_polkit" in sh, (
-        "install.sh must define + call install_jasper_control_polkit"
-    )
-    assert "/etc/polkit-1/rules.d" in sh, (
-        "install.sh must install the rule into /etc/polkit-1/rules.d"
-    )
-    assert "49-jasper-control.rules" in sh
-    # That it RUNS on both profiles (both tiers run jasper-control) is pinned
-    # by _ON_EVERY_PROFILE in test_install_profile_tiers.

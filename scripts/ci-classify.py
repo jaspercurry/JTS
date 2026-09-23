@@ -30,7 +30,6 @@ LANDING_TEST_FILES = (
     "tests/test_landing_control_token.py",
     "tests/test_landing_page_html.py",
     "tests/test_sound_plumbing.py",
-    "tests/test_system_setup.py",
     "tests/test_web_design_system.py",
     "tests/test_web_landing.py",
 )

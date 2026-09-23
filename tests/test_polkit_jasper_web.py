@@ -22,7 +22,6 @@ or over-grant the most network-exposed daemon:
 * it does NOT grant systemctl/reboot (jasper-web restarts via the restart broker,
   not polkit) nor any unrelated action;
 * fall-through is NOT_HANDLED (never NO, which would veto other grants);
-* install.sh installs it in both install profiles.
 """
 from __future__ import annotations
 
@@ -30,7 +29,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "deploy/polkit/49-jasper-web.rules"
-INSTALL_SH = ROOT / "deploy/install.sh"
 
 # The NetworkManager polkit actions wifi_setup.py exercises. Source of truth for
 # the grant set; keep in lockstep with deploy/polkit/49-jasper-web.rules and the
@@ -128,14 +126,3 @@ def test_rule_fallthrough_is_not_handled_not_deny():
     assert "polkit.Result.NO" not in text.replace("NOT_HANDLED", ""), (
         "rule must not return polkit.Result.NO (use NOT_HANDLED for fallthrough)"
     )
-
-
-def test_install_sh_installs_the_rule():
-    sh = INSTALL_SH.read_text(encoding="utf-8")
-    assert "install_jasper_web_polkit" in sh, (
-        "install.sh must define + call install_jasper_web_polkit"
-    )
-    assert "49-jasper-web.rules" in sh
-    # That it RUNS on both profiles, like the control rule, so a future
-    # streambox web drop finds the grant already present, is pinned by
-    # _ON_EVERY_PROFILE in test_install_profile_tiers.

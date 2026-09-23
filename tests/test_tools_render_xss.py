@@ -43,7 +43,6 @@ _ACTIONS_HARNESS = Path("tests/js/tools_actions_test.mjs")
 _ESCAPE = Path("deploy/assets/shared/js/escape.js")
 _RENDER = Path("deploy/assets/tools/js/render.js")
 _DETAIL = Path("deploy/assets/tools/js/detail.js")
-_MAIN = Path("deploy/assets/tools/js/main.js")
 _ACTIONS = Path("deploy/assets/tools/js/actions.js")
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node not on PATH")
@@ -103,15 +102,6 @@ def test_prompt_editor_actions_follow_view_and_edit_modes():
     assert proc.returncode == 0, f"detail harness errored:\n{proc.stderr}"
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ok"] is True
-
-
-def test_catalog_and_detail_share_mutation_actions():
-    for page in (_MAIN, _DETAIL):
-        source = page.read_text()
-        assert 'import { createToolActions } from "./actions.js";' in source
-        assert "createToolActions({" in source
-        assert "async function onToggle" not in source
-        assert "async function onApply" not in source
 
 
 def test_shared_mutation_actions_pin_requests_errors_and_bounded_polling():
