@@ -185,10 +185,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                                           check_target_capture_dbfs=check_target, capture_indexes=capture_indexes)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
-        capture = host._wired_stimulus_capture(
-            device, evidence_store, spl_monitor=door.spl_monitor,
-            read_loudness_volume_db=lambda: camilla_factory().get_loudness_volume_db(best_effort=True),
-        )
+        capture = host._wired_stimulus_capture(device, evidence_store, spl_monitor=door.spl_monitor)
         records.capture = capture
         conductor.set_excitation(replace(conductor.excitation, session_volume_db=door.measurement_volume_db))
         return TuningSession(

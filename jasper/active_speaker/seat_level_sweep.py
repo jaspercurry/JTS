@@ -24,7 +24,6 @@ from .capture_provenance import stimulus_peak_dbfs
 from .measurement_emit import measurement_graph_evidence
 from .crossover_v2.composition import bind_program_composer
 from .crossover_v2.contracts import MEASURE_KIND_BASELINE
-from .crossover_v2.door import set_measurement_loudness
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.program_transaction import ProgramForStimulus, StimulusCaptureStopped
 from .crossover_v2.programs import SessionExcitation
@@ -92,7 +91,6 @@ class SweepLevelReader:
         if gain > 0.0:
             raise StimulusCaptureStopped("fader_above_cap", "The fader is above the 0 dB cap", PlaybackObservation(emission="not_started"))
         self.excitation = replace(self.excitation, session_volume_db=gain)
-        await set_measurement_loudness(self.cam, gain)
         await self.graph.install()
         key = (self.first, gain)
         if self._last is None or self._last[0] != key:

@@ -21,8 +21,7 @@ from jasper.log_event import log_event
 from jasper.platform.route_health import (
     ROUTE_SURFACES, TAKE_FAULT_COUNTER_PATHS, TAKE_FAULT_COUNTER_SUFFIXES, known_counter_deltas, numeric_deltas,
 )
-from jasper.dsp_apply import _maybe_call
-from jasper.json_fields import finite_float, utc_now_iso
+from jasper.json_fields import utc_now_iso
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
@@ -84,7 +83,6 @@ class WiredStimulusCapture:
     recorder_factory: Callable[[int, float], Any] | None = None
     setup_reference: Callable[[], Mapping[str, Any] | None] | None = None
     spl_monitor: WiredSplMonitor | None = None
-    read_loudness_volume_db: Callable[[], float | None | Awaitable[float | None]] | None = None
     #: The playback route's STATUS, read before and after each take (#5684).
     read_route_health: Callable[[], Mapping[str, Any]] | None = None
     _pending: list[WiredCaptureAnswer] = field(default_factory=list)
@@ -261,16 +259,6 @@ class CapturedRecordStore:
             ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt", "stimulus_dbfs") if name in metadata}}
         # The capture ring and the take index order and admit takes by it.
         payload.setdefault("captured_at", utc_now_iso())
-        error = ""
-        try:
-            loudness = await _maybe_call(getattr(self.capture, "read_loudness_volume_db", None))
-        except Exception as exc:  # noqa: BLE001
-            loudness, error = None, type(exc).__name__
-        payload["loudness_volume_db"] = finite_float(loudness)
-        if payload["loudness_volume_db"] is None:
-            log_event(logger, "active_speaker.capture_loudness_unknown", level=logging.WARNING,
-                      take_id=payload.get("take_id"), error_type=error,
-                      reason="read_failed" if error else "unavailable" if loudness is None else "invalid_value")
         if answer is not None:
             for key, attr in (("capture_integrity", "capture_integrity"), ("capture_device", "device"),
                               ("capture_setup", "setup"), ("program", "program")):

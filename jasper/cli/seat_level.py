@@ -31,12 +31,11 @@ from jasper.active_speaker.commissioning_evidence_store import CommissioningEvid
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
 from jasper.active_speaker.setup_status import conductor_status
-from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, set_measurement_loudness
+from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.seat_level_sweep import SweepLevelReader, watchdog_seconds
 from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.volume_latch import read_fader_db
 from jasper.camilla import primary_controller
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
@@ -186,7 +185,6 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     plan = SessionVolumePlan(state_path=DEFAULT_SESSION_VOLUME_STATE_PATH)
     door = FaderVolumeDoor(cam.set_volume_db, cam.get_volume_db)
     restored: bool | None = None
-    loudness_entry: float | None = None
     reader: SweepLevelReader | None = None
     bundle_dir: Path | None = None
     graph = bind_measurement_graph(
@@ -195,22 +193,17 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
 
     async def _restore() -> None:
         nonlocal restored
-        try:
-            if loudness_entry is not None:
-                await set_measurement_loudness(cam, loudness_entry)
-        finally:
-            outcome = await plan.close(door, reason="seat_level_complete")
-            restored = outcome in (SessionVolumeRestoreResult.EXACT_RESTORED,
-                                   SessionVolumeRestoreResult.ALREADY_RESOLVED)
+        outcome = await plan.close(door, reason="seat_level_complete")
+        restored = outcome in (SessionVolumeRestoreResult.EXACT_RESTORED,
+                               SessionVolumeRestoreResult.ALREADY_RESOLVED)
 
     async def _pass() -> LevelResult:
-        nonlocal reader, bundle_dir, loudness_entry
+        nonlocal reader, bundle_dir
         async with measurement_window(gate_owner="seat-level"):
             try:
                 async with asyncio.timeout(VOLUME_CONFIRM_TIMEOUT_S):
                     current = await cam.get_volume_db()
-                    loudness_entry = await read_fader_db(cam.get_loudness_volume_db)
-                if current is None or not math.isfinite(current) or loudness_entry is None or not math.isfinite(loudness_entry):
+                if current is None or not math.isfinite(current):
                     return LevelResult("refused", "volume_latch_unconfirmed")
                 start = min(current, START_FADER_DB, ceiling_db, 0.0)
                 excitation = SessionExcitation(

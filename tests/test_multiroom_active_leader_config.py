@@ -36,7 +36,6 @@ import jasper.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
 from jasper.multiroom import active_leader_config as alc
-from jasper.multiroom.active_profile import build_grouped_profile
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 from jasper.sound.profile import SoundProfile
@@ -293,9 +292,9 @@ def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> N
 
 
 @pytest.mark.parametrize("role", ["leader", "follower"])
-@pytest.mark.parametrize("unsupported_stage", [None, "blend", "headroom", "dynamic_bass"])
+@pytest.mark.parametrize("stage", [None, "dynamic_bass", "blend", "headroom"])
 def test_pair_preserves_applied_tune_without_old_measurements(
-    monkeypatch, tmp_path, role, unsupported_stage,
+    monkeypatch, tmp_path, role, stage,
 ):
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -309,7 +308,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     applied["source"].pop("measured_candidate_fingerprint")
     applied.pop("candidate_artifact_path")
     snapshot = applied["recomposition_snapshot"]
-    if unsupported_stage == "dynamic_bass":
+    if stage == "dynamic_bass":
         snapshot["bass_extension"] = _descriptor().payload()
     snapshot["linearization"] = {
         "woofer": [{"biquad_type": "Peaking", "freq": 910.0, "q": 1.23, "gain": -7.0}],
@@ -317,11 +316,11 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     }
     snapshot["corrections"]["woofer"]["delay_ms"] = 0.11
     snapshot["corrections"]["tweeter"]["gain_db"] = -10.8
-    if unsupported_stage == "blend":
+    if stage == "blend":
         snapshot["blend_correction"] = [
             {"biquad_type": "Peaking", "freq": 2500.0, "q": 1.0, "gain": -2.0},
         ]
-    if unsupported_stage == "headroom":
+    if stage == "headroom":
         snapshot["corrections"]["tweeter"]["gain_db"] = 0.0
     from tests.active_speaker_fixtures import declare_applied_fixture
     declare_applied_fixture(monkeypatch, topology, applied)
@@ -334,7 +333,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_STATE_PATH", str(tmp_path / "follower.json"))
     precheck = alc.precheck_active_leader if role == "leader" else fc.precheck_active_follower
-    if unsupported_stage:
+    if stage in ("blend", "headroom"):
         error_type = alc.ActiveLeaderError if role == "leader" else fc.ActiveFollowerError
         with pytest.raises(error_type) as exc:
             asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
@@ -342,18 +341,6 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
         assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
         assert not Path(fc.FOLLOWER_CONFIG_PATH).exists()
-        if unsupported_stage == "dynamic_bass":
-            result = build_grouped_profile(
-                topology, state_path=fc.FOLLOWER_STATE_PATH,
-                config_path=fc.FOLLOWER_CONFIG_PATH,
-                program_channel="right", trim_db=-4.0, validate=_valid_config,
-            )
-            assert result["status"] == "blocked"
-            assert not result["permissions"]["may_apply"]
-            assert [issue["code"] for issue in result["issues"]] == [
-                "grouping_dynamic_bass_volume_unsupported",
-            ]
-            assert not Path(fc.FOLLOWER_CONFIG_PATH).exists()
         return
     asyncio.run(precheck(replace(_cfg("right", -4.0), role=role), validate=_valid_config))
     path = alc.CROSSOVER_CONFIG_PATH if role == "leader" else fc.FOLLOWER_CONFIG_PATH
