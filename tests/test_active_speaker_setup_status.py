@@ -558,11 +558,10 @@ def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> 
     assert len(result) == 4
 
 
-@pytest.mark.parametrize("permission", ["may_apply", "may_compile"])
-def test_commissioning_summary_proposal_ready_when_may_apply(permission) -> None:
+def test_commissioning_summary_proposal_ready_when_may_compile() -> None:
     result = setup_mod.commissioning_summary(
         SimpleNamespace(topology_id="bench_mono"),
-        profile={"status": "ready_to_apply", "permissions": {permission: True}},
+        profile={"status": "ready_to_compile", "permissions": {"may_compile": True}},
         applied_profile=None,
     )
     assert result["phase"] == "proposal_ready"
@@ -640,7 +639,7 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
     review = _candidate(status="ready_to_compile" if review_ready else "blocked", config_path=tmp_path / "candidate.yml",
                         issues=[] if review_ready else [{"severity": "blocker", "code": "compose_refused"}])
     review["candidate_fingerprint"] = "review-fp"
-    review["permissions"] = {"may_compile": review_ready, "may_apply": False}
+    review["permissions"] = {"may_compile": review_ready}
     saved = {"status": "applied", "config": {"path": str(path)}, "candidate_fingerprint": "saved-fp"} if applied else None
     def compile_review(**kwargs):
         if review_ready is None:

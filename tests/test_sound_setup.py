@@ -3216,7 +3216,6 @@ def test_active_speaker_baseline_http_route_is_exposed(
         profile_payload = json.loads(profile_resp.read().decode("utf-8"))
 
         assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
-        assert profile_payload["permissions"]["may_apply"] is False
 
 
 BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
@@ -3253,7 +3252,6 @@ def _stub_baseline_apply(
                     "path": BASELINE_CONFIG_PATH,
                     "basename": "active_speaker_baseline.yml",
                 },
-                "permissions": {"may_apply": False},
                 "issues": [],
             }
         return applied
@@ -5513,7 +5511,7 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
         lambda **_kwargs: [],
     )
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
             "applied_at": "2026-09-13T12:00:00Z", "config_path": "/var/lib/camilladsp/applied.yml",
         }},

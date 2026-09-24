@@ -135,10 +135,7 @@ def _derive_commissioning_summary(
                 code = issue_entry.get("code")
                 last_failure_code = str(code) if code else None
                 break
-    elif profile is not None and bool(
-        as_mapping(profile.get("permissions")).get("may_apply")
-        or as_mapping(profile.get("permissions")).get("may_compile")
-    ):
+    elif profile is not None and bool(as_mapping(profile.get("permissions")).get("may_compile")):
         phase = "proposal_ready"
     else:
         phase = "idle"

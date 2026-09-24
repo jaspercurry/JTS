@@ -305,7 +305,6 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         write=True,
          config_path=tmp_path / "solo.yml",
     )
-    assert applied["permissions"]["may_apply"]
     applied["status"] = "applied"
     applied["source"].pop("measured_candidate_fingerprint")
     applied.pop("candidate_artifact_path")

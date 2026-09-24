@@ -844,7 +844,7 @@ def _active_speaker_baseline_profile_payload() -> dict[str, Any]:
         "sound.active_speaker_baseline_profile",
         action="status",
         status=str(payload.get("status")),
-        may_apply=str(bool((payload.get("permissions") or {}).get("may_apply"))),
+        may_compile=str(bool((payload.get("permissions") or {}).get("may_compile"))),
         issue_count=len(payload.get("issues") or []),
         config=str((payload.get("config") or {}).get("basename")),
     )

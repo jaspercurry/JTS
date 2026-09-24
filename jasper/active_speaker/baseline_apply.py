@@ -112,7 +112,6 @@ async def apply_result(
         target = baseline_profile_state_path()
         previous = applied_profile_anchor(load_baseline_profile_state())
         profile = {**profile, "status": "apply_failed", "apply": state, "updated_at": _utc_now(),
-                   "permissions": {"may_apply": False},
                    "issues": [*profile.get("issues", []), _issue("blocker", "baseline_profile_apply_failed", str(error))]}
         if previous is not None:
             profile["applied_recomposition_profile"] = previous
@@ -154,8 +153,7 @@ def persist_applied_baseline_profile(
         return existing
     now = applied_at or _utc_now()
     applied = {**candidate, "status": "applied", "applied_at": now, "updated_at": now,
-               "apply": dict(apply_state), "candidate_fingerprint": identity,
-               "permissions": {"may_apply": False}}
+               "apply": dict(apply_state), "candidate_fingerprint": identity}
     applied.pop("applied_recomposition_profile", None)
     atomic_write_text(target, json.dumps(applied, indent=2, sort_keys=True) + "\n", mode=0o640, durable=True)
     return applied

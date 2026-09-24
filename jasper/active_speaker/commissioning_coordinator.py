@@ -88,8 +88,7 @@ def build_commissioning_view(
     applied = applied_identity(applied_profile) or {}
     experiment = dict(first_experiment or {})
     experiment_complete = bool(experiment.get("candidate_fingerprint"))
-    review_ready = bool((review.get("permissions") or {}).get("may_compile")
-                        or (review.get("permissions") or {}).get("may_apply"))
+    review_ready = bool((review.get("permissions") or {}).get("may_compile"))
     disclosures = []
     if applied_profile is not None:
         refusal = reviewed_candidate_refusal(review, str(applied_profile.get("candidate_fingerprint") or ""))
@@ -139,8 +138,7 @@ def build_commissioning_view(
             "applied_at": applied.get("applied_at"),
             "config_path": applied.get("config_path"), "disclosures": disclosures,
         },
-        "review": {"ready": review_ready, "may_apply": review_ready,
-                   "status": review.get("status"), "issues": list(review.get("issues") or [])},
+        "review": {"ready": review_ready, "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),

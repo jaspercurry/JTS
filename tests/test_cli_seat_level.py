@@ -468,12 +468,12 @@ async def test_commissioning_validates_then_verifies_under_lock_before_loading(m
     assert events == ["validated", "verified", "loaded"]
 
 
-def test_commissioning_review_never_enables_apply(commissioning_box):
+def test_commissioning_review_compiles_without_writing_the_config(commissioning_box):
     from jasper.web.sound_active_speaker import _active_speaker_baseline_profile_payload
 
     profile = _active_speaker_baseline_profile_payload()
     assert profile["status"] == "ready_to_compile"
-    assert profile["permissions"] == {"may_apply": False, "may_compile": True}
+    assert profile["permissions"] == {"may_compile": True}
     assert not Path(profile["config"]["path"]).exists()
 
 
@@ -513,7 +513,6 @@ async def test_commissioning_uses_current_draft_and_checks_protection_before_cle
         return
     assert result["status"] == "blocked"
     assert code in {issue["code"] for issue in result["issues"]}
-    assert result["profile"]["permissions"]["may_apply"] is False
     assert cam.path is None
     assert baseline_profile.load_applied_baseline_profile_state() is None
     verified.assert_not_awaited()
@@ -598,7 +597,6 @@ async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_b
     )
     assert result["status"] == "blocked"
     assert result["issues"][0]["code"] == code
-    assert result["profile"]["permissions"]["may_apply"] is False
     assert cam.path is None
     verified.assert_not_awaited()
 

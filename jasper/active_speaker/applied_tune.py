@@ -74,7 +74,6 @@ def reviewed_candidate_refusal(
     if expected_candidate_fingerprint and candidate.get("candidate_fingerprint") == expected_candidate_fingerprint:
         return None
     refused = dict(candidate)
-    refused["permissions"] = {**(refused.get("permissions") or {}), "may_apply": False}
     refused["issues"] = [*(refused.get("issues") or []), _issue(
         "blocker", "baseline_candidate_fingerprint_mismatch",
         "the crossover candidate changed after review; refresh and review the current candidate before applying",
@@ -84,7 +83,7 @@ def reviewed_candidate_refusal(
 
 def commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
     """Mark ``profile`` blocked by ``exc``: its own issues, or one naming its code."""
-    profile.update(status="blocked", permissions={"may_apply": False, "may_compile": False})
+    profile.update(status="blocked", permissions={"may_compile": False})
     profile["issues"] = getattr(exc, "issues", None) or [_issue(
         "blocker", getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused", str(exc),
     )]
@@ -142,7 +141,7 @@ def compile_commissioning_profile(
     CamillaDSP config."""
     profile: dict[str, Any] = {"artifact_schema_version": baseline_profile.SCHEMA_VERSION,
                               "kind": baseline_profile.BASELINE_PROFILE_KIND,
-                              "status": "blocked", "permissions": {"may_apply": False}, "issues": []}
+                              "status": "blocked", "permissions": {"may_compile": False}, "issues": []}
     try:
         topology = topology if topology is not None else output_topology.load_output_topology()
         draft = design_draft if design_draft is not None else design_drafts.load_design_draft(topology=topology)
@@ -171,7 +170,7 @@ def compile_commissioning_profile(
         proof = runtime_contract.prove_desired_graph(topology, text, snapshot=profile.get("recomposition_snapshot"))
         if not runtime_contract.desired_graph_approved(proof):
             raise measurement_emit.MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
-        profile.update(status="ready_to_compile", permissions={"may_apply": False, "may_compile": True})
+        profile.update(status="ready_to_compile", permissions={"may_compile": True})
     except (candidate_bank.CandidateBankRefusal, ValueError) as exc:
         commissioning_refusal(profile, exc)
     return profile
