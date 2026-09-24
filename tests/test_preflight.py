@@ -139,6 +139,25 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
 
 
+@pytest.mark.parametrize("tweeter_floor_hz,offered", [(1000.0, True), (1500.0, False)])
+def test_a_near_field_driver_its_sweep_covers_under_an_octave_of_is_not_offered(monkeypatch, tweeter_floor_hz, offered):
+    """The near-field sweep stops at 2 kHz, so a driver whose band starts above
+    1 kHz is refused before a session composes a sub-octave sweep for it."""
+    plan = AngleCaptureRequest((AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference",
+                                          driver="tweeter"),))
+    ready = ready_facts(plan)
+    context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), role_targets={},
+                              driver_bands={"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(tweeter_floor_hz, 20000)},
+                              preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
+    monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    report = preflight(plan, replace(ready, near_field_drivers=facts.near_field_drivers))
+    assert [issue.code for issue in report.issues] == ([] if offered else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
+
+
 @pytest.mark.parametrize("layout", ["active_3_way", "cardioid", "active_2_way"],
                          ids=["three_way_active", "cardioid", "two_way_active"])
 def test_preflight_per_driver_layout(layout):

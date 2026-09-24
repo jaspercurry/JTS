@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.branch_program import build_branch_program
-from jasper.audio_measurement.program import KIND_PILOT
+from jasper.audio_measurement.program import KIND_PILOT, NEAR_FIELD_SWEEP_BAND_HZ
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 
 from .angle_capture import AngleCaptureRequest
@@ -109,7 +109,10 @@ def read_preflight_facts(
         applied_bass_extension=applied_bass_extension,
         program_ids_for=program_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
-        near_field_drivers=(near_field_drivers(context.topology)
+        # A driver is offered only when the near-field sweep covers an octave of its band.
+        near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
+                                  if driver in context.driver_bands
+                                  and 2 * context.driver_bands[driver].lower_hz <= NEAR_FIELD_SWEEP_BAND_HZ[1])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
     )

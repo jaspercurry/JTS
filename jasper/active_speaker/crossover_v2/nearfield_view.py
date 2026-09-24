@@ -67,12 +67,18 @@ def _sweeps(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
             np.asarray([row["magnitude_db"] for row in rows], dtype=float))
 
 
-def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float]) -> np.ndarray:
+def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
+            swept_hz: tuple[float, float]) -> np.ndarray:
+    """The sweeps' bins in ``band_hz``; none unless the take swept all of it,
+    since outside its sweep a curve is noise."""
+    if not (swept_hz[0] <= band_hz[0] and band_hz[1] <= swept_hz[1]):
+        return sweeps[:, :0]
     return sweeps[:, (freqs >= band_hz[0]) & (freqs < band_hz[1])]
 
 
-def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float]) -> dict[str, Any] | None:
-    within = _within(freqs, sweeps, band_hz)
+def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
+          swept_hz: tuple[float, float]) -> dict[str, Any] | None:
+    within = _within(freqs, sweeps, band_hz, swept_hz)
     if not within.size:
         return None
     row: dict[str, Any] = {"band_hz": list(band_hz), "level_db": round(power_mean_db(within), 2),
@@ -103,7 +109,8 @@ def nearfield_view(
         if not (take.get("selected") and (take.get("pose") or {}).get("driver") and take.get("curve")):
             continue
         freqs, sweeps = _sweeps(take["curve"])
-        step = _within(freqs, sweeps, STEP_BAND_HZ)
+        swept = take["curve"]["band_hz"]
+        step = _within(freqs, sweeps, STEP_BAND_HZ, swept)
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
         path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
         # The first sweep can catch an amplifier still waking (#5684).
@@ -112,7 +119,8 @@ def nearfield_view(
         row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
                "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
                "max_window_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("max_window_db_spl"),
-               "bands": [band for edges in NEAR_FIELD_BANDS_HZ if (band := _band(freqs, sweeps, edges)) is not None]}
+               "bands": [band for edges in NEAR_FIELD_BANDS_HZ
+                         if (band := _band(freqs, sweeps, edges, swept)) is not None]}
         placed.setdefault(row["driver"], {}).setdefault(row["distance_mm"], []).append(len(rows))
         rows.append(row)
         step_levels.append(power_mean_db(step) if step.size else None)
