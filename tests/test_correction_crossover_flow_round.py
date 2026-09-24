@@ -13,6 +13,7 @@ from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker import commissioning_coordinator as coordinator, measurement_view, plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
+    REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
     REASON_MEASUREMENT_TARGETS_MISSING,
     CrossoverV2Refused,
     refusal_copy_for,
@@ -70,6 +71,21 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
         assert picked[row]["lines"]
     assert picked["speaker/mark"]["action"]["id"] == "run_program"
     assert "code" not in picked["speaker/mark"]
+
+
+
+@pytest.mark.parametrize("selected", ["nearfield/rear", "nearfield/nope"])
+def test_a_program_the_speaker_does_not_offer_is_refused_on_its_row(monkeypatch, selected):
+    """A link naming a program this speaker does not offer, such as a rear
+    woofer's near-field row on a 2-way, is refused on its own row instead of
+    silently selecting another program."""
+    monkeypatch.setattr(coordinator, "load_commissioning_view",
+                        lambda: {**_VIEW, "near_field_drivers": ("tweeter", "woofer")})
+    choices = measurement_view.round_choices({}, selected)
+    refused = next(c for c in choices if c["id"] == selected)
+    assert (refused["code"], refused["default"], "action" in refused) == (
+        REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, True, False)
+    assert refused["lines"] and sum(c["default"] for c in choices) == 1
 
 
 def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeypatch):

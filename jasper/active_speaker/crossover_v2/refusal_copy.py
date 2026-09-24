@@ -107,6 +107,7 @@ REASON_SPL_CEILING_EXCEEDED = SPL_CEILING_EXCEEDED
 REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
 REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH = "measurement_candidate_speaker_mismatch"
 REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
+REASON_MEASUREMENT_PROGRAM_NOT_OFFERED = "measurement_program_not_offered"
 REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
@@ -756,6 +757,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
         next_action={"id": 'select_candidate', "label": 'Select a tuning',
                      "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_PROGRAM_NOT_OFFERED: ReasonSpec(
+        REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, TEMPLATE_HARD_STOP, 0, "",
+        "This speaker does not offer that measurement. Choose one from the list.",
     ),
     REASON_MEASUREMENT_CANDIDATE_INVALID: ReasonSpec(
         REASON_MEASUREMENT_CANDIDATE_INVALID, TEMPLATE_HARD_STOP, 0, "",

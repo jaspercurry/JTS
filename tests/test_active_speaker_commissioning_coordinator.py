@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.round_copy import RUN_ENDED
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
 from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
@@ -167,7 +168,8 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(applied_tune, "compile_commissioning_profile", lambda **kw: {})
 
     choices = round_choices({}, "front_rear/express")
-    ids = {choice["id"] for choice in choices}
+    ids = {choice["id"] for choice in choices if choice.get("code") != REASON_MEASUREMENT_PROGRAM_NOT_OFFERED}
+    assert (len(ids) < len(choices)) is not rear
     rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
     assert ids & rear_ids == (rear_ids if rear else set())
     assert ("speaker/mark" in ids) is not passive
