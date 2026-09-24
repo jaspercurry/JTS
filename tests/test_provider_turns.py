@@ -38,7 +38,6 @@ async def test_connection_lost_marks_active_turn_lost(provider):
 async def test_activity_meter_hooks_fire_on_turn_acquire_and_release(persistent_provider):
     conn, _ = persistent_provider()
     meter = RecordingMeter()
-    assert callable(getattr(conn, "set_billable_activity_meter", None))
     conn.set_billable_activity_meter(meter)
     await conn.start(ToolRegistry(), "system")
     try:

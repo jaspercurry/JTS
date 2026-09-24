@@ -1,4 +1,4 @@
-"""Provider turn conformance and absent-response tolerance."""
+"""Provider turn and connection conformance, and absent-response tolerance."""
 from __future__ import annotations
 
 import asyncio
@@ -21,8 +21,8 @@ from jasper.voice.openai_session import (
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
-from jasper.voice.session import Interruptible, LiveTurn, ProviderTurn
-from jasper.voice.openai_live_session import OpenAILiveTurn
+from jasper.voice.session import Interruptible, LiveConnection, LiveTurn, ProviderTurn
+from jasper.voice.openai_live_session import OpenAILiveConnection, OpenAILiveTurn
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests.test_gemini_connection import _FakeConnect
 from tests.test_openai_session import _FakeConnectFactory
@@ -39,6 +39,14 @@ PROVIDER_TURN_CLASSES = {
 }
 
 TURN_CLASSES = (OpenAIRealtimeTurn, GeminiLiveTurn)
+
+# The connection class `daemon_main._make_connection` builds per provider.
+PROVIDER_CONNECTION_CLASSES = {
+    "gemini": GeminiLiveConnection,
+    "openai": OpenAIRealtimeConnection,
+    "grok": GrokRealtimeConnection,
+    "openai_live": OpenAILiveConnection,
+}
 
 
 def _make_turn(cls):
@@ -95,6 +103,15 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         # The two halves are exclusive: an exempt turn carries no reconcile
         # seam for the host to call, and every other turn carries all of it.
         assert isinstance(turn, Interruptible) is not turn.owns_interruption, provider_id
+
+
+def test_every_catalog_provider_ships_a_live_connection():
+    """The daemon reaches a provider only through `LiveConnection`, so a
+    member added to the Protocol, or a provider added to the catalog,
+    fails here rather than at the first wake."""
+    assert set(PROVIDER_CONNECTION_CLASSES) == {p.id for p in PROVIDERS}
+    for provider_id, cls in PROVIDER_CONNECTION_CLASSES.items():
+        assert issubclass(cls, LiveConnection), provider_id
 
 
 # ---------------------------------------------------------------------------

@@ -69,23 +69,6 @@ def test_flat_rate_meter_wiring_uses_generic_activity_hook(tmp_path) -> None:
     assert isinstance(conn.meter, BillableActivityMeter)
 
 
-def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
-    from tests._log_events import event_fields
-
-    store = UsageStore(str(tmp_path / "usage.db"))
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wired = _wire_billable_activity_meter(
-            connection=object(),  # type: ignore[arg-type]
-            usage_store=store,
-            provider="future-flat",
-            flat_per_hour_usd=2.5,
-        )
-
-    assert wired is False
-    fields = event_fields(caplog, "pricing.flat_rate_meter_unavailable")
-    assert fields["provider"] == "future-flat"
-
-
 async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
     """Inherited provider events must identify Grok. See issue #3855."""
     conn, _factory = _make_grok_conn()

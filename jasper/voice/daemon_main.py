@@ -118,30 +118,12 @@ def _wire_billable_activity_meter(
 
     Token-billed providers skip this entirely. For flat-rate realtime
     providers, the provider adapter owns what "billable activity" means
-    by exposing ``set_billable_activity_meter`` and marking the meter at
-    the right lifecycle points. A missing hook is observable because it
-    means the spend cap would otherwise under-count a priced provider.
+    by marking the meter at the right lifecycle points.
     """
     if flat_per_hour_usd <= 0:
         return False
 
-    set_meter = getattr(connection, "set_billable_activity_meter", None)
-    if not callable(set_meter):
-        log_event(
-            logger,
-            "pricing.flat_rate_meter_unavailable",
-            provider=provider,
-            flat_per_hour_usd=f"{flat_per_hour_usd:.6f}",
-            note=(
-                "active model has a flat realtime rate but its adapter does "
-                "not expose set_billable_activity_meter; spend cap will "
-                "not count that provider's realtime activity"
-            ),
-            level=logging.WARNING,
-        )
-        return False
-
-    set_meter(BillableActivityMeter(
+    connection.set_billable_activity_meter(BillableActivityMeter(
         usage_store, provider, flat_per_hour_usd,
     ))
     logger.info(
