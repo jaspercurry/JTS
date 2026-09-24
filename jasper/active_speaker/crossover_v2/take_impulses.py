@@ -92,9 +92,7 @@ def write_take_impulses(
                 "repeat_index": one.repeat_index,
                 "segment_id": one.impulse.segment_id,
                 "sample_rate_hz": one.impulse.sample_rate_hz,
-                "samples": int(one.impulse.samples.size),
                 "origin_index": one.impulse.origin_index,
-                "peak_index": one.impulse.peak_index,
                 "clock_shift_samples": round(one.impulse.clock_shift_samples, 4),
             }
             for index, one in enumerate(impulses)
@@ -114,23 +112,19 @@ def take_impulses(bundle_dir: Path, document: Mapping[str, Any]) -> tuple[TakeIm
     try:
         if sha256_file(path) == block.get("sha256"):
             with np.load(path, allow_pickle=False) as arrays:
-                return tuple(
-                    TakeImpulse(
-                        str(row["role"]), int(row["repeat_index"]),
-                        RecordedImpulse(
-                            samples=np.asarray(arrays[row["key"]], dtype=np.float64),
-                            sample_rate_hz=int(row["sample_rate_hz"]),
-                            origin_index=int(row["origin_index"]),
-                            peak_index=int(row["peak_index"]),
-                            segment_id=str(row["segment_id"]),
-                            clock_shift_samples=float(row["clock_shift_samples"]),
-                        ),
-                    )
-                    for row in block["responses"]
-                )
+                return tuple(_read_impulse(row, np.asarray(arrays[row["key"]], dtype=np.float64))
+                             for row in block["responses"])
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise TakeImpulsesUnreadable(f"{path}: {exc}") from exc
     raise TakeImpulsesUnreadable(f"{path}: content does not match the take record's hash")
+
+
+def _read_impulse(row: Mapping[str, Any], samples: np.ndarray) -> TakeImpulse:
+    return TakeImpulse(str(row["role"]), int(row["repeat_index"]), RecordedImpulse(
+        samples=samples, sample_rate_hz=int(row["sample_rate_hz"]), origin_index=int(row["origin_index"]),
+        peak_index=int(np.argmax(np.abs(samples))), segment_id=str(row["segment_id"]),
+        clock_shift_samples=float(row["clock_shift_samples"]),
+    ))
 
 
 def impulse_for(
