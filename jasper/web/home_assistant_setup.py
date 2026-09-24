@@ -66,7 +66,6 @@ from .. import home_assistant as _ha_mod
 from ..log_event import log_event
 from ..atomic_io import write_env_file
 from ..env_file import delete_env_file, read_env_file
-from ..env_load import parse_bool_value
 from ._common import (
     RESTART_CLAUSE,
     RestartOutcome,
@@ -185,13 +184,6 @@ def _normalize_url(raw: str) -> str:
         if parsed.scheme == "http":
             netloc = netloc + ":8123"
     return f"{parsed.scheme}://{netloc}".rstrip("/").removesuffix("/api").rstrip("/")
-
-
-# ---- verify_ssl ------------------------------------------------------------
-
-def _verify_ssl_from_state(state: dict[str, str]) -> bool:
-    """JASPER_HA_VERIFY_SSL, parsed the way ``Config.ha_verify_ssl`` reads it."""
-    return parse_bool_value(state.get(ENV_VERIFY_SSL)) is not False
 
 
 # ---- Recent-URLs persistence ------------------------------------------------
@@ -519,7 +511,7 @@ def _state_partial_html(state: dict[str, str], csrf_token: str = "") -> str:
     url = state.get(ENV_URL, "")
     profile_url = _profile_link(url)
     is_https = url.startswith("https://")
-    verify_ssl = _verify_ssl_from_state(state)
+    verify_ssl = _ha_mod.verify_ssl_from_state(state)
     # HTTPS-only: show the self-signed-cert opt-in checkbox. Plain HTTP
     # has no TLS to verify. The form field is named `accept_self_signed`
     # to match the label semantics — checked means "yes, accept a
@@ -1008,7 +1000,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         state = read_env_file(cfg["state_path"])
         send_json_response(handler, ready_sync(
             state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
-            verify_ssl=_verify_ssl_from_state(state),
+            verify_ssl=_ha_mod.verify_ssl_from_state(state),
         ))
 
     @read_guarded
@@ -1022,7 +1014,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         state = read_env_file(cfg["state_path"])
         send_json_response(handler, verify_sync(
             state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
-            verify_ssl=_verify_ssl_from_state(state),
+            verify_ssl=_ha_mod.verify_ssl_from_state(state),
         ))
 
     @header_guarded
@@ -1083,7 +1075,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         if "accept_self_signed_present" in form:
             verify_ssl = not bool(form.get("accept_self_signed"))
         else:
-            verify_ssl = _verify_ssl_from_state(existing)
+            verify_ssl = _ha_mod.verify_ssl_from_state(existing)
 
         normalized_url = _normalize_url(raw_url)
         if not normalized_url:

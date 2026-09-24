@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -770,6 +771,11 @@ def read_ha_env_file(path: str = HA_ENV_FILE) -> dict[str, str]:
     return state.values
 
 
+def verify_ssl_from_state(state: Mapping[str, str]) -> bool:
+    """``JASPER_HA_VERIFY_SSL`` from the wizard-owned env state; default on."""
+    return parse_bool_value(state.get(ENV_VERIFY_SSL)) is not False
+
+
 async def probe_status_from_env(
     *, env_file_path: str = HA_ENV_FILE, force: bool = False,
 ) -> dict[str, Any]:
@@ -792,7 +798,7 @@ async def probe_status_from_env(
         state.get(ENV_URL, "").strip(),
         state.get(ENV_TOKEN, "").strip(),
         force=force,
-        verify_ssl=parse_bool_value(state.get(ENV_VERIFY_SSL)) is not False,
+        verify_ssl=verify_ssl_from_state(state),
     )
 
 
