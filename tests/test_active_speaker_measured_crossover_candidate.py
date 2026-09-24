@@ -38,7 +38,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 
 from jasper.active_speaker.rear_calibration import coefficient_sha256, diagnostic_seed
 

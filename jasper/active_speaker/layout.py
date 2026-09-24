@@ -5,15 +5,18 @@
 
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError, OUTPUT_VARIANT_SCHEMA_VERSION, physical_target_id
+from jasper.output_topology import OutputTopology, OutputTopologyError
+from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, OUTPUT_VARIANT_SCHEMA_VERSION, PASSIVE_MAIN_MODE, physical_target_id
+
+from .profile import SIDES_BY_LAYOUT, SUPPORTED_LAYOUTS
 
 
 def layout_choices(topology: OutputTopology) -> dict[str, Any]:
     mains = [group for group in topology.speaker_groups if group.kind != "subwoofer"]
-    mode = mains[0].mode if mains else "full_range_passive"
+    mode = mains[0].mode if mains else PASSIVE_MAIN_MODE
     rear = any(channel.output_variant == "rear" for group in mains for channel in group.channels)
     return {"layout": "stereo" if len(mains) > 1 else "mono",
-            "crossover": "passive" if mode == "full_range_passive" else "active",
+            "crossover": "passive" if mode == PASSIVE_MAIN_MODE else "active",
             "channels": 3 if rear or mode == "active_3_way" else 2,
             "cardioid": rear}
 
@@ -21,15 +24,15 @@ def layout_choices(topology: OutputTopology) -> dict[str, Any]:
 def build_speaker_layout(topology: OutputTopology, choices: Mapping[str, Any]) -> OutputTopology:
     layout, crossover = choices.get("layout"), choices.get("crossover")
     channels, cardioid = choices.get("channels", 2), choices.get("cardioid", False)
-    if layout not in {"mono", "stereo"} or crossover not in {"passive", "active"}:
+    if layout not in SUPPORTED_LAYOUTS or crossover not in {"passive", "active"}:
         raise OutputTopologyError("Choose mono or stereo and passive or active crossover.")
     if type(channels) is not int or channels not in {2, 3} or type(cardioid) is not bool:
         raise OutputTopologyError("Choose two or three amplifier channels per speaker.")
     rear = crossover == "active" and channels == 3 and cardioid
-    roles = (["full_range"] if crossover == "passive" else
-             ["woofer", "mid", "tweeter"] if channels == 3 and not rear else ["woofer", "tweeter"])
-    mode = "full_range_passive" if crossover == "passive" else f"active_{len(roles)}_way"
-    sides = ["left", "right"] if layout == "stereo" else ["mono"]
+    mode = (PASSIVE_MAIN_MODE if crossover == "passive" else
+            "active_3_way" if channels == 3 and not rear else "active_2_way")
+    roles = MAIN_DRIVER_ROLES_BY_MODE[mode]
+    sides = SIDES_BY_LAYOUT[layout]
     subs = [group.to_dict() for group in topology.speaker_groups if group.kind == "subwoofer"]
     required = len(sides) * (len(roles) + int(rear)) + sum(len(group["channels"]) for group in subs)
     if required > topology.hardware.physical_output_count:

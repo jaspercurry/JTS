@@ -53,7 +53,7 @@ from jasper.active_speaker.runtime_contract import (
     safe_graph_for_current_topology,
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,

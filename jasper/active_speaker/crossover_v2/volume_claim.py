@@ -23,7 +23,7 @@ from ...volume_owner import (
     VolumeOwner,
 )
 from ..session_volume_plan import RestoreOutcome
-from ..volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
+from jasper.volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
 
 logger = logging.getLogger(__name__)
 

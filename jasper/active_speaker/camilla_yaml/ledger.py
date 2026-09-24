@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
+from jasper.biquad import PeqFilter, total_positive_boost_db
 
 from ..profile import ActiveSpeakerPreset
 

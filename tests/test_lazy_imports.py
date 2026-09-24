@@ -19,9 +19,8 @@ Pi 5, the savings these guards protect are:
   transitive graph, not just dbus_next, so they save the most)
 - doctor lazy → PortAudio (via sounddevice) doesn't load in jasper-doctor,
   which opens no audio device
-- jasper.active_speaker's module __getattr__ → jasper-voice reaches
-  volume_latch without the commissioning stack behind its siblings
-  (95 fewer modules; -7 MB on x86_64)
+- volume_latch lives in the runtime layer → jasper-voice loads no
+  jasper.active_speaker module at all
 
 A regression in any of these would silently re-inflate jasper-voice's
 RSS by tens of MB. CI catches the import-graph change, not the bytes,
@@ -777,7 +776,7 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
                 "dbus_next",
                 "yaml",
                 "jasper.audio_measurement",
-                "jasper.active_speaker.baseline_profile",
+                "jasper.active_speaker",
             ),
             id="jasper-voice",
         ),
@@ -805,9 +804,8 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     jasper-control reaches their persisted state through stdlib-only record
     modules instead. ``setup_status`` answers a streambox or passive box from
     the topology alone, so the baseline/design candidate stack stays behind
-    its active-speaker branch. jasper-voice touches ``jasper.active_speaker`` only for
-    the ``volume_latch`` leaf, which its package ``__getattr__`` keeps
-    separable from the commissioning submodules. ``scipy`` is the same
+    its active-speaker branch. jasper-voice loads no ``jasper.active_speaker``
+    module: its fader primitives live in ``jasper.volume_latch``. ``scipy`` is the same
     bargain at a much larger price (``jasper.dsp_numpy`` owns that figure):
     the AEC bridge's steady-state resampling and high-pass are
     ``jasper.dsp_numpy``. ``sounddevice`` leaves the bridge's import graph for

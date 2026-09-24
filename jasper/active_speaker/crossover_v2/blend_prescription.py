@@ -37,7 +37,7 @@ import numpy as np
 # rather than restated, so a door's ceiling and the arithmetic it protects
 # cannot drift apart.
 from jasper.active_speaker.branch_chain import chain_response
-from jasper.sound.profile import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
+from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 
 from .blend_correction import (
     BLEND_FILTER_Q,
@@ -125,7 +125,7 @@ def max_q_for_gain(gain_db: float) -> float:
 
     A boost gets :data:`PRESCRIPTION_MAX_BOOST_Q`, a POLICY ceiling; everything
     else — ``0.0`` included — gets
-    :data:`~jasper.sound.profile.EVALUABLE_Q_MAX`, an INSTRUMENT-fidelity one
+    :data:`~jasper.biquad.EVALUABLE_Q_MAX`, an INSTRUMENT-fidelity one
     (past it the f64 biquad cascade stops evaluating the filter asked for:
     measured +6.99 dB realized from a requested Q 8e14 on an admitted -3.0 dB
     cut). Same predicate :func:`_check_bounds` derives
@@ -487,7 +487,7 @@ def _check_bounds(
                 freq_hz=freq,
                 band_hz=[lo, hi],
             )
-        # The evaluator's own floor: below EVALUABLE_Q_MIN, `_biquad_coeffs`
+        # The evaluator's own floor: below EVALUABLE_Q_MIN, `biquad_coeffs`
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
         # not a shape this system can realize, whatever the gain's sign.
         if q < EVALUABLE_Q_MIN:
@@ -506,7 +506,7 @@ def _check_bounds(
                 q=q,
                 q_max=q_max,
             )
-        # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `_biquad_coeffs`
+        # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
         if 10.0 ** (gain / 40.0) == 0.0:
             _refuse(

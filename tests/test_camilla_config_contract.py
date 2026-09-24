@@ -11,13 +11,12 @@ from jasper.camilla_config_contract import (
     DEFAULT_QUEUELIMIT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_TARGET_LEVEL,
-    PeqFilter,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
     resolve_enable_rate_adjust,
-    total_positive_boost_db,
 )
+from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,

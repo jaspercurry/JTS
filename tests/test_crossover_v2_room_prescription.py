@@ -48,7 +48,7 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     read_room_prescription,
     room_prescription_to_candidate_fields,
 )
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.cli import crossover_prescriber as cli
 from jasper.cli.round_views._common import default_out
 

@@ -22,7 +22,7 @@ from jasper.active_speaker import (
     emit_active_speaker_program_bake_config,
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile

@@ -16,7 +16,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, Mapping, cast
 
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -24,10 +24,6 @@ from .audio_hardware.dac import (
     clock_domain_label_for as _dac_clock_domain_label_for,
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
-)
-from .camilla_emit import (
-    BASS_MANAGEMENT_CORNER_HZ_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO,
 )
 from .json_fields import (
     CodedFieldError,
@@ -38,10 +34,21 @@ from .output_hardware import (
     OutputHardwareState,
     normalize_output_device_id,
 )
+from .speaker_layout import (
+    MAIN_GROUP_KINDS,
+    OUTPUT_VARIANT_SCHEMA_VERSION,
+    PASSIVE_MAIN_MODE,
+    REQUIRED_ROLES_BY_MODE,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
+    SUPPORTED_GROUP_KINDS,
+    SUPPORTED_GROUP_MODES,
+    SUPPORTED_OUTPUT_VARIANTS,
+    SUPPORTED_ROLES,
+    physical_target_id,
+)
 
 SCHEMA_VERSION = 1
-OUTPUT_VARIANT_SCHEMA_VERSION = 2
-SUPPORTED_OUTPUT_VARIANTS = {"primary", "rear"}
 
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
 
@@ -55,30 +62,6 @@ MISSING_SOURCE = "missing"
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
-# Hz; active_speaker imports this module, so shared bounds live in camilla_emit.
-SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
-SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
-
-SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
-MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
-PASSIVE_MAIN_MODE = "full_range_passive"
-# Roles run low to high: the first has no lower crossover edge, consecutive
-# roles cross over, and a way-count view assumes one mode per way count.
-MAIN_DRIVER_ROLES_BY_MODE = {
-    PASSIVE_MAIN_MODE: ("full_range",),
-    "active_2_way": ("woofer", "tweeter"),
-    "active_3_way": ("woofer", "mid", "tweeter"),
-}
-WAY_COUNT_BY_MAIN_MODE = {mode: len(roles) for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()}
-ADJACENT_PAIRS_BY_MAIN_MODE = {
-    mode: tuple(zip(roles, roles[1:])) for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()
-}
-LOWEST_DRIVER_ROLE_BY_MAIN_MODE = {mode: roles[0] for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()}
-REQUIRED_ROLES_BY_MODE = {**MAIN_DRIVER_ROLES_BY_MODE, "subwoofer": ("subwoofer",)}
-SUPPORTED_GROUP_MODES = set(REQUIRED_ROLES_BY_MODE)
-SUPPORTED_ROLES = {
-    role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
-}
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
 # run solo, become a wireless follower, or host one?" It seeds later reconciler
@@ -113,42 +96,6 @@ _bool = _JSON_FIELDS.boolean
 _enum = _JSON_FIELDS.enum
 _float = _JSON_FIELDS.number
 _optional_float = _JSON_FIELDS.optional_number
-
-
-def measurement_target_id(role: str, output_variant: str = "primary") -> str:
-    """One physical driver output's identity inside a speaker group.
-
-    A primary output's id IS its role, so every role-keyed measurement map on a
-    primary-only speaker is unchanged; a rear woofer adds ``woofer:rear``
-    (ADR-0316). :func:`physical_target_id` is the same id under its group.
-    """
-    return role if output_variant == "primary" else f"{role}:{output_variant}"
-
-
-def cardioid_cabinet_channels(
-    outputs: Iterable[tuple[str, str, int]],
-) -> tuple[int, int, int] | None:
-    """``(front woofer, rear woofer, tweeter)`` channel indexes of the one
-    cabinet a rear calibration document describes, or ``None``.
-
-    ADR-0318: exactly one rear output, one front output of the rear's role, and
-    one output of the other role, over ``(role, variant, index)`` triples. The
-    caller owns what else its own topology must satisfy.
-    """
-    items = list(outputs)
-    rear = [item for item in items if item[1] == "rear"]
-    if len(rear) != 1:
-        return None
-    role = rear[0][0]
-    front = [item for item in items if item[1] != "rear" and item[0] == role]
-    tweeter = [item for item in items if item[0] != role]
-    if len(front) != 1 or len(tweeter) != 1:
-        return None
-    return front[0][2], rear[0][2], tweeter[0][2]
-
-
-def physical_target_id(group_id: str, role: str, output_variant: str = "primary") -> str:
-    return f"{group_id}:{measurement_target_id(role, output_variant)}"
 
 
 def _safe_id_fragment(value: str) -> str:

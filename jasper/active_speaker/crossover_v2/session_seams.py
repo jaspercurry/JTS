@@ -48,16 +48,12 @@ class SessionGraph(Protocol):
     ) -> str:
         """Install the graph and return its fingerprint.
 
-        Flips, delays and trims are install-time, not patch-time: the
-        fingerprint must name the graph the stimulus actually played through.
+        Flips, delays and trims are install-time: the fingerprint must name
+        the graph the stimulus actually played through.
         The fingerprint is provenance, never a gate — a host that cannot name
         the graph returns ``""``. May raise; the session then treats nothing as
         installed and still calls :meth:`restore`.
         """
-        raise NotImplementedError
-
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        """Change what one candidate needs, without re-installing."""
         raise NotImplementedError
 
     async def restore(self) -> None:
@@ -90,9 +86,9 @@ class VolumeClaim(Protocol):
         """The fader reading, but only when it agrees with the declared level.
 
         Returns the reading when it is within
-        :data:`~jasper.active_speaker.volume_latch.READBACK_TOLERANCE_DB` of the
+        :data:`~jasper.volume_latch.READBACK_TOLERANCE_DB` of the
         acquired level (via
-        :func:`~jasper.active_speaker.volume_latch.fader_matches`), else
+        :func:`~jasper.volume_latch.fader_matches`), else
         ``None`` — unreadable and preempted both read as ``None``, which
         refuses to bank the capture. Called once per stimulus, not once per
         spec: a claim can be preempted between two positions of one walk.

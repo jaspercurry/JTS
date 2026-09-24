@@ -27,7 +27,8 @@ import yaml
 
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import baseline_apply
-from jasper import output_topology, output_topology_store
+from jasper import output_topology_store
+from jasper.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.bundles import mark_state
@@ -659,7 +660,7 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
     bank = {candidate.fingerprint: candidate for candidate in candidates}
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
         plan, **kw, candidates=bank, declared_target_ids=tuple(
-            output_topology.measurement_target_id(t["role"], t.get("output_variant", "primary"))
+            measurement_target_id(t["role"], t.get("output_variant", "primary"))
             for t in active_driver_targets(topology))))
     names = ("base", *bank)
     assert len(names) == 4

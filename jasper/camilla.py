@@ -24,6 +24,8 @@ from .camilla_config_contract import (
     check_volume_limit,
 )
 from .log_event import log_event
+from .volume_latch import READBACK_TOLERANCE_DB, fader_matches
+from .volume_owner import volume_owner
 
 if TYPE_CHECKING:
     from camilladsp import CamillaClient
@@ -1214,13 +1216,6 @@ def declare_main_volume_db(db: float) -> None:
     """
     if not math.isfinite(db):
         raise CamillaVolumeError(f"refusing non-finite Camilla volume: {db!r}")
-
-    # Deferred, like the `volume_owner` imports elsewhere in this module:
-    # `jasper.camilla` is imported by every daemon, and `volume_latch` sits
-    # behind the `jasper.active_speaker` package __init__ (~120 modules) that
-    # only this operator path needs.
-    from .active_speaker.volume_latch import READBACK_TOLERANCE_DB, fader_matches
-    from .volume_owner import volume_owner
 
     owner = volume_owner()
     if owner is None:

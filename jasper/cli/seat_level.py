@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.seat_level_sweep import SweepLevelReader, watchdog_seconds
 from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.active_speaker.volume_latch import read_fader_db
+from jasper.volume_latch import read_fader_db
 from jasper.camilla import primary_controller
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY

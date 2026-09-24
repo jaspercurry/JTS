@@ -19,6 +19,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Closed vocabulary (design doc "Microphone doctrine").
+MIC_TIERS: tuple[str, ...] = ("reference", "consumer", "phone")
+
 # Single source of truth for supported measurement mics. Adding a mic here
 # wires the vendor lookup, the model picker, the wrong-mic guard, AND the
 # wizard's label-based auto-inference (see model_label_aliases in
@@ -26,10 +29,7 @@ from typing import Any
 # default (the vendor_model) when a mic's OS device label does not contain its
 # vendor model string.
 #
-# `tier` is the correction-envelope trust tier — vocabulary owned by
-# jasper.active_speaker.linearization_envelope.MIC_TIERS ("reference" /
-# "consumer" / "phone"), duplicated here as plain literals because
-# audio_measurement never imports upward into active_speaker.
+# `tier` is the correction-envelope trust tier, one of MIC_TIERS.
 #
 # `usb_ids` is the device's USB `vid:pid` as the kernel spells it in
 # `/proc/asound/<card>/usbid`, so the rest of JTS can recognise measurement

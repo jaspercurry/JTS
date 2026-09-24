@@ -11,7 +11,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 import yaml
 
-from jasper.camilla_config_contract import FilterSpec
+from jasper.biquad import FilterSpec
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.branch_chain import confirmed_protection_sections, rear_branch_sum_headroom_db
 from jasper.active_speaker._common import MeasurementGraphRefused

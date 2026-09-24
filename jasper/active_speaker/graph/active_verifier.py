@@ -16,10 +16,11 @@ from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DR
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.output_topology import (
+from jasper.speaker_layout import (
     LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     SUB_CROSSOVER_HZ_HI,
     SUB_CROSSOVER_HZ_LO,
+    SUB_CROSSOVER_ORDER,
     WAY_COUNT_BY_MAIN_MODE,
     cardioid_cabinet_channels,
     measurement_target_id,
@@ -72,7 +73,7 @@ from ..output_contract import (
     mains_lowest_driver_indexes as _mains_lowest_driver_indexes,
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
-from ..profile import ADJACENT_PAIRS_BY_WAY, SUB_CROSSOVER_ORDER, SUPPORTED_LR_ORDERS
+from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)

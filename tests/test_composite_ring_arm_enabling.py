@@ -41,7 +41,7 @@ from jasper.ring_conf import (
     ring_conf_channels,
 )
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.active_speaker.output_contract import (
     active_ring_channels_for_topology,
     classify_output_contract,

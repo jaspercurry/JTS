@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.json_fields import finite_float
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 
 from .bass_table_report import bass_table_markdown, bass_table_rows
 from .crossover_v2.round_frequency_view import position_label

@@ -27,7 +27,7 @@ from typing import Any, TypeVar
 import numpy as np
 
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
-from jasper.active_speaker.volume_latch import fader_matches
+from jasper.volume_latch import fader_matches
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play

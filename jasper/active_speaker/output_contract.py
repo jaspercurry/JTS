@@ -17,12 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from jasper.output_topology import (
-    LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
-    OutputTopology,
-    SpeakerChannel,
-    SpeakerGroup,
-)
+from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
+from jasper.speaker_layout import LOWEST_DRIVER_ROLE_BY_MAIN_MODE
 
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS

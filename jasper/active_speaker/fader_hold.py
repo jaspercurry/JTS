@@ -2,49 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared fail-closed main-fader discipline: set-and-confirm, and hold.
-
-The one implementation of the fader primitives the session-scoped
-``session_volume_plan.SessionVolumePlan`` uses; each consumer owns its own
-durable state schema and lifecycle, so only the primitives and their two
-constants live here.
-
-CamillaDSP does not reset ``main_volume`` on a config replace — the fader is
-process state that survives a reload (read at tag ``v4.1.3``/``05e9cfc``:
-``src/config/mod.rs:806`` is ``#[serde(deny_unknown_fields)]`` on ``Devices``
-with no fader field, ``ProcessingParameters::new`` is constructed once at
-``src/bin.rs:1119``, and ``src/pipeline.rs:270`` re-seeds a rebuilt pipeline
-from the LIVE volume). What lands the fader on the declared level across a
-graph swap is the duck release reference (ADR-0004).
-"""
+"""A measurement session's fader hold: prove the main fader is at the declared
+measurement volume, or refuse."""
 
 from __future__ import annotations
 
 import logging
-import math
-from typing import Any, Awaitable, Callable
 
 from jasper.log_event import log_event
+from jasper.volume_latch import READBACK_TOLERANCE_DB, GetMainVolumeDb, fader_matches, read_fader_db
 
 logger = logging.getLogger(__name__)
-
-# The independent readback must land within this tolerance of the target for a
-# volume mutation to count as confirmed.
-READBACK_TOLERANCE_DB = 0.05
 
 # The attenuated fallback a restore path drops to when it cannot confirm the
 # exact original volume. A measurement session that cannot prove it restored the
 # household's volume must leave the speaker safely quiet, not loud.
 EMERGENCY_MEASUREMENT_VOLUME_DB = -60.0
-
-SetMainVolumeDb = Callable[[float], Awaitable[Any]]
-GetMainVolumeDb = Callable[[], Awaitable[Any]]
-
-#: Errors a fader read/write is allowed to fail with. Injected setters/getters
-#: must REPORT failure rather than raise: bind ``CamillaController``'s methods
-#: with ``best_effort=True``. ``CamillaUnavailable`` is absent because naming it
-#: would import ``jasper.camilla``, which imports this leaf.
-FADER_IO_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError)
 
 
 class MeasurementFaderDrift(RuntimeError):
@@ -71,64 +44,6 @@ class MeasurementFaderDrift(RuntimeError):
         self.expected_db = float(expected_db)
         self.observed_db = None if observed_db is None else float(observed_db)
         self.context = context
-
-
-async def read_fader_db(get_main_volume_db: GetMainVolumeDb) -> float | None:
-    """One live read, normalized to "a usable number, or nothing".
-
-    A bool, a non-numeric, a non-finite reading and a :data:`FADER_IO_ERRORS`
-    raise all normalize to ``None``: an unreadable fader must never render as
-    a value.
-    """
-    try:
-        value = await get_main_volume_db()
-    except FADER_IO_ERRORS:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value) if math.isfinite(float(value)) else None
-
-
-def fader_matches(
-    observed: Any,
-    expected_db: float,
-    *,
-    tolerance_db: float = READBACK_TOLERANCE_DB,
-) -> bool:
-    """The one "do these two fader dB values agree?" test.
-
-    ``True`` only for a real, finite number within ``tolerance_db`` of
-    ``expected_db``: "could not read" must never render as "matches".
-    """
-    if (
-        isinstance(observed, bool)
-        or not isinstance(observed, (int, float))
-        or not math.isfinite(float(observed))
-    ):
-        return False
-    return abs(float(observed) - float(expected_db)) <= tolerance_db
-
-
-async def set_and_confirm_volume(
-    target_db: float,
-    set_main_volume_db: SetMainVolumeDb,
-    get_main_volume_db: GetMainVolumeDb,
-    *,
-    tolerance_db: float = READBACK_TOLERANCE_DB,
-) -> bool:
-    """Set the main volume and confirm it through an independent readback.
-
-    ``True`` only when the setter did not report failure AND a fresh readback
-    lands within ``tolerance_db`` of ``target_db``.
-    """
-    try:
-        applied = await set_main_volume_db(float(target_db))
-        if applied is False:
-            return False
-        observed = await get_main_volume_db()
-    except FADER_IO_ERRORS:
-        return False
-    return fader_matches(observed, target_db, tolerance_db=tolerance_db)
 
 
 async def hold_fader_at(

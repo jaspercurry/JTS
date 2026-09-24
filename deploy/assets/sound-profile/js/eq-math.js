@@ -7,7 +7,7 @@
 // Pure, DOM-free module shared by the live /sound/ graph (main.js) and the
 // node parity check (scripts/check-peq-parity.mjs). It MUST stay
 // byte-for-byte equivalent to the Python reference in
-// jasper/sound/profile.py (_biquad_coeffs / _filter_response_db). Both are
+// jasper/biquad.py (biquad_coeffs / filter_response_db). Both are
 // checked against tests/fixtures/peq_response_fixture.json — drift is a test
 // failure, not a field bug.
 //
@@ -15,8 +15,8 @@
 // CamillaDSP realises, so the drawn magnitude matches the speaker's actual
 // output for the Q-parameterised types (Peaking/Highpass/Lowpass/Notch).
 
-// Must match CamillaDSP's runtime rate (DEFAULT_SAMPLE_RATE = 48000) so the
-// preview curve matches the speaker's actual output.
+// Must match jasper.biquad.RESPONSE_SAMPLE_RATE_HZ, CamillaDSP's pipeline rate,
+// so the preview curve matches the speaker's actual output.
 export var RESPONSE_SAMPLE_RATE_HZ = 48000;
 
 // Cut/notch types shape the response without a user gain term.
@@ -24,11 +24,8 @@ export var GAINLESS_TYPES = ['Highpass', 'Lowpass', 'Notch'];
 
 // Every shelf is drawn AND emitted at this one Butterworth (non-resonant) Q,
 // so Q is not a user control for shelves. The Python twin is
-// jasper.camilla_config_contract.SHELF_Q, which the emitter writes straight
-// into the shelf's CamillaDSP `q` field. (Before 2026-07-27 the emitter wrote
-// `slope: 6.0` believing it was Butterworth — CamillaDSP's Butterworth is
-// `slope: 12`, and at `slope: 6` the realised Q falls with the shelf's gain,
-// so this drawn curve was up to 1.7 dB off what the speaker played.)
+// jasper.biquad.SHELF_Q, which the emitter writes straight
+// into the shelf's CamillaDSP `q` field.
 var SHELF_Q = 1.0 / Math.sqrt(2.0);
 
 // RBJ biquad coefficients (un-normalised). Returns [b0,b1,b2,a0,a1,a2].

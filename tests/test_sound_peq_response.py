@@ -25,21 +25,21 @@ import math
 import re
 from pathlib import Path
 
-from jasper.sound import GAINLESS_BIQUAD_TYPES, build_sound_filters
-from jasper.camilla_config_contract import SHELF_Q, SHELF_Q_EMIT_DECIMALS
+from jasper.sound import build_sound_filters
+from jasper.biquad import (
+    GAINLESS_BIQUAD_TYPES,
+    FilterSpec,
+    RESPONSE_SAMPLE_RATE_HZ,
+    SHELF_Q,
+    SHELF_Q_EMIT_DECIMALS,
+    filter_response_complex,
+    filter_response_db,
+)
 from jasper.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
 import numpy as np
 import pytest
 
-from jasper.sound.profile import (
-    CUT_MAX_Q,
-    RESPONSE_SAMPLE_RATE_HZ,
-    FilterSpec,
-    ParametricBand,
-    SoundProfile,
-    _filter_response_complex,
-    _filter_response_db,
-)
+from jasper.sound.profile import CUT_MAX_Q, ParametricBand, SoundProfile
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "peq_response_fixture.json").read_text()
@@ -60,7 +60,7 @@ def _camilladsp_shelf_db(
 
     Transcribed from CamillaDSP v4.1.3 ``src/filters/biquad.rs`` — the four
     ``Highshelf``/``Lowshelf`` × ``ShelfSteepness::{Q,Slope}`` match arms —
-    deliberately NOT reusing ``jasper.sound.profile._biquad_coeffs``: this is
+    deliberately NOT reusing ``jasper.biquad.biquad_coeffs``: this is
     the independent side of the comparison. Exactly one of ``q``/``slope``, as
     CamillaDSP itself requires.
 
@@ -131,7 +131,7 @@ _EQ_MATH_JS = (
 
 
 def _db(biquad_type, freq, gain, q, at_freq):
-    return _filter_response_db(FilterSpec("x", biquad_type, freq, gain, q=q), [at_freq])[
+    return filter_response_db(FilterSpec("x", biquad_type, freq, gain, q=q), [at_freq])[
         0
     ]
 
@@ -141,15 +141,15 @@ def test_python_matches_shared_parity_fixture():
     freqs = FIXTURE["test_freqs"]
     for case in FIXTURE["cases"]:
         spec = FilterSpec("x", case["type"], case["freq"], case["gain_db"], q=case["q"])
-        got = _filter_response_db(spec, freqs)
+        got = filter_response_db(spec, freqs)
         for value, expected in zip(got, case["db"]):
             assert abs(value - expected) < 1e-6, case
 
 
 def test_filter_response_complex_magnitude_matches_filter_response_db():
     """#1667 magnitude-consistency parity: the complex (minimum-phase) twin
-    shares the ``_biquad_coeffs`` SSOT with the parity-pinned magnitude one, so
-    ``abs(_filter_response_complex)`` equals ``10**(_filter_response_db/20)``
+    shares the ``biquad_coeffs`` SSOT with the parity-pinned magnitude one, so
+    ``abs(filter_response_complex)`` equals ``10**(filter_response_db/20)``
     bin-for-bin across every biquad type. The complex twin ADDS phase; it must
     never perturb the magnitude the emitted graph realizes."""
     freqs = list(np.geomspace(20.0, 20000.0, 400))
@@ -164,8 +164,8 @@ def test_filter_response_complex_magnitude_matches_filter_response_db():
     ]
     for biquad_type, freq, gain, q in cases:
         spec = FilterSpec("x", biquad_type, freq, gain, q=q)
-        mag = np.array(_filter_response_db(spec, freqs))
-        cplx = np.array(_filter_response_complex(spec, freqs))
+        mag = np.array(filter_response_db(spec, freqs))
+        cplx = np.array(filter_response_complex(spec, freqs))
         # Notch reaches a true zero (its magnitude flooring at 1e-12 in the dB
         # twin has no complex counterpart); compare where the magnitude is not
         # near that floor, which is the whole physical range of every case here.
@@ -179,7 +179,7 @@ def test_filter_response_complex_peaking_is_minimum_phase():
     """The load-bearing property vs a zero-phase magnitude scale: a peaking
     biquad is real (phase 0) at its centre and rotates on the skirts."""
     spec = FilterSpec("x", "Peaking", 1000.0, -6.0, q=1.0)
-    cplx = _filter_response_complex(spec, [500.0, 1000.0, 2000.0])
+    cplx = filter_response_complex(spec, [500.0, 1000.0, 2000.0])
     assert abs(cplx[1].imag) < 1e-9  # centre: real
     assert abs(np.degrees(np.angle(cplx[0]))) > 5.0  # below: rotated
     assert abs(np.degrees(np.angle(cplx[2]))) > 5.0  # above: rotated

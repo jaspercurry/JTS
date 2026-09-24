@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
 from jasper.audio_measurement.playback import PlaybackObservation
 
-from ..volume_latch import fader_matches
+from jasper.volume_latch import fader_matches
 from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import (
@@ -526,7 +526,7 @@ class TuningSession:
         :meth:`~.session_seams.VolumeClaim.prove` is contracted to return a
         reading only when it AGREES with the declared level, so this re-checks
         the answer against that level rather than trusting it, through
-        :func:`~jasper.active_speaker.volume_latch.fader_matches` — the repo's
+        :func:`~jasper.volume_latch.fader_matches` — the repo's
         one *"do these two fader dB values agree?"* test, at the confirm
         tolerance wave 5 collapses every other writer onto.
 

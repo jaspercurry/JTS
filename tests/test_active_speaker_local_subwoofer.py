@@ -29,7 +29,7 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
     lowest_driver_role,
 )
-from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.active_speaker.output_contract import classify_output_contract
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -761,7 +761,6 @@ def test_local_subwoofer_uses_topology_crossover_fc() -> None:
 
 
 def test_local_subwoofer_falls_back_to_default_corner() -> None:
-    from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ
     from jasper.active_speaker.preset_binding import _local_subwoofer_from_topology
 
     topology = _passive_1way_sub_topology_fc(None)

@@ -11,7 +11,8 @@ import numpy as np
 import yaml
 
 from jasper.audio_measurement.program import RoleBand
-from jasper.output_topology import OutputTopology, measurement_target_id
+from jasper.output_topology import OutputTopology
+from jasper.speaker_layout import measurement_target_id
 
 from .graph_transfer import complex_channel_transfer
 from .measurement import active_driver_targets

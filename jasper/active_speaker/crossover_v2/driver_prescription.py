@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 
 from jasper.json_fields import finite_float
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
@@ -41,9 +41,6 @@ from jasper.active_speaker.camilla_yaml import (
     MAX_PROGRAM_HEADROOM_DB,
     linearization_slot,
 )
-# The emitter drops a shelf entry's own ``q`` and spells this instead, so a
-# gate evaluating a prescriber's number would read a filter that never plays.
-from jasper.camilla_config_contract import SHELF_Q
 from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     declared_protection_lowpass_ceiling_hz,
@@ -52,12 +49,6 @@ from jasper.active_speaker.driver_protection import (
 # quiet.
 from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
 from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
-
-from jasper.sound.profile import (
-    EVALUABLE_Q_MAX,
-    EVALUABLE_Q_MIN,
-    RESPONSE_SAMPLE_RATE_HZ,
-)
 
 from .blend_prescription import (
     PACKET_FINGERPRINT_FIELD,
@@ -155,7 +146,7 @@ def driver_max_q_for_gain(gain_db: float) -> float:
     """The widest Q one prescribed filter may use, by the SIGN of its gain.
 
     A boost gets :data:`DRIVER_MAX_BOOST_Q`, a POLICY ceiling; everything else
-    — ``0.0`` included — gets :data:`~jasper.sound.profile.EVALUABLE_Q_MAX`, an
+    — ``0.0`` included — gets :data:`~jasper.biquad.EVALUABLE_Q_MAX`, an
     INSTRUMENT-fidelity one (past it the f64 biquad cascade stops evaluating
     the filter asked for: measured +6.99 dB realized from a requested Q 8e14 on
     an admitted -3.0 dB cut). Same shape as ``blend_prescription.
@@ -187,7 +178,7 @@ _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 DRIVER_MAX_FILTERS_PER_ROLE = 8
 
 #: The highest frequency the gate's biquad evaluator is defined for: half of
-#: :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`, imported rather than
+#: :data:`~jasper.biquad.RESPONSE_SAMPLE_RATE_HZ`, imported rather than
 #: restated. It binds because a driver's DECLARED band is a datasheet fact and
 #: the evaluator's is an arithmetic one — a supertweeter published to 40 kHz is
 #: honest, and a bound evaluated past Nyquist is aliased rather than
@@ -717,7 +708,7 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
-        # The evaluator's own floor: below EVALUABLE_Q_MIN, `_biquad_coeffs`
+        # The evaluator's own floor: below EVALUABLE_Q_MIN, `biquad_coeffs`
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
         # not a shape this system can realize, whatever the gain's sign.
         if q < EVALUABLE_Q_MIN:
@@ -736,7 +727,7 @@ def _check_bounds(
                 q=q,
                 q_max=q_max,
             )
-        # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `_biquad_coeffs`
+        # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
         if gain / 40.0 > math.log10(float(np.finfo(np.float64).max)) or 10.0 ** (gain / 40.0) == 0.0:
             _refuse(

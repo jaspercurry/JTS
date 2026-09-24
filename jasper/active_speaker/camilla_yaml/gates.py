@@ -11,7 +11,7 @@ import yaml
 
 from jasper.camilla_config_contract import ensure_volume_limit_db
 from jasper.log_event import log_event
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,

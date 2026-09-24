@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.peq import bell_half_width_oct
-from jasper.camilla_config_contract import FilterSpec
+from jasper.biquad import FilterSpec
 from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings

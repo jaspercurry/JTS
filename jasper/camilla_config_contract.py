@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import math
 import textwrap
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
@@ -73,7 +73,7 @@ POST_DSP_PLAYBACK_DEVICES = frozenset(
 )
 
 
-DEFAULT_SAMPLE_RATE = 48000
+DEFAULT_SAMPLE_RATE = RESPONSE_SAMPLE_RATE_HZ
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
 #: CamillaDSP frames queued ahead of an ordinary (non-ring) ALSA sink. A
@@ -171,108 +171,6 @@ def check_volume_limit(text: str) -> None:
             "safety ceiling",
             code="volume_limit_positive",
         ) from e
-
-
-@dataclass(frozen=True)
-class PeqFilter:
-    """Import-cheap representation of a CamillaDSP peaking EQ."""
-
-    freq: float
-    q: float
-    gain: float
-
-
-def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
-    """Worst-case additive boost (dB) across a set of peaking filters.
-
-    The sum of positive gains is an upper bound on the combined response
-    peak (overlapping boosts at one frequency add), so attenuating a signal
-    by this much guarantees the corrected response cannot exceed unity. This
-    is the one canonical definition of "how much can these boosts clip". Any
-    object exposing a numeric ``.gain`` is accepted — the designer's ``PEQ``
-    is structurally compatible with ``PeqFilter`` here.
-    """
-    return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
-
-
-# Below the simplest |gain| a preference filter is considered "active" — a
-# tiny shelf/peaking gain rounds to a no-op and is dropped before emission.
-FILTER_EPSILON_DB = 0.05
-
-# Cut/notch biquads shape the response without a user gain term. They are
-# "active" by virtue of being enabled, not by a non-zero gain — see
-# FilterSpec.active(). Highpass/Lowpass protect against rumble / tame top
-# end; Notch is a surgical gain-less cut.
-GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
-
-# The ONE steepness every preference-EQ and linearization Lowshelf/Highshelf is
-# both MODELLED at and EMITTED at: the Butterworth (non-resonant, no-overshoot)
-# shelf Q.
-#
-# It is a single constant on purpose. No band in those domains carries a
-# steepness field (FilterSpec.q is None for a shelf), so none is expressible
-# there: a shelf emitted at any other Q would be a filter their evaluators
-# cannot see, which is exactly the PR-L2 defect (2026-07-27). The shared
-# evaluator jasper.sound.profile._biquad_coeffs applies this Q to any shelf
-# that declares no q, and honours one that does -- the rear calibration
-# document (ADR-0318) is the one place that declares a shelf q, and ADR-0324's
-# headroom charge must read it as CamillaDSP will.
-#
-# CamillaDSP's ``slope: 6.0`` is NOT Butterworth, despite reading like the
-# familiar 6 dB/octave figure. CamillaDSP's advanced shelf takes S = slope/12
-# and derives
-#     Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2),   A = 10**(gain/40)
-# (RBJ Audio EQ Cookbook; CamillaDSP src/filters/biquad.rs). Butterworth is
-# S = 1, i.e. ``slope: 12`` -- pinned by CamillaDSP's own ``lowshelf_slope_vs_q``
-# test, which asserts ``slope: 12.0`` and ``q: FRAC_1_SQRT_2`` produce the same
-# coefficients. At ``slope: 6`` the realized Q collapses with gain (0.476 at
-# -11 dB) and the realized curve missed the modelled one by up to 1.7 dB.
-#
-# Emitting ``q`` rather than ``slope: 12`` is deliberate: the number in the
-# emitted YAML is then literally the number the evaluators use, and unlike
-# ``slope`` its meaning does not depend on the band's gain.
-#
-# If a per-band shelf steepness is ever genuinely wanted, the MODEL must gain
-# the parameter in the SAME change. A steepness the evaluators do not read is
-# the bug this constant exists to prevent.
-SHELF_Q: float = 1.0 / math.sqrt(2.0)
-
-# Decimals used when spelling SHELF_Q into CamillaDSP YAML. The shared 4-decimal
-# ``camilla_emit.fmt`` is right for Hz / dB / ms but leaves 0.7071 -- a 1e-5
-# relative Q error, worth ~5e-5 dB of realized-vs-modelled mismatch. Seven
-# decimals put the emitted filter within ~1.3e-7 dB of the model, i.e. inside
-# the PEQ parity suite's 1e-6 dB tolerance, so "emitted == modelled" can be
-# asserted as an equality rather than an approximation.
-SHELF_Q_EMIT_DECIMALS = 7
-
-
-@dataclass(frozen=True)
-class FilterSpec:
-    """A bounded CamillaDSP-friendly filter definition (preference EQ band).
-
-    The program-domain (stereo) DSP contract type, sibling to
-    :class:`PeqFilter`. The sound model (``jasper.sound.profile``) builds
-    these from a ``SoundProfile``; the shared stereo-prefix builder
-    (``jasper.camilla_stereo_prefix``) emits them — so this lives in the
-    neutral contract layer, importable by both the sound and active-speaker
-    emitters without a cross-dependency.
-
-    ``q`` carries the Q-parameterised types only (Peaking / Highpass / Lowpass /
-    Notch). Shelves carry NO steepness field: every shelf is emitted and
-    modelled at :data:`SHELF_Q` -- see that constant for why a per-band shelf
-    steepness is deliberately not expressible here.
-    """
-
-    name: str
-    biquad_type: str
-    freq: float
-    gain: float
-    q: float | None = None
-
-    def active(self) -> bool:
-        if self.biquad_type in GAINLESS_BIQUAD_TYPES:
-            return True
-        return abs(self.gain) >= FILTER_EPSILON_DB
 
 
 def _clean_yaml_scalar(value: str) -> str:
