@@ -36,6 +36,7 @@ from jasper.usbsink.volume_bridge import (
     VolumeBridge,
     VolumeBridgeUnavailable,
 )
+from tests._async_wait import settle
 from tests.fake_clock_fixtures import FakeClock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -578,13 +579,6 @@ async def _until(predicate, *, turns: int = 200) -> None:
     raise AssertionError("condition never became true")
 
 
-async def _settle(turns: int = 200) -> None:
-    """Give the loop plenty of turns without advancing wall time, so a
-    would-be poller or an immediate retry would have shown itself."""
-    for _ in range(turns):
-        await asyncio.sleep(0)
-
-
 async def test_mixer_event_posts_once_and_never_subprocesses(monkeypatch):
     """One host slider move produces exactly one POST, and an idle bridge
     spawns no processes at all — the 4 Hz `amixer cget` pair (two forks per
@@ -606,7 +600,7 @@ async def test_mixer_event_posts_once_and_never_subprocesses(monkeypatch):
             await _until(lambda: posted == [25])
             mixer.emit(40)  # step 40/50 -> 64%
             await _until(lambda: posted == [25, 64])
-            await _settle()
+            await settle(200)
             assert posted == [25, 64]
             assert mixer.handled == 1
             assert run_mock.call_count == 0
@@ -735,7 +729,7 @@ async def test_declined_startup_snapshot_is_not_retried(monkeypatch):
     task = asyncio.create_task(bridge.run())
     try:
         await _until(lambda: posted == [(67, True)])
-        await _settle()
+        await settle(200)
         assert posted == [(67, True)]
         assert bridge._retry_task is None
 
@@ -830,7 +824,7 @@ async def test_declined_host_move_retry_abandons_after_the_cap(monkeypatch):
     assert bridge._last_published_pct == 25  # never accepted; unchanged
 
     calls_at_finish = attempts
-    await _settle()
+    await settle(200)
     assert attempts == calls_at_finish  # _post not called again after done
 
 

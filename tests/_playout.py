@@ -4,7 +4,8 @@
 
 """The TTS-playout stand-ins, one per real surface: `FakeOutputdStream` for
 `jasper.tts_playout._OutputdStreamAdapter` (the blocking socket writer) and
-`FakeTts` for `jasper.tts_playout.TtsPlayout`.
+`FakeTts` for `jasper.tts_playout.TtsPlayout`; `playout_over_fake_stream`
+builds a real `TtsPlayout` writing into a `FakeOutputdStream`.
 
 Both record every call; per-test behaviour comes from the constructor hooks
 (`on_write`, `on_drain`, `write_error`, …) rather than a subclass. Their
@@ -17,6 +18,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
+
+from jasper.tts_playout import TtsPlayout
 
 _DEFAULT_FLUSH_ACK = {
     "ok": True,
@@ -121,6 +125,24 @@ class FakeOutputdStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+def playout_over_fake_stream(
+    *,
+    on_write: Callable[[bytes], None] | None = None,
+    socket_path: str = "/tmp/outputd-test.sock",
+    gain_db: float = -8.0,
+    drain_tail_sec: float = 0.0,
+    **kwargs: Any,
+) -> tuple[TtsPlayout, FakeOutputdStream]:
+    """A real `TtsPlayout` wired to a `FakeOutputdStream`, bypassing
+    `__aenter__` (no real socket); `kwargs` go to `TtsPlayout`."""
+    playout = TtsPlayout(
+        socket_path=socket_path, gain_db=gain_db, drain_tail_sec=drain_tail_sec, **kwargs,
+    )
+    stream = FakeOutputdStream(on_write=on_write)
+    playout._stream = stream  # type: ignore[assignment]
+    return playout, stream
 
 
 class FakeTts:

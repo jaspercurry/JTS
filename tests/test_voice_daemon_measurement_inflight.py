@@ -59,11 +59,11 @@ from jasper.voice.output_gate import AssistantOutputGate
 from jasper.voice.turn_lifecycle import State
 from jasper.voice_daemon import FanInDucker, WakeLoop
 
-from ._async_wait import wait_signalled
+from ._async_wait import settle, wait_signalled
 from ._cue_spy import SpyCues
 from ._live_turn_fake import FakeLiveTurn
 from ._log_events import event_fields, event_records
-from ._playout import FakeOutputdStream, FakeTts
+from ._playout import FakeOutputdStream, FakeTts, playout_over_fake_stream
 from ._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from ._wake_loop import wake_loop_for_tests
 from .fake_clock_fixtures import FakeClock
@@ -73,11 +73,6 @@ _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
 # Five S16 frames: enough accepted PCM to leave a physical tail.
 _CUE_PCM = b"\x01\x00" * 5
-
-
-async def _settle() -> None:
-    for _ in range(5):
-        await asyncio.sleep(0)
 
 
 class _Abort(BaseException):
@@ -276,11 +271,10 @@ class _RemoteDuck:
         return await asyncio.to_thread(self._command, on)
 
 
-def _playout(*, drain_tail_sec: float, on_write=None, **kwargs) -> TtsPlayout:
+def _playout(**kwargs) -> TtsPlayout:
     """A real playout over a capturing stream. That stream is no outputd
     transport, so the measurement meter pause (which demands one) is skipped."""
-    tts = TtsPlayout(gain_db=-8.0, drain_tail_sec=drain_tail_sec, **kwargs)
-    tts._stream = FakeOutputdStream(on_write=on_write)  # type: ignore[assignment]
+    tts, _ = playout_over_fake_stream(**kwargs)
     tts.pause_content_meter_for_measurement = AsyncMock()  # type: ignore[method-assign]
     return tts
 
@@ -347,7 +341,7 @@ async def _cancel_through_remote_duck(
     owner.cancel()
     await asyncio.sleep(0)
     owner.cancel()
-    await _settle()
+    await settle(5)
     assert not owner.done(), "ON outcome still owns cancellation"
     assert not ducker.is_ducked
     assert gate.active_kind == kind
@@ -358,7 +352,7 @@ async def _cancel_through_remote_duck(
     assert gate.active_kind == kind
 
     owner.cancel()
-    await _settle()
+    await settle(5)
     assert not owner.done(), "cleanup must retain the gate through OFF"
     assert gate.active_kind == kind
 
@@ -606,7 +600,7 @@ async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
     pause.cancel()
     await asyncio.sleep(0)
     pause.cancel()
-    await _settle()
+    await settle(5)
     assert not pause.done()
 
     meter_resume.release.set()
@@ -818,7 +812,7 @@ async def test_pause_waits_for_physical_mute_click_tail() -> None:
     await wait_signalled(drain.started, "mute click physical drain", producer=click)
 
     pause = asyncio.create_task(wl.measurement_hold.pause_response())
-    await _settle()
+    await settle(5)
     assert not pause.done()
     assert wl._output_gate.active_kind == "feedback"
 
@@ -863,7 +857,7 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     assert wl._output_gate.active_kind == "feedback"
 
     pause = asyncio.create_task(wl.measurement_hold.pause_response())
-    await _settle()
+    await settle(5)
     assert not pause.done()
 
     drain.release.set()
@@ -886,12 +880,12 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail() -> 
     click = asyncio.create_task(wl._play_mute_click(going_on=True))
     assert await asyncio.to_thread(write_started.wait, 1.0)
     click.cancel()
-    await _settle()
+    await settle(5)
     assert not click.done()
     assert wl._output_gate.active_kind == "feedback"
 
     pause = asyncio.create_task(wl.measurement_hold.pause_response())
-    await _settle()
+    await settle(5)
     assert not pause.done()
 
     release_write.set()
@@ -900,7 +894,7 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail() -> 
         await asyncio.sleep(0)
     drain_at = tts.expected_drain_at()
     click.cancel()
-    await _settle()
+    await settle(5)
     assert not click.done(), "accepted AUDIO tail must still hold feedback gate"
     assert not pause.done(), "PAUSE must still be draining feedback ownership"
     assert asyncio.get_running_loop().time() < drain_at
@@ -951,7 +945,7 @@ async def test_cancelled_cue_keeps_episode_and_duck_until_physical_tail(
     playing.cancel()
     await asyncio.sleep(0)
     playing.cancel()
-    await _settle()
+    await settle(5)
     assert not playing.done()
     assert not pause.done()
     assert ducker.restore_calls == 0, "the duck must cover the accepted tail"
@@ -960,7 +954,7 @@ async def test_cancelled_cue_keeps_episode_and_duck_until_physical_tail(
     drain.release.set()
     await wait_signalled(ducker.restore_hold.started, f"{path} duck restore", producer=playing)
     playing.cancel()
-    await _settle()
+    await settle(5)
     assert not playing.done(), "a cancel must not interrupt the restore"
     assert not ducker.restored
     assert gate.active_kind == path
@@ -1182,7 +1176,7 @@ async def test_repeated_begin_cancellation_waits_for_provider_teardown(monkeypat
         beginning.cancel("initial cancellation")
         await wait_signalled(cleanup_started, "provider cleanup", producer=beginning)
         beginning.cancel("repeated cancellation")
-        await _settle()
+        await settle(5)
         assert not beginning.done()
         assert gate.active_kind == "turn"
         assert tts.meter_resumes == 0
@@ -1260,7 +1254,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     assert gate.active_kind == "turn"
 
     beginning.cancel("repeat cleanup cancellation")
-    await _settle()
+    await settle(5)
     assert not beginning.done()
     assert gate.active_kind == "turn"
 
@@ -1460,7 +1454,7 @@ async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
     beginning = asyncio.create_task(wl._begin_turn(listening_feedback=True))
     try:
         await wait_signalled(accepted, "opening feedback", producer=beginning)
-        await _settle()
+        await settle(5)
         assert not beginning.done()
         assert gate.active_kind == "turn"
         wl._ducker.restore.assert_not_awaited()

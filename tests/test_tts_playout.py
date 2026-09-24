@@ -46,24 +46,12 @@ from jasper.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
 from ._log_events import event_fields
-from ._playout import FakeOutputdStream, FakeTts
+from ._playout import FakeOutputdStream, FakeTts, playout_over_fake_stream
 
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
     return TtsPlayout(gain_db=-8.0)
-
-
-def _make_outputd(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
-    """TtsPlayout wired to a capturing fake stream, bypassing
-    __aenter__ (no real socket)."""
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=drain_tail_sec,
-    )
-    p._stream = FakeOutputdStream()  # type: ignore[assignment]
-    return p
 
 
 def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
@@ -233,7 +221,7 @@ async def test_drain_appends_when_speaker_busy():
     """Back-pressure case: two writes in quick succession queue
     end-to-end. Deadline = now + 2 * chunk_duration, not now + chunk
     (which would be the wrong "stream restarted from idle" answer)."""
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
     chunk_sec = 0.4
     before = time.monotonic()
     await p.write(_silence_pcm(sec=chunk_sec))
@@ -251,7 +239,7 @@ async def test_drain_anchors_fresh_after_idle_gap(monkeypatch):
     Without this, an idle daemon would push every subsequent end-of-turn
     further into the future based on every cue / chirp ever written.
     """
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
     chunk_sec = 0.1
     await p.write(_silence_pcm(sec=chunk_sec))
     first_deadline = p.expected_drain_at()
@@ -273,14 +261,14 @@ async def test_drain_unchanged_after_empty_write():
     """Defensive: a zero-byte PCM write must not corrupt the drain
     sentinel. Without the early-return guard, ``len(pcm)=0`` would
     set ``_ring_end_monotonic = now + 0``, masking the idle state."""
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
     await p.write(b"")
     assert p.expected_drain_at() == 0.0
 
 
 @pytest.mark.parametrize("state", ["empty", "closed", "unavailable", "refused", "accepted"])
 async def test_write_segment_reports_transport_acceptance(monkeypatch, state):
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
     observed = []
 
     async def first_write():
@@ -320,19 +308,6 @@ def _played_mono(stream) -> np.ndarray:
     return np.frombuffer(b"".join(stream.writes), dtype=np.int16)[::2]
 
 
-def _playout_with_capture_stream():
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=0.0,
-        drain_tail_sec=0.0,
-        # The comparisons below are in i16 sample units.
-        wire_wide=False,
-    )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
-    return p, stream
-
-
 async def test_chunked_upsample_matches_the_whole_signal_at_every_join():
     """Provider audio arrives as ~95 ms deltas and each was resampled on its
     own, so both edges of every chunk were interpolated against silence — a
@@ -342,7 +317,7 @@ async def test_chunked_upsample_matches_the_whole_signal_at_every_join():
     """
     chunk = int(TtsPlayout.INPUT_RATE * 0.095)
     source = _speech_like_24k(10, chunk)
-    p, stream = _playout_with_capture_stream()
+    p, stream = playout_over_fake_stream(gain_db=0.0, wire_wide=False)  # i16 units
 
     for start in range(0, source.size, chunk):
         await p.write(source[start:start + chunk].tobytes())
@@ -362,7 +337,7 @@ async def test_a_finished_segment_starts_the_upsampler_from_silence(boundary):
     either way the next segment is different audio, so none of the last one
     may bleed into its leading interpolation."""
     chunk = int(TtsPlayout.INPUT_RATE * 0.095)
-    p, stream = _playout_with_capture_stream()
+    p, stream = playout_over_fake_stream(gain_db=0.0, wire_wide=False)  # i16 units
 
     await p.write(_speech_like_24k(1, chunk).tobytes())
     await getattr(p, boundary)()
@@ -374,10 +349,8 @@ async def test_a_finished_segment_starts_the_upsampler_from_silence(boundary):
 
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
+    p, stream = playout_over_fake_stream(
         gain_db=TtsPlayout.MIN_TTS_GAIN_DB,
-        drain_tail_sec=0.0,
         # STATED, not inherited. The byte-level expectations below are S16, and
         # what the box the suite runs on RESOLVES is not this test's subject —
         # tests/test_tts_wire_width.py owns that question. An undeclared box now
@@ -385,8 +358,6 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
         # the resolver made these assertions depend on the host's /var/lib state.
         wire_wide=False,
     )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([10000, -10000], dtype=np.int16)
     await p.write(mono.tobytes())
@@ -403,15 +374,10 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
 
     monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
+    p, stream = playout_over_fake_stream(
         # S16 frame bytes are what the chunk boundaries below are counted in.
         wire_wide=False,
     )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
     await p.write(mono.tobytes())
@@ -431,13 +397,10 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
 
     monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
+    p, stream = playout_over_fake_stream(
         drain_tail_sec=1.0,
+        on_write=fail_second_write,
     )
-    stream = FakeOutputdStream(on_write=fail_second_write)
-    p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
     accepted = []
@@ -464,8 +427,7 @@ async def test_cancelled_write_observes_accepted_chunk_before_exit():
         loop.call_soon_threadsafe(entered.set)
         assert release.wait(1)
 
-    p = _make_outputd()
-    p._stream = stream = FakeOutputdStream(on_write=block_write)
+    p, stream = playout_over_fake_stream(on_write=block_write)
     observed = []
 
     async def first_write():
@@ -490,7 +452,7 @@ async def test_cancelled_output_control_owns_its_thread(method):
     loop = asyncio.get_running_loop()
     entered, completed = asyncio.Event(), asyncio.Event()
     release = threading.Event()
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
 
     def control(*args, **kwargs):
         loop.call_soon_threadsafe(entered.set)
@@ -518,7 +480,7 @@ async def test_cancelled_output_control_owns_its_thread(method):
 
 @pytest.mark.parametrize("ack", [None, {}, [], {"ok": False}, {"ok": True}])
 async def test_unconfirmed_flush_preserves_the_drain_deadline(ack):
-    p = _make_outputd()
+    p, _ = playout_over_fake_stream()
     await p.write(_silence_pcm(sec=0.01))
     deadline = p.expected_drain_at()
     p._stream.flush_sync = lambda: ack
@@ -529,13 +491,7 @@ async def test_unconfirmed_flush_preserves_the_drain_deadline(ack):
 
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p, stream = playout_over_fake_stream()
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write_segment(
@@ -569,17 +525,12 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
         return profile
 
     monkeypatch.setattr(tts_mod, "profile_for_outputd", fake_profile)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
+    p, stream = playout_over_fake_stream(
         provider="openai",
         model="gpt-realtime-2",
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write_segment(mono.tobytes(), segment_kind="assistant")
@@ -620,17 +571,12 @@ async def test_outputd_transport_pins_assistant_profile_for_one_turn(monkeypatch
     monkeypatch.setattr(tts_mod, "profile_for_outputd", fake_profile)
     monkeypatch.setattr(tts_mod, "update_profile_from_measurement", fake_update_profile)
 
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
+    p, stream = playout_over_fake_stream(
         provider="openai",
         model="gpt-realtime-2",
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
     measurement = LoudnessMeasurement(
         source_lufs=-14.0, source_peak_dbfs=-1.0,
         voiced_duration_sec=1.0, total_duration_sec=1.2,
@@ -689,17 +635,12 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
         updated_at="static",
         method="synthetic_generated",
     )
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
+    p, stream = playout_over_fake_stream(
         provider="openai",
         model="gpt-realtime-2",
         voice="verse",
         profile_path="/tmp/profiles.json",
     )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write_segment(
@@ -713,13 +654,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p, stream = playout_over_fake_stream()
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write(mono.tobytes())
@@ -1370,13 +1305,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
 
 
 async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p, stream = playout_over_fake_stream()
 
     await p.prepare_assistant_context(
         provider="openai",
