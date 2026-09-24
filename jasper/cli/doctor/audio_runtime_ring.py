@@ -31,7 +31,6 @@ from ...service_units import FANIN_SERVICE
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
-_JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # Every PCM the ring conf.d defines, with the tool that probes its direction and

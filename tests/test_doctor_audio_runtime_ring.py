@@ -561,7 +561,7 @@ def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
     """Point the module constants at tmp paths and create/omit each asset."""
     plugin_dir = tmp_path / "alsa-lib"
     plugin_dir.mkdir()
-    so_path = plugin_dir / audio_runtime_ring._JTS_RING_IOPLUG_SO
+    so_path = plugin_dir / audio_runtime_ring.ring_assets.RING_IOPLUG_SO
     if so:
         so_path.write_bytes(b"\x7fELF fake so")
     conf_path = tmp_path / "60-jts-ring.conf"
