@@ -18,6 +18,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.mic_identity import MIC_TIERS
+from tests._log_events import event_fields
 
 
 SAMPLE_CAL = """# freq correction phase
@@ -1157,3 +1158,28 @@ def test_migration_scope_is_keyed_on_provider_and_model(tmp_path: Path):
 
     assert counts["skipped_not_vendor"] == 1
     assert Path(record.metadata_path).read_text() == before
+
+
+@pytest.mark.parametrize("find", [
+    lambda record, root: calibration.find_stored_calibration(
+        provider="minidsp", model_key="minidsp_umik1", serial="7001234", root=root,
+    ),
+    lambda record, root: calibration.find_stored_calibration_by_content_hash(
+        file_sha256=record.file_sha256, root=root,
+    ),
+], ids=["by_serial", "by_content_hash"])
+def test_a_corrupt_stored_record_is_journaled_and_skipped(tmp_path: Path, caplog, find):
+    record = calibration.store_calibration(
+        text=SAMPLE_CAL, provider="minidsp", model="minidsp_umik1",
+        source="vendor", serial="7001234", root=tmp_path,
+    )
+    corrupt = Path(record.metadata_path).with_name("corrupt.json")
+    corrupt.write_text("{", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        found = find(record, tmp_path)
+
+    assert found is not None and found.calibration_id == record.calibration_id
+    assert event_fields(caplog, "correction.calibration_record_unreadable") == {
+        "path": str(corrupt), "reason": "JSONDecodeError",
+    }

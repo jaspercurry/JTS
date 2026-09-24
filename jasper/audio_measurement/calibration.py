@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 
@@ -505,9 +505,8 @@ def store_calibration(
     # 0640 + the parent directory's group. The registry root is installed
     # `2770 -g jasper` and the writer (`jasper-mic-calibration`) runs under
     # sudo, so a root-owned 0600 file is unreadable to every daemon that
-    # resolves a calibration -- silently, since both resolvers skip what they
-    # cannot read. The curve carries no secrets: the serial is stored only as
-    # a one-way hash.
+    # resolves a calibration. The curve carries no secrets: the serial is
+    # stored only as a one-way hash.
     atomic_write_text(raw_path, text, mode=0o640)
 
     record = CalibrationRecord(
@@ -744,6 +743,23 @@ def fetch_minidsp_calibration_text(
     )
 
 
+def _stored_records(paths: Iterable[Path]) -> Iterator[CalibrationRecord]:
+    """The parseable records among ``paths``; each unreadable one is journaled, then skipped."""
+    for path in paths:
+        try:
+            record = CalibrationRecord.from_dict(json.loads(path.read_text()))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log_event(
+                logger,
+                "correction.calibration_record_unreadable",
+                level=logging.WARNING,
+                path=str(path),
+                reason=type(exc).__name__,
+            )
+            continue
+        yield record
+
+
 def find_stored_calibration(
     *,
     provider: str,
@@ -766,24 +782,11 @@ def find_stored_calibration(
         digits = normalized.replace("-", "")
         hashes.extend(serial_hash(value) for value in (digits, f"{digits[:3]}-{digits[3:]}"))
     model_dir = root / _slug(provider) / _slug(model_key)
-    best: CalibrationRecord | None = None
-    for path in model_dir.glob("*.json"):
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if data.get("serial_hash") not in hashes:
-            continue
-        stored_orientation = str(data.get("orientation") or "unknown")
-        if orientation != "unknown" and stored_orientation != orientation:
-            continue
-        try:
-            rec = CalibrationRecord.from_dict(data)
-        except (KeyError, ValueError, TypeError):
-            continue
-        if best is None or rec.fetched_at > best.fetched_at:
-            best = rec
-    return best
+    matches = (
+        rec for rec in _stored_records(model_dir.glob("*.json"))
+        if rec.serial_hash in hashes and orientation in ("unknown", rec.orientation)
+    )
+    return max(matches, key=lambda rec: rec.fetched_at, default=None)
 
 
 def find_stored_calibration_by_content_hash(
@@ -802,21 +805,11 @@ def find_stored_calibration_by_content_hash(
     """
     if not file_sha256:
         return None
-    best: CalibrationRecord | None = None
-    for path in root.glob("*/*/*.json"):
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if data.get("file_sha256") != file_sha256:
-            continue
-        try:
-            rec = CalibrationRecord.from_dict(data)
-        except (KeyError, ValueError, TypeError):
-            continue
-        if best is None or rec.fetched_at > best.fetched_at:
-            best = rec
-    return best
+    matches = (
+        rec for rec in _stored_records(root.glob("*/*/*.json"))
+        if rec.file_sha256 == file_sha256
+    )
+    return max(matches, key=lambda rec: rec.fetched_at, default=None)
 
 
 def fetch_vendor_calibration(
