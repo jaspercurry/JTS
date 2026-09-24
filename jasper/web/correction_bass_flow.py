@@ -20,6 +20,8 @@ import logging
 from http import HTTPStatus
 from typing import Any
 
+from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
+
 from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
@@ -89,7 +91,8 @@ def status_payload() -> dict[str, Any]:
     try:
         from jasper.active_speaker.baseline_profile import applied_bass_extension
 
-        payload["bass_extension"] = applied_bass_extension() or None
+        bass = applied_bass_extension()
+        payload["bass_extension"] = {**bass, "max_boost_db": round(dynamic_bass_gain_reserve_db(bass), 1)} if bass else None
     except (
         ImportError,
         OSError,

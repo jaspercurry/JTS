@@ -56,8 +56,8 @@ function renderBassExtension(ext, error) {
   }
   if (!ext) return;
   extEls.list.replaceChildren(
-    ...row('Maximum added bass', `${ext.low_boost_db} dB`),
-    ...row('Volume response', 'Added bass decreases as volume and bass demand rise'),
+    ...row('Maximum added bass', `${ext.max_boost_db} dB`),
+    ...row('Volume response', 'Full at every volume; eases off only near clipping'),
   );
   extEls.list.hidden = false;
   extEls.message.textContent = 'Dynamic bass extension is included in the saved speaker tune.';

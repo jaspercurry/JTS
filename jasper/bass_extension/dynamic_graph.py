@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .dynamic import DynamicBassDescriptor, delta_shape, validate_dynamic_bass_descriptor
+from .dynamic import DynamicBassDescriptor, as_dynamic_bass_descriptor, boost_biquad
 
 
 PREFIX = "bass_ext_dynamic"
@@ -44,8 +44,8 @@ class NativeDynamicBassGraph:
     pipeline: tuple[dict[str, Any], ...]
 
 
-def _source(channel: int, *, inverted: bool = False, gain: float = 0.0) -> dict[str, Any]:
-    return {"channel": channel, "gain": gain, "inverted": inverted}
+def _source(channel: int, *, inverted: bool = False) -> dict[str, Any]:
+    return {"channel": channel, "gain": 0.0, "inverted": inverted}
 
 
 def _mixer(channels_in: int, channels_out: int, sources: list[list[dict[str, Any]]]) -> dict[str, Any]:
@@ -84,31 +84,14 @@ def build_native_dynamic_bass_graph(
     groups = owner_groups or tuple((owner,) for owner in owners)
     if any(not group for group in groups) or sorted(owner for group in groups for owner in group) != list(owners):
         raise ValueError("owner_groups must partition the owner channels")
-    count = len(owners)
-    loud_channels = tuple(range(channels, channels + count))
-    loud_by_owner = dict(zip(owners, loud_channels, strict=True))
-    delta_channels = loud_channels
-    detector_channels = tuple(range(channels + count, channels + count + len(groups)))
-    control_channel = channels + count
-    loud_count = channels + count
-    expanded_channels = loud_count + 1
-    working_channels = channels + count + len(groups)
+    copied = channels + len(owners)
+    # Each owner's boosted copy, which form_delta turns into its delta lane.
+    boost_by_owner = {owner: channels + index for index, owner in enumerate(owners)}
+    detector_channels = list(range(copied, copied + len(groups)))
+    working_channels = copied + len(groups)
 
     filters: dict[str, dict[str, Any]] = {
-        f"{PREFIX}_volume_ramp": {
-            "type": "Volume",
-            "parameters": {"fader": "Aux1", "ramp_time": 400.0},
-        },
-        f"{PREFIX}_loudness": {
-            "type": "Loudness",
-            "parameters": {
-                "fader": "Aux1",
-                "reference_level": descriptor.reference_level_db,
-                "high_boost": 0.0,
-                "low_boost": descriptor.low_boost_db,
-                "attenuate_mid": False,
-            },
-        },
+        f"{PREFIX}_boost": {"type": "Biquad", "parameters": boost_biquad(descriptor)},
         f"{PREFIX}_detector_lowpass": {
             "type": "BiquadCombo",
             "parameters": {
@@ -118,15 +101,9 @@ def build_native_dynamic_bass_graph(
             },
         },
     }
-    delta_filters: list[str] = []
-    shape = delta_shape(descriptor)
-    if shape is not None:
-        for part, parameters in (("poles", shape.poles), ("zero", shape.zero)):
-            filters[f"{PREFIX}_shape_{part}"] = {"type": "Biquad", "parameters": parameters}
-            delta_filters.append(f"{PREFIX}_shape_{part}")
+    delta_steps: list[dict[str, Any]] = []
     if descriptor.delta_highpass_hz is not None:
-        name = f"{PREFIX}_delta_highpass"
-        filters[name] = {
+        filters[f"{PREFIX}_delta_highpass"] = {
             "type": "BiquadCombo",
             "parameters": {
                 "type": "ButterworthHighpass",
@@ -134,26 +111,21 @@ def build_native_dynamic_bass_graph(
                 "order": 2,
             },
         }
-        delta_filters.append(name)
+        delta_steps.append({"type": "Filter", "channels": list(boost_by_owner.values()),
+                            "names": [f"{PREFIX}_delta_highpass"]})
 
     expand_sources = [[_source(channel)] for channel in range(channels)]
     expand_sources.extend([[_source(owner)] for owner in owners])
-    expand_sources.append([])
     form_sources = [[_source(channel)] for channel in range(channels)]
-    delta_gain = shape.gain_db if shape is not None else 0.0
-    form_sources.extend(
-        [_source(loud, gain=delta_gain), _source(owner, inverted=True, gain=delta_gain)]
-        for owner, loud in zip(owners, loud_channels, strict=True)
-    )
-    form_sources.extend([[_source(loud_by_owner[group[0]])] for group in groups])
+    form_sources.extend([_source(boosted), _source(owner, inverted=True)] for owner, boosted in boost_by_owner.items())
+    form_sources.extend([[_source(boost_by_owner[group[0]])] for group in groups])
     reduce_sources = [[_source(channel)] for channel in range(channels)]
-    for owner, delta in zip(owners, delta_channels, strict=True):
+    for owner, delta in boost_by_owner.items():
         reduce_sources[owner].append(_source(delta))
 
     mixers = {
-        f"{PREFIX}_expand": _mixer(channels, expanded_channels, expand_sources),
-        f"{PREFIX}_drop_control": _mixer(expanded_channels, loud_count, [[_source(c)] for c in range(loud_count)]),
-        f"{PREFIX}_form_delta": _mixer(loud_count, working_channels, form_sources),
+        f"{PREFIX}_expand": _mixer(channels, copied, expand_sources),
+        f"{PREFIX}_form_delta": _mixer(copied, working_channels, form_sources),
         f"{PREFIX}_reduce": _mixer(working_channels, channels, reduce_sources),
     }
     processors = {
@@ -167,46 +139,22 @@ def build_native_dynamic_bass_graph(
                 "factor": descriptor.compressor_factor,
                 "makeup_gain": 0.0,
                 "monitor_channels": [detector],
-                "process_channels": [loud_by_owner[owner] for owner in group],
+                "process_channels": [boost_by_owner[owner] for owner in group],
             },
         }
         for group, detector in zip(groups, detector_channels, strict=True)
     }
 
-    pipeline: list[dict[str, Any]] = [
+    pipeline: tuple[dict[str, Any], ...] = (
         {"type": "Mixer", "name": f"{PREFIX}_expand"},
-        # Volume advances Aux1 smoothly; its zero signal never reaches an output.
-        {"type": "Filter", "channels": [control_channel], "names": [f"{PREFIX}_volume_ramp"]},
-        {"type": "Mixer", "name": f"{PREFIX}_drop_control"},
-        {
-            "type": "Filter",
-            "channels": list(loud_channels),
-            "names": [f"{PREFIX}_loudness"],
-        },
+        {"type": "Filter", "channels": list(boost_by_owner.values()), "names": [f"{PREFIX}_boost"]},
         {"type": "Mixer", "name": f"{PREFIX}_form_delta"},
-    ]
-    if delta_filters:
-        pipeline.append(
-            {"type": "Filter", "channels": list(delta_channels), "names": delta_filters}
-        )
-    pipeline.append(
-        {
-            "type": "Filter",
-            "channels": list(detector_channels),
-            "names": [f"{PREFIX}_detector_lowpass"],
-        }
+        *delta_steps,
+        {"type": "Filter", "channels": detector_channels, "names": [f"{PREFIX}_detector_lowpass"]},
+        *({"type": "Processor", "name": name} for name in processors),
+        {"type": "Mixer", "name": f"{PREFIX}_reduce"},
     )
-    pipeline.extend(
-        {"type": "Processor", "name": name} for name in processors
-    )
-    pipeline.append({"type": "Mixer", "name": f"{PREFIX}_reduce"})
-    return NativeDynamicBassGraph(filters, mixers, processors, tuple(pipeline))
-
-
-def _coerce_descriptor(value: DynamicBassDescriptor | Mapping[str, Any]) -> DynamicBassDescriptor:
-    if isinstance(value, DynamicBassDescriptor):
-        return value
-    return DynamicBassDescriptor(**validate_dynamic_bass_descriptor(value))
+    return NativeDynamicBassGraph(filters, mixers, processors, pipeline)
 
 
 def _owner_limiter_step(payload: Mapping[str, Any], owners: tuple[int, ...]) -> tuple[int, int]:
@@ -253,7 +201,7 @@ def apply_dynamic_bass_graph(
     dynamic = build_native_dynamic_bass_graph(
         channels=channels,
         owner_channels=owners,
-        descriptor=_coerce_descriptor(descriptor),
+        descriptor=as_dynamic_bass_descriptor(descriptor),
         owner_groups=owner_groups,
     )
     sections = (
@@ -298,7 +246,7 @@ def validated_base_graph(
     expected = build_native_dynamic_bass_graph(
         channels=channels,
         owner_channels=owners,
-        descriptor=_coerce_descriptor(descriptor),
+        descriptor=as_dynamic_bass_descriptor(descriptor),
         owner_groups=owner_groups,
     )
     for section_name, definitions in (

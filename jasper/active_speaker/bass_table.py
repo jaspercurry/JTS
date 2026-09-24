@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db, validate_dynamic_bass_descriptor
+from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor
 from jasper.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
@@ -45,10 +45,9 @@ def fit_bass_table(
     if not pairs:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
     try:
-        descriptor = validate_dynamic_bass_descriptor(descriptor) if descriptor is not None else None
+        settings = as_dynamic_bass_descriptor(descriptor) if descriptor is not None else None
     except ValueError as exc:
         raise CrossoverV2Refused({"candidate_id": candidate_id}, code="bass_fit_candidate_unreadable") from exc
-    settings = DynamicBassDescriptor(**descriptor) if descriptor is not None else None
     first: dict[str, Any] = {}
     interventions = (*CHANGE_FIELDS["volume"], "pose_key")
     groups: dict[tuple[float, float, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = defaultdict(list)
@@ -69,11 +68,9 @@ def fit_bass_table(
         contexts.append(comparison)
     levels, ladder = [], []
     for key, group in sorted(groups.items()):
-        prescribed = loudness_boost_db(key[1], settings) if settings else None
         aligned = fit_bass_shape(group, candidate_id=candidate_id, reference_band_hz=reference_band_hz)
         ladder.append(aligned["groups"])
-        levels.append({"level_key": dict(zip(LEVEL_FIELDS, key)),
-                       **bass_level_evidence(aligned, descriptor=settings, prescribed_boost_db=prescribed)})
+        levels.append({"level_key": dict(zip(LEVEL_FIELDS, key)), **bass_level_evidence(aligned, descriptor=settings)})
     bass_ladder_evidence(levels, ladder)
     return {"schema": "jts_bass_table/1", "candidate_id": candidate_id,
             "reference_band_hz": list(reference_band_hz), "smoothing_fraction": 3,
@@ -81,7 +78,7 @@ def fit_bass_table(
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,
             "limits": ["This table reads the recorded stimulus and bass-reference settings; it is not a runtime schedule.",
                        "No extrapolation beyond measured boost or resolved window gains. Harmonics describe measured headroom, not a hardware limit.",
-                       "Compression is prescribed minus realized boost.",
+                       "Compression is prescribed minus realized boost. Takes measured before ADR-0359 played the boost under a volume taper, which their compression includes.",
                        "The single-repeat harmonic evidence floor is 1 dB, not a hearing threshold; repeats combine base and candidate band standard deviations in quadrature at each pose. Decreases are not rises.",
                        "Curves use medians within each pose, then across poses. SPL uses the same pose weighting on each take's calibrated loudest half-second statistic.",
                        "Repeat spread is the RMS of fundamental standard deviations within repeated poses and both arms. Position spread is not yet estimated.",

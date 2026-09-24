@@ -102,8 +102,8 @@ Levels are predict.py's: per unit front drive, 0 dB = the front woofer alone, on
   and the bass boost are not in the prediction.
 - One image source stands in for the wall. There are no room modes, and both amplifier channels
   are assumed to have the same latency.
-- `nearfield-analyze.py` models the played path with the repo's graph walker and a plain Loudness
-  bass boost; it stops on a shaped boost, so `nearfield-plan.py` clears the bass layer.
+- `nearfield-analyze.py` models the played path with the repo's graph walker and an ADR-0352 plain
+  Loudness boost; it stops on any other bass boost, so `nearfield-plan.py` clears the bass layer.
 - The model has not been checked against a gated far-field measurement yet.
 
 Related: #5684 (near-field takes in the web flow), #5692 (shaped bass boost).

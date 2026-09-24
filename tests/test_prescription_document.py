@@ -22,6 +22,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
 from jasper.active_speaker.preset_binding import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+from tests.test_bass_extension_dynamic import _descriptor as _bass_descriptor
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
 from jasper.active_speaker.crossover_v2.topology_prescription import candidate_topology
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
@@ -48,7 +49,6 @@ from jasper.active_speaker.crossover_v2.bass_prescription import BASS_PRESCRIPTI
 from jasper.active_speaker.round_packet import write_round_packet
 from tests.run_manifest_fixture import write_manifest
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
-from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_measured_crossover_candidate import (
@@ -276,7 +276,7 @@ def test_room_document_carries_only_unchanged_measured_timing(base, bank, eviden
 
 
 def bass_document(packet):
-    return {**BASS_EXTENSION, "round_id": packet["round_id"]}
+    return {**_bass_descriptor().payload(), "round_id": packet["round_id"]}
 
 
 @pytest.mark.parametrize("pin", [{}, {"tweeter": -9.52}])
@@ -328,16 +328,17 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ("no_round_id", "bass_evidence_unavailable"),
     ("missing_field", "bass_descriptor_malformed"),
     ({"unknown": 1}, "bass_descriptor_malformed"),
-    ({"low_boost_db": 0}, "bass_low_boost_db_invalid"),
+    ({**BASS_EXTENSION, "linkwitz_transform": None}, "bass_descriptor_malformed"),
+    ({"compressor_threshold_dbfs": 0.5}, "bass_compressor_threshold_dbfs_invalid"),
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
-    ({"low_boost_db": True}, "bass_low_boost_db_invalid"),
+    ({"linkwitz_transform": True}, "bass_linkwitz_transform_invalid"),
 ])
 def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, round_bank, change, code):
     section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
-        del section["low_boost_db"]
+        del section["linkwitz_transform"]
     elif change == "packet_round_mismatch":
         (round_bank[0] / "packet.json").write_text(json.dumps({**bass_packet, "round_id": "wrong"}))
         evidence = replace(evidence, sources=prescription_sources(round_inputs(round_bank[0])))
@@ -377,7 +378,7 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
     assert not {"status", "ok", "code", "error"} & answer.keys()
-    descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
+    descriptor = _bass_descriptor().payload()
     receipt = {**descriptor, "round_id": bass_packet["round_id"], "answers_round": True, "evidence_status": "evaluated",
                "unqualified_boost_bands_hz": []}
     sources = {**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()}
@@ -416,7 +417,7 @@ def test_bass_below_qualified_floor_is_disclosed_by_judge_and_packet(base, bank,
     assert packet["prescriptions"]["bass"] == receipt
 
 
-@pytest.mark.parametrize("corner, highpass, unqualified", [(20, None, [[20, 30]]), (80, None, [[20, 30]]), (120, 40, [])])
+@pytest.mark.parametrize("corner, highpass, unqualified", [(20, 10, [[20, 30]]), (80, 10, [[20, 30]]), (120, 40, [])])
 def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass, unqualified):
     takes = bass_packet["bass"][0]["takes"]
     takes.append(deepcopy(takes[0]))
@@ -438,7 +439,7 @@ def test_cli_refusal_banks_nothing(base, bank, tmp_path, capsys, verb):
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert crossover_prescriber.main(args) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["status"], answer["detail"]["section"], answer["code"]) == ("refused", "bass", "bass_low_boost_db_invalid")
+    assert (answer["status"], answer["detail"]["section"], answer["code"]) == ("refused", "bass", "bass_descriptor_malformed")
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 @pytest.fixture
 def saved_tune(bank):
@@ -492,7 +493,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     assert child.alignment == MeasuredCrossoverAlignment(110, "woofer", "invert")
     assert child.room_correction == snapshot["room_correction"]
     assert child.analysis["measurement_status"] == "unmeasured"
-    assert child.bass_extension["low_boost_db"] == BASS_EXTENSION["low_boost_db"]
+    assert child.bass_extension == _bass_descriptor().payload()
     profile = MeasurementGraphProfile(
         ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
         {"woofer": 0, "tweeter": 1}, "null",
@@ -625,7 +626,7 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     assert child.analysis["evidence"]["packet_fingerprint"] == packet["packet_fingerprint"]
     assert preview["sections"]["room"]["round_id"] == round_dir.name
     assert preview["sections"]["bass"]["round_id"] == bass_round.name
-    assert child.bass_extension == base.candidate.bass_extension
+    assert child.bass_extension == _bass_descriptor().payload()
     assert child.analysis["evidence"]["prescriptions"] == preview["sections"]
     assert child.analysis["room_source"]["prescription_sha256"] == prescription_sha256(contract_json(preview["sections"]["room"]).encode())
     assert len(banked_candidates(root=bank)) == 2

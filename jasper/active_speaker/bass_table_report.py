@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 BASS_READOUT_FIELDS = (
     "candidate_id", "level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark",
-    "prescribed_boost_db", "realized_boost_db", "compression_db", "compression_includes", "base_response", "candidate_response",
+    "realized_boost_db", "compression_db", "compression_includes", "base_response", "candidate_response",
     "headroom_verdict", "headroom_rises", "headroom", "snr_margin_db", "repeat_spread_db", "position_spread_db",
 )
 
@@ -47,8 +47,8 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         return "; ".join(fields) or "null"
 
     lines = ["## Bass by level", "",
-             "| Candidate | Main dB | Base / candidate dB SPL | Law dB | Prescribed / realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Knee dB SPL by Hz band | Headroom remaining dB by Hz band |",
-             "|---|---:|---:|---:|---|---|---|---|---|---|---|"]
+             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed / realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Knee dB SPL by Hz band | Headroom remaining dB by Hz band |",
+             "|---|---:|---:|---|---|---|---|---|---|---|"]
     for row in rows:
         realized = "; ".join(f"{band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {number(band.get('prescribed_boost_db'))} / {number(band['value_db'])}"
                              for band in row["realized_boost_db"]) or "null"
@@ -59,14 +59,13 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         qualified = "No qualified evidence" if all(floor is None for floor in floors) and all(
             band["value_db"] is None for band in row["realized_boost_db"]) else " / ".join(map(number, floors))
         fields = [row["candidate_id"], number(row["level_key"]["level_db"]),
-                  f"{number(row['base_db_spl_at_mark'])} / {number(row['candidate_db_spl_at_mark'])}",
-                  number(row["prescribed_boost_db"]), realized,
+                  f"{number(row['base_db_spl_at_mark'])} / {number(row['candidate_db_spl_at_mark'])}", realized,
                   corners(row["base_response"]), corners(row["candidate_response"]),
                   qualified, headroom, ladder(row, "knee_level_db_spl"), ladder(row, "headroom_remaining_db")]
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     includes = ", ".join(sorted({cause.replace("_", " ") for row in rows
                                  for cause in row.get("compression_includes") or ()})) or "unknown"
-    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed boost models CamillaDSP's shelf, any Linkwitz shape and the delta high-pass at the recorded fader. "
+    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed boost models the emitted boost biquad and delta high-pass, which play at every fader (ADR-0359). "
               f"Band means use the same qualified bins as realized boost; their difference includes: {includes}. "
               "Within-level harmonic deltas use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold. "
               "Across-level knees use repeat spread or level uncertainty from the worst SNR; headroom uses measured SPL and marks an unreached knee as extrapolated."]

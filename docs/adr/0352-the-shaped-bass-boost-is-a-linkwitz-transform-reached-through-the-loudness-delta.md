@@ -1,7 +1,8 @@
 # ADR-0352: The shaped bass boost is a Linkwitz transform reached through the Loudness delta
 
 - **Date:** 2026-09-23
-- **Status:** Accepted
+- **Status:** Accepted. §2–§4, §1's delta-zero rule and the fader part of §5
+  are superseded by [ADR-0359](0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md).
 
 ## Context
 

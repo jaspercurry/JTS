@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection, Mapping
-from dataclasses import MISSING, fields
+from dataclasses import fields
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
@@ -347,45 +347,38 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
 def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
     format_ = bass_prescription.bass_prescription_response_format()
     properties = {
-        "low_boost_db": {"type": "number", "exclusiveMinimum": bass.LOW_BOOST_DB_MIN,
-                         "maximum": bass.NATIVE_LOUDNESS_BOOST_MAX_DB},
-        "reference_level_db": _number(bass.REFERENCE_LEVEL_DB_MIN, bass.REFERENCE_LEVEL_DB_MAX),
         "detector_lowpass_hz": _number(bass.DETECTOR_CORNER_HZ_MIN, bass.DETECTOR_CORNER_HZ_MAX),
         "compressor_threshold_dbfs": _number(bass.COMPRESSOR_THRESHOLD_DBFS_MIN, bass.COMPRESSOR_THRESHOLD_DBFS_MAX),
         "compressor_factor": {"type": "number", "exclusiveMinimum": bass.COMPRESSOR_FACTOR_MIN,
                               "maximum": bass.COMPRESSOR_FACTOR_MAX},
         "compressor_attack_s": _number(bass.COMPRESSOR_ATTACK_S_MIN, bass.COMPRESSOR_ATTACK_S_MAX),
         "compressor_release_s": _number(bass.COMPRESSOR_RELEASE_S_MIN, bass.COMPRESSOR_RELEASE_S_MAX),
-        "delta_highpass_hz": {"type": ["number", "null"], "minimum": bass.DELTA_HIGHPASS_HZ_MIN},
-        "linkwitz_transform": {**_object({
+        "delta_highpass_hz": _number(bass.DELTA_HIGHPASS_HZ_MIN),
+        "linkwitz_transform": _object({
             "source_hz": _number(bass.LINKWITZ_SOURCE_HZ_MIN, bass.LINKWITZ_SOURCE_HZ_MAX),
             "source_q": _number(bass.LINKWITZ_Q_MIN, bass.LINKWITZ_Q_MAX),
             "target_hz": _number(bass.LINKWITZ_TARGET_HZ_MIN),
             "target_q": _number(bass.LINKWITZ_Q_MIN, bass.LINKWITZ_Q_MAX),
-        }, sorted(field.name for field in fields(bass.LinkwitzTransform))), "type": ["object", "null"]},
+        }, sorted(field.name for field in fields(bass.LinkwitzTransform))),
     }
     for field in fields(bass.DynamicBassDescriptor):
-        if field.default is not MISSING:
+        if field.name in bass._OPTIONAL_FIELDS:
             properties[field.name]["default"] = field.default
     properties.update({name: {"type": "string", "minLength": 1, "description": description}
                        for name, description in format_["optional_top_level"].items()})
     return {
         "schema": _object(properties, sorted(bass._REQUIRED_FIELDS)),
         "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
-                   "linkwitz_transform": {
-                       "adr": "ADR-0352", "requires_field": "delta_highpass_hz",
-                       "target_hz_exclusive_upper_field": "source_hz",
-                       "delta_zero_hz": "(source_hz**2 - target_hz**2) / (source_hz/source_q - target_hz/target_q)",
-                       "delta_zero_hz_exclusive_minimum": 0.0,
-                       "delta_zero_hz_maximum": bass.LINKWITZ_DELTA_ZERO_HZ_MAX,
-                   }},
+                   "linkwitz_transform": {"adr": "ADR-0359", "target_hz_exclusive_upper_field": "source_hz"}},
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {
             "adr": "ADR-0257",
             "layers": ["driver_linearization", "room", "bass_extension"],
             "cost": "maximum_output_level_db",
-            "detail": "Room, driver and bass boosts share one headroom budget; their cost is lost maximum level.",
+            "detail": ("Room, driver and bass boosts share one headroom budget. Room and driver boosts cost "
+                       "maximum level; the bass boost plays at every volume and costs maximum bass level near "
+                       "the clip point, where its compressor gives way (ADR-0359)."),
             "bass_reserve_function": "jasper.bass_extension.dynamic.dynamic_bass_gain_reserve_db",
         },
     }

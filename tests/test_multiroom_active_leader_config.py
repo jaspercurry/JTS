@@ -19,7 +19,7 @@ from tests.multiroom_reconcile_fixtures import _FakeCamilla
 
 import asyncio
 import shutil
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -310,7 +310,7 @@ def test_pair_preserves_applied_tune_without_old_measurements(
     applied.pop("candidate_artifact_path")
     snapshot = applied["recomposition_snapshot"]
     if unsupported_stage == "dynamic_bass":
-        snapshot["bass_extension"] = asdict(_descriptor())
+        snapshot["bass_extension"] = _descriptor().payload()
     snapshot["linearization"] = {
         "woofer": [{"biquad_type": "Peaking", "freq": 910.0, "q": 1.23, "gain": -7.0}],
         "tweeter": [{"biquad_type": "Highshelf", "freq": 8500.0, "q": 0.707, "gain": 8.0}],
