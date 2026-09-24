@@ -572,7 +572,7 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     never above the admission bound under its own stop: outside the band it is
     retaken at the sweep peak that lands the target, raised at most 15 dB a
     step. One the microphone did not hear is judged by its recording, and no
-    other retake raises a take past its target (ADR-0355)."""
+    other retake raises a take past its target (ADR-0361)."""
     program = build_measure_program({"woofer": -40.0}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
                                     repeat_count=1, sweep_durations={"woofer": 0.2})
     analysis = _analysis() if heard else _analysis(locations=(_loc("sweep_w", confidence=0.05),))

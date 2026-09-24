@@ -54,7 +54,7 @@ GAIN_CAP_BACKOFF_DB = 0.01
 CHECK_PROBE_BACKOFF_DB = 12.0
 
 #: A near-field take's first attempt at a pose plays this far under the
-#: seat-equivalent level, which reads about 96 dB at 15 mm (ADR-0355).
+#: seat-equivalent level, which reads about 96 dB at 15 mm (ADR-0361).
 NEAR_FIELD_OPENER_BACKOFF_DB = 30.0
 
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).

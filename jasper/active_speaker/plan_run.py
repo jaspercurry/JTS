@@ -420,7 +420,7 @@ async def _run(
     def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            # A take at one driver's pose answers to its level target, never its repeats (ADR-0355).
+            # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
             level_observations[take_id] = (TakeVerdict(True, next="accept", charge="none") if record.get("pose_driver")
                                            else level_drift_verdict(**manifest.level_observation(record)))
         return level_observations[take_id]
@@ -480,7 +480,7 @@ async def _run(
                     if gate:
                         gate.abandon_hold()
                     if item.stop["pose"].get("driver"):
-                        # A new placement at a driver's pose starts quiet again (ADR-0355).
+                        # A new placement at a driver's pose starts quiet again (ADR-0361).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -595,7 +595,7 @@ async def _run(
                 retry = None
                 retry_was_measured = False
                 if item.stop["pose"].get("driver"):
-                    # The rest of this placement plays at the level this take landed (ADR-0355).
+                    # The rest of this placement plays at the level this take landed (ADR-0361).
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)

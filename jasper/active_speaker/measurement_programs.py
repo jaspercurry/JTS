@@ -127,9 +127,9 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-# A reference take may also be one driver near its cone (ADR-0354).
+# A reference take may also be one driver near its cone (ADR-0360).
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
-#: Farthest a reference near-field pose sits from the dust cap (ADR-0354).
+#: Farthest a reference near-field pose sits from the dust cap (ADR-0360).
 NEAR_FIELD_MAX_DISTANCE_M = 0.1
 #: The size of a run whose poses are its own, not a bundled layout's.
 CUSTOM_SIZE = "custom"
@@ -153,7 +153,7 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
     """The drivers a near-field row may play here: every declared output of a
-    mono speaker, and none of a stereo pair's until #5697 (ADR-0354)."""
+    mono speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
     group = next((group for group in topology.speaker_groups if group.id == topology.routing.mono_group_id), None)
     return () if group is None else tuple(sorted(
         measurement_target_id(channel.role, channel.output_variant)
@@ -206,7 +206,7 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 
 def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind: str,
                           distance_m: float | None) -> str:
-    """The one driver a pose plays, a measurement target id (ADR-0354): a pose
+    """The one driver a pose plays, a measurement target id (ADR-0360): a pose
     names one exactly when it is a reference near-field pose, and then sits
     close, within :data:`NEAR_FIELD_MAX_DISTANCE_M` of the dust cap."""
     if not isinstance(driver, str):
@@ -250,7 +250,7 @@ def run_purposes(run_program: str) -> tuple[str, ...]:
 
 def gate_exemption(purpose: str | None, *, driver: str = "") -> str | None:
     """Why a take is read ungated: a room, bass or rear take measures the
-    room; a pose at one driver is too close for the room to matter (ADR-0354)."""
+    room; a pose at one driver is too close for the room to matter (ADR-0360)."""
     from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
     if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR):
@@ -554,7 +554,7 @@ SEAT_OFFSET_M = max(
 )
 CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 #: Programs a run may name beside the tuning programs: reference evidence no
-#: tuning reader admits (ADR-0354).
+#: tuning reader admits (ADR-0360).
 REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))
 
 

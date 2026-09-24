@@ -153,7 +153,7 @@ def _pose_key(
         key = f"{kind}_{key}"
     if seat_offset_m is not None:
         key += "_r{}_f{}_u{}".format(*(_pose_field(v) for v in seat_offset_m))
-    # The base key rounds distance to the centimetre; a driver's pose keys its millimetres (ADR-0354).
+    # The base key rounds distance to the centimetre; a driver's pose keys its millimetres (ADR-0360).
     if driver:
         key += f"_{driver}_{'na' if mark_distance_m is None else f'{mark_distance_m * 1000:g}'}mm"
     return key

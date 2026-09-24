@@ -226,7 +226,7 @@ def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:
 
 def test_a_capture_keys_its_driver_pose_as_its_record_does(tmp_path: Path) -> None:
     """The front and rear woofer at one distance are two poses, read from the
-    bound capture or its record alike (ADR-0354)."""
+    bound capture or its record alike (ADR-0360)."""
     root = _write_round(tmp_path, distance_m=0.015, positions_deg=[0, 0])
     docs = []
     for sidecar, driver in zip(sorted((root / "bundle" / "b0" / "summed").glob("*.json")), ("woofer", "woofer:rear")):
@@ -321,7 +321,7 @@ def test_a_missing_input_is_refused_by_name(
             "behind_az+0.00_el+0.00_d+0.10",
         ),
         # A driver's own pose keys the driver and its millimetres, so the
-        # front and rear woofer at one distance key apart (ADR-0354).
+        # front and rear woofer at one distance key apart (ADR-0360).
         *(
             (
                 {

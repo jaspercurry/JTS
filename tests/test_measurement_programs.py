@@ -287,7 +287,7 @@ def test_a_near_field_run_resolves_as_reference_evidence(program_id, poses, reso
     """A near-field run names its program: a bundled row or an inline pose list
     resolves as reference near-field evidence and banks under that purpose;
     a driver's pose under another program, or a bearing under this one, is
-    refused (ADR-0354)."""
+    refused (ADR-0360)."""
     if resolved is None:
         with pytest.raises(ValueError):
             mp.run_program(program_id, poses)
@@ -459,7 +459,7 @@ def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
     door, refusal, purpose, regime, kind, distance_m, driver, accepted,
 ) -> None:
     """Every door a pose enters through judges its driver the same way
-    (ADR-0354): a program row or layout, and a stop in a hand-written plan."""
+    (ADR-0360): a program row or layout, and a stop in a hand-written plan."""
     if accepted:
         door(purpose, regime, kind, distance_m, driver)
     else:

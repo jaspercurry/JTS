@@ -757,7 +757,7 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
 def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes():
     """Each pose plays its own driver alone, the gate asks for the microphone
     at every pose (the front and rear woofer at one distance included), and
-    every take banks as reference evidence at its driver (ADR-0354)."""
+    every take banks as reference evidence at its driver (ADR-0360)."""
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
     program = MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
@@ -824,7 +824,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     """Each placement's first attempt plays under the target and is retaken at
     the solved peak; the rest of that placement starts there, a re-placement
     starts quiet again, and in-band re-seats are never sent back as drift
-    (ADR-0355)."""
+    (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
@@ -840,7 +840,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     """Only a take at one driver's pose is held to the near-field target: a
     far-field repeat that reads 3 dB off its first is retaken as drift, at the
-    same level (ADR-0355)."""
+    same level (ADR-0361)."""
     result, fakes, selected = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
 
     assert result.status == "complete"

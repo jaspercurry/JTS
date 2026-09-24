@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """A round's near-field driver takes read band by band, and their distance
-self-test: a pure view of banked evidence (ADR-0346, ADR-0354).
+self-test: a pure view of banked evidence (ADR-0346, ADR-0360).
 
 Each kept take banks its first sweep's curve with the other sweeps nested
 beside it. The first sweep against the others shows an amplifier waking late

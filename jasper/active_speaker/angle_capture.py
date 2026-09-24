@@ -234,7 +234,7 @@ class AngleStop:
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     ``branch_pair`` is which two targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
-    a near-field stop plays alone (ADR-0354).
+    a near-field stop plays alone (ADR-0360).
     """
 
     angle_deg: int

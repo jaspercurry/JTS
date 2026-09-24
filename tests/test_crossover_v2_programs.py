@@ -718,7 +718,7 @@ def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
 def test_a_near_field_take_opens_under_the_seat_level_and_retakes_at_the_peak_it_asks(asked_db, played_db):
     """A near-field take's first attempt plays well under the level a far-field
     take plays at; a retake plays the peak it asks for, never above it
-    (ADR-0355). Levels are relative to that seat-equivalent peak."""
+    (ADR-0361). Levels are relative to that seat-equivalent peak."""
     band = FrequencyBand(20.0, 4000.0)
     excitation = SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": 0.0}, -20.0, None,
                                    {"woofer:rear": 8.0}, target_bands={"woofer:rear": band})

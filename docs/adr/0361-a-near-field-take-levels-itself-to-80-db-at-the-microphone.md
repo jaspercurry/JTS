@@ -1,4 +1,4 @@
-# ADR-0355: A near-field take levels itself to 80 dB at the microphone
+# ADR-0361: A near-field take levels itself to 80 dB at the microphone
 
 - **Date:** 2026-09-24
 - **Status:** Accepted. Supersedes the per-pose fader solve the
@@ -6,7 +6,7 @@
 
 ## Context
 
-A pose at one driver sits 15–30 mm from the cone (ADR-0354), where the
+A pose at one driver sits 15–30 mm from the cone (ADR-0360), where the
 seat-level fader reads about 96 dB, over the 85 dB commissioning stop. The
 seat anchor predicts the seat, not the cone. The executor holds one fader for a
 whole run and moves a retake's level only in the stimulus's digital gain, and

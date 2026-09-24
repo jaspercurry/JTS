@@ -41,10 +41,10 @@ CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 #: A take at one driver's pose aims its loudest 21 ms window at the microphone
-#: here, never above the admission bound under its own stop (ADR-0355).
+#: here, never above the admission bound under its own stop (ADR-0361).
 NEAR_FIELD_TARGET_DB_SPL = 80.0
 NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
-#: The most one level retake raises a take (ADR-0355).
+#: The most one level retake raises a take (ADR-0361).
 LEVEL_SOLVE_MAX_RAISE_DB = 15.0
 
 
@@ -83,7 +83,7 @@ class _LevelTarget(NamedTuple):
 def _level_target(target_db_spl: float | None, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None) -> _LevelTarget | None:
     """The target a take at one driver's pose is held to, never above the
-    admission bound under its own stop (ADR-0355)."""
+    admission bound under its own stop (ADR-0361)."""
     reading = finite_float((spl or {}).get("max_window_db_spl"))
     stop = finite_float((spl or {}).get("ceiling_db_spl"))
     peak = stimulus_peak_dbfs(program) if program is not None else None
@@ -111,7 +111,7 @@ def assess(
 ) -> TakeVerdict:
     level = _level_target(level_target_db_spl, kwargs.get("spl"), kwargs.get("program"))
     # A take the microphone heard is levelled before its recording is judged;
-    # one it did not hear is judged, never levelled blind (ADR-0355).
+    # one it did not hear is judged, never levelled blind (ADR-0361).
     if (prior_verdict is None and level is not None and abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB
             and _stimulus_locate_ok(analysis)):
         step = capped_gap_step_db(measured_db=level.reading_db_spl, target_db=level.target_db_spl,

@@ -223,7 +223,7 @@ class CloudPositionPrompt:
     seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
     preserve_text: bool = False
-    #: The one driver a near-field row sits at and plays (ADR-0354).
+    #: The one driver a near-field row sits at and plays (ADR-0360).
     driver: str = ""
 
     @property

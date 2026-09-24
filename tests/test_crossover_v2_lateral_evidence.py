@@ -241,7 +241,7 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
 
 def test_each_pose_is_analyzed_under_its_own_gate_exemption():
     """The session reads the pose the operator followed: a pose at one driver
-    ungated as near-field (ADR-0354), a room seat as the room, a bearing gated."""
+    ungated as near-field (ADR-0360), a room seat as the room, a bearing gated."""
     request = ac.AngleCaptureRequest(stops=(
         ac.AngleStop(0, ac.REGIME_NEAR_FIELD, kind="close", distance_m=0.015, purpose="reference",
                      driver="woofer:rear"),

@@ -5288,7 +5288,7 @@ def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
 
 
 def test_a_one_driver_take_under_the_near_field_exemption_reads_every_sweep_ungated():
-    """A near-field take is too close for the room to matter (ADR-0354): its
+    """A near-field take is too close for the room to matter (ADR-0360): its
     primary sweep and both repeats are read ungated, claiming no floor, over a
     window long enough for a protected woofer's low-frequency ringing."""
     prog = build_measure_program(
