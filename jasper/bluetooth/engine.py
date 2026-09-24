@@ -64,7 +64,7 @@ async def _default_accessory_reconcile(reason: str) -> object:
     publishes a request file that jasper-accessory-reconcile.path acts on. One
     small atomic write, so it stays inline on the request's own task.
     """
-    from jasper.accessories.reconcile import request_reconcile
+    from jasper.accessories.reconcile import request_reconcile  # lazy: import cost, the accessory reconciler stays out of jasper-web until a device action needs it
 
     request_reconcile(reason)
     return None
@@ -117,7 +117,7 @@ async def _bondable_for_pair(adapter: str):
     still attempt the pair -- unbonded is how it behaved before this existed,
     and `untrust_unbonded` keeps that from stranding the device.
     """
-    from .adapter import set_pairable, state as adapter_state
+    from .adapter import set_pairable, state as adapter_state  # lazy: test patch boundary (tests/test_bluetooth_engine.py)
 
     # Tri-state on purpose. `False` and "could not read" are different
     # answers: treating an unreadable adapter as "was off" makes the restore
@@ -720,7 +720,7 @@ class BluetoothEngine:
         stale BLE cache records for devices that are connected/trusted but no
         longer paired.
         """
-        from .adapter import remove_device
+        from .adapter import remove_device  # lazy: test patch boundary (tests/test_bluetooth_engine.py)
 
         try:
             await remove_device(mac, self._adapter)

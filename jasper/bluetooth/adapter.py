@@ -21,6 +21,7 @@ from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import AuthError, DBusError  # type: ignore
 
 from ..log_event import log_event
+from .models import is_hid_uuids
 
 logger = logging.getLogger(__name__)
 
@@ -316,8 +317,6 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
     Bluetooth / Sources wizards to confirm before turning the adapter
     off while a wireless remote (e.g. the VK-01 knob) would lose its
     host. Cheap: one ObjectManager.GetManagedObjects round-trip."""
-    from .models import is_hid_uuids
-
     for _path, ifaces in (await managed_objects()).items():
         dev = ifaces.get("org.bluez.Device1")
         if not dev:
