@@ -6,8 +6,7 @@
 
 The base layer every per-domain check module imports from: the output
 contract re-exported from :mod:`jasper.doctor_contract`, the
-crash-isolation harness (so one crashing check cannot abort the run),
-the subprocess/env-file wrappers, the ANSI colour constants, and the
+subprocess/env-file wrappers, the ANSI colour constants, and the
 helpers and ``REASON_*`` codes more than one domain uses — each declared
 beside the helper it belongs to.
 
@@ -28,7 +27,9 @@ import stat as _stat
 import subprocess
 import time
 from collections.abc import Iterable
-from typing import Any, Awaitable, Callable
+from typing import Any
+# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
+# jasper-control can build contract rows without importing this package).
 from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
     CHECK_STATUSES,
     CheckResult,
@@ -76,10 +77,6 @@ _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
     "chip_convergence",
 })
 
-# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
-# jasper-control can build contract rows without importing this package).
-DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
-
 EXCEPTION_DETAIL_LIMIT = 240
 
 def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
@@ -96,45 +93,6 @@ def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str
     if not message:
         return type(exc).__name__
     return f"{type(exc).__name__}: {message}"
-
-def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
-    return CheckResult(
-        name,
-        "fail",
-        f"check crashed: {exception_detail(exc)}",
-        reason=REASON_CHECK_CRASHED,
-    )
-
-def _check_name(check: Callable[[], CheckResult]) -> str:
-    name = getattr(check, "__name__", "doctor check")
-    if name == "<lambda>":
-        return "doctor check"
-    if name.startswith("check_"):
-        name = name[len("check_"):]
-    return name.replace("_", " ")
-
-def _normalize_doctor_check(
-    entry: DoctorCheck,
-) -> tuple[str, Callable[[], CheckResult]]:
-    if isinstance(entry, tuple):
-        return entry
-    return _check_name(entry), entry
-
-def _run_doctor_check(entry: DoctorCheck) -> CheckResult:
-    name, check = _normalize_doctor_check(entry)
-    try:
-        return check()
-    except Exception as e:  # noqa: BLE001
-        return _crashed_check_result(name, e)
-
-async def _run_async_doctor_check(
-    name: str,
-    check: Callable[[], Awaitable[CheckResult]],
-) -> CheckResult:
-    try:
-        return await check()
-    except Exception as e:  # noqa: BLE001
-        return _crashed_check_result(name, e)
 
 # systemd absent (a dev laptop, a container): nothing was observed, so the
 # callers of the systemctl helpers report `skipped` with this.
@@ -298,25 +256,6 @@ def install_profile_is_streambox() -> bool:
 REASON_SOURCE_INTENT_INVALID = "source_intent_invalid"
 
 REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
-
-
-def _parked_as_bonded_follower() -> bool:
-    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
-
-    The dumb-follower profile parks the renderer/source stack while bonded, so
-    liveness checks must read that as ok rather than as a failure against
-    intended state. Fail-open to NOT-parked: a broken read must never mask a
-    real failure on a solo speaker."""
-    try:
-        from ...multiroom.effective_role import (
-            effective_local_sources_park_reason,
-        )
-        from ._evidence import evidence  # lazy: _evidence imports _shared
-
-        cfg = evidence.grouping_config()
-        return effective_local_sources_park_reason(cfg) is not None
-    except Exception:  # noqa: BLE001 — fail-open
-        return False
 
 
 def service_state_failure(

@@ -23,7 +23,7 @@ import pytest
 from jasper import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
-from jasper.cli.doctor import _evidence, _shared, usbsink
+from jasper.cli.doctor import _evidence, _harness, _shared, usbsink
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
 from .doctor_test_support import _make_unit_states_fake
@@ -322,7 +322,7 @@ def test_check_usbsink_card_host_stream_read_never_crashes_the_doctor(
         mock_path.side_effect = lambda p: (
             card if p == "/proc/asound/UAC2Gadget" else Path(p)
         )
-        result = _shared._run_doctor_check(usbsink.check_usbsink_card)
+        result = _harness._run_doctor_check(usbsink.check_usbsink_card)
 
     assert result.status == "ok"
     assert result.reason == usbsink.REASON_HOST_STREAM_NO_CONTROL

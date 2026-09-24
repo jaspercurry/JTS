@@ -110,7 +110,7 @@ def test_doctor_check_exception_becomes_fail_result():
     def explode():
         raise RuntimeError("synthetic check failure")
 
-    result = _shared._run_doctor_check(("explosive check", explode))
+    result = _harness._run_doctor_check(("explosive check", explode))
 
     assert result.name == "explosive check"
     assert result.status == "fail"
@@ -125,7 +125,7 @@ def test_doctor_check_exception_redacts_secret_like_values():
             "sk-super-secret-openai-key"
         )
 
-    result = _shared._run_doctor_check(("sensitive check", explode))
+    result = _harness._run_doctor_check(("sensitive check", explode))
 
     assert result.status == "fail"
     assert result.reason == _shared.REASON_CHECK_CRASHED
@@ -159,7 +159,7 @@ def test_async_doctor_check_exception_becomes_fail_result():
         raise RuntimeError("synthetic async failure")
 
     result = asyncio.run(
-        _shared._run_async_doctor_check("async check", explode),
+        _harness._run_async_doctor_check("async check", explode),
     )
 
     assert result.name == "async check"

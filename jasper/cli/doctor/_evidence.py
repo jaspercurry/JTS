@@ -133,6 +133,24 @@ def _read_env_mapping(path: str) -> dict[str, str] | None:
     return parse_env_mapping(text)
 
 
+def _parked_as_bonded_follower() -> bool:
+    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
+
+    The dumb-follower profile parks the renderer/source stack while bonded, so
+    liveness checks must read that as ok rather than as a failure against
+    intended state. Fail-open to NOT-parked: a broken read must never mask a
+    real failure on a solo speaker."""
+    try:
+        from ...multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
+
+        cfg = evidence.grouping_config()
+        return effective_local_sources_park_reason(cfg) is not None
+    except Exception:  # noqa: BLE001 — fail-open
+        return False
+
+
 class Evidence:
     def __init__(self) -> None:
         self._memo: dict[str, Any] = {}
@@ -305,8 +323,6 @@ class Evidence:
         return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 
     def parked_bonded_follower(self) -> bool:
-        from ._shared import _parked_as_bonded_follower
-
         return self.get("parked_bonded_follower", _parked_as_bonded_follower)
 
     def grouping_config(self) -> Any:

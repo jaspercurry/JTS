@@ -184,7 +184,7 @@ def test_every_built_check_is_named_by_one_rule(install_profile):
 
     built = _harness._build_doctor_checks(SimpleNamespace(), install_profile)
     assert [c.name for c in built] == [
-        entry.label or _shared._check_name(entry.func)
+        entry.label or _harness._check_name(entry.func)
         for entry in registered_checks()
     ]
 
@@ -406,7 +406,7 @@ def test_harness_rows_carry_a_harness_reason():
     pinning here; what does need pinning is that each carries a reason of its
     own rather than an empty string."""
     rows = [
-        _shared._crashed_check_result("boom", RuntimeError("synthetic")),
+        _harness._crashed_check_result("boom", RuntimeError("synthetic")),
         _timed_out_row(),
         _harness._profile_skip_result(
             registered_checks()[0], detail="not installed (streambox profile)",

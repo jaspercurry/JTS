@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runs the registered jasper-doctor checks — profile skips, bounded
-concurrency, exclusive lanes and the per-row timeout — and returns the
-results in registry order.
+"""Runs the registered jasper-doctor checks — crash isolation (so one
+crashing check cannot abort the run), profile skips, bounded concurrency,
+exclusive lanes and the per-row timeout — and returns the results in
+registry order.
 
 Check membership and order are owned by
 :mod:`~jasper.cli.doctor._registry`."""
@@ -34,13 +35,57 @@ from ._registry import (
 )
 from ._shared import (
     CheckResult,
-    DoctorCheck,
+    REASON_CHECK_CRASHED,
     REASON_CHECK_TIMED_OUT,
     REASON_NOT_INSTALLED,
-    _check_name,
-    _run_async_doctor_check,
-    _run_doctor_check,
+    exception_detail,
 )
+
+DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
+
+
+def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
+    return CheckResult(
+        name,
+        "fail",
+        f"check crashed: {exception_detail(exc)}",
+        reason=REASON_CHECK_CRASHED,
+    )
+
+
+def _check_name(check: Callable[[], CheckResult]) -> str:
+    name = getattr(check, "__name__", "doctor check")
+    if name == "<lambda>":
+        return "doctor check"
+    if name.startswith("check_"):
+        name = name[len("check_"):]
+    return name.replace("_", " ")
+
+
+def _normalize_doctor_check(
+    entry: DoctorCheck,
+) -> tuple[str, Callable[[], CheckResult]]:
+    if isinstance(entry, tuple):
+        return entry
+    return _check_name(entry), entry
+
+
+def _run_doctor_check(entry: DoctorCheck) -> CheckResult:
+    name, check = _normalize_doctor_check(entry)
+    try:
+        return check()
+    except Exception as e:  # noqa: BLE001
+        return _crashed_check_result(name, e)
+
+
+async def _run_async_doctor_check(
+    name: str,
+    check: Callable[[], Awaitable[CheckResult]],
+) -> CheckResult:
+    try:
+        return await check()
+    except Exception as e:  # noqa: BLE001
+        return _crashed_check_result(name, e)
 
 
 def _registered_check_name(entry) -> str:
