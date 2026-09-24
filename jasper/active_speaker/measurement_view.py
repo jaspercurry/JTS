@@ -39,8 +39,8 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
 
 #: Registry ids whose layout, purpose, and regime duplicate another id's
 #: (reviewer finding R4-D9): ``seat/cloud`` mirrors ``room/cloud`` and
-#: ``seat/express`` mirrors ``room/seat``. Hidden from the picker only -- the
-#: ids stay registered and keep resolving through :func:`program` (ADR-0277).
+#: ``seat/express`` mirrors ``room/seat``. Offered only when a link names one:
+#: the ids stay registered and resolve through :func:`program` (ADR-0277).
 _ALIAS_PLAN_IDS = frozenset({"seat/cloud", "seat/express"})
 
 
@@ -58,7 +58,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     view = load_commissioning_view()
     programs = view["programs"]
     plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()
-             if f"{name}/{size}" not in _ALIAS_PLAN_IDS}
+             if f"{name}/{size}" not in _ALIAS_PLAN_IDS or f"{name}/{size}" == selected_id}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
