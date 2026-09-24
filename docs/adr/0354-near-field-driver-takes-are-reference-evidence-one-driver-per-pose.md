@@ -51,6 +51,11 @@ what was missing was a take naming the one target it plays.
 - Each driver is measurable on its own near the cone, on a 2-way and on a
   cardioid cabinet, beside the far-field programs rather than instead of them.
 - Near-field evidence stays out of every fit until the splice lands.
+- The room gate stays (owner ruling): far-field takes are gated as before,
+  and every take keeps its raw capture and program, so any gate is
+  re-applied after the fact, relaxed or tightened, to see where the room
+  enters. A near-field view reads each take's own sweep for that: a
+  three-sweep program deconvolved whole misreads the bass by over 10 dB.
 - Preflight refuses a plan naming a driver the speaker does not declare.
 - Stereo presets are not offered a near-field program until
   [#5697](https://github.com/jaspercurry/JTS/issues/5697): a target id names a
