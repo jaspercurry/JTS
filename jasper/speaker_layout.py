@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Speaker layout vocabulary: group kinds, main modes and their driver roles,
-output variants, the sub crossover corner, and measurement target ids.
+output variants, the sub crossover corner, measurement target ids, and each
+role's declared cone diameter.
 
 Stdlib-only and hardware-free, so the output topology, the active-speaker model
 and the tuning programs share one table without importing the DAC or fan-in
@@ -12,7 +13,8 @@ bindings.
 
 from __future__ import annotations
 
-from typing import Iterable
+import math
+from typing import Any, Iterable, Mapping
 
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
@@ -65,6 +67,44 @@ def measurement_target_parts(target_id: str) -> tuple[str, str]:
     """``(role, output_variant)`` of a :func:`measurement_target_id`."""
     role, _, variant = target_id.partition(":")
     return role, variant or "primary"
+
+
+def declared_radiating_diameters_mm(draft: Mapping[str, Any]) -> dict[str, float]:
+    """Per-role declared effective radiating diameter, mm (#1665 / #1675), read
+    off a design draft's ``manual_settings.drivers``.
+
+    Fail-soft: a role with disagreeing declarations drops entirely, and anything
+    malformed is skipped rather than raised. A diameter is a beaming PRIOR, so a
+    bad one must cost that one role its prior, never the session.
+
+    Deliberately no default: absent means "not declared", and the receipt says
+    so. Substituting a nominal diameter would manufacture a beaming ceiling out
+    of nothing, and #1675 is explicit that this is geometry
+    guidance derived from a declared dimension.
+    """
+    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
+    if not isinstance(manual, Mapping):
+        return {}
+    drivers = manual.get("drivers")
+    out: dict[str, float] = {}
+    conflicted: set[str] = set()
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
+        role = str(driver.get("role") or "")
+        value = driver.get("radiating_diameter_mm")
+        if not role or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        millimetres = float(value)
+        if not math.isfinite(millimetres) or millimetres <= 0.0:
+            continue
+        if role in out and out[role] != millimetres:
+            conflicted.add(role)
+            continue
+        out[role] = millimetres
+    for role in conflicted:
+        out.pop(role, None)
+    return out
 
 
 def cardioid_cabinet_channels(

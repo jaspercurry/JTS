@@ -16,7 +16,6 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.branch_chain import beaming_onset_hz
-from .conductor_context import _resolve_radiating_diameter_by_role
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     resolve_driver_measurement_band_hz,
@@ -32,7 +31,7 @@ from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import as_mapping, finite_float
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
-from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE
+from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE, declared_radiating_diameters_mm
 
 from . import alignment_prescription as alignment
 from . import bass_prescription
@@ -172,7 +171,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     delay = None
     if preset is not None:
         delay = alignment.alignment_delay_search_bounds_us(preset)
-    diameter = _resolve_radiating_diameter_by_role(draft).get("woofer")
+    diameter = declared_radiating_diameters_mm(draft).get("woofer")
     topology_bounds: dict[str, Any] = {
         "supported_orders": sorted(topology.SUPPORTED_LR_ORDERS),
         "fc_hz": None, "minimum_slope_db_per_octave": None,

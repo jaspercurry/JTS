@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.conductor_context import _resolve_radiating_diameter_by_role
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
@@ -19,6 +18,7 @@ from jasper.active_speaker.run_manifest import view_sets
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_NO_NEAR_FIELD_TAKES
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
+from jasper.speaker_layout import declared_radiating_diameters_mm
 
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -49,7 +49,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take.get("selected") and (take.get("pose") or {}).get("driver")]
     graphs = {take["take_id"]: graph for take in takes if (graph := _played_graph(inputs, take)) is not None}
-    document = nearfield_view(takes, radiating_diameter_mm_by_role=_resolve_radiating_diameter_by_role(draft),
+    document = nearfield_view(takes, radiating_diameter_mm_by_role=declared_radiating_diameters_mm(draft),
                               played_graphs=graphs)
     if not document["takes"]:
         return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])
