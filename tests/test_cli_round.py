@@ -1185,7 +1185,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
     manifest = RunManifest("run-1", BankedRecordStore(store, "run-1"))
     fakes, gate = FakeSeams(), AnsweredGate()
-    entry_volume, entry_loudness = box.volume_db, asyncio.run(box.get_loudness_volume_db())
+    entry_volume = box.volume_db
     fakes.graph.entry_scope_fingerprint = "entry"
     monkeypatch.setattr(host, "resolved_household_sensitivity", lambda _: MicSensitivity(-12, 18, "1234"))
     monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, lambda *a, **kw: TakeVerdict(True)))
@@ -1197,7 +1197,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     def engine(**kw):
         async def capture_record(record):
             return await kw["records"].inner.bank({**record, "program_id": "sweep", "stimulus_dbfs": -20,
-                "loudness_volume_db": record["level_db"], "phase": record["program_phase"],
+                "phase": record["program_phase"],
                 "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
                     "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
         return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],
@@ -1261,7 +1261,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     expected = [(level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
-    assert (box.volume_db, asyncio.run(box.get_loudness_volume_db())) == (entry_volume, entry_loudness)
+    assert box.volume_db == entry_volume
     packet = json.loads(Path(body["packet"]).read_text())
     assert packet["result"] == "complete" and len(packet.get("runs", [packet])) == len(levels)
     assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"

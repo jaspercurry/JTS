@@ -823,15 +823,6 @@ class FakeCam:
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
         return self.loaded[-1]
 
-    async def get_loudness_volume_db(self, *, best_effort: bool = False) -> float:
-        return getattr(self, "loudness_db", self.volume_db)
-
-    async def set_loudness_volume_db(
-        self, db: float, *, best_effort: bool = False, immediate: bool = False,
-    ) -> bool:
-        self.loudness_db = db
-        return True
-
     async def get_volume_db(self, *, best_effort: bool = False) -> float:
         return self.volume_db
 
@@ -1190,7 +1181,7 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
         binding, analyze, assessor, execute = real_bind(**kwargs)
         level = kwargs["conductor"]._excitation.session_volume_db
         monitor = WiredSplMonitor(binding.sensitivity, binding.ceiling_db_spl, 0)
-        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph", monitor)
+        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, "graph", monitor)
         captured["tuning"] = binding.build_session(door, kwargs["manifest"].allocate_take_id)
         return binding, analyze, assessor, execute
     monkeypatch.setattr(v2host, "bind_run_door", bind)

@@ -26,19 +26,19 @@ import pytest
 from jasper.active_speaker.crossover_v2.door import (
     REFUSE_NO_VOLUME_OWNER,
     REFUSE_SESSION_LIVE,
-    REFUSE_VOLUME_NOT_OPEN,
     MeasurementDoorRefused,
     bind_measurement_graph,
     isolation_hold,
     level_window,
 )
+from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     live_measurement_session,
 )
-from jasper.volume_owner import VolumeOwner, install_volume_owner
+from jasper.volume_owner import VolumeOwner, install_volume_owner, volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
 from tests._async_wait import wait_signalled
@@ -140,10 +140,7 @@ async def test_the_door_installs_a_measurement_graph_and_puts_the_entry_back(
     level — because a door that reported a restore it did not perform is the
     one failure this helper exists to make impossible.
     """
-    entry_loudness = await box.get_loudness_volume_db()
     async with _door(tmp_path, box) as door:
-        assert door.measurement_loudness_volume_db == pytest.approx(-20.0)
-        assert await box.get_loudness_volume_db() == pytest.approx(-20.0)
         assert door.graph_fingerprint
         assert box.loaded, "no measurement graph reached the DSP"
         assert box.loaded[-1] != (tmp_path / ENTRY_CONFIG).read_text()
@@ -151,92 +148,83 @@ async def test_the_door_installs_a_measurement_graph_and_puts_the_entry_back(
 
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
-    assert await box.get_loudness_volume_db() == entry_loudness
 
 
-async def test_a_body_that_raises_still_gives_the_speaker_back(tmp_path, box):
-    """The give-back is a ``finally``, and the body's failure is what propagates.
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_a_body_that_raises_still_gives_the_speaker_back(tmp_path, box, error):
+    """The give-back is a ``finally``, and the body's failure, a cancel
+    included, is what propagates.
 
     A door that swallowed the body's exception would hide the reason a
     measurement stopped; one that restored only on the happy path would leave a
     speaker on a measurement graph at measurement volume after any error.
     """
-    with pytest.raises(RuntimeError, match="the body failed"):
+    raised = error()
+    with pytest.raises(error) as caught:
         async with _door(tmp_path, box):
-            raise RuntimeError("the body failed")
+            raise raised
 
+    assert caught.value is raised
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
-@pytest.mark.parametrize("failure", ["write", "readback"])
-async def test_unconfirmed_bass_reference_refuses_capture_and_restores_main(tmp_path, box, failure):
-    entry = await box.get_loudness_volume_db()
-    write = box.set_loudness_volume_db
-    read = box.get_loudness_volume_db
+async def test_a_second_cancel_during_the_give_back_still_gives_the_speaker_back(tmp_path, box, monkeypatch):
+    """The give-back is shielded: a cancel that lands while the door gives the
+    speaker back cannot strand the fader at measurement level (ADR-0179)."""
+    entered, releasing = asyncio.Event(), asyncio.Event()
+    release = MeasurementVolumeClaim.release
 
-    async def set_aux(db, **kwargs):
-        if db == -20.0 and failure == "write":
-            return False
-        return await write(db, **kwargs)
+    async def slow_release(self):
+        releasing.set()
+        await asyncio.sleep(0.01)
+        await release(self)
 
-    async def get_aux(**kwargs):
-        current = await read(**kwargs)
-        return current + 1.0 if failure == "readback" and current == -20.0 else current
+    monkeypatch.setattr(MeasurementVolumeClaim, "release", slow_release)
 
-    box.set_loudness_volume_db = set_aux
-    box.get_loudness_volume_db = get_aux
-    with pytest.raises(MeasurementDoorRefused) as caught:
+    async def measure():
         async with _door(tmp_path, box):
-            pytest.fail("unconfirmed Aux reached capture")
-
-    assert caught.value.reason == REFUSE_VOLUME_NOT_OPEN
-    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
-    assert await read() == entry
-    assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
-
-
-async def test_cancel_during_bass_reference_write_restores_both_faders(tmp_path, box):
-    entry = await box.get_loudness_volume_db()
-    reached = asyncio.Event()
-    write = box.set_loudness_volume_db
-
-    async def set_aux(db, **kwargs):
-        await write(db, **kwargs)
-        if db == -20.0:
-            reached.set()
+            entered.set()
             await asyncio.Event().wait()
-        return True
 
-    box.set_loudness_volume_db = set_aux
-
-    async def run():
-        async with _door(tmp_path, box):
-            pytest.fail("cancelled Aux write reached capture")
-
-    task = asyncio.create_task(run())
-    await wait_signalled(reached, "Aux write began", producer=task)
+    task = asyncio.create_task(measure())
+    await wait_signalled(entered, "the door opened", producer=task)
+    task.cancel()
+    await wait_signalled(releasing, "the give-back began", producer=task)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
-    assert await box.get_loudness_volume_db() == entry
+    assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
 
 
-async def test_bass_reference_restore_failure_does_not_strand_main(tmp_path, box):
-    entry = await box.get_loudness_volume_db()
-    write = box.set_loudness_volume_db
+async def test_every_give_back_step_runs_and_the_first_failure_surfaces(tmp_path, box, monkeypatch):
+    """A claim release and a plan close that both fail after doing their work:
+    both ran, and the first failure is the one raised (ADR-0179)."""
+    class ReleaseFailed(Exception):
+        pass
 
-    async def set_aux(db, **kwargs):
-        return False if db == entry else await write(db, **kwargs)
+    class CloseFailed(Exception):
+        pass
 
-    box.set_loudness_volume_db = set_aux
-    with pytest.raises(MeasurementDoorRefused) as caught:
+    release, close = MeasurementVolumeClaim.release, SessionVolumePlan.close
+
+    async def failing_release(self):
+        await release(self)
+        raise ReleaseFailed
+
+    async def failing_close(self, *args, **kwargs):
+        await close(self, *args, **kwargs)
+        raise CloseFailed
+
+    monkeypatch.setattr(MeasurementVolumeClaim, "release", failing_release)
+    monkeypatch.setattr(SessionVolumePlan, "close", failing_close)
+    with pytest.raises(ReleaseFailed):
         async with _door(tmp_path, box):
             pass
 
-    assert caught.value.reason == REFUSE_VOLUME_NOT_OPEN
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
     assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
@@ -342,12 +330,6 @@ async def test_a_stale_record_from_a_crashed_run_does_not_lock_the_door(
     The leftover is written by a REAL plan on a frozen clock, so the record is
     the shape the plan actually persists rather than a hand-built guess.
     """
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-        OwnerVolumeDoor,
-    )
-    from jasper.volume_owner import volume_owner
-
     state_path = tmp_path / VOLUME_STATE
     crashed = SessionVolumePlan(
         state_path=state_path, wall_clock_ceiling_s=1.0, clock=lambda: 0.0,
@@ -431,7 +413,6 @@ async def test_door_needs_a_watch_before_any_volume_write(tmp_path, box):
 
 @pytest.mark.parametrize("fail_body", [False, True])
 async def test_graph_restores_after_the_session_leaves_the_hold(tmp_path, box, fail_body):
-    from jasper.active_speaker.crossover_v2.door import bind_measurement_graph, isolation_hold, level_window
     from jasper.active_speaker.crossover_v2.session import TuningSession
     from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
     from jasper.audio_measurement.calibration import MicSensitivity

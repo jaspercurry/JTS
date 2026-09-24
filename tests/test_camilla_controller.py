@@ -47,7 +47,6 @@ LOUD_GRAPH = "---\ndevices:\n  volume_limit: 6.0\nfilters: {}\n"
 class _FakeVolume:
     def __init__(self, ops: list[str]) -> None:
         self.values: list[float] = []
-        self.fader_values: list[tuple[int, float]] = []
         self.mutes: list[bool] = []
         self.muted = False
         self._ops = ops
@@ -61,17 +60,6 @@ class _FakeVolume:
     def set_main_volume(self, value: float) -> None:
         self.values.append(float(value))
         self._ops.append(f"vol={value:g}")
-
-    def volume(self, fader: int) -> float:
-        return next((value for index, value in reversed(self.fader_values) if index == fader), 0.0)
-
-    def set_volume(self, fader: int, value: float) -> None:
-        self.fader_values.append((fader, float(value)))
-        self._ops.append(f"fader{fader}={value:g}")
-
-    def set_volume_external(self, fader: int, value: float) -> None:
-        self.fader_values.append((fader, float(value)))
-        self._ops.append(f"immediate{fader}={value:g}")
 
     def set_main_mute(self, value: bool) -> None:
         self.muted = bool(value)
@@ -209,18 +197,6 @@ async def test_set_volume_db_rejects_non_finite_strict():
 
     with pytest.raises(ValueError):
         await cam.set_volume_db(float("inf"))
-
-
-@pytest.mark.parametrize("immediate", [False, True])
-async def test_loudness_volume_uses_aux1_target_without_changing_main(immediate):
-    fake = _FakeClient()
-    cam = _controller(fake)
-
-    assert await cam.set_loudness_volume_db(-18.0, immediate=immediate)
-    assert await cam.get_loudness_volume_db() == -18.0
-    assert ("immediate1=-18" if immediate else "fader1=-18") in fake.ops
-    assert fake.volume.fader_values == [(1, -18.0)]
-    assert fake.volume.values == []
 
 
 async def test_set_main_mute_forwards_boolean_to_camilla():
