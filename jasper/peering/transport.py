@@ -357,7 +357,12 @@ class MulticastTransport:
                 logger.warning("peering: recv failed: %s", e)
                 await asyncio.sleep(0.1)
                 continue
-            msg = decode(data)
+            try:
+                msg = decode(data)
+            except Exception as e:  # noqa: BLE001 — neighbour-controlled input: no traceback flood
+                log_event(logger, "peering.transport.datagram_failed",
+                          level=logging.WARNING, error=repr(e))
+                continue
             if msg is None:
                 continue
             try:
