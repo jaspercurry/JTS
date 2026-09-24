@@ -467,6 +467,17 @@ def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
             door(purpose, regime, kind, distance_m, driver)
 
 
+@pytest.mark.parametrize("candidates,accepted", [((), True), (("base",), True), (("base", "fp-a"), False)])
+def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
+    """A driver's pose plays the neutral drivers graph, so ``--candidates``
+    cannot stamp its takes with a candidate or repeat its poses (ADR-0360)."""
+    if accepted:
+        assert len(ac.request_for_program(mp.program("nearfield"), candidates=candidates).stops) == 3
+    else:
+        with pytest.raises(CrossoverV2FlowError):
+            ac.request_for_program(mp.program("nearfield"), candidates=candidates)
+
+
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
     """The pair take is the rear express geometry, played as two branches
     (issue #5330). Naming it leaves the default rear size alone."""

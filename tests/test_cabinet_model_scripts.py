@@ -39,7 +39,8 @@ def cabinet(tmp_path, monkeypatch):
     np.savez(tmp_path / "transfer.npz", f=f, angles_deg=angles, radius_m=10.0, front_z_m=0.1, depth_m=DEPTH_M,
              nf_front=np.ones(f.size, complex), nf_rear=np.ones(f.size, complex),
              far_front=np.exp(1j * k * (10.0 - along)) / 10.0, far_rear=np.exp(1j * k * (10.0 + along)) / 10.0)
-    raw = {"freqs_hz": np.geomspace(10, 5000, 2000).tolist(), "level_db": [0.0] * 2000}
+    # The near-field view exports a raw curve over its sweep's band only.
+    raw = {"freqs_hz": np.geomspace(20, 2000, 2000).tolist(), "level_db": [0.0] * 2000}
     (tmp_path / "nearfield_view.json").write_text(json.dumps({"drivers": [
         {"driver": driver, "placements": [{"distance_mm": 15.0, "raw": raw}]} for driver in ("woofer", "woofer:rear")]}))
     return model, model.Cabinet(tmp_path / "transfer.npz", tmp_path / "nearfield_view.json", f)

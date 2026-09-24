@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.speaker_layout import measurement_target_name
+
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
 from .movers import MOVER_ARM
 
@@ -22,7 +24,13 @@ LEVEL_STEP_LINES = {
 }
 
 
+def millimetres(distance_m: float) -> str:
+    return f"{round(distance_m * 1000, 1):g} mm"
+
+
 def pose_name(pose: Mapping[str, Any]) -> str:
+    if pose.get("driver"):
+        return f"{measurement_target_name(pose['driver'])} at {millimetres(pose['distance_m'])}"
     placement = {POSE_KIND_BEHIND: "behind the speaker", POSE_KIND_CLOSE: "close to the speaker",
                  POSE_KIND_SEAT: "at the seat"}.get(str(pose.get("kind") or ""))
     if placement:

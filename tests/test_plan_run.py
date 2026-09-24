@@ -797,12 +797,36 @@ class _LevelStore(_Store):
         return await super().bank(record)
 
 
+class _RedoOnPlacementGate(AnsweredGate):
+    """Presses Redo once, just after the operator confirms the first placement."""
+
+    def __init__(self, signals):
+        super().__init__()
+        self.signals = signals
+
+    def gate(self, index, attempt, entry):
+        if self.signals.retake.is_set() or self.grants:
+            return super().gate(index, attempt, entry)
+        try:
+            PositionGate.gate(self, index, attempt, entry)
+        except CaptureBeginDeferred:
+            held = (self.published()["pending"]["index"], self.published()["pending"]["attempt"])
+            self.grants.append(held)
+            self.release(*held)
+            self.signals.retake.set()
+            raise
+
+
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
-    """A plan whose recordings pass, judged on the level each take read; the
-    microphone is re-placed at take ``replace_at``, and the operator presses
-    Redo during each take in ``redo_at``."""
-    fakes, takes, gate, signals = FakeSeams(), count(1), AnsweredGate(), plan_run.RunSignals()
+    """A plan whose recordings pass, admitted by the conductor as a web run's are
+    and judged on the level each take read; the microphone is re-placed at take
+    ``replace_at``, and the operator presses Redo during each take in
+    ``redo_at``, take 0 being just after the first placement is confirmed."""
+    fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
+    gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
+    captures = plan_run.prepare_plan_captures(request)
+    conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
 
     def assessor(analysis, **kwargs):
         take = next(takes)
@@ -818,7 +842,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
             return await plan_run.run_plan(
                 request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
                 analyze=lambda record, _id: _measure_analysis(ExcitationProgram.from_dict(record["program"])),
-                captures=plan_run.prepare_plan_captures(request), assessor=assessor)
+                captures=captures, assessor=assessor,
+                admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
 
     result = asyncio.run(run())
     selected = [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
@@ -828,18 +853,22 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
 def test_a_near_field_take_levels_itself_before_it_is_kept():
     """Each placement's first attempt plays under the target and is retaken at
     the solved peak; the rest of that placement starts there, a re-placement
-    starts quiet again, and in-band re-seats are never sent back as drift
-    (ADR-0361)."""
+    starts quiet again, named the opener again, and in-band re-seats are never
+    sent back as drift, though each banks its reading (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
+    readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
 
-    result, fakes, selected, _ = _run_levelled(request, (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0),
-                                               replace_at=3)
+    result, fakes, selected, gate = _run_levelled(request, readings, replace_at=3)
 
     assert result.status == "complete"
     assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
+    steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
+    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+    assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
+        _takes(result.to_dict()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
 
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
@@ -866,24 +895,48 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     assert not any("level_step" in progress for progress in gate.progress)
 
 
-def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round():
+@pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
+def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
     """Each redo asks for the microphone again and starts the pose over, quiet
-    and with its retries, so redos past the pose's budget never end the round;
-    the page is told which plays are the quiet opener (ADR-0361)."""
+    and with its retries, so redos past the pose's budget never end the round,
+    even one with no retries; the page is told which plays are the quiet
+    opener, and a pose whose opener landed plays the rest levelled (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
-        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver="woofer") for mm in (15, 30)),
-        purpose="reference", regime="near_field"))
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        for mm, repeats in ((15, 1), (30, 2))), purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first openers, then lets each pose land.
-    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 64.0, 80.0),
+    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 80.0, 80.0),
                                                   redo_at=range(1, redos + 1))
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
     assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
-    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, -27.0]
-    assert selected == [False] * (redos + 1) + [True, False, True]
+    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, None]
+    assert selected == [False] * (redos + 1) + [True, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+    assert list(steps.values()) == ["opener"] * (redos + 1) + ["levelled", "opener", "levelled"]
+
+
+@pytest.mark.parametrize("redo_at,readings,allowed", [
+    ((0,), (66.0, 80.0, 80.0), 0),
+    ((3,), (66.0, 80.0, 80.0, 66.0, 80.0, 80.0), 2),
+], ids=["before_any_take", "during_the_second_take"])
+def test_a_redo_leaves_a_driver_pose_its_retries(monkeypatch, redo_at, readings, allowed):
+    """Admission charges every attempt after a take's first. A redo before any
+    take played only asks for the placement again, and a redo after two takes
+    carries a retry for each take it plays again, so a pose with no retries
+    still completes (ADR-0361)."""
+    monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+        ProgramPose(0, 0, repeats=2, kind="close", distance_m=0.015, driver="woofer"),),
+        purpose="reference", regime="near_field"), retries_per_pose=0)
+
+    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+
+    assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
+    assert [index for index, _ in gate.grants] == [1, 1]
+    assert selected[-2:] == [True, True]
+    assert [p["budget"]["allowed"] for p in gate.progress if "budget" in p][-1] == allowed
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
@@ -1346,6 +1399,19 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
         assert all(p["level_raise_dbfs"] == -12 for p in retried)
     else:
         assert all("retake_reason" not in p for p in live)
+
+
+def test_a_driver_pose_is_timed_as_its_opener_and_its_takes():
+    """A driver's pose plays a quiet opener before its levelled take, so its
+    first measurement is timed twice; a far-field pose's once (ADR-0361)."""
+    program = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: (
+        SimpleNamespace(role="woofer", kind="sweep", n_samples=8),))
+    spec = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
+    captures = [({"place": "at_driver", "driver": "woofer"}, spec)] * 2 + [({"place": "far"}, spec)]
+
+    facts = plan_run.schedule_facts(captures, lambda _spec: program, mover="arm")
+
+    assert facts["estimated_seconds"] == 8 * (3 + 1)
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
