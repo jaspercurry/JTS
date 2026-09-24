@@ -8,7 +8,7 @@ import math
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.biquad import FilterSpec, PeqFilter
+from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.speaker_layout import SUB_CROSSOVER_ORDER
@@ -237,17 +237,6 @@ MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 
-# A linearization shelf carries NO steepness of its own. Every shelf reaches
-# CamillaDSP through ``emit_filter_spec``, which spells the one Butterworth
-# ``biquad.SHELF_Q`` — the same Q the fit engine designed the
-# shelf at and scored its residual with. Both shelf types share it.
-#
-# CamillaDSP's Butterworth is ``slope: 12`` (S = slope/12, S = 1); at
-# ``slope: 6`` the realized Q falls with the shelf's gain (0.476 at -11 dB,
-# missing the designed curve by up to 1.7 dB across the tweeter band). See
-# ``SHELF_Q`` for the formula and the upstream test that pins it.
-
-
 def linearization_slot(
     index: int, count: int, filters: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -262,7 +251,7 @@ def linearization_slot(
     """
     biquad_type = filters[index]["biquad_type"]
     leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
-    if index == 0 and biquad_type in ("Highshelf", "Lowshelf"):
+    if index == 0 and biquad_type in SHELF_BIQUAD_TYPES:
         return "shelf"
     if (
         index == count - 1
@@ -429,7 +418,6 @@ def _validate_linearization_shelf_structure(
     candidate was corrupted or produced by something else, so it raises rather
     than letting a duplicate filter name reach the graph. Peaking is always fine.
     """
-    shelf_types = {"Highshelf", "Lowshelf"}
     n = len(role_filters)
     for i, entry in enumerate(role_filters):
         biquad_type = entry["biquad_type"]
@@ -437,7 +425,7 @@ def _validate_linearization_shelf_structure(
         # one that classifies as a "peak" slot (a shelf mid-chain, a second
         # shelf, a taper without a Lowshelf lead, a taper not last) is invalid.
         if (
-            biquad_type in shelf_types
+            biquad_type in SHELF_BIQUAD_TYPES
             and linearization_slot(i, n, role_filters) == "peak"
         ):
             raise ActiveSpeakerConfigError(

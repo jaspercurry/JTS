@@ -29,12 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
-from jasper.biquad import (
-    GAINLESS_BIQUAD_TYPES,
-    FilterSpec,
-    filter_response_db,
-    freq_trig,
-)
+from jasper.biquad import GAINLESS_BIQUAD_TYPES, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_db, freq_trig
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +210,7 @@ class SimpleEq:
 class SimpleBand:
     """Fixed slot for one Simple-mode band. Only gain is user-editable;
     frequency, filter type, and Q are fixed per slot. Shelf slots carry no
-    ``q``: every shelf is drawn and emitted at ``SHELF_Q`` (see that constant)."""
+    ``q``: every shelf is drawn and emitted at :data:`jasper.biquad.SHELF_Q`."""
 
     key: str
     field: str
@@ -718,7 +713,7 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
     for i, band in enumerate(padded, start=1):
         if not band.enabled:
             band = idle
-        if band.biquad_type in {"Lowshelf", "Highshelf"}:
+        if band.biquad_type in SHELF_BIQUAD_TYPES:
             # No steepness field: the emitter spells every shelf at SHELF_Q,
             # which is the Q biquad_coeffs draws it at. A band-level Q here
             # would be a steepness no evaluator reads.

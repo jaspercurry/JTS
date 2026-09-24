@@ -36,6 +36,7 @@ from typing import Iterable, Sequence
 
 from jasper.biquad import (
     GAINLESS_BIQUAD_TYPES,
+    SHELF_BIQUAD_TYPES,
     SHELF_Q,
     SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
@@ -83,7 +84,7 @@ def emit_filter_spec(spec: FilterSpec) -> list[str]:
         f"      type: {spec.biquad_type}",
         f"      freq: {fmt(spec.freq)}",
     ]
-    if spec.biquad_type in {"Lowshelf", "Highshelf"}:
+    if spec.biquad_type in SHELF_BIQUAD_TYPES:
         lines.append(f"      q: {SHELF_Q:.{SHELF_Q_EMIT_DECIMALS}f}")
         lines.append(f"      gain: {fmt(spec.gain)}")
     elif spec.biquad_type in GAINLESS_BIQUAD_TYPES:

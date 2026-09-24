@@ -53,6 +53,7 @@ FILTER_EPSILON_DB = 0.05
 # FilterSpec.active(). Highpass/Lowpass protect against rumble / tame top
 # end; Notch is a surgical gain-less cut.
 GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
+SHELF_BIQUAD_TYPES = frozenset({"Lowshelf", "Highshelf"})
 
 # The ONE steepness every preference-EQ and linearization Lowshelf/Highshelf is
 # both MODELLED at and EMITTED at: the Butterworth (non-resonant, no-overshoot)
@@ -97,13 +98,6 @@ SHELF_Q_EMIT_DECIMALS = 7
 @dataclass(frozen=True)
 class FilterSpec:
     """A bounded CamillaDSP-friendly filter definition (preference EQ band).
-
-    The program-domain (stereo) DSP contract type, sibling to
-    :class:`PeqFilter`. The sound model (``jasper.sound.profile``) builds
-    these from a ``SoundProfile``; the shared stereo-prefix builder
-    (``jasper.camilla_stereo_prefix``) emits them — so this lives in the
-    neutral contract layer, importable by both the sound and active-speaker
-    emitters without a cross-dependency.
 
     ``q`` carries the Q-parameterised types only (Peaking / Highpass / Lowpass /
     Notch). Shelves carry NO steepness field: every shelf is emitted and
@@ -169,7 +163,7 @@ def biquad_coeffs(
     cw = math.cos(w0)
     sw = math.sin(w0)
     if q is None:
-        q = SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else 1.0
+        q = SHELF_Q if biquad_type in SHELF_BIQUAD_TYPES else 1.0
     alpha = sw / (2.0 * max(q, EVALUABLE_Q_MIN))
     if biquad_type == "Lowpass":
         return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
@@ -257,28 +251,15 @@ def filter_response_complex(
     freqs: Iterable[float],
     trig: list[tuple[float, float, float, float]] | None = None,
 ) -> list[complex]:
-    """Complex response H(e^{jω}) of one biquad across ``freqs`` — the
-    minimum-phase complement of :func:`filter_response_db`.
+    """Complex response H(e^{jω}) of one biquad across ``freqs``: the
+    minimum-phase twin of :func:`filter_response_db`, whose magnitude it
+    equals bin-for-bin.
 
-    Same RBJ ``biquad_coeffs`` SSOT, same ``num``/``den`` construction, so
-    ``|filter_response_complex(spec, f)| == 10**(filter_response_db(spec, f)
-    / 20)`` bin-for-bin (pinned by a magnitude-consistency test). The magnitude
-    twin discards phase; this keeps it. That phase is load-bearing wherever a
-    correction is applied to a branch that is then SUMMED with another branch:
-    the emitted CamillaDSP biquads are minimum-phase and rotate phase near
-    their corners, and a crossover's two-branch summation is phase-dominated,
-    so modeling a correction as a zero-phase magnitude scale (``10**(db/20)``)
-    mispredicts the summed response. Measured on JTS3: the zero-phase model
-    mistracked the VERIFY summation by ~2 dB where this complex model tracks it
-    to ~0.5 dB (see ``jasper.active_speaker.linearization_fit.
-    complex_correction_response``). Callers apply it in the LINEAR domain:
-    ``H = H * filter_response_complex(spec, freqs)``.
-
-    (The ``den == 0`` fallback returns unity, matching the magnitude twin's
-    ``den > 0.0`` guard; a stable biquad has ``a0 > 0`` so it never triggers.
-    Unlike the magnitude twin this does not floor the result at 1e-12 — the
-    floor only bites at unphysical ~-120 dB nulls a peaking/shelf correction
-    never produces, and flooring a complex value would break the phase.)
+    Keep the phase wherever a correction is applied to a branch that is then
+    summed with another: a crossover sum is phase-dominated, so a zero-phase
+    ``10**(db/20)`` scale mispredicts it. Apply in the linear domain,
+    ``H = H * filter_response_complex(spec, freqs)``. Not floored like the
+    magnitude twin, because flooring a complex value would break its phase.
     """
     coeffs = biquad_coeffs(spec.biquad_type, spec.freq, spec.gain, spec.q)
     return biquad_response_complex(coeffs, freq_trig(freqs) if trig is None else trig)

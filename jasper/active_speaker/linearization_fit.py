@@ -27,7 +27,7 @@ import numpy as np
 
 from jasper.audio_measurement.peq import design_peq, predicted_response
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q as _HIGHSHELF_Q, biquad_coeffs
+from jasper.biquad import SHELF_Q
 
 from .branch_chain import chain_response, branch_headroom_db
 from .branch_target import (
@@ -91,14 +91,6 @@ _PEAKING_Q_MAX: float = 8.0
 # property (Q 1.0 -> +/-0.68 octaves, Q 0.5 -> +/-1.25, Q 0.3 -> +/-1.85).
 _PEAKING_Q_MIN: float = 1.0
 _PEAKING_FLATNESS_TARGET_DB: float = 1.0
-
-# The RBJ Highshelf's fixed Butterworth Q, from
-# ``biquad.SHELF_Q`` — the APPLY stage spells this same
-# number into the emitted CamillaDSP ``q``, so this module's model matches
-# what the speaker realizes. Keep in lockstep;
-# ``tests/test_sound_peq_response.py`` pins CamillaDSP's slope<->Q formula.
-# At ``slope: 6`` the realized Q collapses to 0.476 at -11 dB (the
-# 2026-07-27 shelf-Q defect).
 
 # Octave-band centers for the candidate artifact's compact reason summary.
 _OCTAVE_BAND_CENTERS_HZ: tuple[float, ...] = (
@@ -332,27 +324,6 @@ class BlindZonePlacement:
             "blind_band_hz": [self.blind_band_hz[0], self.blind_band_hz[1]],
             "measured_excess_db": self.measured_excess_db,
         }
-
-
-def _highshelf_response_db(
-    freqs_hz: np.ndarray, corner_hz: float, gain_db: float, q: float,
-) -> np.ndarray:
-    """Highshelf magnitude in dB at ``freqs_hz``: the coefficients of
-    :func:`jasper.biquad.biquad_coeffs`, evaluated over the whole grid with
-    NumPy (the shared evaluator stays NumPy-free)."""
-    b0, b1, b2, a0, a1, a2 = biquad_coeffs("Highshelf", float(corner_hz), float(gain_db), float(q))
-    f = np.asarray(freqs_hz, dtype=np.float64)
-    w = 2.0 * np.pi * np.maximum(f, 1e-6) / float(RESPONSE_SAMPLE_RATE_HZ)
-    c1, s1 = np.cos(w), np.sin(w)
-    c2, s2 = np.cos(2.0 * w), np.sin(2.0 * w)
-    num_re = b0 + b1 * c1 + b2 * c2
-    num_im = -(b1 * s1 + b2 * s2)
-    den_re = a0 + a1 * c1 + a2 * c2
-    den_im = -(a1 * s1 + a2 * s2)
-    num = num_re * num_re + num_im * num_im
-    den = den_re * den_re + den_im * den_im
-    mag2 = np.divide(num, den, out=np.zeros_like(num), where=den > 0.0)
-    return 10.0 * np.log10(np.maximum(mag2, 1e-12))
 
 
 @dataclass(frozen=True)
@@ -900,7 +871,7 @@ def _shelf_stage(
     if shelf_cut_db < _MIN_FILTER_GAIN_DB:
         return None
     return LinearizationFilter(
-        biquad_type="Highshelf", freq=corner_hz, q=_HIGHSHELF_Q, gain=-shelf_cut_db,
+        biquad_type="Highshelf", freq=corner_hz, q=SHELF_Q, gain=-shelf_cut_db,
     )
 
 
@@ -1085,7 +1056,7 @@ def _hf_continuation_stage(
 
     shelf_gain_db = -min(spend, vocabulary.max_gain_db)
     lowshelf = LinearizationFilter(
-        biquad_type="Lowshelf", freq=onset_hz, q=_HIGHSHELF_Q, gain=shelf_gain_db,
+        biquad_type="Lowshelf", freq=onset_hz, q=SHELF_Q, gain=shelf_gain_db,
     )
     lowshelf_db = 20.0 * np.log10(
         np.maximum(np.abs(complex_correction_response((lowshelf,), grid_hz)), 1e-12)
@@ -1151,7 +1122,7 @@ def _hf_continuation_stage(
         if -taper_gain >= _MIN_FILTER_GAIN_DB:
             emitted.append(LinearizationFilter(
                 biquad_type="Highshelf", freq=taper_hz,
-                q=_HIGHSHELF_Q, gain=taper_gain,
+                q=SHELF_Q, gain=taper_gain,
             ))
 
     return _HfContinuation(
@@ -1838,8 +1809,8 @@ def fit_driver_linearization(
             vocabulary=vocabulary, binding=binding,
         )
         if shelf is not None:
-            working_db = working_db + _highshelf_response_db(
-                grid_hz, shelf.freq, shelf.gain, shelf.q,
+            working_db = working_db + 20.0 * np.log10(
+                np.maximum(np.abs(complex_correction_response((shelf,), grid_hz)), 1e-12)
             )
             filters.append(shelf)
             remaining_filters -= 1

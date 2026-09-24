@@ -51,11 +51,9 @@ from jasper.active_speaker.linearization_fit import (
     LinearizationFilter,
     LinearizationFit,
     _HF_MIN_OCCURRENCES,
-    _HIGHSHELF_Q,
     _boost_exclusion_verdicts,
     _blind_zone_placements,
     _core_or_fallback_mask,
-    _highshelf_response_db,
     _lift_stage,
     ladder_smooth,
     _power_band_average_db,
@@ -77,6 +75,7 @@ from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.peq import PEQ, predicted_response
 from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.biquad import SHELF_Q, filter_response_db
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)
 
@@ -461,7 +460,6 @@ def test_complex_correction_response_magnitude_matches_filter_response_db():
     bin-for-bin. The complex correction and the emitted graph's magnitude share
     the ``biquad_coeffs`` SSOT, so the applied correction's magnitude can never
     silently drift from what CamillaDSP realizes -- only its phase is added."""
-    from jasper.biquad import filter_response_db
 
     q_shelf = 1.0 / np.sqrt(2.0)
     filters = (
@@ -517,7 +515,6 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     from jasper.audio_measurement.program_analysis import (
         VERIFY_NOTCH_EXCLUSION_DB, predicted_branch_sum,
     )
-    from jasper.biquad import filter_response_db
 
     fc = 2000.0
     freqs = np.geomspace(500.0, 8000.0, 4096)
@@ -554,35 +551,6 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     # (test_filter_response_complex_*); re-asserting truth-vs-truth here was
     # tautological (2026-07-24 review nit) — this test's load-bearing claim is
     # the zero-phase misprediction above.
-
-
-# --------------------------------------------------------------------------- #
-# _highshelf_response_db -- RBJ parity properties
-# --------------------------------------------------------------------------- #
-
-
-def test_highshelf_zero_gain_is_unity_everywhere():
-    freqs = np.geomspace(20.0, 20000.0, 50)
-    resp = _highshelf_response_db(freqs, 1000.0, 0.0, 1.0 / np.sqrt(2.0))
-    assert np.allclose(resp, 0.0, atol=1e-9)
-
-
-def test_highshelf_half_gain_at_corner():
-    """The RBJ shelf's well-known property: at freq == corner, response == gain / 2."""
-    resp = _highshelf_response_db(np.array([1000.0]), 1000.0, 8.0, 1.0 / np.sqrt(2.0))
-    assert resp[0] == pytest.approx(4.0, abs=0.1)
-
-
-def test_highshelf_numpy_evaluation_matches_the_shared_evaluator():
-    """The vectorized grid evaluation agrees with jasper.biquad.filter_response_db."""
-    from jasper.biquad import FilterSpec, filter_response_db
-
-    freqs = [200.0, 1000.0, 4000.0, 12000.0, 19000.0]
-    corner, gain, q = 3000.0, -5.5, 1.0 / np.sqrt(2.0)
-    ours = _highshelf_response_db(np.array(freqs), corner, gain, q)
-    reference = filter_response_db(FilterSpec("x", "Highshelf", corner, gain, q=q), freqs)
-    for a, b in zip(ours, reference):
-        assert a == pytest.approx(b, abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #
@@ -2283,7 +2251,7 @@ def test_reduce_cuts_uses_the_real_evaluator_not_a_linear_gain_model():
     against the same complex evaluator the emitter's graph realizes."""
     grid = DEFAULT_ENVELOPE_GRID_HZ
     shelf = LinearizationFilter(
-        biquad_type="Lowshelf", freq=4000.0, q=_HIGHSHELF_Q, gain=-9.0,
+        biquad_type="Lowshelf", freq=4000.0, q=SHELF_Q, gain=-9.0,
     )
     reduced, delivered = reduce_cuts_for_lift(
         (shelf,), np.full_like(grid, 3.0), np.full_like(grid, 3.0), grid,
@@ -3467,10 +3435,10 @@ def test_a_shelf_corner_inside_a_hole_is_not_named():
     in_hole_hz = 1404.4032452955714
     cascade = (
         LinearizationFilter(
-            biquad_type="Highshelf", freq=in_hole_hz, q=_HIGHSHELF_Q, gain=-3.0,
+            biquad_type="Highshelf", freq=in_hole_hz, q=SHELF_Q, gain=-3.0,
         ),
         LinearizationFilter(
-            biquad_type="Lowshelf", freq=in_hole_hz, q=_HIGHSHELF_Q, gain=-2.0,
+            biquad_type="Lowshelf", freq=in_hole_hz, q=SHELF_Q, gain=-2.0,
         ),
         LinearizationFilter(
             biquad_type="Peaking", freq=in_hole_hz, q=2.0, gain=-1.7577,
