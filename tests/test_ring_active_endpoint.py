@@ -59,11 +59,11 @@ from jasper.fanin_coupling import (
     ring_active_endpoint_armed,
     resolve_ring_wire,
 )
+from jasper.active_speaker.playback_route import resolve_output_layout
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
-    resolve_output_layout,
 )
 from jasper.output_topology_store import save_output_topology
 
@@ -685,7 +685,7 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     from jasper.fanin_coupling import TRANSPORT_SHAPES
     from jasper.transport_coherence import transport_topology_for_coupling
 
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     produced = {
         transport_topology_for_coupling(
@@ -1916,15 +1916,16 @@ def _recorded_emit_kwargs(
 def _commissioning_apply_site(cam):
     from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
-    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import applied_tune, baseline_profile
+    from jasper.active_speaker.state_paths import config_text_sha256
 
     def call_site():
-        text, reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
+        reviewed = applied_tune.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
         assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
         result = asyncio.run(apply_candidate(camilla_factory=lambda: cam))
         assert result["status"] == "applied", result["issues"]
         assert cam.path == result["profile"]["config"]["path"]
-        assert Path(cam.path).read_text() == text
+        assert config_text_sha256(Path(cam.path).read_text()) == reviewed["config"]["sha256"]
         return result["profile"]
 
     return call_site
@@ -2079,7 +2080,7 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
     from dataclasses import replace
-    from jasper.active_speaker import ActiveSpeakerConfigError, baseline_profile
+    from jasper.active_speaker import ActiveSpeakerConfigError, applied_tune, baseline_profile
     from jasper.active_speaker.candidate_parts import candidate_from_design_draft
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
@@ -2089,7 +2090,7 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     draft = load_design_draft(topology=topology)
     declaration = load_tuning_declaration(topology, design_draft=draft)
     candidate = candidate_from_design_draft(topology, draft)
-    _, reviewed = baseline_profile.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
+    reviewed = applied_tune.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
     assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
@@ -2826,7 +2827,7 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         lambda *a, **k: applied,
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.promote_applied_baseline_candidate",
+        "jasper.active_speaker.baseline_apply.promote_applied_baseline_candidate",
         lambda *a, **k: None,
     )
 
@@ -3189,7 +3190,7 @@ def _anchor_reemit_harness(
     # default path would otherwise decide this test's outcome from whatever the
     # dev machine happens to have on disk.
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_load.load_commission_load_state",
+        "jasper.active_speaker.startup_load.load_commission_load_state",
         lambda *a, **k: (
             {"status": "loaded", "target": "mono/tweeter",
              "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}

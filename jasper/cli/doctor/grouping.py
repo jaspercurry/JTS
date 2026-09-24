@@ -619,8 +619,8 @@ def check_grouping_leader_pipe() -> CheckResult:
     """
     from ...active_speaker.environment import camilla_statefile_path
     from ...multiroom.config import is_active_leader
-    from ...multiroom.leader_config import playback_is_pipe
-    from ...multiroom.reconcile_plan import SNAPFIFO
+    from ...camilla_config_contract import playback_is_pipe
+    from ...multiroom.snapfifo import SNAPFIFO
     from .correction import (
         REASON_CAMILLA_CONFIG_MISSING,
         REASON_CAMILLA_CONFIG_UNREADABLE,

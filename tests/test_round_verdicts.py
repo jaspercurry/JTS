@@ -10,7 +10,8 @@ import pytest
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
+from jasper.active_speaker.round_packet_report import packet_index
 from jasper.active_speaker.round_verdicts import common_measured_band, round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
 from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
@@ -192,6 +193,13 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     (tmp_path / INDEX_FILENAME).write_text(index)
     for prefix in ("series woofer:", "fit woofer:", "null ceiling "):
         assert sum(line.startswith(prefix) for line in index.splitlines()) == 1
+    for group in manifest["sets"]:
+        role = group["capture_basis"].get("role") or "summed"
+        assert any(f"impulse {tmp_path} --set {group['set_id']} --take " in line and line.endswith(f"--role {role}`")
+                   for line in index.splitlines())
+    curveless = {**manifest, "sets": [{**group, "takes": [{**take, "curve": None} for take in group["takes"]]}
+                                      for group in manifest["sets"]]}
+    assert "jasper-round-views impulse" not in packet_index(packet, tmp_path, [], curveless)
 
 
 @pytest.mark.parametrize("change", [

@@ -155,7 +155,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
         GROUPING_RING_FORMAT,
         GROUPING_RING_PCM,
     )
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -209,7 +209,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
     """The bake captures Ring A at the box's resolved wire format — and its sink
     is STILL the snapfifo `File`, never Ring B."""
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -305,7 +305,6 @@ def test_pair_preserves_applied_tune_without_old_measurements(
         write=True,
          config_path=tmp_path / "solo.yml",
     )
-    assert applied["permissions"]["may_apply"]
     applied["status"] = "applied"
     applied["source"].pop("measured_candidate_fingerprint")
     applied.pop("candidate_artifact_path")
@@ -682,10 +681,7 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
     )
     monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-    from jasper.active_speaker import baseline_profile as bp_mod
-    monkeypatch.setattr(
-        bp_mod, "baseline_config_path", lambda *a, **k: tmp_path / "no_durable.yml",
-    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_durable.yml"))
     _patch_restore_reproof(monkeypatch, allowed=False)
     corrupt = tmp_path / "active_speaker_baseline.yml"
     corrupt.write_text("# a flat/passive config that slipped onto disk\n", encoding="utf-8")

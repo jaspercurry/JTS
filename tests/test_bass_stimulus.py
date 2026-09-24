@@ -25,7 +25,8 @@ from jasper.active_speaker.measurement_programs import gate_exemption, load_prog
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
-from jasper.audio_measurement.distortion import required_pre_guard_s, segment_sweep_meta
+from jasper.audio_measurement.deconv import required_pre_guard_s
+from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture

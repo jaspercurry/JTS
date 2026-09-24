@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
+from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
 from jasper.active_speaker.candidate_bank import BankedCandidate
@@ -22,7 +23,7 @@ from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
-from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER
+from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.cli import round as round_cli
 
@@ -59,7 +60,7 @@ def test_program_table_projections(site):
     candidate = _candidate()
     composed = compose_candidate(BankedCandidate(candidate, "", "", Path("candidate.json")), base_profile={},
                                  sections={section.name: None for section in sections if section.reset})
-    snapshot = bp.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
+    snapshot = baseline_record.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
         candidate.source_preset, mono_output_topology(), {}, "null"))
     snapshot_header = {"schema_version", "domain", "topology_id", "topology_fingerprint", "preset", "corrections",
                        "driver_protection", "playback_device", "measured_candidate_fingerprint"}
@@ -140,12 +141,12 @@ def test_run_purposes_preserves_primary_identity_without_a_registry_row(name):
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
 def test_summed_bookkeeping_includes_one_frequency_image(purpose):
-    assert ("frequency", False, False) in mp.bookkeeping_views(purpose)
+    assert ("frequency", False, False) in bookkeeping_views(purpose)
 
 
 def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
-    assert mp.bookkeeping_views("speaker", has_room=True) == tuple(
-        row for row in mp.bookkeeping_views("room") if row[0] != "frequency")
+    assert bookkeeping_views("speaker", has_room=True) == tuple(
+        row for row in bookkeeping_views("room") if row[0] != "frequency")
 
 
 @pytest.mark.parametrize(("purpose", "has_room", "expected"), [
@@ -159,7 +160,7 @@ def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
                      ("inventory", True, False))),
 ])
 def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
-    assert mp.bookkeeping_views(purpose, has_room=has_room) == expected
+    assert bookkeeping_views(purpose, has_room=has_room) == expected
     assert {name for name, row in ARTIFACT_BY_VIEW.items() if row.builder} == set(BOOKKEEPING_ORDER)
     for view, _, _ in expected:
         row = ARTIFACT_BY_VIEW[view]
@@ -168,7 +169,7 @@ def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected
 
 
 def test_rear_co_purpose_banks_the_room_views_in_order():
-    assert mp.bookkeeping_views("rear", co_purposes=("room",)) == tuple(
+    assert bookkeeping_views("rear", co_purposes=("room",)) == tuple(
         (name, row.per_set, row.grades_against_base) for name in BOOKKEEPING_ORDER
         if {"room", "rear"}.intersection((row := ARTIFACT_BY_VIEW[name]).bookkeeping))
 

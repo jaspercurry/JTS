@@ -14,14 +14,16 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement.alignment import fractional_shift
-from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
+from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS, f_trusted_floor_hz, f_valid_floor_hz, gated_segment
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
+from jasper.active_speaker.prediction_document import CAPTURE_PREDICTION_KIND
+from jasper.output_topology import measurement_target_id
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
-from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segment
+from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 
@@ -58,7 +60,8 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
         raise ForwardModelError("window_ms must be positive and finite", detail={"field": "window_ms", "capture_id": capture_id})
     if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
         raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
-    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"), omitted=omitted)
+    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"),
+                                    omitted=omitted, clocked=True)
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())
@@ -211,11 +214,14 @@ def capture_prediction(
             })
         if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
-        outputs = candidate.source_preset.channel_map.outputs
-        channels = {output.driver_role: output.index for output in outputs}
-        if len(outputs) != 2 or set(channels) != set(basis.branches):
+        channel_map = candidate.source_preset.channel_map
+        channels = channel_map.primary_index_by_role
+        if len(channel_map.primary_outputs) != 2 or set(channels) != set(basis.branches):
             raise ForwardModelError("candidate prediction needs an unambiguous output binding for each recorded branch",
                                     detail={"field": "branch_output_binding", "branches": list(basis.branches)})
+        # A cardioid's rear plays no branch of a front take, so it has no transfer to scale.
+        unmodelled = sorted(measurement_target_id(output.driver_role, output.output_variant)
+                            for output in channel_map.variant_outputs)
         _recorded_graph(basis)
         source_graph, target_graph = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
         stereo = {role: {0: 1.0, 1: 1.0} for role in channels}
@@ -229,12 +235,14 @@ def capture_prediction(
         if basis_candidate is not None:
             raise ForwardModelError("source candidate lookup is only needed with --candidate-json")
         transfer = reconstruction_tf
+        unmodelled = []
     predicted = prediction_record(basis, transfer)
     summary = {
         "basis": basis.source, "omitted": omitted,
         "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
         "window": dict(basis.window),
         "branches": list(basis.branches),
+        "unmodelled_outputs": unmodelled,
         "reconstruction": _metric_summary(reconstruction),
         "acceptance": acceptance_block(
             str(basis.captures["summed"].record_path) if candidate is None else None
@@ -247,7 +255,7 @@ def capture_prediction(
         "prediction": {key: value for key, value in predicted.to_dict().items() if key != "take_path"},
     })
     return {
-        "schema_version": 1, "kind": "jts_capture_prediction", "summary": summary,
+        "schema_version": 1, "kind": CAPTURE_PREDICTION_KIND, "summary": summary,
         "prediction": predicted.to_dict(), "reconstruction": reconstruction,
         "relative_graph": changes.to_dict() if changes is not None else None,
         "limitations": [
@@ -256,5 +264,7 @@ def capture_prediction(
             "A finite window can change filter transients; inspect window sensitivity before narrow correction.",
             "Fixed base protection and device settings are held.",
             "No score or mismatch here vetoes a safe experiment.",
+            *([f"Outputs this take recorded no branch for ({', '.join(unmodelled)}) are not modelled; "
+               "a change to them is not in this forecast."] if unmodelled else []),
         ],
     }

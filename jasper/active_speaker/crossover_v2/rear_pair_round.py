@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker import state_paths
 from jasper.active_speaker.candidate_bank import _directories
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.json_fields import parse_utc_iso
@@ -30,10 +31,8 @@ def _front_pair_round(directory: Path) -> bool:
 
 def newest_rear_pair_round(root: Path | None = None, *, limit: int = _ROUND_LIMIT) -> dict[str, Any] | None:
     """Newest front pair in a bounded bank window, independent of tune identity."""
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: commissioning import cost
-
     banked = []
-    for path in _directories(root if root is not None else DEFAULT_CAMPAIGN_ROOT):
+    for path in _directories(root if root is not None else state_paths.DEFAULT_CAMPAIGN_ROOT):
         try:
             if (path / "bundle").is_dir():
                 provenance = _read_json_mapping(path / "provenance.json")

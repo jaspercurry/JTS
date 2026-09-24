@@ -42,6 +42,9 @@ class ViewArtifact(NamedTuple):
     ``packet`` is the analysis family carrying it in ``packet.json``.
     ``schema`` names the artifact's shape and is the ``schema`` the answer of
     the view that writes it carries; empty for an artifact no view writes.
+    ``per_take`` marks a view that files one artifact per take it reads
+    (:func:`~.crossover_v2.round_inputs.take_artifact_name`), so no round
+    inventory row stands for it.
     """
 
     artifact: str
@@ -54,6 +57,7 @@ class ViewArtifact(NamedTuple):
     builder: str | None = None
     packet: str | None = None
     schema: str = ""
+    per_take: bool = False
 
     @property
     def per_set(self) -> bool: return "<set-id>" in self.takes
@@ -70,6 +74,13 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,), schema="jts_directivity/1"),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/1"),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>"), schema=FREQUENCY_VIEW_SCHEMA),
+    "impulse": ViewArtifact("impulse.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_impulse/1", per_take=True),
+    "group-delay": ViewArtifact("group_delay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_group_delay/1",
+                                per_take=True),
+    "decay": ViewArtifact("decay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_decay/1", per_take=True),
+    "compare": ViewArtifact("compare.json", (
+        "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
+    ), schema="jts_compare/1", per_take=True),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA),
     # The batch spans one set per played candidate, so this view reads the
     # round rather than a set.
@@ -143,3 +154,13 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
 
 
 PROG = "jasper-round-views"
+
+
+def bookkeeping_views(purpose: str, *, has_room: bool = False,
+                      co_purposes: tuple[str, ...] = ()) -> tuple[tuple[str, bool, bool], ...]:
+    """View name, per-set scope, and whether it grades against the base."""
+    wanted = {purpose, *co_purposes} | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
+    rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
+    # A speaker round takes its frequency view from the packet writer, not here.
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
+                 if wanted.intersection(row.bookkeeping) and (purpose != PURPOSE_SPEAKER or name != "frequency"))

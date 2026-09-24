@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
 
+from .._common import MeasurementGraphRefused
 from .journey import PHASE_CHECK
 from .playback_transaction import PlaybackTransaction
 from .program_transaction import (
@@ -216,7 +217,6 @@ def bind_program_composer(
         if not expected_graph:
             raise ValueError("playback has no installed measurement graph")
         from ..graph_transfer import GraphTransferError  # lazy: numerical analysis at composition
-        from ..measurement_emit import MeasurementGraphRefused  # lazy: measurement runtime
         from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
 
         try:

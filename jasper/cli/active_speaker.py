@@ -35,6 +35,7 @@ from jasper.active_speaker.environment import (
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
+    path_safety_evidence_payload,
     requirements_payload,
     write_path_safety_evidence,
 )
@@ -55,12 +56,12 @@ from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     ReemitAnchorReport,
     describe_safe_graph_for_refusal,
+    load_commission_load_state,
     reemit_staged_startup_anchor,
     startup_anchor_from_decision,
 )
 from jasper.active_speaker.commission_load import (
     build_driver_commission_load_preflight,
-    load_commission_load_state,
     load_driver_commissioning_config,
     rollback_driver_commissioning_config,
 )
@@ -271,7 +272,7 @@ def _cmd_environment_probe(args: argparse.Namespace) -> int:
     payload = probe_active_speaker_environment(
         config_path=args.config,
         statefile_path=args.statefile,
-        path_safety_evidence_path=args.path_safety_evidence,
+        path_safety=path_safety_evidence_payload(args.path_safety_evidence),
         run_config_check=args.check_config,
     )
     if args.json:

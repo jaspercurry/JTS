@@ -22,8 +22,7 @@ reader agree" structural instead of a claim someone has to check.
 module whose transport constants are already imported piecemeal by
 production and test modules that want nothing else from it — for example,
 ``jasper.cli.doctor.grouping``'s ``check_grouping_leader_pipe`` imports only
-``SNAPFIFO`` from :mod:`jasper.multiroom.reconcile_plan`, not the whole
-module's surface.
+``SNAPFIFO`` from its own leaf, :mod:`jasper.multiroom.snapfifo`.
 
 **Deliberately NOT a member of the ring platform's registries.**
 :data:`jasper.fanin_coupling.RING_PCM_DEVICES` is what

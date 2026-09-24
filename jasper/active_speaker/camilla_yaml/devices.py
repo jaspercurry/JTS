@@ -19,14 +19,9 @@ from jasper.fanin_coupling import (
     resolve_ring_wire,
 )
 
-from ..profile import ActiveSpeakerConfigError
+from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
-# The ring layout's channel accept-set (``jasper_ring::Geometry::validate_self``
-# and the C ioplug's ``JTS_RING_MIN_CHANNELS`` / ``MAX_RING_CHANNELS``). Spelled
-# here so the topology side refuses a width the transport could not carry
-# instead of deferring it to an attach failure.
-MIN_RING_CHANNELS = 2
-MAX_RING_CHANNELS = 8
+from ..profile import ActiveSpeakerConfigError
 
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jasper_out",

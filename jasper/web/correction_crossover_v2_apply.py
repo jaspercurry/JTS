@@ -9,7 +9,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.active_speaker import baseline_profile, runtime_contract
+from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -21,12 +21,13 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path, config_text_sha256
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.dsp_apply import DspApplyError, dsp_writer_lock
+from jasper.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
 from jasper.log_event import log_event
 from jasper.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
-from .sound_active_speaker import apply_measured_crossover_geometry
+from .sound_design_draft import apply_measured_crossover_geometry
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ async def apply_candidate(
     from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
-    async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
+    async with dsp_writer_lock(baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
             if isinstance(candidate, str):
                 banked = find_banked_candidate(candidate)
@@ -60,27 +61,24 @@ async def apply_candidate(
                              else commissioning_candidate(topology, draft))
             expected = selected.fingerprint
             assert_crossover_honours_declared_floor(candidate_on_declaration(selected, declaration.preset).source_preset)
-            text = compile_tuning_graph(declaration, candidate=selected)
             preference_filters, trim_db = sound_settings.saved_sound_layers()
-            if preference_filters or trim_db:
-                text = compile_tuning_graph(declaration, candidate=selected,
-                    preference_filters=preference_filters, output_trim_db=trim_db)
-            sha = baseline_profile.config_text_sha256(text)
-            proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
-                applied_baseline_state={"recomposition_snapshot": baseline_profile.recomposition_snapshot_for(
-                    selected, declaration=declaration, design_draft=draft)})
-            if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
+            text = compile_tuning_graph(declaration, candidate=selected,
+                preference_filters=preference_filters, output_trim_db=trim_db)
+            sha = config_text_sha256(text)
+            proof = runtime_contract.prove_desired_graph(topology, text, snapshot=baseline_record.recomposition_snapshot_for(
+                selected, declaration=declaration, design_draft=draft))
+            if not runtime_contract.desired_graph_approved(proof):
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
-            target = baseline_profile.baseline_candidate_config_path(text)
-            prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
+            target = baseline_candidate_config_path(text)
+            prepared = baseline_record.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
                 config_path=target, config_sha256=sha,
                 saved_timing=(incumbent or {}).get("timing"))
             prepared.update(issues=list(selected.analysis.get("issues") or []),
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
             if from_saved_draft or on_candidate_verified is not None:
                 atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
-                if not baseline_profile.validate_camilla_config(target).ok_to_apply:
+                if not validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
             offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
             summary = v2durable.candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
@@ -88,8 +86,8 @@ async def apply_candidate(
             if on_candidate_verified is not None:
                 await on_candidate_verified()
             load_config, get_current_config_path = v2state.baseline_apply_seams(camilla_factory())
-            baseline_profile._baseline_apply_started(topology, prepared)
-            async with baseline_profile.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
+            baseline_apply.apply_started(topology, prepared)
+            async with baseline_apply.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
                     load_config=load_config, get_current_config_path=get_current_config_path) as (applied, profile):
                 with v2state._state_lock:
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=incumbent,
@@ -106,20 +104,20 @@ async def apply_candidate(
                         except Exception as exc:  # noqa: BLE001
                             update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
                             log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
-                result = await baseline_profile._baseline_apply_result(topology, profile, apply_state=applied)
+                result = await baseline_apply.apply_result(topology, profile, apply_state=applied)
             log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
             return {**result, "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
         except (CandidateBankRefusal, CrossoverV2Refused, MeasurementGraphRefused,
                 MeasuredCrossoverCandidateError, ActiveSpeakerConfigError, CrossoverBelowDeclaredFloor) as exc:
             code = getattr(exc, "code", None) or getattr(exc, "reason", None) or "compose_refused"
             log_event(logger, "correction.crossover_v2_apply", status="blocked", code=code, candidate_fingerprint=expected)
-            baseline_profile._commissioning_refusal(prepared, exc)
+            applied_tune.commissioning_refusal(prepared, exc)
             if not from_saved_draft:
                 raise CrossoverV2Refused(str(exc), code=code, issues=getattr(exc, "issues", ())) from exc
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}
         except DspApplyError as exc:
             log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
-            result = await baseline_profile._baseline_apply_result(topology, prepared, apply_state=exc.state, error=exc)
+            result = await baseline_apply.apply_result(topology, prepared, apply_state=exc.state, error=exc)
             return {**result, "issue": {"code": "apply_failed", "message": str(exc)}}
 
 

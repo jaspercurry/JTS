@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE, RESULT_KEEP_PREVIOUS
+from jasper.active_speaker import driver_base_trim
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -287,7 +288,7 @@ def _resolve_measurement_level_trims(
     nothing: no statefile is read and no preview is loaded.
 
     The answer is NOT decided here:
-    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` owns
+    :func:`~jasper.active_speaker.driver_base_trim.measured_level_trims` owns
     it, and this function only loads the declaration that answer is keyed to.
 
     **No/unreadable evidence answers empty WITHOUT raising, and there is no
@@ -303,12 +304,11 @@ def _resolve_measurement_level_trims(
     """
     if not spec.level_matched:
         return {}, ""
-    from jasper.active_speaker.baseline_profile import measured_level_trims
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft()
-    trims, meta = measured_level_trims(
+    trims, meta = driver_base_trim.measured_level_trims(
         preset, build_crossover_preview(draft), design_draft=draft,
     )
     return (
@@ -343,7 +343,8 @@ def persist_conductor_state(
     """
     from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
 
-    from .correction_crossover_v2_status import crossover_v2_status_block  # lazy: status reads this state owner
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
+    from .correction_crossover_v2_grade import post_apply_grade  # lazy: its projections' import cost
 
     prior = load_v2_state() or {}
     built = build_conductor_state(
@@ -354,14 +355,10 @@ def persist_conductor_state(
         failure_detail=failure_detail,
     )
     session_id = built.state["session_id"]
-    # Read BEFORE the write: this is the grade the household is currently
-    # looking at, and ``crossover_v2_status_block`` reads the state file.
-    prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
-    prior_outcome = (
-        str(prior_grade.get("outcome") or "")
-        if isinstance(prior_grade, Mapping)
-        and prior.get("session_id") == session_id else ""
-    )
+    applied_profile = load_applied_baseline_profile_state()
+    # Graded BEFORE the write: this is the grade the household is currently looking at.
+    prior_grade = post_apply_grade(prior, applied_profile=applied_profile)
+    prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
     from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
@@ -381,8 +378,7 @@ def persist_conductor_state(
                 )
     from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
-    grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
-    grade = grade if isinstance(grade, Mapping) else {}
+    grade = post_apply_grade(built.state, applied_profile=applied_profile)
     was_done = crossover_v2_phase(
         prior, review_declined=review_declined(prior),
     ) == PHASE_DONE

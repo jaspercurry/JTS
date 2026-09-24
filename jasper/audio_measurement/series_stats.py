@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Level, tilt and flatness statistics for measured response curves."""
+"""Level, tilt, flatness and difference statistics for measured response curves."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
@@ -19,6 +20,57 @@ def power_mean_db(values_db: np.ndarray) -> float:
     average of dB values."""
     linear = np.power(10.0, values_db / 10.0)
     return float(10.0 * np.log10(np.mean(linear)))
+
+
+def deviation_summary(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
+    """One deviation curve as scalars, with the frequency its worst bin sits at."""
+    worst = int(np.argmax(np.abs(deviation_db)))
+    return {
+        "bins": int(deviation_db.size),
+        "mean_abs_db": float(np.mean(np.abs(deviation_db))),
+        "max_abs_db": float(abs(deviation_db[worst])),
+        "max_abs_hz": float(freqs_hz[worst]),
+        "rms_db": float(np.sqrt(np.mean(deviation_db**2))),
+    }
+
+
+@dataclass(frozen=True)
+class CurveDifference:
+    """``curve_db - against_db`` on the curve's grid, after ``level_offset_db``
+    came off the curve."""
+
+    freqs_hz: np.ndarray
+    curve_db: np.ndarray
+    against_db: np.ndarray
+    level_offset_db: float
+
+    @property
+    def delta_db(self) -> np.ndarray:
+        return (self.curve_db - self.level_offset_db) - self.against_db
+
+
+def curve_difference(
+    freqs_hz: np.ndarray, curve_db: np.ndarray, against_freqs_hz: np.ndarray, against_db: np.ndarray, *,
+    band_hz: tuple[float, float], remove_level: bool = True,
+) -> CurveDifference | None:
+    """``curve_db`` minus ``against_db`` over ``band_hz``, the second read onto the first's grid.
+
+    With ``remove_level`` the level most bins agree on, the median of the
+    per-bin difference over the band, comes off before subtracting, and the
+    offset is published: two graphs, or a model with no absolute reference,
+    differ by a level that is not a difference in shape, and a filter that
+    reshapes a minority of bins does not move it (ADR-0358). A band's change
+    is the same median over that band.
+    ``None`` when ``curve_db`` has no bin in the band.
+    """
+    freqs = np.asarray(freqs_hz, dtype=float)
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    if not np.any(mask):
+        return None
+    curve = np.asarray(curve_db, dtype=float)[mask]
+    against = np.interp(freqs[mask], np.asarray(against_freqs_hz, dtype=float), np.asarray(against_db, dtype=float))
+    offset = float(np.median(curve - against)) if remove_level else 0.0
+    return CurveDifference(freqs[mask], curve, against, offset)
 
 
 def series_stats(
@@ -53,3 +105,12 @@ def series_stats(
         "low_end_means_db": {f"{b['band_hz'][0]}_{b['band_hz'][1]}": number(b["mean_db"], b["band_hz"][0])
                              for b in plot["band_means"]},
     }
+
+
+def band_change_db(
+    freqs_hz: np.ndarray, curve_db: np.ndarray, against_db: np.ndarray, band_hz: tuple[float, float],
+) -> float | None:
+    """How far ``curve_db`` sits from ``against_db`` over ``band_hz``, both on
+    ``freqs_hz``: :func:`curve_difference`'s level rule. ``None`` with no bin there."""
+    difference = curve_difference(freqs_hz, curve_db, freqs_hz, against_db, band_hz=band_hz)
+    return None if difference is None else difference.level_offset_db

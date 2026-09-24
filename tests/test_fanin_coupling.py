@@ -259,7 +259,7 @@ def test_served_and_contradicted_split_every_marker_armed_box(bridge, served):
 def test_the_marker_predicate_reads_the_key_the_ring_module_owns():
     """One key, one owner: the reader and the writer's constant must agree."""
     from jasper.fanin_coupling import dac_content_lane_marker_armed
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     assert DAC_CONTENT_LANE_ENV == "JASPER_OUTPUTD_DAC_CONTENT_LANE"
     assert dac_content_lane_marker_armed({DAC_CONTENT_LANE_ENV: "1"}) is True

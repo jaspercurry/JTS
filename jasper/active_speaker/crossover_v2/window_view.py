@@ -11,7 +11,7 @@ from typing import Sequence
 
 from jasper.active_speaker.frequency_view import FrequencyRun, FrequencySeries, build_frequency_view
 from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
-from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
+from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS, f_trusted_floor_hz, f_valid_floor_hz
 from . import gate_sweep
 from .round_captures import capture_row, select_capture
 
@@ -22,7 +22,7 @@ def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], 
     rungs, _ = gate_sweep._validated(rungs_ms, ())
     longest = max(*rungs, gate_sweep.REFERENCE_RUNG_MS)
     span = round(longest * capture.sample_rate / 1000)
-    lead = round(gate_sweep.PHASE_GATE_LEAD_MS * capture.sample_rate / 1000)
+    lead = round(PHASE_GATE_LEAD_MS * capture.sample_rate / 1000)
     if span + lead + 1 > gate_sweep.N_FFT or capture.peak_idx + span >= len(capture.ir):
         raise ValueError("window exceeds the retained impulse or the gate-sweep FFT span")
     grid = gate_sweep.analysis_grid()

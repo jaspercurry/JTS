@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import baseline_reemit, measurement_emit
-from jasper.active_speaker.baseline_profile import prepare_applied_baseline_profile
+from jasper.active_speaker.baseline_record import prepare_applied_baseline_profile
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.environment import read_camilla_statefile_config_path
 from tests.active_speaker_fixtures import (
@@ -487,8 +487,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "sound.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "sound-settings.json"))
     monkeypatch.setattr("jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr("jasper.active_speaker.baseline_profile.baseline_config_path",
-                        lambda _path=None: tmp_path / "canonical.yml")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "canonical.yml"))
     _, base = declared_graph_fixture(topology, draft)
     declaration = measurement_emit.load_tuning_declaration(topology)
     candidate = replace(base, bass_extension={

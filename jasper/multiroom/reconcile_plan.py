@@ -5,14 +5,13 @@
 """Multiroom grouping — the pure plan, unit names, and argv/derived-args
 builders. A leaf: stdlib plus sibling PURE multiroom modules only, no
 subprocess/systemctl/camilla/dsp_apply, so a caller that only needs
-``plan()``, an argv builder, or ``SNAPFIFO``/``ARGS_FILE`` does not pay
+``plan()``, an argv builder, or ``ARGS_FILE`` does not pay
 ``jasper.multiroom.reconcile``'s heavier import cost (ADR-0226; a
 Type=oneshot on a Pi Zero 2 W).
 
 Every name below is PURE and total: no I/O, no subprocess, no clock.
 ``jasper.multiroom.reconcile`` re-imports what it still uses so existing
-importers keep working unchanged; SNAPFIFO's own external readers (doctor
-checks, active_speaker) import it from here directly.
+importers keep working unchanged. ``SNAPFIFO`` lives in :mod:`.snapfifo`.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from dataclasses import dataclass
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import DAC_CONTENT_RING_PCM
 from .grouping_ring import GROUPING_RING_PCM
+from .snapfifo import SNAPFIFO
 
 # ---------- Unit names plan() decides ----------
 
@@ -31,13 +31,6 @@ SNAPCLIENT_UNIT = "jasper-snapclient.service"
 
 
 # ---------- Snapcast wiring constants ----------
-
-# The FIFO the fan-in chain writes the mixed stereo program into and snapserver
-# reads as its pipe source. Lives in snapserver's OWN per-unit runtime dir
-# (RuntimeDirectory=jasper-snapserver): a unit's RuntimeDirectory is reaped when
-# it stops, so a shared one would let snapserver stopping destroy another
-# daemon's sockets. tmpfs-backed, recreated each boot.
-SNAPFIFO = "/run/jasper-snapserver/snapfifo"
 
 # Reconciler-owned runtime env file holding the DERIVED snapcast args (the argv
 # after argv[0], space-joined). The snapserver/snapclient units pick it up

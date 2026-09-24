@@ -31,6 +31,7 @@ from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_ca
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker.runtime_contract import (
     FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -520,7 +521,7 @@ def test_generic_jts_pipe_sound_config_resolves_to_program_bake(tmp_path, monkey
     # be `sound_current.yml` with the generic sound source marker, but still be a
     # DAC-less Snapcast pipe sink. Content proves pipe-safety; do not route it to
     # the DAC-bound flat-graph guard.
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(
@@ -558,7 +559,7 @@ def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correcti
     # must stay on the ordinary sound carrier, never get re-stamped as
     # an active program bake. Delete the topology clause and this resolves to
     # `active_leader_program_bake` instead — the mutation tripwire.
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
@@ -584,7 +585,7 @@ def test_grouping_leader_pipe_config_does_not_resolve_to_program_bake(
     # Passive multiroom leaders also write generic JTS stereo YAML to SnapFIFO.
     # The stale-marker recovery is only for `sound_current.yml`; grouping files
     # must not be reclassified or re-stamped as active program-bake configs.
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(
@@ -1158,7 +1159,7 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     out of the group's stream for every follower. The mute must be withheld even
     though the saved topology is mono.
     """
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(_full_range_mono_topology(), tmp_path, monkeypatch)
@@ -1269,7 +1270,7 @@ async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_
     topology, candidate, cam, config_dir = active_sound_box
     before = baseline_profile.load_baseline_profile_state()
     bookkeeping = mock.Mock(side_effect=AssertionError("sound save ran apply bookkeeping"))
-    monkeypatch.setattr(baseline_profile, "_bank_applied_base_trim", bookkeeping)
+    monkeypatch.setattr(baseline_apply, "bank_applied_base_trim", bookkeeping)
     declaration = load_tuning_declaration(topology)
     save_sound_settings(SoundSettings(headroom_trim_db=3.0))
     profile_path = tmp_path / "sound.json"
@@ -1400,9 +1401,9 @@ async def test_partial_applied_record_refuses_sound_save(tmp_path, monkeypatch, 
     _, _, cam, config_dir = active_sound_box
     applied = baseline_profile.load_applied_baseline_profile_state()
     partial = {key: value for key, value in applied.items() if key != missing}
-    monkeypatch.setattr(baseline_profile, "load_baseline_profile_state", lambda: partial)
+    monkeypatch.setattr(baseline_apply, "load_baseline_profile_state", lambda: partial)
     with pytest.raises(DspApplyError) as error:
-        async with baseline_profile.load_composed_graph(Path(cam.current_path).read_text(),
+        async with baseline_apply.load_composed_graph(Path(cam.current_path).read_text(),
                 source="sound", profile=applied, config_dir=config_dir, record="sound",
                 load_config=cam.set_config_file_path, get_current_config_path=cam.get_config_file_path):
             pytest.fail("Partial applied record was loaded")

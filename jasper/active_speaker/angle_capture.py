@@ -49,8 +49,9 @@ from .crossover_v2.measure_spec import (
 )
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
+    BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
+    candidate_identity,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -215,17 +216,6 @@ def _validated_angle(angle_deg: object) -> int:
             f"axis, got {degrees:+d} deg"
         )
     return degrees
-
-
-BASE_CANDIDATE = "base"
-
-
-def candidate_identity(value: str, *, for_spec: bool = False) -> str:
-    if not isinstance(value, str):
-        raise ValueError("candidate_id must be text")
-    if value not in ("", BASE_CANDIDATE):
-        return value
-    return "" if for_spec else BASE_CANDIDATE
 
 
 @dataclass(frozen=True)

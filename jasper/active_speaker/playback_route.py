@@ -2,26 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Active-speaker route capacity over :mod:`jasper.output_topology` resolution."""
+"""Active-speaker output route: where a saved topology's active lane plays, and its capacity."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.audio_hardware.dac import by_id as _dac_by_id
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     EXPLICIT_SOURCE,
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
-    OutputLayout,
     OutputTopology,
     SpeakerGroup,
-    resolve_output_layout,
 )
 
-from ._common import issue as _issue
+from ._common import MeasurementGraphRefused, issue as _issue
 
 # Re-exported: constants moved to jasper.output_topology; kept importable here.
 __all__ = [
@@ -32,13 +32,109 @@ __all__ = [
     "OUTPUTD_ACTIVE_LANE_SOURCE",
     "ActiveLaneCapabilityGap",
     "ActivePlaybackRouteCapability",
+    "OutputLayout",
     "UnrecognizedDacProfile",
     "active_lane_capability_gap",
     "active_playback_route_capability",
     "resolve_active_playback_device",
+    "resolve_output_layout",
 ]
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
+
+
+@dataclass(frozen=True)
+class OutputLayout:
+    """Resolved active-output route for a saved topology.
+
+    Computed FRESH from the ``OutputTopology`` on every call, never cached
+    against a numeric card index, so a boot/udev topology recompute flows
+    straight through to the resolved route. ``playback_device`` is where the
+    active path hands audio off: the production outputd active lane or an
+    explicit lab PCM.
+    """
+
+    device_id: str
+    card_id: str | None
+    playback_device: str | None
+    playback_device_source: str
+    transport_channel_count: int
+    subwoofer_supported: bool
+
+
+def resolve_output_layout(
+    topology: OutputTopology,
+    *,
+    playback_device: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> OutputLayout:
+    """Resolve the active-output route for ``topology`` with stable card identity.
+
+    Resolution order:
+
+    1. An explicit lab/CI device (``playback_device`` arg or
+       ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``).
+    2. The production outputd active lane, when the resolved ``DacProfile``
+       declares one. This is the durable path.
+    3. Otherwise the route is missing (no width, no subwoofer support).
+
+    Case 2 has ONE transport, and this is where a FRESH emit names it: the
+    active lane is reached over the ACTIVE RING, unconditionally. This chooser
+    does not read the reconciler's endpoint marker (see the branch below).
+    ``playback_device_source`` stays ``OUTPUTD_ACTIVE_LANE_SOURCE``: it names
+    the lane ROLE, not the transport, so nothing keyed on the SOURCE knows
+    about the ring.
+
+    """
+
+    env = env if env is not None else os.environ
+    hardware = topology.hardware
+    profile = _dac_by_id(hardware.device_id)
+    physical_width = max(0, int(hardware.physical_output_count or 0))
+
+    explicit = playback_device or env.get(ACTIVE_PLAYBACK_DEVICE_ENV)
+    if explicit and explicit.strip():
+        return OutputLayout(
+            device_id=hardware.device_id,
+            card_id=hardware.card_id,
+            playback_device=explicit.strip(),
+            playback_device_source=EXPLICIT_SOURCE,
+            transport_channel_count=physical_width,
+            subwoofer_supported=True,
+        )
+
+    if (
+        profile is not None
+        and profile.supports_active_outputd_lane
+        and profile.active_outputd_lane_channels
+    ):
+        # The ACTIVE ring, unconditionally — there is no second legal endpoint
+        # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
+        #
+        # Reading `ring_active_endpoint_armed()` here would make this chooser a
+        # FIXED POINT: the marker derives from the loaded graph and the graph's
+        # device would derive from the marker, so no automated pass could move
+        # a box between transports — only a human passing `--endpoint`. Not
+        # reading the marker is what makes the roleful path convergent.
+        active_device = RING_ACTIVE_PLAYBACK_DEVICE
+        return OutputLayout(
+            device_id=hardware.device_id,
+            card_id=hardware.card_id,
+            playback_device=active_device,
+            playback_device_source=OUTPUTD_ACTIVE_LANE_SOURCE,
+            transport_channel_count=profile.active_outputd_lane_channels,
+            subwoofer_supported=True,
+        )
+
+    return OutputLayout(
+        device_id=hardware.device_id,
+        card_id=hardware.card_id,
+        playback_device=None,
+        playback_device_source=MISSING_SOURCE,
+        transport_channel_count=0,
+        subwoofer_supported=False,
+    )
+
 
 def _active_main_groups(topology: OutputTopology) -> list[SpeakerGroup]:
     return [
@@ -139,8 +235,6 @@ def resolve_active_playback_device(
     """Resolve the PCM and, for a compiled preset, require its outputd handoff."""
     layout = resolve_output_layout(topology, playback_device=playback_device)
     if required_output_count is not None:
-        from .measurement_emit import MeasurementGraphRefused  # lazy: graph declarations consume this resolver
-
         # Saved graphs name the same PCM explicitly; use its registered wire width.
         if layout.playback_device_source == EXPLICIT_SOURCE:
             registered = resolve_output_layout(topology, env={})

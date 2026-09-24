@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker.angle_capture import BASE_CANDIDATE
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME, PACKET_FILENAME
+from jasper.active_speaker.measurement_programs import BASE_CANDIDATE
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME, PACKET_FILENAME
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, REASON_NO_REPEATS
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
@@ -114,3 +114,15 @@ def test_a_room_rounds_index_gets_no_rear_lines(tmp_path):
     index = (root / INDEX_FILENAME).read_text()
     assert not any(line.startswith("rear ") for line in index.splitlines())
     assert "jasper-round-views rear" not in index
+
+
+def test_a_pair_rounds_index_names_the_null_and_the_front_rear_comparisons(tmp_path, banked_candidates):
+    root = pair_round(tmp_path, behind_gap_ms=0.5, sidecar_curves=False)
+    packet_of(root)
+    index = (root / INDEX_FILENAME).read_text()
+    commands = [shlex.split(line.strip("`- ")) for line in index.splitlines() if "jasper-round-views compare" in line]
+
+    assert "behind the speaker" in index
+    roles = sorted(tuple(command[command.index(flag) + 1] for flag in ("--a-role", "--b-role")) for command in commands)
+    # Front against rear woofer at each pose kind, and front against behind for the sum.
+    assert roles == [("summed", "summed"), ("woofer", "woofer:rear"), ("woofer", "woofer:rear")]

@@ -45,10 +45,11 @@ from jasper.audio_measurement.calibration import CalibrationCurve, apply_calibra
 from jasper.audio_measurement.deconv import cap_capture_length
 from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
 from jasper.audio_measurement.gating import (
+    PHASE_GATE_LEAD_MS,
     SEARCH_T_MAX_MS,
     TAPER_FRACTION,
     TRUSTED_FLOOR_MULTIPLIER,
-    build_gate_window,
+    gated_segment,
     intersect_bands,
 )
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
@@ -61,7 +62,7 @@ from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
 from .feature_classification import UNCERTAINTY_UNSEPARATED
 from .feature_optics import (
-    CENTRE_SEARCH_OCT, DETREND_FRACTION, PHASE_GATE_LEAD_MS,
+    CENTRE_SEARCH_OCT, DETREND_FRACTION,
     biquad_peaking,
     detrend,
     feature_q,
@@ -211,35 +212,6 @@ def analysis_grid() -> np.ndarray:
     """Log grid at :data:`GRID_FRACTION` points per octave."""
     n = int(round(GRID_FRACTION * np.log2(GRID_HI_HZ / GRID_LO_HZ))) + 1
     return GRID_LO_HZ * 2.0 ** (np.arange(n) / GRID_FRACTION)
-
-
-def gated_segment(
-    ir: np.ndarray,
-    sample_rate: int,
-    *,
-    gate_ms: float,
-    peak_idx: int,
-    lead_ms: float = PHASE_GATE_LEAD_MS,
-) -> tuple[np.ndarray, int]:
-    """One rung's windowed segment, peak-aligned. Returns ``(segment, lead)``.
-
-    The window is :func:`~jasper.audio_measurement.gating.build_gate_window`'s
-    — the shipped gate's own shape at a forced span — led by
-    :data:`~.feature_optics.PHASE_GATE_LEAD_MS`, which states why that lead is
-    load-bearing.
-    """
-    span = int(round(gate_ms * 1e-3 * sample_rate))
-    lead = int(round(lead_ms * 1e-3 * sample_rate))
-    start = max(0, peak_idx - lead)
-    lead = peak_idx - start
-    want = lead + span + 1
-    segment = np.asarray(ir[start : start + want], dtype=np.float64)
-    if segment.size < want:
-        segment = np.pad(segment, (0, want - segment.size))
-    window = build_gate_window(
-        want, peak_idx=lead, span=span, taper_fraction=TAPER_FRACTION, lead=lead
-    )
-    return segment * window, lead
 
 
 def gated_curve(
@@ -1150,6 +1122,7 @@ def sweep_round(
     candidate_id: str | None = None,
     graph_fingerprint: str | None = None,
     take_ids: Sequence[str] | None = None,
+    role: str = "summed",
 ) -> dict[str, Any]:
     """Sweep one banked round's gate and report what moved with the window.
 
@@ -1167,7 +1140,7 @@ def sweep_round(
         (take_ids is None or document_capture_id(doc) in take_ids)
         and (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
         and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
-    ), omitted=omitted)
+    ), role=role, omitted=omitted)
     try:
         grid, reads, sigma, axes = _prepare(captures, rungs)
     except RoundCapturesRefused as exc:

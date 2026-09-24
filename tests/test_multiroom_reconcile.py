@@ -51,11 +51,8 @@ from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import grouping_env as grouping_env_mod
 from jasper.multiroom import reconcile as reconcile_mod
-from jasper.multiroom.dac_content_ring import (
-    DAC_CONTENT_LANE_ENV,
-    DAC_CONTENT_RING_PCM,
-    DAC_CONTENT_RING_PERIOD_FRAMES,
-)
+from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PCM, DAC_CONTENT_RING_PERIOD_FRAMES
+from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.grouping_env import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,

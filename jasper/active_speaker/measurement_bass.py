@@ -12,7 +12,9 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ as BASS_BANDS_HZ
 from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
-from jasper.audio_measurement.distortion import read_segment_distortion, required_pre_guard_s, segment_sweep_meta
+from jasper.audio_measurement.deconv import required_pre_guard_s
+from jasper.audio_measurement.distortion import read_segment_distortion
+from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels

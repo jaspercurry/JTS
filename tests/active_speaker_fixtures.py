@@ -379,9 +379,9 @@ def isolated_candidate_bank(tmp_path, monkeypatch):
 
 def declared_profile_fixture(topology, *, design_draft, config_path, write=False):
     import hashlib
-    from jasper.active_speaker.baseline_profile import (
-        baseline_candidate_config_path, baseline_candidate_fingerprint, prepare_applied_baseline_profile,
-    )
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+    from jasper.active_speaker.baseline_record import prepare_applied_baseline_profile
+    from jasper.active_speaker.state_paths import baseline_candidate_config_path
     from jasper.active_speaker.measurement_emit import compile_tuning_graph
 
     declaration, candidate = declared_graph_fixture(topology, design_draft)
@@ -392,7 +392,7 @@ def declared_profile_fixture(topology, *, design_draft, config_path, write=False
         config_path=target, config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
     profile.update(status="ready_to_apply" if write else "ready_to_compile",
-                   permissions={"may_apply": write, "may_compile": True}, issues=[])
+                   permissions={"may_compile": True}, issues=[])
     profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
     if write:
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -150,6 +150,17 @@ def subject(
     ) if value is not None}
 
 
+def resolve_set_take(
+    round_dir: Path, set_id: str | None, take: str | None, role: str | None,
+) -> tuple[dict[str, Any], str, str]:
+    """One take of a set: the subject naming it, its id, and ``role`` or else
+    the response the set measured."""
+    inputs = round_inputs(round_dir)
+    selected = resolve_set(inputs, set_id)
+    take_id = selected.take_id(take)
+    return subject(inputs, selected, take_ids=[take_id]), take_id, role or selected.role
+
+
 def calibration_id(calibration: Mapping[str, Any] | None) -> str | None:
     """The microphone calibration a capture was read through, when one was applied."""
     return calibration.get("calibration_id") if calibration and calibration.get("applied") else None

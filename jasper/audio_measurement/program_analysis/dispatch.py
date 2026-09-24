@@ -68,6 +68,7 @@ from .model import (
     SummedAlignmentReference,
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+    RecordedImpulse,
     SegmentLocation,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_NOTCH_EXCLUSION_DB,
@@ -85,6 +86,7 @@ from .response import (
     predicted_branch_sum,
     _radiated_band_hz,
     _raw_sweep_segment,
+    recorded_impulse,
     _ripple_db,
     _select_alignment_pair,
     _select_summed_alignment_pair,
@@ -309,6 +311,7 @@ def _repeat_driver_responses(
     ambient_report: Mapping[str, Any] | None,
     fc_hz: float | None,
     n_fft: int,
+    impulses: Mapping[str, RecordedImpulse],
     alignment_band_hz: tuple[float, float] | None = None,
 ) -> tuple[DriverResponse, ...]:
     """Per-repeat responses for ``linearization_envelope.compute_sigma_curve``."""
@@ -326,7 +329,7 @@ def _repeat_driver_responses(
                 capture, seg, global_offset + seg.start_sample,
             ),
         )
-        out.append(replace(resp, repeat_index=repeat_index))
+        out.append(replace(resp, repeat_index=repeat_index, impulse=impulses[seg.segment_id]))
     return tuple(out)
 
 
@@ -359,10 +362,14 @@ def _analyze_measure(
     sweeps.update((loc.segment_id, program.segment(loc.segment_id))
                   for occurrences in occurrences_by_role.values() for loc in occurrences)
     sweep_irs = {}
+    impulses = {}
     # Divide measured epsilon out of the reference so clock drift cannot smear the IR.
     for seg in sweeps.values():
         full_ir, pre = _deconvolve_window(
             capture, seg, global_offset + seg.start_sample, sample_rate, epsilon=epsilon,
+        )
+        impulses[seg.segment_id] = recorded_impulse(
+            full_ir, pre, seg, sample_rate, clock_shift_samples=epsilon * seg.start_sample,
         )
         sweep_irs[seg.segment_id] = (_compose_configured_path_ir(
             seg.role, full_ir, sample_rate, _radiated_band_hz(seg), priors,
@@ -376,17 +383,6 @@ def _analyze_measure(
         branches.append((seg_t, tweeter_full_ir))
     responses = tuple(
         replace(
-            resp,
-            repeat_responses=_repeat_driver_responses(
-                program, capture, sample_rate, global_offset, sweep_irs,
-                occurrences_by_role.get(resp.role, ()),
-                role=resp.role,
-                calibration=calibration, ambient_report=priors.ambient_report,
-                fc_hz=fc_hz, n_fft=n_fft,
-                alignment_band_hz=alignment_band_hz,
-            ),
-        )
-        for resp in (
             _driver_response(
                 seg.role, full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
@@ -396,9 +392,18 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg, global_offset + seg.start_sample,
                 ),
-            )
-            for seg, full_ir in branches
+            ),
+            impulse=impulses[seg.segment_id],
+            repeat_responses=_repeat_driver_responses(
+                program, capture, sample_rate, global_offset, sweep_irs,
+                occurrences_by_role.get(seg.role, ()),
+                role=seg.role,
+                calibration=calibration, ambient_report=priors.ambient_report,
+                fc_hz=fc_hz, n_fft=n_fft, impulses=impulses,
+                alignment_band_hz=alignment_band_hz,
+            ),
         )
+        for seg, full_ir in branches
     )
 
     # ONE branch: nothing to align across, so both come back absent WITH A REASON.
@@ -852,7 +857,7 @@ def _analyze_verify(
         # Averaging can hide a clipped individual pass; retain the raw clip evidence.
         locations = [replace(loc, clipped=loc.clipped or raw.clipped) for loc, raw in zip(
             _locate_segments(program, averaged, sample_rate, global_offset, {}), locations)]
-    full_ir, _pre = _deconvolve_window(
+    full_ir, pre = _deconvolve_window(
         averaged,
         seg, global_offset + seg.start_sample, sample_rate
     )
@@ -863,7 +868,10 @@ def _analyze_verify(
         radiated_band_hz=_radiated_band_hz(seg),
         gate_exempt_reason=geometry.gate_exempt_reason,
     )
-    summed = replace(summed, late_energy=impulse_late_energy(full_ir, sample_rate_hz=sample_rate))
+    summed = replace(
+        summed, late_energy=impulse_late_energy(full_ir, sample_rate_hz=sample_rate),
+        impulse=recorded_impulse(full_ir, pre, seg, sample_rate),
+    )
     # The tracking comparator below is deliberately NOT re-based onto the
     # spatial cloud's shared spec curve: "did apply do what the model
     # predicted" is a single-position claim (both sides share that

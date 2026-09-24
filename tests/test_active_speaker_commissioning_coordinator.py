@@ -11,7 +11,7 @@ from jasper.active_speaker.round_copy import RUN_ENDED
 from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
-from jasper.active_speaker import baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
+from jasper.active_speaker import applied_tune, baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
@@ -76,7 +76,7 @@ def _applied_anchor(basename: str = "candidate_f7e9.yml", *, layers=("speaker",)
 
 def _applied_baseline_profile(**overrides) -> dict:
     return {"status": "ready_to_compile", "candidate_fingerprint": "review-fp",
-            "permissions": {"may_compile": True, "may_apply": False}, "issues": [], **overrides}
+            "permissions": {"may_compile": True}, "issues": [], **overrides}
 
 
 @pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds,reason_code", [
@@ -111,7 +111,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     recent = {name: {"round_dir": f"/bank/{name}", "started_at": applied_at + age} for name, age in rounds}
     view = build_commissioning_view(
         topology, design_draft=draft, crossover_preview=_ready_preview(),
-        baseline_profile=_applied_baseline_profile(permissions={"may_apply": status != "blocked"}),
+        baseline_profile=_applied_baseline_profile(permissions={"may_compile": status != "blocked"}),
         applied_profile=applied if status == "applied" else None, recent_rounds=recent,
         first_experiment={"candidate_fingerprint": "measured-fp"} if action == "save_baseline_profile" else None,
     )
@@ -162,7 +162,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: view)
     monkeypatch.setattr(tuning_handoff, "build_tuning_handoff_binding", lambda *args: {})
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(baseline_profile, "compile_commissioning_profile", lambda **kw: (None, {}))
+    monkeypatch.setattr(applied_tune, "compile_commissioning_profile", lambda **kw: {})
 
     choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices}
@@ -277,7 +277,7 @@ def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
 def test_applied_identity_change_is_disclosed_without_parking_review(ready, applied_fingerprint):
     review = _applied_baseline_profile(
         status="ready_to_compile" if ready else "blocked",
-        permissions={"may_compile": ready, "may_apply": False},
+        permissions={"may_compile": ready},
         issues=[] if ready else [{"severity": "blocker", "code": "compose_refused"}],
     )
     applied = {**_applied_anchor(), "candidate_fingerprint": applied_fingerprint,
@@ -303,7 +303,6 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
         assert view["status"] == ("ready_to_save_profile" if ready else "blocked")
         assert view["next_action"]["enabled"] is ready
     assert view["review"]["ready"] is ready
-    assert view["review"]["may_apply"] is ready
     assert view["review"]["issues"] == review["issues"]
 
 

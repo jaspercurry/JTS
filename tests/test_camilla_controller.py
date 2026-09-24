@@ -1304,10 +1304,10 @@ async def test_failed_duck_release_logs_a_named_event(
 @pytest.mark.parametrize("case", ["applied", "rejected", "other_endpoint", "duck_release_failed", "audition_write"])
 async def test_graph_replacement_retires_only_its_audition(tmp_path, monkeypatch, door, case):
     import json
-    from jasper.active_speaker import audition
+    from jasper.active_speaker import audition, audition_claim
 
     record = tmp_path / "audition.json"
-    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(record))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_AUDITION_STATE", str(record))
     state = {"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
              "layer": "rear_compare", "token": "owned", "deadline_at": 1800.0}
     record.write_text(json.dumps(state))
@@ -1322,7 +1322,7 @@ async def test_graph_replacement_retires_only_its_audition(tmp_path, monkeypatch
     candidate = tmp_path / "candidate.yml"
     candidate.write_text(text)
     arg = text if door == "set_active_config_raw" else str(candidate)
-    token = audition._AUDITION_WRITE.set(case == "audition_write")
+    token = audition_claim.AUDITION_WRITE.set(case == "audition_write")
     try:
         if case in {"rejected", "duck_release_failed"}:
             with pytest.raises((ValueError, RuntimeError)):
@@ -1330,7 +1330,7 @@ async def test_graph_replacement_retires_only_its_audition(tmp_path, monkeypatch
         else:
             assert await getattr(cam, door)(arg)
     finally:
-        audition._AUDITION_WRITE.reset(token)
+        audition_claim.AUDITION_WRITE.reset(token)
     assert record.exists() is (case not in {"applied", "duck_release_failed"})
 
 

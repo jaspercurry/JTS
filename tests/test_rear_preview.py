@@ -230,6 +230,8 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
         for output, source in (("early_late_change_db", "early_late_db"),
                                ("arrival_shift_ms", "centroid_ms"), ("band_energy_change_db", "energy_db")):
             assert row["late_energy"][output] == pytest.approx(predicted_energy[source] - muted[source], abs=0.0005)
+            for side, energy in (("muted", muted), ("predicted", predicted_energy)):
+                assert row["late_energy"][side][source] == pytest.approx(energy[source], abs=0.0005)
 
 
 @pytest.mark.parametrize("case,code", [
@@ -354,13 +356,13 @@ def test_compare_delta_is_broadband_with_retained_headroom(pose, key):
 
 @pytest.fixture
 def compare_evidence(tmp_path, monkeypatch):
-    from jasper.active_speaker import audition, baseline_profile, rear_compare, round_bank
+    from jasper.active_speaker import baseline_profile, rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
 
     root = pair_round(tmp_path)
     runtime = tmp_path / "run"
     runtime.mkdir()
-    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(runtime / "audition.json"))
+    monkeypatch.setenv(state_paths.AUDITION_STATE_ENV, str(runtime / "audition.json"))
     at = "2026-09-20T12:00:00Z"
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": at}))
     section = diagnostic_seed(48000)
@@ -371,7 +373,7 @@ def compare_evidence(tmp_path, monkeypatch):
                "recomposition_snapshot": {"rear_calibration": section}}
     load = baseline_profile.load_applied_baseline_profile_state
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda path=None: applied if path is None else load(path))
-    monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", root.parent)
+    monkeypatch.setattr(state_paths, "DEFAULT_CAMPAIGN_ROOT", root.parent)
     monkeypatch.setattr(rear_compare, "_levels", {})
     rear_compare._build_sha.cache_clear()
     readers._front_pair_round.cache_clear()
@@ -473,13 +475,13 @@ def test_compare_cache_invalidates_for_each_identity_field(compare_evidence, mon
 @pytest.mark.parametrize("damage", ["missing", "json", "shape", "key", "negative", "excess", "nan"])
 def test_compare_cache_damage_recomputes(compare_evidence, monkeypatch, damage):
     from unittest.mock import Mock
-    from jasper.active_speaker import audition, rear_compare
+    from jasper.active_speaker import rear_compare, state_paths
 
     preview = Mock(return_value={})
     monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
     monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 0.35)
     expected = rear_compare.rear_compare_level()
-    path = audition.audition_state_path().with_name("rear_compare_level.json")
+    path = state_paths.audition_state_path().with_name("rear_compare_level.json")
     saved = json.loads(path.read_text())
     assert set(saved["level"]) == {"status", "trim_db", "louder", "reason", "round_id", "banked_at"}
     if damage == "missing":
@@ -501,7 +503,7 @@ def test_compare_cache_damage_recomputes(compare_evidence, monkeypatch, damage):
 
 def test_compare_cache_write_failure_keeps_memo(compare_evidence, monkeypatch):
     from unittest.mock import Mock
-    from jasper.active_speaker import audition, rear_compare
+    from jasper.active_speaker import rear_compare, state_paths
 
     preview = Mock(return_value={})
     monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
@@ -511,7 +513,7 @@ def test_compare_cache_write_failure_keeps_memo(compare_evidence, monkeypatch):
     level = rear_compare.rear_compare_level()
     assert (level["status"], level["trim_db"]) == ("matched", 0.35)
     assert rear_compare.rear_compare_level() == level
-    assert not audition.audition_state_path().with_name("rear_compare_level.json").exists()
+    assert not state_paths.audition_state_path().with_name("rear_compare_level.json").exists()
     write.assert_called_once()
     preview.assert_called_once()
 

@@ -44,7 +44,6 @@ from pathlib import Path
 
 from ..camilla_config_contract import (
     devices_playback_is_pipe,
-    parse_camilla_devices_config,
     read_camilla_devices_config,
 )
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
@@ -52,6 +51,7 @@ from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
+from .snapfifo import SNAPFIFO
 from jasper.output_topology_store import load_output_topology_strict
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,6 @@ def _is_pipe_config(path: str) -> bool:
     Unreadable resolves to False — the write guard then skips stashing
     (defensive) and the read guard's separate ``exists()`` check already
     rejects missing files."""
-    from .reconcile_plan import SNAPFIFO
-
     return devices_playback_is_pipe(read_camilla_devices_config(path) or {}, SNAPFIFO)
 
 
@@ -342,14 +340,6 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
 
 # ---------- producer liveness (for runtime health + the doctor) ----------
 
-def playback_is_pipe(text: str, fifo: str) -> bool:
-    """True when a CamillaDSP config's ``devices.playback`` block is a
-    File sink writing ``fifo`` — the bonded-leader pipe. The text-taking
-    face of :func:`devices_playback_is_pipe`, for the one caller that holds
-    config text rather than a path."""
-    return devices_playback_is_pipe(parse_camilla_devices_config(text), fifo)
-
-
 def active_leader_pipe_path() -> str:
     """``SNAPFIFO`` when the ACTIVE CamillaDSP config writes the
     snapserver pipe, else ``""``. The producer-liveness signal for
@@ -368,8 +358,6 @@ def active_leader_pipe_path() -> str:
     # pulls it under the same role set that gates `/rooms`; the doctor's
     # correction and grouping modules import it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
-
-    from .reconcile_plan import SNAPFIFO
 
     devices = read_camilla_devices_config(read_camilla_statefile_config_path()) or {}
     return SNAPFIFO if devices_playback_is_pipe(devices, SNAPFIFO) else ""

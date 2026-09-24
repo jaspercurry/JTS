@@ -15,6 +15,7 @@ path, then writes evidence for the startup-load gate.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from .driver_protection import (
     format_protection_hz,
     protection_highpass_floor_satisfied,
 )
+from .environment import CAMILLA_CLASS_ACTIVE_PARKED, classify_camilla_config_text
 from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
@@ -603,11 +605,6 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
         ))
         return summary
 
-    from .environment import (
-        CAMILLA_CLASS_ACTIVE_PARKED,
-        classify_camilla_config_text,
-    )
-
     classification = classify_camilla_config_text(text)
     summary.update({
         "readable": True,
@@ -987,3 +984,59 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
         "paths": path_results,
         "issues": issues,
     }
+
+
+def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
+    """The path-safety evidence at ``path`` evaluated, or the blocker saying why it cannot be."""
+    if path is None:
+        return {
+            "provided": False,
+            "status": "missing",
+            "ok_to_load_active_config": False,
+            "load_gate": "evidence_missing",
+            "issues": [
+                _issue(
+                    "blocker",
+                    "path_safety_evidence_missing",
+                    "active-speaker path-safety evidence was not provided",
+                )
+            ],
+        }
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        return {
+            "provided": True,
+            "path": str(path),
+            "status": "unreadable",
+            "ok_to_load_active_config": False,
+            "load_gate": "evidence_unreadable",
+            "issues": [
+                _issue(
+                    "blocker",
+                    "path_safety_evidence_unreadable",
+                    f"could not read active-speaker path-safety evidence: {e}",
+                )
+            ],
+        }
+    try:
+        payload = json.loads(raw)
+        report = evaluate_path_safety_evidence(payload)
+    except (json.JSONDecodeError, ActiveSpeakerConfigError) as e:
+        return {
+            "provided": True,
+            "path": str(path),
+            "status": "invalid",
+            "ok_to_load_active_config": False,
+            "load_gate": "evidence_invalid",
+            "issues": [
+                _issue(
+                    "blocker",
+                    "path_safety_evidence_invalid",
+                    f"invalid active-speaker path-safety evidence: {e}",
+                )
+            ],
+        }
+    report["provided"] = True
+    report["path"] = str(path)
+    return report

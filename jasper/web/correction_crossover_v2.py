@@ -45,19 +45,6 @@ from jasper.active_speaker.crossover_v2.summed_alignment import session_referenc
 V2_CAPTURE_KIND_SESSION = "crossover_v2:session"
 
 
-class CrossoverV2LocalSeamError(RuntimeError):
-    """A LOCAL play/analyze seam raised ``OSError`` — not a program-family failure.
-
-    W6 hardware run 3 finding G: the DSP writer lock's ``os.open`` on a
-    read-only ``config_dir`` (finding F) raised a bare ``OSError`` from
-    inside ``on_armed``, which the catch-all arm would otherwise misclassify
-    identically to a genuine capture-chain fault. ``on_armed``/``consume``
-    convert a local ``OSError`` to THIS type at the seam boundary, so it
-    reaches the catch-all cleanup arm's honest ``internal_error``
-    classification instead of any program-family code.
-    """
-
-
 # --------------------------------------------------------------------------- #
 # endpoint preparation (S1a/S1d)
 # --------------------------------------------------------------------------- #

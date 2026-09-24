@@ -14,25 +14,24 @@ from typing import Any
 import pytest
 import yaml as yaml_lib
 
+from jasper.active_speaker import baseline_record
 from jasper.active_speaker import driver_base_trim as dbt
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
-from jasper.active_speaker.baseline_profile import (
-    PROVENANCE_MANUAL,
-    PROVENANCE_MEASURED,
-    PROVENANCE_RECOMMENDED_START,
+from jasper.active_speaker.applied_tune import (
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
     REAR_CALIBRATION_ROOM_BAND_OVERLAP,
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
-    _GAIN_SOURCE_TO_PROVENANCE,
-    active_layer_a_fingerprint,
-    baseline_candidate_fingerprint,
+    rear_calibration_issues,
 )
+from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )
@@ -172,8 +171,8 @@ def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
         "confidence"
     ] = "high"
 
-    first = baseline_profile_mod._source_payload(topology, draft, preview)
-    changed = baseline_profile_mod._source_payload(topology, draft, changed_preview)
+    first = baseline_record._source_payload(topology, draft, preview)
+    changed = baseline_record._source_payload(topology, draft, changed_preview)
 
     assert (
         first["crossover_preview_fingerprint"]
@@ -194,7 +193,7 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
             operator_inputs={"notes": "edited" if changed and index else "same"},
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
-        sources.append(baseline_profile_mod._source_payload(
+        sources.append(baseline_record._source_payload(
             topology, draft, build_crossover_preview(draft),
         ))
     first, second = sources
@@ -215,7 +214,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     draft = preview_draft()
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
-    source = baseline_profile_mod._source_payload(topology, draft, preview)
+    source = baseline_record._source_payload(topology, draft, preview)
     fingerprint = "6f72a93df72681846819bf3a40e1495a4881ee7e0c57ee1fa065f64fea03c8af"
     assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
@@ -224,7 +223,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
         "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
     })
     preset = resolve_commission_preset(topology, crossover_preview=preview)
-    trims, meta = baseline_profile_mod.measured_level_trims(preset, preview, design_draft=draft)
+    trims, meta = dbt.measured_level_trims(preset, preview, design_draft=draft)
     assert trims == {"woofer": 0.0, "tweeter": -6.0}
     assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
 
@@ -335,18 +334,6 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
 # mirrors the shipped gain rule that a manual pin is never silently replaced.
 
 
-def test_gain_source_to_provenance_migration_mapping_pinned():
-    # SC-3's migration table, verbatim: explicit/operator_pinned -> manual,
-    # measured -> measured, sensitivity/estimate -> recommended_start,
-    # none -> no entry (an untouched role makes no provenance claim).
-    assert _GAIN_SOURCE_TO_PROVENANCE["measured"] == PROVENANCE_MEASURED
-    assert _GAIN_SOURCE_TO_PROVENANCE["operator_pinned"] == PROVENANCE_MANUAL
-    assert _GAIN_SOURCE_TO_PROVENANCE["explicit"] == PROVENANCE_MANUAL
-    assert _GAIN_SOURCE_TO_PROVENANCE["sensitivity"] == PROVENANCE_RECOMMENDED_START
-    assert _GAIN_SOURCE_TO_PROVENANCE["estimate"] == PROVENANCE_RECOMMENDED_START
-    assert "none" not in _GAIN_SOURCE_TO_PROVENANCE
-
-
 def test_baseline_config_emits_single_net_inversion_not_double():
     raw = _two_way_preset()
     raw["crossover_regions"][0]["upper_polarity"] = "inverted"
@@ -385,7 +372,7 @@ def test_baseline_config_emits_single_net_inversion_not_double():
 # --- lifecycle events (lane E, docs/active-crossover-information-design.md
 # "Structured events") -------------------------------------------------------
 
-_BASELINE_LOGGER = "jasper.active_speaker.baseline_profile"
+_BASELINE_LOGGER = "jasper.active_speaker.driver_base_trim"
 
 
 
@@ -630,7 +617,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     candidate = _applied_with_sources(tmp_path, sources)
     # A record from an earlier, fully measured apply is standing before each
     # arm runs -- the arms differ only in what they do to it.
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(
             tmp_path / "prior", {"woofer": "measured", "tweeter": "measured"}
         ),
@@ -640,7 +627,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     assert dbt.load_base_trim() is not None
     caplog.clear()
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -682,7 +669,7 @@ def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
     candidate["source"] = source
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -708,7 +695,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     record is not.
     """
     caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -723,7 +710,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     # writer refuses -- the seam must not leave the prior record behind.
     doomed["source"] = {**doomed["source"], "crossover_preview_fingerprint": ""}
     doomed["candidate_fingerprint"] = baseline_candidate_fingerprint(doomed)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         doomed,
         apply_state={"result": "success"},
         state_path=tmp_path / "next_applied.json",
@@ -754,7 +741,7 @@ def test_a_malformed_correction_entry_refuses_instead_of_escaping(
     candidate["corrections"] = {**candidate["corrections"], "tweeter": "-12.0"}
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    payload = baseline_profile_mod.persist_applied_baseline_profile(
+    payload = baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -783,7 +770,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_corrections["candidate_fingerprint"] = baseline_candidate_fingerprint(
         no_corrections
     )
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         no_corrections,
         apply_state={"result": "success"},
         state_path=tmp_path / "a.json",
@@ -791,7 +778,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_readiness = deepcopy(base)
     no_readiness.pop("automatic_candidate", None)
     no_readiness["candidate_fingerprint"] = baseline_candidate_fingerprint(no_readiness)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         no_readiness,
         apply_state={"result": "success"},
         state_path=tmp_path / "b.json",
@@ -807,7 +794,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
 def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     tmp_path: Path,
 ) -> None:
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -822,7 +809,7 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
         **follower["recomposition_snapshot"], "domain": "driver",
     }
     follower["candidate_fingerprint"] = baseline_candidate_fingerprint(follower)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         follower,
         apply_state={"result": "success"},
         state_path=tmp_path / "follower_applied.json",
@@ -848,12 +835,12 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     if source == "composed":
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
-    monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
+    monkeypatch.setattr(baseline_apply, "bank_applied_base_trim", lambda *a: None)
+    prepared = baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
-    baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
+    baseline_apply.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
     applied = load_applied(path)
     assert all(not ({"delay_ms", "inverted"} & set(values)) for values in applied["corrections_provenance"].values())
     if source in ("cleared", "base"):
@@ -870,7 +857,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     assert {key: value for key, value in asdict(applied_profile_timing(applied)).items() if value is not None} == expected
     corrections = applied["corrections"]
     assert 1000 * (corrections["tweeter"]["delay_ms"] - corrections["woofer"]["delay_ms"]) == pytest.approx(delay)
-    later = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
+    later = baseline_record.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
         design_draft=draft, provenance=applied)
     assert later["timing"] == expected
     assert later["corrections"] == corrections
@@ -904,7 +891,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
                                   sections={"rear_calibration": document})
     text = compile_tuning_graph(declaration, candidate=candidate)
 
-    applied = baseline_profile_mod.prepare_applied_baseline_profile(
+    applied = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=tmp_path / "baseline.yml",
         config_sha256=hashlib.sha256(text.encode()).hexdigest(),
@@ -918,7 +905,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     assert (proof.allowed, proof.classification) == (True, GRAPH_APPROVED_ACTIVE_RUNTIME)
     assert not proof.issues
 
-    pre_apply = baseline_profile_mod.recomposition_snapshot_for(
+    pre_apply = baseline_record.recomposition_snapshot_for(
         candidate, declaration=declaration, design_draft=draft)
     assert set(pre_apply) == set(applied["recomposition_snapshot"])
     assert classify({"recomposition_snapshot": pre_apply}).classification == GRAPH_APPROVED_ACTIVE_RUNTIME
@@ -933,7 +920,7 @@ def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration)
     topology, draft, declaration, declared = cardioid_declaration
     candidate = replace(declared, rear_calibration=_rear_document())
 
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+    prepared = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )
@@ -972,7 +959,7 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
     document["geometry"]["cabinet_back_wall_m"] = None if gap_m == "absent" else gap_m
     document["front"]["delay_ms"] = front_delay_ms
     candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration={} if gap_m == "absent" else document)
-    issues = baseline_profile_mod.rear_calibration_issues(replace(
+    issues = rear_calibration_issues(replace(
         candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}}))
 
     assert [issue["code"] for issue in issues] == codes
@@ -1000,7 +987,7 @@ def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaratio
         {"type": "Biquad", "parameters": {"type": kind, "freq": freq, "q": 0.7}}
         for kind, freq in zip(("Highpass", "Lowpass"), band or [])]
     candidate = replace(cardioid_declaration[3], rear_calibration=document, room_correction=room)
-    issues = baseline_profile_mod.rear_calibration_issues(candidate)
+    issues = rear_calibration_issues(candidate)
     assert [issue["code"] for issue in issues] == ([REAR_CALIBRATION_ROOM_BAND_OVERLAP] if room_band else [])
     if room_band:
         assert issues[0]["severity"] == "warning"

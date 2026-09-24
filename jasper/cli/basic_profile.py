@@ -72,14 +72,8 @@ class _DoorUnreachable(Exception):
 def _door(
     wizard: WizardClient, path: str, body: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
-    """One round trip. A ``body`` means POST -- and a POST here means a WRITE.
-
-    The review route is read-only only as a GET. Its POST arm compiles with
-    ``write=True``, which mkdirs and rewrites both the baseline CamillaDSP YAML
-    and the candidate state JSON (jasper/active_speaker/baseline_profile.py).
-    A "review" doing that would replace the file CamillaDSP's own statefile
-    still points at, so the next daemon restart would play a graph nobody
-    applied -- which is why nothing here POSTs except the apply itself.
+    """One round trip. A ``body`` means POST -- and a POST here means a WRITE,
+    so nothing here POSTs except the apply itself.
     """
     status, payload = (
         wizard.post_json(path, body) if body is not None else wizard.get_json(path)

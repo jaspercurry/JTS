@@ -44,6 +44,7 @@ from tests.crossover_v2_banked_round import (
 )
 from jasper.json_fields import sha256_file
 from tests.crossover_v2_fixtures import bank_capture_round
+from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_cli_close_reference import _compare_argv as close_compare_argv, _round as capture_round
@@ -306,6 +307,24 @@ def _sweep_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["sweep", str(bank_capture_round(root / "capture", [impulse] * 3)), "--scope", "round"]
 
 
+def _kept_take_argv(view: str) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    def argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+        impulse = np.random.default_rng(0).normal(0.0, 1e-4, 36_000)
+        impulse[12_150] += 1.0
+        bundle, doc = bank_kept_impulse_take(root, request.getfixturevalue("monkeypatch"), impulse)
+        return [view, str(bundle), "--take", doc["take_id"]]
+    return argv
+
+
+def _compare_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    impulse = np.random.default_rng(0).normal(0.0, 1e-4, 36_000)
+    impulse[12_150] += 1.0
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    a_bundle, a_doc = bank_kept_impulse_take(root / "a", monkeypatch, impulse)
+    b_bundle, b_doc = bank_kept_impulse_take(root / "b", monkeypatch, 2 * impulse)
+    return ["compare", str(a_bundle), str(b_bundle), "--a-take", a_doc["take_id"], "--b-take", b_doc["take_id"]]
+
+
 def _close_reference_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     rounds = (capture_round(root / "far", 1.0), capture_round(root / "close", 0.30, take_ids=("verify_02_a01",)))
     return close_compare_argv(rounds, root / "close_reference.json")
@@ -383,8 +402,32 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         _ROUND_SET_TAKES, lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "sweep": _ViewRun(
-        _sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz"}), frozenset({"round_id", "take_ids"}),
+        _sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz", "role"}), frozenset({"round_id", "take_ids"}),
         lambda p, a: p["rungs_ms"] == a["frame"]["rungs_ms"]),
+    "impulse": _ViewRun(
+        _kept_take_argv("impulse"),
+        frozenset({"role", "impulse_source", "time_reference", "calibration_applied", "span_ms",
+                   "onset_below_peak_db", "noise_before_onset_ms", "etc_span_fraction"}),
+        frozenset({"set_id", "take_ids", "candidate_id"}),
+        lambda p, a: p["span_ms"] == a["parameters"]["span_ms"]),
+    "group-delay": _ViewRun(
+        _kept_take_argv("group-delay"),
+        frozenset({"role", "impulse_source", "time_reference", "calibration_applied", "window_ms",
+                   "window_source", "lead_ms", "band_hz", "points_per_octave", "slope_span_octave"}),
+        frozenset({"set_id", "take_ids", "candidate_id"}),
+        lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),
+    "decay": _ViewRun(
+        _kept_take_argv("decay"),
+        frozenset({"role", "impulse_source", "time_reference", "calibration_applied", "band_filter",
+                   "figure_ranges_db", "noise_margin_db", "envelope_ms", "noise_tail_fraction"}),
+        frozenset({"set_id", "take_ids", "candidate_id"}),
+        lambda p, a: p["figure_ranges_db"] == a["parameters"]["figure_ranges_db"]),
+    "compare": _ViewRun(
+        _compare_argv,
+        frozenset({"roles", "window_ms", "window_source", "lead_ms", "smoothing_fraction", "points_per_octave",
+                   "band_hz", "level_removed", "calibration_applied"}),
+        frozenset({"set_id", "take_ids", "candidate_id"}),
+        lambda p, a: p["window_ms"] == a["parameters"]["window_ms"]),
     "frequency": _ViewRun(
         _on_fixture_round(lambda r: ["frequency", str(r.measured)]),
         frozenset({"ref_band_hz", "normalize", "analyze_wavs", "reference_db"}),

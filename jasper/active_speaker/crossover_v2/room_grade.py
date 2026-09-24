@@ -19,6 +19,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from jasper.audio_measurement.room_limits import spatial_support
+from jasper.audio_measurement.series_stats import curve_difference
 from .record_index import bundle_measurements
 from .measurement_context import CAPTURE_FIELDS, compare_capture_basis
 from .room_prescription import RoomMedian, read_room_median
@@ -196,14 +197,15 @@ def _comparison_arrays(
         for value in (median, incumbent)
     )
     reference = float(np.median(was_raw))
-    alignment = reference - float(np.median(now_raw))
+    aligned = curve_difference(grid, now_raw, grid, was_raw, band_hz=common)
+    assert aligned is not None  # the grid spans the common support by construction
     comparison.update({
         "available": True,
         "level_reference_db": reference,
-        "level_alignment_db": alignment,
+        "level_alignment_db": -aligned.level_offset_db,
     })
     return comparison, (
-        grid, now_raw + alignment - reference, was_raw - reference,
+        grid, aligned.curve_db - aligned.level_offset_db - reference, aligned.against_db - reference,
         now_spread, was_spread,
     )
 

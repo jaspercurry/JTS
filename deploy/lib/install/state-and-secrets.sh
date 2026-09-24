@@ -111,7 +111,7 @@ heal_shared_state_modes() {
         "d:0770:${STATE_DIR}/wake-events"
         # The Layer-A SSOT older root atomic writers published root:root 0640;
         # jasper-control reads it group `jasper` for the aggregate /state.
-        # Future writes preserve the parent group in baseline_profile.py.
+        # Future writes preserve the parent group in baseline_apply.py.
         "f:0640:${STATE_DIR}/active_speaker_baseline_profile.json"
         # Active run-record advisory locks. A root-run status poll used to
         # CREATE them root:root 0640, after which no service account could take

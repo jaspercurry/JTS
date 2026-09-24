@@ -14,7 +14,7 @@ from jasper.active_speaker.commissioning_coordinator import next_program_action
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import parse_utc_iso
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
-from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
+from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, take_artifact_name
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 
 
@@ -114,3 +114,7 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert after == before
     assert tuple(after) == tuple(before)
     assert next_program_action(profile, identity, after, programs=RUNNABLE_PROGRAMS) == action
+
+
+def test_a_take_artifact_names_a_rear_target_without_a_colon():
+    assert take_artifact_name("impulse.json", "take-1", "woofer:rear") == "impulse-take-1-woofer_rear.json"

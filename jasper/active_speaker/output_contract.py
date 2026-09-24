@@ -24,8 +24,10 @@ from jasper.output_topology import (
     SpeakerGroup,
 )
 
+from jasper.camilla_emit import FLAT_PROGRAM_WIDTH
+from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
+
 from ._common import issue as _issue
-from .camilla_yaml import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 
 ACTIVE_BASELINE_SOURCE = (
@@ -416,3 +418,99 @@ def mains_lowest_driver_indexes(contract: OutputContract) -> set[int]:
         if LOWEST_DRIVER_ROLE_BY_MAIN_MODE.get(item.speaker_mode) == item.role:
             out.add(int(item.physical_output_index))
     return out
+
+
+def flat_full_range_outputs(contract: OutputContract) -> frozenset[int]:
+    """The physical outputs a flat full-range graph is allowed to emit on.
+
+    The saved topology's ``full_range`` assignments and nothing else. This is
+    the ONE definition of "which outputs has the household declared for the
+    flat lane": :func:`_flat_graph_allowed` refuses a graph that emits outside
+    it, and :func:`flat_graph_muted_outputs` — which the flat renderer calls —
+    derives the complement it must hard-mute from the same set. Keeping both
+    sides on one function is what makes the renderer's mute and the checker's
+    demand incapable of disagreeing.
+    """
+
+    return frozenset(
+        item.physical_output_index
+        for item in contract.assignments
+        if item.role == "full_range" and item.physical_output_index is not None
+    )
+
+
+def flat_graph_program_dest_map(
+    topology: OutputTopology,
+    contract: OutputContract,
+    *,
+    width: int,
+) -> tuple[int, ...] | None:
+    """Which playback channel each program channel drives, or ``None``.
+
+    The ONE answer to "where does the flat graph put the program": the renderer
+    builds its mixer, per-dest chains and mutes from it, and the checker asks it
+    whether a live channel reached an undeclared output.
+
+    Playback-channel index and physical-output index are ONE space — a
+    composite's children own a contiguous pair each and outputd deinterleaves in
+    that order — so an entry is both a dest and an output. Two shapes resolve:
+    **indexed** (not a composite, every claimed output inside ``width``: program
+    channel *i* drives output *i*) and **composite-paired** (a multi-child sink
+    whose children declare exactly ONE ``full_range`` output each: program
+    channel *i* drives child *i*'s output, which is why a dual-Apple stereo box
+    sits on outputs 0 and 2 and the identity answer is wrong for it).
+
+    ``None`` is UNDECIDED and both callers fail closed on it.
+    """
+
+    if width < FLAT_PROGRAM_WIDTH:
+        return None
+    claimed = flat_full_range_outputs(contract)
+    if not claimed or not claimed <= frozenset(range(width)):
+        return None
+    if not topology_sink_is_composite(topology):
+        return tuple(range(FLAT_PROGRAM_WIDTH))
+    children = topology.hardware.child_devices
+    if len(children) != FLAT_PROGRAM_WIDTH:
+        return None
+    dests: list[int] = []
+    for child in children:
+        owned = sorted(claimed.intersection(child.physical_output_indexes))
+        if len(owned) != 1:
+            return None
+        dests.append(owned[0])
+    return tuple(dests)
+
+
+def flat_graph_muted_outputs(
+    topology: OutputTopology,
+    *,
+    width: int,
+) -> frozenset[int]:
+    """Playback channels a ``width``-wide flat graph must hard-mute.
+
+    Every channel the saved topology does not claim as ``full_range`` would
+    otherwise send full-range program to an output the household never declared.
+    Muting them satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
+    :func:`_flat_graph_allowed` then re-proves it structurally off the emitted
+    YAML rather than trusting the emitter.
+
+    Withheld — EMPTY, mute nothing — unless
+    :func:`flat_graph_program_dest_map` resolves where the program lands, since
+    muting by an unestablished mapping would silence a working speaker, and for
+    three cases where silencing would only disguise a louder failure:
+    an **unconfigured** topology (runtime selection parks the speaker instead),
+    a **roleful/protected** topology (the flat graph is illegal there whatever
+    is muted, and refusing it is :func:`_flat_graph_allowed`'s job), and **every
+    channel unclaimed** (muting all of them ships a silently silent speaker;
+    the unmuted graph lets the checker refuse it with a reason).
+    """
+
+    if width <= 0:
+        return frozenset()
+    contract = classify_output_contract(topology)
+    if not contract.topology_configured or contract.requires_roleful_graph:
+        return frozenset()
+    if flat_graph_program_dest_map(topology, contract, width=width) is None:
+        return frozenset()
+    return frozenset(range(width)) - flat_full_range_outputs(contract)

@@ -333,6 +333,8 @@ def test_late_energy_change_uses_each_sides_median(candidate_count, reference_co
         "early_late_change_db": 3.0 if candidate_count and reference_count else None,
         "band_energy_change_db": 4.0 if candidate_count and reference_count else None,
         "arrival_shift_ms": -2.0 if candidate_count and reference_count else None,
+        "candidate": {"early_late_db": 7.0, "energy_db": -12.0, "centroid_ms": 4.0} if candidate_count else None,
+        "reference": {"early_late_db": 4.0, "energy_db": -16.0, "centroid_ms": 6.0} if reference_count else None,
         "repeats": [candidate_count, reference_count],
         "reason": "" if candidate_count and reference_count else seat_figures.REASON_NO_COMPARISON,
     }

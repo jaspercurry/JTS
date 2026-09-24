@@ -128,6 +128,10 @@ SEARCH_T_MAX_MS = 7.0
 ENVELOPE_SMOOTH_MS = 0.20
 # Fraction of the reflection-free span given to the half-Hann tail taper.
 TAPER_FRACTION = 0.25
+# Pre-peak lead of a forced-span window. Zero lead splits the direct arrival's main lobe
+# and truncates its low-frequency pre-ringing, so a sub-500 Hz feature reads many dB too
+# deep (P1).
+PHASE_GATE_LEAD_MS = 1.0
 # Advisory (non-excluding) band above the floor: [floor, NEAR_FLOOR_RATIO * floor) marks a
 # derived quantity "near_validity_floor" without excluding it; the hard exclusion is separate.
 NEAR_FLOOR_RATIO = 1.25
@@ -580,6 +584,31 @@ def build_gate_window(
     win[flat_end : end + 1] = 0.5 * (1.0 + np.cos(np.pi * t))
     # win[end + 1:] stays 0 from initialization.
     return win
+
+
+def gated_segment(
+    ir: np.ndarray,
+    sample_rate: int,
+    *,
+    gate_ms: float,
+    peak_idx: int,
+    lead_ms: float = PHASE_GATE_LEAD_MS,
+) -> tuple[np.ndarray, int]:
+    """``ir`` through :func:`build_gate_window` at a forced ``gate_ms`` span, led by
+    ``lead_ms``. Returns ``(segment, lead)``: the segment starts ``lead`` samples
+    before ``peak_idx``."""
+    span = int(round(gate_ms * 1e-3 * sample_rate))
+    lead = int(round(lead_ms * 1e-3 * sample_rate))
+    start = max(0, peak_idx - lead)
+    lead = peak_idx - start
+    want = lead + span + 1
+    segment = np.asarray(ir[start : start + want], dtype=np.float64)
+    if segment.size < want:
+        segment = np.pad(segment, (0, want - segment.size))
+    window = build_gate_window(
+        want, peak_idx=lead, span=span, taper_fraction=TAPER_FRACTION, lead=lead
+    )
+    return segment * window, lead
 
 
 def gate_impulse_response(

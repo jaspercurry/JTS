@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 if TYPE_CHECKING:
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 
 from jasper.active_speaker import calibration_level, commissioning_coordinator, design_draft as design_draft_store
@@ -649,94 +648,6 @@ def _active_speaker_driver_research_request_payload(
     return payload
 
 
-def _active_speaker_design_draft_save_payload(
-    raw: dict[str, Any], *, durable: bool = False
-) -> dict[str, Any]:
-    """Persist a design draft from current topology plus bounded research JSON.
-
-    ``durable`` is a caller-only knob (never read from ``raw``, so an HTTP
-    body can't set it): the crossover-accept seam
-    (:func:`apply_measured_crossover_geometry`) opts in, ordinary wizard
-    edits keep the cheaper default.
-    """
-
-    from jasper.active_speaker.design_draft import save_design_draft
-
-    if not isinstance(raw, dict):
-        raise ValueError("design draft request must be an object")
-    allowed = {
-        "driver_research",
-        "manual_settings",
-        "operator_inputs",
-    }
-    unknown = sorted(str(key) for key in raw if key not in allowed)
-    if unknown:
-        raise ValueError(
-            "design draft request has unknown fields: " + ", ".join(unknown)
-        )
-    topology = load_output_topology()
-    payload = save_design_draft(
-        topology,
-        driver_research=raw.get("driver_research"),
-        manual_settings=raw.get("manual_settings"),
-        operator_inputs=raw.get("operator_inputs"),
-        durable=durable,
-    )
-    log_event(
-        logger,
-        "sound.active_speaker_design_draft_save",
-        status=str(payload.get("status")),
-        topology_id=topology.topology_id,
-        driver_count=str((payload.get("summary") or {}).get("driver_count")),
-        candidate_count=str(
-            (payload.get("summary") or {}).get("crossover_candidate_count")
-        ),
-        manual_driver_count=str(
-            (payload.get("summary") or {}).get("manual_driver_count")
-        ),
-        manual_candidate_count=str(
-            (payload.get("summary") or {}).get("manual_crossover_candidate_count")
-        ),
-        safety_profile_issues=",".join(issue["code"] for issue in
-                                     (payload.get("driver_safety_profile") or {}).get("issues", [])),
-        issues=len(payload.get("issues") or []),
-    )
-    return installation_view(payload)
-
-
-def apply_measured_crossover_geometry(
-    *, between_roles: tuple[str, str],
-    configured: "CrossoverGeometry", selected: "CrossoverGeometry",
-) -> dict[str, Any]:
-    """Write a measured crossover onto the Sound declaration. Durable: every
-    write through this function is fsynced before it is visible.
-
-    The declaration states a crossover as three fields (corner, filter type,
-    slope) and all three go through this one writer, in one write, one fsync
-    and one Undo leg: ``baseline_profile``'s
-    ``measured_candidate_preset_mismatch`` guard compares the speaker identity,
-    crossover regions included, and slope compiles into
-    ``CrossoverRegion.order``, so a candidate measured at a
-    different slope is as unreconcilable with the saved declaration as one
-    measured at a different corner.
-    """
-    from jasper.active_speaker.crossover_declaration import (
-        declared_crossover_geometry,
-        manual_settings_for_crossover,
-    )
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    draft = load_design_draft(topology=load_output_topology())
-    current = declared_crossover_geometry(draft, between_roles)
-    if current is None or not current.matches(configured):
-        raise ValueError("Sound changed since this measurement; review afresh")
-    return _active_speaker_design_draft_save_payload({
-        "driver_research": draft.get("driver_research"),
-        "manual_settings": manual_settings_for_crossover(draft, between_roles, selected),
-        "operator_inputs": draft.get("operator_inputs"),
-    }, durable=True)
-
-
 def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
     """Compute the no-audio crossover preview from the current design draft."""
 
@@ -829,8 +740,8 @@ async def _active_speaker_commission_state_payload(
     from jasper.active_speaker.commission_load import (
         commission_load_runtime_status,
         commission_load_state_with_runtime_status,
-        load_commission_load_state,
     )
+    from jasper.active_speaker.startup_load import load_commission_load_state  # lazy: import cost
 
     commission = load_commission_load_state()
     if commission.get("status") == "loaded":
@@ -922,21 +833,18 @@ async def _active_speaker_commissioning_view_payload(
     return view
 
 
-def _active_speaker_baseline_profile_payload(
-    *,
-    write: bool = False,
-    design_draft: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from jasper.active_speaker.baseline_profile import compile_commissioning_profile, load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
+def _active_speaker_baseline_profile_payload() -> dict[str, Any]:
+    from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
 
     topology = load_output_topology()
-    _, payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology, design_draft=design_draft, write=write)
+    payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology)
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",
-        action="compile" if write else "status",
+        action="status",
         status=str(payload.get("status")),
-        may_apply=str(bool((payload.get("permissions") or {}).get("may_apply"))),
+        may_compile=str(bool((payload.get("permissions") or {}).get("may_compile"))),
         issue_count=len(payload.get("issues") or []),
         config=str((payload.get("config") or {}).get("basename")),
     )
@@ -1013,7 +921,7 @@ async def _active_speaker_finish_commissioning_payload(
         nonlocal commissioning_cleanup
         try:
             from jasper.active_speaker.commission_ramp import load_ramp_state
-            from jasper.active_speaker.commission_load import load_commission_load_state
+            from jasper.active_speaker.startup_load import load_commission_load_state  # lazy: import cost
 
             ramp_state = load_ramp_state()
             commission_load = load_commission_load_state()
@@ -1105,7 +1013,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
     baseline, through the same ``base: saved`` composer
     ``jasper-crossover-prescriber compose`` uses; never applies it."""
 
-    from jasper.active_speaker.baseline_profile import rear_calibration_issues  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.applied_tune import rear_calibration_issues  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.candidate_bank import (  # lazy: graph compilation imports NumPy
         CandidateBankRefusal,
         publish_authored_candidate,

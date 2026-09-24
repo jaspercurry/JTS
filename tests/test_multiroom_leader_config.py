@@ -16,13 +16,13 @@ from pathlib import Path
 
 import pytest
 
+from jasper.camilla_config_contract import playback_is_pipe
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
     SOLO_RESTORE_PATH,
     _clear_stash,
     _write_stash,
-    playback_is_pipe,
     read_stash,
     restore_action,
 )
@@ -73,7 +73,7 @@ def test_is_pipe_config_distinguishes_pipe_from_solo(tmp_path):
     """The content check both stash guards share, against REAL emitted
     configs (emitter/scanner drift fails here)."""
     from jasper.multiroom.leader_config import _is_pipe_config
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 
@@ -107,7 +107,7 @@ def test_is_pipe_config_distinguishes_pipe_from_solo(tmp_path):
     ('  playback:\n    type: Alsa\n    device: "jts_ring_playback"\n', False),
 ])
 def test_playback_is_pipe_keys_on_type_and_exact_filename(playback, expected):
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     text = "devices:\n" + (playback % {"fifo": SNAPFIFO})
     assert playback_is_pipe(text, SNAPFIFO) is expected
@@ -116,7 +116,7 @@ def test_playback_is_pipe_keys_on_type_and_exact_filename(playback, expected):
 def test_playback_is_pipe_fails_closed_on_a_duplicated_devices_key():
     """An ambiguous config yields no devices subset at all, so the pipe
     answer is False rather than a guess."""
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     one = f'devices:\n  playback:\n    type: File\n    filename: "{SNAPFIFO}"\n'
     assert playback_is_pipe(one, SNAPFIFO) is True

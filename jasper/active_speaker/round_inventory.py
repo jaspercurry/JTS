@@ -7,7 +7,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 from typing import Any
-from .measurement_programs import bookkeeping_views, run_purposes
+from .measurement_programs import run_purposes
+from .round_view_artifacts import bookkeeping_views
 from .run_manifest import room_sets
 from .crossover_v2.evidence_packet.offline_reads import derived_view_path
 from .crossover_v2.round_inputs import (RoundInputs, read_run_manifest, resolve_set, set_artifact_name,
@@ -56,7 +57,7 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
     order = dict.fromkeys((
         *(name for name, _, _ in bookkeeping_views(program, has_room=bool(room_sets(manifest)), co_purposes=purposes[1:])),
         *(name for name, spec in ARTIFACT_BY_VIEW.items()
-          if not spec.purposes or set(purposes).intersection(spec.purposes)),
+          if not spec.per_take and (not spec.purposes or set(purposes).intersection(spec.purposes))),
     ))
     for view in order:
         spec = ARTIFACT_BY_VIEW[view]

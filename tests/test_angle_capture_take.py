@@ -188,7 +188,7 @@ def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
     """The answer has one owner. This resolver hands that owner the declaration
     it is keyed to and reports its verdict — it does not substitute a datasheet
     estimate for a measurement of this cabinet."""
-    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import driver_base_trim
 
     seen: list[object] = []
 
@@ -196,7 +196,7 @@ def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
         seen.append((preset, crossover_preview, design_draft))
         return {DRIVER_ROLE_TWEETER: -9.5}, {"source": "banked_base_trim"}
 
-    monkeypatch.setattr(baseline_profile, "measured_level_trims", _owner)
+    monkeypatch.setattr(driver_base_trim, "measured_level_trims", _owner)
     _stub_evidence_loaders(monkeypatch)
     trims, source = v2state._resolve_measurement_level_trims(
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
@@ -213,12 +213,12 @@ def test_the_resolver_answers_empty_for_a_walk_that_asked_for_no_level_match(
 ):
     """The short circuit is the flag, before any read: an ordinary session must
     not pay a statefile read or a preview load for a feature it did not use."""
-    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import driver_base_trim
 
     def _never(*_args, **_kwargs):
         raise AssertionError("an unmatched walk must ask no evidence question")
 
-    monkeypatch.setattr(baseline_profile, "measured_level_trims", _never)
+    monkeypatch.setattr(driver_base_trim, "measured_level_trims", _never)
 
     assert v2state._resolve_measurement_level_trims(
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE), preset=None, topology=None,
@@ -236,7 +236,7 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
     arise is a real fault in the derivation; swallowing it to answer empty would
     misdirect the operator to "run the driver trim step" over a bug. With no
     catch it PROPAGATES, its traceback pointing straight at this function."""
-    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker import driver_base_trim
 
     class _Boom(RuntimeError):
         pass
@@ -244,7 +244,7 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
     def _blows_up(*_args, **_kwargs):
         raise _Boom("a real defect in the derivation")
 
-    monkeypatch.setattr(baseline_profile, "measured_level_trims", _blows_up)
+    monkeypatch.setattr(driver_base_trim, "measured_level_trims", _blows_up)
     _stub_evidence_loaders(monkeypatch)
 
     with pytest.raises(_Boom):

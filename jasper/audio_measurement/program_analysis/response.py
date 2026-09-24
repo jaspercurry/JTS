@@ -25,6 +25,7 @@ from jasper.audio_measurement.program import (
     segment_stimulus,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.recorded_impulse import kept_end
 from jasper.log_event import log_event
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
@@ -37,6 +38,7 @@ from .model import (
     DECONV_PRE_GUARD_S,
     DRIVER_SNR_ALIGNMENT_KEY,
     DriverResponse,
+    RecordedImpulse,
     _FLAT_SUM_POLARITY_OBJECTIVES,
     IR_POST_MS,
     IR_PRE_MS,
@@ -98,6 +100,33 @@ def _deconvolve_window(
         window, np.asarray(stim, dtype=np.float64), sample_rate
     )
     return full_ir, pre_effective
+
+
+def recorded_impulse(
+    full_ir: np.ndarray,
+    origin_index: int,
+    segment: ProgramSegment,
+    sample_rate: int,
+    *,
+    clock_shift_samples: float = 0.0,
+) -> RecordedImpulse:
+    """The part of one deconvolved sweep a later reader can use.
+
+    Kept through :data:`DEFAULT_VERIFY_TAIL_S` past the sweep's scheduled start,
+    which its direct peak follows by milliseconds: the recording ends that long
+    after the sweep, so the highest frequencies hold no decay beyond it. The
+    schedule, not the loudest sample, bounds it, so a capture of noise keeps
+    no more. Everything before the start is kept, the deconvolution pre-guard
+    included, as the noise a reader measures the peak against.
+    """
+    samples = np.asarray(full_ir[:kept_end(origin_index, full_ir.size, sample_rate)], dtype=np.float32)
+    return RecordedImpulse(
+        samples=samples,
+        sample_rate_hz=int(sample_rate),
+        origin_index=int(origin_index),
+        segment_id=segment.segment_id,
+        clock_shift_samples=float(clock_shift_samples),
+    )
 
 
 def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:

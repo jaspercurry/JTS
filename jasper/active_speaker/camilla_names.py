@@ -2,11 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CamillaDSP filter names for active-speaker graphs."""
+"""CamillaDSP filter names for active-speaker graphs, and the gain every
+commission/startup mute filter carries."""
 
 import re
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+#: The gain of every muted output's mute filter, which also carries ``mute: true``.
+STARTUP_MUTE_GAIN_DB = -120.0
 
 
 def name_token(value: str) -> str:

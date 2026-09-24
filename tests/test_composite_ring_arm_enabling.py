@@ -40,7 +40,7 @@ from jasper.ring_conf import (
     render_ring_conf_wire,
     ring_conf_channels,
 )
-from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.output_contract import (
     active_ring_channels_for_topology,
@@ -48,7 +48,8 @@ from jasper.active_speaker.output_contract import (
     ring_channels_for_topology,
     topology_sink_is_composite,
 )
-from jasper.active_speaker.runtime_contract import _flat_hard_muted_outputs, classify_camilla_graph, flat_graph_program_dest_map
+from jasper.active_speaker.output_contract import flat_graph_program_dest_map
+from jasper.active_speaker.runtime_contract import _flat_hard_muted_outputs, classify_camilla_graph
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
     FlatChannelPlan,

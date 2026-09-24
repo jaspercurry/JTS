@@ -20,6 +20,7 @@ PROGRAM_MISSING = "classification_program_missing"
 REASON_COVERAGE_SHORT = "coverage_short"
 REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
 REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
+REASON_FIT_NOT_FINITE = "fit_not_finite"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
 REASON_GRAPH_MISMATCH = "graph_mismatch"
 REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
@@ -71,6 +72,7 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
     REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
+    REASON_FIT_NOT_FINITE: "A fitted filter term is NaN or infinite, so the fit is published without numbers.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
     REASON_GRAPH_MISMATCH: "The summed take played an output the driver-take prediction does not model, so the two sums are not comparable.",
     REASON_MARK_FIT_BAND_UNAVAILABLE: "A mark take does not cover the fit band above its trusted floor.",

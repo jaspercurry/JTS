@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper import fanin_coupling, ring_assets, ring_conf
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.camilla_config_contract import (
     devices_playback_is_pipe,
     parse_camilla_devices_config,
@@ -50,6 +51,7 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_WIRE_FORMAT_ENV_VAR,
 )
+from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
     GROUPING_RING_FORMAT,
@@ -691,8 +693,6 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
     """
-    from jasper.active_speaker.camilla_names import output_commission_mute_name  # lazy: import cost
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost
     from jasper.active_speaker.graph_safety import (  # lazy: import cost
         output_terminally_muted,
         view_from_yaml_dict,
@@ -827,7 +827,6 @@ def graph_at_active_ring_endpoint(
     if graph.devices.get("playback_type") == "File":
         from jasper.active_speaker.environment import read_camilla_statefile_config_path  # lazy: cycle through playback_route
         from jasper.multiroom.active_leader_config import crossover_statefile_path  # lazy: cycle through runtime_contract
-        from jasper.multiroom.reconcile_plan import SNAPFIFO  # lazy: cycle through coupling_reconcile
 
         if (
             graph.devices.get("capture_device") != RING_CAPTURE_DEVICE
@@ -940,8 +939,6 @@ def ring_endpoint_anchor_converged(
     is_anchor, identity_problem = _staged_anchor_identity(graph)
     if not is_anchor:
         return False, identity_problem
-
-    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost
 
     at_endpoint, endpoint_detail = graph_at_active_ring_endpoint(graph)
     if not at_endpoint:

@@ -33,7 +33,7 @@ def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
 
     Extracted so the two consumers of this question cannot drift apart.
     :func:`_snapshot_owner` below decides Layer-A ownership with it, and
-    ``baseline_profile._bank_applied_base_trim`` decides whether an applied
+    ``driver_base_trim.bank_applied_base_trim`` decides whether an applied
     profile still counts as measured evidence — those answers disagreeing is
     how a mixed candidate came to CLEAR a bank the contract considered
     automatic.

@@ -15,6 +15,7 @@ from typing import Any
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
 from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
 from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -28,8 +29,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
-    preview_prescription_document, parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
+    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence,
+    judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
+    read_prescription_document, saved_base, vary_document,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
@@ -143,6 +145,19 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
                      "variants": rows, "adopted": False, "banked": False})
 
 
+def _preview_out(result: Mapping[str, Any], out: Path) -> int:
+    """The whole preview to ``out``; the answer names it and keeps the forecast's summary."""
+    try:
+        atomic_write_json(out, result)
+    except OSError as exc:
+        return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+    return answered({
+        "section": result["section"], "sections": result["sections"], "out": str(out), "bytes": out.stat().st_size,
+        **({"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph" else {}),
+        "adopted": False, "banked": False,
+    })
+
+
 def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
     if exit_code is None:
         exit_code = {REASON_EVIDENCE_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
@@ -159,7 +174,10 @@ def _cmd_document(args: argparse.Namespace) -> int:
         document = read_prescription_document(raw)
         root = Path(args.root) if args.root else None
         if args.command == "judge" and args.preview:
-            return _cmd_vary_document(args, document) if args.vary else answered(_preview_document(args, document))
+            if args.vary:
+                return _cmd_vary_document(args, document)
+            result = _preview_document(args, document)
+            return _preview_out(result, Path(args.out)) if args.out else answered(result)
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
@@ -525,7 +543,7 @@ def _next_commands(
     # Nothing that would fail for the reason already reported: these two read
     # the same evidence this verb just could not.
     if session_dir and not packet_error:
-        commands.append(shlex.join(["jasper-round-views", "inventory", session_dir]))
+        commands.append(shlex.join([ROUND_VIEWS_PROG, "inventory", session_dir]))
         commands.append(shlex.join([
             PROG, "contract", "--round", session_dir,
         ]))
@@ -563,7 +581,7 @@ def status_document(
                     "bundle_session_dir": str(bundle),
                     "next": [
                         shlex.join([PROG, "status", path]),
-                        shlex.join(["jasper-round-views", "inventory", path]),
+                        shlex.join([ROUND_VIEWS_PROG, "inventory", path]),
                     ],
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:
@@ -654,13 +672,18 @@ def build_parser() -> argparse.ArgumentParser:
     contract.set_defaults(func=_cmd_contract)
     for verb in ("judge", "compose"):
         command = sub.add_parser(verb, help="judge every section and preview resolution" if verb == "judge" else "judge, prove and bank one candidate")
-        command.add_argument("document", metavar="DOC")
+        command.add_argument("document", metavar="DOC", help=(
+            f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
+            f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
+            f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
+            command.add_argument("--out", metavar="FILE", help="write the full preview here and answer with its summary; "
+                                 "jasper-round-views compare --a-preview reads it")
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read applied layers, last banked rounds and the next program; optionally inspect a round")
@@ -678,6 +701,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "judge" and args.vary and (not args.preview or not args.out_dir):
         parser.error("--vary requires --preview and --out-dir")
+    if args.command == "judge" and args.out and (not args.preview or args.vary):
+        parser.error("--out requires --preview without --vary")
     if args.command in {"judge", "compose"}:
         args.session_dir = args.round
     result: int = args.func(args)

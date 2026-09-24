@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import driver_base_trim as dbt
-from jasper.active_speaker.baseline_profile import measured_level_trims
+from jasper.active_speaker.driver_base_trim import measured_level_trims
 from jasper.active_speaker.crossover_preview import crossover_preview_fingerprint
 
 

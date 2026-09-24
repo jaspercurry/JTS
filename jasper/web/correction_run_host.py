@@ -10,6 +10,7 @@ from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import replace
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,39 @@ from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, enrich_capture_record
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
+from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
 from jasper.active_speaker.plan_run import RunDoor
+from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import ExcitationProgram
+
+logger = logging.getLogger(__name__)
+
+
+def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> dict[str, Any]:
+    """The take record's impulses block, once they are written beside its recording.
+
+    A failed write costs only the saved copy: the raw recording stays, so the
+    impulses remain recomputable.
+    """
+    bundle_dir = getattr(getattr(records, "capture", None), "bundle_dir", None)
+    if bundle_dir is None:
+        return {}
+    try:
+        block = write_take_impulses(Path(bundle_dir), take_id, analysis,
+                                    recording=getattr(answer, "wav_path", None) or None)
+    except (OSError, BundleError) as exc:
+        log_event(logger, "correction.take_impulses_not_saved", level=logging.WARNING,
+                  take_id=take_id, error_type=type(exc).__name__)
+        return {}
+    return {IMPULSES_KEY: block} if block else {}
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
@@ -63,7 +88,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         else:
-            fields = {**fields, **analysis_blocks(result)}
+            fields = {**fields, **analysis_blocks(result),
+                      **_kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),

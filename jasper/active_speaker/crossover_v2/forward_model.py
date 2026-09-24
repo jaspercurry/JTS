@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
+
 PREDICTION_KIND = "jts_forward_model_prediction"
 PREDICTION_SCHEMA_VERSION = 1
 
@@ -93,11 +95,11 @@ def predicted_minus_measured_db(
 ) -> dict[str, Any]:
     """The predicted-vs-measured delta, as facts and no verdict.
 
-    Both curves are level-normalised against their OWN median over the compared
-    band before subtracting: a forward model over banked solos carries no
-    absolute SPL reference, so the raw offset between it and a measured sum is a
-    level difference rather than a shape error. The offset removed is published
-    as ``level_offset_db``.
+    The level comes off before the shapes are compared, by
+    :func:`~jasper.audio_measurement.series_stats.curve_difference`: a forward
+    model over banked solos carries no absolute SPL reference, so the raw offset
+    between it and a measured sum is a level difference rather than a shape
+    error. The offset removed is published as ``level_offset_db``.
 
     ``band_hz`` defaults to the prediction's own
     :attr:`PredictedSum.sum_band_hz` intersected with the measured curve's
@@ -119,29 +121,26 @@ def predicted_minus_measured_db(
     if band_hz is not None:
         lo_hz = max(lo_hz, float(band_hz[0]))
         hi_hz = min(hi_hz, float(band_hz[1]))
-    grid = predicted.freqs_hz
-    mask = (grid >= lo_hz) & (grid <= hi_hz)
-    if not np.any(mask):
+    difference = curve_difference(predicted.freqs_hz, predicted.predicted_db, measured_grid, measured_curve,
+                                  band_hz=(lo_hz, hi_hz))
+    if difference is None:
         raise ForwardModelError(
             f"no predicted bin falls in {lo_hz:g}-{hi_hz:g} Hz",
             detail={"compared_lo_hz": lo_hz, "compared_hi_hz": hi_hz},
         )
-    compared_grid = grid[mask]
-    predicted_curve = predicted.predicted_db[mask]
-    measured_on_grid = np.interp(compared_grid, measured_grid, measured_curve)
-    offset_db = float(np.median(predicted_curve) - np.median(measured_on_grid))
-    delta = (predicted_curve - offset_db) - measured_on_grid
+    delta = difference.delta_db
+    summary = deviation_summary(difference.freqs_hz, delta)
     return {
         "schema_version": PREDICTION_SCHEMA_VERSION,
         "compared_band_hz": [lo_hz, hi_hz],
-        "compared_points": int(compared_grid.size),
-        "level_offset_db": offset_db,
-        "freqs_hz": [float(hz) for hz in compared_grid],
-        "predicted_db": predicted_curve.tolist(),
-        "measured_db": measured_on_grid.tolist(),
+        "compared_points": summary["bins"],
+        "level_offset_db": difference.level_offset_db,
+        "freqs_hz": [float(hz) for hz in difference.freqs_hz],
+        "predicted_db": difference.curve_db.tolist(),
+        "measured_db": difference.against_db.tolist(),
         "delta_db": [float(db) for db in delta],
-        "max_abs_db": float(np.max(np.abs(delta))),
-        "rms_db": float(np.sqrt(np.mean(delta**2))),
+        "max_abs_db": summary["max_abs_db"],
+        "rms_db": summary["rms_db"],
         "take_path": predicted.take_path,
     }
 

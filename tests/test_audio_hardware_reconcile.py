@@ -3740,7 +3740,7 @@ def test_reconcile_renders_the_width_matched_cutover_and_is_idempotent(
 def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
     """A corrupt topology must FAIL the render, not succeed unmuted.
 
-    `flat_graph_muted_outputs` fails SOFT, which is right for callers with
+    `flat_graph_channel_plan` fails SOFT, which is right for callers with
     a guard behind them. This renderer must keep the last proved bytes
     instead: the runtime selector then rejects stale intent, and the boot
     unit ordering keeps CamillaDSP from starting on a failed convergence.

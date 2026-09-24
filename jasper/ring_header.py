@@ -65,6 +65,13 @@ _RING_OFF_READER_PID = 72  # u64
 # ``tests/test_ring_header.py``.
 RING_LIVENESS_TIMEOUT_NS = 2_000_000_000
 
+# The ring layout's channel accept-set (``jasper_ring::Geometry::validate_self``
+# and the C ioplug's ``JTS_RING_MIN_CHANNELS`` / ``MAX_RING_CHANNELS``). Spelled
+# here so the topology side refuses a width the transport could not carry
+# instead of deferring it to an attach failure.
+MIN_RING_CHANNELS = 2
+MAX_RING_CHANNELS = 8
+
 # The ``sample_format`` header field's wire values (layout.rs
 # SAMPLE_FORMAT_S16LE / SAMPLE_FORMAT_S32LE, mirrored by the C header's
 # JTS_RING_SAMPLE_FORMAT_*). These ids are written into the shared header and

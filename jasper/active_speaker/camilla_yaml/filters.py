@@ -12,6 +12,7 @@ from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peak
 from jasper.camilla_stereo_prefix import emit_filter_spec
 
 from ..camilla_names import (
+    STARTUP_MUTE_GAIN_DB,
     bass_management_hp_name,
     driver_baseline_gain_name,
     driver_baseline_limiter_name,
@@ -54,8 +55,6 @@ from .topology import _ordered_regions, _output_count
 STARTUP_HEADROOM_DB = 40.0
 
 COMMISSIONING_HEADROOM_DB = 0.0
-
-STARTUP_MUTE_GAIN_DB = -120.0
 
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
 

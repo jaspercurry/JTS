@@ -16,6 +16,7 @@ import numpy as np
 from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER, TRUST_UNAVAILABLE
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
@@ -610,6 +611,7 @@ class DriverResponse:
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
     late_energy: Mapping[str, float] | None = None
+    impulse: RecordedImpulse | None = None
 
     @property
     def fit_floor_hz(self) -> float | None:

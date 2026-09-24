@@ -18,7 +18,7 @@ from .frequency_view import (
     FrequencySeries,
     frequency_series,
 )
-from .prediction_document import frequency_run_from_capture_prediction
+from .prediction_document import CAPTURE_PREDICTION_KIND, frequency_run_from_capture_prediction
 from jasper.json_fields import finite_float
 
 
@@ -74,7 +74,7 @@ def frequency_run_from_documents(
 ) -> FrequencyRun:
     """Adapt saved measurement or analysis JSON without knowing its producer."""
 
-    if len(documents) == 1 and documents[0].get("kind") == "jts_capture_prediction":
+    if len(documents) == 1 and documents[0].get("kind") == CAPTURE_PREDICTION_KIND:
         return frequency_run_from_capture_prediction(
             run_id=run_id,
             document=documents[0],

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jasper.active_speaker.camilla_names import output_commission_mute_name
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -35,6 +35,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
+    FLAT_PROGRAM_WIDTH,
     MONO_SUM_GAIN_DB,
     emit_gain_filter,
     emit_master_gain_pipeline,
@@ -43,6 +44,7 @@ from jasper.camilla_emit import (
 )
 from jasper.camilla_stereo_prefix import build_stereo_prefix
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from .profile import (
     SoundProfile,
@@ -56,10 +58,6 @@ if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
 logger = logging.getLogger(__name__)
 
 BASE_CONFIG_PATH = Path("/etc/camilladsp/outputd-cutover.yml")
-# The PROGRAM's width: capture channels, the `master_gain` mixer's `in`, and the
-# channels `mono_sum_sources()` sums. FIXED — `emit_master_gain_pipeline` is a
-# deliberately 2-channel shape (the config contract is stereo-pinned).
-FLAT_PROGRAM_WIDTH = 2
 # The default OUTPUT width, stated once rather than re-derived by each caller
 # that needs to know which physical outputs the emitted graph addresses. A wider
 # graph is opt-in per call (`emit_sound_config(width=...)`).
@@ -79,20 +77,10 @@ def _normalize_width(width: int) -> int:
 
     Bounded by the ring's own channel accept-set: playback is Ring B
     (ADR-0100), so a width the transport cannot carry fails the ioplug open
-    rather than degrading. Those bounds are imported from their owner and only
-    OFF the default, keeping the runtime module out of an ordinary stereo
-    emission (see this module's ``TYPE_CHECKING`` note); the default sitting
-    inside them is test-pinned instead.
+    rather than degrading.
     """
 
     width = int(width)
-    if width == FLAT_GRAPH_WIDTH:
-        return width
-    from jasper.active_speaker.camilla_yaml import (
-        MAX_RING_CHANNELS,
-        MIN_RING_CHANNELS,
-    )
-
     if not MIN_RING_CHANNELS <= width <= MAX_RING_CHANNELS:
         raise ValueError(
             f"width must be {MIN_RING_CHANNELS}..{MAX_RING_CHANNELS} playback "
@@ -109,7 +97,7 @@ def _normalize_program_dest_map(
     """Validate ``emit_sound_config(program_dest_map=...)`` at the API boundary.
 
     Fail LOUD on the three ways a map would silently drop or double a program
-    channel. ``runtime_contract.flat_graph_program_dest_map`` owns WHICH dests
+    channel. ``output_contract.flat_graph_program_dest_map`` owns WHICH dests
     are right; this only refuses a map no graph could mean.
     """
 
@@ -151,7 +139,7 @@ def _normalize_muted_outputs(
     * every channel muted — a wholly silent program graph. That is not this
       lane's answer for "the topology claims none of my outputs"; refusing the
       flat graph is (see
-      ``jasper.active_speaker.runtime_contract.flat_graph_muted_outputs``,
+      ``jasper.active_speaker.output_contract.flat_graph_muted_outputs``,
       which returns empty rather than asking for silence).
     """
 
@@ -278,8 +266,6 @@ def _master_gain_mixer_yaml(
         )
 
     def surplus_source() -> str:
-        from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: circular emitter dependency
-
         return source(0, fmt(STARTUP_MUTE_GAIN_DB), False)
 
     program_dests = _program_dests(program_dest_map)
@@ -416,7 +402,7 @@ def emit_sound_config(
     this pipeline runs after it. It exists so a graph rendered for a topology
     that assigns fewer physical outputs than the stereo-pinned width cannot
     send full-range program to an output the household never declared.
-    ``jasper.active_speaker.runtime_contract.flat_graph_muted_outputs`` owns
+    ``jasper.active_speaker.output_contract.flat_graph_muted_outputs`` owns
     WHICH channels those are; this emitter owns only how the mute is spelled.
     ``None`` / empty is **byte-identical** to before this parameter existed
     (the solo-impact contract). Muting EVERY channel is refused: a wholly
@@ -437,7 +423,7 @@ def emit_sound_config(
     parameter existed (the solo-impact contract); a composite sink is the one
     shape needing another answer, since outputd deinterleaves the period across
     its child DACs.
-    ``jasper.active_speaker.runtime_contract.flat_graph_program_dest_map`` owns
+    ``jasper.active_speaker.output_contract.flat_graph_program_dest_map`` owns
     WHICH dests those are. Mutually exclusive with ``mono_fold_output``, which
     collapses the program this spreads.
 
@@ -558,15 +544,6 @@ def emit_sound_config(
     # Structure is the shared primitive; this module owns only which
     # names go in each chain (room L/R segments + the shared tail).
     if muted_channels:
-        # The repo's ONE hard-mute idiom, imported from its owner rather than
-        # respelled here — the runtime contract re-proves the emitted graph with
-        # the same name and gain, so a drifted copy would silently stop proving.
-        # Lazy because jasper.active_speaker.camilla_yaml imports THIS module at
-        # module scope (emit_sound_config); a top-level edge back would be
-        # circular. Same lazy-import idiom runtime_contract uses for its own
-        # reverse edges.
-        from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: circular emitter dependency
-
         # Append each mute LAST in its channel's chain. CamillaDSP applies a
         # step's filters in order and these per-channel steps are the pipeline's
         # last, so the mute is terminal — nothing downstream can re-amplify it.
@@ -733,13 +710,13 @@ def flat_graph_channel_plan(
 ) -> FlatChannelPlan:
     """The mute set and the mono fold for a ``width``-wide flat graph.
 
-    ``jasper.active_speaker.runtime_contract.flat_graph_muted_outputs`` stays
+    ``jasper.active_speaker.output_contract.flat_graph_muted_outputs`` stays
     the SSOT for which channels are unclaimed; this function adds the second
     half of the mono answer — which channel the program folds ONTO — and reads
     the topology once so the two cannot describe different boxes.
 
     The third answer is WHERE THE PROGRAM LANDS, delegated whole to
-    ``jasper.active_speaker.runtime_contract.flat_graph_program_dest_map``: the
+    ``jasper.active_speaker.output_contract.flat_graph_program_dest_map``: the
     identity on an indexed sink, and one output per child on a composite whose
     children declare exactly one ``full_range`` output each. It is reported as
     ``None`` for the identity so every non-composite emit stays byte-identical.
@@ -748,7 +725,7 @@ def flat_graph_channel_plan(
     (``CONTRACT_NORMAL_MONO_FULL_RANGE``) that assigns exactly one output, and
     only when the SSOT's mute set is that output's exact complement. That last
     equality is the load-bearing one: it is how every case the SSOT withholds
-    muting for — unconfigured, roleful/protected, corrupt, or a sink whose
+    muting for — unconfigured, roleful/protected, or a sink whose
     program-to-output mapping does not resolve — withholds the fold too, without
     this function re-deriving (or drifting from) any of those rules. A composite
     mono box in particular must NOT fold here: outputd owns the program's
@@ -765,15 +742,14 @@ def flat_graph_channel_plan(
     is, and for the same reason: this lane cannot say which output that program
     belongs on. Deciding that is the deferred mapping work.
 
-    Fails SOFT — the empty plan — on a corrupt topology, matching the SSOT.
+    Fails SOFT — the empty plan — on a corrupt topology.
     The graph is checked either way: ``classify_camilla_graph`` and
     ``safe_graph_for_current_topology`` both fail closed on that topology.
     """
 
-    # Lazy: the active-speaker package imports THIS module at module scope, so
-    # a top-level edge back would be circular.
-    from jasper.active_speaker.output_contract import CONTRACT_NORMAL_MONO_FULL_RANGE, classify_output_contract
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.output_contract import (  # lazy: keep topology off the base emitter path
+        CONTRACT_NORMAL_MONO_FULL_RANGE,
+        classify_output_contract,
         flat_full_range_outputs,
         flat_graph_muted_outputs,
         flat_graph_program_dest_map,

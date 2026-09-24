@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker import baseline_record
 from jasper import output_topology_store as topology_mod
 from jasper.active_speaker.candidate_bank import bank_candidate
 
@@ -39,7 +40,7 @@ from jasper.active_speaker.calibration_level import (
 )
 from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
-from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
+from jasper.active_speaker.baseline_apply import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
@@ -86,6 +87,7 @@ from jasper.web import (
     _common,
     nav,
     sound_active_speaker,
+    sound_design_draft,
     sound_profile_apply,
     sound_setup,
     volume_floor_tone,
@@ -2237,6 +2239,7 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({
         "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
     })
@@ -2263,6 +2266,7 @@ def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_p
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
     assert saved["revision"] == 1
     assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
@@ -2286,6 +2290,7 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     request = build_driver_research_context(
         topology,
         _operator_inputs(),
@@ -2334,6 +2339,7 @@ def _declared_candidate_box(
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     candidate = {
         "between_roles": ["woofer", "tweeter"],
         "frequency_hz": 5500,
@@ -2375,7 +2381,7 @@ def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
         monkeypatch, tmp_path, operator_inputs={"notes": "keep this"}
     )
 
-    saved = sound_setup.apply_measured_crossover_geometry(
+    saved = sound_design_draft.apply_measured_crossover_geometry(
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(5750, 24),
@@ -2410,7 +2416,7 @@ def test_apply_measured_crossover_geometry_writes_the_measured_declaration(
     design-draft write, file and directory (#2292)."""
     fsync_calls = _declared_candidate_box(monkeypatch, tmp_path)
 
-    saved = sound_setup.apply_measured_crossover_geometry(
+    saved = sound_design_draft.apply_measured_crossover_geometry(
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(selected_fc_hz, selected_slope),
@@ -2446,7 +2452,7 @@ def test_apply_measured_crossover_geometry_refuses_an_unreconcilable_declaration
     with pytest.raises(
         ValueError, match="Sound changed since this measurement; review afresh"
     ):
-        sound_setup.apply_measured_crossover_geometry(
+        sound_design_draft.apply_measured_crossover_geometry(
             between_roles=("woofer", "tweeter"),
             configured=_geometry(5500, 48),
             selected=_geometry(5500, 24),
@@ -3058,7 +3064,6 @@ def test_reset_reports_the_reconcile_verdict(
 def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     """An applied baseline on a rear-output topology, so ``--base saved``
     resolves — the shape ``candidate_from_applied_profile`` needs."""
-    from jasper.active_speaker import baseline_profile as baseline_profile_mod
     from .active_speaker_fixtures import declared_graph_fixture, standard_design_draft
     from .test_rear_output_foundation import _rear_pair
 
@@ -3072,7 +3077,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     save_output_topology(topology, path=Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"]))
     draft = standard_design_draft(topology)
     declaration, declared = declared_graph_fixture(topology, draft)
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+    prepared = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(declared), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )
@@ -3211,7 +3216,6 @@ def test_active_speaker_baseline_http_route_is_exposed(
         profile_payload = json.loads(profile_resp.read().decode("utf-8"))
 
         assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
-        assert profile_payload["permissions"]["may_apply"] is False
 
 
 BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
@@ -3248,7 +3252,6 @@ def _stub_baseline_apply(
                     "path": BASELINE_CONFIG_PATH,
                     "basename": "active_speaker_baseline.yml",
                 },
-                "permissions": {"may_apply": False},
                 "issues": [],
             }
         return applied
@@ -5508,7 +5511,7 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
         lambda **_kwargs: [],
     )
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
             "applied_at": "2026-09-13T12:00:00Z", "config_path": "/var/lib/camilladsp/applied.yml",
         }},
@@ -5675,6 +5678,7 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
     topology = mono_output_topology(card_id=None)
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})
     stored = json.loads(path.read_text())
@@ -5797,14 +5801,14 @@ def test_cardioid_compare_passes_only_the_louder_states_trim(tmp_path, monkeypat
     ("applied", "level_error")])
 def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monkeypatch, failure, reason):
     from unittest.mock import AsyncMock
-    from jasper.active_speaker import rear_compare, round_bank
+    from jasper.active_speaker import rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
     from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
     if failure == "rear":
         compare_evidence[1]["recomposition_snapshot"].clear()
     elif failure == "round":
-        monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "empty")
+        monkeypatch.setattr(state_paths, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "empty")
     elif failure == "range":
         monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
     elif failure == "preview":
@@ -6009,7 +6013,7 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
     current = tmp_path / "sound_current.yml"
     current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     record = tmp_path / "audition.json"
-    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(record))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_AUDITION_STATE", str(record))
     record.write_text(json.dumps({"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
         "layer": "rear_compare", "state": "off", "token": "session", "owner_pid": 123,
         "deadline_at": 9999999999.0}))

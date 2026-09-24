@@ -22,10 +22,8 @@ from tests._bonded_member import bonded_grouping_env
 from jasper.cli.doctor import grouping as doctor_grouping
 from jasper.cli.doctor._evidence import evidence
 
-from jasper.multiroom.dac_content_ring import (
-    DAC_CONTENT_LANE_ENV,
-    DAC_CONTENT_RING_PERIOD_FRAMES,
-)
+from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
+from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.config import (
     GroupingConfig,
     is_active_member,
@@ -105,7 +103,7 @@ def test_member_camilla_kwargs_carries_only_the_leaders_pipe(cfg, expects_pipe):
     inv-B fallback feed), and solo / off / invalid are the emitter's own
     defaults, byte-for-byte."""
     from jasper.multiroom.member_config import member_camilla_kwargs
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     kw = member_camilla_kwargs(cfg)
 
@@ -439,7 +437,7 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
     from jasper.cli.doctor.grouping import check_grouping_leader_pipe
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 

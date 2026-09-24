@@ -14,7 +14,7 @@ taken and both conjuncts stay `True`. On the ring it is the difference between
 
 **WHAT IT NOW AFFECTS, MEASURED ON THIS TREE.** Arming the marker moves the load
 gate's two liveness conjuncts and **nothing else**. It does NOT move the
-fresh-emit chooser: `jasper.output_topology.resolve_output_layout` answers the
+fresh-emit chooser: `jasper.active_speaker.playback_route.resolve_output_layout` answers the
 ACTIVE ring for both marker values —
 
     marker false -> ('jts_ring_active_playback', 'outputd_active_lane')

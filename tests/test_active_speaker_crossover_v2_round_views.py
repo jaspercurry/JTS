@@ -295,6 +295,8 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     ] is False
 
     assert "forward_model.json" not in rows
+    # A take read files one artifact per take; no round row stands for it.
+    assert {row["view"] for row in rows.values()}.isdisjoint({"impulse", "group-delay", "compare"})
 
     # One row no view here writes: the banker's own pose index, named with the
     # command that makes it rather than with this tool's prog.

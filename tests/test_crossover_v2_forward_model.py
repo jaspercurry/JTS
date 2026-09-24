@@ -58,6 +58,7 @@ from tests.test_audio_measurement_program_analysis import (
     _synthesize,
 )
 from tests.test_crossover_v2_tuning_scope import _trial_candidate
+from tests.test_rear_output_foundation import _rear_pair
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
@@ -517,6 +518,19 @@ def test_the_forecast_is_unjudged_and_keeps_its_identity_when_relocated(
     assert relocated_forecast["summary"]["prediction_fingerprint"] == fingerprint
 
 
+def test_a_cardioid_forecast_binds_its_front_outputs_and_names_the_rear(diagnostic_round, tuning_profile):
+    preset, topology = _rear_pair("mono")
+    cardioid = replace(tuning_profile, preset=preset, topology=topology)
+    source = _trial_candidate(cardioid, trim=-3.0, gain=-2.0)
+    target = _trial_candidate(cardioid, trim=-5.0, gain=4.0)
+    _bind_candidate_take(diagnostic_round, "old", source, cardioid)
+
+    forecast = capture_prediction(diagnostic_round, capture_id="old", candidate=target, basis_candidate=source)
+
+    assert forecast["summary"]["unmodelled_outputs"] == ["woofer:rear"]
+    assert forecast["relative_graph"]["usable_bins_by_role"]["tweeter"] > 0
+
+
 # --------------------------------------------------------------------------- #
 # predicted vs measured
 # --------------------------------------------------------------------------- #
@@ -662,6 +676,21 @@ def test_preview_refuses_an_unanswerable_document(emitted_preview, capsys, fault
         assert answer["detail"]["evidence"]["actual_candidate_id"] == target.fingerprint
     elif fault == "corrupt-graph":
         assert answer["detail"]["evidence"]["capture_id"] == "old"
+
+
+def test_a_preview_written_to_a_file_is_one_side_of_compare(emitted_preview, tmp_path, capsys):
+    _, _, _, argv, args = emitted_preview
+    out = tmp_path / "preview.json"
+    assert crossover_prescriber.main([*argv, "--out", str(out)]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer.keys() == {"section", "sections", "out", "bytes", "summary", "adopted", "banked"}
+    assert (answer["out"], answer["bytes"]) == (str(out), out.stat().st_size)
+
+    assert cli_main(["compare", "--a-preview", str(out), args.round, "--b-set", "old", "--b-take", "old",
+                             "--out", str(tmp_path / "compare.json")]) == 0
+    compared = json.loads(capsys.readouterr().out)
+    assert (compared["parameters"]["window_source"], compared["parameters"]["level_removed"]) == ("preview", True)
+    assert compared["subject"]["rounds"][0] == {"candidate_id": answer["summary"]["candidate_id"]}
 
 
 def test_driver_grid_writes_full_previews_but_reports_only_summaries(emitted_preview, tmp_path, capsys):

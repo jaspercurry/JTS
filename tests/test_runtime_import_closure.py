@@ -37,10 +37,13 @@ FORBIDDEN = (
 #: absent: lane A's load transaction stops and starts units through
 #: ``jasper.control.restart_broker``, which is a real runtime dependency.
 TRUTH_LAYER = (
+    "jasper.active_speaker.baseline_apply",
     "jasper.active_speaker.baseline_profile",
+    "jasper.active_speaker.baseline_record",
     "jasper.active_speaker.camilla_yaml",
     "jasper.active_speaker.driver_safety",
     "jasper.active_speaker.driver_safety_prompt",
+    "jasper.active_speaker.graph_evidence",
     "jasper.active_speaker.graph_safety",
     "jasper.active_speaker.linearization_envelope",
     "jasper.active_speaker.linearization_fit",

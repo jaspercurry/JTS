@@ -46,6 +46,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
+
 from ..log_event import log_event
 from ..logging_setup import configure_logging
 from ..platform.systemd import no_hold
@@ -432,7 +434,6 @@ def _get_measurements(handler: _Handler) -> None:
 
 def _get_measurements_data(handler: _Handler) -> None:
     from jasper.active_speaker import bundles as active_bundles
-    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
     from . import correction_measurements
 
     query = parse_qs(urlparse(handler.path).query)

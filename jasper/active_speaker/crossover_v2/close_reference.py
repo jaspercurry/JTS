@@ -58,8 +58,10 @@ from jasper.audio_measurement.evidence_reasons import (
 )
 from jasper.audio_measurement.gating import (
     ENTANGLEMENT_SOURCE_DECLARED,
+    PHASE_GATE_LEAD_MS,
     TAPER_FRACTION,
     f_trusted_floor_hz,
+    gated_segment,
     intersect_bands,
 )
 from jasper.audio_measurement.measurement_geometry import (
@@ -73,8 +75,7 @@ from jasper.audio_measurement.excess_phase import (
     MAGNITUDE_SMOOTH_FRACTION, NEIGHBOURHOOD_OCT, classification_grid, smoothed_curve,
 )
 from .feature_classifier import DEFAULT_GATE_MS
-from .feature_optics import DETREND_FRACTION, PHASE_GATE_LEAD_MS, detrend
-from .gate_sweep import gated_segment
+from .feature_optics import DETREND_FRACTION, detrend
 from .round_captures import (
     RoundCapturesRefused,
     capture_row,

@@ -32,9 +32,9 @@ from .filters import (
     COMMISSIONING_FILTER_MODE,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
     _emit_commissioning_filter_definitions,
 )
+from ..camilla_names import STARTUP_MUTE_GAIN_DB
 from .gates import _assert_tweeter_outputs_protected, _assert_volume_limit
 from .pipeline import _emit_commissioning_pipeline, _emit_split_mixer
 from .topology import _output_count

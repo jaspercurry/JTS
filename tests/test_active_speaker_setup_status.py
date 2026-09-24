@@ -17,6 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 
+import jasper.active_speaker.applied_tune as applied_tune_mod
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.output_topology import topology_config_fingerprint
@@ -344,9 +345,9 @@ def _applied_automatic_room_status(
         automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
     _write_applied_graph(topology, automatic, config_path, monkeypatch=monkeypatch)
     monkeypatch.setattr(
-        baseline_mod,
+        applied_tune_mod,
         "compile_commissioning_profile",
-        lambda **k: ("", _candidate(status="ready_to_compile", config_path=config_path)),
+        lambda **k: _candidate(status="ready_to_compile", config_path=config_path),
     )
     monkeypatch.setattr(
         baseline_mod,
@@ -522,7 +523,7 @@ def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> N
     no device) rather than building a lane-less topology: the rule under test is
     "the surface honours a no-device answer", and a hand-built fixture would pin
     the fixture instead. The real branch this stands in for is
-    `output_topology.resolve_output_layout`'s fall-through, which returns
+    `playback_route.resolve_output_layout`'s fall-through, which returns
     `playback_device=None` for a profile with no active outputd lane — reachable,
     not theoretical.
     """
@@ -557,11 +558,10 @@ def test_commissioning_summary_transport_is_null_on_an_unreadable_topology() -> 
     assert len(result) == 4
 
 
-@pytest.mark.parametrize("permission", ["may_apply", "may_compile"])
-def test_commissioning_summary_proposal_ready_when_may_apply(permission) -> None:
+def test_commissioning_summary_proposal_ready_when_may_compile() -> None:
     result = setup_mod.commissioning_summary(
         SimpleNamespace(topology_id="bench_mono"),
-        profile={"status": "ready_to_apply", "permissions": {permission: True}},
+        profile={"status": "ready_to_compile", "permissions": {"may_compile": True}},
         applied_profile=None,
     )
     assert result["phase"] == "proposal_ready"
@@ -607,7 +607,7 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
 
 def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, monkeypatch):
-    from jasper.active_speaker.baseline_profile import active_layer_a_fingerprint
+    from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
     from tests.apply_fixtures import prepare_candidate
@@ -639,14 +639,14 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
     review = _candidate(status="ready_to_compile" if review_ready else "blocked", config_path=tmp_path / "candidate.yml",
                         issues=[] if review_ready else [{"severity": "blocker", "code": "compose_refused"}])
     review["candidate_fingerprint"] = "review-fp"
-    review["permissions"] = {"may_compile": review_ready, "may_apply": False}
+    review["permissions"] = {"may_compile": review_ready}
     saved = {"status": "applied", "config": {"path": str(path)}, "candidate_fingerprint": "saved-fp"} if applied else None
     def compile_review(**kwargs):
         if review_ready is None:
             raise OSError("diagnostics unavailable")
-        return "", review
+        return review
 
-    monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", compile_review)
+    monkeypatch.setattr(applied_tune_mod, "compile_commissioning_profile", compile_review)
     monkeypatch.setattr(baseline_mod, "load_applied_baseline_profile_state", lambda path=None: saved)
     status = setup_mod.read_active_speaker_setup_status(active_config_path=str(path))
     readiness = setup_mod.read_active_speaker_setup_status(

@@ -13,6 +13,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
 )
+from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
@@ -73,10 +74,6 @@ def emit_active_speaker_program_bake_config(
     This does NOT load or reload CamillaDSP and does NOT wire camilla#1 into the
     reconciler. ``out_path`` writes the YAML group-readably (0640).
     """
-
-    from jasper.multiroom.reconcile import (
-        SNAPFIFO,  # lazy: grouping reconciler import cost
-    )
 
     program_yaml = emit_sound_config(
         profile,

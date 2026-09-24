@@ -323,7 +323,6 @@ follow_imports = "skip"
 # Keep type debt explicit; remove entries as local type fixes land.
 module = [
     "jasper.accessories.bridge",
-    "jasper.active_speaker.baseline_profile",
     "jasper.active_speaker.calibration_level",
     "jasper.active_speaker.camilla_yaml",
     "jasper.active_speaker.commission_load",
@@ -413,6 +412,21 @@ root_packages = ["jasper"]
 exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
+name = "Tuning subtrees are acyclic"
+type = "acyclic_siblings"
+ancestors = [
+  "jasper.audio_measurement",
+  "jasper.sound",
+  "jasper.active_speaker.crossover_v2",
+  "jasper.active_speaker.camilla_yaml",
+  "jasper.active_speaker.bench",
+  "jasper.active_speaker.graph",
+]
+broken_contract_guidance = "Sibling modules here must not import each other in a cycle, directly or through a chain; grimp counts function-local imports, so deferring an import does not fix it. Move the shared fact down to the module that owns it."
+# Removal condition: redundant once these packages are ranked in "JTS layers"
+# instead of listed in its exhaustive_ignores.
+
+[[tool.importlinter.contracts]]
 name = "JTS layers"
 type = "layers"
 containers = ["jasper"]
@@ -479,7 +493,7 @@ exhaustive_ignores = [
   "oauth_redirect",
   # Hardware still reaches cli.usb_port_role through audio_hardware.usb_port_role.
   "output_hardware",
-  # Layout resolution consumes fanin_coupling, whose runtime helpers reach cli/web.
+  # Topology still reaches cli through output_hardware.
   "output_topology",
   # Store consumes the held schema and hardware owners above.
   "output_topology_store",

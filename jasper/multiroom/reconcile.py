@@ -44,7 +44,7 @@ from ..env_load import (
     OUTPUTD_GROUPING_ENV_FILE,
     VOICE_GROUPING_ENV_FILE,
 )
-from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from ..fanin_coupling import DAC_CONTENT_LANE_ENV, RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..service_units import (
@@ -58,11 +58,7 @@ from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from ..systemd_probe import state_is_live, unit_query, unit_state
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
-from .dac_content_ring import (
-    DAC_CONTENT_LANE_ENV,
-    DAC_CONTENT_RING_PERIOD_FRAMES,
-    OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-)
+from .dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES, OUTPUTD_DAC_CONTENT_CHANNEL_ENV
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
     grouping_request_fingerprint,
@@ -83,7 +79,6 @@ from .grouping_env import (
 from .reconcile_plan import (
     ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
     ARGS_FILE,
-    SNAPFIFO as SNAPFIFO,  # re-exported: jasper.active_speaker.runtime_contract imports it from here
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,

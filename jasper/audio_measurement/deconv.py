@@ -15,8 +15,12 @@ and 500 ms after (domestic-room decay).
 from __future__ import annotations
 
 import logging
+import math
+from collections.abc import Sequence
 
 import numpy as np
+
+from .sweep import SweepMeta
 
 logger = logging.getLogger(__name__)
 
@@ -196,17 +200,13 @@ def magnitude_response(
     magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
     if normalize:
         magnitude_db = magnitude_db - float(np.max(magnitude_db))
-    return freqs.astype(np.float64), magnitude_db.astype(np.float64)
+    return freqs.astype(np.float64, copy=False), magnitude_db.astype(np.float64, copy=False)
 
-
-import math
-
-from .sweep import SweepMeta
 
 # How far a harmonic window reaches from its center, as a fraction of the
 # distance to the NEAREST neighbouring order's center. Below 0.5 by
 # construction, so two adjacent windows cannot touch. Also read by
-# `distortion.required_pre_guard_s`, which predicts this window's leading edge.
+# `required_pre_guard_s`, which predicts this window's leading edge.
 HARMONIC_WINDOW_GAP_FRACTION = 0.4
 
 # Radius of the local-peak search around a harmonic image's predicted center;
@@ -303,3 +303,98 @@ def harmonic_magnitude_response(
         normalize=False,
     )
     return output_freqs / order, magnitude_db
+
+
+# The orders a synchronized sweep separates cleanly at the gaps the MEASURE
+# program actually schedules. Deliberately NOT imported from
+# `program.MESM_MAX_HARMONIC_ORDER`: that constant sizes the STIMULUS, this one
+# bounds the ANALYSIS.
+DEFAULT_HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
+
+
+# Extra pre-guard beyond the predicted window, covering `extract_harmonic_ir`'s
+# ±2 ms local-peak search: a centre refined EARLIER than predicted drags the
+# window's leading edge with it. True worst case is 0.6× this; costs ~96 samples.
+PRE_GUARD_SEARCH_MARGIN_S = HARMONIC_PEAK_SEARCH_RADIUS_S
+
+
+# Shrink applied to the largest phantom window that clears both neighbouring
+# harmonic images, so a sub-sample rounding cannot push its edge into one.
+PHANTOM_WINDOW_SAFETY = 0.9
+
+
+def validated_orders(orders: Sequence[int]) -> tuple[int, ...]:
+    """The requested orders, or a refusal naming what is wrong with them."""
+    checked = tuple(int(order) for order in orders)
+    if not checked:
+        raise ValueError("at least one harmonic order is required")
+    if any(order < 2 for order in checked):
+        raise ValueError("harmonic orders must be integers of at least 2")
+    if len(set(checked)) != len(checked):
+        raise ValueError("harmonic orders must be distinct")
+    return checked
+
+
+def image_half_width_s(meta: SweepMeta, order: int) -> float:
+    """Half-width :func:`extract_harmonic_ir` gives order ``order``.
+
+    Computed from the PREDICTED centre; the runtime function measures its gap
+    from the SEARCHED one, so the two differ by at most 0.6× the ±2 ms search
+    radius, which :data:`PRE_GUARD_SEARCH_MARGIN_S` absorbs.
+    """
+    return (
+        HARMONIC_WINDOW_GAP_FRACTION
+        * meta.L
+        * math.log((order + 1) / order)
+    )
+
+
+def phantom_window_s(meta: SweepMeta, order: int) -> tuple[float, float]:
+    """``(centre_advance_s, half_width_s)`` of order ``order``'s phantom window.
+
+    Centred at ``L·ln(order − ½)`` -- the gap BELOW image ``order`` -- and
+    widened until it just clears both neighbouring image windows. The LOWER gap
+    because the deconvolution's own artefacts are strongest near the direct
+    arrival and fall away from it: an upper-gap phantom under-reports the floor,
+    and on a provably linear synthetic path it left H2's pure artefact more than
+    6 dB "clear" of its own floor. The lower gap over-estimates instead, so the
+    reading errs toward refusing to claim distortion.
+
+    The one owner of this geometry: :func:`required_pre_guard_s` sizes the
+    deconvolution from it and the distortion reading's phantom floor cuts the
+    window with it.
+    """
+    if order < 2:
+        raise ValueError("a phantom floor is only defined for orders above 1")
+    advance = meta.L * math.log(order - 0.5)
+    clearance = min(
+        advance
+        - harmonic_time_advance_s(meta, order - 1)
+        - image_half_width_s(meta, order - 1),
+        harmonic_time_advance_s(meta, order)
+        - image_half_width_s(meta, order)
+        - advance,
+    )
+    return advance, PHANTOM_WINDOW_SAFETY * clearance
+
+
+def required_pre_guard_s(
+    meta: SweepMeta, orders: Sequence[int] = DEFAULT_HARMONIC_ORDERS
+) -> float:
+    """Seconds of pre-guard every window the harmonic reading cuts needs.
+
+    The order-``N`` image sits ``L·ln(N)`` ahead of the linear IR and is
+    windowed to ``±`` :func:`image_half_width_s`, so its leading edge sits at
+    ``L·ln(N) + half_width`` before the direct arrival; the maximum over the
+    requested orders binds, plus :data:`PRE_GUARD_SEARCH_MARGIN_S` for the
+    local-peak search. The fundamental's window and the phantom-floor windows
+    are enumerated too, though neither binds, so the guard follows the window
+    geometry if it ever moves.
+    """
+    orders = validated_orders(orders)
+    edges = [
+        harmonic_time_advance_s(meta, order) + image_half_width_s(meta, order)
+        for order in (1, *orders)
+    ]
+    edges += [sum(phantom_window_s(meta, order)) for order in orders]
+    return max(edges) + PRE_GUARD_SEARCH_MARGIN_S

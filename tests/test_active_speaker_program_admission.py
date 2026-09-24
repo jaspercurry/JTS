@@ -934,7 +934,7 @@ def test_cardioid_timing_admits_full_band_without_rear_lowpass(tmp_path, monkeyp
     )
     assert proof.allowed
     # Runtime proof requires grouped crossover chains; isolate admission's band gate.
-    monkeypatch.setattr("jasper.active_speaker.program_admission.classify_bass_extension_graph",
+    monkeypatch.setattr("jasper.active_speaker.program_admission.prove_desired_graph",
                         lambda *args, **kwargs: proof)
     payload = yaml.safe_load(graph)
     rear = next(target for target in active_driver_targets(topology)

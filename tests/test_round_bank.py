@@ -43,12 +43,12 @@ from jasper.active_speaker.crossover_v2.feature_classifier import load_round_cap
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
 from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
-from jasper.active_speaker.round_packet import INDEX_FILENAME
+from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
-from jasper.active_speaker import measurement_programs
-from jasper.active_speaker.measurement_programs import bookkeeping_views
+from jasper.active_speaker import measurement_programs, round_view_artifacts
+from jasper.active_speaker.round_view_artifacts import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
     CAPTURE_RING_DIR,
@@ -63,7 +63,7 @@ from jasper.active_speaker.round_bank import (
     bank_round,
 )
 
-from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
+from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round, bank_seat_round
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
@@ -314,6 +314,16 @@ def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -
     return bundle
 
 
+def test_a_take_the_capture_host_banked_reaches_the_ring(tmp_path, monkeypatch):
+    bank_executor_take(tmp_path, monkeypatch)
+    session, = (tmp_path / "sessions").iterdir()
+    mark_state(session, "closed")
+
+    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
+
+    assert bank.provenance["capture_ring"] == {"written": 1, "skipped": []}
+
+
 @pytest.mark.parametrize("fallback", [None, errno.EXDEV, errno.EPERM, errno.EACCES])
 def test_banking_writes_the_ring_both_instruments_read(tmp_path, monkeypatch, fallback):
     session = _capture_bundle(tmp_path / "live", takes=(
@@ -386,7 +396,7 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
     (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
-    monkeypatch.setattr(measurement_programs, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
+    monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
     assert Path(banked.provenance["manifest"]).is_file()

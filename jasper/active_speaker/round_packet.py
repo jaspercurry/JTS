@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_measurement.series_stats import series_stats
@@ -22,18 +22,23 @@ from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
-from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
+from .crossover_v2.round_inputs import (
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS,
+)
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
+from .linearization_fit import unavailable_fit
 from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
 from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
-from .round_bank import BankedRound
 from .round_verdicts import round_verdicts
-from .round_packet_report import INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index
+from .round_packet_report import gate_fields, packet_index
 from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets, view_sets
 from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
+
+if TYPE_CHECKING:
+    from .round_bank import BankedRound
 
 
 class RoundPacket:
@@ -122,9 +127,9 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                     computed[take_id] = {role: {**proposal, "trim_decision": result["trim_decision"]}
                                          for role, proposal in result["linearization"].items()}
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[take_id] = {take["role"]: {"fit": {"reason_summary": {
-                        "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
-                    }}}}
+                    computed[take_id] = {take["role"]: {"fit": unavailable_fit(
+                        take["role"], getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
+                    )}}
             for role, proposal in computed[take_id].items():
                 if role != take["role"]:
                     continue

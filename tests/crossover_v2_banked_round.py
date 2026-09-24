@@ -547,7 +547,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
             setup={"calibration": {"mode": "stored", "calibration_id": calibration.calibration_id,
                                     "model": calibration.model}})
         answer = place_wired_answer(store.bundle_dir, answer, phase=program.phase, group=program.phase)
-        capture = SimpleNamespace(take_answer=lambda: answer, read_loudness_volume_db=lambda: -20.0)
+        capture = SimpleNamespace(take_answer=lambda: answer, read_loudness_volume_db=lambda: -20.0,
+                                  bundle_dir=store.bundle_dir)
         records = CapturedRecordStore(manifest, capture)
         conductor, refs = _conductor(FakeSeams(), index_phase_map={1: program.phase}), {}
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))

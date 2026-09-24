@@ -22,7 +22,6 @@ import os
 import threading
 import time
 import uuid
-from contextvars import ContextVar
 from pathlib import Path
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
@@ -32,10 +31,11 @@ from jasper.active_speaker.restore_wait import attempt_graph_restore, resilient_
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
-from jasper.paths import resolve_state_path
 from jasper.sound.settings import saved_sound_layers
 from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for
 from jasper.active_speaker.rear_calibration import rear_stage_gain_name
+from jasper.active_speaker.audition_claim import AUDITION_WRITE, clear_audition_state
+from jasper.active_speaker.state_paths import audition_state_path, baseline_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,6 @@ AUDITION_LAYER_FULL = "full"
 AUDITION_LAYER_REAR_COMPARE = "rear_compare"
 # Bound the runtime-only loudness-match attenuation; see ADR-0329.
 MAX_COMPARE_TRIM_DB = 6.0
-_AUDITION_WRITE = ContextVar("audition_write", default=False)
 AUDITION_LAYERS = (AUDITION_LAYER_BASELINE, AUDITION_LAYER_FULL)
 
 # The walked-away bound, matching session_volume_plan's own wall-clock ceiling.
@@ -55,8 +54,6 @@ AUDITION_TICK_S = 5.0
 
 AUDITION_STATE_KIND = "jts_active_speaker_audition"
 AUDITION_SCHEMA_VERSION = 1
-DEFAULT_AUDITION_STATE_PATH = Path("/run/jasper-active-speaker/audition.json")
-AUDITION_STATE_ENV = "JASPER_ACTIVE_SPEAKER_AUDITION_STATE"
 
 REFUSE_NO_APPLIED_PROFILE = "audition_no_applied_profile"
 REFUSE_PROFILE_DISPLACED = "audition_applied_profile_displaced"
@@ -89,7 +86,6 @@ __all__ = [
     "AUDITION_LAYER_BASELINE",
     "AUDITION_LAYER_FULL",
     "AuditionRefused",
-    "audition_state_path",
     "build_reduced_yaml",
     "hold_audition",
     "level_give_back_db",
@@ -108,13 +104,6 @@ class AuditionRefused(RuntimeError):
         self.reason = reason
         self.detail = detail
         super().__init__(f"{reason}: {detail}")
-
-
-
-def audition_state_path(path: str | Path | None = None) -> Path:
-    """Resolve the audition state path (explicit arg > env override > default)."""
-
-    return resolve_state_path(path, AUDITION_STATE_ENV, DEFAULT_AUDITION_STATE_PATH)
 
 
 def read_audition_state(path: str | Path | None = None) -> dict[str, Any] | None:
@@ -152,11 +141,6 @@ def audition_summary() -> dict[str, Any] | None:
             "expires_in_s": max(0, int(state["deadline_at"] - time.time()))}
 
 
-def graph_replaced() -> None:
-    if not _AUDITION_WRITE.get():
-        _clear_audition_state()
-
-
 def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) -> str:
     # float(), not just a bound check: a numpy scalar passes every comparison and
     # then the YAML dumper cannot represent it (met on jts3, 2026-09-21).
@@ -181,25 +165,6 @@ def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) ->
     return dump_graph_yaml(graph)
 
 
-def _clear_audition_state(path: str | Path | None = None) -> None:
-    try:
-        audition_state_path(path).unlink()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        # The graph is already back; a stranded record only mis-reports. Loud
-        # rather than silent, because `jasper-audition status` would keep
-        # claiming an audition.
-        log_event(
-            logger,
-            "active_speaker.audition",
-            level=logging.WARNING,
-            action="clear_state",
-            result="failed",
-            error=type(exc).__name__,
-        )
-
-
 def _refuse_if_graph_is_claimed() -> None:
     """Refuse while somebody else owns the running graph.
 
@@ -212,7 +177,7 @@ def _refuse_if_graph_is_claimed() -> None:
     """
 
     from jasper.active_speaker.session_volume_plan import live_measurement_session
-    from jasper.active_speaker.commission_load import load_commission_load_state
+    from jasper.active_speaker.startup_load import load_commission_load_state  # lazy: the load transaction imports the graph proof
 
     refusal = live_measurement_session(action="auditioning")
     if refusal is not None:
@@ -294,7 +259,7 @@ async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None
     from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 
     plan = await plan_live_edit_for(cam, yaml_text)
-    token = _AUDITION_WRITE.set(True)
+    token = AUDITION_WRITE.set(True)
     try:
         if plan.method != "unchanged" and not await cam.set_active_config_raw(
             yaml_text, best_effort=False, duck=plan.duck,
@@ -302,7 +267,7 @@ async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None
             raise AuditionRefused(REFUSE_LOAD, refusal)
         await confirm_graph_is_live(cam, yaml_text)
     finally:
-        _AUDITION_WRITE.reset(token)
+        AUDITION_WRITE.reset(token)
 
 
 async def _put_back(cam: Any, anchor: str) -> None:
@@ -353,7 +318,7 @@ async def _undo_failed_arm(cam: Any, anchor: str, state_path: str | Path | None 
 
     took_effect, message = await _restore_verdict(cam, anchor)
     if took_effect:
-        _clear_audition_state(state_path)
+        clear_audition_state(state_path)
     else:
         log_event(
             logger,
@@ -407,12 +372,12 @@ async def start_audition(
 
     from jasper.active_speaker.baseline_profile import (
         applied_profile_displacement,
-        baseline_config_path,
         load_applied_baseline_profile_state,
     )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_bass_extension_graph,
+        desired_graph_approved,
+        prove_desired_graph,
     )
     from jasper.dsp_apply import dsp_writer_lock
     from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
@@ -460,13 +425,10 @@ async def start_audition(
             raise AuditionRefused(REFUSE_EMIT, detail)
         # Re-proved here rather than trusted from the emitter, exactly as
         # `jasper-active-speaker baseline-reemit` does before it writes a byte.
-        graph = None if compare else classify_bass_extension_graph(
-            topology,
-            evidence_source="desired",
-            graph_text=yaml_text,
-            applied_baseline_state=applied,
+        graph = None if compare else prove_desired_graph(
+            topology, yaml_text, snapshot=applied.get("recomposition_snapshot"),
         )
-        if graph is not None and (not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME):
+        if graph is not None and not desired_graph_approved(graph):
             raise AuditionRefused(
                 REFUSE_EMIT,
                 f"the reduced graph did not re-prove as "
@@ -548,7 +510,6 @@ async def stop_audition(
     worst possible reading of a corrupt byte.
     """
 
-    from jasper.active_speaker.baseline_profile import baseline_config_path
     from jasper.dsp_apply import dsp_writer_lock
 
     if not audition_state_path(state_path).exists():
@@ -585,7 +546,7 @@ async def stop_audition(
             raise AuditionRefused(
                 REFUSE_RESTORE, f"{detail} ({message})" if message else detail,
             )
-        _clear_audition_state(state_path)
+        clear_audition_state(state_path)
 
     log_event(
         logger,

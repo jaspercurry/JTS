@@ -408,7 +408,7 @@ def test_the_grouped_park_reads_the_key_the_ring_module_owns():
     classifier would silently watch a key nothing writes and the park would go
     quiet.
     """
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     assert DAC_CONTENT_LANE_ENV == _LANE_ENV
 
@@ -708,7 +708,7 @@ def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch
 
     from jasper.fanin import ring_readiness
     from jasper.fanin_coupling import resolve_ring_wire
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _active_topology("stereo", "active_2_way")
     monkeypatch.setattr(ring_readiness, "load_topology_for_wire", lambda: topology)

@@ -19,12 +19,11 @@ from dataclasses import dataclass
 
 from .. import tts_routing as _tts_routing
 from ..env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
-from ..fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+from ..fanin_coupling import DAC_CONTENT_LANE_ENV, OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 from ..log_event import log_event
 from . import config
 from .config import GroupingConfig
 from .dac_content_ring import (
-    DAC_CONTENT_LANE_ENV,
     OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
     OUTPUTD_DAC_CONTENT_TRIM_ENV,
     dac_content_ring_servable,

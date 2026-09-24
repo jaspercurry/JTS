@@ -25,6 +25,8 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
+from jasper.active_speaker import baseline_record
+from jasper.active_speaker import baseline_apply
 from jasper import output_topology, output_topology_store
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
@@ -345,7 +347,8 @@ def test_apply_document_timing_reaches_record_and_loaded_graph(monkeypatch, tmp_
     child = judge_prescription_document(document(base.fingerprint), base=base, evidence=evidence)
     publish_authored_candidate(child)
     cam = _FakeApplyCam()
-    monkeypatch.setattr(baseline_profile, "_utc_now", lambda: "2026-09-15T12:00:00Z")
+    monkeypatch.setattr(baseline_record, "_utc_now", lambda: "2026-09-15T12:00:00Z")
+    monkeypatch.setattr(baseline_apply, "_utc_now", lambda: "2026-09-15T12:00:00Z")
     opener = _opener()
     original_open = opener.open
 

@@ -22,6 +22,7 @@ from jasper.active_speaker.path_safety import (
     HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
+    path_safety_evidence_payload,
     requirements_payload,
 )
 from tests.active_speaker_fixtures import valid_camilla_config as _valid_config
@@ -163,7 +164,7 @@ def test_classify_volume_limit_verdicts(tmp_path, limit_line, expected_db, expec
     else:
         config.write_text(_outputd_config_text().replace("  volume_limit: 0.0\n", limit_line))
     summary = probe_active_speaker_environment(
-        config_path=config, runner=_runner, validate=_valid_config,
+        config_path=config, runner=_runner, validate=_valid_config, path_safety=path_safety_evidence_payload(None),
     )["camilla_config"]
     codes = {issue["code"] for issue in summary["issues"]}
     assert codes == (set() if expected_code is None else {expected_code})
@@ -270,6 +271,7 @@ def test_probe_blocks_current_outputd_config_without_path_safety(
 
     report = probe_active_speaker_environment(
         statefile_path=statefile,
+        path_safety=path_safety_evidence_payload(None),
         runner=_runner,
         validate=_valid_config,
     )
@@ -294,7 +296,7 @@ def test_probe_operator_path_safety_still_requires_hardware_probe(
 
     report = probe_active_speaker_environment(
         config_path=config,
-        path_safety_evidence_path=evidence,
+        path_safety=path_safety_evidence_payload(evidence),
         runner=_runner,
         validate=_valid_config,
     )
@@ -316,7 +318,7 @@ def test_probe_can_pass_when_active_config_and_hardware_evidence_are_valid(
 
     report = probe_active_speaker_environment(
         config_path=config,
-        path_safety_evidence_path=evidence,
+        path_safety=path_safety_evidence_payload(evidence),
         runner=_runner,
         validate=_valid_config,
     )
@@ -354,7 +356,7 @@ devices:
 
     report = probe_active_speaker_environment(
         config_path=config,
-        path_safety_evidence_path=evidence,
+        path_safety=path_safety_evidence_payload(evidence),
         runner=_runner,
         validate=_valid_config,
     )

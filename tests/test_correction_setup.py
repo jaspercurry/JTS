@@ -494,21 +494,6 @@ def test_capture_stop_callback_is_atomic_with_starting_state():
     finally:
         correction_capture._set_capture_slot(None)
 
-def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_INTERNAL_ERROR,
-        REASON_REGISTRY,
-    )
-    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError
-
-    exc = CrossoverV2LocalSeamError(
-        "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"
-    )
-    message = refusal_envelope(exc)["error"]
-    assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
-    assert "Errno" not in message
-    assert "/etc/camilladsp" not in message
-
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()

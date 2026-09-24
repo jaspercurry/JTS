@@ -13,6 +13,7 @@ from jasper.output_topology import OutputTopology
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 
+from . import state_paths
 from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
 from .crossover_v2.alignment_prescription import (
@@ -37,11 +38,9 @@ def commissioning_experiment_summary(candidate: MeasuredCrossoverCandidate) -> d
 def commissioning_candidate(
     topology: OutputTopology, draft: Mapping[str, Any], *, root: Path | None = None,
 ) -> MeasuredCrossoverCandidate:
-    from .round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: round bank imports packet writer
-
     declared = candidate_from_design_draft(topology, draft)
     try:
-        reference = json.loads(((root or DEFAULT_CAMPAIGN_ROOT) / "commissioning.json").read_text())
+        reference = json.loads(((root or state_paths.DEFAULT_CAMPAIGN_ROOT) / "commissioning.json").read_text())
         measured = load_candidate_artifact(Path(reference["candidate_path"]))
     except (OSError, ValueError, KeyError, TypeError):
         return declared

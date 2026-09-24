@@ -1006,10 +1006,10 @@ async def test_the_ramp_gate_holds_identically_on_a_ring_graph():
     """
     from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
     from jasper.active_speaker.camilla_yaml import (
-        STARTUP_MUTE_GAIN_DB,
         active_emit_devices,
         emit_active_speaker_commissioning_config,
     )
+    from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.commission_ramp import build_stage5_ramp_gate
     from jasper.active_speaker.staging import driver_commission_audible_evidence
     from tests.test_active_speaker_profile import _two_way_preset

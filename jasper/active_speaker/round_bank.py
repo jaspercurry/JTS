@@ -35,9 +35,8 @@ through the reader's own walk
 (:func:`~jasper.active_speaker.crossover_v2.round_inputs.banked_rounds`).
 
 The banked names and their SSOT paths belong to the reader
-(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`) and are imported
-inside the function that needs them, so importing this module for
-:data:`DEFAULT_CAMPAIGN_ROOT` alone stays cheap.
+(:mod:`~jasper.active_speaker.crossover_v2.round_inputs`); the campaign home
+is :data:`~jasper.active_speaker.state_paths.DEFAULT_CAMPAIGN_ROOT`.
 """
 
 from __future__ import annotations
@@ -61,13 +60,13 @@ from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
+from .state_paths import DEFAULT_CAMPAIGN_ROOT
 
 # The first-char class excludes ".", so it rejects ".", ".." and any
 # "/"-carrying token.
 _ROUND_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 
 __all__ = [
-    "DEFAULT_CAMPAIGN_ROOT",
     "REASON_ALREADY_BANKED",
     "REASON_NOT_A_BUNDLE",
     "REASON_ROUND_AMBIGUOUS",
@@ -87,11 +86,6 @@ __all__ = [
     "SKIP_WAV_ESCAPES_BUNDLE",
     "SKIP_WAV_MISSING",
 ]
-
-#: The on-box campaign home: banked rounds, one directory each. A sibling of
-#: ``bundles.DEFAULT_SESSIONS_DIR`` rather than a child of it, so session
-#: retention (``bundles.enforce_retention``) never walks over a banked round.
-DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 
 CAPTURE_RING_DIR = "ring"
 SKIP_NO_CAPTURED_AT = "no_captured_at"
@@ -296,7 +290,8 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from .measurement_programs import PURPOSE_SPEAKER, bookkeeping_views, run_purposes  # lazy: bank-only program registry
+    from .measurement_programs import PURPOSE_SPEAKER, run_purposes  # lazy: bank-only program registry
+    from .round_view_artifacts import bookkeeping_views  # lazy: the view table imports NumPy
     from .run_manifest import RUN_MANIFEST_FILENAME, room_sets, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 

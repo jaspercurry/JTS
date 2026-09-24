@@ -25,7 +25,9 @@ from .crossover_contract import (
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
+from . import web_measurement
 from .environment import read_camilla_statefile_config_path
+from .graph_evidence import active_layer_a_fingerprint, active_layer_a_projection
 from .profile import ActiveSpeakerConfigError
 from .setup_readiness import (
     IN_SEQUENCE_CAPTURE_ANCHOR_REASON as IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
@@ -133,10 +135,7 @@ def _derive_commissioning_summary(
                 code = issue_entry.get("code")
                 last_failure_code = str(code) if code else None
                 break
-    elif profile is not None and bool(
-        as_mapping(profile.get("permissions")).get("may_apply")
-        or as_mapping(profile.get("permissions")).get("may_compile")
-    ):
+    elif profile is not None and bool(as_mapping(profile.get("permissions")).get("may_compile")):
         phase = "proposal_ready"
     else:
         phase = "idle"
@@ -196,8 +195,6 @@ _LAYER_A_DIFFERENCE_LIMIT = 6
 def _layer_a_filter_fields(config_text: str) -> dict[str, Any]:
     """Flatten one graph's Layer-A filters to ``<filter>.<parameter>`` values."""
 
-    from .baseline_profile import active_layer_a_projection
-
     filters = active_layer_a_projection(config_text).get("filters")
     fields: dict[str, Any] = {}
     for name, definition in (
@@ -244,7 +241,6 @@ def _applied_layer_a_binding(
 ) -> dict[str, Any]:
     """Compare the compiled applied candidate with the loaded graph."""
 
-    from .baseline_profile import active_layer_a_fingerprint  # lazy: baseline readers import setup status
     from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
     from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
@@ -345,11 +341,11 @@ def read_active_speaker_setup_status(
 
     profile = None
     if topology is not None and status["active"]:
-        from .baseline_profile import compile_commissioning_profile  # lazy: import cost — setup diagnostics
+        from .applied_tune import compile_commissioning_profile  # lazy: import cost — setup diagnostics
         from .design_draft import load_design_draft  # lazy: import cost — setup diagnostics
 
         try:
-            _, profile = compile_commissioning_profile(
+            profile = compile_commissioning_profile(
                 applied_profile=applied_profile, topology=topology,
                 design_draft=load_design_draft(),
                 find_candidate=lambda fingerprint: load_applied_candidate(
@@ -396,3 +392,29 @@ def read_active_speaker_setup_status(
         topology, profile=profile, applied_profile=applied_profile,
     )
     return status
+
+
+def conductor_status(*, setup: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The live status
+    :func:`~jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context`
+    reads.
+
+    Its three keys — ``targets``, ``setup`` and ``active`` — derived once here,
+    so the wizard's page payload
+    (``jasper.web.correction_crossover_backend.status_payload``, which extends
+    this) and a CLI door cannot disagree about whether a box may be measured.
+
+    ``active`` is read off the SUMMED targets alone, which only
+    ``active_2_way`` / ``active_3_way`` groups have: a subless
+    ``full_range_passive`` speaker carries a driver target too, so counting
+    those would flip the flag wrongly.
+
+    ``setup`` is a setup report the caller already holds; ``None`` reads it.
+    """
+    payload = web_measurement.status_payload()
+    targets = payload.get("targets")
+    payload["active"] = bool(
+        targets.get("summed") if isinstance(targets, Mapping) else None
+    )
+    payload["setup"] = read_active_speaker_setup_status() if setup is None else setup
+    return payload

@@ -73,7 +73,8 @@ def build_commissioning_view(
     recent_rounds: Mapping[str, Mapping[str, Any]] | None = None,
     programs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
+    from .applied_tune import reviewed_candidate_refusal  # lazy: the review compiles graphs
+    from .baseline_profile import APPLIED_PROFILE_DISPLACED  # lazy: baseline imports measurement
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     programs = programs_for_topology(topology) if programs is None else programs
@@ -87,8 +88,7 @@ def build_commissioning_view(
     applied = applied_identity(applied_profile) or {}
     experiment = dict(first_experiment or {})
     experiment_complete = bool(experiment.get("candidate_fingerprint"))
-    review_ready = bool((review.get("permissions") or {}).get("may_compile")
-                        or (review.get("permissions") or {}).get("may_apply"))
+    review_ready = bool((review.get("permissions") or {}).get("may_compile"))
     disclosures = []
     if applied_profile is not None:
         refusal = reviewed_candidate_refusal(review, str(applied_profile.get("candidate_fingerprint") or ""))
@@ -138,8 +138,7 @@ def build_commissioning_view(
             "applied_at": applied.get("applied_at"),
             "config_path": applied.get("config_path"), "disclosures": disclosures,
         },
-        "review": {"ready": review_ready, "may_apply": review_ready,
-                   "status": review.get("status"), "issues": list(review.get("issues") or [])},
+        "review": {"ready": review_ready, "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
@@ -158,9 +157,8 @@ def load_commissioning_view(
     A caller that omits ``commission`` silently degrades the view; ``None``
     composes identical steps.
     """
-    from jasper.active_speaker.baseline_profile import (
-        compile_commissioning_profile, load_applied_baseline_profile_state,
-    )
+    from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: import cost (graph compilation)
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
     from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -174,7 +172,7 @@ def load_commissioning_view(
     preview = build_crossover_preview(design_draft)
     calibration_level = load_calibration_level_state()
     applied = load_applied_baseline_profile_state()
-    _, baseline = compile_commissioning_profile(
+    baseline = compile_commissioning_profile(
         applied_profile=applied, topology=topology, design_draft=design_draft, crossover_preview=preview,
     )
     experiment = {}

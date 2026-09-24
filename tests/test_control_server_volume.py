@@ -17,6 +17,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+import jasper.active_speaker.applied_tune as applied_tune
 import jasper.active_speaker.baseline_profile as baseline
 import jasper.active_speaker.setup_status as setup
 from jasper.control.server import _make_handler
@@ -127,7 +128,7 @@ def test_airplay_volume_checks_fresh_readiness_without_compiling_diagnostics(
     def unavailable(*args, **kwargs):
         raise AssertionError("volume must not depend on staging diagnostics")
 
-    monkeypatch.setattr(baseline, "compile_commissioning_profile", unavailable)
+    monkeypatch.setattr(applied_tune, "compile_commissioning_profile", unavailable)
     monkeypatch.setattr(setup, "_applied_layer_a_binding", unavailable)
     base, fake = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {"percent": 45, "source": "airplay"})

@@ -46,10 +46,8 @@ from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     MIN_TEST_LEVEL_DBFS,
 )
-from jasper.active_speaker.camilla_yaml import (
-    COMMISSIONING_HEADROOM_DB,
-    STARTUP_MUTE_GAIN_DB,
-)
+from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker import ActiveSpeakerConfigError
 

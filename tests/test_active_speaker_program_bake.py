@@ -23,7 +23,7 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.camilla_config_contract import PeqFilter
-from jasper.multiroom.reconcile_plan import SNAPFIFO
+from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile
 
@@ -54,10 +54,9 @@ def test_playback_is_the_snapserver_file_pipe() -> None:
 
 
 def test_pipe_is_shaped_like_the_leader_pipe_liveness_check_reads() -> None:
-    # The exemption reuses jasper.multiroom.leader_config.playback_is_pipe; pin
-    # that the emitted bake satisfies the SAME pipe-shape predicate, so the
-    # exemption and the leader-pipe liveness check cannot disagree.
-    from jasper.multiroom.leader_config import playback_is_pipe
+    # The exemption reads the same pipe-shape predicate as the leader-pipe
+    # liveness check, so the two cannot disagree.
+    from jasper.camilla_config_contract import playback_is_pipe
 
     text = emit_active_speaker_program_bake_config(_profile())
     assert playback_is_pipe(text, SNAPFIFO) is True

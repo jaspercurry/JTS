@@ -260,7 +260,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md) | A durable save that moves only a trim writes in place | accepted |
 | [0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md) | The relay is deleted; the wired microphone on jts.local is the only capture path | amended by 0255 |
 | [0230](0230-the-summed-graph-commissioning-lane-is-deleted.md) | The summed-graph commissioning lane is deleted | accepted |
-| [0237](0237-a-tuning-tools-stdout-is-its-answer.md) | A tuning tool's stdout is its answer | accepted |
+| [0237](0237-a-tuning-tools-stdout-is-its-answer.md) | A tuning tool's stdout is its answer | amended by 0356 |
 | [0255](0255-every-product-measures-through-the-wired-microphone.md) | Every product measures through the wired microphone | accepted |
 | [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260, §2 cut cap amended by 0343 |
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
@@ -327,3 +327,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | accepted |
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | accepted |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
+| [0354](0354-every-take-keeps-its-measured-impulses.md) | Every take keeps its measured impulses: one `.npz` per take beside its recording, read before any rebuild | accepted |
+| [0355](0355-take-views-read-the-way-rew-reads-traces.md) | Take views read the way REW reads traces: `impulse`, `group-delay` and `compare`; magnitude compares across recordings, timing only within one | amended by 0358 |
+| [0356](0356-a-views-artifact-is-a-file.md) | A view's artifact is a file: `--out -` is retired; depth on demand is reading the `out` path the answer names | accepted |
+| [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
+| [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |

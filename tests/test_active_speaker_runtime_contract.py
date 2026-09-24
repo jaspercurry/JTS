@@ -29,7 +29,8 @@ from jasper.active_speaker import (
     emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
-from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_MUTE_GAIN_DB
+from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.camilla_names import driver_linearization_shelf_name, driver_linearization_taper_name
 from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
@@ -1814,7 +1815,7 @@ def test_bonded_leader_pipe_config_on_a_mono_box_stays_exempt() -> None:
     graph is exempt on the File sink long before the fold is considered — the
     same "no DAC attached" key the program bake rests on.
     """
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
 
     text = emit_sound_config(
@@ -2000,7 +2001,7 @@ def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> 
     Camilla channel i is not physical output i, or the claim sits outside the
     graph's width. Both cases fall back to the unmuted graph, which the checker
     then judges on its own terms."""
-    from jasper.active_speaker.runtime_contract import flat_graph_muted_outputs
+    from jasper.active_speaker.output_contract import flat_graph_muted_outputs
 
     assert flat_graph_muted_outputs(_full_range_mono_on(0), width=2) == frozenset({1})
     assert flat_graph_muted_outputs(_full_range_mono_on(1), width=2) == frozenset({0})

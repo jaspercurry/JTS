@@ -23,7 +23,6 @@ from jasper.audio_measurement.excess_phase import (
 __all__ = [
     "CENTRE_SEARCH_OCT",
     "DETREND_FRACTION",
-    "PHASE_GATE_LEAD_MS",
     "biquad_peaking",
     "detrend",
     "feature_q",
@@ -33,11 +32,6 @@ __all__ = [
 #: The broad tilt removed before a feature's size is read. One octave leaves a
 #: ~1/6-octave feature essentially intact; a half-octave baseline would eat it.
 DETREND_FRACTION = 1
-
-#: Pre-peak lead for the PHASE window and for the ladder's rungs. Zero lead
-#: splits the direct arrival's main lobe and truncates its low-frequency
-#: pre-ringing, so a sub-500 Hz feature reads many dB too deep (P1).
-PHASE_GATE_LEAD_MS = 1.0
 
 #: A wider centre search walked onto a neighbouring feature (P1).
 CENTRE_SEARCH_OCT = 1.0 / 6.0
