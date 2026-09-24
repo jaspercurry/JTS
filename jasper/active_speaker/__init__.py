@@ -5,7 +5,7 @@
 """Active-speaker crossover commissioning substrate.
 
 Package-level names resolve lazily (PEP 562): importing a submodule such as
-`volume_latch` must not drag the measurement stack (yaml, numpy/scipy via
+`output_contract` must not drag the measurement stack (yaml, numpy/scipy via
 `jasper.audio_measurement`) into a resident daemon.
 """
 

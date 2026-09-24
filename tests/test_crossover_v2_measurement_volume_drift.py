@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
 )
 from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
-from jasper.active_speaker.volume_latch import (
+from jasper.volume_latch import (
     READBACK_TOLERANCE_DB,
     MeasurementFaderDrift,
     fader_matches,
@@ -47,7 +47,7 @@ from jasper.active_speaker.program_failure import classify_program_failure
 
 from tests._log_events import event_field_maps, event_fields, event_records
 
-LATCH_LOGGER = "jasper.active_speaker.volume_latch"
+LATCH_LOGGER = "jasper.volume_latch"
 
 #: The campaign's own numbers, so a reader can line the fixtures up with the
 #: banked evidence: the plan declared this, the fader sat at HOUSEHOLD_DB, and

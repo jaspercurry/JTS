@@ -23,7 +23,7 @@ from .crossover_v2.session_graph import SessionGraphError
 from .program_admission import ProgramAdmissionError, ProgramAdmissionRefusal
 from .program_playback import ProgramPlaybackError, ProgramPlaybackRefused
 from .session_volume_plan import SessionVolumePlanError
-from .volume_latch import MeasurementFaderDrift
+from jasper.volume_latch import MeasurementFaderDrift
 from jasper.audio_measurement.program_analysis import ConfiguredPathConditioningError
 from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 

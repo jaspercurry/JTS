@@ -30,7 +30,7 @@ from .crossover_v2.wired_stimulus import WiredStimulusCapture
 from .program_playback import play_program
 from .restore_wait import resilient_restore
 from .seat_level_reference import StimulusProvenance
-from .volume_latch import hold_fader_at, read_fader_db
+from jasper.volume_latch import hold_fader_at, read_fader_db
 
 # Seconds for graph/fader confirmation and the recorder's capture tail per sweep.
 READING_OVERHEAD_S = 6.0

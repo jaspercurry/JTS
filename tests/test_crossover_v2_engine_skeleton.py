@@ -20,7 +20,7 @@ from typing import Any, Mapping
 import pytest
 
 from jasper.active_speaker.driver_acoustics import CAPTURE_GEOMETRIES
-from jasper.active_speaker.volume_latch import READBACK_TOLERANCE_DB
+from jasper.volume_latch import READBACK_TOLERANCE_DB
 from jasper.audio_measurement.program_analysis import polarity_label
 
 from jasper.active_speaker.crossover_v2 import measure_spec, spatial

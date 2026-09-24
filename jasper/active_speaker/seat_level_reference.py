@@ -23,7 +23,7 @@ from jasper.paths import resolve_state_path
 
 from ._common import coerce_finite_float
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
-from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
+from jasper.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity

@@ -86,9 +86,9 @@ class VolumeClaim(Protocol):
         """The fader reading, but only when it agrees with the declared level.
 
         Returns the reading when it is within
-        :data:`~jasper.active_speaker.volume_latch.READBACK_TOLERANCE_DB` of the
+        :data:`~jasper.volume_latch.READBACK_TOLERANCE_DB` of the
         acquired level (via
-        :func:`~jasper.active_speaker.volume_latch.fader_matches`), else
+        :func:`~jasper.volume_latch.fader_matches`), else
         ``None`` — unreadable and preempted both read as ``None``, which
         refuses to bank the capture. Called once per stimulus, not once per
         spec: a claim can be preempted between two positions of one walk.
