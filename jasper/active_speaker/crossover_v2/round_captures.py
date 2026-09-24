@@ -463,7 +463,7 @@ def _capture_response(
                 "pre_guard_samples": retained["pre_guard_samples"],
                 "scheduled_start_sample": retained["scheduled_start_sample"],
                 "global_offset_samples": diagnostic["global_offset_samples"],
-                "microphone_correction": False,
+                "microphone_correction": False, "impulse_source": "branch_diagnostic",
             }
             rate = diagnostic["sample_rate_hz"]
             ir = np.asarray(retained["impulse"], dtype=np.float64)

@@ -67,13 +67,15 @@ class TakeRead:
 
     def window(self, window_ms: float | None = None) -> tuple[float, str]:
         """The window to read through, and whose it is: ``argument``, ``take``
-        (the analysis's own gate) or ``ungated`` (a take the analysis did not gate)."""
+        (the analysis's own gate), ``ungated`` (a take the analysis did not
+        gate) or ``retained`` (an ungated take whose impulse ends sooner)."""
         if window_ms is not None:
             return float(window_ms), "argument"
         gate = self.capture.curve.get("gate_window_ms")
         if isinstance(gate, (int, float)) and gate > 0:
             return float(gate), "take"
-        return DEFAULT_POST_ARRIVAL_MS, "ungated"
+        held_ms = 1000.0 * (self.capture.ir.size - 1 - self.capture.peak_idx) / self.capture.sample_rate
+        return (DEFAULT_POST_ARRIVAL_MS, "ungated") if held_ms >= DEFAULT_POST_ARRIVAL_MS else (held_ms, "retained")
 
 
 def read_take(round_dir: Path, *, take_id: str, role: str) -> TakeRead:

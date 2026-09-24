@@ -110,3 +110,11 @@ def test_a_take_decays_from_its_own_onset_over_its_swept_band():
     assert bands[2000.0]["t20_s"] == pytest.approx(0.4, rel=0.05)
     assert min(bands) == 125.0
     assert report["summary"]["kept_after_onset_ms"] == pytest.approx(500.0, abs=5.0)
+
+
+def test_an_ungated_take_reads_no_further_than_its_impulse_holds():
+    short = np.zeros(ORIGIN + 100 + 4_800)
+    short[ORIGIN + 100] = 1.0
+
+    assert _take("t1", gate_ms=None, ir=short).window() == (pytest.approx(99.98, abs=0.05), "retained")
+    assert _take("t1", gate_ms=None, ir=np.pad(short, (0, 48_000))).window() == (500.0, "ungated")
