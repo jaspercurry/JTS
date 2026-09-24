@@ -6,8 +6,7 @@
 
 The rule this makes executable: content hashing stays the VERIFIER and stops
 being the index. :data:`SESSION_IDENTITY_KEY` is the single JSON key every
-store writes it under; :attr:`SessionIdentity.token` is the flat scalar form.
-Aliases are a lookup table hanging off the one canonical id, never a second
+store writes it under. Aliases are a lookup table hanging off the one canonical id, never a second
 identity. Writers ship for the crossover-v2 commissioning bundle and the
 operator capture ring; the laptop archive inherits identity transitively and
 room-correction bundles are deferred to WO-8. No I/O; a value type.
@@ -86,15 +85,6 @@ class SessionIdentity:
         }
         object.__setattr__(self, "aliases", MappingProxyType(dict(sorted(frozen.items()))))
 
-    @property
-    def token(self) -> str:
-        """The flat string form — ``jts-session-1:<session_id>``.
-
-        Round-trips through :meth:`from_token`, which does NOT recover the
-        alias table.
-        """
-        return f"{self.scheme}:{self.session_id}"
-
     def with_alias(self, namespace: str, value: str) -> "SessionIdentity":
         """This identity plus one more alias. Never mutates; re-validates."""
 
@@ -136,17 +126,6 @@ class SessionIdentity:
             aliases=dict(aliases),
             scheme=str(raw.get("scheme") or SESSION_IDENTITY_SCHEME),
         )
-
-    @classmethod
-    def from_token(cls, token: Any) -> "SessionIdentity":
-        """Parse the flat form. Aliases are not carried by a token."""
-
-        if not isinstance(token, str) or token.count(":") != 1:
-            raise SessionIdentityError(
-                "session identity token must be exactly '<scheme>:<session_id>'"
-            )
-        scheme, _, session_id = token.partition(":")
-        return cls(session_id=session_id, scheme=scheme)
 
 
 def stamp_session_identity(
