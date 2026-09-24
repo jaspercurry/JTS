@@ -75,6 +75,7 @@ from ._common import (
     csrf_field_html,
     dispatch_get,
     dispatch_post,
+    flash_error,
     form_guarded,
     header_guarded,
     read_guarded,
@@ -975,7 +976,7 @@ def _save_url(
     try:
         _write_url(path, url, existing, **fields)
     except OSError as e:
-        send_see_other(handler, "./", flash=f"Could not save: {e}")
+        flash_error(handler, "Could not save", e)
         return False
     return True
 
@@ -998,7 +999,7 @@ def _get_reset(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
     try:
         _forget_connection(cfg["state_path"])
     except OSError as e:
-        send_see_other(handler, "./", flash=f"Could not reset: {e}")
+        flash_error(handler, "Could not reset", e)
         return
     send_see_other(handler, "./")
 
@@ -1163,7 +1164,7 @@ def _post_disconnect(
     try:
         _forget_connection(cfg["state_path"])
     except OSError as e:
-        send_see_other(handler, "./", flash=f"Could not disconnect: {e}")
+        flash_error(handler, "Could not disconnect", e)
         return
     clause = RESTART_CLAUSE[restart_voice_daemon()]
     log_event(logger, "ha.disconnect", client=handler.address_string())

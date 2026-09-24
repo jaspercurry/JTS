@@ -75,6 +75,7 @@ from ._common import (
     begin_request,
     dispatch_get,
     dispatch_post,
+    flash_error,
     form_guarded,
     send_html_response,
     send_see_other,
@@ -464,7 +465,7 @@ def _post_geocode(
         )
     except OSError as e:
         logger.exception("could not write transit.env after geocode")
-        send_see_other(handler, "./", flash=f"Could not save: {e}")
+        flash_error(handler, "Could not save", e)
         return
     display = new.get(DISPLAY_NAME_ENV, "")
     # Geocoded coordinates and display names reveal the household's
@@ -503,7 +504,7 @@ def _post_save(
             delete_env_file(cfg["routes_secret_path"])
     except OSError as e:
         logger.exception("could not write transit.env after save")
-        send_see_other(handler, "./", flash=f"Could not save: {e}")
+        flash_error(handler, "Could not save", e)
         return
     # No station/stop/dock IDs in the log — those reveal the
     # household's home location. Record only that a save landed.
@@ -526,7 +527,7 @@ def _post_cities(
         _locked_apply(cfg["state_path"], current, new)
     except OSError as e:
         logger.exception("could not write transit.env after cities save")
-        send_see_other(handler, "./", flash=f"Could not save: {e}")
+        flash_error(handler, "Could not save", e)
         return
     log_event(
         logger,
@@ -552,7 +553,7 @@ def _post_clear(
         delete_env_file(cfg["routes_secret_path"])
     except OSError as e:
         logger.exception("could not write transit.env after clear")
-        send_see_other(handler, "./", flash=f"Could not save: {e}")
+        flash_error(handler, "Could not save", e)
         return
     log_event(logger, "transit.clear", client=handler.address_string())
     clause = RESTART_CLAUSE[restart_voice_daemon()]
