@@ -416,38 +416,29 @@ def measured_level_trims(
 def bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     """Bank (or clear) the base trim the applied profile is actually playing.
 
-    The single writer of
-    :mod:`jasper.active_speaker.driver_base_trim`'s record, and the fix for the
-    blind run's F-1: a box could apply a measured level match, report
-    ``corrections_source: measured``, and still refuse a ``--level-matched``
-    walk ``walk_level_match_no_evidence``, because the resolver
-    (:func:`measured_level_trims`) reads only the banked record — never a
-    candidate's applied corrections. Banking here makes the applied trim the
-    very thing the resolver already looks for, so the walk door and the
-    acoustic confirm unblock with no change of their own.
+    The one writer of this module's record. :func:`measured_level_trims` reads
+    only the banked record, never a candidate's applied corrections, so banking
+    the applied trim is what lets a ``--level-matched`` walk and the acoustic
+    confirm see a measured level match.
 
-    Three answers, not two, and the middle one is the whole point:
+    Three answers, not two:
 
-    * **every** role sourced ``measured`` (beside ``level_match.applied``) —
-      BANK. The profile is levelled by measurement end to end.
-    * **some measured, and every other role OPERATOR-PINNED** — leave the bank
-      ALONE, neither banking nor clearing. Pinning one driver by hand does not
-      un-measure the speaker, so the prior full measurement is still the best
-      evidence anyone has and destroying it on the strength of a pin loses
-      real information.
-    * **anything else** — CLEAR. No measured role at all, or a role that fell
-      back to the datasheet (``sensitivity``/``estimate``) or to a preserved
-      manual crossover. That is weaker evidence, not a pin, and a banked trim
-      the box is not playing is the same lie pointing the other way.
+    * every role sourced ``measured`` (beside ``level_match.applied``): bank.
+    * some measured and every other role operator-pinned: leave the bank
+      alone. A pin does not un-measure the speaker; the prior full measurement
+      is still the best evidence.
+    * anything else: clear. A role that fell back to the datasheet
+      (``sensitivity``/``estimate``) or to a preserved manual crossover is
+      weaker evidence, and a banked trim the box is not playing misleads the
+      resolver.
 
-    The pin/fallback line is drawn by :data:`_PINNED_GAIN_SOURCES` rather than
-    by the ANY predicate alone, because ``level_match.applied`` is ITSELF only
-    "some role was measured" — see the ANY-arm comment below.
+    :data:`_PINNED_GAIN_SOURCES` draws the pin/fallback line, because
+    ``level_match.applied`` alone only says some role was measured.
 
-    Fail-soft by contract, exactly as :func:`promote_applied_baseline_candidate`
-    is: the graph is applied and read back by the time this runs, so a
-    statefile that cannot be written must never turn a successful apply into a
-    failure. The speaker then behaves as it did before this seam existed.
+    Fail-soft, like
+    :func:`~jasper.active_speaker.baseline_apply.promote_applied_baseline_candidate`:
+    the graph is applied and read back by the time this runs, so a statefile
+    that cannot be written never turns a successful apply into a failure.
     """
     def emit(result: str, reason: str, detail: str, *, level: int) -> None:
         log_event(
@@ -504,14 +495,11 @@ def bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
         and all(sources.get(role) == "measured" for role in corrections)
     )
     if not measured:
-        # The middle arm, and it is narrower than "not every role measured".
-        # `level_match.applied` is ALREADY only "some role was measured" (see
-        # this module's own `level_match["applied"] = bool(measured_notes)`),
-        # so the contract's ANY predicate alone cannot tell an operator PIN
-        # from a measurement that was REFUSED and fell back to the datasheet.
-        # Those are opposites: a pin leaves the speaker measured, while a
-        # `sensitivity`/`estimate` fallback IS the weaker evidence the clear
-        # exists for.
+        # The middle arm is narrower than "not every role measured":
+        # `level_match.applied` only says some role was measured, so it cannot
+        # tell an operator pin (the speaker stays measured) from a refused
+        # measurement that fell back to the datasheet (the weaker evidence the
+        # clear exists for).
         if (
             measured_level_match_applied(candidate)
             and all(str(sources.get(role) or "") in _PINNED_GAIN_SOURCES
@@ -554,10 +542,8 @@ def bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             else None
         )
         if gain is None:
-            # Typed refusal, never an exception: `float((entry or {}).get(...))`
-            # raised AttributeError on a non-Mapping entry, and AttributeError
-            # is not something a fail-soft seam catches — it escaped past
-            # `persist_applied_baseline_profile` and failed a successful apply.
+            # A typed refusal, never an exception: a non-Mapping entry must not
+            # escape this fail-soft seam and fail a successful apply.
             left_standing(
                 BANK_CORRECTION_ENTRY_UNREADABLE,
                 f"correction {str(role)!r} names no finite gain_db",

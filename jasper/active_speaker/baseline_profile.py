@@ -270,50 +270,27 @@ def applied_program_level_delta_db(
     previous_profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
 ) -> float:
-    """dB the emitted graph's BROADBAND level MOVED across one apply (#1811).
+    """dB the emitted graph's broadband level moved across one apply (#1811).
 
-    Negative when the apply made the speaker quieter — the ordinary case, and
-    the whole reason this exists: the applied correction's boost is absorbed as
-    a pre-split common attenuation, so the same commanded volume produces a
-    materially quieter speaker the instant the config swaps.
+    Negative when the apply made the speaker quieter, the ordinary case: the
+    applied correction's boost is absorbed as a pre-split common attenuation,
+    so the same commanded volume plays quieter the instant the config swaps.
 
-    **This is an input to ANALYSIS, never to the speaker's level.** The
-    absorption keeps the boosted branch at or below unity (see
-    ``camilla_yaml.program_headroom_db``). Compensating at main volume would
-    undo that attenuation. The consumer is
+    An input to analysis, never to the speaker's level: the absorption keeps
+    the boosted branch at or below unity (``camilla_yaml.program_headroom_db``)
+    and compensating at main volume would undo it. The consumer is
     :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`, whose
-    realized-vs-commanded comparison is not mean-centered and would otherwise
-    read this move as a defect.
+    realized-vs-commanded comparison is not mean-centred. Read from the
+    profiles, never assumed; a correction that hands headroom back yields a
+    positive number.
 
-    Read from the profiles, never assumed: the magnitude is whatever the fit
-    charged (22.5 dB on the session that surfaced this; a few dB once the
-    loudness-doctrine work shrinks the charge), and a correction that hands
-    headroom BACK yields a positive number.
-
-    **This is the pre-split term, and it is the ONLY level term the commanded
-    axis cannot carry** (#2611). The absorption is applied BEFORE the branch
-    split, so ``predicted_branch_sum`` — a model of the two branches — has no
-    place to put it, which is why it travels as a scalar beside the commanded
-    curve rather than inside it. Per-branch trims are excluded here for the
-    complementary reason: since #2611 they ARE on the commanded axis, which is
-    the applied graph's predicted sum minus the PREVIOUS graph's
-    (:mod:`jasper.active_speaker.crossover_v2.commanded`), so counting them here
-    too would remove them twice. Before that fix they were in neither account —
-    both sides of the commanded delta carried the applied candidate's own
-    trims, so a per-role gain step cancelled out of the model entirely and
-    landed in ``residual_offset_db`` as a surprise (+3.2198 dB on the
-    2026-08-16 jts3 round). The two accounts are disjoint and, between them,
-    complete for everything the apply commands.
-
-    **One known incompleteness, deliberate, caught downstream.**
-    Room-PEQ and preference-EQ headroom are excluded. The candidate's own room
-    set is emitted, including its boost headroom, and the preference layer is not
-    emitted at all; neither term is read here, so a round that changes either
-    can see a real level move this reader cannot see. That remainder is
-    exactly what the probe's ``residual_offset_db`` measures and what
-    ``delta_probe.VERDICT_LEVEL_MISMATCH`` names — which is why this function
-    is allowed to be an honest partial account rather than having to be a
-    complete one.
+    The pre-split term only (#2611): the absorption precedes the branch split,
+    so ``predicted_branch_sum`` has no place for it, while the per-branch trims
+    are on the commanded axis (:mod:`jasper.active_speaker.crossover_v2.commanded`)
+    and counting them here would remove them twice. Room-PEQ and preference-EQ
+    headroom are not read: a round that changes either can move level this
+    cannot see, which is the remainder the probe's ``residual_offset_db``
+    measures (``delta_probe.VERDICT_LEVEL_MISMATCH``).
     """
     return profile_program_headroom_db(previous_profile) - (
         profile_program_headroom_db(applied_profile)
@@ -358,26 +335,16 @@ def applied_profile_displacement(
     the three codes above, naming why it cannot be trusted as "the current
     sound".
 
-    **The defect this exists for.** On 2026-08-15 (jts3 cycle 4) the applied
-    record still named run 2's candidate while the speaker had been reconciled
-    out of band to ``sound_current.yml``. Nothing compared the two, so a restore
-    faithfully put back "the previous sound" per the record — a graph the
-    speaker had not played for six and a half hours. The record had silently
-    stopped being the truth, and the statefile is the one place that says so.
+    An out-of-band reconcile (``reconcile-current-dsp``) can move the running
+    graph without touching the record, and the statefile is the one place that
+    says so. This is a reader, never a second writer: the record's only writer
+    stays :func:`~jasper.active_speaker.baseline_apply.persist_applied_baseline_profile`
+    on the apply path, and out-of-band paths stay ignorant of the profile system.
 
-    **This adds a READER, never a second writer.** ``reconcile-current-dsp``
-    and every other out-of-band path stay entirely ignorant of the
-    active-speaker profile system, which is the separation of concerns that
-    makes them safe to run; the record's only writer remains
-    :func:`persist_applied_baseline_profile` on the apply path. What changes is
-    that consumers stop assuming the record won a race it never entered.
-
-    Fail-soft and *reporting*, never gating on its own: a missing statefile or a
-    record with no path yields a code, and each caller decides what an unknown
-    provenance means for its own question. An unreadable statefile is
-    :data:`APPLIED_PROFILE_RUNNING_UNKNOWN` — "we could not check" — which is a
-    different answer from "we checked and it moved", and conflating them is the
-    class of mistake this whole issue is about.
+    Fail-soft and reporting, never gating on its own: each caller decides what
+    an unknown provenance means for its question. An unreadable statefile is
+    :data:`APPLIED_PROFILE_RUNNING_UNKNOWN` ("could not check"), a different
+    answer from "checked and it moved".
     """
 
     from .environment import read_camilla_statefile_config_path
@@ -389,8 +356,4 @@ def applied_profile_displacement(
     running = read_camilla_statefile_config_path(statefile_path)
     if not running:
         return APPLIED_PROFILE_RUNNING_UNKNOWN
-    # ``same_config_file`` rather than a comparison here: "do two paths name
-    # one config file" is one rule, and it shipped as two near-verbatim copies
-    # until an adversarial gate caught them. Its own docstring carries the
-    # resolve-vs-string-compare reasoning.
     return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED

@@ -161,12 +161,10 @@ def persist_applied_baseline_profile(
     return applied
 
 
-# Newest-by-mtime content-addressed candidate siblings to keep around a
-# canonical baseline config on every successful promote. Orphaned candidates
-# accumulate forever now that promotion is a byte COPY, never a move/rename
-# (a fleet Pi was observed carrying 38 of them); this is a bounded-I/O
-# resilience floor, not a tunable, so it is a plain constant rather than an
-# env override.
+# Newest-by-mtime content-addressed candidate siblings kept beside the
+# canonical baseline config on every successful promote: promotion is a byte
+# copy, so orphaned candidates would otherwise accumulate. A bounded-I/O floor,
+# not a tunable.
 _MAX_BASELINE_CANDIDATE_FILES = 20
 
 
