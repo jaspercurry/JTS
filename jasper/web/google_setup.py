@@ -212,16 +212,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
     confirm-forms.js / copy.js modules) — this function emits only markup
     with `data-*` hooks the module binds to.
 
-    The four steps mirror Google's actual UI as of May 2026:
-      1. Create a Cloud project.
-      2. Configure the Google Auth Platform — a single linear setup
-         wizard launched from "Get started" on the Branding tab
-         (App Information → Audience → Contact Information → Finish),
-         followed by clicking Publish App on the Audience tab.
-      3. Enable the Calendar and Gmail APIs.
-      4. Create an OAuth client and paste creds here. The registered
-         redirect URI is a GitHub Pages bounce page because Google
-         rejects mDNS hostnames — see jasper.oauth_redirect.
+    The four steps mirror Google's actual UI as of May 2026.
     """
     redirect_safe = html.escape(redirect_uri)
     if read_only:
@@ -270,7 +261,13 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
 {intro}
 
 <ol class="setup-steps">
+{_cloud_project_steps_html(mark_done)}{_oauth_client_step_html(redirect_widget, creds_form)}</ol>
+"""
 
+
+def _cloud_project_steps_html(mark_done: str) -> str:
+    """Steps 1-3, the Google Cloud console work, each closed by `mark_done`."""
+    return f"""
   <!-- ===== Step 1: Create or pick a Cloud project ===== -->
   <li class="setup-step" data-step="1">
     <details>
@@ -350,7 +347,13 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
       </div>
     </details>
   </li>
+"""
 
+
+def _oauth_client_step_html(redirect_widget: str, creds_form: str) -> str:
+    """Step 4: create the OAuth client, then paste its credentials here. The
+    redirect URI it registers is the bounce page in jasper.oauth_redirect."""
+    return f"""
   <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
   <li class="setup-step" data-step="4">
     <details>
@@ -384,7 +387,6 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
       </div>
     </details>
   </li>
-</ol>
 """
 
 
