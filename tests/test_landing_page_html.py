@@ -945,7 +945,7 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
     assert 'id="source-section"' in html
     assert 'id="volume-eyebrow"' in html
-    assert 'id="pair-manage-link" href="/sound/pair/" data-requires="pair_management" hidden' in html
+    assert '<a id="pair-manage-link" href="/sound/pair/">Manage pair</a>' in html
     assert "fetch('/grouping')" in js
     assert "'Pair volume'" in js
     assert 'from "/assets/shared/js/local-web-host.js"' in js

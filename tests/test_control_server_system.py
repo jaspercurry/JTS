@@ -669,9 +669,6 @@ def test_system_snapshot_legacy_endpoint_token_reports_streambox_caps(
     assert caps["voice_brain"] is True
     assert caps["wake_detection"] is False
     assert caps["developer_tools"] is False
-    assert caps["network_settings"] is True
-    assert caps["reboot"] is True
-    assert caps["poweroff"] is True
     assert "unavailable_reason" not in caps
 
 
@@ -712,12 +709,7 @@ def test_system_snapshot_reports_streambox_capabilities(
     assert caps["voice_brain"] is True
     assert caps["wake_detection"] is False
     assert caps["restart_voice"] is True
-    assert caps["network_settings"] is True
-    assert caps["speaker_settings"] is True
-    assert caps["pair_management"] is True
     assert caps["developer_tools"] is False
-    assert caps["reboot"] is True
-    assert caps["poweroff"] is True
     assert "unavailable_reason" not in caps
 
 

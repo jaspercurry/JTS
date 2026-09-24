@@ -293,12 +293,6 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         # install_profile_supports_wake_detection's docstring for its
         # consumers.
         "wake_detection": wake_detection,
-        "network_settings": True,
-        "speaker_settings": True,
-        "pair_management": True,
         "developer_tools": full,
         "restart_voice": voice_brain,
-        "reboot": True,
-        "poweroff": True,
-        "diagnostics": True,
     }

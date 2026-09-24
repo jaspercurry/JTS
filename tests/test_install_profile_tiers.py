@@ -217,12 +217,9 @@ def test_system_capabilities_map_per_profile():
     full = caps("full")
     streambox = caps("streambox")
     # Both tiers hold the voice brain now; only full has developer tools.
-    # Both keep the management surfaces.
     assert full["voice_brain"] is True and full["developer_tools"] is True
     assert streambox["voice_brain"] is True
     assert streambox["developer_tools"] is False
-    for k in ("network_settings", "speaker_settings", "pair_management", "reboot"):
-        assert full[k] is True and streambox[k] is True
 
     # A legacy token passed DIRECTLY is echoed in install_profile while role +
     # booleans normalize to streambox. (In production read_install_profile

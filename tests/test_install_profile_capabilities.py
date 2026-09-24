@@ -249,28 +249,16 @@ def test_capability_map_is_deterministic_across_calls():
 _EXPECTED_CAPABILITIES = {
     "full": {
         "developer_tools": True,
-        "diagnostics": True,
         "install_profile": "full",
-        "network_settings": True,
-        "pair_management": True,
-        "poweroff": True,
-        "reboot": True,
         "restart_voice": True,
         "role": "full",
-        "speaker_settings": True,
         "voice_brain": True,
     },
     "streambox": {
         "developer_tools": False,
-        "diagnostics": True,
         "install_profile": "streambox",
-        "network_settings": True,
-        "pair_management": True,
-        "poweroff": True,
-        "reboot": True,
         "restart_voice": True,
         "role": "streambox",
-        "speaker_settings": True,
         "voice_brain": True,
     },
 }
