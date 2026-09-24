@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -38,6 +39,25 @@ from jasper.usage_writer import VoiceUsageStore
 
 from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _close_connections(monkeypatch):
+    """Close every connection a test opened: a dropped sqlite3.Connection is
+    self-referential, so its descriptor otherwise waits for a GC pass."""
+    opened: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def _tracked(*args, **kwargs):
+        opened.append(conn := connect(*args, **kwargs))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _tracked)
+    yield
+    for conn in opened:
+        # The usage writer thread closes its own; close() refuses cross-thread.
+        with contextlib.suppress(sqlite3.ProgrammingError):
+            conn.close()
 
 
 def test_open_and_close_session_records_cost(tmp_path: Path):

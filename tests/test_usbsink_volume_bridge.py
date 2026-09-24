@@ -69,7 +69,9 @@ def _set_range(bridge: VolumeBridge) -> None:
 
 class _FakeMixer:
     """One simple-mixer element backed by a real pipe, so the bridge's
-    `loop.add_reader` on `polldescriptors()` is exercised for real.
+    `loop.add_reader` on `polldescriptors()` is exercised for real. The pipe
+    opens on first use, so a test that never reaches the bridge's `close()`
+    owns no descriptors.
 
     `playback` models the merged "PCM" element's playback half, present
     whenever the USB mic export is on. It sits above the 0..50 capture span
@@ -78,7 +80,7 @@ class _FakeMixer:
     """
 
     def __init__(self, raw: int = 41, *, playback: int = 80) -> None:
-        self._read_fd, self._write_fd = os.pipe()
+        self._fds: tuple[int, int] | None = None
         self.raw = raw
         self.playback = playback
         self.rec = [1]
@@ -86,12 +88,17 @@ class _FakeMixer:
         self.handled = 0
         self.closed = False
 
+    def _pipe(self) -> tuple[int, int]:
+        if self._fds is None:
+            self._fds = os.pipe()
+        return self._fds
+
     def polldescriptors(self):
-        return [(self._read_fd, 41)]
+        return [(self._pipe()[0], 41)]
 
     def handleevents(self) -> int:
         self.handled += 1
-        os.read(self._read_fd, 4096)
+        os.read(self._pipe()[0], 4096)
         if self.fail is not None:
             raise self.fail
         return 1
@@ -110,15 +117,15 @@ class _FakeMixer:
 
     def close(self) -> None:
         self.closed = True
-        os.close(self._read_fd)
-        os.close(self._write_fd)
+        for fd in self._fds or ():
+            os.close(fd)
 
     # --- test-side driver -------------------------------------------------
     def emit(self, raw: int | None = None) -> None:
         """Make the control FD readable, as a host slider move would."""
         if raw is not None:
             self.raw = raw
-        os.write(self._write_fd, b"x")
+        os.write(self._pipe()[1], b"x")
 
 
 def _fake_alsaaudio(*mixers: _FakeMixer) -> ModuleType:

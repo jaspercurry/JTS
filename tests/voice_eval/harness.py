@@ -32,7 +32,7 @@ from jasper.google_creds import build_google_clients
 from jasper.google_routes import build_google_routes_client
 from jasper.home_assistant import build_ha_client
 from jasper.renderer import RendererClient
-from jasper.timers import TimerScheduler
+from jasper.timers import TimerScheduler, TimerStore
 from jasper.tools import ToolRegistry, UntrustedContentMonitor
 from jasper.tools.packs import ToolDeps, register_packs
 from jasper.usage import UsageStore, load_pricing_overrides, pricing_for_model
@@ -163,9 +163,11 @@ def _build_test_registry(
     # scenarios can `list_active()` post-turn.
     timer_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     timer_db.close()
-    timer_scheduler = TimerScheduler(db_path=timer_db.name)
+    timer_store = TimerStore(timer_db.name)
+    timer_scheduler = TimerScheduler(store=timer_store)
     if test_state is not None:
         test_state["timer_scheduler"] = timer_scheduler
+        test_state["timer_store"] = timer_store
         test_state["timer_db_path"] = timer_db.name
 
     # Providers own their env parsing; use the same transit builder as the daemon.
@@ -249,6 +251,43 @@ def _build_test_registry(
     )
 
     return registry
+
+
+async def _release_test_registry(test_state: dict[str, object]) -> None:
+    """Release what `_build_test_registry` opened into `test_state`."""
+    sched = test_state.get("timer_scheduler")
+    if sched is not None:
+        try:
+            await sched.stop()  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            logger.warning("voice-eval: timer scheduler stop raised",
+                           exc_info=True)
+    active_transit = test_state.get("active_transit")
+    if active_transit is not None:
+        try:
+            await active_transit.aclose()  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            logger.warning("voice-eval: active_transit aclose raised",
+                           exc_info=True)
+    timer_store = test_state.get("timer_store")
+    if timer_store is not None:
+        timer_store.close()  # type: ignore[union-attr]
+    db_path = test_state.get("timer_db_path")
+    if isinstance(db_path, str):
+        try:
+            os.unlink(db_path)
+        except OSError:
+            pass
+    store = test_state.get("wake_event_store")
+    if store is not None:
+        try:
+            store.close()  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            logger.warning("voice-eval: wake_event_store close raised",
+                           exc_info=True)
+    wake_dir = test_state.get("wake_events_dir")
+    if isinstance(wake_dir, str):
+        shutil.rmtree(wake_dir, ignore_errors=True)
 
 
 # ---- audio I/O -----------------------------------------------------
@@ -434,37 +473,7 @@ class VoiceEvalHarness:
             except Exception:  # noqa: BLE001
                 logger.warning("voice-eval: connection.stop() raised", exc_info=True)
             self._connection = None
-        sched = self.test_state.get("timer_scheduler")
-        if sched is not None:
-            try:
-                await sched.stop()  # type: ignore[union-attr]
-            except Exception:  # noqa: BLE001
-                logger.warning("voice-eval: timer scheduler stop raised",
-                               exc_info=True)
-        active_transit = self.test_state.get("active_transit")
-        if active_transit is not None:
-            try:
-                await active_transit.aclose()  # type: ignore[union-attr]
-            except Exception:  # noqa: BLE001
-                logger.warning("voice-eval: active_transit aclose raised",
-                               exc_info=True)
-        db_path = self.test_state.get("timer_db_path")
-        if isinstance(db_path, str):
-            try:
-                os.unlink(db_path)
-            except OSError:
-                pass
-        store = self.test_state.get("wake_event_store")
-        if store is not None:
-            try:
-                store.close()  # type: ignore[union-attr]
-            except Exception:  # noqa: BLE001
-                logger.warning("voice-eval: wake_event_store close raised",
-                               exc_info=True)
-        wake_dir = self.test_state.get("wake_events_dir")
-        if isinstance(wake_dir, str):
-            shutil.rmtree(wake_dir, ignore_errors=True)
-
+        await _release_test_registry(self.test_state)
         self._usage_store._conn.close()
 
     async def ask(self, prompt: str, *, turn_timeout_sec: float = 30.0) -> TurnResult:
