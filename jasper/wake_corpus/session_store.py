@@ -27,16 +27,17 @@ from .bridge_session import (
     AEC3_SWEEP_LEGS,
     CORPUS_PROFILES,
     DTLN_LEG,
+    LEGACY_AEC3_SWEEP_LEGS,
+    LEGS,
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
     RAW0_LEG,
     USB_CORPUS_LEGS,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
-    _enabled_legs_from_metadata,
-    _metadata_flag,
     chip_aec_config_metadata,
     saved_aec3_sweep_source,
+    session_legs,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -63,6 +64,75 @@ def find_session(metadata_dir: Path, session_id: str) -> tuple[Path, dict[str, A
         if data.get("session_id") == session_id:
             return p, data
     return None
+
+
+def _enabled_legs_from_metadata(
+    data: dict[str, Any], ports: dict[str, int],
+) -> tuple[str, ...]:
+    """Recover the session leg set from new or legacy metadata."""
+    aec3_sweep_source = saved_aec3_sweep_source(data)
+    raw = data.get("enabled_legs")
+    if isinstance(raw, list):
+        raw_legs = tuple(
+            str(leg) for leg in raw
+            if str(leg) in LEGS
+        )
+        include_aec3_sweep = (
+            bool(data.get("include_aec3_sweep", False))
+            or any(
+                leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS
+                for leg in raw_legs
+            )
+        )
+        if include_aec3_sweep:
+            return session_legs(
+                ports,
+                include_dtln=bool(data.get("include_dtln", DTLN_LEG in raw_legs)),
+                include_raw_mic_0=bool(
+                    data.get("include_raw_mic_0", RAW0_LEG in raw_legs),
+                ),
+                include_usb_mic=bool(
+                    data.get(
+                        "include_usb_mic",
+                        any(leg in USB_CORPUS_LEGS for leg in raw_legs),
+                    ),
+                ),
+                include_usb_dtln=bool(
+                    data.get("include_usb_dtln", USB_DTLN_LEG in raw_legs),
+                ),
+                include_aec3_sweep=True,
+                aec3_sweep_source=aec3_sweep_source,
+            )
+        legs = tuple(dict.fromkeys(
+            leg for leg in raw_legs
+            if leg not in AEC3_SWEEP_LEGS
+            and leg not in LEGACY_AEC3_SWEEP_LEGS
+            and leg in ports
+        ))
+        if legs:
+            return legs
+    return session_legs(
+        ports,
+        corpus_profile=str(data.get("corpus_profile") or PROFILE_STANDARD),
+        include_dtln=bool(data.get("include_dtln", True)),
+        include_raw_mic_0=bool(data.get("include_raw_mic_0", False)),
+        include_usb_mic=bool(data.get("include_usb_mic", False)),
+        include_usb_dtln=bool(data.get("include_usb_dtln", False)),
+        include_xvf_raw0_dtln=bool(data.get("include_xvf_raw0_dtln", False)),
+        include_aec3_sweep=bool(data.get("include_aec3_sweep", False)),
+        aec3_sweep_source=aec3_sweep_source,
+    )
+
+
+def _metadata_flag(
+    data: dict[str, Any],
+    key: str,
+    leg: str,
+    enabled_legs: tuple[str, ...],
+) -> bool:
+    """Return a saved capture flag, capped to legs this process can record."""
+    requested = bool(data.get(key, leg in enabled_legs))
+    return requested and leg in enabled_legs
 
 
 def parse_session_data(

@@ -52,7 +52,6 @@ from jasper.wake_conditions import (
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
-    _default_enabled_legs,
     build_capture_health,
     build_session_audio_context,
     chip_aec_config_metadata,
@@ -64,6 +63,7 @@ from .capture_plan import (
     validate_active_capture_plan,
 )
 from .runtime_probe import (
+    BASE_LEGS,
     CORPUS_PROFILES,
     DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
@@ -400,6 +400,11 @@ class MicMutedError(StateError):
     is stopped, so it must honor the persisted flag itself. Subclasses
     StateError so the wizard's existing error plumbing surfaces the
     message as an HTTP error without new handler branches."""
+
+
+def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
+    """Session default: base production legs that exist in this process."""
+    return tuple(leg for leg in BASE_LEGS if leg in ports)
 
 
 class RecordingBackend:
