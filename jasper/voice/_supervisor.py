@@ -132,7 +132,12 @@ def http_status(exc: BaseException) -> int | None:
     return status
 
 
-_NO_RCVD = object()
+_ABSENT = object()
+
+# Links followed down a failure's cause/context chain looking for the
+# close it was translated from: google-genai raises one link above it,
+# and the bound stops a hand-built cyclic chain.
+_CLOSE_CHAIN_LIMIT = 4
 
 
 def provider_code(exc: BaseException) -> int | None:
@@ -147,8 +152,8 @@ def provider_code(exc: BaseException) -> int | None:
     absence. Never read it: any exception carrying an ``.rcvd`` attribute
     is treated as a websockets close, and its code comes from ``.rcvd``
     alone, even when that is ``None``."""
-    rcvd = getattr(exc, "rcvd", _NO_RCVD)
-    if rcvd is _NO_RCVD:
+    rcvd = getattr(exc, "rcvd", _ABSENT)
+    if rcvd is _ABSENT:
         candidate = getattr(exc, "code", None)
     else:
         candidate = getattr(rcvd, "code", None)
@@ -165,8 +170,22 @@ def peer_initiated_close(exc: BaseException) -> bool:
     edge, say — arrives on ``.rcvd`` indistinguishable from a rejection.
     websockets records who moved first in ``.rcvd_then_sent``; ``False``
     means we did. Any other value, the flag being absent included,
-    cannot rule the close ours."""
-    return getattr(exc, "rcvd_then_sent", None) is not False
+    cannot rule the close ours.
+
+    google-genai raises its ``APIError`` inside the ``except`` that caught
+    the close, so there the flag survives only down the error's chain: a
+    failure without one reads it off the first close in that chain which
+    received the same code. See #3895."""
+    code = provider_code(exc)
+    link: BaseException | None = exc
+    for _ in range(_CLOSE_CHAIN_LIMIT):
+        if link is None:
+            break
+        flag = getattr(link, "rcvd_then_sent", _ABSENT)
+        if flag is not _ABSENT and (link is exc or provider_code(link) == code):
+            return flag is not False
+        link = link.__cause__ if link.__cause__ is not None else link.__context__
+    return True
 
 
 # See ADR-0215
