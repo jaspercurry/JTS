@@ -1340,7 +1340,7 @@ def test_the_flat_cutover_threads_its_width_into_the_channel_plan():
 # --- the production call shape ------------------------------------------------
 #
 # deploy/install.sh calls emit_flat_outputd_cutover_config with out_path ONLY,
-# so `topology=None` -> flat_graph_muted_outputs(None, ...) ->
+# so `topology=None` -> flat_graph_channel_plan(None, ...) ->
 # load_output_topology_strict(). That is the branch a real box executes; every
 # other test here injects a topology and skips it.
 

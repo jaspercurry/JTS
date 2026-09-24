@@ -303,6 +303,12 @@ def emit_channel_select_mixer(
     )
 
 
+# The PROGRAM's width: capture channels, the `master_gain` mixer's `in`, and the
+# channels `mono_sum_sources()` sums. FIXED — `emit_master_gain_pipeline` is a
+# deliberately 2-channel shape (the config contract is stereo-pinned).
+FLAT_PROGRAM_WIDTH = 2
+
+
 def emit_master_gain_pipeline(
     left_names: Sequence[str],
     right_names: Sequence[str] | None = None,

@@ -2001,7 +2001,7 @@ def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> 
     Camilla channel i is not physical output i, or the claim sits outside the
     graph's width. Both cases fall back to the unmuted graph, which the checker
     then judges on its own terms."""
-    from jasper.active_speaker.runtime_contract import flat_graph_muted_outputs
+    from jasper.active_speaker.output_contract import flat_graph_muted_outputs
 
     assert flat_graph_muted_outputs(_full_range_mono_on(0), width=2) == frozenset({1})
     assert flat_graph_muted_outputs(_full_range_mono_on(1), width=2) == frozenset({0})

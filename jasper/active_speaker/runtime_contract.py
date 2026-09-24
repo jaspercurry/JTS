@@ -38,7 +38,7 @@ from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdenti
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
 from jasper.camilla_config_contract import playback_is_pipe
-from jasper.camilla_emit import mono_sum_sources
+from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
 from jasper.log_event import log_event
 from jasper.multiroom.reconcile_plan import SNAPFIFO
 
@@ -47,6 +47,7 @@ from jasper.output_topology import (
     OutputTopologyError,
 )
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
+from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
 from ._common import issue as _issue
 from .camilla_yaml import _reserialize_keeping_header
@@ -74,10 +75,11 @@ from .output_contract import (
     CONTRACT_UNCONFIGURED,
     OutputContract,
     classify_output_contract,
+    flat_full_range_outputs,
+    flat_graph_program_dest_map,
     mains_lowest_driver_indexes as _mains_lowest_driver_indexes,
     subwoofer_output_indexes as _subwoofer_output_indexes,
     topology_allows_flat_dac_graph,
-    topology_sink_is_composite,
 )
 from .path_safety import (
     software_guard_ready_for_startup,
@@ -403,112 +405,6 @@ def _playback_is_program_bake_pipe(text: str) -> bool:
     return playback_is_pipe(text, SNAPFIFO)
 
 
-def flat_full_range_outputs(contract: OutputContract) -> frozenset[int]:
-    """The physical outputs a flat full-range graph is allowed to emit on.
-
-    The saved topology's ``full_range`` assignments and nothing else. This is
-    the ONE definition of "which outputs has the household declared for the
-    flat lane": :func:`_flat_graph_allowed` refuses a graph that emits outside
-    it, and :func:`flat_graph_muted_outputs` — which the flat renderer calls —
-    derives the complement it must hard-mute from the same set. Keeping both
-    sides on one function is what makes the renderer's mute and the checker's
-    demand incapable of disagreeing.
-    """
-
-    return frozenset(
-        item.physical_output_index
-        for item in contract.assignments
-        if item.role == "full_range" and item.physical_output_index is not None
-    )
-
-
-def flat_graph_program_dest_map(
-    topology: OutputTopology,
-    contract: OutputContract,
-    *,
-    width: int,
-) -> tuple[int, ...] | None:
-    """Which playback channel each program channel drives, or ``None``.
-
-    The ONE answer to "where does the flat graph put the program": the renderer
-    builds its mixer, per-dest chains and mutes from it, and the checker asks it
-    whether a live channel reached an undeclared output.
-
-    Playback-channel index and physical-output index are ONE space — a
-    composite's children own a contiguous pair each and outputd deinterleaves in
-    that order — so an entry is both a dest and an output. Two shapes resolve:
-    **indexed** (not a composite, every claimed output inside ``width``: program
-    channel *i* drives output *i*) and **composite-paired** (a multi-child sink
-    whose children declare exactly ONE ``full_range`` output each: program
-    channel *i* drives child *i*'s output, which is why a dual-Apple stereo box
-    sits on outputs 0 and 2 and the identity answer is wrong for it).
-
-    ``None`` is UNDECIDED and both callers fail closed on it.
-    """
-
-    from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
-
-    if width < FLAT_PROGRAM_WIDTH:
-        return None
-    claimed = flat_full_range_outputs(contract)
-    if not claimed or not claimed <= frozenset(range(width)):
-        return None
-    if not topology_sink_is_composite(topology):
-        return tuple(range(FLAT_PROGRAM_WIDTH))
-    children = topology.hardware.child_devices
-    if len(children) != FLAT_PROGRAM_WIDTH:
-        return None
-    dests: list[int] = []
-    for child in children:
-        owned = sorted(claimed.intersection(child.physical_output_indexes))
-        if len(owned) != 1:
-            return None
-        dests.append(owned[0])
-    return tuple(dests)
-
-
-def flat_graph_muted_outputs(
-    topology: OutputTopology | None = None,
-    *,
-    width: int,
-) -> frozenset[int]:
-    """Playback channels a ``width``-wide flat graph must hard-mute.
-
-    Every channel the saved topology does not claim as ``full_range`` would
-    otherwise send full-range program to an output the household never declared.
-    Muting them satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
-    :func:`_flat_graph_allowed` then re-proves it structurally off the emitted
-    YAML rather than trusting the emitter.
-
-    Withheld — EMPTY, mute nothing — unless
-    :func:`flat_graph_program_dest_map` resolves where the program lands, since
-    muting by an unestablished mapping would silence a working speaker, and for
-    three cases where silencing would only disguise a louder failure:
-    an **unconfigured** topology (runtime selection parks the speaker instead),
-    a **roleful/protected** topology (the flat graph is illegal there whatever
-    is muted, and refusing it is :func:`_flat_graph_allowed`'s job), and **every
-    channel unclaimed** (muting all of them ships a silently silent speaker;
-    the unmuted graph lets the checker refuse it with a reason).
-
-    A corrupt topology also returns empty: the emitted graph is still checked,
-    so the deploy stops at the layer that can say why.
-    """
-
-    if width <= 0:
-        return frozenset()
-    try:
-        if topology is None:
-            topology = load_output_topology_strict()
-        contract = classify_output_contract(topology)
-    except OutputTopologyError:
-        return frozenset()
-    if not contract.topology_configured or contract.requires_roleful_graph:
-        return frozenset()
-    if flat_graph_program_dest_map(topology, contract, width=width) is None:
-        return frozenset()
-    return frozenset(range(width)) - flat_full_range_outputs(contract)
-
-
 def _flat_output_terminally_muted(
     payload: Mapping[str, Any],
     view: GraphView,
@@ -575,8 +471,7 @@ def _required_mono_fold_output(
 
     Delegated WHOLE to ``jasper.sound.camilla_yaml.flat_graph_channel_plan``, so
     the checker cannot demand a fold the renderer would not emit nor accept a
-    box the renderer would have folded. Imported lazily: a top-level edge back
-    would be circular.
+    box the renderer would have folded.
 
     ``None`` when the graph's own width is unreadable or non-positive — a plan
     derived at width 0 is degenerate (its mute set and the complement of the
@@ -587,8 +482,6 @@ def _required_mono_fold_output(
         return None
     if playback_channels <= 0:
         return None
-    from jasper.sound.camilla_yaml import flat_graph_channel_plan
-
     return flat_graph_channel_plan(topology, width=playback_channels).mono_fold_output
 
 
@@ -689,8 +582,6 @@ def _flat_graph_allowed(
     else:
         live_outputs = None
     if allowed and contract.topology_configured and live_outputs is not None:
-        from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
-
         code = "flat_full_range_graph_wider_than_topology"
         if program_dest_map is not None:
             undeclared = sorted(live_outputs - full_range_outputs)
