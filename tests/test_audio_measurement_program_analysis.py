@@ -36,7 +36,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 from jasper.audio_measurement.program_analysis.response import _alignment_delay_grid
-from scipy.signal import fftconvolve, resample_poly
+from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.audio_measurement import analysis as analysis_mod
@@ -5285,6 +5285,43 @@ def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
     expected = 20 * np.log10(np.abs(0.5 + 0.2 * np.exp(-2j * np.pi * response.freqs_hz[bass] * 0.120)))
     assert response.magnitude_db[bass] == pytest.approx(expected, abs=0.5)
     assert np.ptp(response.magnitude_db[bass]) > 5
+
+
+def test_a_one_driver_take_under_the_near_field_exemption_reads_every_sweep_ungated():
+    """A near-field take is too close for the room to matter (ADR-0354): its
+    primary sweep and both repeats are read ungated, claiming no floor, over a
+    window long enough for a protected woofer's low-frequency ringing."""
+    prog = build_measure_program(
+        {"woofer:rear": -20.0}, (RoleBand("woofer:rear", 0, FrequencyBand(20.0, 2000.0)),),
+        repeat_count=3, sweep_durations={"woofer:rear": 1.0}, sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+    )
+    # A vented woofer behind a 20 Hz protection high-pass: it rings past 60 ms.
+    sos = np.vstack([butter(4, 38, "highpass", fs=SR, output="sos"),
+                     butter(4, 20, "highpass", fs=SR, output="sos"),
+                     butter(2, 1500, "lowpass", fs=SR, output="sos")])
+    ir = sosfilt(sos, np.r_[1.0, np.zeros(SR // 2)])
+    ir[240:] += 0.01 * ir[:-240]  # a floor bounce 40 dB down, 5 ms late
+    pcm = render_program_pcm(prog)
+    cap = np.concatenate([np.zeros(800), fftconvolve(pcm[:, 0], ir)[:pcm.shape[0]], np.zeros(SR)])
+    cap += np.random.default_rng(7).normal(0.0, 1e-6, cap.size)
+    gated, exempt = (
+        analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(), geometry=geometry)
+        for geometry in (None, MeasurementGeometry(gate_exempt_reason=gating.NEAR_FIELD_EXEMPT))
+    )
+    freqs = np.array([20.0, 25.0, 50.0, 100.0, 400.0])
+    truth = 20 * np.log10(np.abs(sosfreqz(sos, worN=freqs, fs=SR)[1]))
+
+    def error_db(response):
+        read = np.interp(freqs, response.freqs_hz, response.magnitude_db)
+        return np.abs((read - read[-1]) - (truth - truth[-1]))
+
+    primary = exempt.driver_responses[0]
+    sweeps = (primary, *primary.repeat_responses)
+    assert [(r.gating["applied"], r.gating["exempt_reason"], r.validity_floor_hz) for r in sweeps] == [
+        (False, gating.NEAR_FIELD_EXEMPT, None)] * 3
+    assert max(error_db(r).max() for r in sweeps) < 0.3
+    assert gated.driver_responses[0].gating["applied"] is True
+    assert error_db(gated.driver_responses[0])[0] > 1.0
 
 
 def test_verify_tracking_against_predicted_sum():

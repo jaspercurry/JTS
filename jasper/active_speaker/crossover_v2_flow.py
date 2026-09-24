@@ -809,7 +809,7 @@ class CrossoverV2Session:
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(self._capture_purpose(phase, index))
+            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver)
         return replace(
             self._geometry,
             gate_exempt_reason=exemption,

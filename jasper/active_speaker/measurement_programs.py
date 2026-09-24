@@ -232,10 +232,14 @@ def run_purposes(run_program: str) -> tuple[str, ...]:
     return (row.purpose, *row.co_purposes)
 
 
-def gate_exemption(purpose: str | None) -> str | None:
-    from jasper.audio_measurement.gating import SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+def gate_exemption(purpose: str | None, *, driver: str = "") -> str | None:
+    """Why a take is read ungated: a room, bass or rear take measures the
+    room; a pose at one driver is too close for the room to matter (ADR-0354)."""
+    from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
-    return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR) else None
+    if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR):
+        return SEAT_EXEMPT
+    return NEAR_FIELD_EXEMPT if driver else None
 
 
 def validated_pose(

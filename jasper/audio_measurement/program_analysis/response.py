@@ -293,7 +293,7 @@ def _driver_response(
 
     ``gate_exempt_reason`` keeps the room in: the response is the arrival
     window ungated, with :func:`gating.exempt_gating_block` saying why and no
-    validity floor claimed (a seat take, ADR-0260).
+    validity floor claimed (a seat take, ADR-0260; a near-field one, ADR-0354).
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate
@@ -315,7 +315,7 @@ def _driver_response(
         full_ir, sample_rate, direct_peak_idx=peak_idx,
         pre_arrival_ms=IR_PRE_MS,
         post_arrival_ms=(1000 * DEFAULT_VERIFY_TAIL_S
-                         if gate_exempt_reason == gating.SEAT_EXEMPT else IR_POST_MS),
+                         if gate_exempt_reason is not None else IR_POST_MS),
     )
     ir = deconv.apply_arrival_window(full_ir, window)
     if gate_exempt_reason is not None:

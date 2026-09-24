@@ -15,10 +15,9 @@ take resolves in a 3 m room, so a close microphone plus a radiation model is
 the only room-free view of it ([#5684](https://github.com/jaspercurry/JTS/issues/5684)).
 No program played one chosen woofer with the rest silent: the stopgap runs
 (ADR-0353) played both woofers or the whole candidate, and the pair check
-refused their takes. The
-drivers graph already names every physical output by measurement target id
-(ADR-0316) and parks the ones a take does not route; what was missing was a
-take naming the one target it plays.
+refused their takes. The drivers graph already names every physical output by
+measurement target id (ADR-0316) and parks the ones a take does not route;
+what was missing was a take naming the one target it plays.
 
 ## Decision
 
@@ -41,6 +40,11 @@ take naming the one target it plays.
    loudness): pilots and three bit-identical sweeps from the driver's floor to
    about 2 kHz, about 8 s each, with no silence over 0.5 s after the first
    sound, so a signal-sensing amplifier stays awake.
+5. **The take is read ungated.** The pose's driver sets the `near_field` gate
+   exemption: at the cone the room is about 40 dB down, and the gate would cut
+   the band the take exists for. It keeps the long window a seat take uses,
+   because a protected woofer rings past the 60 ms arrival window, and claims
+   no validity floor.
 
 ## Consequences
 
