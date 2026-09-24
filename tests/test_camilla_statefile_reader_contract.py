@@ -4,10 +4,10 @@
 
 """One owner for the CamillaDSP statefile's ``config_path`` (issue #2848).
 
-``jasper.active_speaker.environment`` owns three facts together: the
-``JASPER_CAMILLA_STATEFILE`` override, the shipped default statefile path, and
-the ``config_path:`` parse. Three private readers each held their own copy of
-all three — ``jasper.cli.doctor.correction``'s
+``jasper.active_speaker.environment`` owns the ``JASPER_CAMILLA_STATEFILE``
+override and the ``config_path:`` parse, over the shipped default statefile
+path that ``jasper.paths`` names. Three private readers each held their own
+copy of all three facts — ``jasper.cli.doctor.correction``'s
 ``_parse_camilla_statefile_config_path`` / ``_active_camilla_config_path``,
 ``jasper.audio_runtime_plan``'s ``_active_camilla_config_path_from_statefile``,
 and ``jasper.multiroom.leader_config``'s ``active_leader_pipe_path`` — so a box
