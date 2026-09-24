@@ -310,9 +310,10 @@ def set_artifact_name(name: str, set_id: str | None = None) -> str:
 
 
 def take_artifact_name(name: str, take_id: str, role: str) -> str:
-    """A per-take view's file name; the whole take id, since a run's takes share its prefix."""
+    """A per-take view's file name; the whole take id, since a run's takes share
+    its prefix. A target's colon (``woofer:rear``) becomes ``_`` for portability."""
     path = Path(name)
-    return f"{path.stem}-{take_id}-{role}{path.suffix}"
+    return f"{path.stem}-{take_id}-{role}{path.suffix}".replace(":", "_")
 
 
 def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | None = None) -> Path:
