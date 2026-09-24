@@ -325,9 +325,6 @@ def _classify_readable_inputs(
     uid: int,
     gids: frozenset[int],
     user: str,
-    *,
-    stat_fn=os.stat,
-    glob_fn=_glob.glob,
 ) -> CheckResult:
     """Core of the per-daemon read check, path + identity parameterized.
 
@@ -338,10 +335,10 @@ def _classify_readable_inputs(
     unreadable: list[str] = []
     checked = 0
     for pattern in paths:
-        matches = sorted(glob_fn(pattern)) if is_glob(pattern) else [pattern]
+        matches = sorted(_glob.glob(pattern)) if is_glob(pattern) else [pattern]
         for match in matches:
             try:
-                st = stat_fn(match)
+                st = os.stat(match)
             except OSError:
                 continue  # absent / unstat-able → not the present-but-unreadable bug
             checked += 1

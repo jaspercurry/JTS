@@ -398,7 +398,6 @@ def write_review_package(
     title: str = "Wake-word listening review",
     symlink: bool = False,
     scores_csv: Path | None = None,
-    now: datetime | None = None,
 ) -> None:
     """Write the full review package to `output_dir`.
 
@@ -454,10 +453,8 @@ def write_review_package(
 
     html_content = build_index_html(placed_rows, title)
     (output_dir / "index.html").write_text(html_content)
-    (output_dir / "README.md").write_text(render_readme(title, now=now))
-    (output_dir / "YOUR_VERDICT.md").write_text(
-        render_verdict_template(title, now=now),
-    )
+    (output_dir / "README.md").write_text(render_readme(title))
+    (output_dir / "YOUR_VERDICT.md").write_text(render_verdict_template(title))
 
     # Copy the scores CSV verbatim into the package for reference.
     if scores_csv is not None and scores_csv.is_file():

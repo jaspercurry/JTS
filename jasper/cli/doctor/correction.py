@@ -748,9 +748,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     return _result("ok", "; ".join(parts), "")
 
 
-def _classify_seat_level_reference(
-    path: Path, *, now: float | None = None
-) -> CheckResult:
+def _classify_seat_level_reference(path: Path) -> CheckResult:
     label = "session level"
     record = load_seat_level_reference(state_path=path)
     volume = seat_level_reference_volume_db(state_path=path)
@@ -762,7 +760,7 @@ def _classify_seat_level_reference(
     try:
         measured = float(record.get("measured_db_spl"))
         stamp = _datetime.fromisoformat(str(record["leveled_at"]).replace("Z", "+00:00"))
-        age = ((time.time() if now is None else now) - stamp.timestamp()) / 86400
+        age = (time.time() - stamp.timestamp()) / 86400
     except (KeyError, TypeError, ValueError):
         return CheckResult(label, "ok", f"gain {volume:.1f} dB, age unknown{identity}",
                            reason=REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE)

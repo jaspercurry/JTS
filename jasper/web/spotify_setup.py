@@ -414,8 +414,7 @@ def _manual_paste_form_html(csrf_token: str = "", *, hint: str | None = None) ->
 
 
 def _manual_prewarn_page_html(
-    authorize_url: str, account_name: str,
-    csrf_token: str = "", *, status_msg: str = "", back_href: str = "/",
+    authorize_url: str, account_name: str, csrf_token: str = "",
 ) -> bytes:
     """Manual-mode: after /start, render this page instead of redirecting
     to Spotify. Pre-frames the "cannot connect" page so it doesn't look
@@ -450,7 +449,7 @@ def _manual_prewarn_page_html(
 """
     return _spotify_page(
         f"Connecting {account_name} on Spotify — manual mode",
-        body, csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
+        body, csrf_token=csrf_token,
     )
 
 
