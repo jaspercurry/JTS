@@ -779,15 +779,15 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
 
 class _LevelStore(_Store):
     """Banks each take as the web host does: the program it played, at the
-    peak it asked for, and what the microphone read."""
+    peak it asked for under its ceiling, and what the microphone read."""
 
-    def __init__(self, records, readings, opener_db):
+    def __init__(self, records, readings, opener_db, ceiling_db):
         super().__init__(records)
-        self.readings, self.opener_db = iter(readings), opener_db
+        self.readings, self.opener_db, self.ceiling_db = iter(readings), opener_db, ceiling_db
 
     async def bank(self, record):
         if record.get("kind") != RUN_MANIFEST_KIND:
-            peak = self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"]
+            peak = min(self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
             reading = next(self.readings)
             record.update(
                 program=build_measure_program({"woofer": peak}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
@@ -797,11 +797,11 @@ class _LevelStore(_Store):
         return await super().bank(record)
 
 
-def _run_levelled(request, readings, *, replace_at=None):
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0):
     """A plan whose recordings pass, judged on the level each take read; the
     operator re-places the microphone at take ``replace_at``."""
     fakes, takes = FakeSeams(), count(1)
-    manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0))
+    manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
 
     def assessor(analysis, **kwargs):
         if next(takes) == replace_at:
@@ -835,6 +835,18 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     assert result.status == "complete"
     assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
+
+
+def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
+    """A take its ceiling played under the peak it asked for is kept too quiet:
+    a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+        ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purpose="reference", regime="near_field"))
+
+    result, fakes, selected = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
+
+    assert result.status == "complete"
+    assert (fakes.play.rungs, selected) == ([None, -28.0], [False, True])
 
 
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():

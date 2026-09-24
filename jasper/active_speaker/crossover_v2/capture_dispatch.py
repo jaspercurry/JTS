@@ -107,13 +107,17 @@ def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | Non
 
 def assess(
     analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
-    level_target_db_spl: float | None = None, prior_verdict: TakeVerdict | None = None, **kwargs: Any,
+    level_target_db_spl: float | None = None, level_asked_dbfs: float | None = None,
+    prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
     level = _level_target(level_target_db_spl, kwargs.get("spl"), kwargs.get("program"))
-    # A take the microphone heard is levelled before its recording is judged;
-    # one it did not hear is judged, never levelled blind (ADR-0361).
+    # A take the microphone heard is levelled before its recording is judged; one it
+    # did not hear is judged, never levelled blind; one its ceiling held under the peak
+    # it asked for is kept too quiet, since a louder retake would replay it (ADR-0361).
+    capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
+              and level.peak_dbfs < level_asked_dbfs)
     if (prior_verdict is None and level is not None and abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB
-            and _stimulus_locate_ok(analysis)):
+            and not capped and _stimulus_locate_ok(analysis)):
         step = capped_gap_step_db(measured_db=level.reading_db_spl, target_db=level.target_db_spl,
                                   cap_db=LEVEL_SOLVE_MAX_RAISE_DB)
         prior_verdict = TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
@@ -131,7 +135,8 @@ def assess(
                       else pilot_screens(analysis, program=kwargs.get("program")))
     if level is not None:
         verdict = replace(verdict, evidence={**verdict.evidence, "max_window_db_spl": level.reading_db_spl,
-                                             "level_target_db_spl": level.target_db_spl})
+                                             "level_target_db_spl": level.target_db_spl,
+                                             **({"level_capped": True} if capped else {})})
         if verdict.next == "retake_louder" and verdict.next_gain_db is not None:
             # No retake raises a near-field take past its target.
             verdict = replace(verdict, next_gain_db=min(verdict.next_gain_db, level.peak_dbfs + level.gap_db))

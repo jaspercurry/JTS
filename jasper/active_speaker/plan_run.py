@@ -554,7 +554,8 @@ async def _run(
                             assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               spl=(record.get("capture_integrity") or {}).get("spl"),
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
-                                              level_target_db_spl=NEAR_FIELD_TARGET_DB_SPL if record.get("pose_driver") else None)
+                                              level_target_db_spl=NEAR_FIELD_TARGET_DB_SPL if record.get("pose_driver") else None,
+                                              level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}

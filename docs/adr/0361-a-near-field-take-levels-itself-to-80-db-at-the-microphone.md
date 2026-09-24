@@ -29,7 +29,9 @@ near-field level: 80 dB peak in the loudest 21 ms window, ±2 dB (#5684).
    15 dB a step, as an automatic retry charged to the speaker, and the
    out-of-band attempt stays banked, unkept. A take it did not hear is judged
    by its recording (a locate failure, or the muted-output stop), never
-   levelled blind, and no other retake raises a take past its target.
+   levelled blind, and no other retake raises a take past its target. A take
+   its ceiling played under the peak it asked for is kept too quiet and marked
+   `level_capped`, since a louder retake would replay it.
 4. **The 85 dB live stop, its single source and the seat reference are
    unchanged**; no near-field take writes the seat reference.
 
@@ -37,8 +39,8 @@ near-field level: 80 dB peak in the loudest 21 ms window, ±2 dB (#5684).
 
 - A pose costs its opener and its levelled take, about twice one take's play
   time; its later takes reuse the landed level.
-- A target the seat-equivalent level cannot reach spends the pose's retries,
-  and that pose, not the run, is left unmeasured.
+- A target the ceiling cannot reach costs one retake: the take lands at the
+  loudest level allowed and is kept, its reading and target beside it.
 - Rejected: a per-pose fader solve (the plan's S5), because the executor holds
   one fader per run and the digital path already bounds every take by the
   driver caps; a separate level-only probe program, because the opener is the
