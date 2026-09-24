@@ -412,13 +412,19 @@ class UsageStore:
                 self._connection_interval_kind_column_exists()
             )
         except sqlite3.Error:
-            self._conn.close()
+            self.close()
             raise
         self._pricing: Pricing = pricing or pricing_for_model(
             _DEFAULT_DISPLAY_MODEL
         )
         self._pricing_overrides = pricing_overrides or {}
         self._write_health = WriteHealth()
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except sqlite3.Error:
+            pass
 
     def open_session(self, provider: str | None = None) -> int:
         """Return a session ID, or the unrecorded sentinel on write failure."""
@@ -847,7 +853,7 @@ class AggregateUsageReader:
                 try:
                     values.append(getattr(store, method_name)())
                 finally:
-                    store._conn.close()
+                    store.close()
             except sqlite3.Error as e:
                 self.read_degraded = True
                 logger.debug(

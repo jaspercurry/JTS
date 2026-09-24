@@ -166,7 +166,7 @@ class VoiceUsageStore(UsageStore):
                     logger, "usage.drain_incomplete", pending=len(self._dirty),
                     level=logging.WARNING,
                 )
-        self._conn.close()
+        self.close()
 
     def _publish_snapshot(self, disk: UsageStore) -> None:
         with self._condition:
@@ -257,4 +257,4 @@ class VoiceUsageStore(UsageStore):
                         self._condition.wait(0.1 if self._write_error else self._REFRESH_SECONDS)
         finally:
             if disk is not None:
-                disk._conn.close()
+                disk.close()

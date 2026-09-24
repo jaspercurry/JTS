@@ -400,7 +400,7 @@ def test_read_only_store_reads_existing_spend(tmp_path: Path):
     """A read-only reopen of a DDL-only DB (created by another surface, no
     rows written yet) must resolve spend without error once rows exist."""
     db = tmp_path / "usage.db"
-    UsageStore(str(db))._conn.close()
+    UsageStore(str(db)).close()
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
@@ -935,7 +935,7 @@ def _record_cost(db_path: str, cost_usd: float, *, provider: str = "openai") -> 
         "UPDATE sessions SET ended_at = ?, cost_usd = ? WHERE id = ?",
         (datetime.now(timezone.utc).isoformat(), cost_usd, sid),
     )
-    store._conn.close()
+    store.close()
 
 
 def test_tuning_db_is_sibling_of_usage_db():
@@ -1124,7 +1124,7 @@ async def test_buffered_usage_keeps_receipt_time_cost_and_attribution(tmp_path, 
     try:
         assert reader.spend_last_24h_usd() == pytest.approx(total)
     finally:
-        reader._conn.close()
+        reader.close()
 
 
 async def test_buffered_queue_reserves_closes_and_discloses_loss(tmp_path, monkeypatch, caplog):
@@ -1224,7 +1224,7 @@ async def test_buffered_start_recovers_history_without_rebilling_crash_interval(
     _record_cost(db, 0.25)
     disk = UsageStore(db)
     disk.record_billable_activity_open("grok", 3600)
-    disk._conn.close()
+    disk.close()
     lock = sqlite3.connect(db, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
     store = await VoiceUsageStore.start(db)
@@ -1285,7 +1285,7 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
 
 async def test_buffered_start_cancellation_stops_its_worker(tmp_path, monkeypatch):
     db = str(tmp_path / "usage.db")
-    UsageStore(db)._conn.close()
+    UsageStore(db).close()
     instances = []
     original_init = VoiceUsageStore.__init__
 
@@ -1318,7 +1318,7 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
             [(now.isoformat(), 0.001)] * 1000,
         )
-    seed._conn.close()
+    seed.close()
     first = await VoiceUsageStore.start(db)
     second = await VoiceUsageStore.start(db)
     try:
@@ -1361,7 +1361,7 @@ async def test_buffered_snapshots_follow_day_month_and_rolling_windows(tmp_path,
     monkeypatch.setattr("jasper.usage.datetime", Clock)
     monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
     db = str(tmp_path / "usage.db")
-    UsageStore(db)._conn.close()
+    UsageStore(db).close()
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",

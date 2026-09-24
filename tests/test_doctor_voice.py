@@ -402,7 +402,7 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_NO_USAGE
 
-    UsageStore(tuning_usage_db_path(str(tmp_path / "usage.db")))._conn.close()
+    UsageStore(tuning_usage_db_path(str(tmp_path / "usage.db"))).close()
 
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_OK

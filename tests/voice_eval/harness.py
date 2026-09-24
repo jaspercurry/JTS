@@ -474,7 +474,7 @@ class VoiceEvalHarness:
                 logger.warning("voice-eval: connection.stop() raised", exc_info=True)
             self._connection = None
         await _release_test_registry(self.test_state)
-        self._usage_store._conn.close()
+        self._usage_store.close()
 
     async def ask(self, prompt: str, *, turn_timeout_sec: float = 30.0) -> TurnResult:
         result, _ = await self._run_turn(prompt, turn_timeout_sec, interrupt=False)
