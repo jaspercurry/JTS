@@ -83,10 +83,10 @@ def _sampler(
     )
 
 
-@pytest.mark.parametrize("value", [True, False])
-def test_as_int_treats_bool_as_absent_not_1(value: bool) -> None:
-    """A stray bool from upstream JSON must read as "couldn't tell" (the
-    default), never as the numeric identity of True/False."""
+@pytest.mark.parametrize("value", [True, False, float("inf")])
+def test_as_int_treats_bool_and_infinity_as_absent(value: object) -> None:
+    """A stray bool or infinity in upstream JSON reads as "couldn't tell" (the
+    default), never as True/False's numeric identity or an OverflowError."""
     assert as_int(value, default=7) == 7
 
 
