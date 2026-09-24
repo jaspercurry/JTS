@@ -27,7 +27,7 @@ import numpy as np
 
 from jasper.audio_measurement.peq import design_peq, predicted_response
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q as _HIGHSHELF_Q
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q as _HIGHSHELF_Q, biquad_coeffs
 
 from .branch_chain import chain_response, branch_headroom_db
 from .branch_target import (
@@ -337,29 +337,12 @@ class BlindZonePlacement:
 def _highshelf_response_db(
     freqs_hz: np.ndarray, corner_hz: float, gain_db: float, q: float,
 ) -> np.ndarray:
-    """RBJ Audio EQ Cookbook Highshelf magnitude response, in dB, at
-    ``freqs_hz`` for a filter designed at ``corner_hz``/``gain_db``/``q``.
-
-    The same digital biquad family CamillaDSP realizes, at
-    :data:`jasper.biquad.RESPONSE_SAMPLE_RATE_HZ`. Separate from
-    ``biquad.filter_response_db`` — Highshelf-only, vectorized,
-    returns an ndarray (the shape this fit loop needs).
-    """
-    fs = float(RESPONSE_SAMPLE_RATE_HZ)
-    w0 = 2.0 * math.pi * max(float(corner_hz), 1e-6) / fs
-    cw0, sw0 = math.cos(w0), math.sin(w0)
-    amp = 10.0 ** (float(gain_db) / 40.0)
-    alpha = sw0 / (2.0 * float(q))
-    beta = 2.0 * math.sqrt(amp) * alpha
-    b0 = amp * ((amp + 1) + (amp - 1) * cw0 + beta)
-    b1 = -2.0 * amp * ((amp - 1) + (amp + 1) * cw0)
-    b2 = amp * ((amp + 1) + (amp - 1) * cw0 - beta)
-    a0 = (amp + 1) - (amp - 1) * cw0 + beta
-    a1 = 2.0 * ((amp - 1) - (amp + 1) * cw0)
-    a2 = (amp + 1) - (amp - 1) * cw0 - beta
-
+    """Highshelf magnitude in dB at ``freqs_hz``: the coefficients of
+    :func:`jasper.biquad.biquad_coeffs`, evaluated over the whole grid with
+    NumPy (the shared evaluator stays NumPy-free)."""
+    b0, b1, b2, a0, a1, a2 = biquad_coeffs("Highshelf", float(corner_hz), float(gain_db), float(q))
     f = np.asarray(freqs_hz, dtype=np.float64)
-    w = 2.0 * np.pi * np.maximum(f, 1e-6) / fs
+    w = 2.0 * np.pi * np.maximum(f, 1e-6) / float(RESPONSE_SAMPLE_RATE_HZ)
     c1, s1 = np.cos(w), np.sin(w)
     c2, s2 = np.cos(2.0 * w), np.sin(2.0 * w)
     num_re = b0 + b1 * c1 + b2 * c2
