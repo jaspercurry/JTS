@@ -327,6 +327,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | accepted |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
 | [0354](0354-every-take-keeps-its-measured-impulses.md) | Every take keeps its measured impulses: one `.npz` per take beside its recording, read before any rebuild | accepted |
-| [0355](0355-take-views-read-the-way-rew-reads-traces.md) | Take views read the way REW reads traces: `impulse`, `group-delay` and `compare`; magnitude compares across recordings, timing only within one | accepted |
+| [0355](0355-take-views-read-the-way-rew-reads-traces.md) | Take views read the way REW reads traces: `impulse`, `group-delay` and `compare`; magnitude compares across recordings, timing only within one | amended by 0358 |
 | [0356](0356-a-views-artifact-is-a-file.md) | A view's artifact is a file: `--out -` is retired; depth on demand is reading the `out` path the answer names | accepted |
 | [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
+| [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |

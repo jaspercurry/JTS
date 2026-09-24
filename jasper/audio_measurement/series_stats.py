@@ -55,9 +55,12 @@ def curve_difference(
 ) -> CurveDifference | None:
     """``curve_db`` minus ``against_db`` over ``band_hz``, the second read onto the first's grid.
 
-    With ``remove_level`` each curve's median over the band comes off before
-    subtracting, and the offset is published: two graphs, or a model with no
-    absolute reference, differ by a level that is not a difference in shape.
+    With ``remove_level`` the level most bins agree on, the median of the
+    per-bin difference over the band, comes off before subtracting, and the
+    offset is published: two graphs, or a model with no absolute reference,
+    differ by a level that is not a difference in shape, and a filter that
+    reshapes a minority of bins does not move it (ADR-0358). A band's change
+    is the same median over that band.
     ``None`` when ``curve_db`` has no bin in the band.
     """
     freqs = np.asarray(freqs_hz, dtype=float)
@@ -66,7 +69,7 @@ def curve_difference(
         return None
     curve = np.asarray(curve_db, dtype=float)[mask]
     against = np.interp(freqs[mask], np.asarray(against_freqs_hz, dtype=float), np.asarray(against_db, dtype=float))
-    offset = float(np.median(curve) - np.median(against)) if remove_level else 0.0
+    offset = float(np.median(curve - against)) if remove_level else 0.0
     return CurveDifference(freqs[mask], curve, against, offset)
 
 
@@ -102,3 +105,12 @@ def series_stats(
         "low_end_means_db": {f"{b['band_hz'][0]}_{b['band_hz'][1]}": number(b["mean_db"], b["band_hz"][0])
                              for b in plot["band_means"]},
     }
+
+
+def band_change_db(
+    freqs_hz: np.ndarray, curve_db: np.ndarray, against_db: np.ndarray, band_hz: tuple[float, float],
+) -> float | None:
+    """How far ``curve_db`` sits from ``against_db`` over ``band_hz``, both on
+    ``freqs_hz``: :func:`curve_difference`'s level rule. ``None`` with no bin there."""
+    difference = curve_difference(freqs_hz, curve_db, freqs_hz, against_db, band_hz=band_hz)
+    return None if difference is None else difference.level_offset_db

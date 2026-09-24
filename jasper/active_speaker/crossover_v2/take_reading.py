@@ -27,7 +27,7 @@ from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
     log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
 )
-from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
+from jasper.audio_measurement.series_stats import band_change_db, curve_difference, deviation_summary
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
 from .measurement_context import capture_basis, compare_capture_basis
@@ -238,15 +238,13 @@ def _difference_report(
     delta = difference.delta_db
     b_side, a_side = difference.curve_db - difference.level_offset_db, difference.against_db
 
-    def band_mean(lo: float, hi: float) -> float | None:
-        inside = delta[(difference.freqs_hz >= lo) & (difference.freqs_hz < hi)]
-        return _number(float(np.mean(inside)), 2) if inside.size else None
 
     summary = {key: _number(value, 2) if isinstance(value, float) else value
                for key, value in deviation_summary(difference.freqs_hz, delta).items()}
     return {
         **summary, "level_offset_db": _number(difference.level_offset_db, 2),
-        "bands": [{"hz": center, "b_minus_a_db": band_mean(lo, hi)} for center, lo, hi in octave_bands_hz(*band)],
+        "bands": [{"hz": center, "b_minus_a_db": _number(band_change_db(difference.freqs_hz, b_side, a_side, (lo, hi)), 2)}
+                  for center, lo, hi in octave_bands_hz(*band)],
     }, {
         "freqs_hz": _numbers(difference.freqs_hz, 2), "a_db": _numbers(a_side, 3),
         "b_db": _numbers(b_side, 3), "b_minus_a_db": _numbers(delta, 3),

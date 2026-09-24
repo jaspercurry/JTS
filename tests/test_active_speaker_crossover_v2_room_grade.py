@@ -509,8 +509,8 @@ def test_campaign_room_sets_preserve_the_60_to_120_hz_grade(tmp_path, capsys, na
                              *(["--incumbent", "incumbent"] if named else [])]) == EXIT_OK
     answer = json.loads(capsys.readouterr().out)
     band = next(row for row in answer["bands"] if row["lo_hz"] == 60.0)
-    assert band["rms_db"] == pytest.approx(5.123918344665255)
+    assert band["rms_db"] == pytest.approx(5.086593900879649)
     assert band["incumbent_rms_db"] == pytest.approx(7.9267101468919945)
     assert band["regressed"] is False
-    assert band["delta_rms_db"] == pytest.approx(-2.8027918022267393)
+    assert band["delta_rms_db"] == pytest.approx(5.086593900879649 - 7.9267101468919945)
     assert answer["comparison"]["available"] is True
