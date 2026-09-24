@@ -78,10 +78,6 @@ SOURCE_UNAVAILABLE = {
         "Spotify Connect is not installed on this speaker. Re-run install.sh "
         "to set up the local renderer stack."
     ),
-    "bluetooth": (
-        "Bluetooth audio is not installed on this speaker. Re-run install.sh "
-        "to set up the local renderer stack."
-    ),
     "usbsink": (
         "USB Audio Input is not installed on this speaker. Re-run install.sh "
         "to set up the local renderer stack."
