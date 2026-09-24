@@ -32,7 +32,11 @@ from enum import Enum
 from typing import Mapping
 
 from jasper.atomic_io import atomic_write_text
-from jasper.env_load import parse_bool_value, read_env_file_or_warn
+from jasper.env_load import (
+    PEERING_ENV_PATH as PEERING_ENV_FILE,
+    parse_bool_value,
+    read_env_file_or_warn,
+)
 from jasper.identity.reader import PEER_ID_FILE
 from jasper.identity.speaker_name import default_room
 
@@ -102,11 +106,6 @@ DEFAULT_HEARTBEAT_TIMEOUT_SEC = 2.0
 
 
 # ---------- File layout ----------
-
-# Wizard-managed env file (matches the wake_model.env / voice_provider.env
-# pattern). Lives in /var/lib/jasper so it survives daemon restarts and
-# package upgrades.
-PEERING_ENV_FILE = "/var/lib/jasper/peering.env"
 
 # UDS where jasper-control's peering daemon listens for voice→peering
 # arbitration requests. jasper-control runs non-root and owns

@@ -59,8 +59,11 @@ OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 #: PERSISTENT (never /run) so a bonded speaker boots with the content lane
 #: already configured, without a second jasper-outputd restart.
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
+PEERING_ENV_PATH = "/var/lib/jasper/peering.env"
 SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
 SPEAKER_NAME_ENV_PATH = "/var/lib/jasper/speaker_name.env"
+TOOL_STATE_ENV_PATH = "/var/lib/jasper/tool_state.env"
+TRANSIT_ENV_PATH = "/var/lib/jasper/transit.env"
 USB_MIC_ENV_FILE = "/var/lib/jasper/usb_mic.env"
 #: CLIENT_ID + OAUTH_MODE. Separate from ``jasper.env`` so jasper-web can
 #: write it without /etc being RW (systemd ``ProtectSystem=full``).
@@ -68,6 +71,7 @@ SPOTIFY_CREDENTIALS_ENV_PATH = "/var/lib/jasper-intsecrets/spotify_credentials.e
 #: The TTS socket key is OMITTED, never written empty: an empty value is
 #: read as a real, invalid path.
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
+WEATHER_ENV_PATH = "/var/lib/jasper/weather.env"
 
 
 def env_file_path() -> str:
@@ -93,10 +97,10 @@ ENV_FILES = (
     "/var/lib/jasper-secrets/google_credentials.env",
     "/var/lib/jasper-secrets/google_routes.env",
     "/var/lib/jasper/wake_model.env",
-    "/var/lib/jasper/weather.env",
-    "/var/lib/jasper/transit.env",
+    WEATHER_ENV_PATH,
+    TRANSIT_ENV_PATH,
     "/var/lib/jasper-intsecrets/home_assistant.env",
-    "/var/lib/jasper/tool_state.env",
+    TOOL_STATE_ENV_PATH,
     "/var/lib/jasper/conversation_history.env",
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
     "/var/lib/jasper/aec_mode.env",
@@ -105,7 +109,7 @@ ENV_FILES = (
     OUTPUTD_GROUPING_ENV_FILE,
     VOICE_GROUPING_ENV_FILE,
     OUTPUTD_ENV_PATH,
-    "/var/lib/jasper/peering.env",
+    PEERING_ENV_PATH,
     ACCESSORY_MIC_ENV_FILE,
     USB_MIC_ENV_FILE,
     "/var/lib/jasper/wake_corpus_bridge.env",

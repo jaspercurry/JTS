@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
-from ..env_load import parse_bool_value
+from ..env_load import TRANSIT_ENV_PATH, parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -406,7 +406,7 @@ def _bus_card_html(
             '<code>/etc/jasper/jasper.env</code> (set outside the wizard). '
             'The daemon is using it already. Saving any change here will '
             'persist your picks (and the key) into '
-            '<code>/var/lib/jasper/transit.env</code>, where the wizard '
+            f'<code>{html.escape(TRANSIT_ENV_PATH)}</code>, where the wizard '
             'owns it from then on.</div>'
         )
 
@@ -416,7 +416,7 @@ def _bus_card_html(
     saved_key = _value_for(state, "JASPER_MTA_BUSTIME_KEY")
     masked = mask_secret(saved_key.strip())
     key_source_label = {
-        "state": "/var/lib/jasper/transit.env",
+        "state": TRANSIT_ENV_PATH,
         "env": "/etc/jasper/jasper.env (external)",
     }.get(key_source, "")
     masked_key_html = (

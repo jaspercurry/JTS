@@ -31,10 +31,10 @@ from pathlib import Path
 
 from .atomic_io import atomic_write_text
 from .env_file import parse_env_mapping
+from .env_load import TOOL_STATE_ENV_PATH as DEFAULT_PATH
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PATH = "/var/lib/jasper/tool_state.env"
 _TOOLS_KEY = "JASPER_DISABLED_TOOLS"
 _PACKS_KEY = "JASPER_DISABLED_TOOL_PACKS"
 _SETUP_PACKS_KEY = "JASPER_ENABLED_SETUP_TOOL_PACKS"

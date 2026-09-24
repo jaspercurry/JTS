@@ -45,6 +45,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ...env_load import PEERING_ENV_PATH, TOOL_STATE_ENV_PATH, TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -110,8 +111,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/identity.env",
             "/var/lib/jasper/voice_provider.env",
             "/var/lib/jasper/speaker_name.env",
-            "/var/lib/jasper/transit.env",
-            "/var/lib/jasper/peering.env",
+            TRANSIT_ENV_PATH,
+            PEERING_ENV_PATH,
             "/var/lib/jasper/aec_mode.env",
             # /state's sound card: load_profile() + load_sound_settings() are
             # called fresh on every /state aggregation (control.state_aggregate),
@@ -147,12 +148,12 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # Wizard SSOT / status files re-read fresh on page render.
             "/var/lib/jasper/voice_provider.env",
             "/var/lib/jasper/wake_model.env",
-            "/var/lib/jasper/transit.env",
+            TRANSIT_ENV_PATH,
             # weather_setup._load_state opens this on every /assistant/weather/ render,
             # same shape as transit.env above.
-            "/var/lib/jasper/weather.env",
+            WEATHER_ENV_PATH,
             "/var/lib/jasper/speaker_name.env",
-            "/var/lib/jasper/tool_state.env",
+            TOOL_STATE_ENV_PATH,
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
@@ -232,7 +233,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # wake-events.sqlite3 / conversation_history.db are WRITE-owned by
             # voice and covered by env.check_state_dir_group_writable — not
             # repeated here.
-            "/var/lib/jasper/tool_state.env",
+            TOOL_STATE_ENV_PATH,
             "/var/lib/jasper/voice_provider.env",
             "/var/lib/jasper/mic_mute.env",
         ),

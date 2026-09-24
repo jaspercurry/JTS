@@ -14,15 +14,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 
-TRANSIT_FILE = "/var/lib/jasper/transit.env"
+
+TRANSIT_FILE = TRANSIT_ENV_PATH
 TRANSIT_FILE_MODE = 0o640
 TRANSIT_ENV_OWNER = "JTS /assistant/transit wizard"
 TRANSIT_LAT_ENV = "JASPER_TRANSIT_LAT"
 TRANSIT_LON_ENV = "JASPER_TRANSIT_LON"
 TRANSIT_DISPLAY_NAME_ENV = "JASPER_TRANSIT_DISPLAY_NAME"
 
-WEATHER_FILE = "/var/lib/jasper/weather.env"
+WEATHER_FILE = WEATHER_ENV_PATH
 WEATHER_FILE_MODE = 0o640
 WEATHER_ENV_OWNER = "JTS /assistant/weather wizard"
 WEATHER_LAT_ENV = "JASPER_WEATHER_LAT"
