@@ -91,7 +91,7 @@ from .chrome import (
     canonical_header,
     canonical_page,
     json_island,
-    safe_back_href,
+    return_to_href,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
@@ -982,14 +982,11 @@ def _save_url(
 
 
 def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
     state = read_env_file(cfg["state_path"])
     ctx = begin_request(handler)
     send_html_response(handler, _render_index(
         state, ctx["csrf_token"], status_msg=ctx["flash"],
-        back_href=safe_back_href(
-            (qs.get("return_to") or [""])[0], default="/assistant/",
-        ),
+        back_href=return_to_href(handler.path, default="/assistant/"),
     ))
 
 

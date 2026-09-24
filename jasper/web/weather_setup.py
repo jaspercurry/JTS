@@ -26,7 +26,6 @@ import functools
 import html
 import logging
 import os
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import location_state
@@ -48,7 +47,7 @@ from ._common import (
     send_see_other,
     value_for_env as _value_for,
 )
-from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
+from .chrome import canonical_banner, canonical_header, canonical_page, return_to_href
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +363,6 @@ def _index_html(
 def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
     # The route tables live in this closure so the bodies can read `cfg`.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
         ctx = begin_request(handler)
         weather_state = _load_state(cfg["state_path"])
         transit_state = read_env_file(cfg["transit_path"])
@@ -373,9 +371,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             transit_state,
             ctx["csrf_token"],
             status_msg=ctx["flash"],
-            back_href=safe_back_href(
-                (qs.get("return_to") or [""])[0], default="/assistant/",
-            ),
+            back_href=return_to_href(handler.path, default="/assistant/"),
         ))
 
     @form_guarded

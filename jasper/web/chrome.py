@@ -408,6 +408,13 @@ def safe_back_href(raw: str | None, *, default: str = "/") -> str:
     return urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
 
 
+def return_to_href(request_path: str, *, default: str = "/") -> str:
+    """The back link a deep-linked request asks for with `?return_to=`,
+    through `safe_back_href`."""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(request_path).query)
+    return safe_back_href((query.get("return_to") or [""])[0], default=default)
+
+
 def canonical_banner(message: str) -> str:
     """A canonical flash banner (`.banner`) for a wizard.
 

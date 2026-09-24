@@ -58,7 +58,6 @@ import functools
 import html
 import logging
 import os
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -82,7 +81,7 @@ from ._common import (
     restart_voice_daemon,
     SECRET_ENV_MODE,
 )
-from .chrome import safe_back_href
+from .chrome import return_to_href
 # Rendering helpers resolve names in transit_page's globals: patch
 # transit_page.<name>, not these aliases. transit_page also owns the
 # LAT_ENV/etc. constants below; import rather than redeclare.
@@ -421,7 +420,6 @@ def _apply_cities(
 
 
 def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
     state = _load_state(cfg["state_path"])
     ctx = begin_request(handler)
     # A render failure (corrupt CSV, malformed env file) still answers a
@@ -433,10 +431,7 @@ def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
             ctx["csrf_token"],
             routes_state=routes_state,
             status_msg=ctx["flash"],
-            back_href=safe_back_href(
-                (qs.get("return_to") or [""])[0],
-                default="/assistant/",
-            ),
+            back_href=return_to_href(handler.path, default="/assistant/"),
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("transit wizard render failed")

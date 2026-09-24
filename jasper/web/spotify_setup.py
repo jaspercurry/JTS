@@ -118,7 +118,7 @@ from ._common import (
     send_see_other,
 )
 from .oauth_pending import PendingFlows, new_nonce
-from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
+from .chrome import canonical_banner, canonical_header, canonical_page, return_to_href
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -897,9 +897,8 @@ def _pkce_flow(cfg: dict[str, Any], cache_path: str, *, state: str | None = None
 
 def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
     ctx = begin_request(handler)
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
     csrf_token, status_msg = ctx["csrf_token"], ctx["flash"]
-    back_href = safe_back_href((qs.get("return_to") or [""])[0])
+    back_href = return_to_href(handler.path)
     if not cfg["client_id"]:
         send_html_response(handler, _setup_wizard_html(
             csrf_token, status_msg=status_msg, back_href=back_href,

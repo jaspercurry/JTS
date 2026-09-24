@@ -77,7 +77,7 @@ from ._common import (
     SECRET_ENV_MODE,
 )
 from .oauth_pending import PendingFlows, new_nonce
-from .chrome import canonical_banner, canonical_header, canonical_page, safe_back_href
+from .chrome import canonical_banner, canonical_header, canonical_page, return_to_href
 
 logger = logging.getLogger(__name__)
 
@@ -735,10 +735,9 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
 
 
 def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
     ctx = begin_request(handler)
     csrf_token, status_msg = ctx["csrf_token"], ctx["flash"]
-    back_href = safe_back_href((qs.get("return_to") or [""])[0], default="/assistant/")
+    back_href = return_to_href(handler.path, default="/assistant/")
     client_id, client_secret = _creds(cfg)
     if not (client_id and client_secret):
         send_html_response(handler, _setup_wizard_html(
