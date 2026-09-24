@@ -197,6 +197,16 @@ def test_a_banked_round_is_never_overwritten(tmp_path):
     assert (first.path / "provenance.json").is_file()
 
 
+def test_a_round_its_bookkeeping_refuses_leaves_no_half_built_round(tmp_path):
+    session_dir, state_path = _live_session(tmp_path)
+    write_manifest(session_dir, program="close/woofer")
+
+    with pytest.raises(measurement_programs.UnknownProgramError):
+        bank_round(session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path)
+
+    assert not any((tmp_path / "campaigns").iterdir())
+
+
 def test_a_directory_that_is_not_a_bundle_is_refused(tmp_path):
     not_a_bundle = tmp_path / "empty"
     not_a_bundle.mkdir()

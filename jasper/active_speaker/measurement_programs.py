@@ -584,6 +584,8 @@ def run_program(program_id: str, poses: str | None = None) -> MeasurementProgram
     purpose = selected.purpose
     for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != program_id):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
+            if program_id not in PURPOSES and row.program_id != program_id:
+                raise UnknownProgramError(program_id, row.size, available_programs())
             own = row.purpose == purpose
             regime = row.regime if own else selected.regime
             return replace(row, program_id=program_id, purpose=purpose, regime=regime,

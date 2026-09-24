@@ -282,11 +282,14 @@ _WOOFER_RESEAT = (("woofer", 0.015), ("woofer", 0.03), ("woofer", 0.015))
      ("custom", (("woofer:rear", 0.012),))),
     ("speaker", "nearfield/woofer", None),
     ("nearfield", "0,10", None),
+    ("close", "nearfield/woofer", None),
+    ("nearfield", "close_spot", None),
 ])
 def test_a_near_field_run_resolves_as_reference_evidence(program_id, poses, resolved):
     """A near-field run names its program: a bundled row or an inline pose list
     resolves as reference near-field evidence and banks under that purpose;
-    a driver's pose under another program, or a bearing under this one, is
+    a driver's pose under another program, a bearing under this one, or
+    another reference row's layout, which would bank an unregistered id, is
     refused (ADR-0360)."""
     if resolved is None:
         with pytest.raises(ValueError):
