@@ -884,11 +884,15 @@ def test_transient_vendor_failure_retries_once(
     power = json.dumps({"ok": True, "power": {"status": {
         "available": True, "current_flags": [], "history_flags": [], "raw": "0x0",
     }}})
+    named = error_code == "port_busy"
     failure = _Proc(json.dumps({
         "ok": False,
         "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR if error_code is None else "port_busy",
         "code": error_code,
+        **({"holder": {"pid": 4242, "argv": ["jts_turntable.py", "--json", "hotplug-stop"]}}
+           if named else {}),
     }), 1)
+    holder = {"holder_pid": 4242, "holder_argv": "jts_turntable.py --json hotplug-stop"} if named else {}
     responses = [_Proc(power)] + ([_Proc(good)] if failure_at == "position" else [])
     responses.append(failure)
     retried = retry_succeeds is not None
@@ -913,6 +917,7 @@ def test_transient_vendor_failure_retries_once(
         assert event_fields(caplog, "arm_walk.vendor_tool_retried") == {
             "subcommand": failure_at,
             "attempt": "2",
+            **{key: str(value) for key, value in holder.items()},
         }
     else:
         assert event_records(caplog, "arm_walk.vendor_tool_retried") == []
@@ -923,6 +928,7 @@ def test_transient_vendor_failure_retries_once(
         failed = trail.error("move_failed")
         assert failed["subcommand"] == failure_at
         assert failed["after_retry"] is retried
+        assert {key: value for key, value in failed.items() if key.startswith("holder_")} == holder
         assert event_fields(caplog, "arm_walk.vendor_tool_failed")["after_retry"] == str(retried).lower()
 
 

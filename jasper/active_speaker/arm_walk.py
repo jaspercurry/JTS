@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import signal
 import subprocess
 import sys
@@ -313,6 +314,21 @@ def parse_power(payload: Mapping[str, Any]) -> PowerVerdict:
     return PowerVerdict(True, str(status.get("raw") or "throttled=0x0"))
 
 
+def _port_holder(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Who held the port, from a ``port_busy`` refusal's ``holder`` (#5381).
+
+    The adapter records its own parsed argv; none of its options takes a secret.
+    """
+    holder = payload.get("holder")
+    if not isinstance(holder, Mapping):
+        return {}
+    argv = holder.get("argv")
+    return {
+        "holder_pid": holder.get("pid"),
+        "holder_argv": shlex.join(map(str, argv)) if isinstance(argv, list) else str(argv),
+    }
+
+
 @dataclass
 class TurntableMover:
     """The ``jts_turntable.py`` adapter, driven as a subprocess and never imported, so
@@ -368,6 +384,7 @@ class TurntableMover:
                     "arm_walk.vendor_tool_retried",
                     subcommand=subcommand,
                     attempt=2,
+                    **_port_holder(payload),
                 )
                 self.sleep(_VENDOR_RETRY_S)
                 continue
@@ -413,6 +430,7 @@ class TurntableMover:
             "code": payload.get("code", ""),
             "stderr_tail": self._stderr_tail or str(payload.get("error", ""))[-200:],
             "after_retry": self._after_retry or bool(payload.get("retried")),
+            **_port_holder(payload),
         }
         log_event(
             logger,
