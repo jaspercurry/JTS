@@ -828,18 +828,20 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
 def test_a_near_field_take_levels_itself_before_it_is_kept():
     """Each placement's first attempt plays under the target and is retaken at
     the solved peak; the rest of that placement starts there, a re-placement
-    starts quiet again, and in-band re-seats are never sent back as drift,
-    though each banks its reading (ADR-0361)."""
+    starts quiet again, named the opener again, and in-band re-seats are never
+    sent back as drift, though each banks its reading (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
     readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
 
-    result, fakes, selected, _ = _run_levelled(request, readings, replace_at=3)
+    result, fakes, selected, gate = _run_levelled(request, readings, replace_at=3)
 
     assert result.status == "complete"
     assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
+    steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
+    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
     assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
         _takes(result.to_dict()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
@@ -873,21 +875,21 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     """Each redo asks for the microphone again and starts the pose over, quiet
     and with its retries, so redos past the pose's budget never end the round,
     even one with no retries; the page is told which plays are the quiet
-    opener (ADR-0361)."""
+    opener, and a pose whose opener landed plays the rest levelled (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
-        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver="woofer") for mm in (15, 30)),
-        purpose="reference", regime="near_field"), retries_per_pose=retries)
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        for mm, repeats in ((15, 1), (30, 2))), purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first openers, then lets each pose land.
-    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 64.0, 80.0),
+    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 80.0, 80.0),
                                                   redo_at=range(1, redos + 1))
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
     assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
-    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, -27.0]
-    assert selected == [False] * (redos + 1) + [True, False, True]
+    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, None]
+    assert selected == [False] * (redos + 1) + [True, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+    assert list(steps.values()) == ["opener"] * (redos + 1) + ["levelled", "opener", "levelled"]
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [

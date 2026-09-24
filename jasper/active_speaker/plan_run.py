@@ -435,6 +435,7 @@ async def _run(
     retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
+    landed: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
                               mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
@@ -485,6 +486,7 @@ async def _run(
                         gate.abandon_hold()
                     if at_driver:
                         # A new placement at a driver's pose starts quiet again (ADR-0361).
+                        landed.discard(item.pose_index)
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -504,7 +506,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if at_driver:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "opener"
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "opener"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -602,6 +604,7 @@ async def _run(
                 retry_was_measured = False
                 if at_driver:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
+                    landed.add(item.pose_index)
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)
