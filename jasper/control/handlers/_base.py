@@ -17,11 +17,11 @@ logger = logging.getLogger("jasper.control")
 class ControlHandlerMixin(BaseHTTPRequestHandler):
     """Methods and factory-owned state consumed by concern route mixins.
 
-    The concrete nested handler in ``server._make_handler`` supplies these
-    attributes and most of these methods; ``_maybe_forward_pair_action_to_leader``
-    is instead implemented by ``PeeringRoutes``. Keeping the contract here lets
-    mypy check the extracted route bodies without changing their runtime
-    dispatch shape.
+    ``server._ControlHandler`` supplies most of these methods, the subclass
+    ``server._make_handler`` builds binds these attributes, and ``PeeringRoutes``
+    implements ``_maybe_forward_pair_action_to_leader``. Keeping the contract
+    here lets mypy check the extracted route bodies without changing their
+    runtime dispatch shape.
     """
 
     _adjust_op: Any

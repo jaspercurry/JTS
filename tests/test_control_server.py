@@ -401,13 +401,9 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         VolumeRoutes,
     )
 
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        ha_status_cache=object(),
-    )
-    assert {"do_GET", "do_POST"} <= set(handler.__dict__)
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock", ha_status_cache=object())
+    central = [c for c in handler.__mro__ if c.__module__ == _make_handler.__module__]
+    assert any({"do_GET", "do_POST"} <= set(c.__dict__) for c in central)
 
     concern_mixins = (
         VolumeRoutes,
@@ -423,7 +419,7 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         for handler_name, _requires in table.values()
     }
     for method_name in routed_methods:
-        assert method_name not in handler.__dict__
+        assert not any(method_name in c.__dict__ for c in central)
         owners = [mixin for mixin in concern_mixins if method_name in mixin.__dict__]
         assert len(owners) == 1, (method_name, owners)
 
