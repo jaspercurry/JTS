@@ -34,7 +34,7 @@ from .angle_capture import (
 )
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
-from .crossover_v2.capture_dispatch import NEAR_FIELD_TARGET_DB_SPL, assess, level_drift_verdict
+from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
@@ -417,11 +417,11 @@ async def _run(
 
     level_observations: dict[str, TakeVerdict] = {}
 
-    def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
+    def observe_level(record: Mapping[str, Any], at_driver: bool) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
             # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
-            level_observations[take_id] = (TakeVerdict(True, next="accept", charge="none") if record.get("pose_driver")
+            level_observations[take_id] = (TakeVerdict(True) if at_driver
                                            else level_drift_verdict(**manifest.level_observation(record)))
         return level_observations[take_id]
 
@@ -460,6 +460,7 @@ async def _run(
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
             item = work[offset]
+            at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_retry(retry.charge):
@@ -479,7 +480,7 @@ async def _run(
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
-                    if item.stop["pose"].get("driver"):
+                    if at_driver:
                         # A new placement at a driver's pose starts quiet again (ADR-0361).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
@@ -546,7 +547,7 @@ async def _run(
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
-                    level_verdict = observe_level(record)
+                    level_verdict = observe_level(record, at_driver)
                     if record_id:
                         try:
                             analysis = await asyncio.to_thread(analyze, record, record_id)
@@ -554,8 +555,7 @@ async def _run(
                             assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               spl=(record.get("capture_integrity") or {}).get("spl"),
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
-                                              level_target_db_spl=NEAR_FIELD_TARGET_DB_SPL if record.get("pose_driver") else None,
-                                              level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
+                                              near_field=at_driver, level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
@@ -595,7 +595,7 @@ async def _run(
                     continue
                 retry = None
                 retry_was_measured = False
-                if item.stop["pose"].get("driver"):
+                if at_driver:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
@@ -624,7 +624,7 @@ async def _run(
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
                                           started_s=(take_started if take_started is not None else ended) - started,
-                                          ended_s=ended - started, level_observation=observe_level(record).evidence)
+                                          ended_s=ended - started, level_observation=observe_level(record, at_driver).evidence)
                 break
             finally:
                 if take_started is not None:

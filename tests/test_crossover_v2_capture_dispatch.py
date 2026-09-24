@@ -580,7 +580,7 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     analysis = _analysis() if heard else _analysis(locations=(_loc("sweep_w", confidence=0.05),))
     verdict = cd.assess(analysis, phase="measure", prior_verdict=prior, program=program,
                         spl={"max_window_db_spl": reading, "ceiling_db_spl": stop},
-                        level_target_db_spl=cd.NEAR_FIELD_TARGET_DB_SPL, level_asked_dbfs=asked)
+                        near_field=True, level_asked_dbfs=asked)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_capped", False) is (asked == -35.0)
     if heard and prior is None and next_ != "accept":

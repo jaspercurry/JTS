@@ -728,7 +728,7 @@ def test_a_near_field_take_opens_under_the_seat_level_and_retakes_at_the_peak_it
         return {s.gain_db for s in compose_target_program(excitation, spec, stimulus_dbfs).segments
                 if s.kind == KIND_SWEEP}
 
-    seat, = sweep_peak(replace(spec, regime="reference_axis"))
+    seat, = sweep_peak(spec, 100.0)
     played, = sweep_peak(spec, None if asked_db is None else seat + asked_db)
     assert played == pytest.approx(seat + played_db)
 

@@ -1045,7 +1045,7 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     assert admission.channels[0].cap_dbfs == -36
 
 
-def _cardioid_solo_take(monkeypatch, target, regime, *, rear_peak=None):
+def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None):
     """A one-driver take composed the production way: the real conductor
     context of a cardioid cabinet, its session excitation, the plan host."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
@@ -1063,7 +1063,7 @@ def _cardioid_solo_take(monkeypatch, target, regime, *, rear_peak=None):
     context = conductor_context.resolve_conductor_context({
         "active": True, "targets": {"drivers": active_driver_targets(topology)},
     }, topology=topology)
-    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), regime=regime, program_phase=PHASE_LATERAL)
+    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), regime="near_field", program_phase=PHASE_LATERAL)
     excitation = excitation_from_context(context, context.session_volume_db)
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
@@ -1071,21 +1071,20 @@ def _cardioid_solo_take(monkeypatch, target, regime, *, rear_peak=None):
     return topology, safety, context, spec, excitation, program
 
 
-@pytest.mark.parametrize("regime,band", [("near_field", (20.0, 2000.0)), ("reference_axis", (150.0, 23_000.0))])
 @pytest.mark.parametrize("target", ["woofer", "woofer:rear", "tweeter"])
-def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path, monkeypatch, target, regime, band):
+def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path, monkeypatch, target):
     """The PRODUCTION composer on a cardioid cabinet: a one-driver take plays
     its pilots and three bit-identical sweeps on its target alone, on channel
     0 of a program as wide as its graph's capture, inside the band and
     duration limit the conductor resolved for THAT target, and is admitted
-    against that target's own declared caps. A near-field take keeps every
-    silence after its first sound short. The capture window covers it."""
+    against that target's own declared caps. Every silence after its first
+    sound is short. The capture window covers it."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
         CAPTURE_ENTRY_MARGIN_MS, CloudPositionPrompt, _program_duration_ms, build_inline_session_spec,
     )
-    from jasper.audio_measurement.program import NEAR_FIELD_SILENCE_S
+    from jasper.audio_measurement.program import NEAR_FIELD_SILENCE_S, NEAR_FIELD_SWEEP_BAND_HZ
 
-    topology, safety, context, spec, excitation, program = _cardioid_solo_take(monkeypatch, target, regime)
+    topology, safety, context, spec, excitation, program = _cardioid_solo_take(monkeypatch, target)
 
     assert set(context.driver_bands) == set(context.driver_sweep_duration_limits_s) == set(context.role_targets)
     stimuli = program.stimulus_segments()
@@ -1097,12 +1096,11 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     assert len({(s.f1_hz, s.f2_hz, s.n_samples, s.gain_db) for s in sweeps}) == 1
     target_band = context.driver_bands[target]
     assert (sweeps[0].f1_hz, sweeps[0].f2_hz) == (
-        max(target_band.lower_hz, band[0]), min(target_band.upper_hz, band[1]))
+        max(target_band.lower_hz, NEAR_FIELD_SWEEP_BAND_HZ[0]), min(target_band.upper_hz, NEAR_FIELD_SWEEP_BAND_HZ[1]))
     assert sweeps[0].n_samples / program.sample_rate_hz <= context.driver_sweep_duration_limits_s[target]
-    if regime == "near_field":
-        after_first_sound = program.segments[program.segments.index(stimuli[0]):]
-        assert max(s.n_samples for s in after_first_sound if s.kind == "silence") <= round(
-            NEAR_FIELD_SILENCE_S * program.sample_rate_hz)
+    after_first_sound = program.segments[program.segments.index(stimuli[0]):]
+    assert max(s.n_samples for s in after_first_sound if s.kind == "silence") <= round(
+        NEAR_FIELD_SILENCE_S * program.sample_rate_hz)
 
     wav = tmp_path / "one_driver.wav"
     write_program_wav(wav, program)
@@ -1122,7 +1120,7 @@ def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, 
     """Admission judges a one-driver take against the target it plays, never
     its role and never the composer's own numbers: lowering the rear woofer's
     declared ceiling alone, after composition, refuses the rear take."""
-    topology, safety, context, _, _, program = _cardioid_solo_take(monkeypatch, "woofer:rear", "near_field")
+    topology, safety, context, _, _, program = _cardioid_solo_take(monkeypatch, "woofer:rear")
     wav = tmp_path / "rear.wav"
     write_program_wav(wav, program)
     peak = max(segment.effective_peak_dbfs for segment in program.stimulus_segments())

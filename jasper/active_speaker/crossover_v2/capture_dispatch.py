@@ -80,17 +80,16 @@ class _LevelTarget(NamedTuple):
         return self.target_db_spl - self.reading_db_spl
 
 
-def _level_target(target_db_spl: float | None, spl: Mapping[str, Any] | None,
-                  program: ExcitationProgram | None) -> _LevelTarget | None:
+def _level_target(spl: Mapping[str, Any] | None, program: ExcitationProgram | None) -> _LevelTarget | None:
     """The target a take at one driver's pose is held to, never above the
     admission bound under its own stop (ADR-0361)."""
     reading = finite_float((spl or {}).get("max_window_db_spl"))
     stop = finite_float((spl or {}).get("ceiling_db_spl"))
     peak = stimulus_peak_dbfs(program) if program is not None else None
-    if target_db_spl is None or reading is None or stop is None or peak is None:
+    if reading is None or stop is None or peak is None:
         return None
-    return _LevelTarget(reading, min(target_db_spl, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),
-                        peak)
+    return _LevelTarget(reading, min(NEAR_FIELD_TARGET_DB_SPL,
+                                     spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB), peak)
 
 
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
@@ -107,10 +106,10 @@ def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | Non
 
 def assess(
     analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
-    level_target_db_spl: float | None = None, level_asked_dbfs: float | None = None,
+    near_field: bool = False, level_asked_dbfs: float | None = None,
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
-    level = _level_target(level_target_db_spl, kwargs.get("spl"), kwargs.get("program"))
+    level = _level_target(kwargs.get("spl"), kwargs.get("program")) if near_field else None
     # A take the microphone heard is levelled before its recording is judged; one it
     # did not hear is judged, never levelled blind; one its ceiling held under the peak
     # it asked for is kept too quiet, since a louder retake would replay it (ADR-0361).

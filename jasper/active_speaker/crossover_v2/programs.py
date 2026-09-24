@@ -30,7 +30,7 @@ from jasper.audio_measurement.program import (
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
-from .measure_spec import REGIME_NEAR_FIELD, branch_channels_for, solo_target
+from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -138,37 +138,32 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
 
 def compose_target_program(excitation: SessionExcitation, spec: Any,
                            stimulus_dbfs: float | None = None) -> ExcitationProgram:
-    """The one target a drivers take names, alone: its pilots and bit-identical
-    sweeps on its own channel, at its own band, cap and duration limit.
+    """A near-field take's program: the one target its spec names, alone, its
+    pilots and bit-identical sweeps on its own channel at its own band, cap and
+    duration limit, with short silences (see #5684).
 
     The program is as wide as the graph that plays it
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
     channel but the target's is written silent rather than left to the ring.
-    A near-field take sweeps its own band with short silences (see #5684).
     ``stimulus_dbfs`` is the peak a retake asks for, never above the
-    seat-equivalent level; a near-field take's first attempt plays under it.
+    seat-equivalent level; a first attempt plays under it (ADR-0361).
     """
     from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
 
     target = solo_target(spec)
     seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
                                                  else max(0.0, spec.scope_gains_db.get(target, 0.0)))
-    if stimulus_dbfs is None and spec.regime == REGIME_NEAR_FIELD:
-        stimulus_dbfs = seat_equivalent - NEAR_FIELD_OPENER_BACKOFF_DB
-    peak = seat_equivalent if stimulus_dbfs is None else min(seat_equivalent, stimulus_dbfs)
-    gain = back_off_gain(peak, excitation.session_volume_db, excitation.caps_dbfs[target])
-    shape: dict[str, Any] = dict(
-        sweep_durations={target: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
-        gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
-    ) if spec.regime == REGIME_NEAR_FIELD else {}
+    asked = seat_equivalent - NEAR_FIELD_OPENER_BACKOFF_DB if stimulus_dbfs is None else stimulus_dbfs
+    gain = back_off_gain(min(seat_equivalent, asked), excitation.session_volume_db, excitation.caps_dbfs[target])
     return build_measure_program(
         {target: gain}, (RoleBand(target, 0, excitation.target_bands[target]),),
+        sweep_durations={target: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
+        gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
         sweep_duration_limits_s={target: excitation.sweep_duration_limits_s[target]},
         downstream_gain_db=excitation.session_volume_db,
         leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=target,
         courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
         channels=program_channel_count(branch_channels_for(spec)),
-        **shape,
     )
 
 

@@ -125,6 +125,12 @@ def measurement_target_id(role: str, output_variant: str = "primary") -> str:
     return role if output_variant == "primary" else f"{role}:{output_variant}"
 
 
+def measurement_target_parts(target_id: str) -> tuple[str, str]:
+    """``(role, output_variant)`` of a :func:`measurement_target_id`."""
+    role, _, variant = target_id.partition(":")
+    return role, variant or "primary"
+
+
 def cardioid_cabinet_channels(
     outputs: Iterable[tuple[str, str, int]],
 ) -> tuple[int, int, int] | None:

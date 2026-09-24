@@ -19,6 +19,8 @@ from jasper.output_topology import (
     OutputTopology, cardioid_cabinet_channels, measurement_target_id, topology_is_subless_passive_mains,
 )
 
+from .measurement import active_driver_targets
+
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
@@ -152,12 +154,12 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
-    """The drivers a near-field row may play here: every declared output of a
+    """The drivers a near-field row may play here: every measured driver of a
     mono speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
-    group = next((group for group in topology.speaker_groups if group.id == topology.routing.mono_group_id), None)
-    return () if group is None else tuple(sorted(
-        measurement_target_id(channel.role, channel.output_variant)
-        for channel in group.channels if channel.physical_output_index is not None))
+    return tuple(sorted(
+        measurement_target_id(target["role"], target.get("output_variant", "primary"))
+        for target in active_driver_targets(topology)
+        if target["speaker_group_id"] == topology.routing.mono_group_id))
 
 
 #: WHICH two measurement targets a :data:`REGIME_BRANCHES` take excites: the
@@ -232,10 +234,8 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
     or a custom layout's ``nearfield/custom``)."""
-    name, _, size = str(run_program or "").partition("/")
-    if not name or name in PURPOSES:
-        return name
-    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    name = str(run_program or "").partition("/")[0]
+    return name if not name or name in PURPOSES else program(name).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
