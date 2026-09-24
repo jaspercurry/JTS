@@ -48,16 +48,12 @@ class SessionGraph(Protocol):
     ) -> str:
         """Install the graph and return its fingerprint.
 
-        Flips, delays and trims are install-time, not patch-time: the
-        fingerprint must name the graph the stimulus actually played through.
+        Flips, delays and trims are install-time: the fingerprint must name
+        the graph the stimulus actually played through.
         The fingerprint is provenance, never a gate — a host that cannot name
         the graph returns ``""``. May raise; the session then treats nothing as
         installed and still calls :meth:`restore`.
         """
-        raise NotImplementedError
-
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        """Change what one candidate needs, without re-installing."""
         raise NotImplementedError
 
     async def restore(self) -> None:

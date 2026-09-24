@@ -84,7 +84,6 @@ class _Graph:
     restores: int = 0
     #: One entry per install: the polarity variant that stimulus asked for.
     inverted_roles: list[tuple[str, ...]] = field(default_factory=list)
-    patches: list[Mapping[str, Any]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
     measurement_delays: list = field(default_factory=list)
@@ -126,9 +125,6 @@ class _Graph:
         # A variant is a DIFFERENT graph, so it must not answer with the
         # normal graph's fingerprint — the real one does not.
         return f"{self.fingerprint}-{'+'.join(inverted_roles)}"
-
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        self.patches.append(changes)
 
     async def restore(self) -> None:
         self.restores += 1
