@@ -266,8 +266,21 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
 
+def test_medians_banked_at_different_levels_compare():
+    """A basis banked before ADR-0359 still carries its Aux1 value; the grade ignores it."""
+    candidate = _comparison_document(graph="candidate")
+    candidate["evidence"]["basis"].update(level_db=-24.0, loudness_volume_db=-24.0)
+
+    artifact = grade_room_median(
+        read_room_median(candidate),
+        incumbent=read_room_median(_comparison_document(graph="incumbent")),
+    ).to_dict()
+
+    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["incompatible_fields"] == []
+
+
 @pytest.mark.parametrize(("changed_field", "change"), [
-    ("loudness_volume_db", lambda document: document["evidence"]["basis"].update(loudness_volume_db=-24)),
     ("pose_keys", lambda document: document["evidence"].update(
         pose_keys=["different", *document["evidence"]["pose_keys"][1:]],
     )),

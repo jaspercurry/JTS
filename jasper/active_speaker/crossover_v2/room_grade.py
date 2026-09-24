@@ -129,7 +129,6 @@ def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, An
                 "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
     return compare_capture_basis(
         basis(median), basis(incumbent), required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"),
-        # Aux1 changes the loudness response, so it cannot be normalised away.
         exempt=("level_db", "program_id"),
     )
 

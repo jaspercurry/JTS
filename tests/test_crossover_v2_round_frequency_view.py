@@ -977,7 +977,7 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [
     ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
-    ('candidate', 0, 0, {'loudness_volume_db': -23}, 'loudness_volume_db'), ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
+    ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
     ('candidate', 0, 0, {'position_deg': 20}, 'pose_key'), ('demand', 0, 3, {'position_deg': 20}, 'pose_key'),
 ])
 def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(change, main_delta, stimulus_delta, mismatch, field):
@@ -1215,7 +1215,7 @@ def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, m
         if basis == "unknown":
             take["record"]["mark_distance_m"] = None
         assert take["record"]["mark_distance_m"] == distance
-        take["record"].update(run_id=original["run_id"], loudness_volume_db=original["loudness_volume_db"])
+        take["record"].update(run_id=original["run_id"], provenance={**take["record"]["provenance"], "session_volume_db": original["level_db"]})
     bass_run.write()
     assert round_views_main(bass_run.argv) == 0
     capsys.readouterr()
@@ -1229,8 +1229,6 @@ def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, m
     (None, None), ('coverage', None), ('zero_coverage', None),
     *[(field, 'bass_table_capture_context_changed') for field in ('stimulus', 'graph_fingerprint', 'played_graph')],
     ('integrity', 'bass_table_capture_integrity_failed'),
-    ('reference', 'bass_table_window_gain_missing'),
-    ('after_reference', 'bass_table_window_gain_missing'),
     ('after_level', 'bass_table_window_gain_missing'),
     ('program', 'bass_table_window_gain_missing'),
     ('pair_level', 'bass_fit_pairs_unavailable'),
@@ -1251,9 +1249,9 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
             take['record']['provenance'] = {'graph': {'fingerprint': 'first' if take is takes[0] else 'other'}}
     elif fault == 'integrity':
         takes[1]['diagnostics'] = {'integrity_failed': True}
-    elif fault in ('reference', 'after_reference', 'after_level', 'program'):
+    elif fault in ('after_level', 'program'):
         index = int(fault.startswith('after'))
-        field = 'level_db' if fault == 'after_level' else 'program_id' if fault == 'program' else 'loudness_volume_db'
+        field = 'level_db' if fault == 'after_level' else 'program_id'
         del takes[index]['record'][field]
     elif fault == 'pair_level':
         takes[1]['record']['level_db'] -= 1
@@ -1278,14 +1276,14 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
     table, = run['tables']
     assert table['tested_volume_range_db'] == [-30, -10]
     assert [row['level_key'] for row in table['levels']] == [
-        {'level_db': level, 'loudness_volume_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
+        {'level_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
     for row, gain in zip(table['levels'], (6, 3, 10)):
         expected = None if fault == 'zero_coverage' and gain == 10 else pytest.approx(gain)
         assert row['realized_boost_db'][-1]['value_db'] == expected
     assert all(band['value_db'] is None for band in table['levels'][-1]['realized_boost_db']) == (fault == 'zero_coverage')
 
 
-@pytest.mark.parametrize('field', ['level_db', 'loudness_volume_db', 'program_id'])
+@pytest.mark.parametrize('field', ['level_db', 'program_id'])
 def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
     bass_run.write(change_basis=lambda row: row['capture_basis'].pop(field))
     assert round_views_main(bass_run.argv) == 1

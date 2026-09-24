@@ -41,7 +41,7 @@ def _null_ceilings(
     latest = latest_measure_takes(
         ((group, take) for group in manifest.get("sets", ()) for take in group["takes"]),
         key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
-                                group["capture_basis"].get("level_db"), group["capture_basis"].get("loudness_volume_db"),
+                                group["capture_basis"].get("level_db"),
                                 json.dumps(take["pose"], sort_keys=True), take["role"])
         if take.get("role") not in (None, "summed") else None,
     )

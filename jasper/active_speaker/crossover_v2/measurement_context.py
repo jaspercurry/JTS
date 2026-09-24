@@ -45,7 +45,7 @@ GRAPH_FIELDS = (
 )
 CAPTURE_FIELDS = (
     "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "gating_applied", "program_id", "loudness_volume_db",
+    "stimulus_peak_dbfs", "gating_applied", "program_id",
 )
 
 
