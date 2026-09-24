@@ -935,7 +935,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     door.build_session = Mock(wraps=door.build_session)
 
     async def measure(session, spec):
-        assert box.volume_db == await box.get_loudness_volume_db() == level
+        assert box.volume_db == level
         return await session.measure(spec)
 
     result = await plan_run.run_plan(
@@ -1014,7 +1014,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     ladder = preflight_levels(request, facts, "-28,-23,-18")
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
-    entry_volume, entry_loudness = box.volume_db, await box.get_loudness_volume_db()
+    entry_volume = box.volume_db
 
     def prepare(plan):
         assert fakes.graph.restores == 0
@@ -1055,7 +1055,6 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert len({result.run_id for result in results}) == len(expected)
     assert fakes.graph.restores == 1
     assert box.volume_db == entry_volume
-    assert await box.get_loudness_volume_db() == entry_loudness
 
 
 @pytest.mark.parametrize("purpose", ["room", "speaker"])

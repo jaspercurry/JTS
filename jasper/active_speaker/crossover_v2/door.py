@@ -5,12 +5,11 @@
 from __future__ import annotations
 
 import logging
-import math
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, cast
+from typing import Any, AsyncIterator, Callable, Mapping, cast
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
@@ -58,7 +57,6 @@ class IsolationHold:
     claim: Any
     plan: Any
     volume_door: Any
-    camilla: Any
     window_open: bool = False
 
 
@@ -68,7 +66,6 @@ class OpenMeasurementDoor:
     claim: Any
     plan: Any
     measurement_volume_db: float
-    measurement_loudness_volume_db: float
     graph_fingerprint: str
     spl_monitor: WiredSplMonitor
     entry_scope_fingerprint: str = ""
@@ -103,7 +100,7 @@ async def isolation_hold(
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         try:
-            yield IsolationHold(_HeldGraph(graph), claim, plan, volume_door, camilla_factory())
+            yield IsolationHold(_HeldGraph(graph), claim, plan, volume_door)
         except BaseException as exc:  # noqa: BLE001 - preserve cancellation through cleanup
             body_error = exc
             raise
@@ -117,16 +114,6 @@ async def isolation_hold(
                     body_error.__context__ = exc
 
 
-async def set_measurement_loudness(camilla: Any, db: float) -> float:
-    """Set and confirm the bass reference used by a measurement sweep."""
-    if not await camilla.set_loudness_volume_db(db, immediate=True):
-        raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference write failed")
-    actual = await camilla.get_loudness_volume_db()
-    if actual is None or not math.isfinite(actual) or abs(actual - db) > 0.01:
-        raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference did not confirm")
-    return float(actual)
-
-
 @asynccontextmanager
 async def level_window(
     level_db: float, *, hold: IsolationHold, spl_monitor: WiredSplMonitor | None,
@@ -138,34 +125,23 @@ async def level_window(
     if hold.window_open:
         raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, "A level window is already open")
     hold.window_open = True
-    graph, claim, plan, camilla = hold.graph, hold.claim, hold.plan, hold.camilla
+    graph, claim, plan = hold.graph, hold.claim, hold.plan
     body_error: BaseException | None = None
-    volume_open = loudness_changed = False
-    loudness_entry: float | None = None
+    volume_open = False
     opened_door: OpenMeasurementDoor | None = None
-
-    async def restore_loudness() -> None:
-        if loudness_changed and loudness_entry is not None:
-            await set_measurement_loudness(camilla, loudness_entry)
-
     try:
-        loudness_entry = await camilla.get_loudness_volume_db()
-        if loudness_entry is None or not math.isfinite(loudness_entry):
-            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "loudness reference is unreadable")
         try:
             opened = await plan.open(level_db, hold.volume_door)
         except SessionVolumePlanError as exc:
             raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, str(exc)) from exc
         if opened is not SessionVolumeOpenResult.OPENED:
             raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, opened.value)
-        volume_open = loudness_changed = True
-        held_loudness = await set_measurement_loudness(camilla, level_db)
+        volume_open = True
         fingerprint = await graph.install()
-        opened_door = OpenMeasurementDoor(graph, claim, plan, level_db, held_loudness,
-                                         fingerprint, spl_monitor, graph.entry_scope_fingerprint)
+        opened_door = OpenMeasurementDoor(graph, claim, plan, level_db, fingerprint, spl_monitor,
+                                          graph.entry_scope_fingerprint)
         log_event(logger, "active_speaker.measurement_door", action="open",
-                  fingerprint=fingerprint, measurement_volume_db=level_db,
-                  measurement_loudness_volume_db=held_loudness)
+                  fingerprint=fingerprint, measurement_volume_db=level_db)
         yield opened_door
     except BaseException as raised:  # noqa: BLE001 - preserve cancellation through cleanup
         body_error = raised
@@ -183,7 +159,7 @@ async def level_window(
             result = await resilient_restore(_give_back(
                 claim, plan, hold.volume_door,
                 reason="measurement_door_closed" if volume_open else "measurement_door_open_failed",
-                body_error=body_error, restore_loudness=restore_loudness,
+                body_error=body_error,
             ))
             if opened_door is not None:
                 opened_door.restore_result = result
@@ -197,10 +173,9 @@ async def level_window(
 
 
 async def _give_back(
-    claim: Any, plan: Any, volume_door: Any, *, reason: str,
-    restore_loudness: Callable[[], Awaitable[None]], body_error: BaseException | None = None,
+    claim: Any, plan: Any, volume_door: Any, *, reason: str, body_error: BaseException | None = None,
 ) -> SessionVolumeRestoreResult | None:
-    """Restore the loudness reference and Main claim inside the graph hold.
+    """Release the Main claim and close the volume plan inside the graph hold.
 
     Every step runs even when an earlier one raises. A cleanup failure is
     attached to the body error, so the original cause remains visible.
@@ -213,7 +188,7 @@ async def _give_back(
         result = await plan.close(volume_door, reason=reason)
 
     # Restore every slot even after a failure; keep the original failure (ADR-0179).
-    for step in (restore_loudness, claim.release, close_plan):
+    for step in (claim.release, close_plan):
         try:
             await step()
         except BaseException as failure:  # noqa: BLE001 - cleanup must survive cancellation

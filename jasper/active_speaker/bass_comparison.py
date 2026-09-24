@@ -20,7 +20,7 @@ from .round_view_artifacts import ARTIFACT_BY_VIEW
 
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
-    # _program_id hashes segment effective_peak_dbfs, which includes the volume window.
+    # _program_id hashes segment effective_peak_dbfs, which includes the volume window; a take banked under ADR-0352 carries an Aux1 level that moved with level_db.
     "volume": ("level_db", "loudness_volume_db", "program_id"),
     "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_wav_sha256", "program_id"),
     "diagnostic": (),
