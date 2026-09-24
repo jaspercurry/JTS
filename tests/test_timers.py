@@ -33,6 +33,7 @@ from jasper.timers import (
     announcement_text,
     human_duration,
 )
+from jasper.tools.timer import _cancel_confirm, _set_confirm, _update_confirm
 
 
 # --- pure functions -----------------------------------------------
@@ -61,98 +62,37 @@ def test_human_duration(seconds, expected):
     assert human_duration(seconds) == expected
 
 
-def test_announcement_text_labelled_uses_label():
+@pytest.mark.parametrize(
+    ("fn", "label", "total_seconds", "expected"),
+    [
+        pytest.param(announcement_text, "pasta", 300, "Your pasta timer is up.",
+                     id="announce_labelled"),
+        pytest.param(announcement_text, None, 300, "Your timer for 5 minutes is up.",
+                     id="announce_unlabelled"),
+        pytest.param(announcement_text, None, 5400,
+                     "Your timer for 1 hour and 30 minutes is up.",
+                     id="announce_unlabelled_compound"),
+        pytest.param(_set_confirm, None, 30, "Set a timer for 30 seconds.",
+                     id="set_unlabelled"),
+        pytest.param(_set_confirm, "pasta", 600, "Set a pasta timer for 10 minutes.",
+                     id="set_labelled"),
+        pytest.param(_cancel_confirm, "pasta", 600, "Cancelled the pasta timer.",
+                     id="cancel_labelled"),
+        pytest.param(_cancel_confirm, None, 60, "Cancelled the timer for 1 minute.",
+                     id="cancel_unlabelled"),
+        pytest.param(_update_confirm, "pasta", 120, "Updated the pasta timer to 2 minutes.",
+                     id="update_labelled"),
+        pytest.param(_update_confirm, None, 60, "Updated the timer to 1 minute.",
+                     id="update_unlabelled"),
+    ],
+)
+def test_spoken_timer_text(fn, label, total_seconds, expected):
+    now = time.time()
     t = Timer(
-        id="abc", label="pasta", fire_at=time.time() + 60,
-        total_seconds=300, created_at=time.time(),
+        id="abc", label=label, fire_at=now + total_seconds,
+        total_seconds=total_seconds, created_at=now,
     )
-    assert announcement_text(t) == "Your pasta timer is up."
-
-
-def test_announcement_text_unlabelled_uses_duration():
-    t = Timer(
-        id="abc", label=None, fire_at=time.time() + 60,
-        total_seconds=300, created_at=time.time(),
-    )
-    assert announcement_text(t) == "Your timer for 5 minutes is up."
-
-
-def test_announcement_text_unlabelled_compound_duration():
-    """Multi-unit durations (hour + minute) need the 'timer for X'
-    phrasing — adjective form 'Your 1-hour-and-30-minute timer'
-    reads worse aloud."""
-    t = Timer(
-        id="abc", label=None, fire_at=time.time() + 60,
-        total_seconds=5400, created_at=time.time(),
-    )
-    assert announcement_text(t) == (
-        "Your timer for 1 hour and 30 minutes is up."
-    )
-
-
-# --- Tool confirm strings (spoken verbatim by the model) --------
-
-
-def test_set_confirm_unlabelled_uses_natural_noun_form():
-    """Avoid the awkward 'Set a 30 seconds timer' construction —
-    'Set a timer for 30 seconds' is what humans actually say."""
-    from jasper.tools.timer import _set_confirm
-    t = Timer(
-        id="abc", label=None, fire_at=time.time() + 30,
-        total_seconds=30, created_at=time.time(),
-    )
-    assert _set_confirm(t) == "Set a timer for 30 seconds."
-
-
-def test_set_confirm_labelled_says_label_first():
-    from jasper.tools.timer import _set_confirm
-    t = Timer(
-        id="abc", label="pasta", fire_at=time.time() + 600,
-        total_seconds=600, created_at=time.time(),
-    )
-    assert _set_confirm(t) == "Set a pasta timer for 10 minutes."
-
-
-def test_cancel_confirm_labelled():
-    from jasper.tools.timer import _cancel_confirm
-    t = Timer(
-        id="abc", label="pasta", fire_at=time.time() + 60,
-        total_seconds=600, created_at=time.time(),
-    )
-    assert _cancel_confirm(t) == "Cancelled the pasta timer."
-
-
-def test_cancel_confirm_unlabelled_uses_duration():
-    """Without a label, the duration is the only handle the user has
-    to identify which timer was cancelled."""
-    from jasper.tools.timer import _cancel_confirm
-    t = Timer(
-        id="abc", label=None, fire_at=time.time() + 60,
-        total_seconds=60, created_at=time.time(),
-    )
-    assert _cancel_confirm(t) == "Cancelled the timer for 1 minute."
-
-
-def test_update_confirm_labelled_names_new_duration():
-    """Single-sentence form — atomic update reads as one action,
-    not the cancel+set sequence it replaces."""
-    from jasper.tools.timer import _update_confirm
-    new = Timer(
-        id="new", label="pasta", fire_at=time.time() + 120,
-        total_seconds=120, created_at=time.time(),
-    )
-    assert _update_confirm(new) == (
-        "Updated the pasta timer to 2 minutes."
-    )
-
-
-def test_update_confirm_unlabelled():
-    from jasper.tools.timer import _update_confirm
-    new = Timer(
-        id="new", label=None, fire_at=time.time() + 60,
-        total_seconds=60, created_at=time.time(),
-    )
-    assert _update_confirm(new) == "Updated the timer to 1 minute."
+    assert fn(t) == expected
 
 
 def test_timer_remaining_seconds_floors_at_zero():
