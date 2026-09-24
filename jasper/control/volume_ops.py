@@ -15,10 +15,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from ..platform import wire
 from ..platform.uds import voice_socket_command
-from ..spotify_oauth import (
-    SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
-    resolved_spotify_redirect_uri,
-)
+from ..spotify_oauth import resolved_spotify_redirect_uri
 from ..volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -31,8 +28,6 @@ from ..volume_state import VolumeState
 
 logger = logging.getLogger(__name__)
 
-# Compatibility re-export retained for server.py and older importers.
-SPOTIFY_OAUTH_CALLBACK_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
 _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC = 30.0
 
 

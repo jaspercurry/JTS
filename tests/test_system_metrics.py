@@ -496,8 +496,8 @@ def test_read_cgroup_cpu_usec_parses_usage_line(tmp_path) -> None:
     slice_dir = _make_fake_slice(str(tmp_path), {
         "jasper-voice.service": {"cpu.stat": cpu_stat},
     })
-    assert SystemSampler._read_cgroup_cpu_usec(
-        slice_dir, "jasper-voice.service",
+    assert SystemSampler._read_cgroup_cpu_usec_path(
+        os.path.join(slice_dir, "jasper-voice.service"),
     ) == 1234567890
 
 
@@ -505,8 +505,8 @@ def test_read_cgroup_cpu_usec_returns_none_when_missing(tmp_path) -> None:
     slice_dir = _make_fake_slice(str(tmp_path), {
         "jasper-voice.service": {},  # no cpu.stat
     })
-    assert SystemSampler._read_cgroup_cpu_usec(
-        slice_dir, "jasper-voice.service",
+    assert SystemSampler._read_cgroup_cpu_usec_path(
+        os.path.join(slice_dir, "jasper-voice.service"),
     ) is None
 
 
@@ -514,15 +514,15 @@ def test_read_cgroup_memory_bytes_parses(tmp_path) -> None:
     slice_dir = _make_fake_slice(str(tmp_path), {
         "jasper-voice.service": {"memory.current": "157286400\n"},
     })
-    assert SystemSampler._read_cgroup_memory_bytes(
-        slice_dir, "jasper-voice.service",
+    assert SystemSampler._read_cgroup_memory_bytes_path(
+        os.path.join(slice_dir, "jasper-voice.service"),
     ) == 157286400
 
 
 def test_read_cgroup_memory_bytes_returns_none_on_missing(tmp_path) -> None:
     slice_dir = _make_fake_slice(str(tmp_path), {"jasper-voice.service": {}})
-    assert SystemSampler._read_cgroup_memory_bytes(
-        slice_dir, "jasper-voice.service",
+    assert SystemSampler._read_cgroup_memory_bytes_path(
+        os.path.join(slice_dir, "jasper-voice.service"),
     ) is None
 
 

@@ -224,8 +224,6 @@ START_ONLY_UNITS = frozenset({
     "jasper-aec-commission.service",
 })
 
-POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS
-
 # Service users permitted to call the broker (root is always permitted — the
 # still-root clients, and operator debugging). Resolved fresh per request so a
 # user created by a deploy works without restarting the broker.

@@ -739,16 +739,10 @@ class SystemSampler:
         return sorted(out, key=lambda s: (s["group"], s["unit"], s["cgroup"]))
 
     @staticmethod
-    def _read_cgroup_cpu_usec(slice_dir: str, name: str) -> int | None:
+    def _read_cgroup_cpu_usec_path(cgroup_dir: str) -> int | None:
         """Total CPU time consumed by the cgroup, in microseconds, or
         None if cpu.stat is unreadable. Cumulative since cgroup
         creation — the delta over wall time is what's meaningful."""
-        return SystemSampler._read_cgroup_cpu_usec_path(
-            os.path.join(slice_dir, name),
-        )
-
-    @staticmethod
-    def _read_cgroup_cpu_usec_path(cgroup_dir: str) -> int | None:
         path = os.path.join(cgroup_dir, "cpu.stat")
         try:
             with open(path) as f:
@@ -760,15 +754,9 @@ class SystemSampler:
         return None
 
     @staticmethod
-    def _read_cgroup_memory_bytes(slice_dir: str, name: str) -> int | None:
+    def _read_cgroup_memory_bytes_path(cgroup_dir: str) -> int | None:
         """Resident memory of the cgroup in bytes (memory.current).
         None if unreadable (race with cgroup teardown)."""
-        return SystemSampler._read_cgroup_memory_bytes_path(
-            os.path.join(slice_dir, name),
-        )
-
-    @staticmethod
-    def _read_cgroup_memory_bytes_path(cgroup_dir: str) -> int | None:
         path = os.path.join(cgroup_dir, "memory.current")
         try:
             with open(path) as f:
