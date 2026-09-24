@@ -46,15 +46,6 @@ def build_grouped_profile(
     except (CandidateBankRefusal, OSError, ValueError) as exc:
         issues.append({"severity": "blocker", "code": getattr(exc, "code", "grouping_applied_compile_failed"), "message": str(exc)})
         return result
-    # Remove when the bond delivers canonical volume to each output endpoint.
-    if candidate.bass_extension:
-        issues.append({
-            "severity": "blocker",
-            "code": "grouping_dynamic_bass_volume_unsupported",
-            "message": "Pairing does not yet share the volume setting needed for dynamic bass extension.",
-        })
-        return result
-
     graph = yaml.safe_load(text)
     # The current driver-domain verifier admits only channel selection and pair
     # trim before the split. Never drop a saved blend or boost allowance to fit

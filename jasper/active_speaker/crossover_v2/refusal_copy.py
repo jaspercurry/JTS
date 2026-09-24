@@ -435,7 +435,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     "bass_table_window_gain_missing": ReasonSpec(
         "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete resolved window gain.",
-        next_action={"id": "measure_bass_level", "label": "Record Main, Aux1 and program identity on each take", "href": "/sound/speaker/crossover/"},
+        next_action={"id": "measure_bass_level", "label": "Record Main and program identity on each take", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_capture_integrity_failed": ReasonSpec(
         "bass_table_capture_integrity_failed", TEMPLATE_HARD_STOP, 0, "", "A bass capture failed its integrity check.",

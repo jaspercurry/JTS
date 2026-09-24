@@ -222,7 +222,7 @@ class RunManifest:
                    "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
                    "level": {**{key: basis.get(key) for key in
-                             ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
+                             ("level_db", "stimulus_dbfs", "program_id")},
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,

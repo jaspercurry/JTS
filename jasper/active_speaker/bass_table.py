@@ -19,22 +19,20 @@ from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 
 LEVEL_FIELD = "level_db"
-REFERENCE_FIELD = "loudness_volume_db"
 PROGRAM_FIELD = "program_id"
-LEVEL_FIELDS = (LEVEL_FIELD, REFERENCE_FIELD, PROGRAM_FIELD)
+LEVEL_FIELDS = (LEVEL_FIELD, PROGRAM_FIELD)
 
 
-def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, float, str]:
-    volume, reference = (finite_float(basis.get(key)) for key in (LEVEL_FIELD, REFERENCE_FIELD))
+def level_key(basis: Mapping[str, Any], **identity: Any) -> tuple[float, str]:
+    volume = finite_float(basis.get(LEVEL_FIELD))
     program = basis.get(PROGRAM_FIELD)
-    missing = [key for key, value in zip((LEVEL_FIELD, REFERENCE_FIELD), (volume, reference))
-               if value is None or not -100 <= value <= 0]
+    missing = [LEVEL_FIELD] if volume is None or not -100 <= volume <= 0 else []
     if not isinstance(program, str) or not program.strip():
         missing.append(PROGRAM_FIELD)
     if missing:
         raise CrossoverV2Refused({**identity, "fields": missing}, code="bass_table_window_gain_missing")
-    assert volume is not None and reference is not None and isinstance(program, str)
-    return volume, reference, program
+    assert volume is not None and isinstance(program, str)
+    return volume, program
 
 
 def fit_bass_table(
@@ -50,7 +48,7 @@ def fit_bass_table(
         raise CrossoverV2Refused({"candidate_id": candidate_id}, code="bass_fit_candidate_unreadable") from exc
     first: dict[str, Any] = {}
     interventions = (*CHANGE_FIELDS["volume"], "pose_key")
-    groups: dict[tuple[float, float, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = defaultdict(list)
+    groups: dict[tuple[float, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = defaultdict(list)
     contexts = []
     for before, after in pairs:
         for take in (before, after):
@@ -76,7 +74,7 @@ def fit_bass_table(
             "reference_band_hz": list(reference_band_hz), "smoothing_fraction": 3,
             "tested_volume_range_db": [min(key[0] for key in groups), max(key[0] for key in groups)],
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,
-            "limits": ["This table reads the recorded stimulus and bass-reference settings; it is not a runtime schedule.",
+            "limits": ["This table reads the recorded stimulus settings; it is not a runtime schedule.",
                        "No extrapolation beyond measured boost or resolved window gains. Harmonics describe measured headroom, not a hardware limit.",
                        "Compression is prescribed minus realized boost. Takes measured before ADR-0359 played the boost under a volume taper, which their compression includes.",
                        "The single-repeat harmonic evidence floor is 1 dB, not a hearing threshold; repeats combine base and candidate band standard deviations in quadrature at each pose. Decreases are not rises.",
