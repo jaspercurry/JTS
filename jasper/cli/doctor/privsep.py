@@ -45,7 +45,16 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
-from ...env_load import PEERING_ENV_PATH, TOOL_STATE_ENV_PATH, TRANSIT_ENV_PATH, WEATHER_ENV_PATH
+from ...env_load import (
+    GROUPING_ENV_FILE,
+    PEERING_ENV_PATH,
+    SOURCE_INTENT_ENV,
+    SPEAKER_NAME_ENV_PATH,
+    TOOL_STATE_ENV_PATH,
+    TRANSIT_ENV_PATH,
+    USB_MIC_ENV_FILE,
+    WEATHER_ENV_PATH,
+)
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -107,10 +116,10 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/control_token",
             # SSOT files jasper-control re-reads FRESH on every /state / endpoint
             # call (it is not restarted on a wizard save).
-            "/var/lib/jasper/grouping.env",
+            GROUPING_ENV_FILE,
             "/var/lib/jasper/identity.env",
             "/var/lib/jasper/voice_provider.env",
-            "/var/lib/jasper/speaker_name.env",
+            SPEAKER_NAME_ENV_PATH,
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
             "/var/lib/jasper/aec_mode.env",
@@ -152,7 +161,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # weather_setup._load_state opens this on every /assistant/weather/ render,
             # same shape as transit.env above.
             WEATHER_ENV_PATH,
-            "/var/lib/jasper/speaker_name.env",
+            SPEAKER_NAME_ENV_PATH,
             TOOL_STATE_ENV_PATH,
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
@@ -194,7 +203,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # The shared source-intent SSOT the Bluetooth power switch and
             # /sources/ both drive.
-            "/var/lib/jasper/source_intent.env",
+            SOURCE_INTENT_ENV,
         ),
     ),
     DaemonReadSpec(
@@ -262,7 +271,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # Explicit export intent is the relay's only persisted policy
             # input. Assistant pause state deliberately does not gate the Mac
             # microphone export.
-            "/var/lib/jasper/usb_mic.env",
+            USB_MIC_ENV_FILE,
         ),
     ),
 )

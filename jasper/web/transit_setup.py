@@ -67,6 +67,7 @@ from ..transit import geocode as geocode_mod
 from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file
+from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ._common import (
     RESTART_CLAUSE,
     api_key_token_is_valid,
@@ -96,9 +97,8 @@ from .transit_page import (
 logger = logging.getLogger(__name__)
 
 
-# Persisted at /var/lib/jasper/transit.env. Mode 0640 — the BusTime
-# key is mildly sensitive but not as critical as an OAuth token.
-TRANSIT_FILE = location_state.TRANSIT_FILE
+# Mode 0640 — the BusTime key is mildly sensitive but not as critical as an
+# OAuth token.
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
 
@@ -119,7 +119,7 @@ def _owned_env_keys() -> set[str]:
     }
 
 
-def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
+def _load_state(path: str = TRANSIT_ENV_PATH) -> dict[str, str]:
     return read_env_file(path)
 
 
@@ -155,7 +155,7 @@ def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str])
 def _seed_weather_from_transit_if_missing(
     transit_state: dict[str, str],
     *,
-    weather_path: str = location_state.WEATHER_FILE,
+    weather_path: str = WEATHER_ENV_PATH,
 ) -> bool:
     """Copy transit coords into weather.env when weather has no coords.
 
@@ -420,11 +420,11 @@ def _apply_cities(
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     """Build the request handler closed over `cfg` (state-file path).
-    Tests pass a tmpdir-based path; production uses TRANSIT_FILE."""
+    Tests pass a tmpdir-based path; production uses TRANSIT_ENV_PATH."""
     cfg = {
-        "state_path": cfg.get("state_path", TRANSIT_FILE),
+        "state_path": cfg.get("state_path", TRANSIT_ENV_PATH),
         "routes_secret_path": cfg.get("routes_secret_path", GOOGLE_ROUTES_SECRET_FILE),
-        "weather_path": cfg.get("weather_path", location_state.WEATHER_FILE),
+        "weather_path": cfg.get("weather_path", WEATHER_ENV_PATH),
     }
 
     # The route tables live in this closure so the bodies can read `cfg`.
@@ -601,9 +601,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    state_path: str = TRANSIT_FILE,
+    state_path: str = TRANSIT_ENV_PATH,
     routes_secret_path: str = GOOGLE_ROUTES_SECRET_FILE,
-    weather_path: str = location_state.WEATHER_FILE,
+    weather_path: str = WEATHER_ENV_PATH,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
     cfg = {

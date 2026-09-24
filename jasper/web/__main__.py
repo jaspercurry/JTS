@@ -49,6 +49,7 @@ from jasper.active_speaker.audition import recover_web_audition
 from jasper.camilla import primary_controller
 
 from ..accounts import registry_path as spotify_registry_path
+from ..env_load import SPEAKER_NAME_ENV_PATH, TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ..google_creds import registry_path as google_registry_path
 from ..platform import systemd as _systemd
 from ..logging_setup import configure_logging
@@ -262,7 +263,6 @@ def _make_sources_server(target: object) -> object:
 
 def _make_speaker_server(target: object) -> object:
     from . import speaker_setup
-    from ..env_load import SPEAKER_NAME_ENV_PATH
 
     return speaker_setup.make_server(
         target,
@@ -322,9 +322,7 @@ def _make_tools_server(target: object) -> object:
 
 
 def _transit_state_path() -> str:
-    from . import transit_setup
-
-    return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
+    return os.environ.get("JASPER_TRANSIT_FILE", TRANSIT_ENV_PATH)
 
 
 def _routes_secret_path() -> str:
@@ -337,9 +335,7 @@ def _routes_secret_path() -> str:
 
 
 def _weather_state_path() -> str:
-    from . import weather_setup
-
-    return os.environ.get("JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE)
+    return os.environ.get("JASPER_WEATHER_FILE", WEATHER_ENV_PATH)
 
 
 def _make_transit_server(target: object) -> object:

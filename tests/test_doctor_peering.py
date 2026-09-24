@@ -5,8 +5,6 @@
 """Unit tests for the jasper-doctor peering domain."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from jasper.cli.doctor import peering
@@ -47,10 +45,7 @@ def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, reason
     env = tmp_path / "peering.env"
     if body is not None:
         env.write_text(body)
-    monkeypatch.setattr(
-        "jasper.cli.doctor.peering.Path",
-        lambda p: env if "peering.env" in p else Path(p),
-    )
+    monkeypatch.setattr(peering, "PEERING_ENV_PATH", str(env))
 
     r = peering.check_peering_mode()
 
@@ -62,10 +57,7 @@ def test_check_peering_mode_reports_unreadable_env(monkeypatch, tmp_path):
     env = tmp_path / "peering.env"
     env.mkdir()  # reading a directory as text raises OSError
 
-    monkeypatch.setattr(
-        "jasper.cli.doctor.peering.Path",
-        lambda p: env if "peering.env" in p else Path(p),
-    )
+    monkeypatch.setattr(peering, "PEERING_ENV_PATH", str(env))
 
     r = peering.check_peering_mode()
 

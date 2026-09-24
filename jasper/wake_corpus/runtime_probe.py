@@ -30,6 +30,7 @@ from jasper.aec_sweep import (
 from jasper.audio_profile_state import (
     AEC_MODE_ENV,
     AEC_MODE_FILE_ENV,
+    DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -158,7 +159,7 @@ LEG_LABELS = {
 # in /var/lib/jasper like the other wizard-owned env files.
 SYSTEM_ENV_PATH = Path(BASE_ENV_PATH)
 AEC_MODE_PATH = Path(os.environ.get(
-    AEC_MODE_FILE_ENV, "/var/lib/jasper/aec_mode.env",
+    AEC_MODE_FILE_ENV, DEFAULT_AEC_MODE_PATH,
 ))
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",

@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
-from ..env_load import TRANSIT_ENV_PATH, parse_bool_value
+from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -403,7 +403,7 @@ def _bus_card_html(
         external_notice_html = (
             '<div class="banner banner--info" role="status">'
             'Detected an MTA BusTime API key in '
-            '<code>/etc/jasper/jasper.env</code> (set outside the wizard). '
+            f'<code>{html.escape(BASE_ENV_PATH)}</code> (set outside the wizard). '
             'The daemon is using it already. Saving any change here will '
             'persist your picks (and the key) into '
             f'<code>{html.escape(TRANSIT_ENV_PATH)}</code>, where the wizard '
@@ -417,7 +417,7 @@ def _bus_card_html(
     masked = mask_secret(saved_key.strip())
     key_source_label = {
         "state": TRANSIT_ENV_PATH,
-        "env": "/etc/jasper/jasper.env (external)",
+        "env": f"{BASE_ENV_PATH} (external)",
     }.get(key_source, "")
     masked_key_html = (
         f'<p class="saved-key">Saved key: '

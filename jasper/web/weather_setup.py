@@ -34,6 +34,7 @@ from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event
 from ..env_file import read_env_file
+from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ._common import (
     RESTART_CLAUSE,
     begin_request,
@@ -52,15 +53,12 @@ from .chrome import canonical_banner, canonical_header, canonical_page, safe_bac
 logger = logging.getLogger(__name__)
 
 
-WEATHER_FILE = location_state.WEATHER_FILE
 WEATHER_FILE_MODE = location_state.WEATHER_FILE_MODE
 LAT_ENV = location_state.WEATHER_LAT_ENV
 LON_ENV = location_state.WEATHER_LON_ENV
 DISPLAY_NAME_ENV = location_state.WEATHER_DISPLAY_NAME_ENV
 DEFAULT_LOCATION_ENV = location_state.WEATHER_DEFAULT_LOCATION_ENV
 UNITS_ENV = location_state.WEATHER_UNITS_ENV
-
-TRANSIT_FILE = location_state.TRANSIT_FILE
 
 VALID_UNITS = {"celsius", "fahrenheit"}
 
@@ -75,7 +73,7 @@ def _owned_env_keys() -> set[str]:
     }
 
 
-def _load_state(path: str = WEATHER_FILE) -> dict[str, str]:
+def _load_state(path: str = WEATHER_ENV_PATH) -> dict[str, str]:
     return read_env_file(path)
 
 
@@ -117,7 +115,7 @@ def _transit_location(state: dict[str, str]) -> location_state.SavedLocation | N
 def _seed_transit_from_weather_if_missing(
     weather_state: dict[str, str],
     *,
-    transit_path: str = TRANSIT_FILE,
+    transit_path: str = TRANSIT_ENV_PATH,
 ) -> bool:
     loc = location_state.parse_weather_location(weather_state)
     if loc is None:
@@ -477,8 +475,8 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    state_path: str = WEATHER_FILE,
-    transit_path: str = TRANSIT_FILE,
+    state_path: str = WEATHER_ENV_PATH,
+    transit_path: str = TRANSIT_ENV_PATH,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
     cfg = {"state_path": state_path, "transit_path": transit_path}

@@ -57,11 +57,11 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
 from ..tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
 from ..tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
 from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
-from ..tool_state import DEFAULT_PATH as TOOL_STATE_FILE
 from ..tool_state import ToolState, read_tool_state, write_tool_state
 from ._common import (
     RestartOutcome,
@@ -863,7 +863,7 @@ def make_server(
     target,
     *,
     catalog_path: str = DEFAULT_CATALOG_PATH,
-    state_path: str = TOOL_STATE_FILE,
+    state_path: str = TOOL_STATE_ENV_PATH,
     prompt_overrides_path: str = PROMPT_OVERRIDES_FILE,
     apply_ts_path: str | None = None,
 ) -> ThreadingHTTPServer:
