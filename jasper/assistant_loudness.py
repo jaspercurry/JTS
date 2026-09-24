@@ -151,15 +151,6 @@ def profile_for_outputd(
     return profile
 
 
-def save_profile(
-    profile: AssistantLoudnessProfile,
-    *,
-    path: str | os.PathLike[str] = DEFAULT_PROFILE_PATH,
-) -> None:
-    with _PROFILE_LOCK:
-        _save_profile_unlocked(profile, path=path)
-
-
 def _save_profile_unlocked(
     profile: AssistantLoudnessProfile,
     *,

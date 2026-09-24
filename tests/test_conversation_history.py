@@ -161,7 +161,6 @@ def test_read_only_store_does_not_create_or_write_db(tmp_path):
     assert store.available is False
     assert db_path.exists() is False
     assert store.add(turn) is False
-    assert store.delete(turn.id) is False
     assert store.clear() == 0
     assert store.prune(max_rows=1) == 0
     assert db_path.exists() is False
@@ -183,7 +182,6 @@ def test_read_only_store_can_read_existing_db_but_not_mutate(tmp_path):
     assert stats is not None
     assert stats.turn_count == 2
     assert reader.add(_turn("2026-06-19T20:30:00Z", 1)) is False
-    assert reader.delete(first.id) is False
     reader.close()
 
     writer = ConversationStore(str(db_path))
@@ -363,19 +361,12 @@ def test_prune_keeps_the_two_newest_rows(tmp_path, limit):
     ]
 
 
-def test_delete_and_clear(tmp_path):
+def test_clear(tmp_path):
     store = ConversationStore(str(tmp_path / "history.db"))
-    first = _turn("2026-06-19T20:10:00Z", 1)
-    second = _turn("2026-06-19T20:20:00Z", 1)
-    assert store.add(first) is True
-    assert store.add(second) is True
+    assert store.add(_turn("2026-06-19T20:10:00Z", 1)) is True
+    assert store.add(_turn("2026-06-19T20:20:00Z", 1)) is True
 
-    assert store.delete(first.id) is True
-    assert store.delete(first.id) is False
-    assert store.get(first.id) is None
-    assert store.get(second.id) == second
-
-    assert store.clear() == 1
+    assert store.clear() == 2
     assert store.recent(10) == []
     assert store.clear() == 0
 
@@ -390,7 +381,6 @@ def test_fail_soft_when_sqlite_unavailable(tmp_path):
     assert store.add(turn) is False
     assert store.get(turn.id) is None
     assert store.recent(10) == []
-    assert store.delete(turn.id) is False
     assert store.clear() == 0
     assert store.prune(max_rows=1) == 0
     assert store.prune(older_than_ts="2026-06-19T20:00:00Z") == 0
@@ -409,7 +399,6 @@ def test_methods_fail_soft_when_sqlite_connection_errors(tmp_path):
     assert store.add(_turn("2026-06-19T20:16:00Z", 1)) is False
     assert store.get(turn.id) is None
     assert store.recent(10) == []
-    assert store.delete(turn.id) is False
     assert store.clear() == 0
     assert store.prune(max_rows=1) == 0
     assert store.prune(older_than_ts="2026-06-19T20:00:00Z") == 0

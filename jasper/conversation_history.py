@@ -217,20 +217,6 @@ class ConversationStore:
             return []
         return [_turn_from_row(row) for row in rows]
 
-    def delete(self, turn_id: str) -> bool:
-        conn = self._conn
-        if conn is None or self._read_only:
-            return False
-        try:
-            cursor = conn.execute(
-                "DELETE FROM conversation_turns WHERE id = ?",
-                (turn_id,),
-            )
-            return _changed_count(cursor) > 0
-        except _STORE_ERRORS as e:
-            self._warn("conversation history store delete failed (id=%s): %s", turn_id, e)
-            return False
-
     def clear(self) -> int:
         conn = self._conn
         if conn is None or self._read_only:
