@@ -52,8 +52,8 @@ def _pair_follower_active() -> bool:
     "Jarvis, louder" spoken to the follower must move the PAIR volume via
     the local control API — whose /volume* handlers already forward to the
     leader. One forwarding implementation total."""
-    from ..multiroom.config import load_config
-    from ..multiroom.effective_role import effective_follower_leader_addr
+    from ..multiroom.config import load_config  # lazy: import cost, multiroom stays out of jasper-voice until a volume tool runs; test patch boundary (tests/test_tools_audio.py)
+    from ..multiroom.effective_role import effective_follower_leader_addr  # lazy: import cost, multiroom stays out of jasper-voice until a volume tool runs
 
     return effective_follower_leader_addr(load_config()) is not None
 
