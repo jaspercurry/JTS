@@ -16,14 +16,12 @@ from .camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
-    TRANSIT_DISPLAY_NAME_ENV,
-    TRANSIT_LAT_ENV,
-    TRANSIT_LON_ENV,
     WEATHER_DEFAULT_LOCATION_ENV,
     WEATHER_DISPLAY_NAME_ENV,
     WEATHER_LAT_ENV,
     WEATHER_LON_ENV,
     WEATHER_UNITS_ENV,
+    parse_transit_location,
 )
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
@@ -161,7 +159,7 @@ def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
 
 def _weather_defaults() -> tuple[str, float | None, float | None, str]:
     """``(location, lat, lon, display_name)`` for a weather question that names
-    no place. With neither weather coordinate set, a complete transit location
+    no place. With neither weather coordinate set, the saved transit location
     stands in (its display name too, when none is set); an unset display name
     falls back to ``location``."""
     location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
@@ -169,21 +167,11 @@ def _weather_defaults() -> tuple[str, float | None, float | None, str]:
     lon = _env_optional_float(WEATHER_LON_ENV)
     display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
     if lat is None and lon is None:
-        transit_lat_raw = os.environ.get(TRANSIT_LAT_ENV, "").strip()
-        transit_lon_raw = os.environ.get(TRANSIT_LON_ENV, "").strip()
-        if transit_lat_raw and transit_lon_raw:
-            try:
-                lat = float(transit_lat_raw)
-                lon = float(transit_lon_raw)
-            except ValueError:
-                lat = None
-                lon = None
-            else:
-                if not display_name:
-                    display_name = _env(TRANSIT_DISPLAY_NAME_ENV, "").strip()
-    if not display_name:
-        display_name = location
-    return location, lat, lon, display_name
+        transit = parse_transit_location(dict(os.environ))
+        if transit is not None:
+            lat, lon = transit.lat, transit.lon
+            display_name = display_name or transit.display_name
+    return location, lat, lon, display_name or location
 
 
 def _validate(cfg: "Config") -> "Config":

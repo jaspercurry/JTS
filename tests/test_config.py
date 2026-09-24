@@ -269,21 +269,32 @@ def test_weather_default_coordinates_from_weather_env(monkeypatch):
     assert cfg.weather_units == "fahrenheit"
 
 
-def test_weather_default_falls_back_to_transit_coords(monkeypatch):
+@pytest.mark.parametrize("lat, lon, expected", [
+    ("40.653", "-74.007", (40.653, -74.007, "341, 39th Street, Brooklyn")),
+    ("nan", "-74.007", (None, None, "")),
+    ("40.653", "-181", (None, None, "")),
+], ids=["usable", "nan", "out_of_range"])
+def test_weather_default_falls_back_to_a_usable_transit_location(
+    monkeypatch, lat, lon, expected,
+):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.delenv("JASPER_WEATHER_LAT", raising=False)
-    monkeypatch.delenv("JASPER_WEATHER_LON", raising=False)
-    monkeypatch.setenv("JASPER_TRANSIT_LAT", "40.653")
-    monkeypatch.setenv("JASPER_TRANSIT_LON", "-74.007")
+    for var in (
+        "JASPER_WEATHER_LAT", "JASPER_WEATHER_LON",
+        "JASPER_WEATHER_DISPLAY_NAME", "JASPER_DEFAULT_LOCATION",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JASPER_TRANSIT_LAT", lat)
+    monkeypatch.setenv("JASPER_TRANSIT_LON", lon)
     monkeypatch.setenv(
         "JASPER_TRANSIT_DISPLAY_NAME",
         "341, 39th Street, Brooklyn",
     )
     cfg = Config.from_env()
-    assert cfg.weather_default_lat == 40.653
-    assert cfg.weather_default_lon == -74.007
-    assert cfg.weather_default_display_name == "341, 39th Street, Brooklyn"
-    assert cfg.weather_prompt_location == "341, 39th Street, Brooklyn"
+    assert (
+        cfg.weather_default_lat,
+        cfg.weather_default_lon,
+        cfg.weather_default_display_name,
+    ) == expected
 
 
 def test_weather_coordinate_pair_must_be_complete(monkeypatch):
