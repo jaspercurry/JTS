@@ -214,9 +214,7 @@ def camilla_statefile_path(path: str | Path | None = None) -> Path:
 
     if path is not None:
         return Path(path)
-    return Path(
-        os.environ.get("JASPER_CAMILLA_STATEFILE", str(DEFAULT_CAMILLA_STATEFILE))
-    )
+    return Path(os.environ.get("JASPER_CAMILLA_STATEFILE", DEFAULT_CAMILLA_STATEFILE))
 
 
 def read_camilla_statefile_config_path(

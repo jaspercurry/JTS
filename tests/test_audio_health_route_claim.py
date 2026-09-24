@@ -229,7 +229,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     monkeypatch.setattr("jasper.paths.DEFAULT_CAMILLA_STATEFILE", statefile)
     monkeypatch.setattr("jasper.paths.DEFAULT_CAMILLA2_STATEFILE", statefile)
     evidence = audio_runtime_plan.output_endpoint_evidence_from_statefiles(
-        str(statefile), str(statefile)
+        statefile, statefile
     )
     assert evidence.devices is not None  # populated...
     assert evidence.endpoint_recognized is False  # ...but names no outputd lane

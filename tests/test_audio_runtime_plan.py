@@ -46,7 +46,6 @@ from jasper.transport_coherence import (
     transport_topology_for_coupling,
 )
 from jasper.env_load import EnvFileState
-from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -154,8 +153,8 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
     ok, lines = validate_outputd_env(
         base_env=str(base_env),
         outputd_env=str(outputd_env),
-        camilla_statefile=str(DEFAULT_CAMILLA_STATEFILE),
-        camilla2_statefile=str(DEFAULT_CAMILLA2_STATEFILE),
+        camilla_statefile=str(tmp_path / "statefile.yml"),
+        camilla2_statefile=str(tmp_path / "statefile.yml"),
         overrides=str(store),
     )
 

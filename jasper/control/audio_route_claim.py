@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ._health_fields import _MONITOR_ERRORS
+from .. import paths
 from ..output_topology import OutputTopologyError
 from ..output_topology_store import load_output_topology_strict, load_output_topology
 
@@ -88,9 +89,8 @@ def _parked_graph_transport() -> dict[str, Any] | None:
         active_graph_is_parked,
         parked_muted_exits,
     )
-    from ..paths import DEFAULT_CAMILLA_STATEFILE  # lazy: source patch boundary pinned by test_audio_health_route_claim
 
-    config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE)
+    config_path = read_camilla_statefile_config_path(paths.DEFAULT_CAMILLA_STATEFILE)
     if not active_graph_is_parked(config_path):
         return None
     try:
@@ -132,14 +132,10 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     policy error is not a reason to tell a household its speaker is parked.
     """
     from ..audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
-    from ..paths import (  # lazy: source patch boundary pinned by test_audio_health_route_claim
-        DEFAULT_CAMILLA2_STATEFILE,
-        DEFAULT_CAMILLA_STATEFILE,
-    )
 
     evidence = output_endpoint_evidence_from_statefiles(
-        DEFAULT_CAMILLA_STATEFILE,
-        DEFAULT_CAMILLA2_STATEFILE,
+        paths.DEFAULT_CAMILLA_STATEFILE,
+        paths.DEFAULT_CAMILLA2_STATEFILE,
     )
     if evidence.devices is None or not evidence.endpoint_recognized:
         # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph
