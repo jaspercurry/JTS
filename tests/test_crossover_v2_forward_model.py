@@ -58,6 +58,7 @@ from tests.test_audio_measurement_program_analysis import (
     _synthesize,
 )
 from tests.test_crossover_v2_tuning_scope import _trial_candidate
+from tests.test_rear_output_foundation import _rear_pair
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
@@ -515,6 +516,19 @@ def test_the_forecast_is_unjudged_and_keeps_its_identity_when_relocated(
                                             candidate=target, basis_candidate=source)
     assert relocated_forecast["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
     assert relocated_forecast["summary"]["prediction_fingerprint"] == fingerprint
+
+
+def test_a_cardioid_forecast_binds_its_front_outputs_and_names_the_rear(diagnostic_round, tuning_profile):
+    preset, topology = _rear_pair("mono")
+    cardioid = replace(tuning_profile, preset=preset, topology=topology)
+    source = _trial_candidate(cardioid, trim=-3.0, gain=-2.0)
+    target = _trial_candidate(cardioid, trim=-5.0, gain=4.0)
+    _bind_candidate_take(diagnostic_round, "old", source, cardioid)
+
+    forecast = capture_prediction(diagnostic_round, capture_id="old", candidate=target, basis_candidate=source)
+
+    assert forecast["summary"]["unmodelled_outputs"] == ["woofer:rear"]
+    assert forecast["relative_graph"]["usable_bins_by_role"]["tweeter"] > 0
 
 
 # --------------------------------------------------------------------------- #

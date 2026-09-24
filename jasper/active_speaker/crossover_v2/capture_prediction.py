@@ -19,6 +19,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
+from jasper.output_topology import measurement_target_id
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
@@ -212,10 +213,14 @@ def capture_prediction(
         if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
         outputs = candidate.source_preset.channel_map.outputs
-        channels = {output.driver_role: output.index for output in outputs}
-        if len(outputs) != 2 or set(channels) != set(basis.branches):
+        primary = [output for output in outputs if output.output_variant == "primary"]
+        channels = {output.driver_role: output.index for output in primary}
+        if len(primary) != 2 or set(channels) != set(basis.branches):
             raise ForwardModelError("candidate prediction needs an unambiguous output binding for each recorded branch",
                                     detail={"field": "branch_output_binding", "branches": list(basis.branches)})
+        # A cardioid's rear plays no branch of a front take, so it has no transfer to scale.
+        unmodelled = sorted(measurement_target_id(output.driver_role, output.output_variant)
+                            for output in outputs if output.output_variant != "primary")
         _recorded_graph(basis)
         source_graph, target_graph = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
         stereo = {role: {0: 1.0, 1: 1.0} for role in channels}
@@ -229,12 +234,14 @@ def capture_prediction(
         if basis_candidate is not None:
             raise ForwardModelError("source candidate lookup is only needed with --candidate-json")
         transfer = reconstruction_tf
+        unmodelled = []
     predicted = prediction_record(basis, transfer)
     summary = {
         "basis": basis.source, "omitted": omitted,
         "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
         "window": dict(basis.window),
         "branches": list(basis.branches),
+        "unmodelled_outputs": unmodelled,
         "reconstruction": _metric_summary(reconstruction),
         "acceptance": acceptance_block(
             str(basis.captures["summed"].record_path) if candidate is None else None
@@ -256,5 +263,7 @@ def capture_prediction(
             "A finite window can change filter transients; inspect window sensitivity before narrow correction.",
             "Fixed base protection and device settings are held.",
             "No score or mismatch here vetoes a safe experiment.",
+            *([f"Outputs this take recorded no branch for ({', '.join(unmodelled)}) are not modelled; "
+               "a change to them is not in this forecast."] if unmodelled else []),
         ],
     }
