@@ -33,6 +33,7 @@ from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.bluetooth.adapter import BUS_CONNECT_TIMEOUT_SEC, connect_bounded
+from jasper.control import restart_broker
 from jasper.log_event import log_event
 
 from ._dbus import variant_value
@@ -384,16 +385,7 @@ class UdpPcmSink:
 
 
 def _start_ce_helper() -> dict[str, Any]:
-    """Blocking broker call. Runs on a worker thread — never the event loop.
-
-    Guarded lazy import (mirrors jasper/fanin/coupling_reconcile.py): a
-    missing or broken control package degrades to a reported failure instead
-    of an exception that would take the adapter down.
-    """
-    try:
-        from jasper.control import restart_broker
-    except ImportError as exc:
-        return {"ok": False, "error": f"restart_broker unavailable: {exc}"}
+    """Blocking broker call. Runs on a worker thread — never the event loop."""
     return restart_broker.manage_units(
         CE_HELPER_UNIT,
         verb="start",
