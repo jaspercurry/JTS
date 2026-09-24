@@ -455,12 +455,17 @@ async def test_a_loud_read_waiting_at_a_reader_exit_stops_the_take_as_the_spl_st
 
 
 async def test_a_take_banks_how_the_playback_route_counters_moved(monkeypatch, tmp_path):
-    """A wired take banks the route counters' deltas across its capture and the
-    surfaces that answered both reads, so a playback fault is named per take
-    (#5684)."""
-    lane = {"label": "correction", "xrun_count": 2, "catchup_events": 5}
-    snapshots = iter([{"fanin": {"inputs": [lane]}, "outputd": None},
-                      {"fanin": {"inputs": [{**lane, "xrun_count": 3}]}, "outputd": None}])
+    """A wired take banks the route counters' deltas across its capture, the
+    surfaces that answered both reads, and the playback faults among them: the
+    measurement lane's and outputd's, never an idle lane's catch-up or the USB
+    lane's resampler (#5684)."""
+    lanes = [{"label": "airplay", "xrun_count": 0, "catchup_events": 9},
+             {"label": "usbsink", "xrun_count": 0, "resampler": {"silence_frames": 0}},
+             {"label": "correction", "xrun_count": 2, "catchup_events": 5}]
+    moved = [{**lanes[0], "catchup_events": 10}, {**lanes[1], "resampler": {"silence_frames": 4800}},
+             {**lanes[2], "xrun_count": 3, "catchup_events": 6}]
+    snapshots = iter([{"fanin": {"inputs": lanes}, "outputd": {"shm_ring": {"reader_resyncs": 0}}},
+                      {"fanin": {"inputs": moved}, "outputd": {"shm_ring": {"reader_resyncs": 2}}}])
 
     class Recorder:
         def start(self):
@@ -481,8 +486,11 @@ async def test_a_take_banks_how_the_playback_route_counters_moved(monkeypatch, t
         pass
 
     await capture.around(play, program=SimpleNamespace(sample_rate_hz=RATE, total_samples=RATE, phase="measure"))
+    faults = {"fanin.inputs.2.xrun_count": 1.0, "fanin.inputs.2.catchup_events": 1.0,
+              "outputd.shm_ring.reader_resyncs": 2.0}
     assert capture.take_answer().capture_integrity["playback_path"] == {
-        "read": ["fanin"], "deltas": {"fanin.inputs.0.xrun_count": 1.0}}
+        "read": ["fanin", "outputd"], "faults": faults,
+        "deltas": {**faults, "fanin.inputs.0.catchup_events": 1.0, "fanin.inputs.1.resampler.silence_frames": 4800.0}}
 
 
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():

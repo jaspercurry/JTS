@@ -217,8 +217,8 @@ def _index_poses(target: Path) -> list[str]:
     Best-effort, and deliberately so: a round that ran no lateral walk has
     nothing to index, and neither that nor a filesystem that would not take one
     more file un-measures the round. Both are named absent instead — which is
-    why nothing here reaches the caller's ``except OSError``, whose job is to
-    unwind a half-assembled round.
+    why nothing here reaches the caller's cleanup, whose job is to unwind a
+    half-assembled round.
     """
     from .crossover_v2.position_cycle import (  # lazy: keep bank constants cheap
         POSITION_CYCLE_FILENAME,
@@ -416,6 +416,7 @@ def bank_round(
         statefile_path,
     )
     target.mkdir(parents=True)
+    banked = False
     try:
         shutil.copytree(
             session_dir,
@@ -455,10 +456,11 @@ def bank_round(
             json.dumps(provenance, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    except OSError:
-        # Never leave a half-assembled round where a reader would find one.
-        shutil.rmtree(target, ignore_errors=True)
-        raise
+        banked = True
+    finally:
+        if not banked:
+            # Never leave a half-assembled round where a reader would find one.
+            shutil.rmtree(target, ignore_errors=True)
     return BankedRound(target, provenance)
 
 

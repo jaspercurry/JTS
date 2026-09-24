@@ -39,7 +39,6 @@ from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, po
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
-from .crossover_v2.contracts import REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
@@ -165,7 +164,7 @@ def prepare_plan_captures(
                            vertical_deg=stop.elevation_deg,
                            pose_prompts=(resolved[offset // request.repeats].prompt.text,))
             if stop.driver:
-                spec = replace(spec, branch_target_ids=(stop.driver,), regime=MEASURE_REGIME_NEAR_FIELD)
+                spec = replace(spec, branch_target_ids=(stop.driver,), regime=stop.regime)
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
         )), offset % request.repeats + 1))
@@ -216,6 +215,7 @@ HUMAN_MOVE_ALLOWANCE_S = 30
 def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
     poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
+    opener_seconds = 0.0
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
@@ -225,6 +225,9 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             excitation = program_for_spec(spec)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
+            if measurement == 1 and pose.get("driver"):
+                # A driver's pose plays a quiet opener before its levelled take (ADR-0361).
+                opener_seconds += sum(segment.n_samples for segment in segments) / excitation.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
@@ -243,7 +246,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
-            "estimated_seconds": sum(row["seconds"] for row in rows) +
+            "estimated_seconds": sum(row["seconds"] for row in rows) + opener_seconds +
                                  (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 
@@ -417,12 +420,10 @@ async def _run(
 
     level_observations: dict[str, TakeVerdict] = {}
 
-    def observe_level(record: Mapping[str, Any], at_driver: bool) -> TakeVerdict:
+    def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
-            level_observations[take_id] = (TakeVerdict(True) if at_driver
-                                           else level_drift_verdict(**manifest.level_observation(record)))
+            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
         return level_observations[take_id]
 
     admit = admit or default_admit
@@ -436,6 +437,7 @@ async def _run(
     retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
+    landed: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
                               mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
@@ -460,8 +462,16 @@ async def _run(
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
                 if work[offset].stop["pose"].get("driver"):
-                    # A redo places a driver's pose again from its start, retries included (ADR-0361).
-                    ledgers[pose] = SlotAttempts(retries_per_pose=retries)
+                    # A redo places a driver's pose again from its start with its retries (ADR-0361).
+                    # Admission charges every attempt after a take's first, so each take it
+                    # replays carries one retry; before any take played it only asks again.
+                    replayed = sum(1 for index, row in enumerate(work) if row.pose_index == pose and attempts[index])
+                    ledgers[pose] = SlotAttempts(retries_per_pose=retries + replayed)
+                    if not replayed:
+                        retry = None
+                        grant_epoch += 1
+                        if gate:
+                            gate.abandon_hold()
             item = work[offset]
             at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
@@ -485,6 +495,7 @@ async def _run(
                         gate.abandon_hold()
                     if at_driver:
                         # A new placement at a driver's pose starts quiet again (ADR-0361).
+                        landed.discard(item.pose_index)
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -504,7 +515,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if at_driver:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "opener"
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "opener"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -552,7 +563,7 @@ async def _run(
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
-                    level_verdict = observe_level(record, at_driver)
+                    level_verdict = observe_level(record)
                     if record_id:
                         try:
                             analysis = await asyncio.to_thread(analyze, record, record_id)
@@ -602,6 +613,7 @@ async def _run(
                 retry_was_measured = False
                 if at_driver:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
+                    landed.add(item.pose_index)
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)
@@ -629,7 +641,7 @@ async def _run(
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
                                           started_s=(take_started if take_started is not None else ended) - started,
-                                          ended_s=ended - started, level_observation=observe_level(record, at_driver).evidence)
+                                          ended_s=ended - started, level_observation=observe_level(record).evidence)
                 break
             finally:
                 if take_started is not None:

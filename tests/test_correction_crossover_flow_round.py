@@ -118,8 +118,8 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
 def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
     """R4-D9: seat/cloud duplicates room/cloud and seat/express duplicates
     room/seat. The picker offers only one of each pair, but both ids stay
-    registered and keep resolving (ADR-0277: registry ids are banked-round
-    identities)."""
+    registered and keep resolving, and a link naming one selects it
+    (ADR-0277: registry ids are banked-round identities)."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
@@ -133,6 +133,8 @@ def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
     assert "seat/express" not in ids
     assert program("seat", "cloud").program_id == "seat"
     assert program("seat", "express").program_id == "seat"
+    linked = next(c for c in measurement_view.round_choices({}, "seat/cloud") if c["default"])
+    assert (linked["id"], linked["action"]["id"], "code" in linked) == ("seat/cloud", "run_program", False)
 
 
 def test_pre_round_choice_survives_a_stopped_run(monkeypatch):

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
@@ -25,7 +24,7 @@ from .refusal_copy import (
     CrossoverV2Refused,
 )
 from jasper.output_topology import topology_is_subless_passive_mains
-from jasper.speaker_layout import measurement_target_id
+from jasper.speaker_layout import declared_radiating_diameters_mm, measurement_target_id
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import FrequencyBand
@@ -174,45 +173,6 @@ def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
-def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, float]:
-    """Per-role declared effective radiating diameter, mm (#1665 / #1675).
-
-    The same shape and the same fail-soft contract as
-    :func:`_resolve_driver_class_by_role` — role-keyed, a role with disagreeing
-    declarations drops entirely, anything malformed is skipped rather than
-    raised. A diameter is a beaming PRIOR, so a bad one must cost that one
-    role its prior, never the session.
-
-    Deliberately no default: absent means "not declared", and the receipt says
-    so. Substituting a nominal diameter would manufacture a beaming ceiling out
-    of nothing, and #1675 is explicit that this is geometry
-    guidance derived from a declared dimension.
-    """
-    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
-    if not isinstance(manual, Mapping):
-        return {}
-    drivers = manual.get("drivers")
-    out: dict[str, float] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("radiating_diameter_mm")
-        if not role or isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        millimetres = float(value)
-        if not math.isfinite(millimetres) or millimetres <= 0.0:
-            continue
-        if role in out and out[role] != millimetres:
-            conflicted.add(role)
-            continue
-        out[role] = millimetres
-    for role in conflicted:
-        out.pop(role, None)
-    return out
-
-
 @overload
 def resolve_conductor_context(
     status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[True] = True,
@@ -335,7 +295,7 @@ def resolve_conductor_context(
     declared_sensitivities = declared_effective_driver_sensitivities(draft)
     driver_class_by_role = _resolve_driver_class_by_role(draft)
     # #1675: the ka/beaming prior, off the SAME draft path, as disclosure.
-    radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)
+    radiating_diameter_mm_by_role = declared_radiating_diameters_mm(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     bands = {}

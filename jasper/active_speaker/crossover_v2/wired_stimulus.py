@@ -18,7 +18,11 @@ from jasper.audio_measurement.playback import (
     WavPlaybackCancelledBeforeSpawn,
 )
 from jasper.log_event import log_event
-from jasper.platform.route_health import ROUTE_SURFACES, known_counter_deltas, numeric_deltas
+from jasper.measurement_window import MEASUREMENT_FANIN_LABEL
+from jasper.platform.route_health import (
+    ROUTE_SURFACES, TAKE_FAULT_COUNTER_PATHS, TAKE_FAULT_COUNTER_SUFFIXES, known_counter_deltas, lane_indexes,
+    numeric_deltas,
+)
 from jasper.json_fields import utc_now_iso
 from .playback_transaction import PlaybackInterrupted
 
@@ -140,9 +144,9 @@ class WiredStimulusCapture:
             if isinstance(program, ExcitationProgram):
                 answer = replace(answer, program=program.to_dict())
             if path is not None:
-                faults = {key: delta for key, delta in known_counter_deltas(path["deltas"]).items() if delta}
-                log_event(logger, "active_speaker.take_playback_path", level=logging.WARNING if faults else logging.INFO,
-                          wav=answer.wav_path, read=",".join(path["read"]), faults=json.dumps(faults, sort_keys=True))
+                log_event(logger, "active_speaker.take_playback_path",
+                          level=logging.WARNING if path["faults"] else logging.INFO, wav=answer.wav_path,
+                          read=",".join(path["read"]), faults=json.dumps(path["faults"], sort_keys=True))
             self._pending.append(answer)
             return answer.wav_path
 
@@ -232,11 +236,15 @@ class WiredStimulusCapture:
 
 
 def _playback_path(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """How the route's counters moved across one take, and which surfaces answered both reads."""
+    """How the route's counters moved across one take, which surfaces answered both
+    reads, and the playback faults among them on the path the stimulus played."""
     if before is None or after is None:
         return None
+    deltas = numeric_deltas(before, after)
+    faults = known_counter_deltas(deltas, paths=TAKE_FAULT_COUNTER_PATHS, suffixes=TAKE_FAULT_COUNTER_SUFFIXES,
+                                  lanes=lane_indexes(after, MEASUREMENT_FANIN_LABEL))
     return {"read": [name for name in ROUTE_SURFACES if before.get(name) and after.get(name)],
-            "deltas": numeric_deltas(before, after)}
+            "deltas": deltas, "faults": {key: delta for key, delta in faults.items() if delta}}
 
 
 @dataclass

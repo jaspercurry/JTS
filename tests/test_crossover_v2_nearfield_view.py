@@ -9,15 +9,16 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import nearfield_view as nv
 
-FREQS = np.geomspace(20.0, 2000.0, 400)
+# A banked curve's grid runs to 20 kHz; a near-field sweep stops at 2 kHz.
+FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = nv.piston_step_db(0.015, 0.030, 0.057)
 
 
-def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0):
+def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0)):
     rng = np.random.default_rng(seed)
     sweeps = [np.full(FREQS.size, level_db) + rng.normal(0.0, 0.01, FREQS.size) for _ in range(3)]
     sweeps[0] = sweeps[0] + np.where(FREQS < 35.0, first_low_db, 0.0)
-    curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(),
+    curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz),
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist()} for sweep in sweeps[1:]]}
     return {"take_id": take_id, "selected": selected, "pose": {"driver": driver, "distance_m": distance_mm / 1000},
             "quality": {"evidence": {"max_window_db_spl": 80.0}}, "curve": curve,
@@ -69,11 +70,11 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
     """A placement's raw curve pools its takes' settled sweeps with the fader
     and the played graph divided out, so takes played through different pads
-    read one driver on one reference. A take whose graph was not read back,
-    or cannot be modelled, or whose curve sits on another grid stays out of
-    it, and the rest of the view still reads (#5713)."""
+    read one driver on one reference, over the band they swept only. A take
+    whose graph was not read back, or cannot be modelled, or whose curve sits
+    on another grid stays out of it, and the rest of the view still reads (#5713)."""
     coarse = _take("coarse", "woofer", 15, 70.0, seed=3)
-    coarse["curve"] = {**{key: value[::2] for key, value in coarse["curve"].items() if key != "repeat_curves"},
+    coarse["curve"] = {**coarse["curve"], **{key: coarse["curve"][key][::2] for key in ("freqs_hz", "magnitude_db")},
                        "repeat_curves": [{key: value[::2] for key, value in sweep.items()}
                                          for sweep in coarse["curve"]["repeat_curves"]]}
     unmodelled = _graph(-6.0)
@@ -86,5 +87,17 @@ def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
 
     raw = view["drivers"][0]["placements"][0]["raw"]
     assert raw["take_ids"] == ["a", "b"]
-    assert raw["freqs_hz"] == pytest.approx(FREQS.tolist(), abs=1e-3)
+    assert raw["freqs_hz"] == pytest.approx(FREQS[FREQS <= 2000.0].tolist(), abs=1e-3)
     assert np.asarray(raw["level_db"]) == pytest.approx(96.0, abs=0.05)
+
+
+def test_a_take_is_read_only_where_its_sweep_reached():
+    """Outside its sweep a curve is noise: a take swept from 700 Hz reads only
+    the bands it swept whole, and gives no distance step (#5684)."""
+    takes = [_take("t15", "tweeter", 15, 80.0, band_hz=(700.0, 2000.0)),
+             _take("t30", "tweeter", 30, 78.0, seed=1, band_hz=(700.0, 2000.0))]
+
+    view = nv.nearfield_view(takes, radiating_diameter_mm_by_role={"tweeter": 25.0})
+
+    assert [[band["band_hz"] for band in row["bands"]] for row in view["takes"]] == [[[800.0, 2000.0]]] * 2
+    assert view["drivers"][0]["steps"] == []

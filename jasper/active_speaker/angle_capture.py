@@ -265,6 +265,8 @@ class AngleStop:
             validated_branch_pair(self.branch_pair, self.regime)
             validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose,
                                   kind=self.kind, distance_m=distance)
+            if self.driver and self.candidate_id:
+                raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
