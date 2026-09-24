@@ -266,6 +266,16 @@ def issue_row(
     }
 
 
+def path_row(
+    key: str, title: str, detail: str, severity: str = "issue",
+) -> dict[str, Any]:
+    """An :func:`issue_row` for playback continuity on the shared audio path."""
+    return issue_row(
+        key, scope="path", impact="continuity", severity=severity,
+        title=title, detail=detail,
+    )
+
+
 class IssueTracker:
     """Bounded durable incident lifecycle keyed by stable issue names."""
 

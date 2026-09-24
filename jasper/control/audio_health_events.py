@@ -26,7 +26,7 @@ from typing import Any
 from ..music_sources import Source
 from ._health_fields import as_int, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_incidents import issue_row
+from .audio_incidents import issue_row, path_row
 
 # ``(row, when, count, context, observed_at)``: one ``IssueTracker.record_point``.
 Point = tuple[dict[str, Any], float, int, Mapping[str, Any] | None, float | None]
@@ -90,11 +90,8 @@ def record_raw_events(
         ):
             continue
         if event_type == "camilla_playback_underrun":
-            candidate = issue_row(
+            candidate = path_row(
                 f"path.{event_type}",
-                scope="path",
-                impact="continuity",
-                severity="issue",
                 title=str(raw.get("title") or "Audio path recovered"),
                 detail=str(raw.get("detail") or "The shared path recovered."),
             )
@@ -149,11 +146,8 @@ def _watchdog_recoveries(
     # LONG one stall lasted, not how many stalls there were. It rides the
     # structured count instead.
     return [(
-        issue_row(
+        path_row(
             "path.fanin_watchdog_recovered",
-            scope="path",
-            impact="continuity",
-            severity="issue",
             title="Sound recovered after a brief pause",
             detail="Sound stopped moving through the speaker briefly and resumed.",
         ),
@@ -263,11 +257,8 @@ def _service_restarts(
             delta = current - previous
             if delta > 0:
                 occurrences.append((
-                    issue_row(
+                    path_row(
                         f"{stem}.restarted",
-                        scope="path",
-                        impact="continuity",
-                        severity="issue",
                         title="Sound restarted itself",
                         detail=(
                             "Part of the speaker's sound handling restarted, "
@@ -323,11 +314,8 @@ def _outputd_xruns(
             delta = count - baselines.outputd_xruns.get(stage, count)
             if delta > 0:
                 occurrences.append((
-                    issue_row(
+                    path_row(
                         f"path.outputd_{stage}_xrun",
-                        scope="path",
-                        impact="continuity",
-                        severity="issue",
                         title=(
                             "Sound to the speaker recovered"
                             if stage == "dac" else "Music path recovered"

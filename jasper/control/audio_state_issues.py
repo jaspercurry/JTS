@@ -28,7 +28,7 @@ from ._health_sources import (
     SOURCE_OFF_DRIFT_UNITS,
     SOURCE_UNAVAILABLE_DETAIL,
 )
-from .audio_incidents import issue_row
+from .audio_incidents import issue_row, path_row
 from .audio_signal_path import (
     ACTIVITY_UNKNOWN_DETAIL,
     OUTPUT_ABSENT_DETAIL,
@@ -58,19 +58,6 @@ _INPUT_PATH_CODES = frozenset({"input_absent", "input_broken", "input_stalled"})
 def _sentence(signal: Mapping[str, Any]) -> tuple[str, str]:
     """A signal's ``(headline, detail)``, as an incident row's title and detail."""
     return str(signal.get("headline")), str(signal.get("detail"))
-
-
-def _path_row(
-    key: str, title: str, detail: str, severity: str = "issue",
-) -> dict[str, Any]:
-    return issue_row(
-        key,
-        scope="path",
-        impact="continuity",
-        severity=severity,
-        title=title,
-        detail=detail,
-    )
 
 
 def _undeclared_or(
@@ -103,12 +90,12 @@ def _park_rows(
     if park_state.get("status") != "parked":
         if coherence_park is None:
             return []
-        return [_path_row("path.transport_parked", *_sentence(coherence_park))]
+        return [path_row("path.transport_parked", *_sentence(coherence_park))]
     rows: list[dict[str, Any]] = []
     for park in park_state.get("parks") or []:
         if isinstance(park, Mapping):
             park_class = str(park.get("park_class"))
-            rows.append(_path_row(
+            rows.append(path_row(
                 f"path.transport_park.{park_class}",
                 PARKED_HEADLINE,
                 park_detail([park]),
@@ -125,18 +112,18 @@ def _daemon_rows(
     """The shared-path daemons that are not running or not reporting."""
     rows: list[dict[str, Any]] = []
     if not isinstance(mapping(airplay.get("current")).get("fanin"), Mapping):
-        rows.append(_path_row(
+        rows.append(path_row(
             "path.fanin_unavailable", PATH_UNREPORTED_TITLE, PATH_UNREPORTED_DETAIL,
         ))
     camilla_stopped = camilla_stopped_verdict(
         mapping(service_states).get(CAMILLA_SERVICE)
     )
     if camilla_stopped is not None:
-        rows.append(_path_row(
+        rows.append(path_row(
             "path.camilla_stopped", STOPPED_DSP_HEADLINE, camilla_stopped[1],
         ))
     if outputd is None:
-        rows.append(_path_row(
+        rows.append(path_row(
             "path.outputd_unavailable",
             *_undeclared_or(
                 undeclared_hardware, OUTPUT_ABSENT_TITLE, OUTPUT_ABSENT_DETAIL,
@@ -169,7 +156,7 @@ def _signal_path_rows(
     title, detail = _sentence(signal_path)
     if code == "output_backend_inactive":
         title, detail = _undeclared_or(undeclared_hardware, title, detail)
-    return [_path_row(key, title, detail, severity)]
+    return [path_row(key, title, detail, severity)]
 
 
 def _usb_latency_row(key: str, title: str, detail: str) -> dict[str, Any]:
