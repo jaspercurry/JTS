@@ -2,34 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compile and apply accepted active-speaker baseline profiles."""
+"""Read the applied active-speaker baseline profile and its candidate identity."""
 
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.dsp_apply import (
-    same_config_file,
-)
-from jasper.output_topology import (
-    canonical_fingerprint as _fingerprint,
-)
+from jasper.dsp_apply import same_config_file
+from jasper.output_topology import canonical_fingerprint as _fingerprint
 
-from .camilla_yaml import (
-    _branch_context,
-    linearization_headroom_db,
-)
+from .camilla_yaml import _branch_context, linearization_headroom_db
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
-from .state_paths import (
-    baseline_profile_state_path,
-)
-
-logger = logging.getLogger(__name__)
+from .state_paths import baseline_profile_state_path
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"

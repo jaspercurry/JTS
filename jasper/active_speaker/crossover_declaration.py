@@ -10,7 +10,7 @@ declaration and the emitted graph cannot disagree. Nothing here writes:
 ``sound_setup`` owns the single durable writer.
 
 **Why the comparison has to exist at all.**
-``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard compares
+``measurement_emit.require_candidate_speaker_identity`` compares
 ``ActiveSpeakerPreset.speaker_identity()``: the candidate's ``source_preset``
 must name the same physical speaker — crossover regions included — as the
 preset recompiled *now* from the saved declaration. So a candidate measured at

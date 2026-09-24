@@ -83,9 +83,9 @@ def gate(
     peak, decaying half-Hann after it, raised-cosine fade into any lead.
 
     This is the PRIMARY and phase window only. The window LADDER has its own
-    shape (:func:`~jasper.active_speaker.crossover_v2.gate_sweep.gated_segment`); the two are not
-    interchangeable and their numbers are not comparable (P1 sec 6, rows D
-    and F).
+    shape (:func:`~jasper.audio_measurement.gating.gated_segment`); the two
+    are not interchangeable and their numbers are not comparable (P1 sec 6,
+    rows D and F).
     """
     if peak is None:
         peak = int(np.argmax(np.abs(ir)))
@@ -130,10 +130,7 @@ def smoothed_curve(
     return curve - float(np.median(curve[band]))
 
 
-def _hold_band_edges(
-    freqs: np.ndarray, logmag: np.ndarray,
-    edge_band_hz: tuple[float, float] = (EDGE_LO_HZ, EDGE_HI_HZ),
-) -> np.ndarray:
+def _hold_band_edges(freqs: np.ndarray, logmag: np.ndarray, edge_band_hz: tuple[float, float]) -> np.ndarray:
     """Blend out-of-band log-magnitude to the nearest in-band value."""
     edge_lo, edge_hi = edge_band_hz
     out = logmag.copy()

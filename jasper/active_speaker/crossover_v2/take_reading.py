@@ -23,6 +23,7 @@ from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
 from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.program_analysis.response import polarity_label
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
     log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
@@ -40,6 +41,8 @@ REFUSE_COMPARE_NO_COMMON_BAND = "compare_no_common_band"
 REFUSE_COMPARE_RATES_DIFFER = "compare_sample_rates_differ"
 #: A preview document that carries no magnitude prediction to compare.
 REFUSE_PREVIEW_UNREADABLE = "compare_preview_unreadable"
+#: The spacing of the Schroeder curves a decay artifact carries.
+SCHROEDER_STEP_MS = 1.0
 
 
 @dataclass(frozen=True)
@@ -103,7 +106,7 @@ def impulse_report(read: TakeRead, *, span_ms: tuple[float, float] = (5.0, 100.0
     summary = {
         "arrival_ms": _number(read.arrival_ms, 3),
         "onset_before_peak_ms": round(1000 * (capture.peak_idx - shape.onset_index) / rate, 3),
-        "polarity": "normal" if shape.polarity > 0 else "inverted",
+        "polarity": polarity_label(shape.polarity),
         "peak_to_noise_db": _number(shape.peak_to_noise_db, 1),
         "reflection_free_ms": _number(reflection, 2),
         "etc_db": [{"ms": ms, "db": _number(db, 1)} for ms, db in shape.etc_db],
@@ -123,12 +126,12 @@ def impulse_report(read: TakeRead, *, span_ms: tuple[float, float] = (5.0, 100.0
     }
 
 
-def decay_report(read: TakeRead, *, step_ms: float = 1.0) -> dict[str, Any]:
+def decay_report(read: TakeRead) -> dict[str, Any]:
     """How the take's sound decays from its onset, octave by octave (ISO 3382-1)."""
     capture, rate = read.capture, read.capture.sample_rate
     onset = impulse_shape(capture.ir, rate, peak_index=capture.peak_idx).onset_index
     bands = octave_decays(capture.ir, rate, start_index=onset, band_hz=capture.radiated_band_hz)
-    step = max(1, round(step_ms * rate / 1000))
+    step = max(1, round(SCHROEDER_STEP_MS * rate / 1000))
     return {
         "parameters": {
             **read.parameters(), "band_filter": f"octave; Butterworth order {FILTER_ORDER} edges; time-reversed",
@@ -144,7 +147,7 @@ def decay_report(read: TakeRead, *, step_ms: float = 1.0) -> dict[str, Any]:
                        "t30_s": _number(band.t30_s, 3), "decay_range_db": _number(band.decay_range_db, 1),
                        "noise_crossing_ms": _number(band.noise_crossing_ms, 1)} for band in bands],
         },
-        "schroeder_step_ms": step_ms,
+        "schroeder_step_ms": SCHROEDER_STEP_MS,
         "schroeder_db": [{"hz": band.centre_hz, "db": _numbers(band.schroeder_db[::step], 2)} for band in bands],
     }
 
@@ -155,7 +158,7 @@ def group_delay_report(
     """Phase, group delay and excess group delay by frequency, through one window."""
     capture = read.capture
     window, window_source = read.window(window_ms)
-    band = trusted_band_hz(window, capture.radiated_band_hz, capture.sample_rate)
+    band = trusted_band_hz(window, capture.sample_rate, capture.radiated_band_hz)
     if band is None:
         raise RoundCapturesRefused(REFUSE_TAKE_BAND_TOO_NARROW, {
             "capture_id": capture.capture_id, "role": read.role, "window_ms": window,
@@ -237,8 +240,6 @@ def _difference_report(
         raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {"band_hz": list(band)})
     delta = difference.delta_db
     b_side, a_side = difference.curve_db - difference.level_offset_db, difference.against_db
-
-
     summary = {key: _number(value, 2) if isinstance(value, float) else value
                for key, value in deviation_summary(difference.freqs_hz, delta).items()}
     return {
@@ -266,16 +267,15 @@ def compare_report(
         raise RoundCapturesRefused(REFUSE_COMPARE_RATES_DIFFER, {"a": rate, "b": b.capture.sample_rate})
     (a_window, a_source), (b_window, b_source) = a.window(window_ms), b.window(window_ms)
     window = min(a_window, b_window)
-    a_band, b_band = (trusted_band_hz(window, side.capture.radiated_band_hz, rate) for side in (a, b))
-    band = None if a_band is None or b_band is None else (max(a_band[0], b_band[0]), min(a_band[1], b_band[1]))
-    if band is None or band[1] <= band[0] * 1.5:
+    band = trusted_band_hz(window, rate, a.capture.radiated_band_hz, b.capture.radiated_band_hz)
+    if band is None:
         raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {
             "window_ms": window, "a_band_hz": list(a.capture.radiated_band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
         })
     grid = log_grid_hz(band, points_per_octave)
     a_db, b_db = (magnitude_db(side.capture.ir, rate, peak_index=side.capture.peak_idx, window_ms=window,
-                               lead_ms=PHASE_GATE_LEAD_MS, grid_hz=grid, smoothing_fraction=smoothing_fraction or None)
+                               lead_ms=PHASE_GATE_LEAD_MS, grid_hz=grid, smoothing_fraction=smoothing_fraction)
                   for side in (a, b))
     summary, curves = _difference_report(grid, a_db, b_db, band, remove_level=remove_level)
     same_recording = a.capture.capture_id == b.capture.capture_id
@@ -308,10 +308,9 @@ def compare_preview_report(
     The forecast carries no absolute level, so the level always comes off.
     """
     rate = b.capture.sample_rate
-    trusted = trusted_band_hz(preview.window_ms, b.capture.radiated_band_hz, rate)
-    band = None if trusted is None else (max(trusted[0], preview.band_hz[0], float(preview.freqs_hz[0])),
-                                         min(trusted[1], preview.band_hz[1], float(preview.freqs_hz[-1])))
-    if band is None or band[1] <= band[0] * 1.5:
+    band = trusted_band_hz(preview.window_ms, rate, b.capture.radiated_band_hz, preview.band_hz,
+                           (preview.freqs_hz[0], preview.freqs_hz[-1]))
+    if band is None:
         raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {
             "window_ms": preview.window_ms, "preview_band_hz": list(preview.band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
@@ -321,7 +320,7 @@ def compare_preview_report(
                  if smoothing_fraction else preview.predicted_db)
     a_db = np.interp(grid, preview.freqs_hz, predicted)
     b_db = magnitude_db(b.capture.ir, rate, peak_index=b.capture.peak_idx, window_ms=preview.window_ms,
-                        lead_ms=preview.lead_ms, grid_hz=grid, smoothing_fraction=smoothing_fraction or None)
+                        lead_ms=preview.lead_ms, grid_hz=grid, smoothing_fraction=smoothing_fraction)
     summary, curves = _difference_report(grid, a_db, b_db, band, remove_level=True)
     return {
         "parameters": {

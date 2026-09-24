@@ -18,7 +18,10 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import signal as scipy_signal
 
-OCTAVE_CENTRES_HZ = (63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0)
+from .band_ladders import OCTAVE_BAND_CENTERS_HZ, OCTAVE_BANDS_HZ
+
+#: ISO 3382-1's lowest octave.
+LOWEST_CENTRE_HZ = 63.0
 #: Each figure's evaluation range on the Schroeder curve, in dB (ISO 3382-1).
 FIGURE_RANGES_DB = {"edt_s": (0.0, -10.0), "t20_s": (-5.0, -25.0), "t30_s": (-5.0, -35.0)}
 #: A figure is read only when the band's noise sits at least this far below
@@ -51,15 +54,14 @@ class BandDecay:
     schroeder_db: np.ndarray
 
 
-def octave_band(samples: np.ndarray, sample_rate: int, centre_hz: float) -> tuple[np.ndarray, int]:
-    """``samples`` through one octave band, and the band's lead in samples.
+def octave_band(samples: np.ndarray, sample_rate: int, edges_hz: tuple[float, float]) -> tuple[np.ndarray, int]:
+    """``samples`` through one band, and the band's lead in samples.
 
     The filter runs time-reversed, so its own ringing lands before a sound
     rather than in its decay; the lead is how far before a sound that
     ringing reaches, so an integral started that early holds the whole of it.
     """
-    edges = (centre_hz / np.sqrt(2.0), min(centre_hz * np.sqrt(2.0), 0.49 * sample_rate))
-    sos = scipy_signal.butter(FILTER_ORDER, edges, btype="bandpass", fs=sample_rate, output="sos")
+    sos = scipy_signal.butter(FILTER_ORDER, edges_hz, btype="bandpass", fs=sample_rate, output="sos")
     probe = np.zeros(sample_rate // 2)
     probe[0] = 1.0
     spread = np.cumsum(scipy_signal.sosfilt(sos, probe) ** 2)
@@ -75,7 +77,7 @@ def _slope_db_per_s(level_db: np.ndarray, sample_rate: int) -> tuple[float, floa
 
 
 def band_decay(
-    band: np.ndarray, sample_rate: int, *, start_index: int, centre_hz: float, lead: int = 0,
+    band: np.ndarray, sample_rate: int, *, start_index: int, centre_hz: float, lead: int,
 ) -> BandDecay:
     """One band's decay from ``start_index``, where the sound starts, integrated
     from ``lead`` samples before it."""
@@ -126,11 +128,11 @@ def band_decay(
 def octave_decays(
     samples: np.ndarray, sample_rate: int, *, start_index: int, band_hz: tuple[float, float],
 ) -> tuple[BandDecay, ...]:
-    """Every octave band whose centre lies inside ``band_hz`` and whose top edge
-    lies below Nyquist, read from ``start_index``."""
+    """Every octave band from :data:`LOWEST_CENTRE_HZ` whose centre lies inside
+    ``band_hz`` and whose top edge lies below Nyquist, read from ``start_index``."""
     decays = []
-    for centre in OCTAVE_CENTRES_HZ:
-        if band_hz[0] <= centre <= band_hz[1] and centre * np.sqrt(2.0) < sample_rate / 2:
-            band, lead = octave_band(samples, sample_rate, centre)
+    for centre, edges in zip(OCTAVE_BAND_CENTERS_HZ, OCTAVE_BANDS_HZ):
+        if LOWEST_CENTRE_HZ <= centre and band_hz[0] <= centre <= band_hz[1] and edges[1] < sample_rate / 2:
+            band, lead = octave_band(samples, sample_rate, edges)
             decays.append(band_decay(band, sample_rate, start_index=start_index, centre_hz=centre, lead=lead))
     return tuple(decays)

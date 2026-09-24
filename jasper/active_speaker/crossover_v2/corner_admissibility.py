@@ -68,7 +68,7 @@ def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) ->
     ``preset_binding.compile_preset_from_crossover_preview``, which recompiles it as
     ``f"{lower_role}_{upper_role}_{int(round(frequency))}hz"``; any other
     spelling — a pinned order joining the name included — is refused
-    ``measured_candidate_preset_mismatch`` at apply. Change this format only
+    ``measurement_candidate_speaker_mismatch`` at apply. Change this format only
     together with preset_binding's.
     """
     moved: dict[str, Any] = {"fc_hz": float(fc_hz)}

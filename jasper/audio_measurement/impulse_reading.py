@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .analysis import smooth_fractional_octave
+from .deconv import magnitude_response
 from .excess_phase import PHASE_NFFT, excess_group_delay, local_group_delay_s
 from .gating import analytic_envelope, f_trusted_floor_hz, gated_segment
 
@@ -31,6 +32,8 @@ NOISE_BEFORE_ONSET_MS = (50.0, 10.0)
 #: reading averages the energy over +/- :data:`ETC_SPAN_FRACTION` of its time.
 ETC_READ_MS = (1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0)
 ETC_SPAN_FRACTION = 0.1
+#: The narrowest band a read reports: its top edge above this multiple of its bottom.
+MIN_BAND_RATIO = 1.5
 
 
 @dataclass(frozen=True)
@@ -109,12 +112,14 @@ def log_grid_hz(band_hz: tuple[float, float], points_per_octave: int) -> np.ndar
     return np.geomspace(lo, hi, max(2, int(round(np.log2(hi / lo) * points_per_octave)) + 1))
 
 
-def trusted_band_hz(window_ms: float, radiated_band_hz: tuple[float, float],
-                    sample_rate: int) -> tuple[float, float] | None:
-    """Where a ``window_ms`` read of a sweep over ``radiated_band_hz`` can be trusted."""
-    lo = max(float(radiated_band_hz[0]), f_trusted_floor_hz(window_ms / 1000))
-    hi = min(float(radiated_band_hz[1]), sample_rate / 2)
-    return (lo, hi) if hi > lo * 1.5 else None
+def trusted_band_hz(
+    window_ms: float, sample_rate: int, *bands_hz: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Where a ``window_ms`` read inside every one of ``bands_hz`` can be trusted;
+    ``None`` when that leaves less than :data:`MIN_BAND_RATIO` of band."""
+    lo = max(f_trusted_floor_hz(window_ms / 1000), *(float(band[0]) for band in bands_hz))
+    hi = min(sample_rate / 2, *(float(band[1]) for band in bands_hz))
+    return (lo, hi) if hi > lo * MIN_BAND_RATIO else None
 
 
 def timing_by_frequency(
@@ -170,9 +175,9 @@ def magnitude_db(
     power-smoothed to 1/``smoothing_fraction`` octave when given, on ``grid_hz``.
     Uncalibrated dB."""
     segment, _ = gated_segment(samples, sample_rate, gate_ms=window_ms, peak_idx=peak_index, lead_ms=lead_ms)
-    spectrum = np.fft.rfft(segment, n=max(PHASE_NFFT, 1 << (segment.size - 1).bit_length()))
-    freqs = np.fft.rfftfreq(2 * (spectrum.size - 1), d=1.0 / sample_rate)[1:]
-    db = 20 * np.log10(np.maximum(np.abs(spectrum[1:]), 1e-12))
+    freqs, db = magnitude_response(segment, sample_rate, normalize=False,
+                                   n_fft=max(PHASE_NFFT, 1 << (segment.size - 1).bit_length()))
+    freqs, db = freqs[1:], db[1:]
     if smoothing_fraction:
         db = smooth_fractional_octave(freqs, db, smoothing_fraction)
     return np.interp(grid_hz, freqs, db)
