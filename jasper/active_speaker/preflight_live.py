@@ -23,7 +23,7 @@ from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
-from .measurement_programs import BASE_CANDIDATE, candidate_identity
+from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
 from .program_failure import read_output_volume
@@ -109,5 +109,7 @@ def read_preflight_facts(
         applied_bass_extension=applied_bass_extension,
         program_ids_for=program_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
+        near_field_drivers=(near_field_drivers(context.topology)
+                            if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
     )
