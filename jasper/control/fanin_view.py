@@ -18,12 +18,12 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from jasper.control._health_fields import (
-    as_float,
     as_int,
     as_int_or_none,
     nonneg_rate,
 )
 from jasper.fanin.status import fanin_inputs_by_label, read_fanin_status
+from jasper.json_fields import as_float
 from jasper.music_sources import MUSIC_SOURCE_SPECS, MusicSourceSpec
 
 # Fallback mixer rate when fan-in STATUS omits output.sample_rate.

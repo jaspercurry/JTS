@@ -20,6 +20,7 @@ from jasper.json_fields import (
     CodedFieldError,
     JsonFields,
     _HASH_CHUNK_BYTES,
+    as_float,
     finite_float,
     json_fingerprint,
     sha256_file,
@@ -43,6 +44,17 @@ from jasper.json_fields import (
 )
 def test_finite_float_reads_only_a_real_number(value, expected):
     result = finite_float(value)
+    assert result == expected
+    assert result is None or type(result) is float
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, 1.0), (" 1.5 ", 1.5), ("-inf", float("-inf")), (3, 3.0),
+     (None, None), ("junk", None), ([1], None)],
+)
+def test_as_float_coerces_whatever_float_accepts(value, expected):
+    result = as_float(value)
     assert result == expected
     assert result is None or type(result) is float
 

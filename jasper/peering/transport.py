@@ -27,6 +27,7 @@ import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from jasper.json_fields import as_float
 from jasper.log_event import log_event
 
 from .config import MULTICAST_GROUP, MULTICAST_PORT, MULTICAST_TTL
@@ -173,8 +174,8 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
                 report=WakeReport(
                     peer_id=str(msg["peer"]),
                     score=float(msg["score"]),
-                    snr_db=maybe_float(msg.get("snr_db")),
-                    rms_dbfs=maybe_float(msg.get("rms_dbfs")),
+                    snr_db=as_float(msg.get("snr_db")),
+                    rms_dbfs=as_float(msg.get("rms_dbfs")),
                     primary=bool(msg.get("primary", 0)),
                     can_serve=bool(msg.get("can_serve", 1)),
                 ),
@@ -202,15 +203,6 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
         return None
     except (KeyError, ValueError, TypeError) as e:
         logger.debug("peering: dropped bad %s payload: %s", t, e)
-        return None
-
-
-def maybe_float(v) -> float | None:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
         return None
 
 

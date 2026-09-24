@@ -28,6 +28,7 @@ import logging
 import time
 from typing import Optional
 
+from jasper.json_fields import as_float
 from jasper.log_event import log_event
 
 from .config import (
@@ -67,7 +68,6 @@ from .transport import (
     IncomingMessage,
     IncomingWake,
     MulticastTransport,
-    maybe_float,
     encode_claim,
     encode_end,
     encode_heartbeat,
@@ -307,8 +307,8 @@ class PeeringDaemon:
         # future from inside _execute.
         self._dispatch(LocalWake(
             score=score,
-            snr_db=maybe_float(snr_db),
-            rms_dbfs=maybe_float(rms_dbfs),
+            snr_db=as_float(snr_db),
+            rms_dbfs=as_float(rms_dbfs),
             can_serve=can_serve,
             now=self._loop.time(),  # type: ignore[union-attr]
         ))

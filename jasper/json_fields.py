@@ -45,6 +45,16 @@ def finite_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def as_float(value: Any) -> float | None:
+    """``value`` coerced by ``float()``, or ``None`` when it refuses it — the
+    lenient sibling of :func:`finite_float`: numeric strings and ``bool``
+    convert, and NaN and infinities pass through."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def utc_now_iso() -> str:
     """The wall-clock stamp artifacts carry, e.g. ``2026-09-07T12:34:56Z``."""
     return time.strftime(_ISO_FORMAT, time.gmtime())

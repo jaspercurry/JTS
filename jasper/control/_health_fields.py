@@ -75,14 +75,6 @@ def as_int(value: Any, default: int = 0) -> int:
     return default if parsed is None else parsed
 
 
-def as_float(value: Any) -> float | None:
-    """``value`` as a ``float``, or ``None`` when it is not one."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def as_int_or_none(value: Any) -> int | None:
     """``value`` as an ``int``, or ``None`` when it is not one — ``0`` would
     misread as "confirmed zero" rather than "couldn't tell".

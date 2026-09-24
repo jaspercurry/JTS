@@ -33,7 +33,6 @@ from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control._health_fields import (
-    as_float,
     as_int,
     as_int_or_none,
     nonneg_delta,
@@ -43,6 +42,7 @@ from jasper.control._health_fields import (
 )
 from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
+from jasper.json_fields import as_float
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE, JournalctlUnavailable, run_journalctl_json
 from jasper.source_state import airplay_playing
 
