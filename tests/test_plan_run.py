@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
+from itertools import count
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock, Mock
@@ -38,11 +39,13 @@ from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import RoleBand, build_measure_program
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from jasper.web import correction_run_host
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis, _roles
+from tests.crossover_v2_fixtures import (
+    FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
+)
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_active_speaker_program_admission import _profile_and_targets
@@ -794,38 +797,44 @@ class _LevelStore(_Store):
         return await super().bank(record)
 
 
-def _run_levelled(request, readings):
-    """A plan whose recordings pass, judged only on the level each take read."""
-    fakes = FakeSeams()
+def _run_levelled(request, readings, *, replace_at=None):
+    """A plan whose recordings pass, judged on the level each take read; the
+    operator re-places the microphone at take ``replace_at``."""
+    fakes, takes = FakeSeams(), count(1)
     manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0))
+
+    def assessor(analysis, **kwargs):
+        if next(takes) == replace_at:
+            return TakeVerdict(False, next="fix_and_retake", charge="operator")
+        return capture_dispatch.assess(analysis, **kwargs)
 
     async def run():
         async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
-                request, session=session, manifest=manifest, analyze=_analysis, aborts=_ABORTS,
-                captures=plan_run.prepare_plan_captures(request),
-                assessor=lambda analysis, **kw: capture_dispatch.assess(
-                    analysis, prior_verdict=TakeVerdict(True, next="accept"), **kw))
+                request, session=session, manifest=manifest, gate=AnsweredGate(), aborts=_ABORTS,
+                analyze=lambda record, _id: _measure_analysis(ExcitationProgram.from_dict(record["program"])),
+                captures=plan_run.prepare_plan_captures(request), assessor=assessor)
 
     result = asyncio.run(run())
     return result, fakes, [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
 
 
 def test_a_near_field_take_levels_itself_before_it_is_kept():
-    """Each pose's first attempt plays under the target and is retaken at the
-    solved peak; the in-band retake is the kept take, and in-band re-seats are
-    never sent back as drift between repeats (ADR-0355)."""
-    layout = [("woofer", 15), ("woofer", 30), ("woofer", 15)]
+    """Each placement's first attempt plays under the target and is retaken at
+    the solved peak; the rest of that placement starts there, a re-placement
+    starts quiet again, and in-band re-seats are never sent back as drift
+    (ADR-0355)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
-        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
-        purpose="reference", regime="near_field"))
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
 
-    result, fakes, selected = _run_levelled(request, (66.0, 79.0, 64.0, 79.0, 66.0, 81.5))
+    result, fakes, selected = _run_levelled(request, (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0),
+                                            replace_at=3)
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None, -28.0, None, -27.0, None, -28.0]
-    assert selected == [False, True] * 3
+    assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
+    assert selected == [False, True, False, False, True, False, True, False, True]
 
 
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():

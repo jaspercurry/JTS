@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
@@ -20,6 +20,8 @@ from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
+from jasper.audio_measurement.ramp import capped_gap_step_db
+from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.active_speaker.program_failure import read_output_volume
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
@@ -66,25 +68,29 @@ def level_drift_verdict(
                                  if value is not None})
 
 
-def level_target_verdict(record: Mapping[str, Any]) -> TakeVerdict:
-    """A near-field take judged against its level target, never its repeats:
-    outside the band it is retaken at the sweep peak that lands the target."""
-    spl = (record.get("capture_integrity") or {}).get("spl") or {}
-    reading, stop = finite_float(spl.get("max_window_db_spl")), finite_float(spl.get("ceiling_db_spl"))
-    peak = max((gain for segment in (record.get("program") or {}).get("segments", ())
-                if segment.get("kind") == KIND_SWEEP and (gain := finite_float(segment.get("gain_db"))) is not None),
-               default=None)
-    if reading is None or stop is None or peak is None:
-        return TakeVerdict(True, next="accept", charge="none")
-    target = min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB)
-    gap = target - reading
-    evidence: dict[str, float | bool | str] = {"max_window_db_spl": reading, "level_target_db_spl": target,
-                                               "level_gap_db": gap}
-    if abs(gap) <= NEAR_FIELD_TARGET_TOLERANCE_DB:
-        return TakeVerdict(True, next="accept", charge="none", evidence=evidence)
-    return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
-                       next="retake_louder" if gap > 0 else "retake_quieter", charge="speaker",
-                       next_gain_db=peak + min(gap, LEVEL_SOLVE_MAX_RAISE_DB), evidence=evidence)
+class _LevelTarget(NamedTuple):
+    """A near-field take's reading against its target, and the peak it played at."""
+
+    reading_db_spl: float
+    target_db_spl: float
+    peak_dbfs: float
+
+    @property
+    def gap_db(self) -> float:
+        return self.target_db_spl - self.reading_db_spl
+
+
+def _level_target(target_db_spl: float | None, spl: Mapping[str, Any] | None,
+                  program: ExcitationProgram | None) -> _LevelTarget | None:
+    """The target a take at one driver's pose is held to, never above the
+    admission bound under its own stop (ADR-0355)."""
+    reading = finite_float((spl or {}).get("max_window_db_spl"))
+    stop = finite_float((spl or {}).get("ceiling_db_spl"))
+    peak = stimulus_peak_dbfs(program) if program is not None else None
+    if target_db_spl is None or reading is None or stop is None or peak is None:
+        return None
+    return _LevelTarget(reading, min(target_db_spl, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),
+                        peak)
 
 
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
@@ -101,8 +107,18 @@ def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | Non
 
 def assess(
     analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
-    prior_verdict: TakeVerdict | None = None, **kwargs: Any,
+    level_target_db_spl: float | None = None, prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
+    level = _level_target(level_target_db_spl, kwargs.get("spl"), kwargs.get("program"))
+    # A take the microphone heard is levelled before its recording is judged;
+    # one it did not hear is judged, never levelled blind (ADR-0355).
+    if (prior_verdict is None and level is not None and abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB
+            and _stimulus_locate_ok(analysis)):
+        step = capped_gap_step_db(measured_db=level.reading_db_spl, target_db=level.target_db_spl,
+                                  cap_db=LEVEL_SOLVE_MAX_RAISE_DB)
+        prior_verdict = TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
+                                    next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
+                                    next_gain_db=level.peak_dbfs + step)
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
     # Removal condition: see the output mute guard in preflight.py.
     if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
@@ -113,6 +129,12 @@ def assess(
                               evidence={**verdict.evidence, **output_volume})
     verdict = replace(verdict, screens=[] if verdict.fault == reasons.REASON_MEASUREMENT_OUTPUT_MUTED
                       else pilot_screens(analysis, program=kwargs.get("program")))
+    if level is not None:
+        verdict = replace(verdict, evidence={**verdict.evidence, "max_window_db_spl": level.reading_db_spl,
+                                             "level_target_db_spl": level.target_db_spl})
+        if verdict.next == "retake_louder" and verdict.next_gain_db is not None:
+            # No retake raises a near-field take past its target.
+            verdict = replace(verdict, next_gain_db=min(verdict.next_gain_db, level.peak_dbfs + level.gap_db))
     if level_verdict is None:
         return verdict
     verdict = replace(verdict, evidence={**verdict.evidence, **level_verdict.evidence})

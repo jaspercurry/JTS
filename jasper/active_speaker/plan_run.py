@@ -34,7 +34,7 @@ from .angle_capture import (
 )
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
-from .crossover_v2.capture_dispatch import assess, level_drift_verdict, level_target_verdict
+from .crossover_v2.capture_dispatch import NEAR_FIELD_TARGET_DB_SPL, assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
@@ -420,7 +420,8 @@ async def _run(
     def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            level_observations[take_id] = (level_target_verdict(record) if record.get("pose_driver")
+            # A take at one driver's pose answers to its level target, never its repeats (ADR-0355).
+            level_observations[take_id] = (TakeVerdict(True, next="accept", charge="none") if record.get("pose_driver")
                                            else level_drift_verdict(**manifest.level_observation(record)))
         return level_observations[take_id]
 
@@ -478,6 +479,11 @@ async def _run(
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
+                    if item.stop["pose"].get("driver"):
+                        # A new placement at a driver's pose starts quiet again (ADR-0355).
+                        for index, row in enumerate(work):
+                            if row.pose_index == item.pose_index:
+                                playing[index] = row.spec
                 if retry.next in {"retake_louder", "retake_quieter"}:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"
@@ -547,7 +553,8 @@ async def _run(
                             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
                             assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
                                               spl=(record.get("capture_integrity") or {}).get("spl"),
-                                              program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict)
+                                              program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
+                                              level_target_db_spl=NEAR_FIELD_TARGET_DB_SPL if record.get("pose_driver") else None)
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
@@ -587,6 +594,11 @@ async def _run(
                     continue
                 retry = None
                 retry_was_measured = False
+                if item.stop["pose"].get("driver"):
+                    # The rest of this placement plays at the level this take landed (ADR-0355).
+                    for index in range(offset + 1, len(work)):
+                        if work[index].pose_index == item.pose_index:
+                            playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)
                 if signals.retake.is_set():
                     continue
                 offset += 1
