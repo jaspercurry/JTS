@@ -113,7 +113,7 @@ def _wire_billable_activity_meter(
     usage_store: UsageStore,
     provider: str,
     flat_per_hour_usd: float,
-) -> bool:
+) -> None:
     """Wire flat-rate realtime billing into a provider connection.
 
     Token-billed providers skip this entirely. For flat-rate realtime
@@ -121,7 +121,7 @@ def _wire_billable_activity_meter(
     by marking the meter at the right lifecycle points.
     """
     if flat_per_hour_usd <= 0:
-        return False
+        return
 
     connection.set_billable_activity_meter(BillableActivityMeter(
         usage_store, provider, flat_per_hour_usd,
@@ -130,7 +130,6 @@ def _wire_billable_activity_meter(
         "realtime activity meter: enabled for %s at $%.2f/hour",
         provider, flat_per_hour_usd,
     )
-    return True
 
 
 def _active_voice(cfg: Config) -> str:

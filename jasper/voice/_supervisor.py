@@ -24,9 +24,9 @@ import socket
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from ..backoff import reconnect_delay, sleep_or_nudge
+from ..backoff import RECONNECT_INITIAL_BACKOFF_SEC, reconnect_delay, sleep_or_nudge
 from ..log_event import log_event
-from ..os_fault import root_os_error
+from ..os_fault import exception_chain, root_os_error
 from ..secret_redaction import redact_secrets
 from .session import ConnectionState, CuePlayer
 
@@ -134,11 +134,6 @@ def http_status(exc: BaseException) -> int | None:
 
 _ABSENT = object()
 
-# Links followed down a failure's cause/context chain looking for the
-# close it was translated from: google-genai raises one link above it,
-# and the bound stops a hand-built cyclic chain.
-_CLOSE_CHAIN_LIMIT = 4
-
 
 def provider_code(exc: BaseException) -> int | None:
     """The code a failure carries where ``http_status`` cannot see it.
@@ -177,14 +172,10 @@ def peer_initiated_close(exc: BaseException) -> bool:
     failure without one reads it off the first close in that chain which
     received the same code. See #3895."""
     code = provider_code(exc)
-    link: BaseException | None = exc
-    for _ in range(_CLOSE_CHAIN_LIMIT):
-        if link is None:
-            break
+    for link in exception_chain(exc, context=True):
         flag = getattr(link, "rcvd_then_sent", _ABSENT)
-        if flag is not _ABSENT and (link is exc or provider_code(link) == code):
+        if flag is not _ABSENT and provider_code(link) == code:
             return flag is not False
-        link = link.__cause__ if link.__cause__ is not None else link.__context__
     return True
 
 
@@ -462,8 +453,7 @@ class SupervisedConnection(Protocol):
         ...
 
 
-# One full cycle of the 1/2/4/8 s reconnect ramp (jasper/backoff.py).
-AWAIT_CONNECTED_TIMEOUT_SEC = 15.0
+AWAIT_CONNECTED_TIMEOUT_SEC = RECONNECT_INITIAL_BACKOFF_SEC * (1 + 2 + 4 + 8)
 
 
 async def await_connected(conn: SupervisedConnection) -> None:

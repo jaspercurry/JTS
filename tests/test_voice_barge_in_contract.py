@@ -28,25 +28,18 @@ from tests.test_gemini_connection import _FakeConnect
 from tests.test_openai_session import _FakeConnectFactory
 
 
-# The turn class each catalog provider drives. Grok defines no turn class of
-# its own — `GrokRealtimeConnection` inherits OpenAI's `acquire_turn`, which
+# Per catalog provider: the connection `daemon_main._make_connection` builds
+# and the turn class it drives. Grok defines no turn class of its own —
+# `GrokRealtimeConnection` inherits OpenAI's `acquire_turn`, which
 # `test_grok_inherits_openai_seam` pins.
-PROVIDER_TURN_CLASSES = {
-    "gemini": GeminiLiveTurn,
-    "openai": OpenAIRealtimeTurn,
-    "grok": OpenAIRealtimeTurn,
-    "openai_live": OpenAILiveTurn,
+PROVIDER_CLASSES = {
+    "gemini": (GeminiLiveConnection, GeminiLiveTurn),
+    "openai": (OpenAIRealtimeConnection, OpenAIRealtimeTurn),
+    "grok": (GrokRealtimeConnection, OpenAIRealtimeTurn),
+    "openai_live": (OpenAILiveConnection, OpenAILiveTurn),
 }
 
 TURN_CLASSES = (OpenAIRealtimeTurn, GeminiLiveTurn)
-
-# The connection class `daemon_main._make_connection` builds per provider.
-PROVIDER_CONNECTION_CLASSES = {
-    "gemini": GeminiLiveConnection,
-    "openai": OpenAIRealtimeConnection,
-    "grok": GrokRealtimeConnection,
-    "openai_live": OpenAILiveConnection,
-}
 
 
 def _make_turn(cls):
@@ -75,14 +68,15 @@ def test_fake_live_turn_conforms_to_the_protocol():
     assert isinstance(FakeLiveTurn(), LiveTurn)
 
 
-def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn():
-    """The catalog's `interrupt_reconcile` is a REQUIRED field, so declaring
-    one is the same act as promising the seam. This pins that the two never
-    drift: a fourth provider must appear in both places, and a turn class
-    that drops part of `LiveTurn` or of `Interruptible` fails here rather
-    than at the first barge-in."""
-    assert set(PROVIDER_TURN_CLASSES) == {p.id for p in PROVIDERS}
-    for provider_id, cls in PROVIDER_TURN_CLASSES.items():
+def test_every_catalog_provider_ships_a_conforming_connection_and_turn():
+    """The daemon reaches a provider only through `LiveConnection` and its
+    turns, and the catalog's `interrupt_reconcile` is a REQUIRED field, so
+    declaring one is the same act as promising the seam. A provider added to
+    the catalog, or a class that drops part of `LiveConnection`, `LiveTurn`
+    or `Interruptible`, fails here rather than at the first wake."""
+    assert set(PROVIDER_CLASSES) == {p.id for p in PROVIDERS}
+    for provider_id, (connection_cls, cls) in PROVIDER_CLASSES.items():
+        assert issubclass(connection_cls, LiveConnection), provider_id
         kind = resolve_interrupt_reconcile(provider_id)
         assert kind in (
             InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
@@ -103,15 +97,6 @@ def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn()
         # The two halves are exclusive: an exempt turn carries no reconcile
         # seam for the host to call, and every other turn carries all of it.
         assert isinstance(turn, Interruptible) is not turn.owns_interruption, provider_id
-
-
-def test_every_catalog_provider_ships_a_live_connection():
-    """The daemon reaches a provider only through `LiveConnection`, so a
-    member added to the Protocol, or a provider added to the catalog,
-    fails here rather than at the first wake."""
-    assert set(PROVIDER_CONNECTION_CLASSES) == {p.id for p in PROVIDERS}
-    for provider_id, cls in PROVIDER_CONNECTION_CLASSES.items():
-        assert issubclass(cls, LiveConnection), provider_id
 
 
 # ---------------------------------------------------------------------------

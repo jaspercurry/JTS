@@ -58,14 +58,13 @@ def test_flat_rate_meter_wiring_uses_generic_activity_hook(tmp_path) -> None:
 
     conn = _FlatRateConnection()
     store = UsageStore(str(tmp_path / "usage.db"))
-    wired = _wire_billable_activity_meter(
+    _wire_billable_activity_meter(
         connection=conn,  # type: ignore[arg-type]
         usage_store=store,
         provider="future-flat",
         flat_per_hour_usd=2.5,
     )
 
-    assert wired is True
     assert isinstance(conn.meter, BillableActivityMeter)
 
 
