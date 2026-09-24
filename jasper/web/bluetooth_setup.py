@@ -509,12 +509,14 @@ def _landing_html(csrf_token: str = "") -> bytes:
     )
 
 
-def _run_claimed(handler: Any, claim: bool, change: Callable[[], object]) -> bool:
+def _run_claimed(
+    handler: BaseHTTPRequestHandler, claim: bool, change: Callable[[], object],
+) -> bool:
     """Run `change`, holding the adapter's one action slot when `claim`.
     False, with `change` never run, once a busy slot is answered 409."""
     owner = object() if claim else None
     if owner is not None and not _claim_bluetooth_action(owner):
-        handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
+        send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
         return False
     try:
         change()
@@ -524,14 +526,14 @@ def _run_claimed(handler: Any, claim: bool, change: Callable[[], object]) -> boo
     return True
 
 
-def _get_index(handler: Any) -> None:
+def _get_index(handler: BaseHTTPRequestHandler) -> None:
     ctx = begin_request(handler)
     send_html_response(handler, _landing_html(ctx["csrf_token"]))
 
 
-def _get_state(handler: Any) -> None:
+def _get_state(handler: BaseHTTPRequestHandler) -> None:
     state, status = _bluetooth_state_snapshot()
-    handler._send_json(state, status=status)
+    send_json_response(handler, state, status=status)
 
 
 def _get_devices_stream(handler: Any) -> None:
@@ -576,23 +578,27 @@ _GET_ROUTES = {
 }
 
 
-def _prepare_action(handler: Any, path: str) -> dict[str, Any] | None:
-    body = handler._read_json()
+def _prepare_action(handler: BaseHTTPRequestHandler, path: str) -> dict[str, Any] | None:
+    try:
+        body = read_json_object(handler, max_bytes=1_000_000)
+    except (JsonBodyError, OSError):
+        body = {}
     if path in {"/power", "/discoverable"} and not isinstance(body.get("on"), bool):
-        handler._send_json({"error": "on must be true or false"}, status=400)
+        send_json_response(handler, {"error": "on must be true or false"}, status=400)
         return None
     if path in {"/pair", "/connect", "/disconnect", "/forget"}:
         body["mac"] = _normalize_mac(body.get("mac"))
         if body["mac"] is None:
-            handler._send_json({"error": "invalid mac"}, status=400)
+            send_json_response(handler, {"error": "invalid mac"}, status=400)
             return None
     if path[1:] in _DEVICE_ACTIONS:
         body["mutationId"] = _normalize_mutation_id(body.get("mutationId"))
         if body["mutationId"] is None:
-            handler._send_json({"error": "invalid mutation id"}, status=400)
+            send_json_response(handler, {"error": "invalid mutation id"}, status=400)
             return None
     if bonded_follower_active():
-        handler._send_json(
+        send_json_response(
+            handler,
             {"error": "Bluetooth is managed by the stereo pair "
                       "while this speaker is a follower — unpair "
                       "on /sound/pair/ to change it"},
@@ -608,13 +614,15 @@ def _prepare_action(handler: Any, path: str) -> dict[str, Any] | None:
         try:
             bluetooth_desired = source_intent_enabled(Source.BLUETOOTH)
         except RuntimeError as exc:
-            handler._send_json(
+            send_json_response(
+                handler,
                 {"error": f"Bluetooth intent is unavailable: {exc}"},
                 status=HTTPStatus.BAD_GATEWAY,
             )
             return None
         if not bluetooth_desired:
-            handler._send_json(
+            send_json_response(
+                handler,
                 {"error": "Bluetooth is turned off in Sources"},
                 status=HTTPStatus.CONFLICT,
             )
@@ -626,7 +634,8 @@ def _prepare_action(handler: Any, path: str) -> dict[str, Any] | None:
             )
         )
         if not availability.available:
-            handler._send_json(
+            send_json_response(
+                handler,
                 {"error": bluetooth_unavailable_reason(availability)},
                 status=HTTPStatus.CONFLICT,
             )
@@ -635,7 +644,7 @@ def _prepare_action(handler: Any, path: str) -> dict[str, Any] | None:
 
 
 def _run_action(
-    handler: Any, path: str, body: dict[str, Any],
+    handler: BaseHTTPRequestHandler, path: str, body: dict[str, Any],
     fn: Callable[[dict[str, Any]], None],
 ) -> None:
     try:
@@ -647,10 +656,10 @@ def _run_action(
             # Intent persists before reconciliation; read back even if it fails.
             state, _status = _bluetooth_state_snapshot()
             payload["state"] = state
-        handler._send_json(payload, status=502)
+        send_json_response(handler, payload, status=502)
 
 
-def _post_power(handler: Any) -> None:
+def _post_power(handler: BaseHTTPRequestHandler) -> None:
     body = _prepare_action(handler, "/power")
     if body is None:
         return
@@ -658,12 +667,12 @@ def _post_power(handler: Any) -> None:
     def apply(body: dict[str, Any]) -> None:
         on = body["on"]
         if _run_claimed(handler, on, lambda: request_source_intent(Source.BLUETOOTH, on)):
-            handler._send_json({"ok": True, "desired": on})
+            send_json_response(handler, {"ok": True, "desired": on})
 
     _run_action(handler, "/power", body, apply)
 
 
-def _post_discoverable(handler: Any) -> None:
+def _post_discoverable(handler: BaseHTTPRequestHandler) -> None:
     body = _prepare_action(handler, "/discoverable")
     if body is None:
         return
@@ -673,12 +682,12 @@ def _post_discoverable(handler: Any) -> None:
         if _run_claimed(handler, on, lambda: _dispatch().run(
             set_discoverable(on), timeout_sec=MUTATION_TIMEOUT_SEC,
         )):
-            handler._send_json({"ok": True})
+            send_json_response(handler, {"ok": True})
 
     _run_action(handler, "/discoverable", body, apply)
 
 
-def _post_scan(handler: Any) -> None:
+def _post_scan(handler: BaseHTTPRequestHandler) -> None:
     body = _prepare_action(handler, "/scan")
     if body is None:
         return
@@ -691,33 +700,33 @@ def _post_scan(handler: Any) -> None:
                 _dispatch().engine.start_discovery(duration_s=SCAN_DURATION_SEC),
                 timeout_sec=MUTATION_TIMEOUT_SEC,
             )):
-                handler._send_json({"ok": True, "duration_s": SCAN_DURATION_SEC})
+                send_json_response(handler, {"ok": True, "duration_s": SCAN_DURATION_SEC})
         elif action == "stop":
             _dispatch().run(
                 _dispatch().engine.stop_discovery(), timeout_sec=MUTATION_TIMEOUT_SEC,
             )
-            handler._send_json({"ok": True})
+            send_json_response(handler, {"ok": True})
         else:
-            handler._send_json({"error": "action must be start or stop"}, status=400)
+            send_json_response(handler, {"error": "action must be start or stop"}, status=400)
 
     _run_action(handler, "/scan", body, apply)
 
 
-def _post_pair(handler: Any) -> None:
+def _post_pair(handler: BaseHTTPRequestHandler) -> None:
     body = _prepare_action(handler, "/pair")
     if body is None:
         return
 
     def apply(body: dict[str, Any]) -> None:
         if not _start_pair_stream(body["mac"]):
-            handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
+            send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
             return
-        handler._send_json({"ok": True})
+        send_json_response(handler, {"ok": True})
 
     _run_action(handler, "/pair", body, apply)
 
 
-def _post_device_action(idle_hold: Any, action: str, handler: Any) -> None:
+def _post_device_action(idle_hold: Any, action: str, handler: BaseHTTPRequestHandler) -> None:
     path = f"/{action}"
     body = _prepare_action(handler, path)
     if body is None:
@@ -728,9 +737,10 @@ def _post_device_action(idle_hold: Any, action: str, handler: Any) -> None:
             action, body["mac"], body["mutationId"], idle_hold=idle_hold,
         )
         if attempt is None:
-            handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
+            send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
             return
-        handler._send_json(
+        send_json_response(
+            handler,
             _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
         )
 
@@ -742,15 +752,6 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            send_json_response(self, payload, status=status)
-
-        def _read_json(self) -> dict[str, Any]:
-            try:
-                return read_json_object(self, max_bytes=1_000_000)
-            except (JsonBodyError, OSError):
-                return {}
 
         def _begin_sse(self) -> None:
             self.send_response(200)

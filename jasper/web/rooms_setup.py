@@ -281,10 +281,6 @@ def _render_page(*, csrf_token: str = "") -> bytes:
 # ----------------------------------------------------------------------
 
 
-def _send_json(handler: BaseHTTPRequestHandler, payload: dict, *, status: int = 200) -> None:
-    send_json_response(handler, payload, status=status)
-
-
 # Max JSON body on the POST routes; the real payloads are ~30 B, so anything
 # larger is rejected before it is read off the wire.
 _PEERING_BODY_LIMIT = 4096
@@ -308,7 +304,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         log_event(logger, "rooms.peering.save.reject", reason=err, level=logging.WARNING)
-        _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
+        send_json_response(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
         return
 
     enabled = bool(parsed.get("enabled"))
@@ -333,7 +329,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
         )
     except OSError as e:
         log_event(logger, "rooms.peering.save.error", level=logging.ERROR, exc_info=True)
-        _send_json(
+        send_json_response(
             handler, {"ok": False, "error": f"write failed: {e}"},
             status=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
@@ -352,7 +348,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     restart_voice_daemon()
     restart_systemd_units("jasper-control")
 
-    _send_json(
+    send_json_response(
         handler,
         {"ok": True, "peering": {"enabled": enabled, "primary": primary}},
     )
@@ -373,14 +369,14 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
         log_event(logger, "rooms.bond.save.reject", reason=err, level=logging.WARNING)
-        _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
+        send_json_response(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
         return
 
     members = parsed.get("members")
     if members is None:
         peer_addr = str(parsed.get("peer_addr") or "").strip()
         if not peer_addr:
-            _send_json(
+            send_json_response(
                 handler,
                 {"ok": False, "error": "peer_addr is required"},
                 status=HTTPStatus.BAD_REQUEST,
@@ -388,7 +384,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             return
         members = rooms_peers.stereo_pair_members_from_intent(peer_addr)
     if not isinstance(members, list) or not members:
-        _send_json(
+        send_json_response(
             handler, {"ok": False, "error": "members must be a non-empty list"},
             status=HTTPStatus.BAD_REQUEST,
         )
@@ -488,7 +484,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
                 detail=r["detail"],
                 level=logging.WARNING,
             )
-        _send_json(
+        send_json_response(
             handler,
             {
                 "ok": False,
@@ -544,7 +540,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         members=len(members),
         ok=all_ok,
     )
-    _send_json(
+    send_json_response(
         handler,
         {"ok": all_ok, "bond_id": bond_id, "results": results},
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
@@ -560,7 +556,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     grouping = read_grouping_state()
     bond_id = str(grouping.get("bond_id") or "").strip()
     if not grouping.get("enabled") or not bond_id:
-        _send_json(
+        send_json_response(
             handler, {"ok": False, "error": "not in a bond"},
             status=HTTPStatus.BAD_REQUEST,
         )
@@ -666,7 +662,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         self_ok=self_ok,
         dissolved=len(dissolved),
     )
-    _send_json(
+    send_json_response(
         handler,
         {"ok": self_ok, "bond_id": bond_id, "dissolved": dissolved, "results": results},
         status=HTTPStatus.OK if self_ok else HTTPStatus.BAD_GATEWAY,
@@ -772,7 +768,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     grouping = read_grouping_state()
     bond_id = str(grouping.get("bond_id") or "").strip()
     if not grouping.get("enabled") or not bond_id:
-        _send_json(
+        send_json_response(
             handler, {"ok": False, "error": "not in a bond"},
             status=HTTPStatus.BAD_REQUEST,
         )
@@ -781,7 +777,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     known = rooms_peers.self_addresses()
     peer_addr_r, peer_grouping, perr = resolve_bond_peer(grouping, known)
     if perr:
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": f"channel swap {perr}"},
             status=HTTPStatus.BAD_REQUEST,
@@ -808,7 +804,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     elif {self_channel, peer_channel} == {"left", "right"}:
         swapped_self, swapped_peer = peer_channel, self_channel
     else:
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": (
                 "channel swap needs a left/right pair (this speaker is "
@@ -887,7 +883,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         payload["repaired"] = True
     if rolled_back is not None:
         payload["rolled_back"] = rolled_back
-    _send_json(
+    send_json_response(
         handler,
         payload,
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
@@ -1005,7 +1001,7 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     attenuate-only pair: one side is always 0 dB, the other is <= 0 dB.
     """
     if "balance_db" not in parsed:
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": "balance_db must be a number"},
             status=HTTPStatus.BAD_REQUEST,
@@ -1014,14 +1010,14 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     try:
         balance_db = float(parsed.get("balance_db"))
     except (TypeError, ValueError):
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": "balance_db must be a number"},
             status=HTTPStatus.BAD_REQUEST,
         )
         return
     if not math.isfinite(balance_db):
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": "balance_db must be finite"},
             status=HTTPStatus.BAD_REQUEST,
@@ -1031,14 +1027,14 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     grouping = read_grouping_state()
     if (not grouping.get("enabled") or grouping.get("error")
             or not str(grouping.get("bond_id") or "").strip()):
-        _send_json(
+        send_json_response(
             handler, {"ok": False, "error": "not in a bond"},
             status=HTTPStatus.BAD_REQUEST,
         )
         return
     self_channel = str(grouping.get("channel") or "").strip()
     if self_channel not in ("left", "right"):
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": "balance needs a left/right pair"},
             status=HTTPStatus.BAD_REQUEST,
@@ -1048,7 +1044,7 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     known = rooms_peers.self_addresses()
     peer_addr, peer_grouping, perr = resolve_bond_peer(grouping, known)
     if perr:
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": f"balance {perr}"},
             status=HTTPStatus.BAD_REQUEST,
@@ -1057,7 +1053,7 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     assert peer_grouping is not None
     peer_channel = str(peer_grouping.get("channel") or "").strip()
     if {self_channel, peer_channel} != {"left", "right"}:
-        _send_json(
+        send_json_response(
             handler,
             {"ok": False, "error": (
                 "balance needs a left/right pair (this speaker is "
@@ -1159,7 +1155,7 @@ def _set_pair_balance(handler: BaseHTTPRequestHandler, parsed: dict) -> None:
     }
     if rollbacks:
         payload["rollbacks"] = rollbacks
-    _send_json(
+    send_json_response(
         handler,
         payload,
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
@@ -1173,14 +1169,14 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
     write."""
     parsed, err = read_json_body(handler, max_bytes=_PEERING_BODY_LIMIT)
     if err is not None:
-        _send_json(handler, {"ok": False, "error": err},
+        send_json_response(handler, {"ok": False, "error": err},
                    status=HTTPStatus.BAD_REQUEST)
         return
     _set_pair_balance(handler, parsed)
 
 
 def _get_rooms_json(handler: BaseHTTPRequestHandler) -> None:
-    _send_json(handler, _build_rooms_payload())
+    send_json_response(handler, _build_rooms_payload())
 
 
 def _get_index(handler: BaseHTTPRequestHandler) -> None:
