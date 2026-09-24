@@ -19,7 +19,6 @@ from typing import Any
 from jasper.speaker_layout import (
     ADJACENT_PAIRS_BY_MAIN_MODE,
     DEFAULT_SUB_CROSSOVER_HZ,
-    LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     MAIN_DRIVER_ROLES_BY_MODE,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     SUB_CROSSOVER_HZ_HI,
@@ -51,9 +50,6 @@ DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
 }
 ADJACENT_PAIRS_BY_WAY: dict[int, tuple[tuple[str, str], ...]] = {
     WAY_COUNT_BY_MAIN_MODE[mode]: pairs for mode, pairs in ADJACENT_PAIRS_BY_MAIN_MODE.items()
-}
-LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
-    WAY_COUNT_BY_MAIN_MODE[mode]: role for mode, role in LOWEST_DRIVER_ROLE_BY_MAIN_MODE.items()
 }
 
 SUPPORTED_LAYOUTS = {"mono", "stereo"}
@@ -110,7 +106,7 @@ def lowest_driver_role(way_count: int) -> str:
     This is the driver that carries the bass-management high-pass when a local
     subwoofer is present — the only role with no lower crossover edge."""
     try:
-        return LOWEST_DRIVER_ROLE_BY_WAY[int(way_count)]
+        return DRIVER_ROLES_BY_WAY[int(way_count)][0]
     except (KeyError, TypeError, ValueError) as e:
         raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
 
