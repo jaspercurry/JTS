@@ -14,9 +14,9 @@
   1. Every analysed sweep's deconvolved impulse rides its response as a
      `RecordedImpulse`: the raw deconvolution, with no microphone correction
      and no configured-path composition, kept through
-     `DEFAULT_VERIFY_TAIL_S` past the direct peak, with the sample of the
-     segment's scheduled start (`origin_index`) and the drift accumulated
-     there (`clock_shift_samples`). `(index - origin_index -
+     `DEFAULT_VERIFY_TAIL_S` past the segment's scheduled start, with the
+     sample of that start (`origin_index`) and the drift accumulated there
+     (`clock_shift_samples`). `(index - origin_index -
      clock_shift_samples) / rate` is one clock for every role and repeat of
      one recording.
   2. The capture host writes a take's impulses to `impulses/<take-id>.npz` in

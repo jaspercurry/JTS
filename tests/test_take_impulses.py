@@ -20,10 +20,11 @@ from jasper.active_speaker.crossover_v2.take_impulses import (
     write_take_impulses,
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
-from jasper.audio_measurement.program import build_measure_program, build_verify_program
+from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_measure_program, build_verify_program
 from jasper.audio_measurement.program_analysis import (
     DECONV_PRE_GUARD_S, MeasurementPriors, RecordedImpulse, analyze_program_capture,
 )
+from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import _verify_analysis
 from tests.test_audio_measurement_program_analysis import (
@@ -60,7 +61,16 @@ def test_every_sweep_keeps_its_impulse_on_the_recordings_one_clock():
         tweeter_later, abs=1.0)
     for one in kept:
         assert one.impulse.samples.dtype == np.float32
-        assert one.impulse.samples.size <= one.impulse.peak_index + round(0.5 * SR) + 1
+        assert one.impulse.samples.size <= one.impulse.origin_index + round(0.5 * SR) + 1
+
+
+def test_a_capture_whose_loudest_sample_is_noise_keeps_no_more():
+    full = np.zeros(5 * SR)
+    full[4 * SR] = 1.0
+
+    kept = recorded_impulse(full, 12_000, SimpleNamespace(segment_id="sweep_w"), SR)
+
+    assert kept.samples.size == 12_000 + round(DEFAULT_VERIFY_TAIL_S * SR) + 1
 
 
 def test_a_summed_sweep_keeps_its_impulse():

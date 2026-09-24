@@ -111,18 +111,20 @@ def recorded_impulse(
 ) -> RecordedImpulse:
     """The part of one deconvolved sweep a later reader can use.
 
-    Kept through :data:`DEFAULT_VERIFY_TAIL_S` past the direct peak: the
-    recording ends that long after the sweep, so the highest frequencies hold
-    no decay beyond it. Everything before the peak is kept, the deconvolution
-    pre-guard included, as the noise a reader measures the peak against.
+    Kept through :data:`DEFAULT_VERIFY_TAIL_S` past the sweep's scheduled start,
+    which its direct peak follows by milliseconds: the recording ends that long
+    after the sweep, so the highest frequencies hold no decay beyond it. The
+    schedule, not the loudest sample, bounds it, so a capture of noise keeps
+    no more. Everything before the start is kept, the deconvolution pre-guard
+    included, as the noise a reader measures the peak against.
     """
-    peak = int(np.argmax(np.abs(full_ir)))
-    end = min(full_ir.size, peak + int(round(DEFAULT_VERIFY_TAIL_S * sample_rate)) + 1)
+    end = min(full_ir.size, origin_index + int(round(DEFAULT_VERIFY_TAIL_S * sample_rate)) + 1)
+    samples = np.asarray(full_ir[:end], dtype=np.float32)
     return RecordedImpulse(
-        samples=np.asarray(full_ir[:end], dtype=np.float32),
+        samples=samples,
         sample_rate_hz=int(sample_rate),
         origin_index=int(origin_index),
-        peak_index=peak,
+        peak_index=int(np.argmax(np.abs(samples))),
         segment_id=segment.segment_id,
         clock_shift_samples=float(clock_shift_samples),
     )
