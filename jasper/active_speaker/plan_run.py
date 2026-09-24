@@ -459,6 +459,9 @@ async def _run(
                 offset = next(i for i, row in enumerate(work) if row.pose_index == pose)
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
+                if work[offset].stop["pose"].get("driver"):
+                    # A redo places a driver's pose again from its start, retries included (ADR-0361).
+                    ledgers[pose] = SlotAttempts(retries_per_pose=retries)
             item = work[offset]
             at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
@@ -500,6 +503,8 @@ async def _run(
                                retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset],
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
+            if at_driver:
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "opener"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,

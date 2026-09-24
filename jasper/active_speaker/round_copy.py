@@ -15,6 +15,11 @@ from .movers import MOVER_ARM
 CHOOSE_PROGRAM = "Start a measurement round when you are ready."
 RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
 PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
+#: What a take at one driver's pose is doing: its quiet opener, or a take at the level it found (ADR-0361).
+LEVEL_STEP_LINES = {
+    "opener": "Level check: a quiet first pass finds this pose's level. The room hears almost nothing.",
+    "levelled": "Take: playing at the level the microphone needs.",
+}
 
 
 def pose_name(pose: Mapping[str, Any]) -> str:
@@ -67,6 +72,8 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
         elif facts.get("role"):
             lines.append(f"Measurement {facts['measurement']} of {facts['measurements']}, pose {facts['pose']} of {facts['poses']}.")
             lines.append("Keep the microphone still until the tone stops.")
+            if step := facts.get("level_step"):
+                lines.append(LEVEL_STEP_LINES[step])
         else:
             lines += [pose_line(facts), "Preparing this pose's measurements."]
     if reason := facts.get("retake_reason"):

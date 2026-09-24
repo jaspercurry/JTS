@@ -21,6 +21,8 @@ near-field level: 80 dB peak in the loudest 21 ms window, ±2 dB (#5684).
 2. **Its first attempt at each pose plays 30 dB under that level**, about
    66 dB at 15 mm. The pose's later takes start at the level its take landed,
    and a pose placed again after a refused take or a redo starts quiet again.
+   A redo also gives the pose back its retries, since its opener and level
+   retakes start over, so a redo never ends the round.
 3. **A take at one driver's pose is judged against its level target, not its
    repeats.** Its loudest 21 ms window must read 80 ± 2 dB, and the target
    never sits above the admission bound under the take's own stop. A take
@@ -38,7 +40,8 @@ near-field level: 80 dB peak in the loudest 21 ms window, ±2 dB (#5684).
 ## Consequences
 
 - A pose costs its opener and its levelled take, about twice one take's play
-  time; its later takes reuse the landed level.
+  time; its later takes reuse the landed level. The measure page names which
+  of the two is playing.
 - A target the ceiling cannot reach costs one retake: the take lands at the
   loudest level allowed and is kept, its reading and target beside it.
 - Rejected: a per-pose fader solve (the plan's S5), because the executor holds
