@@ -75,15 +75,18 @@ import os
 import re
 import time
 import urllib.parse
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ..env_load import SPOTIFY_CREDENTIALS_ENV_PATH
 from ..accounts import (
+    ACCOUNT_NAME_PATTERN,
     Account,
     Registry,
     build_cache_handler,
     default_cache_path_for,
+    valid_account_name,
 )
 from ..spotify_router import (
     ACCOUNT_NEEDS_OAUTH,
@@ -343,7 +346,7 @@ def _add_account_form_html(csrf_token: str = "") -> str:
   {csrf}
   <div class="field">
     <label for="name">Your name (label only)</label>
-    <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
+    <input id="name" name="name" type="text" required pattern="{ACCOUNT_NAME_PATTERN}"
            placeholder="brittany" autocapitalize="off" autocorrect="off">
     <p class="form-hint">Lowercase, no spaces. Just an internal label &mdash; pick anything.</p>
   </div>
@@ -538,8 +541,8 @@ def _relink_notice_html(status: AccountStatus | None, name: str, csrf_token: str
     callback overwrites the existing cache file at the same path.
 
     `name` is escaped here for defense in depth — callers already
-    escape (see _account_card_html) and the registry constrains names
-    to `[a-zA-Z0-9_-]+`, but escaping at the render site keeps the
+    escape (see _account_card_html) and names are validated against
+    `ACCOUNT_NAME_PATTERN`, but escaping at the render site keeps the
     function safe if a future caller passes an unescaped name."""
     if status is None or status.state != ACCOUNT_REVOKED:
         return ""
@@ -588,7 +591,7 @@ def _account_card_html(
         '<button class="btn btn--default" type="submit">Set default</button>'
     )
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
-    # The account name is registry-constrained to [a-zA-Z0-9_-]+, but it still
+    # The account name is constrained by ACCOUNT_NAME_PATTERN, but it still
     # rides in the escaped data-confirm attribute (never interpolated into JS)
     # so the shared dialog stays injection-safe regardless of caller.
     remove_confirm = html.escape(f"Remove {account.name}?", quote=True)
@@ -959,7 +962,7 @@ def _handle_start(
         send_see_other(handler, "./", flash="Set up Spotify credentials first.")
         return
     name = form.get("name", "").strip()
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+    if not valid_account_name(name):
         send_see_other(handler, "./", flash="Invalid name (letters/digits/_- only)")
         return
 
@@ -1094,23 +1097,17 @@ def _handle_remove(
 ) -> None:
     name = form.get("name", "")
     registry = Registry.load(cfg["registry_path"])
-    cache_path = ""
-    a = registry.get(name)
-    if a is not None:
-        cache_path = a.cache_path
-    if registry.remove(name):
-        registry.save()
-        if cache_path and os.path.isfile(cache_path):
-            try:
-                os.unlink(cache_path)
-            except OSError:
-                pass
-        _invalidate_health_cache()
-        clause = RESTART_CLAUSE[_restart_spotify_consumers()]
-        log_event(logger, "spotify.unlink", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
-    else:
+    removed = registry.remove(name)
+    if removed is None:
         send_see_other(handler, "./", flash="Account not found")
+        return
+    registry.save()
+    with suppress(OSError):
+        os.unlink(removed.cache_path)
+    _invalidate_health_cache()
+    clause = RESTART_CLAUSE[_restart_spotify_consumers()]
+    log_event(logger, "spotify.unlink", client=handler.address_string())
+    send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
 
 
 def _handle_default(
@@ -1118,16 +1115,15 @@ def _handle_default(
 ) -> None:
     name = form.get("name", "")
     registry = Registry.load(cfg["registry_path"])
-    if registry.get(name) is not None:
-        registry.default_name = name
-        registry.save()
-        clause = RESTART_CLAUSE[_restart_spotify_consumers()]
-        # Account-identity config (which account voice cold-starts from)
-        # + a 3-daemon restart — same audit category as link/unlink.
-        log_event(logger, "spotify.default", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Default set to {name}.{clause}")
-    else:
+    if not registry.set_default(name):
         send_see_other(handler, "./", flash="Account not found")
+        return
+    registry.save()
+    clause = RESTART_CLAUSE[_restart_spotify_consumers()]
+    # Account-identity config (which account voice cold-starts from)
+    # + a 3-daemon restart — same audit category as link/unlink.
+    log_event(logger, "spotify.default", client=handler.address_string())
+    send_see_other(handler, "./", flash=f"Default set to {name}.{clause}")
 
 
 def _get_playlist_preview(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:

@@ -359,8 +359,8 @@ def test_probe_all_health_caches_failure_as_empty_buildresult(tmp_path):
 
 
 def test_relink_notice_html_escapes_name():
-    """Defense-in-depth: even though callers escape and the registry
-    constrains names to `[a-zA-Z0-9_-]+`, `_relink_notice_html` must
+    """Defense-in-depth: even though callers escape and names are
+    validated against `ACCOUNT_NAME_PATTERN`, `_relink_notice_html` must
     escape its own input so a future caller bypassing the upstream
     safeguards doesn't open an XSS hole."""
     from jasper.spotify_router import ACCOUNT_REVOKED, AccountStatus

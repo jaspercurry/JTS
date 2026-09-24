@@ -50,6 +50,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..accounts import ACCOUNT_NAME_PATTERN, valid_account_name
 from ..atomic_io import write_env_file
 from ..env_file import read_env_file
 from ..google_creds import (
@@ -506,7 +507,7 @@ def _add_account_form_html(csrf_token: str = "") -> str:
   {csrf}
   <div class="field">
     <label for="name">Your name (label only)</label>
-    <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
+    <input id="name" name="name" type="text" required pattern="{ACCOUNT_NAME_PATTERN}"
            placeholder="brittany" autocapitalize="off" autocorrect="off">
     <p class="form-hint">Lowercase, no spaces. Used by voice ('what's on Brittany's calendar') and shown in the list below.</p>
   </div>
@@ -564,7 +565,7 @@ def _redirect_uri_page_html(
 
 def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: str = "") -> str:
     """One linked-account row. The account name is untrusted-ish (user
-    label, validated to `[a-zA-Z0-9_-]+` on save) and the email comes
+    label, validated against `ACCOUNT_NAME_PATTERN` on save) and the email comes
     from Google; both are HTML-escaped before interpolation. The
     remove-confirm message rides in `data-confirm` (escaped for an
     attribute) — never inline JS — so the shared confirm-forms.js module
@@ -868,7 +869,7 @@ def _post_start(
         send_see_other(handler, "./", flash="Set up Google credentials first.")
         return
     name = form.get("name", "").strip()
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+    if not valid_account_name(name):
         send_see_other(handler, "./", flash="Invalid name (letters/digits/_- only)")
         return
     registry = GoogleRegistry.load(cfg["registry_path"])
@@ -908,22 +909,16 @@ def _post_remove(
 ) -> None:
     name = form.get("name", "")
     registry = GoogleRegistry.load(cfg["registry_path"])
-    token_path = ""
-    a = registry.get(name)
-    if a is not None:
-        token_path = a.token_path
-    if registry.remove(name):
-        registry.save()
-        if token_path and os.path.isfile(token_path):
-            try:
-                os.unlink(token_path)
-            except OSError:
-                pass
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
-        log_event(logger, "google.unlink", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
-    else:
+    removed = registry.remove(name)
+    if removed is None:
         send_see_other(handler, "./", flash="Account not found")
+        return
+    registry.save()
+    with suppress(OSError):
+        os.unlink(removed.token_path)
+    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    log_event(logger, "google.unlink", client=handler.address_string())
+    send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
 
 
 def _post_default(
@@ -931,16 +926,15 @@ def _post_default(
 ) -> None:
     name = form.get("name", "")
     registry = GoogleRegistry.load(cfg["registry_path"])
-    if registry.get(name) is not None:
-        registry.default_name = name
-        registry.save()
-        # Account-identity config — symmetric with spotify.default.
-        # (No restart here: Google's default is read lazily, but the
-        # config change is still worth the audit line.)
-        log_event(logger, "google.default", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Default set to {name}")
-    else:
+    if not registry.set_default(name):
         send_see_other(handler, "./", flash="Account not found")
+        return
+    registry.save()
+    # Account-identity config — symmetric with spotify.default.
+    # (No restart here: Google's default is read lazily, but the
+    # config change is still worth the audit line.)
+    log_event(logger, "google.default", client=handler.address_string())
+    send_see_other(handler, "./", flash=f"Default set to {name}")
 
 
 def _exchange_code(

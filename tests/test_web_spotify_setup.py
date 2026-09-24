@@ -407,6 +407,30 @@ def test_playlist_remove_uses_guarded_voice_restart(monkeypatch, outcome):
     assert flash == "Removed playlist from brittany." + RESTART_CLAUSE[outcome]
 
 
+def test_remove_deletes_the_account_and_its_token_cache(monkeypatch, tmp_path):
+    token = "y" * 64
+    monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
+    monkeypatch.setattr(
+        spotify_setup, "_restart_spotify_consumers", lambda: RestartOutcome.RAN,
+    )
+    registry = spotify_setup.Registry(path=str(tmp_path / "accounts.json"))
+    for name in ("jasper", "britt"):
+        cache = tmp_path / f"{name}.cache.json"
+        cache.write_text("{}")
+        registry.add_or_update(spotify_setup.Account(name=name, cache_path=str(cache)))
+    registry.save()
+
+    body = urllib.parse.urlencode({"csrf_token": token, "name": "jasper"}).encode()
+    _Request(
+        _handler_cls(registry_path=registry.path), "/remove", body=body,
+        cookies="jts_csrf=" + token,
+    ).do_POST()
+
+    remaining = spotify_setup.Registry.load(registry.path).accounts
+    assert [a.name for a in remaining] == ["britt"]
+    assert [p.name for p in tmp_path.glob("*.cache.json")] == ["britt.cache.json"]
+
+
 def test_get_root_unconfigured_renders_setup_wizard():
     h = _Request(_handler_cls(client_id=""), "/")
     h.do_GET()
