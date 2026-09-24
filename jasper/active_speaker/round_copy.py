@@ -18,7 +18,7 @@ PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose
 #: What a take at one driver's pose is doing: its quiet opener, or a take at the level it found (ADR-0361).
 LEVEL_STEP_LINES = {
     "opener": "Level check: a quiet first pass finds this pose's level. The room hears almost nothing.",
-    "levelled": "Take: playing at the level the microphone needs.",
+    "levelled": "Take: playing at the level set for this pose.",
 }
 
 
