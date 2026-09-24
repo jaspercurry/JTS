@@ -1,7 +1,10 @@
 # ADR-0192: The campaign is the validation
 
 - **Date:** 2026-08-29
-- **Status:** Accepted
+- **Status:** Accepted. §3 (the R-3/R-4 near-field park) is superseded in part by
+  [ADR-0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md).
+  Its installed repeat-floor authority is superseded by
+  [ADR-0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md).
 
 ## Context
 
