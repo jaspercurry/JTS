@@ -376,7 +376,8 @@ async def start_audition(
     )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_bass_extension_graph,
+        desired_graph_approved,
+        prove_desired_graph,
     )
     from jasper.dsp_apply import dsp_writer_lock
     from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
@@ -424,13 +425,10 @@ async def start_audition(
             raise AuditionRefused(REFUSE_EMIT, detail)
         # Re-proved here rather than trusted from the emitter, exactly as
         # `jasper-active-speaker baseline-reemit` does before it writes a byte.
-        graph = None if compare else classify_bass_extension_graph(
-            topology,
-            evidence_source="desired",
-            graph_text=yaml_text,
-            applied_baseline_state=applied,
+        graph = None if compare else prove_desired_graph(
+            topology, yaml_text, snapshot=applied.get("recomposition_snapshot"),
         )
-        if graph is not None and (not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME):
+        if graph is not None and not desired_graph_approved(graph):
             raise AuditionRefused(
                 REFUSE_EMIT,
                 f"the reduced graph did not re-prove as "

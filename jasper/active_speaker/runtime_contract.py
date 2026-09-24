@@ -1381,6 +1381,29 @@ def _candidate_locator(
     return Path(raw) if isinstance(raw, str) and raw.strip() == raw else None
 
 
+def prove_desired_graph(
+    topology: OutputTopology,
+    graph_text: str,
+    *,
+    snapshot: Mapping[str, Any] | None,
+    excited_target_ids: Collection[str] = (),
+) -> GraphSafety:
+    """The proof a graph this box compiled must pass before it is written or loaded.
+
+    ``snapshot`` is the saved tune's ``recomposition_snapshot``, the one part of
+    an applied record the proof reads. :func:`desired_graph_approved` says
+    whether the answer lets the graph run."""
+    return classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph_text,
+        applied_baseline_state={"recomposition_snapshot": snapshot},
+        excited_target_ids=excited_target_ids,
+    )
+
+
+def desired_graph_approved(graph: GraphSafety) -> bool:
+    return graph.allowed and graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
 def classify_bass_extension_graph(
     topology: OutputTopology,
     *,

@@ -48,10 +48,7 @@ from .graph_safety import (
 )
 from .measurement import active_driver_targets
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
-from .runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
-    classify_bass_extension_graph,
-)
+from .runtime_contract import desired_graph_approved, prove_desired_graph
 from .excitation_safety_plan import (
     DriverSweepGeneratorPlan,
     ExcitationSafetyPlanError,
@@ -709,15 +706,14 @@ def readmit_summed_program_from_wav(
     excited = frozenset(
         target_id for target_id, channel in channels.items() if channel is not None
     )
-    graph = classify_bass_extension_graph(
-        topology, evidence_source="desired", graph_text=graph_yaml,
-        applied_baseline_state={"recomposition_snapshot": graph_evidence or {}},
+    graph = prove_desired_graph(
+        topology, graph_yaml, snapshot=graph_evidence or {},
         # This take's own targets, in memory: a rear it excites on its own
         # program channel cannot be muted, so the door proves the role chain
         # at that index instead of the mute.
         excited_target_ids=excited,
     )
-    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+    if not desired_graph_approved(graph):
         log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
                   program_id=program.program_id, classification=graph.classification,
                   issues=graph.issues)

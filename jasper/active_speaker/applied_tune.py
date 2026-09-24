@@ -61,9 +61,9 @@ def compile_applied_tune(
         preference_filters=preference_filters, output_trim_db=output_trim_db)
     prepared = baseline_record.prepare_applied_baseline_profile(tune.banked, declaration=tune.declaration,
         design_draft=tune.draft, provenance=tune.applied)
-    proof = runtime_contract.classify_bass_extension_graph(tune.declaration.topology, evidence_source="desired",
-        graph_text=text, applied_baseline_state=prepared)
-    if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
+    proof = runtime_contract.prove_desired_graph(tune.declaration.topology, text,
+                                                 snapshot=prepared.get("recomposition_snapshot"))
+    if not runtime_contract.desired_graph_approved(proof):
         raise ValueError(proof.classification)
     return text, prepared
 
@@ -168,9 +168,8 @@ def compile_commissioning_profile(
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_profile.baseline_candidate_fingerprint(profile)
         profile["config"]["exists"] = target.exists()
-        proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
-                                                               applied_baseline_state=profile)
-        if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
+        proof = runtime_contract.prove_desired_graph(topology, text, snapshot=profile.get("recomposition_snapshot"))
+        if not runtime_contract.desired_graph_approved(proof):
             raise measurement_emit.MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
         profile.update(status="ready_to_compile", permissions={"may_apply": False, "may_compile": True})
     except (candidate_bank.CandidateBankRefusal, ValueError) as exc:

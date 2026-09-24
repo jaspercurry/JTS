@@ -61,16 +61,13 @@ async def apply_candidate(
                              else commissioning_candidate(topology, draft))
             expected = selected.fingerprint
             assert_crossover_honours_declared_floor(candidate_on_declaration(selected, declaration.preset).source_preset)
-            text = compile_tuning_graph(declaration, candidate=selected)
             preference_filters, trim_db = sound_settings.saved_sound_layers()
-            if preference_filters or trim_db:
-                text = compile_tuning_graph(declaration, candidate=selected,
-                    preference_filters=preference_filters, output_trim_db=trim_db)
+            text = compile_tuning_graph(declaration, candidate=selected,
+                preference_filters=preference_filters, output_trim_db=trim_db)
             sha = config_text_sha256(text)
-            proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
-                applied_baseline_state={"recomposition_snapshot": baseline_record.recomposition_snapshot_for(
-                    selected, declaration=declaration, design_draft=draft)})
-            if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
+            proof = runtime_contract.prove_desired_graph(topology, text, snapshot=baseline_record.recomposition_snapshot_for(
+                selected, declaration=declaration, design_draft=draft))
+            if not runtime_contract.desired_graph_approved(proof):
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
             target = baseline_candidate_config_path(text)
