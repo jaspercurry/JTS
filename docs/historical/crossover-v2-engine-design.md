@@ -522,7 +522,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`audio_measurement/spatial_combine.py`](../../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
 | [`audio_measurement/interference_nulls.py`](../../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |
 | [`audio_measurement/frame_fit.py`](../../jasper/audio_measurement/frame_fit.py) | The frame between two curves about to be differenced — the model and its disclosure record, no band and no verdict. |
-| [`attribution/`](../../jasper/attribution/__init__.py) | Mechanism attribution's schema and persistence half: findings, the declaration registry, promotion, bundle-lifetime storage. |
+| [`attribution/`](../../jasper/attribution/__init__.py) | The cross-store session identity. Its findings, declaration registry, promotion and storage halves are deleted (#5652, #5668). |
 
 ---
 

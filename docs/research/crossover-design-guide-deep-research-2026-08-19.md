@@ -29,8 +29,8 @@ supply it. And no
 physical inverted-polarity probe has ever been banked:
 `commissioning_capture_producer.SummedCaptureProducer` is a confirmed
 runtime orphan nothing instantiates, `docs/attribution-stage-plan.md`
-records "No P1 has ever been run" (P1 = `PROBE_REVERSE_NULL` in
-`attribution/closed_sets.py`), and `null_walk.py`'s walk executor
+records "No P1 has ever been run" (P1 = that plan's §5 reverse-null
+probe), and `null_walk.py`'s walk executor
 `run_null_walk` was deleted because nothing called it. The slope-aware
 distortion-informed tweeter floor split: the candidate_space refinement was
 deferred prose that never shipped as code and died with the file; the

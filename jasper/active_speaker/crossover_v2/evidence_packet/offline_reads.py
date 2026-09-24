@@ -36,10 +36,10 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: banked then may still carry their outputs there.
 LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
 
-#: The three phases a finding set is banked under, each at its own
-#: ``findings_{phase}.json``
-#: (:func:`~jasper.attribution.storage.findings_relative_path`): the two
-#: cloud-group closes and the level-frame gate's own MEASURE-phase set.
+#: The three phases a finding set was banked under, each at its own
+#: ``findings_{phase}.json``: the two cloud-group closes and the level-frame
+#: gate's own MEASURE-phase set. No writer remains; reading them keeps the
+#: packet's shape, and so a banked round's fingerprint, unchanged (#5668).
 _FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 
 #: The phases whose set comes from carve-out promotion, which reads only the

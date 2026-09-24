@@ -44,8 +44,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.attribution.findings import FindingSet
-from jasper.attribution.session_identity import SESSION_IDENTITY_KEY, SessionIdentity
+from jasper.attribution.session_identity import SESSION_IDENTITY_KEY
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -317,7 +316,7 @@ async def test_the_record_lands_under_the_capture_id(real_store):
 
 
 # --------------------------------------------------------------------------- #
-# the fold — the five publishers' artifact kinds, on one seam
+# the fold — the publishers' artifact kinds, on one seam
 # --------------------------------------------------------------------------- #
 
 
@@ -331,41 +330,11 @@ def _candidate() -> MeasuredCrossoverCandidate:
     )
 
 
-def _finding_set() -> dict[str, Any]:
-    """A finding set with the phase the CALLER injects for the route."""
-    return {
-        **FindingSet(
-            session=SessionIdentity(session_id="bundle-1"),
-            produced_by="test",
-            findings=(),
-        ).to_dict(),
-        "phase": "cloud_measure",
-    }
-
-
-async def test_a_banked_finding_set_is_exactly_what_its_reader_expects(real_store):
-    """The findings route's ``phase`` ROUTES the record; it is not payload.
-
-    ``FindingSet.to_dict()`` carries no phase, so a routing key left in the file
-    would make the store a non-drop-in for the publisher whose bytes the
-    bundle's readers already know.
-    """
-    built = FindingSet(
-        session=SessionIdentity(session_id="bundle-1"), produced_by="test",
-        findings=(),
-    )
-
-    record_id = await real_store.bank({**built.to_dict(), "phase": "cloud_measure"})
-
-    assert _banked_file(real_store, record_id) == built.to_dict()
-
-
 def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
-    """All SIX routes: the five publishers' kinds plus the position take.
+    """All five routes: the four publishers' kinds plus the position take.
 
     Parametrized together and not sampled, because the route table is where a
-    kind gets forgotten — the findings route shipped with a ``phase`` nothing
-    supplied, and only three of six routes had a pin to catch it.
+    kind gets forgotten.
     """
     return [
         ("position", _take(), f"positions/{_take()['take_id']}.json"),
@@ -385,7 +354,6 @@ def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
             {"schema_version": 2, "kind": ROUND_RECEIPT_KIND, "round_id": "r1"},
             "round_receipt.json",
         ),
-        ("findings", _finding_set(), "findings_cloud_measure.json"),
     ]
 
 
@@ -418,10 +386,9 @@ async def test_a_folded_kind_lands_where_its_reader_looks(
 async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
     """F1: the cloud payload's BYTES, not only its path.
 
-    ``publish_cloud`` stamps the session identity so a finding can cite the
-    artifact across two id namespaces. The store is the writer now, so the
-    stamp is the store's, and it names both namespaces because the capture id is
-    minted after the bundle id and is not derivable from it.
+    The store stamps the session identity, and it names both namespaces
+    because the capture id is minted after the bundle id and is not derivable
+    from it.
     """
     record = {
         "kind": CLOUD_EVIDENCE_KIND, "phase": "cloud_measure", "ripple_db": 3.0,

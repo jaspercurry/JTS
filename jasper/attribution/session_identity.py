@@ -5,9 +5,7 @@
 """One measurement session's identity, stable across every store.
 
 The rule this makes executable: content hashing stays the VERIFIER and stops
-being the index. A finding cites its evidence by a :class:`SessionIdentity`
-plus a store-relative locator, and the SHA-256 rides along to verify the bytes,
-never to find them. :data:`SESSION_IDENTITY_KEY` is the single JSON key every
+being the index. :data:`SESSION_IDENTITY_KEY` is the single JSON key every
 store writes it under; :attr:`SessionIdentity.token` is the flat scalar form.
 Aliases are a lookup table hanging off the one canonical id, never a second
 identity. Writers ship for the crossover-v2 commissioning bundle and the
