@@ -344,24 +344,19 @@ def test_prune_for_settings_noops_when_retention_disabled(tmp_path):
     assert store.get(old_row.id) == old_row
 
 
-def test_prune_by_max_rows_keeps_newest_rows(tmp_path):
+@pytest.mark.parametrize(
+    "limit",
+    [
+        pytest.param({"max_rows": 2}, id="max_rows_keeps_newest"),
+        pytest.param({"older_than_ts": "2026-06-19T20:30:00Z"}, id="older_than_ts"),
+    ],
+)
+def test_prune_keeps_the_two_newest_rows(tmp_path, limit):
     store = ConversationStore(str(tmp_path / "history.db"))
     for idx, minute in enumerate(["10", "20", "30", "40"], start=1):
         assert store.add(_turn(f"2026-06-19T20:{minute}:00Z", idx)) is True
 
-    assert store.prune(max_rows=2) == 2
-    assert [turn.ts_utc for turn in store.recent(10)] == [
-        "2026-06-19T20:40:00Z",
-        "2026-06-19T20:30:00Z",
-    ]
-
-
-def test_prune_by_older_than_timestamp(tmp_path):
-    store = ConversationStore(str(tmp_path / "history.db"))
-    for idx, minute in enumerate(["10", "20", "30", "40"], start=1):
-        assert store.add(_turn(f"2026-06-19T20:{minute}:00Z", idx)) is True
-
-    assert store.prune(older_than_ts="2026-06-19T20:30:00Z") == 2
+    assert store.prune(**limit) == 2
     assert [turn.ts_utc for turn in store.recent(10)] == [
         "2026-06-19T20:40:00Z",
         "2026-06-19T20:30:00Z",

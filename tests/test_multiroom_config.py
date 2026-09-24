@@ -251,61 +251,34 @@ def test_enabled_channel_defaults_to_stereo(tmp_path):
 # ---------- enabled + INVALID => fail LOUD (enabled stays True) ----------
 
 
-def test_invalid_empty_bond_id_sets_error(tmp_path):
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=leader\n"
-        "JASPER_GROUPING_CHANNEL=left\n"
-        # no bond id
-    )
+@pytest.mark.parametrize(
+    ("keys", "expected_token"),
+    [
+        pytest.param(("ROLE=leader", "CHANNEL=left"), "BOND_ID", id="empty_bond_id"),
+        pytest.param(
+            ("ROLE=leader", "CHANNEL=surround", "BOND_ID=den"), "CHANNEL",
+            id="bad_channel_surround",
+        ),
+        pytest.param(
+            ("ROLE=leader", "CHANNEL=sub", "BOND_ID=den"), "CHANNEL",
+            id="bad_channel_sub",
+        ),
+        pytest.param(("ROLE=boss", "CHANNEL=left", "BOND_ID=den"), "ROLE", id="bad_role"),
+        # Role is required when enabled — empty string is not in ALLOWED_ROLES.
+        pytest.param(("CHANNEL=left", "BOND_ID=den"), "ROLE", id="empty_role"),
+        pytest.param(
+            ("ROLE=leader", "CHANNEL=left", "BOND_ID=den", "CODEC=mp3"), "CODEC",
+            id="bad_codec",
+        ),
+    ],
+)
+def test_invalid_field_sets_error(tmp_path, keys, expected_token):
+    body = "JASPER_GROUPING=on\n" + "".join(f"JASPER_GROUPING_{k}\n" for k in keys)
     path = _write_env(tmp_path, body)
     cfg = load_config(path)
     assert cfg.enabled is True
     assert cfg.error is not None
-    assert "BOND_ID" in cfg.error
-
-
-@pytest.mark.parametrize("channel", ["surround", "sub"])
-def test_invalid_bad_channel_sets_error(tmp_path, channel):
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=leader\n"
-        f"JASPER_GROUPING_CHANNEL={channel}\n"
-        "JASPER_GROUPING_BOND_ID=den\n"
-    )
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.enabled is True
-    assert cfg.error is not None
-    assert "CHANNEL" in cfg.error
-
-
-def test_invalid_bad_role_sets_error(tmp_path):
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=boss\n"
-        "JASPER_GROUPING_CHANNEL=left\n"
-        "JASPER_GROUPING_BOND_ID=den\n"
-    )
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.enabled is True
-    assert cfg.error is not None
-    assert "ROLE" in cfg.error
-
-
-def test_invalid_empty_role_sets_error(tmp_path):
-    """Role is required when enabled — empty string is not in ALLOWED_ROLES."""
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_CHANNEL=left\n"
-        "JASPER_GROUPING_BOND_ID=den\n"
-    )
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.enabled is True
-    assert cfg.error is not None
-    assert "ROLE" in cfg.error
+    assert expected_token in cfg.error
 
 
 def test_invalid_follower_without_leader_addr_sets_error(tmp_path):
@@ -340,26 +313,15 @@ def test_buffer_ms_default_when_non_int(tmp_path):
     assert cfg.buffer_ms == DEFAULT_BUFFER_MS
 
 
-def test_buffer_ms_clamped_below_floor(tmp_path):
-    body = _leader_env() + "JASPER_GROUPING_BUFFER_MS=10\n"
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.buffer_ms == 150
-
-
-def test_buffer_ms_clamped_above_ceiling(tmp_path):
-    body = _leader_env() + "JASPER_GROUPING_BUFFER_MS=99999\n"
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.buffer_ms == 1500
-
-
-@pytest.mark.parametrize("value", [150, 400, 800, 1500])
-def test_buffer_ms_valid_passthrough(tmp_path, value):
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(10, 150), (99999, 1500), (150, 150), (400, 400), (800, 800), (1500, 1500)],
+)
+def test_buffer_ms_clamps_into_range(tmp_path, value, expected):
     body = _leader_env() + f"JASPER_GROUPING_BUFFER_MS={value}\n"
     path = _write_env(tmp_path, body)
     cfg = load_config(path)
-    assert cfg.buffer_ms == value
+    assert cfg.buffer_ms == expected
 
 
 def test_buffer_ms_never_an_error(tmp_path):
@@ -460,21 +422,6 @@ def test_codec_empty_falls_back_to_default(tmp_path):
     assert cfg.error is None
 
 
-def test_invalid_bad_codec_sets_error(tmp_path):
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=leader\n"
-        "JASPER_GROUPING_CHANNEL=left\n"
-        "JASPER_GROUPING_BOND_ID=den\n"
-        "JASPER_GROUPING_CODEC=mp3\n"
-    )
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.enabled is True
-    assert cfg.error is not None
-    assert "CODEC" in cfg.error
-
-
 def test_bad_codec_not_an_error_when_disabled(tmp_path):
     """Validation only fires when enabled — a bad codec in an off file is moot."""
     body = "JASPER_GROUPING=off\nJASPER_GROUPING_CODEC=mp3\n"
@@ -484,40 +431,28 @@ def test_bad_codec_not_an_error_when_disabled(tmp_path):
     assert cfg.error is None
 
 
-def test_codec_validation_ordered_after_channel(tmp_path):
-    """A config with BOTH a bad channel and a bad codec reports the channel
-    error first — codec validation is ordered after channel in the cascade.
-    """
+@pytest.mark.parametrize(
+    ("role", "channel", "reported", "masked"),
+    [
+        pytest.param("leader", "surround", "CHANNEL", "CODEC", id="after_channel"),
+        pytest.param("boss", "left", "CODEC", "ROLE", id="before_role"),
+    ],
+)
+def test_codec_validation_order(tmp_path, role, channel, reported, masked):
+    """A bad codec plus one other bad field reports whichever the cascade
+    checks first: channel, then codec, then role."""
     body = (
         "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=leader\n"
-        "JASPER_GROUPING_CHANNEL=surround\n"   # bad channel
+        f"JASPER_GROUPING_ROLE={role}\n"
+        f"JASPER_GROUPING_CHANNEL={channel}\n"
         "JASPER_GROUPING_BOND_ID=den\n"
-        "JASPER_GROUPING_CODEC=mp3\n"          # also bad codec
+        "JASPER_GROUPING_CODEC=mp3\n"
     )
     path = _write_env(tmp_path, body)
     cfg = load_config(path)
     assert cfg.error is not None
-    assert "CHANNEL" in cfg.error
-    assert "CODEC" not in cfg.error
-
-
-def test_codec_validation_ordered_before_role(tmp_path):
-    """A config with BOTH a bad codec and a bad role reports the codec error
-    first — codec validation is ordered before role in the cascade.
-    """
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=boss\n"          # bad role
-        "JASPER_GROUPING_CHANNEL=left\n"
-        "JASPER_GROUPING_BOND_ID=den\n"
-        "JASPER_GROUPING_CODEC=mp3\n"          # bad codec
-    )
-    path = _write_env(tmp_path, body)
-    cfg = load_config(path)
-    assert cfg.error is not None
-    assert "CODEC" in cfg.error
-    assert "ROLE" not in cfg.error
+    assert reported in cfg.error
+    assert masked not in cfg.error
 
 
 # ---------- is_enabled() mirrors load_config().enabled ----------
