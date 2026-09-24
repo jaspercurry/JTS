@@ -25,7 +25,9 @@ from jasper.active_speaker.crossover_v2.round_views import response_from_banked_
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
-from jasper.active_speaker.linearization_fit import FitVocabulary, complex_correction_response, linearization_filters_by_role
+from jasper.active_speaker.linearization_fit import (
+    FitVocabulary, LinearizationFit, complex_correction_response, linearization_filters_by_role,
+)
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
@@ -153,6 +155,15 @@ def _fit_vocabularies(
     return vocabularies
 
 
+#: A fit with a NaN or infinite filter term: published as unavailable, never
+#: as a number JSON cannot carry.
+REASON_FIT_NOT_FINITE = "fit_not_finite"
+
+
+def _filters_finite(fit: LinearizationFit) -> bool:
+    return bool(np.isfinite([(one.freq, one.q, one.gain) for one in fit.filters]).all())
+
+
 def speaker_fit(
     inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str, take_id: str | None = None,
     *, budget: Mapping[str, Any] | None = None,
@@ -228,6 +239,7 @@ def speaker_fit(
             trim_decision = {"status": "unavailable", "reason": exc.refusal_reason}
         except ValueError:
             trim_decision = {"status": "unavailable", "reason": "handover_band_unmeasured"}
+    finite = {role: _filters_finite(fit) for role, fit in branches.fits.items()}
     handover_shifts = {}
     for role, fit in branches.fits.items():
         grid = np.unique(np.concatenate([
@@ -235,7 +247,7 @@ def speaker_fit(
             for section in sections.get(role, ())
         ])) if sections.get(role) else np.array([])
         correction_db = 20 * np.log10(np.maximum(np.abs(complex_correction_response(fit.filters, grid)), 1e-12))
-        handover_shifts[role] = power_mean_db(correction_db) if grid.size else None
+        handover_shifts[role] = power_mean_db(correction_db) if grid.size and finite[role] else None
     linearization = {driver.role: {
         "boost_evidence": {"design_poses": clouds[driver.role].n_positions,
                   "band_spread": [asdict(band) for band in clouds[driver.role].band_spread]}
@@ -245,7 +257,8 @@ def speaker_fit(
         "excited_band_hz": list(driver.excited_band_hz),
         "envelope": _envelope_answer(branches.envelopes[driver.role]),
         "handover_level_shift_db": handover_shifts[driver.role],
-        "fit": branches.fits[driver.role].to_dict(),
+        "fit": branches.fits[driver.role].to_dict() if finite[driver.role] else {
+            "role": driver.role, "reason_summary": {"unavailable": REASON_FIT_NOT_FINITE}},
     } for driver in drivers}
     selected_fit = linearization.get(selected.capture_basis.get("role") or drivers[0].role, linearization[drivers[0].role])
     return dict(

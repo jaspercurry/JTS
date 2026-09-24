@@ -198,8 +198,9 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("gain_db", [-6.0, float("nan")])
 @pytest.mark.parametrize("fc_hz", [2400, 200])
-def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, fc_hz):
+def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, fc_hz, gain_db):
     root, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -215,12 +216,18 @@ def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, 
         fit = branches.fits["woofer"]
         return replace(branches, fits={
             **branches.fits,
-            "woofer": replace(fit, filters=(LinearizationFilter("Peaking", fc_hz, 0.1, -6),)),
+            "woofer": replace(fit, filters=(LinearizationFilter("Peaking", fc_hz, 0.1, gain_db),)),
         })
 
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", one_wide_cut)
     result = speaker_fit(inputs, manifest, "speaker-set")
-    assert result["linearization"]["woofer"]["handover_level_shift_db"] == pytest.approx(-6, abs=0.5)
+    woofer = result["linearization"]["woofer"]
+    if np.isnan(gain_db):
+        assert (woofer["fit"]["reason_summary"], woofer["handover_level_shift_db"]) == (
+            {"unavailable": "fit_not_finite"}, None)
+        json.dumps(result["linearization"], allow_nan=False)
+        return
+    assert woofer["handover_level_shift_db"] == pytest.approx(-6, abs=0.5)
     if fc_hz == 200:
         assert result["trim_decision"] == {"status": "unavailable", "reason": "handover_band_unmeasured"}
 
