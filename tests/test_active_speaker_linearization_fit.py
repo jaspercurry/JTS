@@ -568,19 +568,13 @@ def test_highshelf_zero_gain_is_unity_everywhere():
 
 
 def test_highshelf_half_gain_at_corner():
-    """The RBJ shelf's well-known property (also pinned against
-    jasper.sound.profile's own implementation in
-    tests/test_sound_peq_response.py's test_shelf_reaches_half_gain_at_corner_
-    and_full_gain_in_band): at freq == corner, response == gain / 2."""
+    """The RBJ shelf's well-known property: at freq == corner, response == gain / 2."""
     resp = _highshelf_response_db(np.array([1000.0]), 1000.0, 8.0, 1.0 / np.sqrt(2.0))
     assert resp[0] == pytest.approx(4.0, abs=0.1)
 
 
-def test_highshelf_matches_sound_profile_reference_implementation():
-    """Cross-checks THIS module's Highshelf-only, numpy-vectorized RBJ math
-    against jasper.sound.profile's own general, FilterSpec-dispatched
-    implementation (the two are kept separate because their interfaces
-    differ -- see this function's own docstring for why)."""
+def test_highshelf_numpy_evaluation_matches_the_shared_evaluator():
+    """The vectorized grid evaluation agrees with jasper.biquad.filter_response_db."""
     from jasper.biquad import FilterSpec, filter_response_db
 
     freqs = [200.0, 1000.0, 4000.0, 12000.0, 19000.0]

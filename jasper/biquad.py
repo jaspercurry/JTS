@@ -61,9 +61,8 @@ GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
 # It is a single constant on purpose. No band in those domains carries a
 # steepness field (FilterSpec.q is None for a shelf), so none is expressible
 # there: a shelf emitted at any other Q would be a filter their evaluators
-# cannot see, which is exactly the PR-L2 defect (2026-07-27). The evaluator
-# :func:`biquad_coeffs` applies this Q to any shelf that declares no q, and
-# honours one that does -- the rear calibration
+# cannot see. The evaluator :func:`biquad_coeffs` applies this Q to any shelf
+# that declares no q, and honours one that does -- the rear calibration
 # document (ADR-0318) is the one place that declares a shelf q, and ADR-0324's
 # headroom charge must read it as CamillaDSP will.
 #
@@ -124,7 +123,7 @@ class FilterSpec:
         return abs(self.gain) >= FILTER_EPSILON_DB
 
 
-# The clamp floor biquad_coeffs applies to eff_q below, and the smallest Q
+# The floor biquad_coeffs clamps q to, and the smallest Q
 # jasper.camilla_emit.fmt's "%.4f" spells faithfully into CamillaDSP's YAML
 # (below it the emitter writes "q: 0.0000", a document that fails at apply
 # time). Below this floor an evaluated chain is not the filter that was
@@ -153,9 +152,7 @@ def biquad_coeffs(
 
     ``q`` is the width the SPEC declares. ``None`` means it declares none, and
     the shape then falls back to the width the emitter writes for it: the fixed
-    Butterworth ``SHELF_Q`` for a shelf, 1.0 elsewhere. (Before 2026-07-27 the
-    emitter wrote ``slope: 6.0``, whose realised Q is gain-dependent and NOT
-    Butterworth; Butterworth is ``slope: 12``.) A shelf that DOES declare a q is
+    Butterworth ``SHELF_Q`` for a shelf, 1.0 elsewhere. A shelf that DOES declare a q is
     evaluated at it, because CamillaDSP honours the ``q`` field the graph
     carries — ``active_speaker.rear_calibration`` admits shelves up to q 1.0 and
     emits them verbatim, and reading one of those at ``SHELF_Q`` under-reports
