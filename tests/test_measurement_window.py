@@ -26,7 +26,7 @@ REAL_RELEASE_MEASUREMENT_GATE = coordinator._release_measurement_gate
 
 @pytest.fixture(autouse=True)
 def _stub_measurement_gate(monkeypatch):
-    async def acquire_gate() -> None:
+    async def acquire_gate(**_kwargs) -> None:
         return None
 
     async def release_gate(**_kwargs) -> None:
@@ -304,10 +304,10 @@ async def test_custom_owner_indeterminate_cleanup_never_releases_foreign_owner(
 async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatch):
     cleanup_modes: list[bool] = []
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         raise MeasurementWindowError("response lost")
 
-    async def release(*, allow_other_owner: bool) -> None:
+    async def release(*, allow_other_owner: bool, **_kwargs) -> None:
         cleanup_modes.append(allow_other_owner)
 
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
@@ -326,7 +326,7 @@ async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch)
     gate_calls: list[str] = []
     gate_renewed = asyncio.Event()
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         gate_calls.append("acquire")
         if gate_calls.count("acquire") >= 2:
             gate_renewed.set()
@@ -508,7 +508,7 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
 
     calls = {"n": 0}
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         calls["n"] += 1
         if calls["n"] == 1:
             return  # the enter-path acquire succeeds; the lease starts here
@@ -600,7 +600,7 @@ async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypa
     acquire_calls = 0
     released: list[bool] = []
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         nonlocal acquire_calls
         acquire_calls += 1
         if acquire_calls > 1:
@@ -630,7 +630,7 @@ async def test_measurement_gate_wraps_body_without_source_process_churn(monkeypa
 
     events: list[str] = []
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         events.append("gate-acquire")
 
     async def release(**_kwargs) -> None:
@@ -663,7 +663,7 @@ async def test_gate_release_failure_surfaces(monkeypatch):
 async def test_measurement_releases_mux_gate_after_body_exception(monkeypatch):
     restored: list[bool] = []
 
-    async def acquire() -> None:
+    async def acquire(**_kwargs) -> None:
         return None
 
     async def release(**_kwargs) -> None:

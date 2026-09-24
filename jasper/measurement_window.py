@@ -396,23 +396,6 @@ async def _check_no_active_voice_session(
         )
 
 
-async def _acquire_gate_for(gate_owner: str) -> None:
-    # The default owner goes bare: the gate commands' test stand-ins take none.
-    if gate_owner == MEASUREMENT_GATE_OWNER:
-        await _acquire_measurement_gate()
-    else:
-        await _acquire_measurement_gate(gate_owner=gate_owner)
-
-
-async def _release_gate_for(gate_owner: str, *, allow_other_owner: bool) -> None:
-    if gate_owner == MEASUREMENT_GATE_OWNER:
-        await _release_measurement_gate(allow_other_owner=allow_other_owner)
-    else:
-        await _release_measurement_gate(
-            gate_owner=gate_owner, allow_other_owner=allow_other_owner,
-        )
-
-
 async def _refresh_measurement_hold(gate_owner: str, hold_ours: asyncio.Event) -> None:
     """Renew jasper-control's volume hold until cancelled; ``hold_ours`` is
     set while the hold is this window's.
@@ -460,7 +443,7 @@ async def _refresh_measurement_gate_lease(
     while True:
         await asyncio.sleep(delay)
         try:
-            await _acquire_gate_for(gate_owner)
+            await _acquire_measurement_gate(gate_owner=gate_owner)
         except MeasurementWindowError as exc:
             logger.warning("measurement gate lease refresh failed: %s", exc)
             if time.monotonic() - last_confirmed >= MEASUREMENT_GATE_ABORT_SEC:
@@ -671,7 +654,7 @@ async def measurement_window(
             # a lost response still releases this exact owner and never
             # commissioning's gate.
             measurement_gate_cleanup_required = True
-            await _acquire_gate_for(gate_owner)
+            await _acquire_measurement_gate(gate_owner=gate_owner)
             measurement_gate_acquired = True
             measurement_gate_refresh_task = asyncio.create_task(
                 _refresh_measurement_gate_lease(gate_owner, measurement_owner_task)
@@ -711,8 +694,9 @@ async def measurement_window(
             gate_release_error: MeasurementWindowError | None = None
             if measurement_gate_cleanup_required:
                 try:
-                    await _release_gate_for(
-                        gate_owner, allow_other_owner=not measurement_gate_acquired,
+                    await _release_measurement_gate(
+                        gate_owner=gate_owner,
+                        allow_other_owner=not measurement_gate_acquired,
                     )
                 except MeasurementWindowError as exc:
                     # If release truly did not land, the still-held mux gate
