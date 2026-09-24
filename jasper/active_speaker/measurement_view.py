@@ -57,8 +57,9 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
 
     view = load_commissioning_view()
     programs = view["programs"]
+    hidden = _ALIAS_PLAN_IDS - {selected_id}
     plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()
-             if f"{name}/{size}" not in _ALIAS_PLAN_IDS or f"{name}/{size}" == selected_id}
+             if f"{name}/{size}" not in hidden}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)

@@ -15,7 +15,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_programs import program
+from jasper.active_speaker.measurement_programs import program, run_program
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
@@ -139,10 +139,27 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
 
 
-@pytest.mark.parametrize("tweeter_floor_hz,offered", [(1000.0, True), (1500.0, False)])
-def test_a_near_field_driver_its_sweep_covers_under_an_octave_of_is_not_offered(monkeypatch, tweeter_floor_hz, offered):
-    """The near-field sweep stops at 2 kHz, so a driver whose band starts above
-    1 kHz is refused before a session composes a sub-octave sweep for it."""
+@pytest.mark.parametrize("program_id,poses,banks", [
+    ("nearfield", "nearfield/woofer", True),
+    ("nearfield", None, True),
+    ("close", "nearfield/woofer", False),
+    ("nearfield", "close_spot", False),
+])
+def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, poses, banks):
+    """A round banks under its program id, so a plan naming one the registry
+    does not hold is refused before it plays, whichever door it came through
+    (ADR-0277)."""
+    plan = request_for_program(run_program(program_id, poses))
+    report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer", "woofer:rear")))
+    assert [issue.code for issue in report.issues if issue.code == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED] == (
+        [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
+
+
+@pytest.mark.parametrize("tweeter_floor_hz,offered", [(800.0, True), (1000.0, False)])
+def test_a_near_field_driver_the_view_cannot_read_is_not_offered(monkeypatch, tweeter_floor_hz, offered):
+    """The near-field sweep stops at 2 kHz and the view reads its top band,
+    800 Hz - 2 kHz, only whole, so a driver whose band starts above 800 Hz is
+    refused before a session plays takes no band can read."""
     plan = AngleCaptureRequest((AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference",
                                           driver="tweeter"),))
     ready = ready_facts(plan)

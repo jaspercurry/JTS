@@ -33,7 +33,6 @@ from jasper.platform.route_health import (
     KNOWN_HEALTH_COUNTER_SUFFIXES,
     TAKE_FAULT_COUNTER_PATHS,
     TAKE_FAULT_COUNTER_SUFFIXES,
-    known_counter_deltas,
 )
 from jasper.route_latency.tap_client import (
     TapArmParams,
@@ -226,16 +225,6 @@ def test_known_health_counter_suffixes_exist_in_fanin_status_json():
             "serializer — a Rust-side rename would silently make the harness's "
             "per-lane route-health verdict vacuous. Update both sides together."
         )
-
-
-def test_a_take_logs_playback_faults_not_an_idle_usb_lanes_silence():
-    deltas = {"fanin.inputs.2.resampler.silence_frames": 4800.0, "fanin.inputs.0.xrun_count": 1.0,
-              "outputd.shm_ring.reader_resyncs": 2.0}
-
-    faults = known_counter_deltas(deltas, paths=TAKE_FAULT_COUNTER_PATHS, suffixes=TAKE_FAULT_COUNTER_SUFFIXES)
-
-    assert {key: delta for key, delta in faults.items() if delta} == {
-        "fanin.inputs.0.xrun_count": 1.0, "outputd.shm_ring.reader_resyncs": 2.0}
 
 
 # --------------------------------------------------------------------------

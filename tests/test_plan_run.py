@@ -798,11 +798,16 @@ class _LevelStore(_Store):
 
 
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
-    """A plan whose recordings pass, judged on the level each take read; the
-    microphone is re-placed at take ``replace_at``, and the operator presses
-    Redo during each take in ``redo_at``."""
+    """A plan whose recordings pass, admitted by the conductor as a web run's are
+    and judged on the level each take read; the microphone is re-placed at take
+    ``replace_at``, and the operator presses Redo during each take in
+    ``redo_at``, take 0 being the first placement's hold."""
     fakes, takes, gate, signals = FakeSeams(), count(1), AnsweredGate(), plan_run.RunSignals()
     manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
+    captures = plan_run.prepare_plan_captures(request)
+    conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
+    if 0 in redo_at:
+        signals.retake.set()
 
     def assessor(analysis, **kwargs):
         take = next(takes)
@@ -818,7 +823,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
             return await plan_run.run_plan(
                 request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
                 analyze=lambda record, _id: _measure_analysis(ExcitationProgram.from_dict(record["program"])),
-                captures=plan_run.prepare_plan_captures(request), assessor=assessor)
+                captures=captures, assessor=assessor,
+                admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
 
     result = asyncio.run(run())
     selected = [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
@@ -890,6 +896,26 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     assert selected == [False] * (redos + 1) + [True, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert list(steps.values()) == ["opener"] * (redos + 1) + ["levelled", "opener", "levelled"]
+
+
+@pytest.mark.parametrize("redo_at,readings,allowed", [
+    ((0,), (66.0, 80.0, 80.0), 0),
+    ((3,), (66.0, 80.0, 80.0, 66.0, 80.0, 80.0), 2),
+], ids=["before_any_take", "during_the_second_take"])
+def test_a_redo_leaves_a_driver_pose_its_retries(redo_at, readings, allowed):
+    """Admission charges every attempt after a take's first. A redo before any
+    take plays redoes nothing, and a redo after two takes carries a retry for
+    each take it plays again, so a pose with no retries still completes
+    (ADR-0361)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+        ProgramPose(0, 0, repeats=2, kind="close", distance_m=0.015, driver="woofer"),),
+        purpose="reference", regime="near_field"), retries_per_pose=0)
+
+    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+
+    assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
+    assert selected[-2:] == [True, True]
+    assert [p["budget"]["allowed"] for p in gate.progress if "budget" in p][-1] == allowed
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [

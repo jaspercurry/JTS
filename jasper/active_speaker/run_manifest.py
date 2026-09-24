@@ -169,6 +169,9 @@ class RunManifest:
 
     def level_observation(self, record: Mapping[str, Any]) -> dict[str, Any]:
         observed = finite_float(((record.get("capture_integrity") or {}).get("spl") or {}).get("loudest_half_second_db_spl"))
+        if self._context["pose"].get("driver"):
+            # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
+            return {"loudest_half_second_db_spl": observed, "level_reference_db_spl": None, "same_pose": False}
         basis = capture_basis(record)
         gain, program = basis.get("level_db"), basis.get("program_id")
         candidate = self._context.get("candidate_id")
@@ -182,9 +185,7 @@ class RunManifest:
                     and take.get("candidate_id") == candidate
                     and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
-        # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
-        reference = [] if self._context["pose"].get("driver") else [
-            take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
+        reference = [take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
         return {"loudest_half_second_db_spl": observed,
                 "level_reference_db_spl": median(reference) if reference else None, "same_pose": bool(same)}
 

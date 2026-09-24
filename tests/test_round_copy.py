@@ -91,8 +91,8 @@ def test_unmeasured_poses_are_distinct_and_counted_once():
 
 
 def test_a_near_field_pose_is_named_by_its_driver_and_distance():
-    """A cardioid near-field round names each placement by driver and distance,
-    so a pose that was not measured says which one (ADR-0360)."""
+    """A cardioid near-field round names each placement by its driver and
+    distance (ADR-0360)."""
     names = [pose_name({"kind": pose.kind, "distance_m": pose.distance_m, "driver": pose.driver})
              for pose in program("nearfield", "cardioid").poses]
     assert names == ["woofer at 15 mm", "woofer at 30 mm", "woofer at 15 mm",
