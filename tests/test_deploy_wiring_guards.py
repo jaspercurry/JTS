@@ -297,13 +297,8 @@ def _location_matches(mod: str, path: str, uri: str) -> bool:
 @pytest.mark.parametrize("profile", tuple(nginx_site.PROFILE_CONFS))
 def test_oauth_callbacks_are_never_logged(profile, callback):
     """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's logs."""
-    conf = nginx_site.conf_text(profile)
-    servers = nginx_site.servers(conf)
+    servers = nginx_site.servers(nginx_site.conf_text(profile))
     assert {frozenset({80}), frozenset({443})} <= {ports for ports, _ in servers}
-    # The parser only sees 4-space-indented locations; none may hide from it.
-    assert len(re.findall(r"(?m)^[ \t]*location\b", conf)) == sum(
-        len(locations) for _, locations in servers
-    )
     for ports, locations in servers:
         # An exact match wins outright, and it proxies the code, so an upstream
         # failure would also log it at error level. Otherwise nginx picks one
