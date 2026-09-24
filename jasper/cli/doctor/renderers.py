@@ -268,10 +268,8 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
 def check_librespot_running(cfg: Config) -> CheckResult:
     """Verify librespot is installed and the systemd unit is active.
 
-    librespot 0.8.0 (rust) replaced go-librespot in the debian-stack
-    on 2026-05-07 specifically for the configurable volume curve
-    (--volume-ctrl log over 60 dB range). It has no local control
-    HTTP, so health is checked via systemd state + binary version."""
+    librespot has no local control HTTP, so health is systemd state
+    plus binary presence."""
     parked = _parked_follower_result(LIBRESPOT_SERVICE)
     if parked is not None:
         return parked
@@ -286,8 +284,8 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     if not os.path.isfile(bin_path):
         return CheckResult(
             "librespot binary", "fail",
-            f"{bin_path} not present. Install: "
-            "apt install raspotify (provides librespot via .deb)",
+            f"{bin_path} not present; redeploy "
+            "(bash scripts/deploy-to-pi.sh) installs it",
             reason=REASON_LIBRESPOT_BINARY_MISSING,
         )
     state = (evidence.unit_state(LIBRESPOT_SERVICE) or {}).get(
@@ -300,7 +298,6 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "systemctl status librespot",
             reason=REASON_LIBRESPOT_NOT_ACTIVE,
         )
-    # Best-effort version line (librespot prints to stderr at startup)
     return CheckResult(
         LIBRESPOT_SERVICE, "ok",
         f"{bin_path} active (state file: {cfg.librespot_state_path})",
@@ -310,7 +307,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
 def check_shairport_sync_ap2() -> CheckResult:
     """Verify shairport-sync is installed with AirPlay 2 support
     AND the systemd unit is active. The Debian Trixie apt package
-    is AP1-only; the migration's source-build emits a binary whose
+    is AP1-only; the installer's source build emits a binary whose
     `-V` output contains 'AirPlay2'."""
     parked = _parked_follower_result("shairport-sync AP2")
     if parked is not None:
@@ -325,7 +322,7 @@ def check_shairport_sync_ap2() -> CheckResult:
     if shutil.which("shairport-sync") is None:
         return CheckResult(
             "shairport-sync AP2", "fail",
-            "binary not found. Source-build per deploy/debian-stack/README.md",
+            "binary not found; redeploy (bash scripts/deploy-to-pi.sh) builds it",
             reason=REASON_SHAIRPORT_BINARY_MISSING,
         )
     p = run(["shairport-sync", "-V"])
@@ -333,8 +330,8 @@ def check_shairport_sync_ap2() -> CheckResult:
     if "AirPlay2" not in out:
         return CheckResult(
             "shairport-sync AP2", "fail",
-            f"binary lacks --with-airplay-2 (got: {out!r}). "
-            f"Apt's package is AP1-only; rebuild from source.",
+            f"binary lacks --with-airplay-2 (got: {out!r}). Apt's package "
+            "is AP1-only; redeploy (bash scripts/deploy-to-pi.sh) rebuilds it.",
             reason=REASON_SHAIRPORT_NOT_AP2,
         )
     state = (evidence.unit_state("shairport-sync.service") or {}).get(

@@ -592,7 +592,6 @@ class Config:
             # Directory holds wake-events.sqlite3 + per-event WAV
             # files (one per leg, 6 s window). DB rows kept forever;
             # audio ring rolls oldest-first when the byte cap is hit.
-            # install.sh creates this dir at mode 0755 owned by pi:pi.
             wake_events_dir=_env(
                 "JASPER_WAKE_EVENTS_DIR",
                 "/var/lib/jasper/wake-events",
