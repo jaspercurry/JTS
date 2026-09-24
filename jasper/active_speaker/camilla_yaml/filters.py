@@ -11,6 +11,7 @@ from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.speaker_layout import SUB_CROSSOVER_ORDER
 
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
@@ -31,7 +32,6 @@ from ..camilla_names import (
     sub_startup_limiter_name,
 )
 from ..profile import (
-    SUB_CROSSOVER_ORDER,
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     CrossoverRegion,

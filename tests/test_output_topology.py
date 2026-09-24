@@ -8,15 +8,6 @@ from dataclasses import replace
 
 import pytest
 
-from jasper.active_speaker.profile import (
-    SUB_CROSSOVER_HZ_HI as PROFILE_HI,
-    SUB_CROSSOVER_HZ_LO as PROFILE_LO,
-)
-from jasper.speaker_layout import (
-    BASS_MANAGEMENT_CORNER_HZ_HI as SHARED_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO as SHARED_LO,
-)
-
 from jasper import output_topology as output_topology_mod
 from jasper.audio_hardware import dac
 from jasper.output_hardware import (
@@ -27,8 +18,6 @@ from jasper.output_topology import (
     DEFAULT_PAIRING_INTENT,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
-    SUB_CROSSOVER_HZ_HI,
-    SUB_CROSSOVER_HZ_LO,
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
@@ -600,15 +589,6 @@ def test_sub_crossover_fc_out_of_range_is_loud_blocker(fc: float) -> None:
     topology = OutputTopology.from_mapping(_passive_sub_topology_raw(fc))
     codes = {b["code"] for b in topology.evaluation()["blockers"]}
     assert "subwoofer_crossover_out_of_range" in codes
-
-
-def test_sub_crossover_bounds_mirror_profile() -> None:
-    # output_topology, the active-speaker profile, AND the one shared corner
-    # home (jasper.speaker_layout) must all agree — since P5 they are bound to the
-    # same constant, not three independent numbers.
-
-    assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
-    assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0
 
 
 def test_a_reworded_warning_cannot_move_the_config_fingerprint(

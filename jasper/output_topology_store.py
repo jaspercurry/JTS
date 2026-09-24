@@ -29,7 +29,7 @@ from .output_topology import (
     unknown_output_hardware,
 )
 from .paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
-from .speaker_layout import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+from .speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from .transition_log import TransitionLog
 
 logger = logging.getLogger(__name__)
@@ -423,4 +423,4 @@ def bass_management_corner_hz() -> float | None:
         for channel in group.channels:
             if channel.crossover_fc_hz is not None:
                 return float(channel.crossover_fc_hz)
-    return float(BASS_MANAGEMENT_CORNER_HZ_DEFAULT)
+    return float(DEFAULT_SUB_CROSSOVER_HZ)

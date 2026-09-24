@@ -45,10 +45,10 @@ SUPPORTED_OUTPUT_VARIANTS = {"primary", "rear"}
 # caps an audible sub's low-pass at it, so a corner ceiling that drifted higher
 # than the guard's would let a wider-than-legal sub low-pass past the guard.
 # LR4 (order 4) is the standard sub/main slope; both halves at order 4.
-BASS_MANAGEMENT_CORNER_HZ_DEFAULT = 80.0
-BASS_MANAGEMENT_CORNER_HZ_LO = 40.0
-BASS_MANAGEMENT_CORNER_HZ_HI = 200.0
-BASS_MANAGEMENT_CROSSOVER_ORDER = 4
+DEFAULT_SUB_CROSSOVER_HZ = 80.0
+SUB_CROSSOVER_HZ_LO = 40.0
+SUB_CROSSOVER_HZ_HI = 200.0
+SUB_CROSSOVER_ORDER = 4
 
 
 def measurement_target_id(role: str, output_variant: str = "primary") -> str:

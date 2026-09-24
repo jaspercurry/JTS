@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper import output_topology_store as output_topology_mod
-from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputHardware,
@@ -406,7 +406,7 @@ def _subless_topology_raw() -> dict:
         (json.dumps(_passive_sub_topology_raw(120.0)), 120.0),
         (
             json.dumps(_passive_sub_topology_raw(None)),
-            BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
+            DEFAULT_SUB_CROSSOVER_HZ,
         ),
         (json.dumps(_subless_topology_raw()), None),
         ('{"kind": "jts_output_', None),

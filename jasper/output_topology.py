@@ -35,12 +35,12 @@ from .output_hardware import (
     normalize_output_device_id,
 )
 from .speaker_layout import (
-    BASS_MANAGEMENT_CORNER_HZ_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO,
     MAIN_GROUP_KINDS,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     PASSIVE_MAIN_MODE,
     REQUIRED_ROLES_BY_MODE,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     SUPPORTED_GROUP_KINDS,
     SUPPORTED_GROUP_MODES,
     SUPPORTED_OUTPUT_VARIANTS,
@@ -61,9 +61,6 @@ EXPLICIT_SOURCE = "explicit"
 MISSING_SOURCE = "missing"
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-
-SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
-SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to

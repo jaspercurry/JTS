@@ -18,13 +18,12 @@ from typing import Any
 
 from jasper.speaker_layout import (
     ADJACENT_PAIRS_BY_MAIN_MODE,
-    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
-    BASS_MANAGEMENT_CORNER_HZ_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO,
-    BASS_MANAGEMENT_CROSSOVER_ORDER,
+    DEFAULT_SUB_CROSSOVER_HZ,
     LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     MAIN_DRIVER_ROLES_BY_MODE,
     OUTPUT_VARIANT_SCHEMA_VERSION,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     SUPPORTED_OUTPUT_VARIANTS,
     WAY_COUNT_BY_MAIN_MODE,
 )
@@ -57,16 +56,6 @@ LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
     WAY_COUNT_BY_MAIN_MODE[mode]: role for mode, role in LOWEST_DRIVER_ROLE_BY_MAIN_MODE.items()
 }
 
-# Local-subwoofer bass-management crossover corner. BOUND TO the one shared
-# bass-management corner definition (jasper.speaker_layout) — the same values the
-# safety guard references — so the corner cannot drift. The public spelling
-# stays for this module's importers (graph_safety, runtime_contract,
-# output_topology's mirror test).
-DEFAULT_SUB_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
-SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
-# LR4 is the standard sub/main bass-management slope (both halves at order 4).
-SUB_CROSSOVER_ORDER = BASS_MANAGEMENT_CROSSOVER_ORDER
 SUPPORTED_LAYOUTS = {"mono", "stereo"}
 SIDES_BY_LAYOUT: dict[str, tuple[str, ...]] = {
     "mono": ("mono",),
