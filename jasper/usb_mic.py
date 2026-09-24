@@ -172,7 +172,7 @@ def usb_mic_leg_choices(env: Mapping[str, str]) -> list[dict[str, Any]]:
         "label": "Same as JTS voice",
         "description": "Follows the microphone stream JTS uses for voice.",
     }]
-    from .mics import xvf3800
+    from .mics import xvf3800  # lazy: import cost, the XVF profile stays out of jasper-usbmic
 
     plan = xvf3800.chip_beam_plan_from_env(env)
     if plan is None:

@@ -119,6 +119,7 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
+from .spotify_router import build_router
 from .volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
@@ -1581,10 +1582,6 @@ class Mux:
             )
             return None
         try:
-            # lazy: an import failure here must degrade the pause path
-            # (the except below), not stop jasper-mux from starting.
-            from .spotify_router import build_router
-
             router = build_router(
                 client_id=client_id,
                 redirect_uri=resolved_spotify_redirect_uri(),

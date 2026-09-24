@@ -64,7 +64,7 @@ def read_before(path: str | Path | None) -> dict[str, Any]:
 def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any]:
     """Synchronously ask both topology consumers to apply saved state."""
 
-    from jasper.control.restart_broker import manage_units
+    from jasper.control.restart_broker import manage_units  # lazy: test patch boundary (tests/test_output_topology_reset.py)
 
     result: dict[str, Any] = {"ok": True}
     for unit in RECONCILE_UNITS:
@@ -113,8 +113,8 @@ def reset_to_unconfigured(
 ) -> dict[str, Any]:
     """Park audio, clear setup, save empty intent, then run the reconciler."""
 
-    from jasper.active_speaker.reset import clear_active_speaker_setup_state
-    from jasper.active_speaker.runtime_convergence import park_and_commit_topology
+    from jasper.active_speaker.reset import clear_active_speaker_setup_state  # lazy: import cost (yaml), jasper-fanin-coupling-reconcile imports this module
+    from jasper.active_speaker.runtime_convergence import park_and_commit_topology  # lazy: import cost (numpy/scipy), jasper-fanin-coupling-reconcile imports this module
 
     target = topology_path(path)
     with output_topology_mutation(target) as mutation:

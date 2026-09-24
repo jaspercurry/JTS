@@ -21,7 +21,10 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
+from .control import control_token
+from .control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
 from .platform import wire
+from .platform.control_client import AsyncControlClient
 from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from .platform.uds import daemon_command
 from .platform.uds import mux_socket_command as _mux_socket_command
@@ -215,9 +218,6 @@ async def _measurement_hold_command(path: str, body: dict) -> tuple[int, dict]:
     file and presented as ``X-JTS-Token``; ``current_token()`` returns ``""``
     when the gate is off or the file is unreadable, and the header is omitted.
     """
-    from .control import control_token
-    from .platform.control_client import AsyncControlClient
-
     headers: dict[str, str] = {}
     token = control_token.current_token()
     if token:
@@ -303,7 +303,7 @@ async def _release_measurement_hold(owner: str) -> None:
             "measurement hold release failed (%s) — jasper-control's %.0fs "
             "TTL will recover it",
             exc,
-            _measurement_hold_ttl_sec(),
+            MEASUREMENT_HOLD_TTL_SEC,
         )
         return
     if status < 200 or status >= 300:
@@ -312,7 +312,7 @@ async def _release_measurement_hold(owner: str) -> None:
             "jasper-control's %.0fs TTL will recover it",
             status,
             payload.get("error", ""),
-            _measurement_hold_ttl_sec(),
+            MEASUREMENT_HOLD_TTL_SEC,
         )
 
 
@@ -338,13 +338,6 @@ async def _stop_lease_refresh(
     except Exception:  # noqa: BLE001 - see the docstring
         logger.exception("%s refresh task failed", label)
     return None
-
-
-def _measurement_hold_ttl_sec() -> float:
-    """The registrar's TTL, read from its owner so the log cannot drift."""
-    from .control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
-
-    return MEASUREMENT_HOLD_TTL_SEC
 
 
 async def _voice_uds_command(

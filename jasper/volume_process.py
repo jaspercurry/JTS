@@ -19,12 +19,10 @@ from .volume_persistence import VolumePersistence, configured_path as volume_sta
 
 async def env_canonical_target_db() -> float:
     """Read current household intent through the active source coordinator."""
-    # lazy: import cost — the callers are one-shot CLIs, wizards and daemon
-    # mains that must not load the actuator graph at import time.
-    from jasper import librespot_state
-    from jasper.camilla import primary_controller
-    from jasper.renderer import RendererClient
-    from jasper.volume_coordinator import VolumeCoordinator
+    from jasper import librespot_state  # lazy: import cost, the actuator graph loads only when a swap releases its duck
+    from jasper.camilla import primary_controller  # lazy: test patch boundary (tests/test_volume_coordinator.py)
+    from jasper.renderer import RendererClient  # lazy: import cost, the actuator graph loads only when a swap releases its duck
+    from jasper.volume_coordinator import VolumeCoordinator  # lazy: import cost, the actuator graph loads only when a swap releases its duck
 
     coord = VolumeCoordinator(
         camilla=primary_controller(),
@@ -67,8 +65,7 @@ def install_env_canonical_target_provider() -> None:
     Which processes call it is pinned by
     ``tests/test_canonical_target_registration.py``.
     """
-    # lazy: import cost — see env_canonical_target_db above.
-    from jasper.camilla import primary_controller, set_canonical_target_db_provider
+    from jasper.camilla import primary_controller, set_canonical_target_db_provider  # lazy: test patch boundary (tests/test_volume_coordinator.py)
 
     set_canonical_target_db_provider(env_canonical_target_db)
 
