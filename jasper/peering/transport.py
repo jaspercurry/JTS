@@ -173,8 +173,8 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
                 report=WakeReport(
                     peer_id=str(msg["peer"]),
                     score=float(msg["score"]),
-                    snr_db=_maybe_float(msg.get("snr_db")),
-                    rms_dbfs=_maybe_float(msg.get("rms_dbfs")),
+                    snr_db=maybe_float(msg.get("snr_db")),
+                    rms_dbfs=maybe_float(msg.get("rms_dbfs")),
                     primary=bool(msg.get("primary", 0)),
                     can_serve=bool(msg.get("can_serve", 1)),
                 ),
@@ -205,7 +205,7 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
         return None
 
 
-def _maybe_float(v) -> float | None:
+def maybe_float(v) -> float | None:
     if v is None:
         return None
     try:

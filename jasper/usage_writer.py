@@ -14,8 +14,8 @@ import uuid
 
 from jasper.log_event import log_event
 from jasper.usage import (
-    AggregateUsageReader, Pricing, UsageStore, _UNRECORDED_SESSION,
-    _USAGE_READS, _UsageRow, household_usage_reader,
+    AggregateUsageReader, Pricing, UsageStore, UNRECORDED_SESSION,
+    USAGE_READS, UsageRow, household_usage_reader,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,11 +40,11 @@ class VoiceUsageStore(UsageStore):
         super().__init__(":memory:", pricing, pricing_overrides=pricing_overrides)
         self._condition = threading.Condition()
         # Open rows keep their slot until their close is saved.
-        self._pending: dict[tuple[str, int], _UsageRow] = {}
-        self._dirty: dict[tuple[str, int], _UsageRow] = {}
-        self._totals: dict[str, float | int] = dict.fromkeys(_USAGE_READS, 0)
+        self._pending: dict[tuple[str, int], UsageRow] = {}
+        self._dirty: dict[tuple[str, int], UsageRow] = {}
+        self._totals: dict[str, float | int] = dict.fromkeys(USAGE_READS, 0)
         self._published: tuple[dict[str, float | int], list[tuple[str, int]]] | None = None
-        self._other_totals: dict[str, float | int] = dict.fromkeys(_USAGE_READS, 0)
+        self._other_totals: dict[str, float | int] = dict.fromkeys(USAGE_READS, 0)
         self._refreshed = self._other_refreshed = 0.0
         self._read_error: str | None = None
         self._cleanup_requested = False
@@ -100,7 +100,7 @@ class VoiceUsageStore(UsageStore):
         with self._condition:
             self._load_snapshot()
             row_id = super().open_session(provider)
-            return row_id if self._submit("sessions", row_id) else _UNRECORDED_SESSION
+            return row_id if self._submit("sessions", row_id) else UNRECORDED_SESSION
 
     def _close_session_with_pricing(self, session_id, *args, **kwargs) -> float:
         with self._condition:
@@ -192,7 +192,7 @@ class VoiceUsageStore(UsageStore):
 
     def _refresh_other(self, reader: AggregateUsageReader) -> None:
         totals = {}
-        for name in _USAGE_READS:
+        for name in USAGE_READS:
             totals[name] = getattr(reader, name)()
             if reader.read_degraded:
                 self._read_error = "household ledger unreadable"

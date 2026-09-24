@@ -19,9 +19,9 @@ from dataclasses import dataclass
 import pytest
 
 from jasper.voice.earcons import (
-    _generate_listening_chirp,
-    _generate_mute_click,
-    _synthetic_audio_profile,
+    generate_listening_chirp,
+    generate_mute_click,
+    synthetic_audio_profile,
 )
 
 from ._log_events import event_fields
@@ -35,10 +35,10 @@ def _samples(pcm: bytes) -> list[int]:
 
 
 ALL_EARCONS = [
-    ("chime_ascending", lambda: _generate_listening_chirp(going_on=True)),
-    ("chime_descending", lambda: _generate_listening_chirp(going_on=False)),
-    ("sparkle_ascending", lambda: _generate_mute_click(going_on=True)),
-    ("sparkle_descending", lambda: _generate_mute_click(going_on=False)),
+    ("chime_ascending", lambda: generate_listening_chirp(going_on=True)),
+    ("chime_descending", lambda: generate_listening_chirp(going_on=False)),
+    ("sparkle_ascending", lambda: generate_mute_click(going_on=True)),
+    ("sparkle_descending", lambda: generate_mute_click(going_on=False)),
 ]
 
 
@@ -92,27 +92,27 @@ def test_earcon_duration_reasonable(name: str, render) -> None:
 def test_up_and_down_cues_differ() -> None:
     """Ascending and descending members of each family are distinct
     renders, so start/end and on/off are audibly different."""
-    assert _generate_listening_chirp(going_on=True) != _generate_listening_chirp(
+    assert generate_listening_chirp(going_on=True) != generate_listening_chirp(
         going_on=False
     )
-    assert _generate_mute_click(going_on=True) != _generate_mute_click(
+    assert generate_mute_click(going_on=True) != generate_mute_click(
         going_on=False
     )
 
 
 def test_families_are_distinct() -> None:
     """Chime and sparkle are different sounds, not the same recipe."""
-    assert _generate_listening_chirp(going_on=True) != _generate_mute_click(
+    assert generate_listening_chirp(going_on=True) != generate_mute_click(
         going_on=True
     )
 
 
 def test_render_is_deterministic() -> None:
     """Pre-rendered once at startup and cached — must be pure."""
-    assert _generate_listening_chirp(going_on=True) == _generate_listening_chirp(
+    assert generate_listening_chirp(going_on=True) == generate_listening_chirp(
         going_on=True
     )
-    assert _generate_mute_click(going_on=False) == _generate_mute_click(
+    assert generate_mute_click(going_on=False) == generate_mute_click(
         going_on=False
     )
 
@@ -134,7 +134,7 @@ def test_synthetic_audio_profile_uses_measured_source_level(monkeypatch):
         ),
     )
 
-    profile = _synthetic_audio_profile(
+    profile = synthetic_audio_profile(
         model="synthetic-mute-click",
         voice="mute",
         pcm=b"\x00\x00\x01\x00",
@@ -161,7 +161,7 @@ def test_synthetic_audio_profile_fallback_log_is_structured(
     monkeypatch.setattr(earcons, "measure_pcm_24k_mono", fail_measurement)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        profile = _synthetic_audio_profile(
+        profile = synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="mute",
             pcm=b"\x00\x00\x01\x00",

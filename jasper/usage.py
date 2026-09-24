@@ -45,7 +45,7 @@ def tuning_usage_db_path(usage_db_path: str) -> str:
 
 
 # Reserved outside both disk AUTOINCREMENT IDs and buffered session IDs.
-_UNRECORDED_SESSION = -1
+UNRECORDED_SESSION = -1
 
 
 @dataclass(frozen=True)
@@ -355,13 +355,13 @@ _USAGE_COLUMNS = {
     "sessions": "id, started_at, ended_at, input_tokens, output_tokens, cost_usd, provider",
     "connection_intervals": "id, provider, opened_at, closed_at, rate_per_hour_usd, kind",
 }
-_USAGE_READS = (
+USAGE_READS = (
     "spend_last_24h_usd", "spend_month_to_date_usd", "session_count_today_utc",
 )
 
 
 @dataclass(frozen=True)
-class _UsageRow:
+class UsageRow:
     key: tuple[str, int]
     values: tuple
 
@@ -433,7 +433,7 @@ class UsageStore:
                 "unrecorded", type(e).__name__, e,
             )
             self._note_write_failed(e)
-            return _UNRECORDED_SESSION
+            return UNRECORDED_SESSION
         self._note_write_ok()
         return int(cur.lastrowid)
 
@@ -510,8 +510,8 @@ class UsageStore:
         cost = pricing.estimate_cost(usage)
         # No row to update when open_session's write failed — the cost
         # estimate is still returned for the caller's logging, it just
-        # isn't persisted (see _UNRECORDED_SESSION / open_session).
-        if session_id == _UNRECORDED_SESSION:
+        # isn't persisted (see UNRECORDED_SESSION / open_session).
+        if session_id == UNRECORDED_SESSION:
             return cost
         # Fail-soft for the same reason open_session is: a telemetry
         # write must never break the voice turn. The cost estimate is
@@ -740,17 +740,17 @@ class UsageStore:
         return int(row[0]) if row else 0
 
 
-    def _row(self, table: str, row_id: int) -> _UsageRow | None:
+    def _row(self, table: str, row_id: int) -> UsageRow | None:
         values = self._conn.execute(
             f"SELECT {_USAGE_COLUMNS[table]} FROM {table} WHERE id = ?", (row_id,),
         ).fetchone()
-        return _UsageRow((table, row_id), values) if values is not None else None
+        return UsageRow((table, row_id), values) if values is not None else None
 
     def _discard_rows(self, keys: list[tuple[str, int]]) -> None:
         for table, row_id in keys:
             self._conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
-    def _save_row(self, row: _UsageRow) -> None:
+    def _save_row(self, row: UsageRow) -> None:
         table = row.key[0]
         columns = _USAGE_COLUMNS[table].split(", ")
         self._conn.execute(
@@ -781,7 +781,7 @@ class UsageStore:
         self._conn.executemany("INSERT INTO usage_pending VALUES (?, ?)", excluded)
         self._conn.execute("BEGIN")
         try:
-            return {name: getattr(self, name)() for name in _USAGE_READS}
+            return {name: getattr(self, name)() for name in USAGE_READS}
         finally:
             self._conn.execute("ROLLBACK")
 

@@ -23,7 +23,7 @@ from jasper.usage import (
     USAGE_RETENTION_DAYS,
     _CONNECTION_INTERVALS_TABLE_DDL,
     _SESSIONS_TABLE_DDL,
-    _UNRECORDED_SESSION,
+    UNRECORDED_SESSION,
     Pricing,
     SpendCap,
     UsageStore,
@@ -82,7 +82,7 @@ def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
     Reproduces the 2026-06-19 outage: usage.db ends up unwritable by
     jasper-voice, so the per-turn INSERT raises "attempt to write a
     readonly database". open_session must swallow it, return the
-    _UNRECORDED_SESSION sentinel, and let the caller serve the turn;
+    UNRECORDED_SESSION sentinel, and let the caller serve the turn;
     close_session must no-op on that sentinel and also survive a failed
     UPDATE. Neither may raise — a raise here aborted the turn and made
     the daemon play the (false) cant_connect cue."""
@@ -98,7 +98,7 @@ def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
 
     with caplog.at_level("WARNING"):
         sid = store.open_session(provider="gemini")  # must not raise
-    assert sid == _UNRECORDED_SESSION
+    assert sid == UNRECORDED_SESSION
     assert any("open_session write failed" in r.message for r in caplog.records)
 
     # close_session on the sentinel is a no-op that still returns a cost
@@ -130,7 +130,7 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     )
 
     with caplog.at_level("WARNING"):
-        assert store.open_session() == _UNRECORDED_SESSION
+        assert store.open_session() == UNRECORDED_SESSION
     assert store.write_degraded is True
     assert len(event_records(caplog, "usage.write_degraded")) == 1, (
         "the ok->degraded transition emits the structured event exactly once"
@@ -139,7 +139,7 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     # A further failure bumps the counter but must NOT re-emit (no journal spam).
     caplog.clear()
     with caplog.at_level("WARNING"):
-        assert store.open_session() == _UNRECORDED_SESSION
+        assert store.open_session() == UNRECORDED_SESSION
     assert store.write_degraded is True
     assert not event_records(caplog, "usage.write_degraded"), (
         "a persistent failure must not re-emit the degraded event"
@@ -887,7 +887,7 @@ def test_read_only_cannot_write(tmp_path: Path):
     # reject the write, so a reader can never create/mutate usage.db (the
     # 2026-06-16 protection): the call returns the unrecorded sentinel and
     # no session row is persisted.
-    assert ro.open_session(provider="openai") == _UNRECORDED_SESSION
+    assert ro.open_session(provider="openai") == UNRECORDED_SESSION
     assert ro.session_count_today_utc() == 0
 
 
@@ -1274,7 +1274,7 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
             with pytest.raises(RuntimeError):
                 await wl._turns.begin_inner(pre_roll=False)
             wl._connection.acquire_turn.assert_awaited_once()
-            assert wl._turns.session_id != _UNRECORDED_SESSION
+            assert wl._turns.session_id != UNRECORDED_SESSION
             store.close_session(wl._turns.session_id, 0, 0)
             await tick
             assert time.monotonic() - began < 0.1
@@ -1391,7 +1391,7 @@ async def test_unreadable_companion_cannot_fill_the_voice_queue(tmp_path, monkey
     try:
         for _ in range(6):
             sid = store.open_session("openai")
-            assert sid != _UNRECORDED_SESSION
+            assert sid != UNRECORDED_SESSION
             total += store.close_session(sid, 1000, 1000)
             await _wait_usage(lambda: not store._pending)
         assert store.write_degraded

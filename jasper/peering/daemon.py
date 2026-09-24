@@ -67,7 +67,7 @@ from .transport import (
     IncomingMessage,
     IncomingWake,
     MulticastTransport,
-    _maybe_float,
+    maybe_float,
     encode_claim,
     encode_end,
     encode_heartbeat,
@@ -307,8 +307,8 @@ class PeeringDaemon:
         # future from inside _execute.
         self._dispatch(LocalWake(
             score=score,
-            snr_db=_maybe_float(snr_db),
-            rms_dbfs=_maybe_float(rms_dbfs),
+            snr_db=maybe_float(snr_db),
+            rms_dbfs=maybe_float(rms_dbfs),
             can_serve=can_serve,
             now=self._loop.time(),  # type: ignore[union-attr]
         ))

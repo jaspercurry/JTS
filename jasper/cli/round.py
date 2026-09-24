@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
-from jasper.net.http_security import _is_loopback_name
+from jasper.net.http_security import is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
@@ -426,7 +426,7 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     args = parser.parse_args(argv)
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
-    if args.command in ("run", "trial") and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
+    if args.command in ("run", "trial") and args.dry_run and not is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
     if args.command in ("list", "show"):
