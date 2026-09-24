@@ -51,6 +51,7 @@ from jasper.camilla import primary_controller
 from ..accounts import registry_path as spotify_registry_path
 from ..env_load import (
     SPEAKER_NAME_ENV_PATH,
+    TOOL_STATE_ENV_PATH,
     TRANSIT_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
     WAKE_MODEL_ENV_PATH,
@@ -316,10 +317,7 @@ def _make_tools_server(target: object) -> object:
             "JASPER_TOOLS_CATALOG_FILE",
             tools_setup.DEFAULT_CATALOG_PATH,
         ),
-        state_path=os.environ.get(
-            "JASPER_TOOL_STATE_FILE",
-            tools_setup.TOOL_STATE_FILE,
-        ),
+        state_path=os.environ.get("JASPER_TOOL_STATE_FILE", TOOL_STATE_ENV_PATH),
         prompt_overrides_path=os.environ.get(
             "JASPER_TOOL_PROMPT_OVERRIDES_FILE",
             tools_setup.PROMPT_OVERRIDES_FILE,

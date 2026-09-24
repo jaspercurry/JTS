@@ -70,6 +70,15 @@ def test_registered_wizard_default_ports_are_socket_backed():
         )
 
 
+def test_every_registered_wizard_builds_its_server():
+    """A factory resolves its module attributes only when called, which on a
+    speaker is when jasper-web starts the wizard: build every one."""
+    from jasper.web import __main__ as web_main
+
+    for spec in web_main.WIZARD_SPECS:
+        spec.make_server(("127.0.0.1", 0)).server_close()
+
+
 # Which capability each wizard's availability follows. Named as literals so
 # moving a row between the groups — a product decision about what a tier
 # grants — cannot pass as a refactor.
