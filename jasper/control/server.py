@@ -853,7 +853,6 @@ def build_server(
     )
 
 
-
 def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]:
     previous = signal.getsignal(signal.SIGTERM)
 
@@ -877,7 +876,7 @@ def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]
     return _restore
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="jasper-control",
         description="HTTP control surface for the JTS speaker",
@@ -886,70 +885,21 @@ def main(argv: list[str] | None = None) -> int:
         "--host", default=os.environ.get("JASPER_CONTROL_HOST", "0.0.0.0"),
         help="bind host (default 0.0.0.0 — LAN-reachable)",
     )
-    parser.add_argument(
-        "--port", type=int, default=CONTROL_PORT,
-    )
-    parser.add_argument(
-        "--camilla-host",
-        default=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-    )
+    parser.add_argument("--port", type=int, default=CONTROL_PORT)
+    parser.add_argument("--camilla-host", default=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"))
     parser.add_argument(
         "--camilla-port", type=int,
         default=int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT)),
     )
     parser.add_argument(
         "--voice-socket",
-        default=os.environ.get(
-            "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
-        ),
+        default=os.environ.get("JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH),
         help="path to voice_daemon's control UDS",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
 
-    configure_logging()
-    # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
-    # the journal at INFO, applies the /system Debug card's toggle, and wires
-    # SIGUSR1 -> dump. See jasper/flight_recorder.py.
-    flight_recorder.install("control")
 
-    # The live pair-balance trim patches the graph from this process, so its
-    # swap duck needs a canonical target to release to.
-    install_env_canonical_target_provider()
-
-    # 5 s ring buffer for the /system dashboard; daemon thread.
-    from .system_metrics import SystemSampler  # lazy: test patch boundary (tests/test_control_server.py)
-    sampler = SystemSampler()
-    sampler.start()
-    # The ONE resident audio-monitor thread: it composes the AirPlay probes
-    # with cheap outputd state and slow route-certification reads.
-    from .audio_health_sampler import AudioHealthSampler  # lazy: test patch boundary (tests/test_control_server.py)
-    audio_health_sampler = AudioHealthSampler(
-        camilla_host=args.camilla_host,
-        camilla_port=args.camilla_port,
-        service_probe=sampler.service_states_snapshot,
-        system_probe=sampler.pressure_snapshot,
-        incident_store=IncidentStore(),
-    )
-    audio_health_sampler.start()
-
-    try:
-        server = build_server(
-            args.host, args.port,
-            args.camilla_host, args.camilla_port,
-            args.voice_socket,
-            sampler=sampler,
-            audio_health_sampler=audio_health_sampler,
-        )
-    except OSError as exc:
-        # A refused listen socket does not heal on a restart, so park rather
-        # than spend the burst that ends in StartLimitAction=reboot.
-        log_event(
-            logger, "control.bind_failed",
-            level=logging.ERROR,
-            host=args.host, port=args.port,
-            errno=exc.errno, error=exc.strerror or str(exc),
-        )
-        return CONTROL_BIND_FAILED_EXIT
+def _start_companion_services() -> Any:
     # Arm the control-token gate before serving. ensure_token()
     # auto-generates the token (0640 group jasper) if absent, so the
     # destructive routes are always gated with no operator action;
@@ -996,6 +946,57 @@ def main(argv: list[str] | None = None) -> int:
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.
     debug_control.reconcile_on_startup()
+    return restart_broker_server
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
+    configure_logging()
+    # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
+    # the journal at INFO, applies the /system Debug card's toggle, and wires
+    # SIGUSR1 -> dump. See jasper/flight_recorder.py.
+    flight_recorder.install("control")
+
+    # The live pair-balance trim patches the graph from this process, so its
+    # swap duck needs a canonical target to release to.
+    install_env_canonical_target_provider()
+
+    # 5 s ring buffer for the /system dashboard; daemon thread.
+    from .system_metrics import SystemSampler  # lazy: test patch boundary (tests/test_control_server.py)
+    sampler = SystemSampler()
+    sampler.start()
+    # The ONE resident audio-monitor thread: it composes the AirPlay probes
+    # with cheap outputd state and slow route-certification reads.
+    from .audio_health_sampler import AudioHealthSampler  # lazy: test patch boundary (tests/test_control_server.py)
+    audio_health_sampler = AudioHealthSampler(
+        camilla_host=args.camilla_host,
+        camilla_port=args.camilla_port,
+        service_probe=sampler.service_states_snapshot,
+        system_probe=sampler.pressure_snapshot,
+        incident_store=IncidentStore(),
+    )
+    audio_health_sampler.start()
+
+    try:
+        server = build_server(
+            args.host, args.port,
+            args.camilla_host, args.camilla_port,
+            args.voice_socket,
+            sampler=sampler,
+            audio_health_sampler=audio_health_sampler,
+        )
+    except OSError as exc:
+        # A refused listen socket does not heal on a restart, so park rather
+        # than spend the burst that ends in StartLimitAction=reboot.
+        log_event(
+            logger, "control.bind_failed",
+            level=logging.ERROR,
+            host=args.host, port=args.port,
+            errno=exc.errno, error=exc.strerror or str(exc),
+        )
+        return CONTROL_BIND_FAILED_EXIT
+    restart_broker_server = _start_companion_services()
     # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
@@ -1005,12 +1006,8 @@ def main(argv: list[str] | None = None) -> int:
     server.heartbeat = heartbeat
     heartbeat.start()
     log_event(
-        logger,
-        "control.ready",
-        host=args.host,
-        port=args.port,
-        camilla_host=args.camilla_host,
-        camilla_port=args.camilla_port,
+        logger, "control.ready", host=args.host, port=args.port,
+        camilla_host=args.camilla_host, camilla_port=args.camilla_port,
         voice_socket=args.voice_socket,
     )
     restore_sigterm = _install_sigterm_shutdown(server)
@@ -1021,7 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         restore_sigterm()
         stop_peering_daemon()
-        # None when the broker failed to bind (non-fatal, logged above).
+        # None when the broker failed to bind (non-fatal, logged).
         if restart_broker_server is not None:
             restart_broker_server.shutdown()
             restart_broker_server.server_close()
