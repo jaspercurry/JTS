@@ -343,7 +343,8 @@ def persist_conductor_state(
     """
     from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
 
-    from .correction_crossover_v2_status import crossover_v2_status_block  # lazy: status reads this state owner
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
+    from .correction_crossover_v2_grade import post_apply_grade  # lazy: its projections' import cost
 
     prior = load_v2_state() or {}
     built = build_conductor_state(
@@ -354,14 +355,9 @@ def persist_conductor_state(
         failure_detail=failure_detail,
     )
     session_id = built.state["session_id"]
-    # Read BEFORE the write: this is the grade the household is currently
-    # looking at, and ``crossover_v2_status_block`` reads the state file.
-    prior_grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
-    prior_outcome = (
-        str(prior_grade.get("outcome") or "")
-        if isinstance(prior_grade, Mapping)
-        and prior.get("session_id") == session_id else ""
-    )
+    # Read BEFORE the write: this is the grade the household is currently looking at.
+    prior_grade = post_apply_grade(prior, applied_profile=load_applied_baseline_profile_state())
+    prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
     from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
@@ -381,8 +377,7 @@ def persist_conductor_state(
                 )
     from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
-    grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
-    grade = grade if isinstance(grade, Mapping) else {}
+    grade = post_apply_grade(load_v2_state(), applied_profile=load_applied_baseline_profile_state())
     was_done = crossover_v2_phase(
         prior, review_declined=review_declined(prior),
     ) == PHASE_DONE

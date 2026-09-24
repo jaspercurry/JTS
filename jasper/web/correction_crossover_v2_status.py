@@ -25,7 +25,6 @@ from typing import Any, Mapping
 from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.log_event import log_event
 
@@ -126,8 +125,7 @@ def crossover_v2_status_block(
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status() if controllability is False else controllability,
     }
-    block["post_apply_grade"] = v2grade._post_apply_grade(block,
-        spatial_required=bool(block["applied"]) and asked_beyond_mark(state or {}, applied_profile=applied_profile))
+    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile)
     return block
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
+from jasper.active_speaker import crossover_envelope_v2 as projection
 from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.verification import (
@@ -17,6 +18,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
+from jasper.active_speaker.grade_coverage import asked_beyond_mark
 from jasper.json_fields import finite_float
 
 
@@ -84,6 +86,18 @@ def _spatial_grade(post_apply: Any) -> str:
     if isinstance(flatness, Mapping) and flatness.get("evaluable") is False:
         return GRADE_SPATIAL_UNMEASURABLE
     return GRADE_SPATIAL_FAILED
+
+
+def post_apply_grade(state: Mapping[str, Any] | None, *, applied_profile: Any) -> dict[str, Any]:
+    """The grade the status block publishes as ``post_apply_grade``, read from
+    the durable ``state`` and the applied profile alone."""
+    state = state or {}
+    applied = bool(state.get("applied"))
+    return _post_apply_grade({
+        "applied": applied, "candidate": state.get("candidate"), "verify": state.get("verify"),
+        "prediction": projection.prediction_status(state),
+        "cloud": projection.compact_cloud_status(state.get("cloud"), current_session_id=state.get("session_id")),
+    }, spatial_required=applied and asked_beyond_mark(state, applied_profile=applied_profile))
 
 
 def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = False) -> dict[str, Any]:
