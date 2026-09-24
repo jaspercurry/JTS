@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +9,6 @@ import pytest
 
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
-from jasper.install_profile import read_install_profile
 from tests.systemd_unit_helpers import value_for as _value_for
 from tests._log_events import event_field_maps, event_fields
 from jasper.music_sources import Source
@@ -140,7 +138,7 @@ def test_no_change_boot_reconcile_does_not_restart_the_adapter_host(
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -171,7 +169,7 @@ def test_bluez_discovery_timeout_is_bounded_and_observable(
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", hanging_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
     monkeypatch.setattr(reconcile, "BLUEZ_DISCOVERY_TIMEOUT_SEC", 0.01)
 
     with caplog.at_level(logging.ERROR):
@@ -220,7 +218,7 @@ def test_a_refused_host_refresh_raises_with_the_refusal_carried(
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     with caplog.at_level(logging.ERROR):
         with pytest.raises(reconcile.AdapterHostRefreshError):
@@ -332,9 +330,15 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
     assert fields["err"].endswith(intent_detail)
 
 
-def test_role_park_preserves_enabled_intent_but_withdraws_the_mic_source(
+@pytest.mark.parametrize(
+    ("verdict", "published"),
+    [((False, "bonded_follower"), False), ((True, None), True)],
+)
+def test_grouping_verdict_gates_the_accessory_mic_source(
     monkeypatch,
     tmp_path: Path,
+    verdict,
+    published,
 ):
     env_file = tmp_path / "accessory-mics.env"
     env_file.write_text(
@@ -343,79 +347,34 @@ def test_role_park_preserves_enabled_intent_but_withdraws_the_mic_source(
     )
     calls = []
     intent_reads = []
+    bluez_queries = []
 
-    async def fail_bluez():
-        pytest.fail("a role-parked source must not query BlueZ")
-
-    fake_systemctl = _recording_systemctl(monkeypatch, calls)
+    async def fake_bluez():
+        bluez_queries.append(True)
+        return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
 
     monkeypatch.setattr(
         reconcile,
         "source_intent_enabled",
         lambda source: intent_reads.append(source) or True,
     )
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: False)
-    monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: verdict)
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
 
     plan = asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=fake_systemctl,
+            systemctl=_recording_systemctl(monkeypatch, calls),
             reason="source-intent",
         ),
     )
 
     assert intent_reads == [Source.BLUETOOTH]
-    assert dict(plan.sources) == {}
-    assert not env_file.exists()
-    assert HOST_REFRESH in calls
+    assert bool(plan.sources) is published
+    assert env_file.exists() is published
+    assert bool(bluez_queries) is published
+    assert (HOST_REFRESH in calls) is not published
     assert _host_never_disarmed(calls)
-
-
-@pytest.mark.parametrize(
-    ("marker", "grouping_allowed", "expected"),
-    [
-        ("bogus", True, False),
-        ("full", False, False),
-        ("full", True, True),
-        ("streambox", True, True),
-    ],
-)
-def test_local_source_role_gate_combines_install_and_grouping_permission(
-    monkeypatch,
-    tmp_path,
-    marker,
-    grouping_allowed,
-    expected,
-):
-    marker_path = tmp_path / "install_profile"
-    marker_path.write_text(f"{marker}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        reconcile, "read_install_profile", partial(read_install_profile, path=marker_path),
-    )
-    monkeypatch.setattr(
-        reconcile,
-        "local_sources_allowed",
-        lambda: (grouping_allowed, None),
-    )
-
-    assert reconcile._local_sources_allowed() is expected
-
-
-def test_local_source_role_probe_failure_parks_and_logs(monkeypatch, caplog):
-    probe_detail = "bad profile"
-
-    def invalid_profile():
-        raise ValueError(probe_detail)
-
-    monkeypatch.setattr(reconcile, "read_install_profile", invalid_profile)
-
-    with caplog.at_level(logging.WARNING):
-        assert reconcile._local_sources_allowed() is False
-
-    assert event_fields(caplog, "accessory_mic.role_probe_failed") == {
-        "error": probe_detail,
-    }
 
 
 @pytest.mark.parametrize(
@@ -852,7 +811,7 @@ def test_reconciler_owns_voice_where_it_follows_the_accessory_mic(
     monkeypatch.setattr(reconcile, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -888,7 +847,7 @@ def test_owned_voice_restarts_when_published_sources_change_under_it(
     monkeypatch.setattr(reconcile, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -918,7 +877,7 @@ def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
     monkeypatch.setattr(reconcile, "read_install_profile", lambda: "full")
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -1041,7 +1000,7 @@ def test_a_published_source_with_a_dead_host_is_not_a_clean_pass(
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
-    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
 
     with caplog.at_level(logging.ERROR):
         with pytest.raises(reconcile.AdapterHostRefreshError):

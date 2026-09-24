@@ -6,9 +6,9 @@
 per-source availability/enabled/effective state and the enable-time
 precondition checks.
 
-All product probes (systemd, DBus/Bluetooth, install profile, USB hardware
-role, fan-in) are stubbed at the names ``status.py`` imports them under, so
-these tests exercise only the derivation logic, never real systemctl/DBus.
+All product probes (systemd, DBus/Bluetooth, USB hardware role, fan-in) are
+stubbed at the names ``status.py`` imports them under, so these tests exercise
+only the derivation logic, never real systemctl/DBus.
 """
 from __future__ import annotations
 
@@ -84,7 +84,6 @@ def stub_backends(monkeypatch):
             "local_sources_allowed",
             lambda: (not parked, "bonded_follower" if parked else None),
         )
-        monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: True)
         monkeypatch.setattr(status, "read_unit_states", fake_read_unit_states)
         monkeypatch.setattr(
             status,
@@ -192,26 +191,6 @@ def test_read_source_status_renderer_units_unavailable(stub_backends):
         str(item.get("unavailableReason") or "") for item in state.values()
     )
     assert "install.sh" in unavailable
-
-
-def test_read_source_status_profile_disables_stale_renderer_units(
-    stub_backends, monkeypatch,
-):
-    stub_backends(
-        active={AIRPLAY_UNIT, SPOTIFY_UNIT, status.USBSINK_UNIT},
-        bt=(True, False),
-        usb_ready=True,
-    )
-    monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: False)
-
-    state = status.read_source_status()
-
-    assert state["airplay"]["effective"] == "unavailable"
-    assert state["airplay"]["available"] is False
-    assert state["spotify_connect"]["available"] is False
-    assert state["bluetooth"]["available"] is False
-    assert "not installed on this speaker" in str(state["bluetooth"]["unavailableReason"])
-    assert state["usbsink"]["available"] is False
 
 
 def test_read_source_status_bluetooth_unavailable(stub_backends):
@@ -394,7 +373,6 @@ def test_read_source_status_reports_unit_state_unavailable_not_not_installed(
 def test_enable_blocker_reports_unit_state_unavailable(
     monkeypatch, source,
 ):
-    monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: True)
     monkeypatch.setattr(status, "read_unit_states", lambda units, timeout=5.0: None)
 
     assert status.enable_blocker(source) == status.UNIT_STATE_UNAVAILABLE_REASON
@@ -416,7 +394,6 @@ def test_sources_parked_inverts_role_verdict(monkeypatch, verdict, expected):
 
 
 def _happy_backends(monkeypatch) -> None:
-    monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: True)
     monkeypatch.setattr(
         status,
         "read_unit_states",
@@ -438,11 +415,6 @@ def _happy_backends(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("setup", "source", "expected_substring"),
     [
-        # profile disallowed outranks every other check, for all four sources.
-        ("profile_denied", Source.AIRPLAY, "AirPlay is not installed"),
-        ("profile_denied", Source.SPOTIFY, "Spotify Connect is not installed"),
-        ("profile_denied", Source.BLUETOOTH, "Bluetooth audio is not installed"),
-        ("profile_denied", Source.USBSINK, "USB Audio Input is not installed"),
         # missing health/main unit, per source (USB: both units missing ->
         # the main-unit message wins over the gadget-specific one).
         ("no_units_loaded", Source.AIRPLAY, "AirPlay is not installed"),
@@ -456,7 +428,7 @@ def _happy_backends(monkeypatch) -> None:
         ("bt_hard_blocked", Source.BLUETOOTH, "hardware radio switch"),
         ("bt_missing_units", Source.BLUETOOTH, "bt-agent.service"),
         ("bt_no_adapter", Source.BLUETOOTH, "Bluetooth adapter"),
-        # USB hardware-capability refusal, once units and profile pass.
+        # USB hardware-capability refusal, once units pass.
         ("usb_hardware_unavailable", Source.USBSINK, "USB output DAC uses the shared port"),
         # the happy row: every check passes.
         ("happy", Source.AIRPLAY, ""),
@@ -468,9 +440,7 @@ def _happy_backends(monkeypatch) -> None:
 def test_enable_blocker_precedence(monkeypatch, setup, source, expected_substring):
     _happy_backends(monkeypatch)
 
-    if setup == "profile_denied":
-        monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: False)
-    elif setup == "no_units_loaded":
+    if setup == "no_units_loaded":
         monkeypatch.setattr(status, "read_unit_states", lambda units, timeout=5.0: {})
     elif setup == "missing_usb_gadget_unit":
         monkeypatch.setattr(

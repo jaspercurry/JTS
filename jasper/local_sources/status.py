@@ -4,8 +4,8 @@
 
 """Single owner of local-source availability/enabled/effective status.
 
-Everything that answers "is this source installed, allowed by the current
-install profile, effectively on, or blocked from turning on" for the four
+Everything that answers "is this source installed, parked by the grouping
+role, effectively on, or blocked from turning on" for the four
 local music sources (AirPlay, Bluetooth, Spotify Connect, USB Audio Input)
 lives here. The /sources/ wizard (``jasper.web.sources_setup``) and
 jasper-control's mux-status augmenter (``jasper.control.handlers.volume``)
@@ -35,7 +35,6 @@ from ..fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
-from ..install_profile import read_install_profile
 from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
 from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
@@ -122,16 +121,6 @@ def _usbsink_capability() -> tuple[bool, str]:
     return state.gadget_available, gadget_unavailable_detail(state)
 
 
-def _profile_allows_local_sources() -> bool:
-    """True when this install role may run local source resource groups."""
-    try:
-        read_install_profile()  # every valid tier runs local sources
-    except ValueError as e:
-        logger.warning("invalid install profile while reading source status: %s", e)
-        return False
-    return True
-
-
 def _source_state(
     *,
     desired: bool,
@@ -173,24 +162,19 @@ def _source_availability(
     source: Source,
     *,
     records: Mapping[str, dict[str, Any]] | None,
-    profile_allows: bool | None = None,
     bluetooth: BluetoothAvailability | None = None,
 ) -> tuple[bool, str]:
     """Whether ``source`` may run now, and the reason it may not ("" when it may).
 
-    One derivation for the status snapshot (which passes its unit-record batch,
-    profile verdict and Bluetooth probe) and for the turn-on precondition
-    (which probes only what its one source needs). Precedence: install profile,
-    then the unit-state read itself (``records`` is None when systemctl was
-    unreachable or answered nothing: that is not "not installed"), then the
-    source's units (USB: main unit, then gadget unit), then hardware (USB data
-    role; Bluetooth adapter and units together).
+    One derivation for the status snapshot (which passes its unit-record batch
+    and Bluetooth probe) and for the turn-on precondition (which probes only
+    what its one source needs). Precedence: the unit-state read itself
+    (``records`` is None when systemctl was unreachable or answered nothing:
+    that is not "not installed"), then the source's units (USB: main unit, then
+    gadget unit), then hardware (USB data role; Bluetooth adapter and units
+    together).
     """
     wizard_key = SOURCE_SPECS[source].wizard_key
-    if profile_allows is None:
-        profile_allows = _profile_allows_local_sources()
-    if not profile_allows:
-        return False, SOURCE_UNAVAILABLE[wizard_key]
     if records is None:
         return False, UNIT_STATE_UNAVAILABLE_REASON
     if source == Source.BLUETOOTH:
@@ -221,12 +205,9 @@ def _systemd_source_state(
     desired: bool,
     parked: bool,
     records: Mapping[str, dict[str, Any]] | None,
-    profile_allows: bool,
 ) -> dict[str, bool | str]:
     lifecycle = local_source_lifecycle(source)
-    available, unavailable_reason = _source_availability(
-        source, records=records, profile_allows=profile_allows,
-    )
+    available, unavailable_reason = _source_availability(source, records=records)
     # ``records`` is None when the shared batch read was unavailable:
     # _source_availability already turned that into UNIT_STATE_UNAVAILABLE_REASON
     # above, so every unit here reads as "not observed active" -- unknown,
@@ -336,10 +317,9 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
             _BLUETOOTH_STATE_TIMEOUT_SEC,
         )
         bt_powered, bt_has_hid = False, False
-    profile_allows = _profile_allows_local_sources()
     parked = sources_parked()
     usbsink_available, usbsink_reason = _source_availability(
-        Source.USBSINK, records=records, profile_allows=profile_allows,
+        Source.USBSINK, records=records,
     )
     usbsink_main_active = unit_active(records_map.get(USBSINK_UNIT))
     # Host-visible audio device presence is the uac2 ALSA card, NOT gadget-unit
@@ -411,10 +391,7 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
     }
     bt_runtime_active = all(bt_unit_active.values())
     bt_available_for_role, bt_unavailable_reason = _source_availability(
-        Source.BLUETOOTH,
-        records=records,
-        profile_allows=profile_allows,
-        bluetooth=bt_availability,
+        Source.BLUETOOTH, records=records, bluetooth=bt_availability,
     )
     bt_desired = intents[Source.BLUETOOTH]
     bt_observed_on = (
@@ -449,7 +426,6 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
             Source.AIRPLAY,
             desired=intents[Source.AIRPLAY], parked=parked,
             records=records,
-            profile_allows=profile_allows,
         ),
         "bluetooth": {
             **_source_state(
@@ -466,7 +442,6 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
             Source.SPOTIFY,
             desired=intents[Source.SPOTIFY], parked=parked,
             records=records,
-            profile_allows=profile_allows,
         ),
         "usbsink": _source_state(
             desired=usbsink_desired,

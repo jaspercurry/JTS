@@ -160,22 +160,6 @@ class AdapterHostRefreshError(AccessoryReconcileError):
     """An adapter host did not accept the refresh that applies the new plan."""
 
 
-def _local_sources_allowed() -> bool:
-    """Mirror the source coordinator's install-role + grouping permission."""
-
-    try:
-        read_install_profile()  # every valid tier runs local sources
-        return local_sources_allowed()[0]
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "accessory_mic.role_probe_failed",
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return False
-
-
 @dataclass(frozen=True)
 class AccessoryMicPlan:
     """Resolved accessory mic state from current BlueZ device records."""
@@ -588,9 +572,8 @@ async def reconcile_once(
             f"cannot read Bluetooth source intent: {exc}"
         )
 
-    role_allowed = _local_sources_allowed() if bluetooth_enabled else False
-    effective_enabled = bluetooth_enabled and role_allowed
-    if effective_enabled:
+    role_allowed = bluetooth_enabled and local_sources_allowed()[0]
+    if role_allowed:
         try:
             managed = await asyncio.wait_for(
                 bluez_managed_objects(),
