@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
+from jasper.install_profile import read_install_profile
 from tests.systemd_unit_helpers import value_for as _value_for
 from tests._log_events import event_field_maps, event_fields
 from jasper.music_sources import Source
@@ -371,20 +373,25 @@ def test_role_park_preserves_enabled_intent_but_withdraws_the_mic_source(
 
 
 @pytest.mark.parametrize(
-    ("profile_allowed", "grouping_allowed", "expected"),
-    [(False, True, False), (True, False, False), (True, True, True)],
+    ("marker", "grouping_allowed", "expected"),
+    [
+        ("bogus", True, False),
+        ("full", False, False),
+        ("full", True, True),
+        ("streambox", True, True),
+    ],
 )
 def test_local_source_role_gate_combines_install_and_grouping_permission(
     monkeypatch,
-    profile_allowed,
+    tmp_path,
+    marker,
     grouping_allowed,
     expected,
 ):
-    monkeypatch.setattr(reconcile, "read_install_profile", lambda: "full")
+    marker_path = tmp_path / "install_profile"
+    marker_path.write_text(f"{marker}\n", encoding="utf-8")
     monkeypatch.setattr(
-        reconcile,
-        "install_profile_allows_local_sources",
-        lambda _profile: profile_allowed,
+        reconcile, "read_install_profile", partial(read_install_profile, path=marker_path),
     )
     monkeypatch.setattr(
         reconcile,

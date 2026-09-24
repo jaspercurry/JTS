@@ -205,11 +205,6 @@ def is_streambox_install_profile(profile: str | None) -> bool:
     return normalize_install_profile(profile) == STREAMBOX_INSTALL_PROFILE
 
 
-def install_profile_allows_local_sources(profile: str | None) -> bool:
-    """Whether this install role may advertise/run local music sources."""
-    return normalize_install_profile(profile) in VALID_INSTALL_PROFILES
-
-
 def install_profile_has_capability(
     profile: str | None, capability: Capability,
 ) -> bool:
@@ -277,7 +272,6 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     """
     role = normalize_install_profile(profile)
     full = role == FULL_INSTALL_PROFILE
-    local_sources = install_profile_allows_local_sources(profile)
     voice_brain = install_profile_allows_voice_brain(profile)
     wake_detection = install_profile_supports_wake_detection(profile)
     return {
@@ -290,8 +284,8 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         # only appears if the function is called directly with one.
         "install_profile": profile,
         "role": role,
-        "local_sources": local_sources,
-        "content_dsp": local_sources,
+        "local_sources": True,
+        "content_dsp": True,
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
         # having the headroom to listen for a wake word all day. The
@@ -305,9 +299,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "speaker_settings": True,
         "pair_management": True,
         "developer_tools": full,
-        "audio_quality": local_sources,
+        "audio_quality": True,
         "restart_voice": voice_brain,
-        "restart_audio": local_sources,
+        "restart_audio": True,
         "reboot": True,
         "poweroff": True,
         "diagnostics": True,

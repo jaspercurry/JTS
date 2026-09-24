@@ -30,10 +30,7 @@ from jasper.fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
-from jasper.install_profile import (
-    install_profile_allows_local_sources,
-    read_install_profile,
-)
+from jasper.install_profile import read_install_profile
 from jasper.local_sources import local_source_lifecycle
 from jasper.local_sources.markers import (
     SHARED_LABEL,
@@ -202,8 +199,7 @@ def _unit_failed(unit: str) -> bool | None:
 
 def _local_sources_allowed() -> bool:
     try:
-        if not install_profile_allows_local_sources(read_install_profile()):
-            return False
+        read_install_profile()  # every valid tier runs local sources
         return local_sources_allowed()[0]
     except (OSError, RuntimeError, ValueError) as exc:
         log_event(

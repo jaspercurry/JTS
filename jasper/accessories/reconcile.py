@@ -37,7 +37,6 @@ from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
 from jasper.install_profile import (
-    install_profile_allows_local_sources,
     install_profile_allows_voice_brain,
     install_profile_supports_wake_detection,
     read_install_profile,
@@ -165,8 +164,7 @@ def _local_sources_allowed() -> bool:
     """Mirror the source coordinator's install-role + grouping permission."""
 
     try:
-        if not install_profile_allows_local_sources(read_install_profile()):
-            return False
+        read_install_profile()  # every valid tier runs local sources
         return local_sources_allowed()[0]
     except (OSError, RuntimeError, ValueError) as exc:
         log_event(

@@ -35,10 +35,7 @@ from ..fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
-from ..install_profile import (
-    install_profile_allows_local_sources,
-    read_install_profile,
-)
+from ..install_profile import read_install_profile
 from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
 from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
@@ -128,10 +125,11 @@ def _usbsink_capability() -> tuple[bool, str]:
 def _profile_allows_local_sources() -> bool:
     """True when this install role may run local source resource groups."""
     try:
-        return install_profile_allows_local_sources(read_install_profile())
+        read_install_profile()  # every valid tier runs local sources
     except ValueError as e:
         logger.warning("invalid install profile while reading source status: %s", e)
         return False
+    return True
 
 
 def _source_state(
