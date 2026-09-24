@@ -577,7 +577,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     from jasper import mux
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-    from jasper.control import audio_health_sampler, grouping_supervisor
+    from jasper.control import grouping_supervisor
     from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
     from jasper.platform import status_socket, uds
@@ -611,7 +611,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         status_socket.MUX_CONTROL_SOCKET_PATH,
         mux.MUX_CONTROL_SOCKET_PATH,
         uds.MUX_CONTROL_SOCKET_PATH,
-        audio_health_sampler.MUX_CONTROL_SOCKET_PATH,
         system_soak.STATUS_SOCKETS["mux"],
     } == {mux_sock}
 

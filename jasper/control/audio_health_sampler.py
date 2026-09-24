@@ -25,7 +25,6 @@ from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..output_hardware import load_state as load_output_hardware_state
 from ..platform import wire
 from ..platform.status_socket import (
-    MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET, STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..platform.uds import mux_socket_command
@@ -76,57 +75,11 @@ def _read_local_status(
     )
 
 
-def _read_mux_status(
-    socket_path: str = MUX_CONTROL_SOCKET_PATH,
-    timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
-) -> dict[str, Any] | None:
+def _read_mux_status() -> dict[str, Any]:
     """Read mux's already-normalized source activity over its local UDS."""
-    try:
-        return asyncio.run(
-            mux_socket_command(
-                wire.STATUS,
-                socket_path=socket_path,
-                timeout=timeout_sec,
-            )
-        )
-    except MONITOR_ERRORS:
-        logger.debug("audio health mux STATUS probe failed", exc_info=True)
-        return None
-
-
-def _read_output_hardware() -> Any:
-    """Read the reconciler-published output-hardware record, fail-soft.
-
-    Same reader ``/state.audio.output_hardware``
-    (:mod:`jasper.control.state_aggregate`) and the ``/sound/speaker/``
-    hardware-adoption precondition use. ``MONITOR_ERRORS`` degrades to "no
-    record" rather than taking a health tick down.
-    """
-    try:
-        return load_output_hardware_state()
-    except MONITOR_ERRORS:
-        logger.debug("audio health output-hardware probe failed", exc_info=True)
-        return None
-
-
-def _read_output_topology() -> Any:
-    """Read the DECLARED output topology's SNAPSHOT (topology + revision),
-    fail-soft.
-
-    The SNAPSHOT, not the bare ``load_output_topology`` (#2812 B2): on a
-    missing file both readers fall back to ``new_topology_draft``, which
-    auto-seeds ``hardware`` FROM the observed record whenever it has outputs,
-    so an ``OutputTopology`` alone cannot distinguish "never declared" from
-    "declared and already matches". ``snapshot.revision == "missing"`` survives
-    that auto-seed and says nothing was ever persisted. Same reader
-    ``/sound/speaker/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
-    """
-    try:
-
-        return load_output_topology_snapshot()
-    except MONITOR_ERRORS:
-        logger.debug("audio health output-topology probe failed", exc_info=True)
-        return None
+    return asyncio.run(
+        mux_socket_command(wire.STATUS, timeout=LOCAL_STATUS_TIMEOUT_SEC)
+    )
 
 
 def _incident_context(
@@ -197,8 +150,11 @@ class AudioHealthSampler:
         self._route_probe = route_probe or read_route_claim
         self._service_probe = service_probe
         self._system_probe = system_probe
-        self._output_hardware_probe = output_hardware_probe or _read_output_hardware
-        self._output_topology_probe = output_topology_probe or _read_output_topology
+        self._output_hardware_probe = output_hardware_probe or load_output_hardware_state
+        # The snapshot, not the bare topology (#2812 B2): a missing file's
+        # draft auto-seeds hardware from the observed record, so only
+        # revision == "missing" says nothing was ever declared.
+        self._output_topology_probe = output_topology_probe or load_output_topology_snapshot
         observation_gap = max(15.0, sample_interval_sec * 3.0)
         self._issues = IssueTracker(
             store=incident_store,
@@ -210,9 +166,7 @@ class AudioHealthSampler:
         self._outputd: dict[str, Any] | None = None
         self._route: dict[str, Any] | None = None
         # Refreshed on the slow `_route_interval` cadence, not every fast tick:
-        # declared topology changes only when a household saves a new layout. A
-        # SNAPSHOT (topology + revision), not a bare topology -- see
-        # `undeclared_hardware_signal` for why revision matters.
+        # declared topology changes only when a household saves a new layout.
         self._output_topology_snapshot: Any = None
         self._transport_park: dict[str, Any] | None = None
         self._service_states: dict[str, dict[str, Any]] = {}
