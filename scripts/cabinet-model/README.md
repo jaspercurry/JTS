@@ -25,7 +25,10 @@ document, which goes through the same judge → compose → apply gates as any o
 
 ## Steps
 
-1. **Capture.** Run `nearfield-plan.py` on the speaker (its `--help` has the commands). It plays
+1. **Capture.** The speaker's own near-field rows (`jasper-round run --program nearfield`, see the
+   [runbook](../../docs/tuning-operator-runbook.md)) record one woofer per take, but
+   `nearfield-analyze.py` reads only the pair takes below; `nearfield-plan.py` stays until it reads
+   the rows' takes. Run `nearfield-plan.py` on the speaker (its `--help` has the commands). It plays
    the raw woofers: the rear stage and the bass boost are cleared for the takes. The mic tip goes
    on the dust-cap axis, level with a ruler across the surround (~15 mm from the cap). Take each
    spacing as its own run: 3–4 front takes and one rear take at `--gap-m 0.0146`, then one of each

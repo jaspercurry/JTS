@@ -631,7 +631,12 @@ def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypat
     assert not opener.requests
 
 
-@pytest.mark.parametrize("program,layout", [("speaker", "baseline_express"), ("rear", "rear/pair_behind")])
+_NEAR_FIELD_POSES = json.dumps([{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": mm / 1000,
+                                  "driver": "woofer"} for mm in (12, 24)])
+
+
+@pytest.mark.parametrize("program,layout", [("speaker", "baseline_express"), ("rear", "rear/pair_behind"),
+                                            ("nearfield", _NEAR_FIELD_POSES)])
 @pytest.mark.parametrize("repeats", [None, 1, 2])
 def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkeypatch, capsys, program, layout, repeats):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))

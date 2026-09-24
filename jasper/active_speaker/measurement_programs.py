@@ -131,6 +131,8 @@ _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if r
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
 #: Farthest a reference near-field pose sits from the dust cap (ADR-0354).
 NEAR_FIELD_MAX_DISTANCE_M = 0.1
+#: The size of a run whose poses are its own, not a bundled layout's.
+CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 
 
@@ -228,9 +230,12 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 
 
 def run_purpose(run_program: str | None) -> str:
-    """The purpose behind a run manifest's program id (``speaker`` or ``speaker/full``)."""
+    """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
+    or a custom layout's ``nearfield/custom``)."""
     name, _, size = str(run_program or "").partition("/")
-    return name if not name or name in PURPOSES else program(name, size or None).purpose
+    if not name or name in PURPOSES:
+        return name
+    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -548,6 +553,9 @@ SEAT_OFFSET_M = max(
     for component in pose.seat_offset_m or ()
 )
 CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
+#: Programs a run may name beside the tuning programs: reference evidence no
+#: tuning reader admits (ADR-0354).
+REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
@@ -566,24 +574,27 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
         raise UnknownProgramError(program_id, requested_size, available_programs()) from None
 
 
-def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
-    """Resolve the run's named layout or explicit bearing list (ADR-0298)."""
-    selected = program(purpose)
+def run_program(program_id: str, poses: str | None = None) -> MeasurementProgram:
+    """Resolve the run's named layout, inline JSON pose list or bearing list
+    (ADR-0298) under the program's own purpose."""
+    selected = program(program_id)
     if poses is None:
         return selected
-    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
+    purpose = selected.purpose
+    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != program_id):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             own = row.purpose == purpose
             regime = row.regime if own else selected.regime
-            return replace(row, program_id=purpose, purpose=purpose, regime=regime,
+            return replace(row, program_id=program_id, purpose=purpose, regime=regime,
                            co_purposes=row.co_purposes if own else selected.co_purposes,
                            branch_pair=row.branch_pair if own else selected.branch_pair,
                            room_sweep=(selected.room_sweep and purpose == PURPOSE_SPEAKER
                                        and regime == REGIME_PER_DRIVER),
                            levels=selected.levels, stimulus=row.stimulus if own else selected.stimulus)
-    return replace(selected, size="custom", layout="", poses=tuple(
-        ProgramPose(int(value.strip()), 0) for value in poses.split(",")
-    ))
+    layout = json.loads(poses) if poses.lstrip().startswith("[") else [
+        {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
+    return replace(selected, size=CUSTOM_SIZE, layout="", poses=tuple(
+        _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(layout)))
 
 
 def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram | None:

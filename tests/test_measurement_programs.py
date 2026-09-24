@@ -270,6 +270,34 @@ def test_available_programs_is_the_sorted_registry() -> None:
     }
 
 
+
+_WOOFER_RESEAT = (("woofer", 0.015), ("woofer", 0.03), ("woofer", 0.015))
+
+
+@pytest.mark.parametrize("program_id,poses,resolved", [
+    ("nearfield", None, ("woofer", _WOOFER_RESEAT)),
+    ("nearfield", "nearfield/cardioid", ("cardioid", (*_WOOFER_RESEAT, *(
+        ("woofer:rear", distance) for _, distance in _WOOFER_RESEAT)))),
+    ("nearfield", '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.012, "driver": "woofer:rear"}]',
+     ("custom", (("woofer:rear", 0.012),))),
+    ("speaker", "nearfield/woofer", None),
+    ("nearfield", "0,10", None),
+])
+def test_a_near_field_run_resolves_as_reference_evidence(program_id, poses, resolved):
+    """A near-field run names its program: a bundled row or an inline pose list
+    resolves as reference near-field evidence and banks under that purpose;
+    a driver's pose under another program, or a bearing under this one, is
+    refused (ADR-0354)."""
+    if resolved is None:
+        with pytest.raises(ValueError):
+            mp.run_program(program_id, poses)
+        return
+    row = mp.run_program(program_id, poses)
+    assert (row.size, tuple((pose.driver, pose.distance_m) for pose in row.poses)) == resolved
+    assert (row.purpose, row.regime, mp.run_purpose(f"{row.program_id}/{row.size}")) == (
+        mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.PURPOSE_REFERENCE)
+
+
 def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
     return mp.ProgramPose(
         0, 0, repeats,

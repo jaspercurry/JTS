@@ -14,7 +14,7 @@ from tests.crossover_v2_fixtures import _roles
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import REFERENCE_PROGRAMS, RUNNABLE_PROGRAMS
 from jasper.active_speaker import tuning_handoff
 from jasper.cli.round import build_parser
 from jasper.active_speaker.crossover_v2 import round_inputs
@@ -143,6 +143,8 @@ def test_program_order_consumers(consumer):
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
+        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("close", "nearfield")
+        order = order[:len(RUNNABLE_PROGRAMS)]
     else:
         order = tuple(next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
