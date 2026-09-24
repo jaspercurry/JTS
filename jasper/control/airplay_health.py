@@ -44,6 +44,7 @@ from jasper.control._health_fields import (
 from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE, JournalctlUnavailable, run_journalctl_json
+from jasper.source_state import airplay_playing
 
 logger = logging.getLogger(__name__)
 
@@ -919,7 +920,6 @@ class AirPlayHealthSampler:
     @staticmethod
     def _read_airplay_mpris() -> dict[str, Any] | None:
         try:
-            from ..source_state import airplay_playing
             playing = asyncio.run(airplay_playing())
         except Exception:  # noqa: BLE001
             return None

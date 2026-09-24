@@ -15,16 +15,21 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
+from .. import librespot_state
 from ..active_speaker.audition import audition_summary
+from ..dsp_apply import last_dsp_apply_state
 from ..music_sources import MUSIC_SOURCE_VALUES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
 )
+from ..output_hardware import load_state as load_output_hardware_state
 from ..source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
+from ..sound.profile import build_sound_filters, estimate_headroom_db, load_profile
+from ..sound.settings import load_sound_settings, output_trim_db
 from ..identity.speaker_name import read_state as _read_speaker_name_state
 from ..platform import wire
 from ..platform.status_socket import (
@@ -32,6 +37,8 @@ from ..platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,
 )
 from ..volume_diagnostics import build_volume_policy_snapshot
+from ..volume_persistence import VolumePersistence, configured_path as volume_state_path
+from ..volume_state import VolumeState
 from . import (
     debug_control,
     grouping_supervisor,
@@ -296,10 +303,6 @@ async def _soft_read_optional(
 
 def _read_persisted_volume() -> tuple[int | None, float | None]:
     """The persisted listening level and main volume, in that order."""
-    from ..volume_persistence import VolumePersistence
-    from ..volume_persistence import configured_path as volume_state_path
-    from ..volume_state import VolumeState
-
     record = VolumePersistence(volume_state_path()).load()
     if record is None:
         return None, None
@@ -312,14 +315,6 @@ def _read_persisted_volume() -> tuple[int | None, float | None]:
 
 
 def _read_sound_profile() -> dict[str, Any]:
-    from ..dsp_apply import last_dsp_apply_state
-    from ..sound.profile import (
-        build_sound_filters,
-        estimate_headroom_db,
-        load_profile,
-    )
-    from ..sound.settings import load_sound_settings, output_trim_db
-
     profile = load_profile()
     sound_settings = load_sound_settings()
     return {
@@ -338,8 +333,6 @@ def _read_sound_profile() -> dict[str, Any]:
 
 
 def _spotify_playing() -> bool:
-    from .. import librespot_state
-
     blob = librespot_state.read(librespot_state.configured_path())
     return bool(blob.get("playing", False))
 
@@ -400,9 +393,7 @@ def _active_source(
 
 
 def _read_output_hardware() -> dict[str, Any] | None:
-    from ..output_hardware import load_state
-
-    hardware = load_state()
+    hardware = load_output_hardware_state()
     return hardware.to_dict() if hardware is not None else None
 
 
@@ -428,7 +419,7 @@ def _round_levels(levels: Sequence[float] | None) -> list[float | None] | None:
 
 
 async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
-    from ..camilla import CamillaController
+    from ..camilla import CamillaController  # lazy: test patch boundary (tests/test_control_server_system.py)
 
     status: dict[str, Any] = {
         "main_volume_db": None,
@@ -536,7 +527,7 @@ async def get_state(
     """
     from datetime import datetime, timezone
 
-    from ..voice.provider_state import (
+    from ..voice.provider_state import (  # lazy: import cost, jasper.voice.* stays off control startup; test patch boundary (tests/test_wire_contracts.py)
         read_active_provider_state,
         read_barge_in_enabled,
     )
@@ -627,9 +618,7 @@ async def get_state(
         mux_status=mux,
     )
 
-    # Lazy import (mirrors read_active_provider_state above) so jasper-control
-    # doesn't pull jasper.voice.* at module load.
-    from ..mic_presence import read_mic_presence
+    from ..mic_presence import read_mic_presence  # lazy: import cost, jasper.voice.* stays off control startup
 
     return {
         "schema_version": STATE_SCHEMA_VERSION,

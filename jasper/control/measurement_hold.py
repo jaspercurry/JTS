@@ -415,10 +415,9 @@ def read_measurement_hold() -> dict[str, Any] | None:
     ``None`` means "jasper-control could not be asked" and is deliberately
     distinct from ``{"active": False}`` ("asked, and nothing is held") —
     callers that must degrade conservatively can only do so if those two are
-    not conflated. The client import is lazy so importing this module inside
-    jasper-control stays free of it.
+    not conflated.
     """
-    from ..platform.control_client import ControlError, get_measurement
+    from ..platform.control_client import ControlError, get_measurement  # lazy: test patch boundary (tests/test_measurement_hold.py)
 
     try:
         hold = get_measurement()

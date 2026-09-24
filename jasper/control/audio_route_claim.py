@@ -18,6 +18,11 @@ from typing import Any
 
 from ._health_fields import MONITOR_ERRORS
 from .. import paths
+from ..active_speaker.environment import read_camilla_statefile_config_path
+from ..active_speaker.playback_route import (
+    ActiveLaneCapabilityGap,
+    active_lane_capability_gap,
+)
 from ..output_topology import OutputTopologyError
 from ..output_topology_store import load_output_topology_strict, load_output_topology
 
@@ -47,15 +52,8 @@ def _transport_state(
     same function — so this offers no second opinion about what "disconnected"
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
-
-    ``topology`` is an :class:`~jasper.output_topology.OutputTopology`, typed
-    loosely because this module imports the topology layer lazily.
     """
-    from ..active_speaker.playback_route import (
-        ActiveLaneCapabilityGap,
-        active_lane_capability_gap,
-    )
-    from ..transport_coherence import transport_coherence_report
+    from ..transport_coherence import transport_coherence_report  # lazy: import cost, keeps route assembly off control startup
 
     report = transport_coherence_report(
         outputd_env=dict(outputd_env),
@@ -80,12 +78,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     :func:`_transport_state` resolves it, so a no-active-lane DAC still gets
     that clause after this reason, not instead of it.
     """
-    from ..active_speaker.environment import read_camilla_statefile_config_path
-    from ..active_speaker.playback_route import (
-        ActiveLaneCapabilityGap,
-        active_lane_capability_gap,
-    )
-    from ..active_speaker.runtime_contract import (
+    from ..active_speaker.runtime_contract import (  # lazy: import cost, the graph verifier loads only for a parked graph
         active_graph_is_parked,
         parked_muted_exits,
     )
@@ -161,7 +154,7 @@ def read_route_claim() -> dict[str, Any]:
     live audio probe, so it runs on the slow cadence.
     """
     try:
-        from ..audio_runtime_plan import build_audio_runtime_plan_from_system
+        from ..audio_runtime_plan import build_audio_runtime_plan_from_system  # lazy: import cost, keeps route assembly off control startup
 
         plan = build_audio_runtime_plan_from_system()
         profile = plan.route_profile

@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
+from .. import flight_recorder
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
@@ -68,6 +69,20 @@ from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from ..volume_curve import percent_to_db
+from ..volume_process import install_env_canonical_target_provider
+from ..watchdog import Heartbeat
+from .audio_incidents import IncidentStore
+from .ha_status_cache import HomeAssistantStatusCache
+from .handlers import (
+    AecRoutes,
+    GroupingRoutes,
+    MeasurementRoutes,
+    PeeringRoutes,
+    SystemRoutes,
+    VoiceRoutes,
+    VolumeRoutes,
+)
+from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
 from .single_flight import SingleFlightTTLCache
 from ..platform.uds import (
     local_status_json as _local_status_json,
@@ -280,18 +295,6 @@ def _make_handler(
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
-    # Route-body imports stay factory-local so importing this module stays
-    # cheap: the concern mixins arrive only when a concrete server is built.
-    from .handlers import (
-        AecRoutes,
-        GroupingRoutes,
-        MeasurementRoutes,
-        PeeringRoutes,
-        SystemRoutes,
-        VoiceRoutes,
-        VolumeRoutes,
-    )
-
     # One probe instance per handler — stateless (it only closes over
     # voice_socket_path), so all mutating volume ops share it. Read-only
     # `_get_op` bypasses coordinator/actuator construction.
@@ -300,8 +303,6 @@ def _make_handler(
         STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
     )
     if ha_status_cache is None:
-        from .ha_status_cache import HomeAssistantStatusCache
-
         ha_status_cache = HomeAssistantStatusCache()
 
     async def _set_op(percent: int) -> VolumeState:
@@ -910,23 +911,19 @@ def main(argv: list[str] | None = None) -> int:
     # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
     # the journal at INFO, applies the /system Debug card's toggle, and wires
     # SIGUSR1 -> dump. See jasper/flight_recorder.py.
-    from .. import flight_recorder
     flight_recorder.install("control")
 
     # The live pair-balance trim patches the graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from ..volume_process import install_env_canonical_target_provider
-
     install_env_canonical_target_provider()
 
     # 5 s ring buffer for the /system dashboard; daemon thread.
-    from .system_metrics import SystemSampler
+    from .system_metrics import SystemSampler  # lazy: test patch boundary (tests/test_control_server.py)
     sampler = SystemSampler()
     sampler.start()
     # The ONE resident audio-monitor thread: it composes the AirPlay probes
     # with cheap outputd state and slow route-certification reads.
-    from .audio_health_sampler import AudioHealthSampler
-    from .audio_incidents import IncidentStore
+    from .audio_health_sampler import AudioHealthSampler  # lazy: test patch boundary (tests/test_control_server.py)
     audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
@@ -979,9 +976,6 @@ def main(argv: list[str] | None = None) -> int:
     # socket) when JASPER_PEERING=off — the default. The /sound/pair/
     # Speakers page writes that env file and restarts jasper-control to
     # pick up the new mode.
-    # lazy: import cost — handlers/ loads every route mixin
-    from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
-
     start_peering_daemon_if_enabled()
     # Protocol-level liveness probe so a wedged shairport-sync AP2 control
     # plane recovers without manual intervention. Off via
@@ -1008,7 +1002,6 @@ def main(argv: list[str] | None = None) -> int:
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
     # WATCHDOG=1 pats and systemd restarts us. No-ops outside systemd
     # (NOTIFY_SOCKET unset). See jasper/watchdog.py.
-    from ..watchdog import Heartbeat
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()

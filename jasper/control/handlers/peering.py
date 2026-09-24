@@ -18,6 +18,8 @@ import threading
 from typing import Any
 
 from ...log_event import log_event
+from ...multiroom import config as grouping_config
+from ...multiroom.effective_role import effective_follower_leader_addr
 from ...platform.control_client import (
     PEER_RESPONSE_MAX_BYTES,
     ControlError,
@@ -51,10 +53,8 @@ _PEERING_RETRY_JITTER_SEC = 3.0
 async def _run_peering(shutdown: asyncio.Event) -> None:
     """Own the peering daemon until `shutdown` is set by stop_peering_daemon."""
     global _peering_task
-    # lazy: import cost — these load on the control loop's thread rather
-    # than on jasper-control's startup import path.
-    from ...peering import load_config
-    from ...peering.daemon import PeeringDaemon
+    from ...peering import load_config  # lazy: import cost off the startup path; test patch boundary (tests/test_control_server.py)
+    from ...peering.daemon import PeeringDaemon  # lazy: import cost off the startup path; test patch boundary (tests/test_control_server.py)
 
     daemon = PeeringDaemon(load_config())
     started = False
@@ -155,10 +155,7 @@ def pair_follower_leader_addr() -> str | None:
     every /volume request). The predicate is the shared effective-role
     reader, so a refused bond that safely landed solo does not forward local
     controls to the requested leader."""
-    from ...multiroom.config import load_config
-    from ...multiroom.effective_role import effective_follower_leader_addr
-
-    return effective_follower_leader_addr(load_config())
+    return effective_follower_leader_addr(grouping_config.load_config())
 
 
 class PeeringRoutes(ControlHandlerMixin):

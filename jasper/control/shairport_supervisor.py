@@ -33,6 +33,8 @@ import time
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.multiroom import config as grouping_config
+from jasper.multiroom.effective_role import effective_local_sources_park_reason
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE
 from jasper.source_state import airplay_playbackstatus_observed
 from jasper.systemd_probe import async_unit_probe
@@ -323,12 +325,9 @@ class ShairportSupervisor:
         Fail-open to NOT-parked: a broken read must never
         silently disable the wedge supervisor on a solo speaker."""
         try:
-            from ..multiroom.config import load_config
-            from ..multiroom.effective_role import (
-                effective_local_sources_park_reason,
-            )
-
-            return effective_local_sources_park_reason(load_config()) is not None
+            return effective_local_sources_park_reason(
+                grouping_config.load_config()
+            ) is not None
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
 

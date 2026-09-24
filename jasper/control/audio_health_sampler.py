@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ..output_hardware import load_state as load_output_hardware_state
 from ..platform import wire
 from ..platform.status_socket import (
     MUX_CONTROL_SOCKET_PATH,
@@ -43,6 +44,7 @@ from .audio_health_events import (
     record_raw_events,
 )
 from .audio_incident_view import present_incident
+from . import transport_eligibility
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
 from .audio_signal_path import (
@@ -98,14 +100,10 @@ def _read_output_hardware() -> Any:
     Same reader ``/state.audio.output_hardware``
     (:mod:`jasper.control.state_aggregate`) and the ``/sound/speaker/``
     hardware-adoption precondition use. ``MONITOR_ERRORS`` degrades to "no
-    record" rather than taking a health tick down; a broken import is
-    deliberately NOT in that set — it would fail identically on every call from
-    process start, so it is a startup bug, not a per-tick condition.
+    record" rather than taking a health tick down.
     """
     try:
-        from ..output_hardware import load_state
-
-        return load_state()
+        return load_output_hardware_state()
     except MONITOR_ERRORS:
         logger.debug("audio health output-hardware probe failed", exc_info=True)
         return None
@@ -374,11 +372,7 @@ class AudioHealthSampler:
             # ADR-0178's transport parks ride the SLOW cadence with the
             # topology read they classify; their own snapshot() is fail-soft,
             # so a bad read lands as status="unavailable" rather than raising.
-            # Imported here, not at module scope, so the name cannot shadow the
-            # `transport_park` PARAMETER the composers below take.
-            from . import transport_eligibility as transport_park_reader
-
-            self._transport_park = transport_park_reader.snapshot()
+            self._transport_park = transport_eligibility.snapshot()
             self._last_route_sample_at = now
 
         route_state = mapping(self._route)
@@ -531,9 +525,7 @@ class AudioHealthSampler:
 
         Falls back to a fresh read only before the first slow tick.
         """
-        from . import transport_eligibility as transport_park_reader
-
         cached = self._transport_park
         if cached is not None:
             return cached
-        return transport_park_reader.snapshot()
+        return transport_eligibility.snapshot()

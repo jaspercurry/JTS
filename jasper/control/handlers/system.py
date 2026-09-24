@@ -46,9 +46,11 @@ from ...local_sources import (
 from ...log_event import log_event
 from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
 from .. import aec_endpoints
+from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker
 from .. import state_aggregate
+from .. import transport_eligibility
 from .. import usb_gadget_forensics
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
@@ -241,8 +243,6 @@ def _camilla_topology_gate_field(action: str) -> dict[str, Any]:
     """
     if action != "restart-audio":
         return {}
-    from .. import camilla_topology_gate_state
-
     state = _safe("topology gate", camilla_topology_gate_state.snapshot, {})
     if not isinstance(state, dict) or not state.get("refused"):
         return {}
@@ -345,11 +345,9 @@ class SystemRoutes(ControlHandlerMixin):
         cached verdict when it has one, so every row in the payload is the
         same observation; the module's own fail-soft read otherwise, because
         the route must keep answering without a sampler."""
-        from ..transport_eligibility import snapshot
-
         return getattr(
             self._audio_health_sampler, "transport_park_snapshot", None,
-        ) or snapshot
+        ) or transport_eligibility.snapshot
 
     def _get_healthz(self) -> None:
         self._send_json({"ok": True})
@@ -398,8 +396,8 @@ class SystemRoutes(ControlHandlerMixin):
         # home_assistant connection status.
         # Sampler may be None in tests / direct CLI invocation;
         # surface an empty history rather than 500.
-        from ..system_metrics import read_build_info
-        from ...voice.provider_state import read_active_provider
+        from ..system_metrics import read_build_info  # lazy: test patch boundary (tests/test_system_metrics.py)
+        from ...voice.provider_state import read_active_provider  # lazy: import cost, jasper.voice.* stays off control startup
 
         ha_status = state_aggregate.ha_status(self._ha_status_cache.snapshot)
 
