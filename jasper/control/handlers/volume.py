@@ -77,7 +77,7 @@ def _active_speaker_volume_block() -> dict[str, Any] | None:
 
 
 async def _dispatch_transport(action: str) -> dict:
-    return await volume_ops._dispatch_transport(
+    return await volume_ops.dispatch_transport(
         action,
         spotify_router_factory=volume_ops._build_spotify_router_or_none,
     )

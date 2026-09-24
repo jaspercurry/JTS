@@ -16,7 +16,7 @@ sits). Mute stays open as the emergency door; any other level write,
 including unmute, is refused while the hold is live.
 
 Why the fact has to live HERE and not in the volume coordinator:
-``jasper.control.volume_ops._with_coordinator`` builds a **fresh**
+``jasper.control.volume_ops.with_coordinator`` builds a **fresh**
 ``VolumeCoordinator`` per HTTP request and disposes it in ``finally``, so no
 in-memory measurement state can survive between two requests there. This
 module is process-scoped instead — the same lifetime as jasper-control

@@ -254,7 +254,7 @@ async def _with_coordinator(
     camilla_port: int,
     duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
-    return await _volume_ops._with_coordinator(
+    return await _volume_ops.with_coordinator(
         op,
         camilla_host=camilla_host,
         camilla_port=camilla_port,

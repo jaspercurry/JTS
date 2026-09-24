@@ -133,7 +133,7 @@ def _build_spotify_router_or_none():
         return None
 
 
-async def _with_coordinator(
+async def with_coordinator(
     op: Callable[[Any], Any],
     *,
     camilla_host: str,
@@ -142,7 +142,7 @@ async def _with_coordinator(
 ) -> Any:
     """Build a VolumeCoordinator for one operation, run `op(coord)`, dispose.
 
-    Per-request like `_dispatch_transport`, so this stdlib HTTP server never
+    Per-request like `dispatch_transport`, so this stdlib HTTP server never
     holds a long-lived asyncio loop. `op` is an async callable taking the live
     coordinator and returning the request's result.
 
@@ -219,7 +219,7 @@ def make_duck_active_probe(
     return probe
 
 
-async def _dispatch_transport(
+async def dispatch_transport(
     action: str,
     *,
     spotify_router_factory: Callable[[], Any] = _build_spotify_router_or_none,
