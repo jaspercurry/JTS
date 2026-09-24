@@ -14,6 +14,7 @@ files — so a pin that passes here is a pin about what they will find.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -44,7 +45,9 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
 from jasper.attribution.session_identity import SESSION_IDENTITY_KEY
+from tests._log_events import event_fields
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -516,3 +519,19 @@ async def test_an_unroutable_record_is_refused(real_store):
     """Strict, and loud: a kind with no place to land is a defect, not a drop."""
     with pytest.raises(ValueError):
         await real_store.bank({"kind": "jts_not_a_banked_artifact"})
+
+
+@pytest.mark.parametrize("record, live", [
+    ({"kind": CHECK_EVIDENCE_KIND, "gain_plan_db": {"woofer": -6.0}}, "false"),
+    ({"kind": RUN_MANIFEST_KIND, "run_id": "r1"}, "true"),
+])
+async def test_a_banked_record_logs_its_kind_path_and_size(real_store, caplog, record, live):
+    caplog.set_level(logging.INFO, logger=BankedRecordStore.__module__)
+
+    record_id = await real_store.bank(record)
+
+    written = Path(real_store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
+    assert event_fields(caplog, "active_speaker.record_banked") == {
+        "kind": record["kind"], "path": record_id, "live": live,
+        "bytes": str(written.stat().st_size),
+    }

@@ -622,12 +622,14 @@ class CommissioningEvidenceStore:
         self.reopen_json_artifact(artifact)
         return artifact
 
-    def write_live(self, relative_path: str, document: Mapping[str, Any]) -> None:
-        """Atomically replace run status; raw evidence stays write-once (ADR-0017)."""
+    def write_live(self, relative_path: str, document: Mapping[str, Any]) -> int:
+        """Atomically replace run status and return its size in bytes; raw
+        evidence stays write-once (ADR-0017)."""
         path = self._target(_artifact_path(relative_path))
         self._prepare_parent(path.parent)
         try:
             atomic_write_json(path, document, mode=BUNDLE_FILE_MODE)
+            return path.stat().st_size
         except OSError as exc:
             raise CommissioningEvidenceStoreError(
                 CommissioningEvidenceStoreErrorCode.PERSIST_FAILED, str(exc),

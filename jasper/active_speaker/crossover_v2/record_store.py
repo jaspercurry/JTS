@@ -11,11 +11,13 @@ store-relative paths (ADR-0198). Store errors propagate to the host.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
+from jasper.log_event import log_event
 
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
@@ -38,6 +40,8 @@ __all__ = [
     "CLOUD_EVIDENCE_KIND",
     "BankedRecordStore",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: The two artifact kinds no producer names for itself: a check bundle and a
 #: cloud group are plain dicts, so their discriminator is spelled here.
@@ -178,7 +182,9 @@ class BankedRecordStore:
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
-        await resilient_restore(asyncio.to_thread(self._publish, relative, payload, route))
+        size = await resilient_restore(asyncio.to_thread(self._publish, relative, payload, route))
+        log_event(logger, "active_speaker.record_banked", kind=discriminator, path=relative,
+                  live=route.live, bytes=size)
         return relative
 
     # --------------------------------------------------------------- internals
@@ -235,10 +241,9 @@ class BankedRecordStore:
 
     def _publish(
         self, relative: str, payload: Mapping[str, Any], route: _Route,
-    ) -> None:
+    ) -> int:
         if route.live:
-            self.evidence.write_live(relative, payload)
-            return
+            return self.evidence.write_live(relative, payload)
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if _measure_kind(payload) is not None and payload.get("wav_path"):
             record_artifact(
@@ -252,3 +257,4 @@ class BankedRecordStore:
             # whether what was written comes back, and the two differ wherever
             # the store owns keys the caller supplied.
             route.verify(payload, self.evidence.reopen_json_artifact(artifact))
+        return artifact.byte_size
