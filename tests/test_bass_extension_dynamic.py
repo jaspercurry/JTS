@@ -7,13 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from jasper.biquad import (
-    FilterSpec,
-    SHELF_Q,
-    biquad_response_complex,
-    filter_response_complex,
-    freq_trig,
-)
+from jasper.biquad import SHELF_Q, FilterSpec, biquad_response_complex, filter_response_complex, freq_trig
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,

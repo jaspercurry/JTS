@@ -16,11 +16,6 @@ from unittest import mock
 import numpy as np
 import pytest
 
-# Tests may import upward across the audio_measurement -> active_speaker
-# layering boundary even though calibration.py's own module comment says
-# source must not (audio_measurement is the lower layer) -- a test
-# asserting cross-layer consistency between the two is exactly what the
-# boundary is for.
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 

@@ -108,7 +108,7 @@ _CLEAN: PlayScript = (STAGE_RESTORE, "")
 
 @dataclass
 class FakeGraph:
-    """The session graph slot: installed once, patched per candidate, restored.
+    """The session graph slot: scoped, installed per stimulus, restored.
 
     ``install_raises`` covers the contract hole wave 1a's review found — a
     conforming install may route the tweeter and then fail, so the session

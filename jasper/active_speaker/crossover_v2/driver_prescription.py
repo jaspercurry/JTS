@@ -26,15 +26,7 @@ from typing import Any
 import numpy as np
 
 from jasper.json_fields import finite_float
-# The emitter drops a shelf entry's own ``q`` and spells SHELF_Q instead, so a
-# gate evaluating a prescriber's number would read a filter that never plays.
-from jasper.biquad import (
-    EVALUABLE_Q_MAX,
-    EVALUABLE_Q_MIN,
-    PeqFilter,
-    RESPONSE_SAMPLE_RATE_HZ,
-    SHELF_Q,
-)
+from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,

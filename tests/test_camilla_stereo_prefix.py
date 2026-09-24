@@ -17,8 +17,6 @@ tests/test_sound_camilla_yaml_golden.py.
 
 from __future__ import annotations
 
-# FilterSpec is imported from the neutral contract (not jasper.sound) on
-# purpose: the builder must be usable without depending on the sound package.
 from jasper.biquad import FilterSpec, PeqFilter
 from jasper.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
 

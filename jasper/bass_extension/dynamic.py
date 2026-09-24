@@ -12,12 +12,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 from jasper.biquad import (
-    FilterSpec,
-    RESPONSE_SAMPLE_RATE_HZ,
-    SHELF_Q,
-    biquad_response_complex,
-    filter_response_complex,
-    freq_trig,
+    RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, FilterSpec, biquad_response_complex, filter_response_complex, freq_trig,
 )
 from jasper.json_fields import finite_float
 

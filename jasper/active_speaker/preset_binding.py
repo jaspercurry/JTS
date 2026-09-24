@@ -17,11 +17,7 @@ from jasper.output_topology import (
     main_speaker_groups,
     subwoofer_speaker_groups,
 )
-from jasper.speaker_layout import (
-    ADJACENT_PAIRS_BY_MAIN_MODE,
-    DEFAULT_SUB_CROSSOVER_HZ,
-    WAY_COUNT_BY_MAIN_MODE,
-)
+from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE, DEFAULT_SUB_CROSSOVER_HZ, WAY_COUNT_BY_MAIN_MODE
 
 from ._common import gate as _gate, issue as _issue
 from .crossover_preview import CROSSOVER_PREVIEW_KIND

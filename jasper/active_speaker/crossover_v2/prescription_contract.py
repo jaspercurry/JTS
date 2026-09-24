@@ -31,12 +31,7 @@ from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import as_mapping, finite_float
-from jasper.output_topology import (
-    OutputTopology,
-    SpeakerChannel,
-    SpeakerGroup,
-    unknown_output_hardware,
-)
+from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
 from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE
 
 from . import alignment_prescription as alignment

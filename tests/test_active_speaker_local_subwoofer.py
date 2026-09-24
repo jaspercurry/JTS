@@ -761,7 +761,6 @@ def test_local_subwoofer_uses_topology_crossover_fc() -> None:
 
 
 def test_local_subwoofer_falls_back_to_default_corner() -> None:
-    from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
     from jasper.active_speaker.preset_binding import _local_subwoofer_from_topology
 
     topology = _passive_1way_sub_topology_fc(None)

@@ -74,7 +74,7 @@ from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     linearization_filters_by_role,
 )
-from jasper.biquad import SHELF_Q
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
@@ -455,8 +455,6 @@ def test_a_declared_band_past_nyquist_is_clamped_not_dropped():
     the evaluator's own limit, and the packet publishes the clamped value so a
     prescriber is shown the band it will actually be judged against.
     """
-    from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
-
     profile = _draft()["driver_safety_profile"]
     profile["targets"][1]["measurement_band_hz"] = [1000.0, 40000.0]
     profile["targets"][1]["required_protection_filters"] = []
@@ -3328,8 +3326,6 @@ def test_a_total_cascade_can_offset_a_filter_above_headroom(packet):
 @pytest.mark.parametrize("trim,room_gain", [(-9.52, 0.0), (0.0, 6.0)])
 @pytest.mark.parametrize("offset", [-0.1, 0.1])
 def test_door_charges_total_program_headroom(packet, trim, room_gain, offset):
-    from jasper.biquad import PeqFilter
-
     gain = 40.0 - HEADROOM_MARGIN_DB - trim - room_gain + offset
     document = _document([_boost(gain=gain / 2)] * 2, packet)
     document["pinned_trim_db"] = {"tweeter": trim}
