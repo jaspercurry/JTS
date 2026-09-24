@@ -828,20 +828,11 @@ def _spotify_client_for_account(cfg: dict[str, Any], account_name: str):
         return None
     try:
         import spotipy
-        from spotipy.oauth2 import SpotifyPKCE
     except ImportError:
         logger.warning("spotipy not installed; playlist preview unavailable")
         return None
     try:
-        auth = SpotifyPKCE(
-            client_id=cfg["client_id"],
-            redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
-            scope=SPOTIFY_SCOPE,
-            # group-readable cache (0640) in the jasper-intsecrets compartment
-            # so the non-root readers can read it; see accounts.build_cache_handler.
-            cache_handler=build_cache_handler(account.cache_path),
-            open_browser=False,
-        )
+        auth = _pkce_flow(cfg, account.cache_path)
         if not auth.get_cached_token():
             return None
         return spotipy.Spotify(auth_manager=auth)
