@@ -74,15 +74,6 @@ CORPUS_PROFILES = (PROFILE_STANDARD, PROFILE_CHIP_AEC_COMPARISON)
 # Leg / profile vocabulary
 # ---------------------------------------------------------------------------
 
-# CONDITIONS / DISTANCES (defined in the sibling recording_backend.py,
-# which imports them from jasper.wake_conditions) are the operator-labelled
-# input domains — the shared single source of truth so the corpus, the
-# runtime and the wake telemetry agree on one taxonomy. The wizard
-# validates strictly against them to reject typos;
-# captured files land in aec_<leg>_<condition>/ for the upstream
-# extract/score/review pipeline, so do NOT rename a condition without an
-# alias (see wake_conditions' stability contract). "ambient" is the
-# realistic-home floor (AC, fridge; no music we control).
 # Legs the recorder knows about. "raw0" is the truly-raw mic 0 leg
 # (chip channel 2 — no chip DSP), opt-in per session via the
 # include_raw_mic_0 flag. The USB/reference legs are corpus-only
