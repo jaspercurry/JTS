@@ -5245,7 +5245,7 @@ def test_apply_does_not_turn_untyped_faults_into_refusals(monkeypatch, tmp_path,
     if phase == "compose":
         monkeypatch.setattr(v2apply, "compile_tuning_graph", fail)
     elif phase == "load":
-        monkeypatch.setattr(v2apply.baseline_profile, "load_composed_graph", failed_load)
+        monkeypatch.setattr(v2apply.baseline_apply, "load_composed_graph", failed_load)
     else:
         monkeypatch.setattr(v2state, "observe_apply_success", fail)
     with pytest.raises(ValueError) as caught:

@@ -6,7 +6,7 @@
 
 The relative level a driver needs so the acoustic sum is level across every
 declared crossover, replacing the datasheet-sensitivity estimate. One writer
-(``baseline_profile.persist_applied_baseline_profile``), one reader
+(``baseline_apply.persist_applied_baseline_profile``), one reader
 (``baseline_profile.measured_level_trims``); absent is normal. No estimator
 and no solver live here. A trim is degenerate with the correction chain it was
 co-fitted with, so the record names that chain and the declaration it was

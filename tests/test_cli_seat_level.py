@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker.candidate_bank import bank_candidate
 
 import asyncio
@@ -411,7 +412,7 @@ async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_
         candidate = replace(candidate_from_design_draft(topology, draft), role_attenuations_db={"woofer": -3.0, "tweeter": -8.0},
                             blend_correction=[{"biquad_type": "Peaking", "freq": 2000, "q": 1.0, "gain": -2.0}])
         prepared = baseline_profile.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=profile, design_draft=draft)
-        baseline_profile.persist_applied_baseline_profile(prepared, apply_state={"result": "success"})
+        baseline_apply.persist_applied_baseline_profile(prepared, apply_state={"result": "success"})
     reviewed = web._active_speaker_baseline_profile_payload()
     assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
     if applied:
@@ -620,7 +621,7 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
         monkeypatch.setattr(cam, "set_config_file_path", fail_once)
     reviewed = web._active_speaker_baseline_profile_payload()
     caplog.clear()
-    caplog.set_level("INFO", logger=baseline_profile.__name__)
+    caplog.set_level("INFO", logger=baseline_apply.__name__)
     result = await web._active_speaker_baseline_profile_apply_payload(camilla_factory=lambda: cam)
     assert result["status"] == outcome
     started = event_fields(caplog, "correction.crossover_apply_started")

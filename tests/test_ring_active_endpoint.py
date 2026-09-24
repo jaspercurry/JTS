@@ -2827,7 +2827,7 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         lambda *a, **k: applied,
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.promote_applied_baseline_candidate",
+        "jasper.active_speaker.baseline_apply.promote_applied_baseline_candidate",
         lambda *a, **k: None,
     )
 

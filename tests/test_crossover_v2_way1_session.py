@@ -26,6 +26,7 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 
 import yaml as yaml_lib
 
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import (
     commission_wiring,
@@ -258,7 +259,7 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
     caplog.set_level(logging.INFO, logger=baseline_profile_mod.logger.name)
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _way1_ready_to_apply_payload(tmp_path),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",

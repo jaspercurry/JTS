@@ -736,7 +736,7 @@ class OutputTopology:
         return out
 
 
-def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
+def canonical_fingerprint(payload: Mapping[str, Any] | None) -> str:
     """SHA-256 over one canonically serialised payload.
 
     Public because ``active_speaker.baseline_profile`` consumes it: the two

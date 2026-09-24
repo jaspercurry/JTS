@@ -9,7 +9,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.active_speaker import applied_tune, baseline_profile, runtime_contract
+from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -89,8 +89,8 @@ async def apply_candidate(
             if on_candidate_verified is not None:
                 await on_candidate_verified()
             load_config, get_current_config_path = v2state.baseline_apply_seams(camilla_factory())
-            baseline_profile._baseline_apply_started(topology, prepared)
-            async with baseline_profile.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
+            baseline_apply.apply_started(topology, prepared)
+            async with baseline_apply.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
                     load_config=load_config, get_current_config_path=get_current_config_path) as (applied, profile):
                 with v2state._state_lock:
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=incumbent,
@@ -107,7 +107,7 @@ async def apply_candidate(
                         except Exception as exc:  # noqa: BLE001
                             update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
                             log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
-                result = await baseline_profile._baseline_apply_result(topology, profile, apply_state=applied)
+                result = await baseline_apply.apply_result(topology, profile, apply_state=applied)
             log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
             return {**result, "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
         except (CandidateBankRefusal, CrossoverV2Refused, MeasurementGraphRefused,
@@ -120,7 +120,7 @@ async def apply_candidate(
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}
         except DspApplyError as exc:
             log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
-            result = await baseline_profile._baseline_apply_result(topology, prepared, apply_state=exc.state, error=exc)
+            result = await baseline_apply.apply_result(topology, prepared, apply_state=exc.state, error=exc)
             return {**result, "issue": {"code": "apply_failed", "message": str(exc)}}
 
 

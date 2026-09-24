@@ -322,7 +322,6 @@ follow_imports = "skip"
 # Keep type debt explicit; remove entries as local type fixes land.
 module = [
     "jasper.accessories.bridge",
-    "jasper.active_speaker.baseline_profile",
     "jasper.active_speaker.calibration_level",
     "jasper.active_speaker.camilla_yaml",
     "jasper.active_speaker.commission_load",

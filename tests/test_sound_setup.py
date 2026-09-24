@@ -39,7 +39,7 @@ from jasper.active_speaker.calibration_level import (
 )
 from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
-from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
+from jasper.active_speaker.baseline_apply import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry

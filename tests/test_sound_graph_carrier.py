@@ -31,6 +31,7 @@ from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_ca
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker.runtime_contract import (
     FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -1269,7 +1270,7 @@ async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_
     topology, candidate, cam, config_dir = active_sound_box
     before = baseline_profile.load_baseline_profile_state()
     bookkeeping = mock.Mock(side_effect=AssertionError("sound save ran apply bookkeeping"))
-    monkeypatch.setattr(baseline_profile, "_bank_applied_base_trim", bookkeeping)
+    monkeypatch.setattr(baseline_apply, "_bank_applied_base_trim", bookkeeping)
     declaration = load_tuning_declaration(topology)
     save_sound_settings(SoundSettings(headroom_trim_db=3.0))
     profile_path = tmp_path / "sound.json"
@@ -1400,9 +1401,9 @@ async def test_partial_applied_record_refuses_sound_save(tmp_path, monkeypatch, 
     _, _, cam, config_dir = active_sound_box
     applied = baseline_profile.load_applied_baseline_profile_state()
     partial = {key: value for key, value in applied.items() if key != missing}
-    monkeypatch.setattr(baseline_profile, "load_baseline_profile_state", lambda: partial)
+    monkeypatch.setattr(baseline_apply, "load_baseline_profile_state", lambda: partial)
     with pytest.raises(DspApplyError) as error:
-        async with baseline_profile.load_composed_graph(Path(cam.current_path).read_text(),
+        async with baseline_apply.load_composed_graph(Path(cam.current_path).read_text(),
                 source="sound", profile=applied, config_dir=config_dir, record="sound",
                 load_config=cam.set_config_file_path, get_current_config_path=cam.get_config_file_path):
             pytest.fail("Partial applied record was loaded")

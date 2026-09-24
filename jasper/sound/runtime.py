@@ -272,7 +272,7 @@ async def load_profile_config(
     if carrier.kind != "active" or not carrier.can_host_eq:
         carrier.prepare_eq()
 
-    from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
+    from jasper.active_speaker.baseline_apply import load_composed_graph  # lazy: active graph owner
 
     async with dsp_writer_lock(config_path, source=source):
         active = carrier.kind == "active"

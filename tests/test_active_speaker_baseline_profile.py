@@ -19,6 +19,7 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_cand
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
+from jasper.active_speaker import baseline_apply
 from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
@@ -615,7 +616,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     candidate = _applied_with_sources(tmp_path, sources)
     # A record from an earlier, fully measured apply is standing before each
     # arm runs -- the arms differ only in what they do to it.
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(
             tmp_path / "prior", {"woofer": "measured", "tweeter": "measured"}
         ),
@@ -625,7 +626,7 @@ def test_a_partly_pinned_profile_neither_banks_nor_clears(
     assert dbt.load_base_trim() is not None
     caplog.clear()
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -667,7 +668,7 @@ def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
     candidate["source"] = source
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -693,7 +694,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     record is not.
     """
     caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -708,7 +709,7 @@ def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
     # writer refuses -- the seam must not leave the prior record behind.
     doomed["source"] = {**doomed["source"], "crossover_preview_fingerprint": ""}
     doomed["candidate_fingerprint"] = baseline_candidate_fingerprint(doomed)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         doomed,
         apply_state={"result": "success"},
         state_path=tmp_path / "next_applied.json",
@@ -739,7 +740,7 @@ def test_a_malformed_correction_entry_refuses_instead_of_escaping(
     candidate["corrections"] = {**candidate["corrections"], "tweeter": "-12.0"}
     candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
 
-    payload = baseline_profile_mod.persist_applied_baseline_profile(
+    payload = baseline_apply.persist_applied_baseline_profile(
         candidate,
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -768,7 +769,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_corrections["candidate_fingerprint"] = baseline_candidate_fingerprint(
         no_corrections
     )
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         no_corrections,
         apply_state={"result": "success"},
         state_path=tmp_path / "a.json",
@@ -776,7 +777,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
     no_readiness = deepcopy(base)
     no_readiness.pop("automatic_candidate", None)
     no_readiness["candidate_fingerprint"] = baseline_candidate_fingerprint(no_readiness)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         no_readiness,
         apply_state={"result": "success"},
         state_path=tmp_path / "b.json",
@@ -792,7 +793,7 @@ def test_the_two_unreadable_guards_no_longer_share_one_slug(
 def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     tmp_path: Path,
 ) -> None:
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
         apply_state={"result": "success"},
         state_path=tmp_path / "applied_profile.json",
@@ -807,7 +808,7 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
         **follower["recomposition_snapshot"], "domain": "driver",
     }
     follower["candidate_fingerprint"] = baseline_candidate_fingerprint(follower)
-    baseline_profile_mod.persist_applied_baseline_profile(
+    baseline_apply.persist_applied_baseline_profile(
         follower,
         apply_state={"result": "success"},
         state_path=tmp_path / "follower_applied.json",
@@ -833,12 +834,12 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     if source == "composed":
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
-    monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
+    monkeypatch.setattr(baseline_apply, "_bank_applied_base_trim", lambda *a: None)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
-    baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
+    baseline_apply.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
     applied = load_applied(path)
     assert all(not ({"delay_ms", "inverted"} & set(values)) for values in applied["corrections_provenance"].values())
     if source in ("cleared", "base"):

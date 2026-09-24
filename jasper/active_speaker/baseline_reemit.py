@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper import atomic_io
-from jasper.active_speaker import baseline_profile, candidate_parts, measurement_emit, runtime_contract
+from jasper.active_speaker import baseline_apply, baseline_profile, candidate_parts, measurement_emit, runtime_contract
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings
@@ -61,5 +61,5 @@ def reemit_applied_baseline(
         except OSError:
             mode = 0o640
         atomic_io.atomic_write_text(target, text, mode=mode, durable=True)
-        baseline_profile.promote_applied_baseline_candidate(applied)
+        baseline_apply.promote_applied_baseline_candidate(applied)
     return BaselineReemitResult(target, graph.classification, len(text))
