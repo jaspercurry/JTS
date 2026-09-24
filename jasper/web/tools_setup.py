@@ -56,14 +56,14 @@ import urllib.parse
 from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, TypeVar
 
 from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
 from ..tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
 from ..tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
 from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
-from ..tool_state import ToolState, read_tool_state, write_tool_state
+from ..tool_state import read_tool_state, write_tool_state
 from ._common import (
     RestartOutcome,
     begin_request,
@@ -411,23 +411,15 @@ def _pending(cfg: dict[str, Any]) -> bool:
     )
 
 
-def _save_tool_state(handler: Any, path: str, state: ToolState) -> bool:
-    """Write the staged tool state; False once a failed write is answered 500."""
-    try:
-        write_tool_state(path, state)
-    except OSError as e:
-        logger.exception("could not write tool_state.env")
-        send_json_response(handler, {"error": f"save failed: {e}"}, status=500)
-        return False
-    return True
+_Saved = TypeVar("_Saved")
 
 
-def _save_prompt_overrides(handler: Any, path: str, overrides: dict[str, str]) -> bool:
-    """Write the prompt overrides; False once a failed write is answered 500."""
+def _save(handler: Any, write: Callable[[str, _Saved], None], path: str, value: _Saved) -> bool:
+    """``write(path, value)``; False once a failed write is answered 500."""
     try:
-        write_prompt_overrides(path, overrides)
+        write(path, value)
     except OSError as e:
-        logger.exception("could not write tool prompt overrides")
+        logger.exception("could not write %s", path)
         send_json_response(handler, {"error": f"save failed: {e}"}, status=500)
         return False
     return True
@@ -483,7 +475,7 @@ def _post_toggle(cfg: dict[str, Any], handler: Any, body: dict[str, Any]) -> Non
         disabled = _toggled(state.disabled_tools, name, not enabled)
         if disabled != state.disabled_tools:
             staged = replace(state, disabled_tools=disabled)
-            if not _save_tool_state(handler, cfg["state_path"], staged):
+            if not _save(handler, write_tool_state, cfg["state_path"], staged):
                 return
             log_event(
                 logger, "tools.toggle",
@@ -533,7 +525,7 @@ def _post_toggle_pack(cfg: dict[str, Any], handler: Any, body: dict[str, Any]) -
                 state.disabled_packs, pack_id, not enabled,
             ))
         if staged != state:
-            if not _save_tool_state(handler, cfg["state_path"], staged):
+            if not _save(handler, write_tool_state, cfg["state_path"], staged):
                 return
             log_event(
                 logger, "tools.toggle_pack",
@@ -596,7 +588,7 @@ def _post_prompt(cfg: dict[str, Any], handler: Any, body: dict[str, Any]) -> Non
             if changed:
                 overrides[name] = prompt
         if changed:
-            if not _save_prompt_overrides(handler, cfg["prompt_overrides_path"], overrides):
+            if not _save(handler, write_prompt_overrides, cfg["prompt_overrides_path"], overrides):
                 return
             log_event(
                 logger, "tools.prompt_override_saved",
@@ -621,7 +613,7 @@ def _post_prompt_reset(cfg: dict[str, Any], handler: Any, body: dict[str, Any]) 
         overrides = read_prompt_overrides(cfg["prompt_overrides_path"])
         if name in overrides:
             del overrides[name]
-            if not _save_prompt_overrides(handler, cfg["prompt_overrides_path"], overrides):
+            if not _save(handler, write_prompt_overrides, cfg["prompt_overrides_path"], overrides):
                 return
             log_event(
                 logger, "tools.prompt_override_reset",
