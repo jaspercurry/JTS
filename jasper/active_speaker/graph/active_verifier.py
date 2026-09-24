@@ -14,6 +14,7 @@ import yaml
 
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
+from jasper.json_fields import as_float
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.speaker_layout import (
@@ -53,7 +54,6 @@ from ..graph_safety import (
     bass_extension_block_valid,
     bass_management_corner_matched,
     filter_param_matches,
-    float_value as _float_value,
     mains_highpass_present,
     mixer_output_proved as _mixer_output_proved,
     output_terminally_muted,
@@ -1178,7 +1178,7 @@ def _driver_domain_pair_trim_safe(
     )
     if not present:
         return True
-    gain = _float_value(_filter_params(payload, _DRIVER_DOMAIN_PAIR_TRIM).get("gain"))
+    gain = as_float(_filter_params(payload, _DRIVER_DOMAIN_PAIR_TRIM).get("gain"))
     return (
         _filter_type(payload, _DRIVER_DOMAIN_PAIR_TRIM) == "Gain"
         and gain is not None
@@ -1799,7 +1799,7 @@ def _active_graph_evidence(
                     "active_baseline_headroom_unwired",
                     "active baseline graph does not wire the shared headroom filter",
                 ))
-            headroom = _float_value(
+            headroom = as_float(
                 _filter_params(payload, "active_baseline_headroom").get("gain")
             )
             if headroom is None or headroom > 0.0:
@@ -2103,7 +2103,7 @@ def _active_graph_evidence(
                     ),
                 ))
             limiter_params = _filter_params(payload, limiter_name)
-            limiter_clip = _float_value(limiter_params.get("clip_limit"))
+            limiter_clip = as_float(limiter_params.get("clip_limit"))
             if (
                 _filter_type(payload, limiter_name) != "Limiter"
                 or limiter_clip is None
@@ -2119,7 +2119,7 @@ def _active_graph_evidence(
                         f"DAC output {index + 1} ({role})"
                     ),
                 ))
-            gain = _float_value(_filter_params(payload, gain_name).get("gain"))
+            gain = as_float(_filter_params(payload, gain_name).get("gain"))
             if gain is None or not math.isfinite(gain) or gain > 0.0:
                 issues.append(_issue(
                     "blocker",
@@ -2135,7 +2135,7 @@ def _active_graph_evidence(
                     if _filter_type(payload, name) == "BiquadCombo"
                     and str(_filter_params(payload, name).get("type") or "")
                     == "LinkwitzRileyHighpass"
-                    and (_float_value(_filter_params(payload, name).get("freq")) or 0.0)
+                    and (as_float(_filter_params(payload, name).get("freq")) or 0.0)
                     > 0.0
                 ]
                 if not highpass_names:
