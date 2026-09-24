@@ -9,7 +9,8 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import nearfield_view as nv
 
-FREQS = np.geomspace(20.0, 2000.0, 400)
+# A banked curve's grid runs to 20 kHz; a near-field sweep stops at 2 kHz.
+FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = nv.piston_step_db(0.015, 0.030, 0.057)
 
 
@@ -69,9 +70,9 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
     """A placement's raw curve pools its takes' settled sweeps with the fader
     and the played graph divided out, so takes played through different pads
-    read one driver on one reference. A take whose graph was not read back,
-    or cannot be modelled, or whose curve sits on another grid stays out of
-    it, and the rest of the view still reads (#5713)."""
+    read one driver on one reference, over the band they swept only. A take
+    whose graph was not read back, or cannot be modelled, or whose curve sits
+    on another grid stays out of it, and the rest of the view still reads (#5713)."""
     coarse = _take("coarse", "woofer", 15, 70.0, seed=3)
     coarse["curve"] = {**coarse["curve"], **{key: coarse["curve"][key][::2] for key in ("freqs_hz", "magnitude_db")},
                        "repeat_curves": [{key: value[::2] for key, value in sweep.items()}
@@ -86,7 +87,7 @@ def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
 
     raw = view["drivers"][0]["placements"][0]["raw"]
     assert raw["take_ids"] == ["a", "b"]
-    assert raw["freqs_hz"] == pytest.approx(FREQS.tolist(), abs=1e-3)
+    assert raw["freqs_hz"] == pytest.approx(FREQS[FREQS <= 2000.0].tolist(), abs=1e-3)
     assert np.asarray(raw["level_db"]) == pytest.approx(96.0, abs=0.05)
 
 

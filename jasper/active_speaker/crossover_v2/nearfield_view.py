@@ -111,11 +111,13 @@ def nearfield_view(
         freqs, sweeps = _sweeps(take["curve"])
         swept = take["curve"]["band_hz"]
         step = _within(freqs, sweeps, STEP_BAND_HZ, swept)
+        # The raw curve keeps only the swept bins, and drops the first sweep, which
+        # can catch an amplifier still waking (#5684).
+        in_sweep = (freqs >= swept[0]) & (freqs <= swept[1])
+        raw_freqs, settled = freqs[in_sweep], (sweeps[1:] if len(sweeps) > 1 else sweeps)[:, in_sweep]
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
-        path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
-        # The first sweep can catch an amplifier still waking (#5684).
-        raw_rows.append(None if path_db is None else
-                        (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
+        path_db = None if graph is None or fader_db is None else played_path_db(graph, raw_freqs)
+        raw_rows.append(None if path_db is None else (raw_freqs, settled - fader_db - path_db))
         row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
                "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
                "max_window_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("max_window_db_spl"),
