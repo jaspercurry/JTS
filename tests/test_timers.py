@@ -547,29 +547,33 @@ async def test_scheduler_retains_pre_render_task_until_done(store):
     await sched.stop()
 
 
-async def test_scheduler_pre_render_fires_on_restored_timers(store):
+async def test_scheduler_pre_render_fires_on_restored_timers(db_path):
     """When the daemon restarts and start() restores persisted
     timers, each restored timer also gets a pre-render — handles the
     case where the user switched providers between runs (cached
-    cue's hash is now stale, must re-render in new voice)."""
+    cue's hash is now stale, must re-render in new voice). Built on
+    db_path, as jasper-voice builds it, over a store the previous run
+    closed."""
     rendered: list[Timer] = []
 
     async def pre_render(t: Timer) -> None:
         rendered.append(t)
 
-    # Pre-seed a future timer in the store directly.
-    store.add(Timer(
-        id="restored1", label="dinner",
-        fire_at=time.time() + 3600, total_seconds=3600,
-        created_at=time.time(),
-    ))
+    with closing(TimerStore(db_path)) as previous_run:
+        previous_run.add(Timer(
+            id="restored1", label="dinner",
+            fire_at=time.time() + 3600, total_seconds=3600,
+            created_at=time.time(),
+        ))
 
-    sched = TimerScheduler(pre_render=pre_render, store=store)
-    await sched.start()
-    await asyncio.sleep(0.02)
-    assert len(rendered) == 1
-    assert rendered[0].id == "restored1"
-    await sched.stop()
+    sched = TimerScheduler(pre_render=pre_render, db_path=db_path)
+    try:
+        await sched.start()
+        await asyncio.sleep(0.02)
+        assert [t.id for t in rendered] == ["restored1"]
+    finally:
+        await sched.stop()
+        sched._store.close()
 
 
 async def test_scheduler_pre_render_failure_doesnt_abort_add(store):
