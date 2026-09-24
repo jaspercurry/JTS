@@ -58,7 +58,6 @@ def _landing_js() -> str:
     return _LANDING_JS_PATH.read_text(encoding="utf-8")
 
 
-_LOCATION_RX = nginx_site.LOCATION_RX
 _nginx_servers = nginx_site.servers
 
 
@@ -773,16 +772,6 @@ def test_assistant_pages_proxy_at_their_hub_path(conf_path: Path) -> None:
     assert served == set(_ASSISTANT_PAGES) - (
         set() if conf_path == _NGINX_PATH else {"/wake/"}
     )
-    # nginx refuses a conf with a duplicate location outright, and
-    # `_nginx_servers` would quietly keep only the last one.
-    for chunk in conf.split("\nserver {")[1:]:
-        body = chunk[: chunk.index("\n}")] if "\n}" in chunk else chunk
-        headers = [
-            (m.group("mod") or "", m.group("path"))
-            for m in _LOCATION_RX.finditer(body)
-        ]
-        duplicates = {h for h in headers if headers.count(h) > 1}
-        assert not duplicates, duplicates
 
 
 @pytest.mark.parametrize(

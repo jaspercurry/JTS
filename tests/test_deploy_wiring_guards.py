@@ -280,22 +280,44 @@ def test_wizard_socket_ports_match_nginx_upstreams():
 
 
 # ----------------------------------------------------------------------
-# 4b — OAuth callbacks stay out of nginx's access log
+# 4b — OAuth callbacks stay out of nginx's logs
 # ----------------------------------------------------------------------
+
+
+def _location_matches(mod: str, path: str, uri: str) -> bool:
+    path = path.strip("\"'")  # nginx accepts quoted location paths
+    if mod in ("", "^~"):
+        return uri.startswith(path)
+    if mod in ("~", "~*"):
+        return re.search(path, uri, re.IGNORECASE if mod == "~*" else 0) is not None
+    return False
 
 
 @pytest.mark.parametrize("callback", ["/spotify/oauth-callback", "/google/callback"])
 @pytest.mark.parametrize("profile", tuple(nginx_site.PROFILE_CONFS))
-def test_oauth_callbacks_are_never_access_logged(profile, callback):
-    """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's access log."""
-    blocks = [
-        locations[("=", callback)]
-        for _, locations in nginx_site.servers(nginx_site.conf_text(profile))
-        if ("=", callback) in locations
-    ]
-    assert blocks
-    for body in blocks:
-        assert "access_log off;" in {line.strip() for line in body.splitlines()}
+def test_oauth_callbacks_are_never_logged(profile, callback):
+    """Non-negotiable 3: OAuth codes in callback query strings must not reach nginx's logs."""
+    servers = nginx_site.servers(nginx_site.conf_text(profile))
+    assert {frozenset({80}), frozenset({443})} <= {ports for ports, _ in servers}
+    for ports, locations in servers:
+        # An exact match wins outright, and it proxies the code, so an upstream
+        # failure would also log it at error level. Otherwise nginx picks one
+        # of the matching prefix or regex locations, so each must be unlogged.
+        exact = ("=", callback) in locations
+        candidates = (
+            [("=", callback)]
+            if exact
+            else [key for key in locations if _location_matches(*key, callback)]
+        )
+        assert candidates, ports
+        for key in candidates:
+            lines = {line.strip() for line in locations[key].splitlines()}
+            assert "access_log off;" in lines, (ports, key)
+            if exact:
+                error_logs = {line for line in lines if line.startswith("error_log ")}
+                assert error_logs and all(
+                    re.fullmatch(r"error_log \S+ emerg;", line) for line in error_logs
+                ), (ports, key, error_logs)
 
 
 # ----------------------------------------------------------------------

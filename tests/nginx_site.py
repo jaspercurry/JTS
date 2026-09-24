@@ -92,4 +92,9 @@ def servers(conf: str) -> list[tuple[frozenset[int], dict]]:
                 end += 1
             locations[(m.group("mod") or "", m.group("path"))] = body[start + 1 : end]
         out.append((ports, locations))
+    # nginx refuses a duplicate location, which the dict would silently drop,
+    # and LOCATION_RX only sees 4-space-indented ones.
+    found = len(re.findall(r"(?m)^[ \t]*location\b", conf))
+    parsed = sum(len(locations) for _, locations in out)
+    assert found == parsed, f"{found} location lines, {parsed} parsed"
     return out
