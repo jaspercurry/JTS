@@ -235,29 +235,43 @@ Read each `packet["bass"]` entry's `set_id` and `takes`. Each take has
 harmonic coverage is not low distortion. Read `diagnostics` before comparing
 curves. Requested gain alone does not establish actual DSP drive.
 
-The shelf has a fixed corner near 70 Hz and slope 12.
-Choose `low_boost_db` to match the measured roll-off: compare the base corner
-and per-band `realized_boost_db` in `bass_table.tables[].levels[]`; overshoot
-above the corner beyond repeat spread means too much boost for the box.
-For the shelf, keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz
-protection, never at the extension target: a high corner tilts boost up and
-discards extension.
-Set `detector_lowpass_hz` at the top of the boosted band.
+The boost is the `linkwitz_transform` from the woofers' measured alignment
+(`source_hz`, `source_q`) to the target (`target_hz`, `target_q`). It plays in
+full at every volume
+(`0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md`).
+Overshoot above the corner in the per-band `realized_boost_db`
+(`bass_table.tables[].levels[]`), beyond repeat spread, means too much boost
+for the box.
+Put `delta_highpass_hz` below the target: 15 Hz under a 22 Hz target adds
+about 1 dB near 80 Hz, and a corner nearer the target trades a little
+extension for less drive below 20 Hz.
+Set `detector_lowpass_hz` at the top of the band where the boosted lane
+(static chain times boost) runs hot, at most 200 Hz: boosted content above the
+corner reaches the owner limiter without making the boost give way. Go lower
+only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
+100 Hz).
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail.
+A tune stored before ADR-0359 (`low_boost_db`, `reference_level_db`) still
+loads and plays its full boost at every volume; a new document uses the form
+above.
 
-When the shelf cannot match the box, add `linkwitz_transform`
-(`0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md`).
-At full boost the block then plays the Linkwitz transform from the woofers'
-measured alignment (`source_hz`, `source_q`) to the target (`target_hz`,
-`target_q`); the volume taper and the compressor act on it as on the shelf.
-A shape needs `delta_highpass_hz` below the target: 15 Hz under a 22 Hz
-target adds about 1 dB near 80 Hz, and a corner nearer the target trades a
-little extension for less drive below 20 Hz. The detector still reads the
-shelf at `low_boost_db`, not the shaped output, so set `low_boost_db` at or
-just above the shape's peak boost (the reserve at full boost). Below it the
-compressor acts late by the difference; far above it, early. The judge does
-not yet check this (#5704).
+`compressor_threshold_dbfs` is where the boost starts to give way, in dBFS
+at the front woofer output. Set it from the amp, not by ear. Start from the
+lower of the owner limiter (−1 dBFS) and the amp's clip point, then subtract
+the rear lane's excess over the front in the deep bass (the detector reads
+the front, ADR-0335) and the envelope and 10:1 slope margin; a time-domain run
+of the block is the honest check. On jts3 at 36 V, start at about −15 dBFS for
+a bridged board (two TPA3255 chips): only near-full-scale 25–30 Hz content at
+100% then reaches the limiter on B's rear lane, and at 78% a loud 30 Hz note
+keeps about 14 dB of its 19.5 dB boost. For a single-ended board (one chip,
+clipping near −6.5 dBFS), start at about −21 dBFS. To tell
+them apart, switch the power off and measure between the "−" terminals of two
+channels: open means bridged, 0 Ω means single-ended. A new amp or supply
+changes only this number
+([`docs/examples/bass_prescription_example.json`](examples/bass_prescription_example.json)
+is jts3's tune B, bridged). Then run the bass ladder. It should show the full
+boost up to the knee, with the owner limiter idle at normal levels.
 
 `prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
 `compression_db` includes compressor and driver action in the boost band.
@@ -608,17 +622,15 @@ Room
 Bass
 | Name | Value | Unit | Constant or function field |
 |---|---|---|---|
-| low_boost | {"type":"number","exclusiveMinimum":0.0,"maximum":20.0} | dB | contract.bass.schema.properties.low_boost_db |
-| reference_level | {"type":"number","minimum":-100.0,"maximum":0.0} | dB | contract.bass.schema.properties.reference_level_db |
 | detector_lowpass | {"type":"number","minimum":20.0,"maximum":200.0} | Hz | contract.bass.schema.properties.detector_lowpass_hz |
 | compressor_threshold | {"type":"number","minimum":-60.0,"maximum":0.0} | dBFS | contract.bass.schema.properties.compressor_threshold_dbfs |
 | compressor_factor | {"type":"number","exclusiveMinimum":1.0,"maximum":20.0,"default":10.0} | ratio | contract.bass.schema.properties.compressor_factor |
 | compressor_attack | {"type":"number","minimum":0.001,"maximum":0.1,"default":0.01} | s | contract.bass.schema.properties.compressor_attack_s |
 | compressor_release | {"type":"number","minimum":0.01,"maximum":2.0,"default":0.25} | s | contract.bass.schema.properties.compressor_release_s |
-| delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
+| delta_highpass | {"type":"number","minimum":10.0} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
 | linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
-| linkwitz_transform_rules | {"adr":"ADR-0352","requires_field":"delta_highpass_hz","target_hz_exclusive_upper_field":"source_hz","delta_zero_hz":"(source_hz**2 - target_hz**2) / (source_hz/source_q - target_hz/target_q)","delta_zero_hz_exclusive_minimum":0.0,"delta_zero_hz_maximum":20000.0} | rule | contract.bass.bounds.linkwitz_transform |
+| linkwitz_transform_rules | {"adr":"ADR-0359","target_hz_exclusive_upper_field":"source_hz"} | rule | contract.bass.bounds.linkwitz_transform |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
 
 Rear

@@ -32,7 +32,7 @@ summed, cloud, on-axis, and off-axis.
   correction, with bass off for the base and on for the candidate (see
   [ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
 - **Room correction:** play through the applied speaker layer and applied bass
-  extension so the room fit absorbs what the bass shelf leaves above its band.
+  extension so the room fit absorbs what the bass boost leaves above its band.
   Preference EQ remains absent.
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.

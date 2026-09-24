@@ -509,7 +509,14 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     fresh = measurement_emit.compile_tuning_graph(declaration, candidate=candidate)
     old_payload = yaml.safe_load(fresh)
     if case != "blocked":
-        old_payload["processors"]["bass_ext_dynamic_compress_0"]["parameters"]["attack"] = 0.123
+        # The saved graph carries ADR-0352's block: the Aux1 Loudness shelf where the boost biquad now plays.
+        filters = old_payload["filters"]
+        del filters["bass_ext_dynamic_boost"]
+        filters["bass_ext_dynamic_loudness"] = {"type": "Loudness", "parameters": {
+            "fader": "Aux1", "reference_level": -10.0, "high_boost": 0.0, "low_boost": 4.0, "attenuate_mid": False}}
+        for step in old_payload["pipeline"]:
+            if step.get("names") == ["bass_ext_dynamic_boost"]:
+                step["names"] = ["bass_ext_dynamic_loudness"]
     old = "\n".join(line for line in fresh.splitlines() if line.startswith("#")) + "\n" + yaml.safe_dump(old_payload)
     artifact.write_text(fresh if case in {"already_safe"} else old)
     current = artifact if case == "heal_current" else tmp_path / "prior.yml"
@@ -562,7 +569,10 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         if case == "heal":
             assert result.decision.current_graph.issues[0]["code"] == "bass_extension_block_invalid"
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(artifact)
-        assert yaml.safe_load(artifact.read_text())["devices"]["volume_limit"] == 0.0
+        healed = yaml.safe_load(artifact.read_text())
+        assert healed["devices"]["volume_limit"] == 0.0
+        assert "bass_ext_dynamic_boost" in healed["filters"]
+        assert not any(filter_["type"] == "Loudness" for filter_ in healed["filters"].values())
         assert yaml.safe_load(paths["statefile_path"].read_text())["volume"] == -18.0
     elif case in {"already_safe", "current_startup", "blocked"}:
         assert result.decision.status == ("blocked" if case == "blocked" else "preserve_current")

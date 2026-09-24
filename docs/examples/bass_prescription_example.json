@@ -1,0 +1,17 @@
+{
+  "kind": "jts_prescription",
+  "schema": 1,
+  "base": "saved",
+  "sections": {
+    "bass": {
+      "linkwitz_transform": {"source_hz": 107.0, "source_q": 0.44, "target_hz": 30.0, "target_q": 0.707},
+      "delta_highpass_hz": 22.0,
+      "detector_lowpass_hz": 100.0,
+      "compressor_threshold_dbfs": -15.0,
+      "compressor_factor": 10.0,
+      "compressor_attack_s": 0.01,
+      "compressor_release_s": 0.25
+    }
+  },
+  "rationale": "jts3 tune B with the full-boost block (ADR-0359). The threshold assumes a bridged amp board (two TPA3255 chips) on 36 V: the rear lane runs about 5 dB over the front at 30 Hz, so only near-full-scale deep bass at 100% reaches the -1 dBFS limiter. A single-ended board (one chip) starts at -21 dBFS. The 100 Hz detector is right for B because its 114 Hz cut keeps the band above cool."
+}

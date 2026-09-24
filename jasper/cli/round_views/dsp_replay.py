@@ -46,7 +46,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--main-db", type=float, required=True)
     parser.add_argument("--bass-reference-db", type=float, required=True)
     parser.add_argument("--out", type=Path, required=True, help="render directory; use pi-run-diagnostic.sh on the Pi")
-    parser.add_argument("--bass-descriptor", type=Path, help="also render bass off, full boost and volume taper from this descriptor")
+    parser.add_argument("--bass-descriptor", type=Path, help="also render bass off and full boost from this descriptor (graphs with the ADR-0359 block)")
     parser.add_argument("--bass-channels", type=int, nargs="+", default=[], help="bass output indices; validated against the graph and descriptor")
     parser.add_argument("--preset", type=Path, help="active-speaker preset JSON for shared cardioid bass detection")
     parser.set_defaults(func=_cmd_replay)

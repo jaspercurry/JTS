@@ -92,8 +92,6 @@ BOUND_SOURCES = {
         ("taper", "octaves", "room.ROOM_TAPER_OCTAVES"),
     ),
     "Bass": (
-        ("low_boost", "dB", "contract.bass.schema.properties.low_boost_db"),
-        ("reference_level", "dB", "contract.bass.schema.properties.reference_level_db"),
         ("detector_lowpass", "Hz", "contract.bass.schema.properties.detector_lowpass_hz"),
         ("compressor_threshold", "dBFS", "contract.bass.schema.properties.compressor_threshold_dbfs"),
         ("compressor_factor", "ratio", "contract.bass.schema.properties.compressor_factor"),

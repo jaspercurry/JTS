@@ -15,7 +15,6 @@ import json
 import os
 import resource
 import subprocess
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +66,7 @@ def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatc
     preset = None
     base = _base_graph()
     if cardioid:
-        preset, _, text = _cardioid_baseline(bass_extension=asdict(descriptor))
+        preset, _, text = _cardioid_baseline(bass_extension=descriptor.payload())
         source = yaml.safe_load(text)
         base = yaml.safe_load(_cardioid_baseline()[2])
     else:
@@ -82,22 +81,17 @@ def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatc
 
     monkeypatch.setattr(bass_replay, 'replay_graph', replay)
     result = bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
-        main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(0, 2), preset=preset)
+        main_db=-16, bass_reference_db=-16, descriptor=descriptor.payload(), channels=(0, 2), preset=preset)
     assert calls[0][0] == base
     assert calls[-1][0] == source
-    assert calls[1][0] == calls[2][0]
-    for payload, _ in calls[1:3]:
-        assert payload['filters'] == source['filters']
-        assert payload['mixers'] == source['mixers']
-        assert payload['pipeline'] == [step for step in source['pipeline'] if step['type'] != 'Processor']
-    assert [faders for _, faders in calls] == [
-        {'main_db': -16, 'bass_reference_db': ref} for ref in (-16, -26, -16, -16)]
+    assert calls[1][0] == {**source, 'pipeline': [step for step in source['pipeline'] if step['type'] != 'Processor']}
+    assert [faders for _, faders in calls] == [{'main_db': -16, 'bass_reference_db': -16}] * 3
     assert result['bass_attribution']['channels'] == [0, 2]
     assert yaml.safe_load(graph.read_text()) == source
     with pytest.raises(ValueError):
         bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
-            main_db=-16, bass_reference_db=-16, descriptor=asdict(descriptor), channels=(1, 3))
-    assert len(calls) == 4
+            main_db=-16, bass_reference_db=-16, descriptor=descriptor.payload(), channels=(1, 3))
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("with_preset", [False, True])
@@ -106,7 +100,7 @@ def test_bass_replay_cli_passes_the_optional_preset(tmp_path, monkeypatch, with_
     preset_path = tmp_path / "preset.json"
     preset_path.write_text(json.dumps(preset.to_dict()))
     descriptor_path = tmp_path / "bass.json"
-    descriptor_path.write_text(json.dumps(asdict(_descriptor())))
+    descriptor_path.write_text(json.dumps(_descriptor().payload()))
     calls = []
 
     def replay(*args, **kwargs):
@@ -130,21 +124,20 @@ def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_
     rate = 48000
     tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
     manifests = {}
-    for name, gain in (('baseline', 0), ('full_boost', 9), ('volume_taper', 6), ('delivered', 2)):
+    for name, gain in (('baseline', 0), ('full_boost', 9), ('delivered', 2)):
         directory = tmp_path if name == 'delivered' else tmp_path / name
         directory.mkdir(exist_ok=True)
         raw = directory / 'output.f64le'
         np.column_stack([tone * .01 * 10 ** (gain / 20), np.zeros(rate)]).astype('<f8').tofile(raw)
         manifests[name] = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
             'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': name, 'stimulus_sha256': 'stimulus',
-            'main_db': -16, 'bass_reference_db': -26 if name == 'full_boost' else -16}
+            'main_db': -16, 'bass_reference_db': -16}
     manifest = manifests.pop('delivered')
     manifest['bass_attribution'] = {'stages': manifests, 'channels': [0], 'descriptor': {}, 'scope': 'net output'}
     raw = tmp_path / 'output.f64le'
     result = bass_replay.bass_replay_levels(manifest, raw, (0, 1))
     band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == [50., 63.])
-    assert [band[key] for key in ('full_boost_gain_db', 'volume_taper_output_change_db',
-                                  'compressor_output_change_db', 'delivered_gain_db')] == [9, -3, -4, 2]
+    assert [band[key] for key in ('full_boost_gain_db', 'compressor_output_change_db', 'delivered_gain_db')] == [9, -7, 2]
     assert result['channels'][0]['bass_owner'] is True
     assert result['channels'][1]['bass_owner'] is False
     assert all(b['delivered_gain_db'] is None for b in result['channels'][1]['bands'])
@@ -152,6 +145,10 @@ def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_
     with pytest.raises(ValueError):
         bass_replay.bass_replay_levels(manifest, raw, (0, 1))
     manifests['baseline']['main_db'] = -16
+    manifests['volume_taper'] = dict(manifests['full_boost'])
+    with pytest.raises(ValueError, match='bass_replay_manifest_predates_adr_0359'):
+        bass_replay.bass_replay_levels(manifest, raw, (0, 1))
+    del manifests['volume_taper']
     (tmp_path / 'full_boost' / 'output.f64le').write_bytes(b'changed')
     with pytest.raises(ValueError):
         bass_replay.bass_replay_levels(manifest, raw, (0, 1))

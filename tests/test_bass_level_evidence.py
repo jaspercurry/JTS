@@ -100,14 +100,12 @@ def test_prescribed_realized_and_partial_boost_band(pair, fraction, fader_db):
     descriptor = {**DESCRIPTOR, "delta_highpass_hz": 25, "detector_lowpass_hz": 90}
     settings = DynamicBassDescriptor(**descriptor)
     for take in pair:
-        take["record"]["loudness_volume_db"] = fader_db
-    pair[1]["fundamental_db"] = (fraction * np.asarray(expected_boost_db(
-        settings, fader_db, pair[1]["freqs_hz"],
-    ))).tolist()
+        take["record"].update(level_db=fader_db, loudness_volume_db=fader_db)
+    pair[1]["fundamental_db"] = (fraction * np.asarray(expected_boost_db(settings, pair[1]["freqs_hz"]))).tolist()
     row, = table([pair], descriptor)["levels"]
     grid = np.geomspace(BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1], BASS_GRID_POINTS)
-    expected = np.asarray(expected_boost_db(settings, fader_db, grid))
-    assert row["prescribed_boost_db"] == -fader_db * .4
+    # The prescribed boost is the same at every fader.
+    expected = np.asarray(expected_boost_db(settings, grid))
     assert row["boost_band_hz"] == [25, 90]
     # One-third-octave power smoothing shifts band means by less than 0.15 dB.
     for band in row["realized_boost_db"]:
@@ -121,17 +119,25 @@ def test_prescribed_realized_and_partial_boost_band(pair, fraction, fader_db):
         assert band["value_db"] == pytest.approx(mean * (1 - fraction), abs=.15)
     assert row["compression_db"][0]["band_hz"] == [25, 30]
     assert row["compression_db"][-1]["band_hz"] == [80, 90]
-    assert row["compression_includes"] == ["compressor", "driver", "shelf_model_error"]
+    assert row["compression_includes"] == ["compressor", "owner_limiter", "driver"]
+
+
+def test_a_take_that_played_the_adr_0352_taper_says_so(pair):
+    for take in pair:
+        take["record"]["provenance"] = {"graph": {"config": {"filters": {
+            "bass_ext_dynamic_loudness": {"type": "Loudness", "parameters": {"fader": "Aux1"}}}}}}
+    row, = table([pair], DESCRIPTOR)["levels"]
+    assert row["compression_includes"] == ["compressor", "owner_limiter", "driver", "volume_taper"]
 
 
 def test_live_boost_readings_follow_the_prescribed_shape(pair):
-    descriptor = {**DESCRIPTOR, "low_boost_db": 12, "delta_highpass_hz": 25, "detector_lowpass_hz": 125}
+    descriptor = {**DESCRIPTOR, "low_boost_db": 9.9, "delta_highpass_hz": 25, "detector_lowpass_hz": 125}
     for take in pair:
         take["record"].update(level_db=-16.5, loudness_volume_db=-16.5)
     aligned = fit_bass_shape([pair], candidate_id="boost")
     for (lo, hi), realized in zip(BASS_BANDS_HZ[3:7], (8.8, 6.0, 3.9, 2.8)):
         aligned["delta"][(aligned["freqs_hz"] >= lo) & (aligned["freqs_hz"] < hi)] = realized
-    row = bass_level_evidence(aligned, descriptor=DynamicBassDescriptor(**descriptor), prescribed_boost_db=9.9)
+    row = bass_level_evidence(aligned, descriptor=DynamicBassDescriptor(**descriptor))
     bands = [band for band in row["realized_boost_db"] if 50 <= band["band_hz"][0] <= 100]
     assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.938, 6.167, 4.254, 2.694], abs=.001)
     compression = [band["value_db"] for band in row["compression_db"] if band["band_hz"][0] >= 50]
@@ -396,7 +402,6 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert [row["headroom"] for row in rows] == [level["headroom"] for level in levels]
     assert [row["compression_includes"] for row in rows] == [level["compression_includes"] for level in levels]
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
-    assert (levels[0]["prescribed_boost_db"] is None) is baseline_only
     assert all((band["prescribed_boost_db"] is None) is (baseline_only or band["value_db"] is None)
                for row in rows for band in row["realized_boost_db"])
     packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
@@ -411,9 +416,9 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert render.call_args.args[0] == rows
     cells = [line.strip("|").split("|") for line in (tmp_path / INDEX_FILENAME).read_text().splitlines() if line.startswith("|")][2:]
     assert [float(cells[1]) for cells in cells] == [row["level_key"]["level_db"] for row in rows]
-    assert all(len(row) == 11 for row in cells)
+    assert all(len(row) == 10 for row in cells)
     for cells, row in zip(cells, rows):
-        values = [band.split(":")[1].strip().split(" / ") for band in cells[4].split(";")]
+        values = [band.split(":")[1].strip().split(" / ") for band in cells[3].split(";")]
         assert [[float(value) if value != "null" else None for value in band] for band in values] == [
             [round(band[key], 1) if band[key] is not None else None for key in ("prescribed_boost_db", "value_db")]
             for band in row["realized_boost_db"]]

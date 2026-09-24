@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
+from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -56,37 +56,24 @@ def validate_ramp_target_spl(level_db_spl: float, *, ceiling_db_spl: float) -> N
                                margin_db=MAX_STEP_DB + CEILING_MARGIN_DB)
 
 
-def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any], fader_db: float) -> float:
-    def reserve(raw: Mapping[str, Any]) -> float:
-        return dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**raw), fader_db) if raw else 0.0
-
-    return max(0.0, reserve(candidate) - reserve(applied))
+def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any]) -> float:
+    return max(0.0, dynamic_bass_gain_reserve_db(candidate) - dynamic_bass_gain_reserve_db(applied))
 
 
 def predicted_rung_admission(
     fader_db: float, anchor: ResolvedLevel, candidates: Mapping[str, Mapping[str, Any]], *,
     applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float,
 ) -> dict[str, Any]:
-    requested = fader_db
-    for attempt in range(6):
-        lift, name = max((rung_lift_bound_db(descriptor, applied, fader_db), name)
-                         for name, descriptor in candidates.items())
-        margin = tolerance_db + lift
-        bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
-        predicted = anchor.db_spl_at(fader_db)
-        if predicted <= bound:
-            return {"level_db": fader_db, "admitted_db_spl": predicted, "candidate_id": name,
-                    "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
-                    "margin_db": margin, "margin_bound_db_spl": bound,
-                    **({"bound_by": "commissioning_margin"} if fader_db < requested else {})}
-        if attempt == 4:
-            # Full candidate reserve bounds every fader, even across the loudness taper.
-            lift = max(dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
-                       for descriptor in candidates.values())
-            bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=tolerance_db + lift)
-        # 1e-9 dB clears db_spl_at's rounding; a one-ulp fader step can round back above the bound.
-        fader_db = fader_db - (predicted - bound) - 1e-9
-    raise SeatLevelTargetError("The commissioning margin did not converge")
+    lift, name = max((rung_lift_bound_db(descriptor, applied), name) for name, descriptor in candidates.items())
+    margin = tolerance_db + lift
+    bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
+    predicted = anchor.db_spl_at(fader_db)
+    # 1e-9 dB clears db_spl_at's rounding; a one-ulp fader step can round back above the bound.
+    level = fader_db - (predicted - bound) - 1e-9 if predicted > bound else fader_db
+    return {"level_db": level, "admitted_db_spl": anchor.db_spl_at(level), "candidate_id": name,
+            "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
+            "margin_db": margin, "margin_bound_db_spl": bound,
+            **({"bound_by": "commissioning_margin"} if level < fader_db else {})}
 
 
 class RungMeasurementUnavailable(SeatLevelTargetError):

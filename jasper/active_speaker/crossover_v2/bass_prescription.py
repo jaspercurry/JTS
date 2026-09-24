@@ -63,14 +63,14 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     try:
         descriptor = validate_dynamic_bass_descriptor({key: value for key, value in raw.items()
                                                        if key != "round_id"}
-                                                      if isinstance(raw, Mapping) else raw)
+                                                      if isinstance(raw, Mapping) else raw, new_section=True)
     except DynamicBassDescriptorError as exc:
         _refuse(exc.reason, str(exc), field=exc.field)
     round_id = evidence.get("round_id")
     status = bass_evidence_status(evidence)["evidence_status"]
     if not round_id or status != "evaluated":
         _refuse(BASS_EVIDENCE_UNAVAILABLE, "The round has no bass evidence.", round_id=round_id)
-    lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"] or BASS_BANDS_HZ[0][0])
+    lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"])
     upper = descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]
     qualified = {tuple(band["band_hz"]) for view in evidence.get("bass", [])

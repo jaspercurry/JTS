@@ -15,8 +15,8 @@ level step that bem-transfer.py's gate 2 checks:
 A take's woofer is the louder of its two solo sweeps. Every sweep is located on its own (the
 playback timeline can jump between segments at near-field levels), drift-corrected with the take's
 fitted clock and deconvolved against the take's own stimulus. The fader, the played path (the
-repo's graph walker) and a plain bass-extension Loudness boost are divided out, which leaves each
-raw driver on one digital reference.
+repo's graph walker) and an ADR-0352 plain Loudness boost are divided out, which leaves each raw
+driver on one digital reference.
 """
 from __future__ import annotations
 
@@ -30,9 +30,12 @@ from scipy.io import wavfile
 from scipy.signal import fftconvolve
 
 from _cabinet import sealed_fit
+from jasper.active_speaker.branch_chain import camilla_filter_response
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.audio_measurement.program import ExcitationProgram, segment_stimulus
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
+from jasper.bass_extension.dynamic import NATIVE_LOUDNESS_CORNER_HZ
+from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
+from jasper.biquad import SHELF_Q
 
 FS = 48000
 NFFT = 1 << 19
@@ -43,7 +46,6 @@ WINDOW = np.ones(int(0.30 * FS) + 240)  # 5 ms before the impulse peak to 300 ms
 WINDOW[:96] = 0.5 * (1 - np.cos(np.linspace(0, np.pi, 96)))
 WINDOW[-4800:] = 0.5 * (1 + np.cos(np.linspace(0, np.pi, 4800)))
 SWEEPS = {"front": ("sweep_w", "sweep_w_rep"), "rear": ("sweep_t", "sweep_t_rep")}
-PLAIN_BASS = {f"bass_ext_dynamic_{n}" for n in ("volume_ramp", "loudness", "delta_highpass", "detector_lowpass")}
 BANDS = ((25, 35), (35, 50), (50, 70), (70, 100), (100, 200), (200, 400), (400, 700), (700, 1000))
 STEP_BAND_HZ = (35, 400)
 
@@ -85,26 +87,29 @@ def sweep_spectrum(rec: np.ndarray, take: dict, segment) -> np.ndarray:
 
 
 def played_db(take: dict, input_channel: int, freqs: np.ndarray) -> np.ndarray:
-    """Level of the drive that played the take's woofer: fader, played path and a plain Loudness boost."""
+    """Level of the drive that played the take's woofer: fader, played path and an ADR-0352 plain boost."""
     cfg = take["provenance"]["graph"]["config"]
     F = cfg["filters"]
-    shaped = sorted(n for n in F if n.startswith("bass_ext_dynamic_") and n not in PLAIN_BASS)
-    if shaped:
-        raise SystemExit(f"{take['take_id']}: the played bass boost is shaped ({shaped[0]}...), which this tool "
-                         "does not model; capture with the bass layer cleared (nearfield-plan.py does)")
+    loudness = F.get(f"{DYNAMIC_BASS_PREFIX}_loudness")
+    if any(name.startswith(DYNAMIC_BASS_PREFIX) for name in F) and (
+            loudness is None or f"{DYNAMIC_BASS_PREFIX}_shape_poles" in F):
+        raise SystemExit(f"{take['take_id']}: the take played a bass boost this tool does not model; "
+                         "capture with the bass layer cleared (nearfield-plan.py does)")
     outputs = complex_channel_transfer(cfg, freqs, input_weights={input_channel: 1.0},
                                        output_channels={ch: ch for ch in range(cfg["devices"]["playback"]["channels"])},
                                        allow_limiter_passthrough=True, dynamic_bass_at_rest=True)
     path = max(outputs.values(), key=lambda h: float(np.sum(np.abs(h) ** 2)))
     out = take["level_db"] + 20 * np.log10(np.abs(path))
-    if "bass_ext_dynamic_loudness" in F:
-        p, hp = F["bass_ext_dynamic_loudness"]["parameters"], F.get("bass_ext_dynamic_delta_highpass")
-        descriptor = DynamicBassDescriptor(
-            low_boost_db=p["low_boost"], reference_level_db=p["reference_level"],
-            detector_lowpass_hz=F["bass_ext_dynamic_detector_lowpass"]["parameters"]["freq"],
-            compressor_threshold_dbfs=next(iter(cfg["processors"].values()))["parameters"]["threshold"],
-            delta_highpass_hz=hp and hp["parameters"]["freq"])
-        out = out + np.array(expected_boost_db(descriptor, take["loudness_volume_db"], freqs))
+    if loudness:  # the 2026-09-23 takes: the Loudness shelf at the take's Aux1 fader (CamillaDSP's 20 dB taper)
+        p = loudness["parameters"]
+        gain = p["low_boost"] * min(1.0, max(0.0, (p["reference_level"] - take["loudness_volume_db"]) / 20.0))
+        shelf = {"type": "Biquad", "parameters": {"type": "Lowshelf", "freq": NATIVE_LOUDNESS_CORNER_HZ,
+                                                   "q": SHELF_Q, "gain": gain}}
+        highpass = F.get(f"{DYNAMIC_BASS_PREFIX}_delta_highpass")
+        delta = camilla_filter_response([shelf], freqs) - 1.0
+        if highpass:
+            delta = delta * camilla_filter_response([highpass], freqs)
+        out = out + 20 * np.log10(np.abs(1.0 + delta))
     return out
 
 
