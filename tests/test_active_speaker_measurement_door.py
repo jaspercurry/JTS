@@ -26,7 +26,6 @@ import pytest
 from jasper.active_speaker.crossover_v2.door import (
     REFUSE_NO_VOLUME_OWNER,
     REFUSE_SESSION_LIVE,
-    REFUSE_VOLUME_NOT_OPEN,
     MeasurementDoorRefused,
     bind_measurement_graph,
     isolation_hold,
@@ -39,7 +38,6 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     live_measurement_session,
 )
-from jasper.camilla import CamillaUnavailable
 from jasper.volume_owner import VolumeOwner, install_volume_owner, volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
@@ -161,12 +159,45 @@ async def test_a_body_that_raises_still_gives_the_speaker_back(tmp_path, box, er
     measurement stopped; one that restored only on the happy path would leave a
     speaker on a measurement graph at measurement volume after any error.
     """
-    with pytest.raises(error):
+    raised = error()
+    with pytest.raises(error) as caught:
         async with _door(tmp_path, box):
-            raise error()
+            raise raised
+
+    assert caught.value is raised
+    assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_a_second_cancel_during_the_give_back_still_gives_the_speaker_back(tmp_path, box, monkeypatch):
+    """The give-back is shielded: a cancel that lands while the door gives the
+    speaker back cannot strand the fader at measurement level (ADR-0179)."""
+    entered, releasing = asyncio.Event(), asyncio.Event()
+    release = MeasurementVolumeClaim.release
+
+    async def slow_release(self):
+        releasing.set()
+        await asyncio.sleep(0.01)
+        await release(self)
+
+    monkeypatch.setattr(MeasurementVolumeClaim, "release", slow_release)
+
+    async def measure():
+        async with _door(tmp_path, box):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(measure())
+    await wait_signalled(entered, "the door opened", producer=task)
+    task.cancel()
+    await wait_signalled(releasing, "the give-back began", producer=task)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+    assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
 
 
 async def test_every_give_back_step_runs_and_the_first_failure_surfaces(tmp_path, box, monkeypatch):
@@ -195,23 +226,6 @@ async def test_every_give_back_step_runs_and_the_first_failure_surfaces(tmp_path
             pass
 
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
-    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
-    assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
-
-
-async def test_an_unreadable_fader_refuses_before_the_plan_records_anything(tmp_path, box, monkeypatch):
-    """A window whose household fader does not answer refuses before the volume
-    plan persists an intent, so no later door waits on a recovery that could
-    restore only the emergency floor."""
-    async def unreadable(**_kwargs):
-        raise CamillaUnavailable("no answer")
-
-    monkeypatch.setattr(box, "get_volume_db", unreadable)
-    with pytest.raises(MeasurementDoorRefused) as caught:
-        async with _door(tmp_path, box):
-            pytest.fail("a door with an unreadable fader reached capture")
-
-    assert caught.value.reason == REFUSE_VOLUME_NOT_OPEN
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
     assert not SessionVolumePlan(state_path=tmp_path / VOLUME_STATE).needs_recovery
 

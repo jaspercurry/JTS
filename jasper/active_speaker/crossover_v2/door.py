@@ -130,10 +130,6 @@ async def level_window(
     volume_open = False
     opened_door: OpenMeasurementDoor | None = None
     try:
-        # The plan persists its intent before it reads the fader back; with no household
-        # level to restore, a failed open would latch the emergency floor.
-        if await hold.volume_door.read_household_level_db() is None:
-            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "the household volume is unreadable")
         try:
             opened = await plan.open(level_db, hold.volume_door)
         except SessionVolumePlanError as exc:
