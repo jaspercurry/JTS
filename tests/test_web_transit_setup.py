@@ -65,7 +65,7 @@ def _render(
     routes_state: dict[str, str] | None = None,
     back_href: str = "/",
 ) -> str:
-    return transit_setup._index_html(
+    return transit_setup.index_html(
         state,
         TOKEN,
         routes_state=routes_state,

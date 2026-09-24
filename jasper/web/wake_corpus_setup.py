@@ -366,7 +366,7 @@ class _Handler(BaseHTTPRequestHandler):
 #
 # Module-level functions taking the handler, not methods: the tables below
 # hold them directly, so a body bound to the class would be dispatched past
-# any override on the per-server subclass `_make_handler_class` builds.
+# any override on the per-server subclass `make_handler_class` builds.
 # `@json_body` runs `_read_json()` for the POST bodies, which answers the
 # client's 400 itself, so a malformed body never reaches one.
 
@@ -795,7 +795,7 @@ _POST_ROUTES = {
 }
 
 
-def _make_handler_class(backend: RecordingBackend) -> type[_Handler]:
+def make_handler_class(backend: RecordingBackend) -> type[_Handler]:
     class _BoundHandler(_Handler):
         pass
     _BoundHandler.backend = backend
@@ -812,7 +812,7 @@ def make_server(
     already be `start()`ed by the caller (the asyncio loop thread +
     crash-recovery state both depend on it).
     """
-    return systemd.make_http_server(target, _make_handler_class(backend))
+    return systemd.make_http_server(target, make_handler_class(backend))
 
 
 # ---------------------------------------------------------------------------

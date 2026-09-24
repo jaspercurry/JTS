@@ -436,7 +436,7 @@ _TABLED_WIZARD_FACTORIES = {
         "assistant_loudness_profile_path": str(_SCRATCH / "voice-loudness.json"),
         "loudness_seed_fn": lambda *a, **k: None,
     }),
-    "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(object()),
+    "wake_corpus_setup": lambda: wake_corpus_setup.make_handler_class(object()),
     "wake_setup": lambda: wake_setup._make_handler(
         {
             "state_path": str(_SCRATCH / "wake.env"),

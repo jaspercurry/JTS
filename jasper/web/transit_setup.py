@@ -90,8 +90,8 @@ from .transit_page import (
     LAT_ENV,
     LON_ENV,
     TRAVEL_DEFAULT_MODE_ENV,
-    _index_html,
-    _wrap_transit_page,
+    index_html,
+    wrap_transit_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -439,7 +439,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # is to tell the user what to do next.
         try:
             routes_state = read_env_file(cfg["routes_secret_path"])
-            body = _index_html(
+            body = index_html(
                 state,
                 ctx["csrf_token"],
                 routes_state=routes_state,
@@ -451,7 +451,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("transit wizard render failed")
-            body = _wrap_transit_page(
+            body = wrap_transit_page(
                 "Transit",
                 f'<div class="banner banner--danger" role="status">'
                 f'Couldn\'t render the page: {html.escape(str(e))}. '

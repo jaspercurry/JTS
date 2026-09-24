@@ -191,7 +191,7 @@ def _make_lazy_wake_corpus_server(
                     ports=ports,
                 )
                 backend.start()
-                real_cls = wake_corpus_setup._make_handler_class(backend)
+                real_cls = wake_corpus_setup.make_handler_class(backend)
 
                 for base in reversed(real_cls.mro()):
                     if base in {

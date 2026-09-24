@@ -14,7 +14,7 @@ from jasper.usage import pricing_for_model
 from ._common import csrf_field_html, pair_banner_html
 from .chrome import canonical_banner, canonical_header, canonical_page
 from .voice_settings import provider_model_ids as _provider_model_ids, selected_provider
-from .voice_costs import _fmt_env_float, _fmt_env_money, _read_spend_cap_status, _today_iso
+from .voice_costs import fmt_env_float, fmt_env_money, read_spend_cap_status, today_iso
 
 
 def _fmt_usd(value: float | None) -> str:
@@ -28,7 +28,7 @@ def _badge_html(label: str, tone: str) -> str:
 
 
 def _spend_cap_section_html(state: dict[str, str], csrf_token: str, selected: str) -> str:
-    status = _read_spend_cap_status(state)
+    status = read_spend_cap_status(state)
     disabled = bool(status["disabled"])
     if disabled:
         status_badge = _badge_html("disabled", "idle")
@@ -62,9 +62,9 @@ def _spend_cap_section_html(state: dict[str, str], csrf_token: str, selected: st
     note_html = "".join(
         f'<p class="form-hint">{html.escape(note)}</p>' for note in notes
     )
-    cap_value = html.escape(_fmt_env_money(status["cap_usd"]), quote=True)
+    cap_value = html.escape(fmt_env_money(status["cap_usd"]), quote=True)
     multiplier_value = html.escape(
-        _fmt_env_float(status["safety_multiplier"]),
+        fmt_env_float(status["safety_multiplier"]),
         quote=True,
     )
     return f"""
@@ -188,7 +188,7 @@ def _pricing_research_prompt(
     discovery: dict[str, DiscoverySnapshot] | None,
 ) -> str:
     discovery = discovery or {}
-    today = _today_iso()
+    today = today_iso()
     lines = []
     for provider in PROVIDERS:
         buckets = provider.pricing_buckets
@@ -259,7 +259,7 @@ def _pricing_refresh_html(
     </details>"""
 
 
-def _costs_html(
+def costs_html(
     state: dict[str, str], csrf_token: str, *, status_msg: str = "",
     discovery: dict[str, DiscoverySnapshot] | None = None,
     overrides: dict[str, dict] | None = None, default_as_of: str = "",

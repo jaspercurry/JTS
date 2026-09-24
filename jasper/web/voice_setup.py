@@ -67,15 +67,15 @@ from ._common import (
     SECRET_ENV_MODE,
     value_for_env as _value_for,
 )
-from .voice_page import _index_html
-from .voice_cost_page import _costs_html
+from .voice_page import index_html
+from .voice_cost_page import costs_html
 from .voice_settings import (
     active_provider_id as _active_provider_id,
     provider_model_ids as _provider_model_ids,
     submitted_settings,
 )
 from .voice_costs import (
-    _apply_spend_cap, _apply_pricing_save, _apply_pricing_paste, _sparsify_overrides, _today_iso,
+    apply_spend_cap, apply_pricing_save, apply_pricing_paste, sparsify_overrides, today_iso,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     def _page(state: dict[str, str], selected: str | None = None):
         return partial(
-            _index_html, state, selected=selected,
+            index_html, state, selected=selected,
             discovery=load_cache(cfg["discovery_cache_path"]),
         )
 
@@ -258,7 +258,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _get_costs(handler: BaseHTTPRequestHandler) -> None:
         query = parse_qs(urlsplit(handler.path).query, keep_blank_values=True)
         ctx = begin_request(handler)
-        send_html_response(handler, _costs_html(
+        send_html_response(handler, costs_html(
             _load_merged(cfg), ctx["csrf_token"], status_msg=ctx["flash"],
             selected=query.get("provider", [None])[0],
             discovery=load_cache(cfg["discovery_cache_path"]),
@@ -504,7 +504,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
         current = _load_merged(cfg)
-        new, err = _apply_spend_cap(form, current)
+        new, err = apply_spend_cap(form, current)
         if err is not None:
             send_see_other(handler, _costs_location(form), flash=err)
             return
@@ -537,11 +537,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         discovery = load_cache(cfg["discovery_cache_path"])
         model_ids = _provider_model_ids(provider, discovery.get(provider.id))
         existing = load_pricing_overrides(cfg["pricing_path"])
-        new_models = _apply_pricing_save(form, provider, model_ids, existing)
+        new_models = apply_pricing_save(form, provider, model_ids, existing)
         try:
             if new_models:
                 atomic_write_json(cfg["pricing_path"], {
-                    "as_of": _today_iso(),
+                    "as_of": today_iso(),
                     "source": "edited via /voice",
                     "models": new_models,
                 })
@@ -574,7 +574,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_pricing_import(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
+        models, as_of, err = apply_pricing_paste(form.get("payload") or "")
         if err is not None:
             send_see_other(handler, _costs_location(form), flash=err)
             return
@@ -583,11 +583,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         # Sparsify so the file stays minimal. A full-replace here would
         # silently drop a hand-priced model the chatbot didn't return.
         existing = load_pricing_overrides(cfg["pricing_path"])
-        merged = _sparsify_overrides({**existing, **models})
+        merged = sparsify_overrides({**existing, **models})
         try:
             if merged:
                 atomic_write_json(cfg["pricing_path"], {
-                    "as_of": as_of or _today_iso(),
+                    "as_of": as_of or today_iso(),
                     "source": "imported via /voice",
                     "models": merged,
                 })

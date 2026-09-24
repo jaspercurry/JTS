@@ -101,7 +101,7 @@ def _badge_html(configured: bool) -> str:
 TRANSIT_CSS_HREF = "/assets/transit/transit.css"
 
 
-def _wrap_transit_page(
+def wrap_transit_page(
     title: str,
     body_main: str,
     *,
@@ -903,7 +903,7 @@ def _cities_section_html(
 </form>"""
 
 
-def _index_html(
+def index_html(
     state: dict[str, str],
     csrf_token: str = "",
     *,
@@ -920,7 +920,7 @@ def _index_html(
 <p class="form-hint">Configure travel and transit settings for the speaker.</p>
 {_address_section_html(state, csrf_token)}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page(
+        return wrap_transit_page(
             "Transit", body, status_msg=status_msg, back_href=back_href,
         )
 
@@ -947,7 +947,7 @@ def _index_html(
 {save_form}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page(
+        return wrap_transit_page(
             "Transit", body, status_msg=status_msg, back_href=back_href,
         )
 
@@ -1023,6 +1023,6 @@ def _index_html(
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <button type="submit" class="btn btn--danger">Clear all transit settings</button>
 </form>"""
-    return _wrap_transit_page(
+    return wrap_transit_page(
         "Transit", body, status_msg=status_msg, back_href=back_href,
     )

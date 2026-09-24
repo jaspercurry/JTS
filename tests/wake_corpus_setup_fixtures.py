@@ -305,7 +305,7 @@ def _corpus_post_handler(
     content_length: int | str,
     read_fails: bool = False,
 ):
-    handler_cls = wake_corpus_setup._make_handler_class(object())
+    handler_cls = wake_corpus_setup.make_handler_class(object())
     handler = handler_cls.__new__(handler_cls)
     handler.path = "/api/session"
     handler.headers = Message()
