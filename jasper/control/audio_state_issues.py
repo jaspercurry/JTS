@@ -22,11 +22,11 @@ from ..music_sources import Source
 from ..service_units import CAMILLA_SERVICE, unit_failed
 from ._health_fields import mapping
 from ._health_sources import (
-    SOURCE_OFF_DRIFT_DETAIL,
-    SOURCE_UNAVAILABLE_DETAIL,
-    _SOURCE_HEALTH_UNITS,
+    SOURCE_HEALTH_UNITS,
     SOURCE_LABELS,
-    _SOURCE_OFF_DRIFT_UNITS,
+    SOURCE_OFF_DRIFT_DETAIL,
+    SOURCE_OFF_DRIFT_UNITS,
+    SOURCE_UNAVAILABLE_DETAIL,
 )
 from .audio_incidents import issue_row
 from .audio_signal_path import (
@@ -253,10 +253,10 @@ def _state_issues(
                 title="USB low-latency clock mode unavailable",
                 detail="Playback continues with standard buffering.",
             ))
-    for source_id, health_units in _SOURCE_HEALTH_UNITS.items():
+    for source_id, health_units in SOURCE_HEALTH_UNITS.items():
         desired = mapping(source_intents).get(source_id)
         units = (
-            _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
+            SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
             if desired is False
             else health_units
         )

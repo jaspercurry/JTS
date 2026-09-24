@@ -31,6 +31,7 @@ from ..output_hardware import detected_hardware_adoption_precondition
 from ..output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
 from ..fanin_coupling import RING_SLOT_FRAMES
+from ..music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
@@ -40,7 +41,7 @@ from ._health_fields import (
     finite_number,
     mapping,
 )
-from ._health_sources import _LABEL_TO_SOURCE, SOURCE_LABELS
+from ._health_sources import SOURCE_LABELS
 from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
@@ -155,6 +156,10 @@ STOPPED_DSP_HEADLINE = "Sound processing has stopped"
 # ordinary outputd hiccup is also "positively identified and ready" and must
 # not see this sentence (#2812 B1/B2). Sole writer of this wording.
 UNDECLARED_HARDWARE_HEADLINE = "Detected hardware is ready — finish setup"
+
+_LABEL_TO_SOURCE = {
+    spec.fanin_label: spec.id.value for spec in MUSIC_SOURCE_SPECS
+}
 
 
 def _selected_source(airplay: Mapping[str, Any]) -> str | None:

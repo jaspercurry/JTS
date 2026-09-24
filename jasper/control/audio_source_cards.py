@@ -16,17 +16,25 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
 from ._health_fields import as_int, mapping
 from ._health_sources import (
-    SOURCE_OFF_DRIFT_DETAIL,
-    SOURCE_UNAVAILABLE_DETAIL,
-    _SOURCE_HEALTH_UNITS,
+    SOURCE_HEALTH_UNITS,
     SOURCE_LABELS,
-    _SOURCE_OFF_DRIFT_UNITS,
-    _SOURCE_PRIMARY_UNITS,
+    SOURCE_OFF_DRIFT_DETAIL,
+    SOURCE_OFF_DRIFT_UNITS,
+    SOURCE_UNAVAILABLE_DETAIL,
 )
+
+_SOURCE_PRIMARY_UNITS = {
+    lifecycle.source.value: (
+        lifecycle.intent_unit
+        or (lifecycle.runtime_units[0] if lifecycle.runtime_units else None)
+    )
+    for lifecycle in local_source_lifecycles()
+}
 
 
 def _usb_timing(
@@ -228,7 +236,7 @@ def _source_service_summary(
     if desired is False:
         if any(
             mapping(states.get(unit)).get("active_state") == "active"
-            for unit in _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
+            for unit in SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
         ):
             return (
                 "unavailable",
@@ -238,7 +246,7 @@ def _source_service_summary(
         return "off", "Off", "Turned off in Playback sources."
     if not states:
         return None
-    for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
+    for unit in SOURCE_HEALTH_UNITS.get(source_id, ()):
         if unit_failed(mapping(states.get(unit))):
             return (
                 "unavailable",
