@@ -21,7 +21,6 @@ from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CLIENT_LATENCY_MS,
     DEFAULT_CODEC,
-    is_enabled,
     is_private_or_loopback_ipv4,
     load_config,
     validate_grouping,
@@ -453,40 +452,6 @@ def test_codec_validation_order(tmp_path, role, channel, reported, masked):
     assert cfg.error is not None
     assert reported in cfg.error
     assert masked not in cfg.error
-
-
-# ---------- is_enabled() mirrors load_config().enabled ----------
-
-
-def test_is_enabled_matches_load_config_disabled(tmp_path):
-    path = _write_env(tmp_path, "JASPER_GROUPING=off\n")
-    assert is_enabled(path) == load_config(path).enabled
-    assert is_enabled(path) is False
-
-
-def test_is_enabled_matches_load_config_enabled(tmp_path):
-    path = _write_env(tmp_path, _leader_env())
-    assert is_enabled(path) == load_config(path).enabled
-    assert is_enabled(path) is True
-
-
-def test_is_enabled_true_for_configured_but_invalid(tmp_path):
-    """A configured-but-broken bond is still enabled (the fail-LOUD state);
-    is_enabled() tracks enabled, not validity.
-    """
-    body = (
-        "JASPER_GROUPING=on\n"
-        "JASPER_GROUPING_ROLE=leader\n"
-        "JASPER_GROUPING_CHANNEL=left\n"
-        # no bond id => invalid
-    )
-    path = _write_env(tmp_path, body)
-    assert is_enabled(path) is True
-    assert load_config(path).error is not None
-
-
-def test_is_enabled_absent_file(tmp_path):
-    assert is_enabled(str(tmp_path / "missing.env")) is False
 
 
 def test_validate_grouping_leader_addr_shape_gate():

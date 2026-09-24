@@ -146,15 +146,6 @@ def test_resolve_for_transport_no_clients_returns_none():
     assert asyncio.run(r.resolve_for_transport("X", "Hey Jude")) is None
 
 
-def test_invalidate_cache_clears_decision():
-    jasper = _ac("jasper", title="Hey Jude", is_playing=True)
-    r = Router(clients={"jasper": jasper}, default_name="jasper")
-    asyncio.run(r.resolve_for_transport("Jasper's Mac Studio", "Hey Jude"))
-    r.invalidate_cache()
-    asyncio.run(r.resolve_for_transport("Jasper's Mac Studio", "Hey Jude"))
-    assert jasper.sp.current_playback.call_count == 2  # re-polled after invalidation
-
-
 def test_resolve_for_transport_retries_on_transient_none():
     """First call: current_playback returns None (transient blip).
     Second call: returns real data with matching title. Resolver should

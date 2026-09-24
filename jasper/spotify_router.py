@@ -592,11 +592,6 @@ class Router:
         retry_advised = chosen is None and n_data == 0 and n_none > 0
         return chosen, retry_advised
 
-    def invalidate_cache(self) -> None:
-        """Drop the cached AirPlay→account decision. Call when the
-        AirPlay session ends so the next resolution starts fresh."""
-        self._cache = None
-
     async def active(self, *, airplay_active: bool) -> AccountClient | None:
         """Resolve an account for cold-start commands like
         `spotify_play "Beyoncé"` — i.e. when there's no current track
