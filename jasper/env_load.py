@@ -242,9 +242,7 @@ def merged_env_files(
 
     The base layer resolves through :func:`env_file_path`, so the
     ``JASPER_ENV_FILE`` seam reaches every reader that goes through this
-    function — not readers that open :data:`BASE_ENV_PATH` themselves, nor the
-    separate ``JASPER_SYSTEM_ENV_FILE`` seam in
-    ``wake_corpus/runtime_probe.py``."""
+    function — not readers that open :data:`BASE_ENV_PATH` themselves."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
     for path in files:

@@ -57,7 +57,7 @@ from jasper.mics.xvf3800 import (
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
 from jasper.env_file import read_env_file
-from jasper.env_load import parse_bool_value
+from jasper.env_load import BASE_ENV_PATH, parse_bool_value
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.service_units import AEC_BRIDGE_SERVICE
 from jasper.systemd_probe import unit_query, unit_state
@@ -156,9 +156,7 @@ LEG_LABELS = {
 # The web service is intentionally sandboxed away from
 # /etc/jasper/jasper.env, so operator-driven corpus experiment flags live
 # in /var/lib/jasper like the other wizard-owned env files.
-SYSTEM_ENV_PATH = Path(os.environ.get(
-    "JASPER_SYSTEM_ENV_FILE", "/etc/jasper/jasper.env",
-))
+SYSTEM_ENV_PATH = Path(BASE_ENV_PATH)
 AEC_MODE_PATH = Path(os.environ.get(
     AEC_MODE_FILE_ENV, "/var/lib/jasper/aec_mode.env",
 ))
