@@ -182,7 +182,9 @@ class RunManifest:
                     and take.get("candidate_id") == candidate
                     and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
-        reference = [take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
+        # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
+        reference = [] if self._context["pose"].get("driver") else [
+            take["level"]["loudest_half_second_db_spl"] for take in (same or list(accepted.values()))]
         return {"loudest_half_second_db_spl": observed,
                 "level_reference_db_spl": median(reference) if reference else None, "same_pose": bool(same)}
 

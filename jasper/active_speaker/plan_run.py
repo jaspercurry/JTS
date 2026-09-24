@@ -420,12 +420,10 @@ async def _run(
 
     level_observations: dict[str, TakeVerdict] = {}
 
-    def observe_level(record: Mapping[str, Any], at_driver: bool) -> TakeVerdict:
+    def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
-            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record)
-                                                              | ({"level_reference_db_spl": None} if at_driver else {}))
+            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
         return level_observations[take_id]
 
     admit = admit or default_admit
@@ -558,7 +556,7 @@ async def _run(
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
-                    level_verdict = observe_level(record, at_driver)
+                    level_verdict = observe_level(record)
                     if record_id:
                         try:
                             analysis = await asyncio.to_thread(analyze, record, record_id)
@@ -636,7 +634,7 @@ async def _run(
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
                                           started_s=(take_started if take_started is not None else ended) - started,
-                                          ended_s=ended - started, level_observation=observe_level(record, at_driver).evidence)
+                                          ended_s=ended - started, level_observation=observe_level(record).evidence)
                 break
             finally:
                 if take_started is not None:

@@ -18,7 +18,9 @@ from jasper.audio_measurement.playback import (
     WavPlaybackCancelledBeforeSpawn,
 )
 from jasper.log_event import log_event
-from jasper.platform.route_health import ROUTE_SURFACES, known_counter_deltas, numeric_deltas
+from jasper.platform.route_health import (
+    ROUTE_SURFACES, TAKE_FAULT_COUNTER_PATHS, TAKE_FAULT_COUNTER_SUFFIXES, known_counter_deltas, numeric_deltas,
+)
 from jasper.dsp_apply import _maybe_call
 from jasper.json_fields import finite_float, utc_now_iso
 from .playback_transaction import PlaybackInterrupted
@@ -142,7 +144,8 @@ class WiredStimulusCapture:
             if isinstance(program, ExcitationProgram):
                 answer = replace(answer, program=program.to_dict())
             if path is not None:
-                faults = {key: delta for key, delta in known_counter_deltas(path["deltas"]).items() if delta}
+                faults = {key: delta for key, delta in known_counter_deltas(
+                    path["deltas"], paths=TAKE_FAULT_COUNTER_PATHS, suffixes=TAKE_FAULT_COUNTER_SUFFIXES).items() if delta}
                 log_event(logger, "active_speaker.take_playback_path", level=logging.WARNING if faults else logging.INFO,
                           wav=answer.wav_path, read=",".join(path["read"]), faults=json.dumps(faults, sort_keys=True))
             self._pending.append(answer)

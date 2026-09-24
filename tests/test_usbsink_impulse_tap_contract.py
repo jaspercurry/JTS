@@ -232,7 +232,9 @@ def test_a_take_logs_playback_faults_not_an_idle_usb_lanes_silence():
     deltas = {"fanin.inputs.2.resampler.silence_frames": 4800.0, "fanin.inputs.0.xrun_count": 1.0,
               "outputd.shm_ring.reader_resyncs": 2.0}
 
-    assert {key: delta for key, delta in known_counter_deltas(deltas).items() if delta} == {
+    faults = known_counter_deltas(deltas, paths=TAKE_FAULT_COUNTER_PATHS, suffixes=TAKE_FAULT_COUNTER_SUFFIXES)
+
+    assert {key: delta for key, delta in faults.items() if delta} == {
         "fanin.inputs.0.xrun_count": 1.0, "outputd.shm_ring.reader_resyncs": 2.0}
 
 

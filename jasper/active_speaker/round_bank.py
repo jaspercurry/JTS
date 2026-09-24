@@ -416,6 +416,7 @@ def bank_round(
         statefile_path,
     )
     target.mkdir(parents=True)
+    banked = False
     try:
         shutil.copytree(
             session_dir,
@@ -455,10 +456,11 @@ def bank_round(
             json.dumps(provenance, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    except (OSError, ValueError, KeyError, TypeError):
-        # Never leave a half-assembled round where a reader would find one.
-        shutil.rmtree(target, ignore_errors=True)
-        raise
+        banked = True
+    finally:
+        if not banked:
+            # Never leave a half-assembled round where a reader would find one.
+            shutil.rmtree(target, ignore_errors=True)
     return BankedRound(target, provenance)
 
 

@@ -61,16 +61,17 @@ def played_path_db(config: Mapping[str, Any], freqs_hz: np.ndarray) -> np.ndarra
 
 
 def _sweeps(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-    """The curve's grid, and one row of magnitude per sweep, first sweep first."""
+    """The curve's grid over its sweep's band, and one row of magnitude per
+    sweep, first sweep first; outside its sweep a curve is noise."""
     rows = [curve, *curve.get("repeat_curves", ())]
-    return (np.asarray(curve["freqs_hz"], dtype=float),
-            np.asarray([row["magnitude_db"] for row in rows], dtype=float))
+    freqs = np.asarray(curve["freqs_hz"], dtype=float)
+    swept = (freqs >= curve["band_hz"][0]) & (freqs <= curve["band_hz"][1])
+    return freqs[swept], np.asarray([row["magnitude_db"] for row in rows], dtype=float)[:, swept]
 
 
 def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
             swept_hz: tuple[float, float]) -> np.ndarray:
-    """The sweeps' bins in ``band_hz``; none unless the take swept all of it,
-    since outside its sweep a curve is noise."""
+    """The sweeps' bins in ``band_hz``; none unless the take swept all of it."""
     if not (swept_hz[0] <= band_hz[0] and band_hz[1] <= swept_hz[1]):
         return sweeps[:, :0]
     return sweeps[:, (freqs >= band_hz[0]) & (freqs < band_hz[1])]
@@ -111,13 +112,11 @@ def nearfield_view(
         freqs, sweeps = _sweeps(take["curve"])
         swept = take["curve"]["band_hz"]
         step = _within(freqs, sweeps, STEP_BAND_HZ, swept)
-        # The raw curve keeps only the swept bins, and drops the first sweep, which
-        # can catch an amplifier still waking (#5684).
-        in_sweep = (freqs >= swept[0]) & (freqs <= swept[1])
-        raw_freqs, settled = freqs[in_sweep], (sweeps[1:] if len(sweeps) > 1 else sweeps)[:, in_sweep]
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
-        path_db = None if graph is None or fader_db is None else played_path_db(graph, raw_freqs)
-        raw_rows.append(None if path_db is None else (raw_freqs, settled - fader_db - path_db))
+        path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
+        # The first sweep can catch an amplifier still waking (#5684).
+        raw_rows.append(None if path_db is None else
+                        (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
         row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
                "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
                "max_window_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("max_window_db_spl"),

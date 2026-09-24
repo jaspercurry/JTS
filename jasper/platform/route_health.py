@@ -84,13 +84,10 @@ def numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) -> 
 
 
 def known_counter_deltas(
-    deltas: Mapping[str, float], *,
-    paths: tuple[tuple[str, ...], ...] = TAKE_FAULT_COUNTER_PATHS,
-    suffixes: tuple[tuple[str, ...], ...] = TAKE_FAULT_COUNTER_SUFFIXES,
+    deltas: Mapping[str, float], *, paths: tuple[tuple[str, ...], ...], suffixes: tuple[tuple[str, ...], ...],
 ) -> dict[str, float]:
-    """The health counters among :func:`numeric_deltas`' output, a take's by
-    default: each stable path, zero when it did not move, and every lane
-    counter that moved."""
+    """The named health counters among :func:`numeric_deltas`' output: each
+    stable path, zero when it did not move, and every lane counter that moved."""
     known = {".".join(path): deltas.get(".".join(path), 0.0) for path in paths}
     for key, delta in deltas.items():
         parts = key.split(".")

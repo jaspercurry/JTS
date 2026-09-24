@@ -40,6 +40,7 @@ from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
     gate_exemption, pose_place, resolved_measurement_purpose,
 )
+from ..round_copy import millimetres
 from . import contracts as _contracts
 from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
@@ -571,7 +572,7 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     if prompt.kind == POSE_KIND_CLOSE and prompt.driver:
         return replace(
             prompt,
-            headline=(f"Put the microphone {round(distance * 1000, 1):g} mm from the centre of the "
+            headline=(f"Put the microphone {millimetres(distance)} from the centre of the "
                       f"{measurement_target_name(prompt.driver)}, on its axis."),
             detail="Measured from the dust cap, pointed straight at it.",
         )
