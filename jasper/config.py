@@ -774,9 +774,7 @@ class Config:
             ha_url=_env(_ha_env.ENV_URL, "").strip().rstrip("/"),
             ha_token=_env(_ha_env.ENV_TOKEN, "").strip(),
             ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
-            # Default to verifying. Wizard writes "0" only when the
-            # household explicitly opts into self-signed-cert mode.
-            ha_verify_ssl=env_bool(_ha_env.ENV_VERIFY_SSL, True),
+            ha_verify_ssl=_ha_env.verify_ssl_from_state(os.environ),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_volume_persistence.configured_path(),
