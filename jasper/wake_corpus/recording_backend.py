@@ -71,7 +71,7 @@ from .runtime_probe import (
 from .session_store import METADATA_SCHEMA_VERSION, ClipMetadata
 from . import session_store
 
-logger =logging.getLogger("jasper-wake-corpus-web")
+logger = logging.getLogger("jasper-wake-corpus-web")
 
 
 # ---------------------------------------------------------------------------
