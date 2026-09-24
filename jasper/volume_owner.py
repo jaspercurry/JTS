@@ -178,8 +178,9 @@ class VolumeOwner:
     in production ``CamillaController.set_volume_db`` and ``.get_volume_db``
     bound with ``best_effort=True``, so every write passes
     ``_coerce_main_volume_db``'s clamp and no transport error escapes into the
-    arbitration. Injection rather than a controller import keeps the owner out
-    of ``jasper.camilla``'s import graph.
+    arbitration. Injection rather than a controller import keeps
+    ``jasper.camilla`` out of this module's imports, so camilla can import it
+    without a cycle.
 
     There is no tolerance knob: ``READBACK_TOLERANCE_DB`` is the repo's one
     confirm tolerance.
