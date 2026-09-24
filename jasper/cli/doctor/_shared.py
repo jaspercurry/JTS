@@ -43,14 +43,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
 )
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
-from ...service_units import (
-    AEC_BRIDGE_SERVICE,
-    JASPER_VOICE_SERVICE,
-    LIBRESPOT_SERVICE,
-    SHAIRPORT_SYNC_SERVICE,
-    unit_not_running,
-)
-from ...source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from ...service_units import unit_not_running
 
 GREEN = "\033[32m"
 
@@ -63,19 +56,6 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 
 RESET = "\033[0m"
-
-_CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
-    "runtime_profile",
-    "mic_detected",
-    "runtime_env",
-    "service_state",
-    "dac_reference",
-    "wake_legs",
-    "outputd_reference_health",
-    "bridge_counter_window",
-    "chip_profile_readback",
-    "chip_convergence",
-})
 
 EXCEPTION_DETAIL_LIMIT = 240
 
@@ -323,72 +303,6 @@ def _parked_follower_result(label: str) -> CheckResult | None:
         "parked (bonded follower) — the dumb-follower profile stops this "
         "while paired; the pair leader owns playback + the mic",
         reason=REASON_PARKED_BONDED_FOLLOWER,
-    )
-
-
-# NO audio-path unit: `service_state_failure` (jasper-fanin, jasper-camilla)
-# and resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
-# record and all) own their runtime state, so one down unit is one fail row.
-_RUNTIME_STATE_UNITS = (
-    "nginx.service",
-    JASPER_VOICE_SERVICE,
-    AEC_BRIDGE_SERVICE,
-    "jasper-control.service",
-    "jasper-input.service",
-    # A .path unit fails on a bad spec; resilience.check_required_units_active
-    # defers every non-`inactive` state to this row, so both must track it.
-    "jasper-accessory-reconcile.path",
-    "jasper-mux.service",
-    "nqptp.service",
-    SHAIRPORT_SYNC_SERVICE,
-    LIBRESPOT_SERVICE,
-    "bluealsa.service",
-    "bluealsa-aplay.service",
-    "bt-agent.service",
-    # A failed coupling-reconcile pass parks the unit in `failed` with the
-    # evidence only in `systemctl --failed` + the journal; tracking it here
-    # makes that doctor-visible.
-    "jasper-fanin-coupling-auto.service",
-    # Same reasoning (#2802 item 3): a dead grouping or source-intent
-    # reconciler was doctor-invisible except indirectly, via USB combo
-    # consistency.
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
-)
-
-# A oneshot normally stays `activating` during its pass; its unit timeout
-# moves a stalled pass to `failed`.
-_ONESHOT_RUNTIME_STATE_UNITS = frozenset({
-    "jasper-fanin-coupling-auto.service",
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
-})
-
-def _loopback_playback_active() -> bool:
-    """True if any renderer is currently writing the music-chain loopback.
-
-    Reads `/proc/asound/Loopback/pcm0p/sub*/status`: an open subdevice prints
-    `state: …\\nowner_pid: …`, a closed one the single word `closed`. Only
-    input lanes 0..4 count as "music active" — substream 7 is jasper-fanin's
-    own summed output and may be open while every renderer is idle.
-
-    Gates the AEC bridge FAIL: ref-silent windows only diagnose a broken
-    reference chain while music is actually routed through the loopback.
-
-    Blind spot — False means "no snd-aloop renderer lane is open", NOT
-    "nothing is playing": USB Audio Input is DIRECT-captured by jasper-fanin
-    from hw:UAC2Gadget. A caller needing true output silence must consult
-    that too.
-
-    """
-    from ._evidence import evidence  # lazy: _evidence imports _shared
-
-    def first_line(text: str) -> str:
-        return text.splitlines()[0].strip() if text else ""
-
-    return any(
-        index <= 4 and first_line(status) not in ("", "closed")
-        for index, status in evidence.loopback_substreams().items()
     )
 
 

@@ -59,8 +59,6 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _CHIP_AEC_PASSIVE_REQUIRED_CHECKS,
-    _loopback_playback_active,
     _parked_follower_result,
     run,
 )
@@ -484,6 +482,19 @@ def _assess_audio_validation_summary(
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
         reason=REASON_VALIDATION_ADVISORY,
     )
+
+_CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
+    "runtime_profile",
+    "mic_detected",
+    "runtime_env",
+    "service_state",
+    "dac_reference",
+    "wake_legs",
+    "outputd_reference_health",
+    "bridge_counter_window",
+    "chip_profile_readback",
+    "chip_convergence",
+})
 
 def _chip_aec_passive_evidence_pair(
     summary: dict[str, object],
@@ -1217,6 +1228,31 @@ def _assess_aec_bridge_output(
         "AEC bridge output", "ok", summary,
         reason=(REASON_BRIDGE_OUTPUT_HEALTHY_WORK if healthy_windows
                 else REASON_BRIDGE_OUTPUT_ATTENUATION_UNPROVEN),
+    )
+
+def _loopback_playback_active() -> bool:
+    """True if any renderer is currently writing the music-chain loopback.
+
+    Reads `/proc/asound/Loopback/pcm0p/sub*/status`: an open subdevice prints
+    `state: …\\nowner_pid: …`, a closed one the single word `closed`. Only
+    input lanes 0..4 count as "music active" — substream 7 is jasper-fanin's
+    own summed output and may be open while every renderer is idle.
+
+    Gates the AEC bridge FAIL: ref-silent windows only diagnose a broken
+    reference chain while music is actually routed through the loopback.
+
+    Blind spot — False means "no snd-aloop renderer lane is open", NOT
+    "nothing is playing": USB Audio Input is DIRECT-captured by jasper-fanin
+    from hw:UAC2Gadget. A caller needing true output silence must consult
+    that too.
+
+    """
+    def first_line(text: str) -> str:
+        return text.splitlines()[0].strip() if text else ""
+
+    return any(
+        index <= 4 and first_line(status) not in ("", "closed")
+        for index, status in evidence.loopback_substreams().items()
     )
 
 @doctor_check(exclusive_group="audio-probe")

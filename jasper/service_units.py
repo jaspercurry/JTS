@@ -150,7 +150,7 @@ def unit_unstable(record: Mapping[str, Any] | None) -> bool:
     ``active_state`` ``activating``/``deactivating`` is a Type=oneshot unit's
     NORMAL in-flight state, not instability — a caller tracking oneshots must
     exclude those itself (see
-    ``jasper.cli.doctor._shared._ONESHOT_RUNTIME_STATE_UNITS``); on a
+    ``jasper.cli.doctor.resilience._ONESHOT_RUNTIME_STATE_UNITS``); on a
     long-running daemon it signals a stuck start/stop.
     """
     if not record:

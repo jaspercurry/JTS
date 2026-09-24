@@ -134,7 +134,7 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
 
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
-    assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
+    assert "jasper-fanin-coupling-auto.service" in resilience._RUNTIME_STATE_UNITS
 
 
 def test_runtime_state_units_are_queryable_on_the_doctor_roster():
@@ -142,7 +142,7 @@ def test_runtime_state_units_are_queryable_on_the_doctor_roster():
     `service_units.DOCTOR_UNIT_ROSTER`, so a unit in `_RUNTIME_STATE_UNITS`
     but missing from the roster never appears in the batch and this check
     silently no-ops on it (the bug that motivated tracking these two)."""
-    for unit in _shared._RUNTIME_STATE_UNITS:
+    for unit in resilience._RUNTIME_STATE_UNITS:
         assert unit in service_units.DOCTOR_UNIT_ROSTER, unit
 
 
@@ -168,7 +168,7 @@ def test_every_required_unit_has_an_owner_for_its_failed_state():
     services to check_service_runtime_state, the wizard sockets to
     web.check_wizard_socket_start_limits. A required unit neither of those
     reads falls through every row when it fails."""
-    owned = set(_shared._RUNTIME_STATE_UNITS) | {
+    owned = set(resilience._RUNTIME_STATE_UNITS) | {
         f"{unit}.socket" for unit in web.WIZARD_UNITS
     }
     assert set(resilience._REQUIRED_ACTIVE_UNITS) <= owned
@@ -862,7 +862,7 @@ def test_a_failed_outputd_is_exactly_one_fail_row(tmp_path, monkeypatch):
     generic = resilience.check_service_runtime_state()
     assert park.status == "fail"
     assert generic.status == "ok"
-    assert "jasper-outputd.service" not in _shared._RUNTIME_STATE_UNITS
+    assert "jasper-outputd.service" not in resilience._RUNTIME_STATE_UNITS
 
 
 @pytest.mark.parametrize(

@@ -553,7 +553,7 @@ oom_killed_comms() {
 # during an update is a real incident (See ADR-0174). Build steps run in a
 # transient ssh scope, not these units, so a build-tool OOM never matches.
 # This is the laptop-side analog of the on-Pi production-daemon set in
-# jasper/cli/doctor/_shared.py (`_RUNTIME_STATE_UNITS`); they can't share
+# jasper/cli/doctor/resilience.py (`_RUNTIME_STATE_UNITS`); they can't share
 # (bash vs Python, laptop vs Pi). The `jasper-*` glob absorbs new jasper
 # daemons; only the non-jasper tail (nginx/shairport/librespot/…) is a
 # hand-maintained list that could drift — keep it in sync if that set grows.
