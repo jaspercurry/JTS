@@ -57,19 +57,26 @@ DIM = "\033[2m"
 
 RESET = "\033[0m"
 
-EXCEPTION_DETAIL_LIMIT = 240
+_EXCEPTION_DETAIL_LIMIT = 240
 
-def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
-    """Redact + cap an exception's message for a doctor row.
+def redacted_detail(text: str, *, literals: Iterable[str] = ()) -> str:
+    """Redact + cap foreign text (an exception message, a child's output)
+    for a doctor row.
 
     ``literals`` are secret values the caller holds (e.g. a probed
-    credential) that may appear in the exception text in a shape
+    credential) that may appear in the text in a shape
     ``redact_secrets``'s patterns don't recognise; empty values are
     skipped by ``redact_secrets`` itself.
     """
-    message = redact_secrets(str(exc), literals=literals)
-    if len(message) > EXCEPTION_DETAIL_LIMIT:
-        message = message[: EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    text = redact_secrets(text, literals=literals)
+    if len(text) > _EXCEPTION_DETAIL_LIMIT:
+        text = text[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    return text
+
+
+def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
+    """:func:`redacted_detail` of an exception's message, led by its type."""
+    message = redacted_detail(str(exc), literals=literals)
     if not message:
         return type(exc).__name__
     return f"{type(exc).__name__}: {message}"

@@ -12,7 +12,6 @@ from pathlib import Path
 from ...bus import parse_bus_stops
 from ...config import Config
 from ...env_load import parse_bool_value
-from ...secret_redaction import redact_secrets
 from ...transit import enabled_pack_ids
 from ...transit._mta_stations import stations_by_id
 from ...voice.catalog import (
@@ -27,10 +26,10 @@ from ...voice.provider_state import (
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    EXCEPTION_DETAIL_LIMIT,
     CheckResult,
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     exception_detail,
+    redacted_detail,
     run,
 )
 
@@ -325,11 +324,7 @@ def check_provider_importable() -> CheckResult:
         # The child died before it could report (import-time crash, signal).
         crash = (proc.stderr or "").strip().splitlines()
         failure = crash[-1] if crash else "unknown import failure"
-    # Arbitrary text from a child's traceback goes through the doctor's
-    # redaction + length policy, not straight into the report.
-    failure = redact_secrets(failure)
-    if len(failure) > EXCEPTION_DETAIL_LIMIT:
-        failure = failure[:EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    failure = redacted_detail(failure)
     return CheckResult(
         "voice provider imports", "fail",
         f"{state.provider} is the active provider but its code will not "
