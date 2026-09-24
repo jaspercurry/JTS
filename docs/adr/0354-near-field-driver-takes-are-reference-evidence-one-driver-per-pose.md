@@ -56,6 +56,10 @@ what was missing was a take naming the one target it plays.
   re-applied after the fact, relaxed or tightened, to see where the room
   enters. A near-field view reads each take's own sweep for that: a
   three-sweep program deconvolved whole misreads the bass by over 10 dB.
+- `jasper-round-views nearfield` reads a round's kept takes band by band: the
+  first sweep against the two after it (an amplifier waking late), the SNR of
+  the last two, and each driver's level step between distances against a rigid
+  piston of the declared cone, within 0.4 dB.
 - Preflight refuses a plan naming a driver the speaker does not declare.
 - The bundled rows (`nearfield/woofer`, `nearfield/rear`, `nearfield/cardioid`)
   take each driver at 15, 30 and 15 mm again, so the second 15 mm take is a

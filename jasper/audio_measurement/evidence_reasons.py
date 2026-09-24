@@ -45,6 +45,7 @@ REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
 REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
+REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
 REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
@@ -97,6 +98,7 @@ EVIDENCE_REASONS = MappingProxyType({
     REFUSE_GATE_NOT_POSITIVE: "The requested close-reference gate is not finite and positive.",
     REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
     REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
+    REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
     REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
     REFUSE_RATE_MISMATCH: "The close and far captures have different sample rates.",
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
