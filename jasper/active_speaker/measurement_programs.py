@@ -234,8 +234,10 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
     or a custom layout's ``nearfield/custom``)."""
-    name = str(run_program or "").partition("/")[0]
-    return name if not name or name in PURPOSES else program(name).purpose
+    name, _, size = str(run_program or "").partition("/")
+    if not name or name in PURPOSES:
+        return name
+    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
