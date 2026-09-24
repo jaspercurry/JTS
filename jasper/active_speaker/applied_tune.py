@@ -16,7 +16,7 @@ from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
-from . import baseline_profile, baseline_record, candidate_bank, commissioning_experiment, measurement_emit, runtime_contract
+from . import baseline_profile, baseline_record, candidate_bank, measurement_emit, runtime_contract
 from . import design_draft as design_drafts
 from ._common import issue as _issue
 from .crossover_declaration import assert_crossover_honours_declared_floor
@@ -152,8 +152,10 @@ def compile_commissioning_profile(
             banked = (find_candidate(fingerprint) if find_candidate is not None
                       else candidate_bank.load_applied_candidate(fingerprint, applied_profile=applied))
         else:
+            from .commissioning_experiment import commissioning_candidate  # lazy: import cost (the program analysis)
+
             banked = candidate_bank.bank_candidate(
-                commissioning_experiment.commissioning_candidate(topology, draft), find_candidate=find_candidate)
+                commissioning_candidate(topology, draft), find_candidate=find_candidate)
         candidate = banked.candidate
         preference_filters, trim_db = sound_settings.saved_sound_layers()
         text = measurement_emit.compile_tuning_graph(declaration, candidate=candidate,

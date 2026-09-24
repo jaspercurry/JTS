@@ -16,6 +16,7 @@ import numpy as np
 from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER, TRUST_UNAVAILABLE
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
@@ -588,26 +589,6 @@ class DriftEstimate:
     discontinuity_samples: float | str = 0.0
     discontinuity_after_segment: str = ""
     discontinuity_resolvable: bool = False
-
-
-@dataclass(frozen=True)
-class RecordedImpulse:
-    """The measured impulse one response was read from.
-
-    ``samples[origin_index]`` is the scheduled start of the sweep's segment.
-    Every impulse of one recording shares that schedule, so
-    ``(index - origin_index - clock_shift_samples) / sample_rate_hz`` is one
-    time axis across a take's roles and repeats; across recordings the origin
-    is each take's own anchor, so only a relative time compares. Raw
-    deconvolution: no microphone correction and no configured-path composition.
-    """
-
-    samples: np.ndarray
-    sample_rate_hz: int
-    origin_index: int
-    peak_index: int
-    segment_id: str
-    clock_shift_samples: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -124,7 +124,6 @@ def recorded_impulse(
         samples=samples,
         sample_rate_hz=int(sample_rate),
         origin_index=int(origin_index),
-        peak_index=int(np.argmax(np.abs(samples))),
         segment_id=segment.segment_id,
         clock_shift_samples=float(clock_shift_samples),
     )

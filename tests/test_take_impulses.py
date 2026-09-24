@@ -17,6 +17,7 @@ import pytest
 from jasper.active_speaker.crossover_v2.capture_prediction import read_diagnostic
 from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused, select_capture
+from jasper.active_speaker.crossover_v2.take_reading import read_take
 from jasper.active_speaker.crossover_v2.take_impulses import (
     IMPULSES_KIND, TakeImpulsesUnreadable, analysis_impulses, impulse_for, take_impulses,
     write_take_impulses,
@@ -36,7 +37,7 @@ from tests.test_crossover_v2_round_captures import PEAK_IDX, _bank_canonical, _w
 
 
 def _arrival(impulse: RecordedImpulse) -> float:
-    return impulse.peak_index - impulse.origin_index - impulse.clock_shift_samples
+    return int(np.argmax(np.abs(impulse.samples))) - impulse.origin_index - impulse.clock_shift_samples
 
 
 def test_every_sweep_keeps_its_impulse_on_the_recordings_one_clock():
@@ -95,7 +96,7 @@ def bank_kept_impulse_take(
     program = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     impulse = RecordedImpulse(
         np.asarray(samples, dtype=np.float32), 48000, origin_index=origin_index,
-        peak_index=int(np.argmax(np.abs(samples))), segment_id="sweep_verify",
+        segment_id="sweep_verify",
         clock_shift_samples=clock_shift_samples,
     )
     doc = bank_executor_take(root, monkeypatch, program=program, analysis_fields={
@@ -111,8 +112,7 @@ def test_a_banked_take_keeps_its_impulses_beside_the_recording(tmp_path, monkeyp
 
     read = impulse_for(take_impulses(bundle, doc), "summed")
     np.testing.assert_array_equal(read.samples, samples)
-    assert (read.origin_index, read.peak_index, read.clock_shift_samples, read.segment_id) == (
-        100, int(np.argmax(np.abs(samples))), 0.25, "sweep_verify")
+    assert (read.origin_index, read.clock_shift_samples, read.segment_id) == (100, 0.25, "sweep_verify")
     entry, = (row for row in read_artifact_manifest(bundle)["artifacts"] if row["path"] == doc["impulses"]["path"])
     assert (entry["kind"], entry["sha256"], entry["dependencies"]) == (
         IMPULSES_KIND, doc["impulses"]["sha256"], [doc["wav_path"]])
@@ -130,7 +130,7 @@ def _response(role: str, peak: int) -> SimpleNamespace:
     samples = np.zeros(4800, dtype=np.float32)
     samples[peak] = 1.0
     return SimpleNamespace(role=role, repeat_index=None, repeat_responses=(), impulse=RecordedImpulse(
-        samples, 48000, origin_index=240, peak_index=peak, segment_id=f"sweep_{role[0]}"))
+        samples, 48000, origin_index=240, segment_id=f"sweep_{role[0]}"))
 
 
 def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
@@ -154,6 +154,9 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
     summed = select_capture(round_dir, capture_id=doc["take_id"], role="summed")
     assert "impulse_source" not in summed.preprocessing
     assert abs(summed.peak_idx - PEAK_IDX) <= 1
+    # A take view reads that rebuilt sum over the span a kept impulse holds.
+    rebuilt = read_take(round_dir, take_id=doc["take_id"], role="summed").capture
+    assert rebuilt.ir.size <= round((DECONV_PRE_GUARD_S + DEFAULT_VERIFY_TAIL_S) * 48000) + 1 < summed.ir.size
     with pytest.raises(RoundCapturesRefused) as refused:
         select_capture(round_dir, capture_id=doc["take_id"], role="mid")
     assert (refused.value.reason, refused.value.detail["roles"]) == (
@@ -163,4 +166,4 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
     # The rebuilt sum stands off the take's recording clock, so the forecast refuses it by name.
     with pytest.raises(RoundCapturesRefused) as unclocked:
         read_diagnostic(round_dir, doc["take_id"], 5.0)
-    assert (unclocked.value.reason, unclocked.value.detail["roles"]) == ("round_branch_diagnostic_missing", ["summed"])
+    assert (unclocked.value.reason, unclocked.value.detail["role"]) == ("round_branch_diagnostic_missing", "summed")

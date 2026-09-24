@@ -22,7 +22,7 @@ import numpy as np
 
 from jasper.atomic_io import atomic_write_bytes
 from jasper.audio_measurement.bundles import record_artifact
-from jasper.audio_measurement.program_analysis import RecordedImpulse
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.json_fields import sha256_file
 
 from ..bundles import BUNDLE_FILE_MODE
@@ -122,7 +122,7 @@ def take_impulses(bundle_dir: Path, document: Mapping[str, Any]) -> tuple[TakeIm
 def _read_impulse(row: Mapping[str, Any], samples: np.ndarray) -> TakeImpulse:
     return TakeImpulse(str(row["role"]), int(row["repeat_index"]), RecordedImpulse(
         samples=samples, sample_rate_hz=int(row["sample_rate_hz"]), origin_index=int(row["origin_index"]),
-        peak_index=int(np.argmax(np.abs(samples))), segment_id=str(row["segment_id"]),
+        segment_id=str(row["segment_id"]),
         clock_shift_samples=float(row["clock_shift_samples"]),
     ))
 

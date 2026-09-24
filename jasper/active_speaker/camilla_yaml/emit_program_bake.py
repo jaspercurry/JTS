@@ -13,7 +13,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
 )
-from jasper.multiroom.reconcile_plan import SNAPFIFO
+from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 

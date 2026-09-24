@@ -355,8 +355,9 @@ def persist_conductor_state(
         failure_detail=failure_detail,
     )
     session_id = built.state["session_id"]
-    # Read BEFORE the write: this is the grade the household is currently looking at.
-    prior_grade = post_apply_grade(prior, applied_profile=load_applied_baseline_profile_state())
+    applied_profile = load_applied_baseline_profile_state()
+    # Graded BEFORE the write: this is the grade the household is currently looking at.
+    prior_grade = post_apply_grade(prior, applied_profile=applied_profile)
     prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
     from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
@@ -377,7 +378,7 @@ def persist_conductor_state(
                 )
     from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
-    grade = post_apply_grade(load_v2_state(), applied_profile=load_applied_baseline_profile_state())
+    grade = post_apply_grade(built.state, applied_profile=applied_profile)
     was_done = crossover_v2_phase(
         prior, review_declined=review_declined(prior),
     ) == PHASE_DONE

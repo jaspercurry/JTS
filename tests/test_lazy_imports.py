@@ -781,6 +781,16 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
             ),
             id="jasper-voice",
         ),
+        # The Sound page's /state and the correction wizard's measurements page
+        # read stored tuning records; the program analysis is scipy.
+        pytest.param(
+            "jasper.active_speaker.applied_tune",
+            ("scipy", "jasper.audio_measurement.program_analysis"), id="sound-state",
+        ),
+        pytest.param(
+            "jasper.active_speaker.measurement_document",
+            ("scipy", "jasper.audio_measurement.program_analysis"), id="measurements-page",
+        ),
     ],
 )
 def test_resident_daemon_import_leaves_oneshot_subsystems_out(

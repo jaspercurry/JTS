@@ -24,10 +24,7 @@ from jasper.output_topology import measurement_target_id
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
-from .round_captures import (
-    REFUSE_BRANCH_DIAGNOSTIC_MISSING, PoseCapture, RoundCapturesRefused, capture_fingerprint, capture_row,
-    select_capture_roles,
-)
+from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 
 DEFAULT_BRANCHES = ("woofer", "tweeter")
 
@@ -62,11 +59,8 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
         raise ForwardModelError("window_ms must be positive and finite", detail={"field": "window_ms", "capture_id": capture_id})
     if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
         raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
-    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"), omitted=omitted)
-    # A per-driver take's summed read is rebuilt from the whole program, off the take's recording clock.
-    unclocked = sorted(role for role, capture in captures.items() if "pre_guard_samples" not in capture.preprocessing)
-    if unclocked:
-        raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"capture": capture_id, "roles": unclocked})
+    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"),
+                                    omitted=omitted, clocked=True)
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())

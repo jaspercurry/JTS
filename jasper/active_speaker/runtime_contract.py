@@ -40,7 +40,7 @@ from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, valid
 from jasper.camilla_config_contract import playback_is_pipe
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
 from jasper.log_event import log_event
-from jasper.multiroom.reconcile_plan import SNAPFIFO
+from jasper.multiroom.snapfifo import SNAPFIFO
 
 from jasper.output_topology import (
     OutputTopology,

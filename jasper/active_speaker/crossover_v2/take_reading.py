@@ -10,7 +10,7 @@ caller may name another.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,8 @@ from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
 from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S
+from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S
 from jasper.audio_measurement.program_analysis.response import polarity_label
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
@@ -82,7 +84,16 @@ class TakeRead:
 
 
 def read_take(round_dir: Path, *, take_id: str, role: str) -> TakeRead:
-    return TakeRead(select_capture(Path(round_dir), capture_id=take_id, role=role), role)
+    """One role of one take. An impulse rebuilt from the whole program is read
+    over about the span a kept one holds, the deconvolution pre-guard before
+    its peak and the verify tail after it, so the two read alike."""
+    capture = select_capture(Path(round_dir), capture_id=take_id, role=role)
+    if "pre_guard_samples" not in capture.preprocessing:
+        rate, peak = capture.sample_rate, capture.peak_idx
+        start = max(0, peak - round(DECONV_PRE_GUARD_S * rate))
+        capture = replace(capture, ir=capture.ir[start:peak + round(DEFAULT_VERIFY_TAIL_S * rate) + 1],
+                          peak_idx=peak - start)
+    return TakeRead(capture, role)
 
 
 def _numbers(values: np.ndarray, digits: int) -> list[float | None]:

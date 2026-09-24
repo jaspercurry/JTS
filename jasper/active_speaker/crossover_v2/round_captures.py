@@ -32,7 +32,7 @@ from .record_index import measurement_documents, played_graph_fingerprint
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
 )
-from .take_impulses import IMPULSES_KEY, impulse_for, take_impulses
+from .take_impulses import IMPULSES_KEY, TakeImpulse, TakeImpulsesUnreadable, impulse_for, take_impulses
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -291,6 +291,7 @@ def _refused(fault: RoundCapturesRefused, skipped: list[_Omission]) -> RoundCapt
 
 def _discover_captures(
     round_dir: Path, *, select: Callable[[Mapping[str, Any]], bool] | None, roles: tuple[str, ...],
+    clocked: bool = False,
 ) -> tuple[tuple[PoseCapture, ...], list[_Omission]]:
     round_dir, documents = _capture_documents(Path(round_dir))
     manifest: Mapping[str, Any] | None = None
@@ -316,7 +317,8 @@ def _discover_captures(
                 manifest_path = artifact_dir / RUN_MANIFEST_FILENAME if artifact_dir else None
                 manifest = _capture_document(manifest_path) if manifest_path and manifest_path.is_file() else {}
             try:
-                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, manifest, program_audio)
+                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, manifest, program_audio,
+                                         clocked=clocked)
                 continue
             except RoundCapturesRefused as exc:
                 fault = exc
@@ -330,6 +332,7 @@ def _discover_captures(
 def _bind_record(
     sidecar: Path, wav: Path, doc: Mapping[str, Any], roles: tuple[str, ...], root: Path,
     programs: Mapping[str, Path], manifest: Mapping[str, Any] | None, program_audio: dict[str, tuple[np.ndarray, int]],
+    *, clocked: bool,
 ) -> list[PoseCapture]:
     """One record's capture per role, or the refusal that keeps it out."""
     if not wav.is_file():
@@ -377,8 +380,13 @@ def _bind_record(
                 ),
             },
         )
-    responses = [_capture_response(doc, role, wav, program, program_audio, root=root, manifest=manifest)
-                 for role in roles]
+    try:
+        kept = take_impulses(root, doc) if isinstance(doc.get(IMPULSES_KEY), Mapping) else None
+    except TakeImpulsesUnreadable as exc:
+        raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
+    curves = {role: _role_curve(doc, manifest, role) for role in roles}
+    responses = [_capture_response(doc, role, wav, program, program_audio, kept=kept, curve=curves[role],
+                                   clocked=clocked) for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
     return [
         PoseCapture(
@@ -402,7 +410,7 @@ def _bind_record(
             preprocessing=preprocessing,
             record_path=sidecar,
             record_document=doc,
-            curve=_role_curve(doc, manifest, role),
+            curve=curves[role],
         )
         for role, (ir, rate, retained_band, preprocessing) in zip(roles, responses, strict=True)
     ]
@@ -423,20 +431,20 @@ def _role_band(curve: Mapping[str, Any]) -> tuple[float, float] | None:
 
 def _capture_response(
     doc: Mapping[str, Any], role: str, wav: Path, program: Path | None,
-    program_audio: dict[str, tuple[np.ndarray, int]], *, root: Path,
-    manifest: Mapping[str, Any] | None,
+    program_audio: dict[str, tuple[np.ndarray, int]], *, kept: tuple[TakeImpulse, ...] | None,
+    curve: Mapping[str, Any], clocked: bool,
 ) -> tuple[np.ndarray, int, tuple[float, float] | None, dict[str, Any]]:
     """One role's impulse: the one the take kept, else rebuilt from the recording.
 
-    A per-driver take keeps no summed impulse; its summed read is still the
-    recording deconvolved against the whole program.
+    A per-driver take keeps no summed impulse; its summed read is the recording
+    deconvolved against the whole program, off the take's recording clock.
+    ``clocked`` refuses that read before it is made.
     """
     try:
-        if isinstance(doc.get(IMPULSES_KEY), Mapping):
-            kept = take_impulses(root, doc)
+        if kept is not None:
             stored = impulse_for(kept, role)
             if stored is not None:
-                return stored.samples, stored.sample_rate_hz, _role_band(_role_curve(doc, manifest, role)), {
+                return stored.samples, stored.sample_rate_hz, _role_band(curve), {
                     "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
                     "pre_guard_samples": stored.origin_index,
                     "clock_shift_samples": stored.clock_shift_samples,
@@ -469,7 +477,7 @@ def _capture_response(
             ir = np.asarray(retained["impulse"], dtype=np.float64)
             band = tuple(retained["band_hz"])
         else:
-            if role != "summed":
+            if role != "summed" or clocked:
                 raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
             signal, rate = read_wav_mono(wav)
         if retained is None:
@@ -521,9 +529,13 @@ def select_capture(
 
 def select_capture_roles(
     round_dir: Path, *, capture_id: str | None, roles: tuple[str, ...],
-    omitted: list[dict[str, str]] | None = None,
+    omitted: list[dict[str, str]] | None = None, clocked: bool = False,
 ) -> dict[str, PoseCapture]:
-    """Read selected roles from one record and one set of verified audio bytes."""
+    """Read selected roles from one record and one set of verified audio bytes.
+
+    ``clocked`` refuses a role the take would rebuild rather than kept, so
+    every role read shares the take's recording clock.
+    """
     root = Path(round_dir)
     if not root.is_dir():
         raise RoundCapturesRefused(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"round_dir": str(root)})
@@ -540,7 +552,7 @@ def select_capture_roles(
                 or Path(str(doc.get("wav_path") or "")).stem == capture_id
             )
 
-        found, skipped = _discover_captures(root, select=wanted, roles=roles)
+        found, skipped = _discover_captures(root, select=wanted, roles=roles, clocked=clocked)
         chosen = tuple(
             capture
             for capture in found
@@ -564,7 +576,7 @@ def select_capture_roles(
             # same answer the decoded ``None`` gave.
             return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
 
-        found, skipped = _discover_captures(root, select=on_axis_doc, roles=roles)
+        found, skipped = _discover_captures(root, select=on_axis_doc, roles=roles, clocked=clocked)
         if not found:
             raise RoundCapturesRefused(
                 REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
