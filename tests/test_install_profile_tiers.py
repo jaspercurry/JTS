@@ -178,7 +178,6 @@ def _plan_steps(profile: str) -> list[str]:
 def test_python_normalize_maps_legacy_tokens_to_streambox():
     from jasper.install_profile import (
         VALID_INSTALL_PROFILES,
-        install_profile_allows_voice_brain,
         is_streambox_install_profile,
         normalize_install_profile,
     )
@@ -192,9 +191,6 @@ def test_python_normalize_maps_legacy_tokens_to_streambox():
     assert normalize_install_profile(None) == "full"
 
     assert is_streambox_install_profile("satellite")
-    assert install_profile_allows_voice_brain("endpoint")
-    assert install_profile_allows_voice_brain("streambox")
-    assert install_profile_allows_voice_brain("full")
 
     with pytest.raises(ValueError, match="invalid install profile"):
         normalize_install_profile("bogus")
@@ -206,28 +202,6 @@ def test_legacy_aliases_never_raise():
     # The whole point of the alias: a field box must never fail closed.
     for token in ("endpoint", "satellite"):
         assert normalize_install_profile(token) == "streambox"
-
-
-def test_system_capabilities_map_per_profile():
-    # The install-time page bake derives the boolean caps from the
-    # normalized role.
-    from jasper.install_profile import system_capabilities_for_profile as caps
-
-    full = caps("full")
-    streambox = caps("streambox")
-    # Both tiers hold the voice brain now; only full has developer tools.
-    assert full["voice_brain"] is True and full["developer_tools"] is True
-    assert streambox["voice_brain"] is True
-    assert streambox["developer_tools"] is False
-
-    # A legacy token passed DIRECTLY is echoed in install_profile while role +
-    # booleans normalize to streambox. (In production read_install_profile
-    # normalizes first, so /system and the baked page show streambox; this
-    # pins the function's pass-through contract, not the live field value.)
-    legacy = caps("endpoint")
-    assert legacy["install_profile"] == "endpoint"
-    assert legacy["role"] == "streambox"
-    assert legacy["voice_brain"] is True and legacy["developer_tools"] is False
 
 
 def test_bash_normalize_maps_legacy_tokens_to_streambox():

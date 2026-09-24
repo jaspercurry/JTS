@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 # Each route names its handler method and the Capability an install profile
 # must grant to be served it (None: every profile). The mic/AEC routes ride
-# WAKE_DETECTION, not ASSISTANT (ADR-0217).
+# WAKE_DETECTION (ADR-0217).
 _GET_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/healthz": ("_get_healthz", None),
     "/volume": ("_get_volume", None),
@@ -119,9 +119,9 @@ _POST_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/transport/next": ("_post_transport", None),
     "/transport/previous": ("_post_transport", None),
     "/source/select": ("_post_source_select", None),
-    "/session/start": ("_post_session", Capability.ASSISTANT),
-    "/session/end": ("_post_session", Capability.ASSISTANT),
-    "/cue/play": ("_post_cue_play", Capability.ASSISTANT),
+    "/session/start": ("_post_session", None),
+    "/session/end": ("_post_session", None),
+    "/cue/play": ("_post_cue_play", None),
     "/mic/mute": ("_post_mic_mute", Capability.WAKE_DETECTION),
     "/aec/leg": ("_post_aec_leg", Capability.WAKE_DETECTION),
     "/aec/profile": ("_post_aec_profile", Capability.WAKE_DETECTION),
@@ -139,7 +139,7 @@ _POST_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/system/usb-latency": ("_post_system_usb_latency", None),
     "/measurement/hold": ("_post_measurement_hold", None),
     "/measurement/release": ("_post_measurement_release", None),
-    "/system/restart/voice": ("_post_system_action", Capability.ASSISTANT),
+    "/system/restart/voice": ("_post_system_action", None),
     "/system/restart/audio": ("_post_system_action", None),
     "/system/reboot": ("_post_system_action", None),
     "/system/poweroff": ("_post_system_action", None),

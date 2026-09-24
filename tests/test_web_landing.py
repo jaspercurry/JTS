@@ -46,7 +46,7 @@ def _render(template: str = FAKE_TEMPLATE, *, token: str = "tok-1") -> str:
     return render_landing(
         template,
         app_css_version="abc1234",
-        caps={"voice_brain": True},
+        caps={"wake_detection": True},
         control_token=token,
     )
 
@@ -87,7 +87,7 @@ def test_render_substitutes_every_placeholder() -> None:
     assert 'content="tok-1"' in out
     assert (
         '<script type="application/json" id="landing-caps">'
-        '{"voice_brain": true}</script>'
+        '{"wake_detection": true}</script>'
     ) in out
     assert CANONICAL_ICON_SPRITE in out
 
@@ -180,7 +180,7 @@ def test_hub_is_static_and_gates_fail_closed(path: str, profile: str) -> None:
 
 
 def test_install_writes_one_page_per_hub(tmp_path: Path) -> None:
-    write_hub_pages(tmp_path, caps={"voice_brain": True}, app_css_version="abc1234")
+    write_hub_pages(tmp_path, caps={"wake_detection": True}, app_css_version="abc1234")
 
     assert sorted(
         page.relative_to(tmp_path).as_posix() for page in tmp_path.rglob("*.html")

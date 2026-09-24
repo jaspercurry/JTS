@@ -56,23 +56,23 @@ NAV: tuple[NavRow, ...] = (
            "sound", "", "Bass-management status"),
     NavRow("Sound", "Measurements", "/sound/measurements/", "/sound/",
            (), "wave", "", "Saved sweeps"),
-    NavRow("Assistant", "Assistant", "/assistant/", "/", ("voice_brain",),
+    NavRow("Assistant", "Assistant", "/assistant/", "/", (),
            "voice", "", "Voice · Wake word · Services"),
-    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", ("voice_brain",),
+    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", (),
            "voice", "status-voice", "Provider"),
     NavRow("Assistant", "Wake word", "/assistant/wake/", "/assistant/",
-           ("voice_brain", "wake_detection"), "wake", "", "Model · Sensitivity · Mic"),
-    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", ("voice_brain",),
+           ("wake_detection",), "wake", "", "Model · Sensitivity · Mic"),
+    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", (),
            "tools", "", "Voice tools on/off"),
-    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", ("voice_brain",),
+    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", (),
            "chat", "", "Recent voice turns"),
-    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", (),
            "weather", "", "Location and units"),
-    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", (),
            "transit", "", "Routes and stops"),
-    NavRow("Services", "Google", "/assistant/google/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Google", "/assistant/google/", "/assistant/", (),
            "calendar", "", "Calendar · Gmail"),
-    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", (),
            "home", "status-ha", "Not connected"),
     NavRow("System", "Status", "/system/", "/", (),
            "system", "status-software", "Build"),
@@ -162,7 +162,7 @@ def landing_groups_html(rows: Sequence[NavRow], *, page_title: str = "") -> str:
     )
 
 
-def render_hub(path: str, *, caps: dict[str, object], app_css_version: str) -> str:
+def render_hub(path: str, *, caps: dict[str, bool], app_css_version: str) -> str:
     """The static hub page for `path`: its child rows as settings groups.
 
     Rendered at install time (`jasper.web.landing`) and served from disk, so

@@ -5,8 +5,8 @@
 """The install-tier capability axis: registry shape, purity, no drift.
 
 ``jasper.install_profile`` names what a tier GRANTS on its own axis —
-``Capability.ASSISTANT`` and ``Capability.WAKE_DETECTION`` — with a
-pure-data grant table (``PROFILE_CAPABILITIES``) and one predicate
+``Capability.WAKE_DETECTION`` — with a pure-data grant table
+(``PROFILE_CAPABILITIES``) and one predicate
 (``install_profile_has_capability``).
 
 Three things are pinned here:
@@ -20,10 +20,8 @@ Three things are pinned here:
    something dynamic would freeze its install-time answer into the page,
    and ``initSettingsStatus`` fails closed — a section hidden forever, no
    error.
-3. **The grant table's derived map, pinned.** Every
-   ``system_capabilities_for_profile`` boolean is a thin view over
-   ``PROFILE_CAPABILITIES`` — data, not a second place to restate a grant.
-   The golden map fails loudly the day the two drift apart.
+3. **The baked map, pinned.** A golden map per profile fails loudly the
+   day what the pages gate on drifts.
 """
 from __future__ import annotations
 
@@ -42,7 +40,6 @@ from jasper.install_profile import (
     PROFILE_CAPABILITIES,
     VALID_INSTALL_PROFILES,
     Capability,
-    install_profile_allows_voice_brain,
     install_profile_has_capability,
     install_profile_supports_wake_detection,
     system_capabilities_for_profile,
@@ -70,24 +67,6 @@ def test_granted_capabilities_are_all_real_capabilities():
         assert granted <= known, f"{profile}: unknown capabilities {granted - known}"
 
 
-def test_capability_values_are_stable_snake_case_tokens():
-    """Pin the enum's own token format — not a claim about who reads it.
-
-    Nothing in this module logs a ``Capability`` today, and the /system
-    JSON keys ``system_capabilities_for_profile`` emits are hand-written
-    literals, not ``Capability.value`` — the two vocabularies are
-    separate by design (``voice_brain`` in the JSON vs. ``assistant`` on
-    the enum; ``wake_detection`` happens to match today, which is
-    coincidence, not coupling). Pinning the format still earns its keep:
-    it locks in stable snake_case identifiers for whatever serialization
-    DOES read ``.value`` in the future, and it stops a rename from
-    silently decoupling the enum from prose/comments elsewhere in this
-    module that reference these exact tokens.
-    """
-    assert Capability.ASSISTANT.value == "assistant"
-    assert Capability.WAKE_DETECTION.value == "wake_detection"
-
-
 def test_legacy_tokens_read_streambox_grants():
     """A field box with an endpoint/satellite marker reads its REAL grants."""
     for token in ("endpoint", "satellite"):
@@ -110,15 +89,11 @@ def test_unset_profile_reads_full_grants():
 
 def test_invalid_profile_raises_rather_than_granting_nothing():
     with pytest.raises(ValueError, match="invalid install profile"):
-        install_profile_has_capability("bogus", Capability.ASSISTANT)
+        install_profile_has_capability("bogus", Capability.WAKE_DETECTION)
 
 
-def test_named_predicates_agree_with_the_registry():
-    """The convenience predicates are thin views on the same table."""
+def test_named_predicate_agrees_with_the_registry():
     for profile in ("full", "streambox", "endpoint", None):
-        assert install_profile_allows_voice_brain(profile) is (
-            install_profile_has_capability(profile, Capability.ASSISTANT)
-        )
         assert install_profile_supports_wake_detection(profile) is (
             install_profile_has_capability(profile, Capability.WAKE_DETECTION)
         )
@@ -238,64 +213,28 @@ def test_capability_map_is_deterministic_across_calls():
         )
 
 
-# ---------- (3) the grant table's derived map, pinned ---------------------
+# ---------- (3) the baked map, pinned -------------------------------------
 
-# Captured by running jasper.install_profile.system_capabilities_for_profile
-# at HEAD, reflecting the grant table in PROFILE_CAPABILITIES. Not
-# transcribed from a design doc — the point is to compare against what the
-# code actually produces.
-_EXPECTED_CAPABILITIES = {
-    "full": {
-        "developer_tools": True,
-        "install_profile": "full",
-        "role": "full",
-        "voice_brain": True,
-    },
-    "streambox": {
-        "developer_tools": False,
-        "install_profile": "streambox",
-        "role": "streambox",
-        "voice_brain": True,
-    },
-}
-
-# Held out of the golden map because test_wake_detection_key_tracks_the
-# _capability pins it directly against the grant, one altitude down.
-_PINNED_ELSEWHERE = {"wake_detection"}
+_FULL = {"developer_tools": True, "wake_detection": True}
+_STREAMBOX = {"developer_tools": False, "wake_detection": False}
 
 
-@pytest.mark.parametrize("profile", sorted(_EXPECTED_CAPABILITIES))
-def test_capability_map_matches_the_grant_table(profile):
-    """The map's booleans are a thin view over PROFILE_CAPABILITIES.
-
-    voice_brain mirrors ``Capability.ASSISTANT`` and wake_detection
-    mirrors ``Capability.WAKE_DETECTION`` for every profile — the baked
-    pages must see exactly these answers.
-    """
-    golden = _EXPECTED_CAPABILITIES[profile]
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [("full", _FULL), ("streambox", _STREAMBOX), ("endpoint", _STREAMBOX), (None, _FULL)],
+)
+def test_capability_map_is_pinned(profile, expected):
+    """The baked pages must see exactly these answers, as JSON booleans:
+    they gate on ``=== true``."""
     live = system_capabilities_for_profile(profile)
 
-    assert set(live) - set(golden) == _PINNED_ELSEWHERE
-    assert not set(golden) - set(live), "a capability key disappeared"
-    for key, value in golden.items():
-        assert live[key] == value, key
-        assert type(live[key]) is type(value), key
+    assert live == expected
+    assert {type(value) for value in live.values()} == {bool}
 
 
-def test_wake_detection_key_tracks_the_capability():
-    """The new key is the capability, not a second place to state it."""
-    for profile in ("full", "streambox", "endpoint", None):
-        assert system_capabilities_for_profile(profile)["wake_detection"] is (
-            install_profile_supports_wake_detection(profile)
-        )
-
-
-def test_streambox_grants_assistant_without_wake_detection():
-    """The Bluetooth-remote split.
-
-    See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
-    """
-    assert PROFILE_CAPABILITIES["full"] == frozenset(
-        {Capability.ASSISTANT, Capability.WAKE_DETECTION},
-    )
-    assert PROFILE_CAPABILITIES["streambox"] == frozenset({Capability.ASSISTANT})
+def test_only_the_full_tier_grants_wake_detection():
+    """See docs/adr/0363-the-assistant-is-on-every-tier-and-wake-detection-is-the-only-tier-capability.md."""
+    assert PROFILE_CAPABILITIES == {
+        "full": frozenset({Capability.WAKE_DETECTION}),
+        "streambox": frozenset(),
+    }

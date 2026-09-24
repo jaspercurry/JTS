@@ -754,11 +754,10 @@ STREAMBOX_EXEMPT_ENVFILES = {"/var/lib/jasper/wake_model.env"}
 def test_streambox_web_unit_sources_every_env_its_wizards_write():
     """Same process, same wizards, same files — derived from the full unit.
 
-    jasper-web hosts a wizard when the tier's Capability grant allows it, so a
-    streambox holding ASSISTANT runs /voice, /google, /transit and /weather.
-    A wizard whose env file the unit does not source renders operator defaults
-    for its env-backed fields after a save that appeared to work. Only the
-    wake-side file is exempt.
+    A streambox runs every wizard but the wake-side ones, /voice, /google,
+    /transit and /weather included. A wizard whose env file the unit does not
+    source renders operator defaults for its env-backed fields after a save
+    that appeared to work. Only the wake-side file is exempt.
     """
 
     def envfiles(path):

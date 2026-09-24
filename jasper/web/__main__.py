@@ -411,12 +411,8 @@ def _make_wake_corpus_server(target: object) -> ThreadingHTTPServer:
     )
 
 
-# `requires` is what makes a wizard reachable, so it is the tier gate:
-# ASSISTANT for the pages that configure what the assistant says and does
-# (provider, tool packs, integrations), WAKE_DETECTION for the always-on
-# wake/mic/AEC pages, None for the renderer/DSP/network pages every tier
-# hosts. Granting a tier a capability is then the ONLY edit needed to make
-# its wizards appear — nothing here names a profile.
+# `requires` is the tier gate: WAKE_DETECTION for the always-on wake/mic/AEC
+# pages, None for the pages every tier hosts. Nothing here names a profile.
 WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
@@ -424,11 +420,11 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     ),
     WizardSpec(
         "/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,
@@ -444,15 +440,15 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     ),
     WizardSpec(
         "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, _make_transit_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/ha", "JASPER_HA_WEB_PORT", 8778, _make_ha_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/weather", "JASPER_WEATHER_WEB_PORT", 8779, _make_weather_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/wake-corpus", "JASPER_WAKE_CORPUS_WEB_PORT", 8782,
@@ -472,7 +468,7 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     ),
     WizardSpec(
         "/tools", "JASPER_TOOLS_WEB_PORT", 8786, _make_tools_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
 )
 
