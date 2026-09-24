@@ -301,8 +301,8 @@ def test_dynamic_bass_owns_both_woofers_and_leaves_the_stage_alone(layout, swap,
         assert parameters["monitor_channels"] == [width + len(owners) + index]
         assert parameters["process_channels"] == [width + owners.index(front), width + owners.index(rear)]
     mixers = _mixer_names(decorated)
-    assert mixers == [*_mixer_names(base), "bass_ext_dynamic_expand", "bass_ext_dynamic_drop_control",
-                      "bass_ext_dynamic_form_delta", "bass_ext_dynamic_reduce"]
+    assert mixers == [*_mixer_names(base), "bass_ext_dynamic_expand", "bass_ext_dynamic_form_delta",
+                      "bass_ext_dynamic_reduce"]
 
 
 def test_the_mixer_sequence_grows_by_exactly_the_stages_split_then_sum():

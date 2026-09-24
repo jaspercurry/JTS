@@ -245,8 +245,8 @@ def complex_channel_transfer(
 
     Limiters have no linear transfer. They refuse by default. A caller may
     treat them as pass-through only after proving the compared graphs carry the
-    same limiter semantics and placement. Dynamic bass is unity at rest;
-    ``dynamic_bass_at_rest`` excludes its runtime gain from a static comparison.
+    same limiter semantics and placement. ``dynamic_bass_at_rest`` excludes the
+    dynamic-bass block from a static comparison; admission charges its reserve.
     """
     import numpy as np  # lazy: keep NumPy off admission/status imports until analysis is needed
 

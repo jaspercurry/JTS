@@ -10,7 +10,6 @@ from jasper.active_speaker.bass_comparison import compare_bass_takes
 from jasper.active_speaker.bass_fit import fit_bass_shape
 from jasper.cli.round_views._bass_inputs import join_bass_rounds
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db
 from dataclasses import replace
 import json
 import sys
@@ -1280,8 +1279,6 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
     assert table['tested_volume_range_db'] == [-30, -10]
     assert [row['level_key'] for row in table['levels']] == [
         {'level_db': level, 'loudness_volume_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
-    assert [row['prescribed_boost_db'] for row in table['levels']] == [
-        loudness_boost_db(level, DynamicBassDescriptor(**bass_run.descriptor)) for level in (-30, -20, -10)]
     for row, gain in zip(table['levels'], (6, 3, 10)):
         expected = None if fault == 'zero_coverage' and gain == 10 else pytest.approx(gain)
         assert row['realized_boost_db'][-1]['value_db'] == expected

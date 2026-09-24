@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from jasper.audio_measurement.snr_policy import DBFS_FLOOR
-from jasper.bass_extension.dynamic import LOUDNESS_TAPER_DB, DynamicBassDescriptor, validate_dynamic_bass_descriptor
+from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import build_native_dynamic_bass_graph, dynamic_bass_owner_groups, validated_base_graph
 
 from ..profile import ActiveSpeakerPreset
@@ -21,8 +21,7 @@ from .replay import replay_graph, replay_levels
 def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
                 bass_reference_db: float, descriptor: Mapping, channels: tuple[int, ...],
                 preset: ActiveSpeakerPreset | None = None) -> dict:
-    descriptor = validate_dynamic_bass_descriptor(descriptor)
-    settings = DynamicBassDescriptor(**descriptor)
+    settings = as_dynamic_bass_descriptor(descriptor)
     source = yaml.safe_load(graph.read_text())
     groups = dynamic_bass_owner_groups(channels, (
         (output.side, output.driver_role, output.output_variant, output.index)
@@ -35,19 +34,15 @@ def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
         if not (step.get('type') == 'Processor' and step.get('name') in fragment.processors)]}
     out.mkdir(parents=True, exist_ok=True)
     stages = {}
-    for name, payload, reference in (
-        ('baseline', baseline, bass_reference_db),
-        ('full_boost', uncompressed, settings.reference_level_db - LOUDNESS_TAPER_DB),
-        ('volume_taper', uncompressed, bass_reference_db),
-    ):
+    for name, payload in (('baseline', baseline), ('full_boost', uncompressed)):
         stage = out / name
         stage.mkdir(exist_ok=True)
         stage_graph = stage / 'graph.yml'
         stage_graph.write_text(yaml.safe_dump(payload, sort_keys=False))
         stages[name] = replay_graph(stage_graph, stimulus, stage, main_db=main_db,
-                                    bass_reference_db=reference)
+                                    bass_reference_db=bass_reference_db)
     actual = replay_graph(graph, stimulus, out, main_db=main_db, bass_reference_db=bass_reference_db)
-    return {**actual, 'bass_attribution': {'descriptor': dict(descriptor), 'channels': list(channels),
+    return {**actual, 'bass_attribution': {'descriptor': settings.payload(), 'channels': list(channels),
         'stages': stages,
         'scope': 'Native file comparisons at final output, with downstream limiters retained. '
                  'Compressor effect is the net output change, not internal gain reduction or a physical limit.'}}
@@ -56,8 +51,11 @@ def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
 def bass_replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float]) -> dict:
     attribution = manifest['bass_attribution']
     stages = attribution['stages']
+    if 'volume_taper' in stages:
+        # Rendered before ADR-0359: its delivered output includes the taper, so no stage isolates the compressor.
+        raise ValueError('bass_replay_manifest_predates_adr_0359')
     readings = {'delivered': replay_levels(manifest, raw, window_s)}
-    for name in ('baseline', 'full_boost', 'volume_taper'):
+    for name in ('baseline', 'full_boost'):
         stage = stages[name]
         if any(stage[key] != manifest[key] for key in ('stimulus_sha256', 'main_db', 'channels', 'sample_rate_hz')):
             raise ValueError('bass_replay_context_mismatch')
@@ -73,8 +71,7 @@ def bass_replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, floa
                 return round(values[after] - values[before], 3) if min(values[after], values[before]) > DBFS_FLOOR else None
             bands.append({**band, 'stage_levels_dbfs': values,
                 'full_boost_gain_db': change('full_boost', 'baseline'),
-                'volume_taper_output_change_db': change('volume_taper', 'full_boost'),
-                'compressor_output_change_db': change('delivered', 'volume_taper'),
+                'compressor_output_change_db': change('delivered', 'full_boost'),
                 'delivered_gain_db': change('delivered', 'baseline')})
         channels.append({'channel': index, 'bass_owner': index in attribution['channels'],
                          'ladder': channel['ladder'], 'bands': bands})

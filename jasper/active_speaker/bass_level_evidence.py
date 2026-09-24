@@ -202,16 +202,20 @@ def bass_ladder_evidence(levels: list[dict[str, Any]], groups: list[Mapping[str,
                 level["headroom"][stack].append(row)
 
 
-def bass_level_evidence(
-    aligned: Mapping[str, Any], *,
-    descriptor: DynamicBassDescriptor | None, prescribed_boost_db: float | None,
-) -> dict[str, Any]:
+def _played_volume_taper(pairs) -> bool:
+    """A take banked before ADR-0359 played the Loudness taper; its measured compression includes it."""
+    return any(filter_.get("type") == "Loudness"
+               for pair in pairs for take in pair
+               for filter_ in ((((take["record"].get("provenance") or {}).get("graph") or {})
+                                .get("config") or {}).get("filters") or {}).values()
+               if isinstance(filter_, Mapping))
+
+
+def bass_level_evidence(aligned: Mapping[str, Any], *, descriptor: DynamicBassDescriptor | None) -> dict[str, Any]:
     grid, delta = aligned["freqs_hz"], aligned["delta"]
     groups, curves = aligned["groups"], aligned["curves"]
     pairs = [pair for repeats in groups.values() for pair in repeats]
-    prescribed = np.asarray(expected_boost_db(
-        descriptor, pairs[0][1]["record"]["loudness_volume_db"], grid,
-    )) if descriptor else np.full(grid.shape, np.nan)
+    prescribed = np.asarray(expected_boost_db(descriptor, grid)) if descriptor else np.full(grid.shape, np.nan)
     boost_band = [descriptor.delta_highpass_hz or BASS_BANDS_HZ[0][0],
                   descriptor.detector_lowpass_hz] if descriptor else None
     overlap = [(lo, hi) for lo, hi in BASS_BANDS_HZ
@@ -241,11 +245,12 @@ def bass_level_evidence(
     return {**{f"{stack}_response": _response(grid, aligned[stack], [pair[side] for pair in pairs], aligned["reference_band_hz"][0])
                for side, stack in enumerate(("base", "candidate"))},
             "sources": aligned["sources"], "position_count": len(groups), "take_pair_count": len(pairs),
-            "prescribed_boost_db": prescribed_boost_db, "boost_band_hz": boost_band, "ladder": "bass",
+            "boost_band_hz": boost_band, "ladder": "bass",
             "realized_boost_db": [{"band_hz": [lo, hi], "value_db": band_mean(delta, lo, hi),
                                    "prescribed_boost_db": band_mean(prescribed, lo, hi)} for lo, hi in BASS_BANDS_HZ],
             "compression_db": compression,
-            "compression_includes": ["compressor", "driver", "shelf_model_error"],
+            "compression_includes": ["compressor", "owner_limiter", "driver",
+                                     *(["volume_taper"] if _played_volume_taper(pairs) else [])],
             **_harmonics(groups, boost_bands),
             "base_db_spl_at_mark": _level_spl(groups, 0), "candidate_db_spl_at_mark": _level_spl(groups, 1),
             "snr_margin_db": min(snr) - DRIVER.snr_warn_db if snr else None,

@@ -7,7 +7,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -53,10 +52,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "3d1fe6c0cafbd3d2f08051ace88ab7cde77b0a38125043d7d6a9826443b752e5"),
-    ("mono", True, "80cc08d641194f01f131a0d19e884151e145b93de5b9da4a53fb6ed4a8c0c1be"),
-    ("stereo", False, "550e0aa7876e6f1d113dc68036a7024004b83d3d8735915a2f498da8957b5f1b"),
-    ("stereo", True, "ace0081c1edd9c1fafde17f8f548759c015e734922f1961cd8aaa36e02e7fa63"),
+    ("mono", False, "356f7257d319df4d1c4358a2be7eb4c2711be8b8ea6950b7f6aba4ea87c2e2cb"),
+    ("mono", True, "8e3784e0ee73324f4d25c472b734b993ad3aa37d54405d24a03de97b5fbf557c"),
+    ("stereo", False, "ab428ccca788fa893849920a5b46c1fd620f08961cd495471722ae26851f0b2a"),
+    ("stereo", True, "b466d38799d6ce1f697f5ccba7d0a3c1709158424b5b66ea4de277c899d90661"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -283,9 +282,14 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
-        "bass_evidence_unavailable", "bass_descriptor_malformed",
-    } | {f"bass_{name}_invalid" for name in dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS}
-    assert contract["schema"]["properties"]["low_boost_db"]["maximum"] == dynamic.NATIVE_LOUDNESS_BOOST_MAX_DB
+        "bass_evidence_unavailable", "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
+        "bass_delta_highpass_hz_invalid", "bass_detector_lowpass_hz_invalid", "bass_compressor_threshold_dbfs_invalid",
+        "bass_compressor_factor_invalid", "bass_compressor_attack_s_invalid", "bass_compressor_release_s_invalid",
+        "bass_low_boost_db_invalid", "bass_reference_level_db_invalid",
+    }
+    assert contract["schema"]["required"] == sorted(dynamic._REQUIRED_FIELDS)
+    assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic._OPTIONAL_FIELDS} == {
+        "compressor_factor": 10.0, "compressor_attack_s": 0.01, "compressor_release_s": 0.25}
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
     assert contract["shared_headroom"]["adr"] == "ADR-0257"
 
@@ -321,7 +325,8 @@ def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():
 def test_bass_schema_edges_match_the_unchanged_validator(name):
     contract = prescription_contracts()["bass"]
     prop = contract["schema"]["properties"][name]
-    baseline = asdict(_descriptor())
+    # The lowest high-pass keeps the detector's lowest edge above it.
+    baseline = {**_descriptor().payload(), "delta_highpass_hz": 10.0}
     for bound, direction in (("minimum", -math.inf), ("exclusiveMinimum", -math.inf),
                              ("maximum", math.inf)):
         if bound not in prop:
@@ -346,7 +351,7 @@ def test_linkwitz_schema_edges_match_the_validator(name):
     rules = contract["bounds"]["linkwitz_transform"]
     # A low target keeps every single-field edge inside the cross-field rules.
     shape = {"source_hz": 90.0, "source_q": 0.6, "target_hz": 12.0, "target_q": 0.707}
-    baseline = {**asdict(_descriptor()), "detector_lowpass_hz": 125.0, rules["requires_field"]: 15.0}
+    baseline = {**_descriptor().payload(), "detector_lowpass_hz": 125.0, "delta_highpass_hz": 15.0}
 
     def validate(value, **changes):
         return dynamic.validate_dynamic_bass_descriptor({**baseline, **changes, "linkwitz_transform": {**shape, name: value}})
@@ -358,7 +363,7 @@ def test_linkwitz_schema_edges_match_the_validator(name):
                 validate(math.nextafter(prop[bound], direction))
     if name == "target_hz":
         with pytest.raises(ValueError):
-            validate(shape[name], **{rules["requires_field"]: None})
+            validate(shape[name], delta_highpass_hz=None)
         with pytest.raises(ValueError):
             validate(shape[rules["target_hz_exclusive_upper_field"]])
 

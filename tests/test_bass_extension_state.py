@@ -6,9 +6,10 @@ import pytest
 
 from jasper.active_speaker import baseline_profile
 from jasper.cli.doctor.active_speaker import check_bass_extension_profile
+from tests.test_bass_extension_dynamic import _descriptor
 
 
-@pytest.mark.parametrize("descriptor", [{}, {"low_boost_db": 6.0}])
+@pytest.mark.parametrize("descriptor", [{}, _descriptor().payload()])
 def test_doctor_reads_applied_bass(monkeypatch, descriptor):
     monkeypatch.setattr(baseline_profile, "applied_bass_extension", lambda: descriptor)
     result = check_bass_extension_profile()

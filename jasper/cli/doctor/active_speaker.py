@@ -290,6 +290,7 @@ def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         applied_bass_extension,
     )
+    from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
     bass = applied_bass_extension()
     if not bass:
         return CheckResult(
@@ -299,7 +300,7 @@ def check_bass_extension_profile() -> CheckResult:
     return CheckResult(
         "bass extension profile",
         "ok",
-        f"active; boost={bass['low_boost_db']:g}dB",
+        f"active; max boost={dynamic_bass_gain_reserve_db(bass):.1f}dB",
     )
 
 @doctor_check()

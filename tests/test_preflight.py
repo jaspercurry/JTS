@@ -25,7 +25,7 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.speaker_layout import measurement_target_id
 from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
@@ -318,7 +318,7 @@ def test_run_level_keeps_anchor_and_clamps_to_statement_ceiling(level_db):
 
 
 @pytest.mark.parametrize("boost,tolerance,admitted,clamped", [
-    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 82.65, 82.66), (18, 0.5, 84.5, 84.6),
+    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 82.95, 82.96), (18, 0.5, 84.5, 84.6),
 ])
 def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, tolerance, admitted, clamped):
     applied = {**BASS_EXTENSION, "low_boost_db": 18, "reference_level_db": 0,
@@ -338,13 +338,13 @@ def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, toleranc
         assert fader <= requested
         assert row.get("bound_by") == ("commissioning_margin" if spl == clamped else None)
         assert row["anchor_tolerance_db"] == tolerance
-        assert row["lift_bound_db"] == rung_lift_bound_db(candidate.bass_extension, applied, fader)
+        assert row["lift_bound_db"] == rung_lift_bound_db(candidate.bass_extension, applied)
         assert row["admitted_db_spl"] == report.plan.level.predicted_db_spl
         assert row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 85 - (tolerance + row["lift_bound_db"])
         if spl == admitted:
             assert fader == requested
-            assert row["lift_bound_db"] == pytest.approx(1.34283 if boost == 20 else 0, abs=0.001)
-            assert row["margin_bound_db_spl"] == pytest.approx(82.65717 if boost == 20 else 85 - tolerance, abs=0.001)
+            assert row["lift_bound_db"] == pytest.approx(1.04676 if boost == 20 else 0, abs=0.001)
+            assert row["margin_bound_db_spl"] == pytest.approx(82.95324 if boost == 20 else 85 - tolerance, abs=0.001)
 
 
 @pytest.mark.parametrize("tolerance", [None, 0, -1, float("nan")])
@@ -440,10 +440,9 @@ def test_margin_clamp_below_policy_floor_refuses(anchor_spl):
 
 
 @pytest.mark.parametrize("applied_boost", [0, 6, 18])
-@pytest.mark.parametrize("reference", [-25, -10, 0])
-def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile, applied_boost, reference):
+def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile, applied_boost):
     base = _room_candidate(tuning_profile)
-    descriptors = [{}, *({**BASS_EXTENSION, "low_boost_db": boost, "reference_level_db": reference} for boost in (6, 18, 20))]
+    descriptors = [{}, *({**BASS_EXTENSION, "low_boost_db": boost} for boost in (6, 18, 20))]
     candidates = [replace(base, bass_extension=descriptor) for descriptor in descriptors]
     plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, candidate_id=c.fingerprint) for c in candidates),
                                candidates=tuple(c.fingerprint for c in candidates))
@@ -457,13 +456,13 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
         row = report.rung_admission
         assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
         for descriptor in descriptors:
-            margin = 1 + rung_lift_bound_db(descriptor, applied, fader)
+            margin = 1 + rung_lift_bound_db(descriptor, applied)
             assert report.plan.level.predicted_db_spl <= 85 - margin
 
 
-@pytest.mark.parametrize("requested", [-17.621, -17.627])
-def test_margin_clamp_converges_where_the_bound_stops_moving(requested):
-    candidate = {**BASS_EXTENSION, "low_boost_db": 20, "reference_level_db": -10}
+def test_margin_clamp_lands_under_the_bound():
+    requested = -17.621
+    candidate = {**BASS_EXTENSION, "low_boost_db": 20}
     row = predicted_rung_admission(requested, ResolvedLevel(70.8695, -22.0129, "1234"), {"trial": candidate},
                                    applied={}, ceiling_db_spl=85, tolerance_db=3)
     assert row["level_db"] < requested
@@ -528,9 +527,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     assert row["bound_by"] == "commissioning_margin"
     assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
     if not descriptor:
-        bass = DynamicBassDescriptor(**candidate.bass_extension)
-        boost = loudness_boost_db(report.plan.level.volume_db, bass)
-        assert row["lift_bound_db"] == (dynamic_bass_gain_reserve_db(replace(bass, low_boost_db=boost)) if boost else 0)
+        assert row["lift_bound_db"] == dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**candidate.bass_extension))
 
 
 @pytest.mark.parametrize("level_db,has_ambient,disclosed", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])

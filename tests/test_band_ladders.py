@@ -125,7 +125,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         expected = tuple(expected[index] for index in (0, 1, 2, 5, 6, 7, 8))
     elif builder == "bass_level":
         aligned = fit_bass_shape([request.getfixturevalue("pair")], candidate_id="boost")
-        payload = bass_level_evidence(aligned, descriptor=None, prescribed_boost_db=None)
+        payload = bass_level_evidence(aligned, descriptor=None)
     elif builder == "bass_comparison":
         payload = compare_bass_takes(*request.getfixturevalue("pair"), change="candidate")
     elif builder == "speaker_envelope":
@@ -166,7 +166,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload = windows[0]
     elif builder in ("replay", "bass_replay"):
         manifests = {}
-        for stage in ("baseline", "full_boost", "volume_taper", "delivered"):
+        for stage in ("baseline", "full_boost", "delivered"):
             directory = tmp_path if stage == "delivered" else tmp_path / stage
             directory.mkdir(exist_ok=True)
             raw = directory / "output.f64le"

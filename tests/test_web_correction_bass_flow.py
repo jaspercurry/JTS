@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from http import HTTPStatus
 from pathlib import Path
 
@@ -67,14 +66,14 @@ def test_status_payload_is_display_only_no_control_keys(monkeypatch):
 
 
 @pytest.mark.parametrize("configured", [False, True])
-def test_status_payload_includes_native_bass_descriptor(monkeypatch, configured):
+def test_status_payload_includes_native_bass_descriptor_and_its_reserve(monkeypatch, configured):
     _corner(monkeypatch)
-    descriptor = asdict(_descriptor()) if configured else {}
+    descriptor = _descriptor().payload() if configured else {}
     monkeypatch.setattr(baseline_profile, "applied_bass_extension", lambda: descriptor)
 
     payload, status = flow.handle_status()
     assert status == HTTPStatus.OK
-    assert payload["bass_extension"] == (descriptor or None)
+    assert payload["bass_extension"] == ({**descriptor, "max_boost_db": 19.6} if configured else None)
 
 
 def test_status_payload_bass_extension_section_is_fail_soft(monkeypatch):
