@@ -49,7 +49,7 @@ from jasper.audio_measurement.room_limits import (
     cut_floor_db,
     spatial_support,
 )
-from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
+from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
 from .blend_prescription import (

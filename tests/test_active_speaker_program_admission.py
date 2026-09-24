@@ -25,7 +25,7 @@ from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, effective_preset
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, excitation_from_context, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer

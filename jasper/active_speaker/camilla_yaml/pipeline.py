@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.fanin_coupling import RING_A_CHANNELS
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
     bass_management_hp_name,

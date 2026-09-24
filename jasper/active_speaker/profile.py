@@ -16,21 +16,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from jasper.camilla_emit import (
-    BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
-    BASS_MANAGEMENT_CORNER_HZ_HI,
-    BASS_MANAGEMENT_CORNER_HZ_LO,
-    BASS_MANAGEMENT_CROSSOVER_ORDER,
-)
-from jasper.json_fields import CodedFieldError, JsonFields
-from jasper.output_topology import (
+from jasper.speaker_layout import (
     ADJACENT_PAIRS_BY_MAIN_MODE,
-    LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
+    DEFAULT_SUB_CROSSOVER_HZ,
     MAIN_DRIVER_ROLES_BY_MODE,
     OUTPUT_VARIANT_SCHEMA_VERSION,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     SUPPORTED_OUTPUT_VARIANTS,
     WAY_COUNT_BY_MAIN_MODE,
 )
+from jasper.json_fields import CodedFieldError, JsonFields
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
@@ -55,20 +51,7 @@ DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
 ADJACENT_PAIRS_BY_WAY: dict[int, tuple[tuple[str, str], ...]] = {
     WAY_COUNT_BY_MAIN_MODE[mode]: pairs for mode, pairs in ADJACENT_PAIRS_BY_MAIN_MODE.items()
 }
-LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
-    WAY_COUNT_BY_MAIN_MODE[mode]: role for mode, role in LOWEST_DRIVER_ROLE_BY_MAIN_MODE.items()
-}
 
-# Local-subwoofer bass-management crossover corner. BOUND TO the one shared
-# bass-management corner definition (jasper.camilla_emit) — the same values the
-# safety guard references — so the corner cannot drift. The public spelling
-# stays for this module's importers (graph_safety, runtime_contract,
-# output_topology's mirror test).
-DEFAULT_SUB_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
-SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
-SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
-# LR4 is the standard sub/main bass-management slope (both halves at order 4).
-SUB_CROSSOVER_ORDER = BASS_MANAGEMENT_CROSSOVER_ORDER
 SUPPORTED_LAYOUTS = {"mono", "stereo"}
 SIDES_BY_LAYOUT: dict[str, tuple[str, ...]] = {
     "mono": ("mono",),
@@ -123,7 +106,7 @@ def lowest_driver_role(way_count: int) -> str:
     This is the driver that carries the bass-management high-pass when a local
     subwoofer is present — the only role with no lower crossover edge."""
     try:
-        return LOWEST_DRIVER_ROLE_BY_WAY[int(way_count)]
+        return DRIVER_ROLES_BY_WAY[int(way_count)][0]
     except (KeyError, TypeError, ValueError) as e:
         raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
 

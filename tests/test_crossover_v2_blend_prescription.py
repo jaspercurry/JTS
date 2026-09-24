@@ -66,7 +66,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_CROSS_SEAT_SPREAD_OVERFLOW,
     REASON_NO_CURVE_GRID,
 )
-from jasper.sound.profile import EVALUABLE_Q_MAX
+from jasper.biquad import EVALUABLE_Q_MAX
 from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,

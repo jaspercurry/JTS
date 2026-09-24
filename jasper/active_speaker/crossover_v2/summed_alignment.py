@@ -23,7 +23,7 @@ from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.log_event import log_event
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 
 from .contracts import REFERENCE_MARK_DESIGN_AXIS
 from .measurement_context import capture_basis

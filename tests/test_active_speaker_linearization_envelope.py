@@ -39,7 +39,6 @@ from jasper.active_speaker.linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
     DRIVER_CLASSES,
     ENVELOPE_CEILING_SENTINEL_DB,
-    MIC_TIERS,
     EnvelopeCurve,
     EnvelopeTerm,
     ReasonCode,
@@ -50,6 +49,7 @@ from jasper.active_speaker.linearization_envelope import (
     repeatability_limit,
     spatial_exclusion_limit,
 )
+from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.linearization_fit import (
     fit_driver_linearization,
 )

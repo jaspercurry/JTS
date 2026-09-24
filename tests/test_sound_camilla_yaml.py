@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.output_topology_store import new_topology_draft
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config_text,

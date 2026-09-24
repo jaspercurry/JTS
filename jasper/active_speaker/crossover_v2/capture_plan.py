@@ -34,7 +34,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
-from jasper.output_topology import measurement_target_parts
+from jasper.speaker_layout import measurement_target_parts
 
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,

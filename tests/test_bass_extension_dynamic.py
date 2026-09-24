@@ -7,8 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from jasper.camilla_config_contract import SHELF_Q, FilterSpec
-from jasper.sound.profile import _biquad_response_complex, _filter_response_complex, _freq_trig
+from jasper.biquad import SHELF_Q, FilterSpec, biquad_response_complex, filter_response_complex, freq_trig
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,
@@ -64,7 +63,7 @@ def test_native_loudness_law_withdraws_over_twenty_db(boost_db: float) -> None:
 def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
     descriptor = _descriptor(low_boost_db=boost_db)
     frequencies = np.geomspace(0.01, 23000.0, 4096)
-    shelf = np.asarray(_filter_response_complex(
+    shelf = np.asarray(filter_response_complex(
         FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost_db), frequencies,
     ))
     gain_envelope = 1.0 + np.abs(shelf - 1.0)
@@ -78,10 +77,10 @@ def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
 def test_expected_boost_matches_native_shelf_delta_proof(boost_db, fader_db, highpass_hz):
     descriptor = _descriptor(low_boost_db=boost_db, delta_highpass_hz=highpass_hz)
     frequencies = np.geomspace(0.01, 23000.0, 4096)
-    shelf = np.asarray(_filter_response_complex(
+    shelf = np.asarray(filter_response_complex(
         FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, loudness_boost_db(fader_db, descriptor)), frequencies,
     ))
-    highpass = np.asarray(_filter_response_complex(
+    highpass = np.asarray(filter_response_complex(
         FilterSpec("delta_highpass", "Highpass", highpass_hz, 0.0, SHELF_Q), frequencies,
     )) if highpass_hz is not None else 1.0
     proof = 20 * np.log10(np.abs(1 + (shelf - 1) * highpass))
@@ -307,20 +306,20 @@ def _response(definition: dict, descriptor: DynamicBassDescriptor, fader_db: flo
     kind = parameters.get("type", definition["type"])
     if kind == "Loudness":
         boost = loudness_boost_db(fader_db, descriptor)
-        return _filter_response_complex(FilterSpec("l", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost), freqs, trig)
+        return filter_response_complex(FilterSpec("l", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost), freqs, trig)
     if kind == "LinkwitzTransform":
-        return _biquad_response_complex(_linkwitz_coeffs(parameters), trig)
+        return biquad_response_complex(_linkwitz_coeffs(parameters), trig)
     if kind == "LowshelfFO":
-        return _biquad_response_complex(_lowshelf_fo_coeffs(parameters), trig)
+        return biquad_response_complex(_lowshelf_fo_coeffs(parameters), trig)
     if kind == "ButterworthHighpass" and parameters["order"] == 2:
-        return _filter_response_complex(FilterSpec("h", "Highpass", parameters["freq"], 0.0, SHELF_Q), freqs, trig)
+        return filter_response_complex(FilterSpec("h", "Highpass", parameters["freq"], 0.0, SHELF_Q), freqs, trig)
     assert kind in {"Volume", "LinkwitzRileyLowpass"}  # Aux1's silent ramp and the detector reach no output.
     return 1.0
 
 
 def _fragment_output(graph, descriptor: DynamicBassDescriptor, fader_db: float, freqs: np.ndarray) -> np.ndarray:
     """Owner 0 alone through the emitted fragment, compressors idle, at every output."""
-    trig = _freq_trig(freqs)
+    trig = freq_trig(freqs)
     state = np.zeros((4, len(freqs)), dtype=complex)
     state[0] = 1.0
     for step in graph.pipeline:
@@ -354,7 +353,7 @@ def test_emitted_graph_realizes_the_model_at_every_fader(descriptor, groups, fad
 def test_shaped_reserve_bounds_the_boost_and_fades_with_it() -> None:
     descriptor = _shaped()
     freqs = np.geomspace(1.0, 24000.0, 4000).tolist()
-    trig = _freq_trig(freqs)
+    trig = freq_trig(freqs)
     faders = np.arange(-30.0, 1.0, 2.0)
     reserves = [dynamic_bass_gain_reserve_db(descriptor, fader) for fader in faders]
 

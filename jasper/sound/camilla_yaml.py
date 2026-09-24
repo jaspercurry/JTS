@@ -29,10 +29,10 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
-    PeqFilter,
     ensure_volume_limit_db,
     resolve_enable_rate_adjust,
 )
+from jasper.biquad import PeqFilter
 from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     FLAT_PROGRAM_WIDTH,

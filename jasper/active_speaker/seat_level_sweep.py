@@ -17,6 +17,7 @@ from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationP
 from jasper.audio_measurement.snr_policy import framed_ambient_band_report
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder, select_capture_channel
 from jasper.platform.route_health import snapshot_route_health
+from jasper.volume_latch import read_fader_db
 
 from .auto_level import reading_budget
 from .capture_provenance import stimulus_peak_dbfs
@@ -31,7 +32,7 @@ from .crossover_v2.wired_stimulus import WiredStimulusCapture
 from .program_playback import play_program
 from .restore_wait import resilient_restore
 from .seat_level_reference import StimulusProvenance
-from .volume_latch import hold_fader_at, read_fader_db
+from .fader_hold import hold_fader_at
 
 # Seconds for graph/fader confirmation and the recorder's capture tail per sweep.
 READING_OVERHEAD_S = 6.0

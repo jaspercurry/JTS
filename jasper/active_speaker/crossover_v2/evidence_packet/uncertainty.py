@@ -8,7 +8,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.linearization_envelope import _MIC_TRUST_TABLE_HZ, MIC_TIERS
+from jasper.active_speaker.linearization_envelope import _MIC_TRUST_TABLE_HZ
+from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.json_fields import finite_float
 

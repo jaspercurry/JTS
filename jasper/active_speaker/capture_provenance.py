@@ -26,7 +26,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 
 from .commissioning_admission import parse_running_graph
 
-from .volume_latch import fader_matches
+from jasper.volume_latch import fader_matches
 
 logger = logging.getLogger(__name__)
 

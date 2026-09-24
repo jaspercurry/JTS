@@ -144,6 +144,7 @@ code = [
   "jasper/camilla_latency.py",
   "jasper/output_hardware.py",
   "jasper/output_topology.py",
+  "jasper/speaker_layout.py",
   "deploy/alsa/**",
   "deploy/lib/jasper-asound-render.sh",
   "deploy/camilladsp/**",
@@ -325,9 +326,11 @@ code = [
   "jasper/tools/audio.py",
   "jasper/sound/**",
   "jasper/camilla_stereo_prefix.py",
+  # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
+  # that preference EQ, headroom and the tuning fits all predict with.
+  "jasper/biquad.py",
   # Shared with audio-routing-and-renderers: it owns the device/volume_limit
-  # defaults AND the FilterSpec/PeqFilter/boost-headroom contract, so a
-  # change here can touch preference-EQ composition too.
+  # defaults.
   "jasper/camilla_config_contract.py",
   "jasper/camilla_latency.py",
   "jasper/web/sound_setup.py",

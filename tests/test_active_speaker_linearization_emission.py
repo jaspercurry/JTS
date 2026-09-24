@@ -32,13 +32,10 @@ from jasper.active_speaker.baseline_profile import (
     applied_program_level_delta_db,
     profile_program_headroom_db,
 )
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import SHELF_Q, PeqFilter
 from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, boost_headroom_by_role, linearization_headroom_db
 from jasper.active_speaker.camilla_names import driver_linearization_peak_name, driver_linearization_shelf_name, driver_linearization_taper_name
-from jasper.active_speaker.linearization_fit import (
-    MAX_FILTERS_PER_DRIVER,
-    _HIGHSHELF_Q,
-)
+from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -181,7 +178,7 @@ def test_linearization_shelf_uses_the_fit_engines_butterworth_q():
     assert params["type"] == "Highshelf"
     assert params["freq"] == pytest.approx(6500.0)
     assert params["gain"] == pytest.approx(-4.0)
-    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert params["q"] == pytest.approx(SHELF_Q, abs=5e-8)
     assert "slope" not in params
 
 
@@ -219,7 +216,7 @@ def test_linearization_lowshelf_uses_the_same_butterworth_q():
     assert params["type"] == "Lowshelf"
     assert params["freq"] == pytest.approx(8200.0)
     assert params["gain"] == pytest.approx(-9.0)
-    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert params["q"] == pytest.approx(SHELF_Q, abs=5e-8)
     assert "slope" not in params
 
 
@@ -247,7 +244,7 @@ def test_linearization_taper_gets_its_own_name_and_definition():
     assert params["type"] == "Highshelf"
     assert params["freq"] == pytest.approx(20500.0)
     assert params["gain"] == pytest.approx(-5.0)
-    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert params["q"] == pytest.approx(SHELF_Q, abs=5e-8)
     assert "slope" not in params
 
 
@@ -281,12 +278,12 @@ def test_baseline_write_logs_the_shelf_realization(tmp_path, caplog):
     # Two shelf-slot filters on the tweeter (backbone + taper), none on the
     # woofer's peak-only chain.
     assert "linearization_shelves=2" in written[0]
-    assert f"shelf_q={_HIGHSHELF_Q:.7f}" in written[0]
+    assert f"shelf_q={SHELF_Q:.7f}" in written[0]
     # ...and the field reports what the file actually carries.
     params = yaml.safe_load(out.read_text())["filters"][
         driver_linearization_shelf_name("tweeter")
     ]["parameters"]
-    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert params["q"] == pytest.approx(SHELF_Q, abs=5e-8)
 
 
 def test_linearization_peak_carries_its_own_q():

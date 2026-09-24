@@ -34,7 +34,7 @@ from jasper.active_speaker.bench.compare import ARRIVAL_PRE_MS, SOFT_CLIP_BUDGET
 from jasper.active_speaker.bench.loop import EmitLoopError, run_emit_loop
 from jasper.active_speaker.delta_probe import VERDICT_MATCHED, VERDICT_MODEL_ERROR
 from jasper.active_speaker.bench.render import BinaryIdentity
-from jasper.camilla_config_contract import SHELF_Q
+from jasper.biquad import SHELF_Q
 from tests._fake_camilladsp import SLOPE6_SHELF_ENV, slope6_shelf_q
 from tests.test_active_speaker_profile import _two_way_preset
 

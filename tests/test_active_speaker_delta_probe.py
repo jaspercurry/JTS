@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jasper.biquad import SHELF_Q, FilterSpec, filter_response_db
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_BAND_ABOVE_CEILING,
     DELTA_PROBE_BAND_CROSSOVER,
@@ -60,6 +61,10 @@ from jasper.active_speaker.delta_probe import (
 )
 
 _GRID_HZ = np.logspace(math.log10(100.0), math.log10(20_000.0), 400)
+
+
+def _highshelf_db(corner_hz: float, gain_db: float, q: float) -> np.ndarray:
+    return np.asarray(filter_response_db(FilterSpec("shelf", "Highshelf", corner_hz, gain_db, q=q), _GRID_HZ))
 
 
 def _commanded_lift(depth_db: float = 8.0, corner_hz: float = 5_000.0) -> np.ndarray:
@@ -240,13 +245,10 @@ def test_the_shelf_q_realization_error_class_is_caught():
     structurally cannot see: the error lives at 5–12 kHz, an octave and a half
     above the ``[Fc/2, 2·Fc]`` window that comparator gates on.
     """
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
 
     corner_hz, gain_db = 7_000.0, -11.0
-    commanded = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, _HIGHSHELF_Q)
-    realized = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, 0.476)
+    commanded = _highshelf_db(corner_hz, gain_db, SHELF_Q)
+    realized = _highshelf_db(corner_hz, gain_db, 0.476)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.advises_against_keep is True
     assert probe.verdict == VERDICT_MODEL_ERROR
@@ -338,13 +340,10 @@ def test_the_shelf_q_keystone_still_classifies_under_a_known_offset():
     chain that also carries the live session's 22.458 dB apply charge, is
     still a model error at the same magnitude.
     """
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
 
     corner_hz, gain_db = 7_000.0, -11.0
-    commanded = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, _HIGHSHELF_Q)
-    realized = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, 0.476)
+    commanded = _highshelf_db(corner_hz, gain_db, SHELF_Q)
+    realized = _highshelf_db(corner_hz, gain_db, 0.476)
     probe = classify_delta_probe(
         _GRID_HZ, realized + _LIVE_APPLY_OFFSET_DB, commanded, band_hz=_band(),
         expected_offset_db=_LIVE_APPLY_OFFSET_DB,
@@ -881,11 +880,8 @@ def test_the_tiered_floor_leaves_the_keystone_fixture_untouched():
     tiered floor grades exactly the bins the old flat 0.5 dB floor did on this
     fixture — pinned here rather than asserted in prose.
     """
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
 
-    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
+    commanded = _highshelf_db(7_000.0, -11.0, SHELF_Q)
     tiered = np.abs(commanded) >= graded_command_floor_db(_GRID_HZ)
     flat = np.abs(commanded) >= DELTA_PROBE_MIN_COMMANDED_DB
     assert np.array_equal(tiered, flat)
@@ -1050,12 +1046,9 @@ def test_the_keystone_survives_frame_removal():
     commanded NOTHING, so a defect confined to the commanded region cannot
     contribute to the line that is then subtracted from it.
     """
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
 
-    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
-    realized = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476)
+    commanded = _highshelf_db(7_000.0, -11.0, SHELF_Q)
+    realized = _highshelf_db(7_000.0, -11.0, 0.476)
     probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
     assert probe.verdict == VERDICT_MODEL_ERROR
     assert probe.advises_against_keep is True
@@ -1077,13 +1070,10 @@ def test_fitting_the_frame_over_the_graded_bins_would_delete_the_keystone():
     from jasper.active_speaker.delta_probe import (
         _structured_exceedance, _tolerance_curve,
     )
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
     from jasper.audio_measurement.frame_fit import fit_frame
 
-    commanded = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q)
-    realized = _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476)
+    commanded = _highshelf_db(7_000.0, -11.0, SHELF_Q)
+    realized = _highshelf_db(7_000.0, -11.0, 0.476)
     graded = np.abs(commanded) >= graded_command_floor_db(_GRID_HZ)
     wrong_frame = fit_frame(
         _GRID_HZ[graded], realized[graded], commanded[graded],
@@ -1207,9 +1197,6 @@ def test_the_demotion_and_the_survival_are_the_same_gate():
     that survives is the rollback it has always been. Neither arm is a new
     trigger — both start from a raw grade that already failed.
     """
-    from jasper.active_speaker.linearization_fit import (
-        _HIGHSHELF_Q, _highshelf_response_db,
-    )
 
     commanded = _commanded_lift()
     demoted = classify_delta_probe(
@@ -1218,8 +1205,8 @@ def test_the_demotion_and_the_survival_are_the_same_gate():
     )
     survived = classify_delta_probe(
         _GRID_HZ,
-        _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, 0.476),
-        _highshelf_response_db(_GRID_HZ, 7_000.0, -11.0, _HIGHSHELF_Q),
+        _highshelf_db(7_000.0, -11.0, 0.476),
+        _highshelf_db(7_000.0, -11.0, SHELF_Q),
         band_hz=_band(),
     )
     assert demoted.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES

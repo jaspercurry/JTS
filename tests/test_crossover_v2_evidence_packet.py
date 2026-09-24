@@ -49,7 +49,7 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     ITERATION_PLATEAU_DB,
     MEASURED_BENEFIT_MARGIN_DB,
 )
-from jasper.active_speaker.linearization_envelope import MIC_TIERS
+from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
     SCHEMA_VERSION as REPEAT_FLOOR_SCHEMA_VERSION,

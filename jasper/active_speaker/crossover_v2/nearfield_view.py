@@ -23,7 +23,7 @@ import numpy as np
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_db
-from jasper.output_topology import measurement_target_parts
+from jasper.speaker_layout import measurement_target_parts
 
 #: Where the distance step is read: above a port, below cone breakup (#5684).
 STEP_BAND_HZ = (35.0, 400.0)

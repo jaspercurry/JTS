@@ -41,7 +41,8 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MIN,
 )
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE, PeqFilter, total_positive_boost_db
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
 from ._common import issue, require_sha256_hex

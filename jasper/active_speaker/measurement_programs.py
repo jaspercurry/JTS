@@ -15,9 +15,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.output_topology import (
-    OutputTopology, cardioid_cabinet_channels, measurement_target_id, topology_is_subless_passive_mains,
-)
+from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
+from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
 
 from .measurement import active_driver_targets
 

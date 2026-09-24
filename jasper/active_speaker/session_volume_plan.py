@@ -14,7 +14,7 @@ the program's per-segment digital gains (§5.5), not in re-leveling the speaker.
 This module owns that plan. It reuses the fail-closed latch pattern the
 pre-v2 per-step leveler established — durable intent written BEFORE the
 first volume mutation, set-and-confirm through an independent readback (the
-shared :func:`jasper.active_speaker.volume_latch.set_and_confirm_volume`),
+shared :func:`jasper.volume_latch.set_and_confirm_volume`),
 and restore-exactly-once — but adds the lifecycle a *session* needs that a
 per-step lease does not:
 
@@ -60,17 +60,11 @@ from typing import Any, Iterable, Mapping, Protocol
 from jasper.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
+from jasper.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
 
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
 from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
-from .volume_latch import (
-    EMERGENCY_MEASUREMENT_VOLUME_DB,
-    GetMainVolumeDb,
-    SetMainVolumeDb,
-    hold_fader_at,
-    read_fader_db,
-    set_and_confirm_volume,
-)
+from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB, hold_fader_at
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +433,7 @@ class FaderVolumeDoor:
     """The direct door: set-and-confirm straight at the fader.
 
     Both verbs land on the same
-    :func:`~jasper.active_speaker.volume_latch.set_and_confirm_volume` — at this
+    :func:`~jasper.volume_latch.set_and_confirm_volume` — at this
     door they are one act. Callers that arbitrate through
     :class:`~jasper.volume_owner.VolumeOwner` bind a door that does; a process
     with no owner to arbitrate through binds this one.
@@ -745,7 +739,7 @@ class SessionVolumePlan:
         volume to hold (nothing open, unresolved, crash-hydrated, or past its
         ceiling), which leaves the fader alone rather than refusing — that is
         :meth:`assert_ready`'s question, already answered by ``play_program``.
-        Raises :class:`~jasper.active_speaker.volume_latch.MeasurementFaderDrift`
+        Raises :class:`~jasper.active_speaker.fader_hold.MeasurementFaderDrift`
         when the fader cannot be proven at the declared level.
 
         **Under the restore lock**, which is why this lives on the plan rather

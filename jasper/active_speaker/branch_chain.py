@@ -23,8 +23,8 @@ import numpy as np
 
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-from jasper.sound.profile import (
-    RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
+from jasper.biquad import (
+    RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
 )
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
@@ -105,7 +105,6 @@ CHAIN_GRID_HZ.flags.writeable = False
 # ``freq * K`` (Highshelf) to the grid. K = 32 holds the worst residual approach under
 # 1e-4 dB across Q 0.05-50 and |gain| <= 24 dB -- two orders below ``_PEAK_EPS_DB``.
 _SHELF_ASYMPTOTE_RATIO: float = 32.0
-_SHELF_BIQUAD_TYPES: frozenset[str] = frozenset({"Lowshelf", "Highshelf"})
 
 
 def _evaluation_grid(
@@ -146,7 +145,7 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
     for entry in filters:
         kind = str(entry.get("biquad_type") or "")
         freq = float(entry.get("freq") or 0.0)
-        if kind not in _SHELF_BIQUAD_TYPES or not freq > 0.0:
+        if kind not in SHELF_BIQUAD_TYPES or not freq > 0.0:
             continue
         out.append(
             freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
@@ -330,7 +329,7 @@ def _first_order_response(
     freqs_hz: np.ndarray, *, fc_hz: float, highpass: bool,
 ) -> np.ndarray:
     """One first-order digital section's complex response, the same ``tan`` prewarp
-    ``_biquad_coeffs`` uses. Reached only for an odd Butterworth order.
+    ``biquad_coeffs`` uses. Reached only for an odd Butterworth order.
     """
     k = math.tan(math.pi * fc_hz / RESPONSE_SAMPLE_RATE_HZ)
     b0 = (k / (1.0 + k)) if not highpass else (1.0 / (1.0 + k))
@@ -487,7 +486,7 @@ def chain_response(
     evaluator applies the width the emitter writes for that shape.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    trig = _freq_trig(freqs)
+    trig = freq_trig(freqs)
     total = np.ones(freqs.shape, dtype=np.complex128)
     for entry in filters:
         q = entry.get("q")
@@ -500,9 +499,9 @@ def chain_response(
             # ``emit_filter_spec`` DROPS a record's shelf q and writes SHELF_Q,
             # so a stray one must not be evaluated -- the shelf that reaches the
             # speaker is the emitted one.
-            q=None if biquad_type in _SHELF_BIQUAD_TYPES or not q else float(q),
+            q=None if biquad_type in SHELF_BIQUAD_TYPES or not q else float(q),
         )
-        total = total * np.array(_filter_response_complex(spec, freqs, trig))
+        total = total * np.array(filter_response_complex(spec, freqs, trig))
     return total
 
 
@@ -581,12 +580,12 @@ def camilla_filter_response(
     denominator ``2*Notch - 1`` is the allpass numerator term for term.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    trig = _freq_trig(freqs)
+    trig = freq_trig(freqs)
     total = np.ones(freqs.shape, dtype=np.complex128)
 
     def biquad(shape: str, freq: float, q: float, gain: float = 0.0) -> np.ndarray:
         return np.array(
-            _filter_response_complex(FilterSpec("chain", shape, freq, gain, q), freqs, trig)
+            filter_response_complex(FilterSpec("chain", shape, freq, gain, q), freqs, trig)
         )
 
     for spec in filters:
