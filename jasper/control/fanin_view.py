@@ -120,6 +120,14 @@ def _rounded(value: float | None, digits: int) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _lane_counters(inputs_by_label: Mapping[str, Any], key: str) -> dict[str, int]:
+    """Each declared source's ``key`` counter, 0 for a lane STATUS lacks."""
+    return {
+        spec.id.value: as_int(inputs_by_label.get(spec.fanin_label, {}).get(key))
+        for spec in MUSIC_SOURCE_SPECS
+    }
+
+
 def _counts(
     now: float, inputs_by_label: Mapping[str, Any], output: dict[str, Any],
 ) -> dict[str, Any]:
@@ -127,20 +135,6 @@ def _counts(
     next sample's rates delta against."""
     airplay = inputs_by_label.get("airplay")
     output_ring = _block(output, "ring")
-    input_frames = {
-        spec.id.value: (
-            as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
-            if spec.fanin_label in inputs_by_label else 0
-        )
-        for spec in MUSIC_SOURCE_SPECS
-    }
-    input_xruns = {
-        spec.id.value: (
-            as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
-            if spec.fanin_label in inputs_by_label else 0
-        )
-        for spec in MUSIC_SOURCE_SPECS
-    }
     # empty_reads only exists on a ring-armed lane's optional "ring"
     # block (U3/P6, rust/jasper-fanin/src/state.rs); None on an unarmed
     # lane, never 0.
@@ -165,49 +159,40 @@ def _counts(
             _sum_or_none(output_ring, ("stuck_reader_drops", "drop_no_reader"))
             if output_ring is not None else None
         ),
-        "input_frames": input_frames,
-        "input_xruns": input_xruns,
+        "input_frames": _lane_counters(inputs_by_label, "frames_read"),
+        "input_xruns": _lane_counters(inputs_by_label, "xrun_count"),
         "input_empty_reads": input_empty_reads,
     }
 
 
+_SCALAR_COUNTERS = (
+    "airplay_frames", "output_frames", "output_full_waits", "output_ring_drops",
+)
+_PER_SOURCE_COUNTERS = ("input_frames", "input_xruns", "input_empty_reads")
+
+
 def _rates(counts: dict[str, Any], prev: dict[str, Any] | None) -> dict[str, Any]:
-    """Each counter's per-second rate since ``prev``, keyed as ``counts`` is.
+    """Each counter's per-second rate since ``prev`` (the previous sample's
+    ``_counts``), keyed as ``counts`` is.
 
     None throughout without a previous sample, and None for a counter that
     went backwards (a restart) or was not observed on both sides."""
-    sources = [spec.id.value for spec in MUSIC_SOURCE_SPECS]
-    rates: dict[str, Any] = {
-        "airplay_frames": None,
-        "output_frames": None,
-        "output_full_waits": None,
-        "output_ring_drops": None,
-        "input_frames": dict.fromkeys(sources),
-        "input_empty_reads": dict.fromkeys(sources),
-        "input_xruns": dict.fromkeys(sources),
-    }
     if prev is None:
-        return rates
-    now = counts["ts"]
-    dt = max(0.001, now - float(prev.get("ts", now)))
-    for key in ("airplay_frames", "output_frames"):
-        rates[key] = nonneg_rate(counts[key], as_int(prev.get(key)), dt)
-    previous_inputs = prev.get("input_frames")
-    if isinstance(previous_inputs, Mapping):
-        for source_id, frames in counts["input_frames"].items():
-            rates["input_frames"][source_id] = nonneg_rate(
-                frames, as_int(previous_inputs.get(source_id)), dt,
-            )
-    for key in ("input_empty_reads", "input_xruns"):
-        previous = prev.get(key)
-        if isinstance(previous, Mapping):
-            for source_id, value in counts[key].items():
-                rates[key][source_id] = nonneg_rate(
-                    value, previous.get(source_id), dt,
-                )
-    for key in ("output_full_waits", "output_ring_drops"):
-        rates[key] = nonneg_rate(counts[key], prev.get(key), dt)
-    return rates
+        return {
+            **dict.fromkeys(_SCALAR_COUNTERS),
+            **{key: dict.fromkeys(counts[key]) for key in _PER_SOURCE_COUNTERS},
+        }
+    dt = max(0.001, counts["ts"] - prev["ts"])
+    return {
+        **{key: nonneg_rate(counts[key], prev[key], dt) for key in _SCALAR_COUNTERS},
+        **{
+            key: {
+                source_id: nonneg_rate(value, prev[key][source_id], dt)
+                for source_id, value in counts[key].items()
+            }
+            for key in _PER_SOURCE_COUNTERS
+        },
+    }
 
 
 def _input_observation(
@@ -356,7 +341,7 @@ class FaninView:
         prev = self._last_counts
         rates = _rates(counts, prev)
         if prev is not None:
-            airplay_delta = counts["airplay_xruns"] - as_int(prev.get("airplay_xruns"))
+            airplay_delta = counts["airplay_xruns"] - prev["airplay_xruns"]
             if airplay_delta > 0 and not suppress_events:
                 record_event(
                     now,
