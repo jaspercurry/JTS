@@ -317,9 +317,10 @@ async def _release_measurement_hold(owner: str) -> None:
 
 
 async def _stop_lease_refresh(
-    task: "asyncio.Task[None] | None", label: str,
-) -> None:
-    """Cancel one lease-renewal task and absorb whatever it died of.
+    task: "asyncio.Task[MeasurementWindowError | None] | None", label: str,
+) -> MeasurementWindowError | None:
+    """Cancel one lease-renewal task and absorb whatever it died of; return
+    the error it gave up with, if it aborted the window.
 
     Renewal is resilience-only: a dead background task must never bypass
     MEASURE_RESUME, the mux-gate release, or the volume-hold release, so its
@@ -328,14 +329,15 @@ async def _stop_lease_refresh(
     moment a third lease arrived.
     """
     if task is None:
-        return
+        return None
     task.cancel()
     try:
-        await task
+        return await task
     except asyncio.CancelledError:
         pass
     except Exception:  # noqa: BLE001 - see the docstring
         logger.exception("%s refresh task failed", label)
+    return None
 
 
 def _measurement_hold_ttl_sec() -> float:
@@ -401,6 +403,215 @@ async def _check_no_active_voice_session(
         )
 
 
+async def _acquire_gate_for(gate_owner: str) -> None:
+    # The default owner goes bare: the gate commands' test stand-ins take none.
+    if gate_owner == MEASUREMENT_GATE_OWNER:
+        await _acquire_measurement_gate()
+    else:
+        await _acquire_measurement_gate(gate_owner=gate_owner)
+
+
+async def _release_gate_for(gate_owner: str, *, allow_other_owner: bool) -> None:
+    if gate_owner == MEASUREMENT_GATE_OWNER:
+        await _release_measurement_gate(allow_other_owner=allow_other_owner)
+    else:
+        await _release_measurement_gate(
+            gate_owner=gate_owner, allow_other_owner=allow_other_owner,
+        )
+
+
+async def _refresh_measurement_hold(gate_owner: str, hold_ours: asyncio.Event) -> None:
+    """Renew jasper-control's volume hold until cancelled; ``hold_ours`` is
+    set while the hold is this window's.
+
+    Started UNCONDITIONALLY, including when the first acquire did not land,
+    because this loop both renews and RETRIES: jasper-control is restarted
+    by every deploy and is not socket-activated. A renewal that cannot land
+    retries on the shared back-off and does NOT clear ``hold_ours`` (a lost
+    response may still have landed). A 409 is the one definitive answer — a
+    different owner holds it — so renewal stops and cleanup responsibility
+    is dropped."""
+    delay = MEASUREMENT_LEASE_REFRESH_SEC if hold_ours.is_set() else MEASUREMENT_LEASE_RETRY_SEC
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            landed = await _acquire_measurement_hold(gate_owner)
+        except MeasurementWindowError as exc:
+            logger.warning(
+                "measurement hold lost to another owner (%s); stopping renewal", exc,
+            )
+            hold_ours.clear()
+            return
+        if landed:
+            hold_ours.set()
+        delay = MEASUREMENT_LEASE_REFRESH_SEC if landed else MEASUREMENT_LEASE_RETRY_SEC
+
+
+def _abort_window(
+    owner_task: "asyncio.Task[Any] | None", message: str,
+) -> MeasurementWindowError:
+    """Cancel the task that entered the window; the error it must raise."""
+    error = MeasurementWindowError(message)
+    if owner_task is not None:
+        owner_task.cancel()
+    return error
+
+
+async def _refresh_measurement_gate_lease(
+    gate_owner: str, owner_task: "asyncio.Task[Any] | None",
+) -> MeasurementWindowError | None:
+    """Renew mux's gate lease until cancelled; abort the window once no
+    renewal has landed for MEASUREMENT_GATE_ABORT_SEC."""
+    delay = MEASUREMENT_GATE_REFRESH_SEC
+    last_confirmed = time.monotonic()
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            await _acquire_gate_for(gate_owner)
+        except MeasurementWindowError as exc:
+            logger.warning("measurement gate lease refresh failed: %s", exc)
+            if time.monotonic() - last_confirmed >= MEASUREMENT_GATE_ABORT_SEC:
+                return _abort_window(
+                    owner_task,
+                    "Measurement isolation could not be renewed; "
+                    "the sweep was stopped before household music "
+                    "could re-enter the mix. Check System status "
+                    "and try again.",
+                )
+            delay = MEASUREMENT_LEASE_RETRY_SEC
+        else:
+            last_confirmed = time.monotonic()
+            delay = MEASUREMENT_GATE_REFRESH_SEC
+
+
+_VOICE_LEASE_LOST = "Voice isolation could not be renewed; the measurement was stopped."
+
+
+async def _refresh_voice_lease(
+    voice_socket_path: str,
+    require_voice_pause: bool,
+    owner_task: "asyncio.Task[Any] | None",
+) -> MeasurementWindowError | None:
+    """Renew MEASURE_PAUSE until cancelled; a strict window whose renewal
+    fails is aborted."""
+    delay = MEASUREMENT_LEASE_REFRESH_SEC
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            renewal = await _voice_uds_command(
+                voice_socket_path, wire.VOICE_MEASURE_PAUSE, timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
+            )
+        except (
+            FileNotFoundError,
+            OSError,
+            asyncio.TimeoutError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+        ) as exc:
+            logger.warning("measurement lease refresh failed: %s", exc)
+            if require_voice_pause:
+                return _abort_window(owner_task, _VOICE_LEASE_LOST)
+            delay = MEASUREMENT_LEASE_RETRY_SEC
+            continue
+        renewal_ok = (
+            isinstance(renewal, dict)
+            and renewal.get("result") == "ok"
+            and (not require_voice_pause or renewal.get("drained") is True)
+        )
+        if not renewal_ok:
+            logger.warning("measurement lease refresh returned non-ok: %s", renewal)
+            if require_voice_pause:
+                return _abort_window(owner_task, _VOICE_LEASE_LOST)
+            delay = MEASUREMENT_LEASE_RETRY_SEC
+        else:
+            delay = MEASUREMENT_LEASE_REFRESH_SEC
+
+
+async def _pause_voice(
+    voice_socket_path: str,
+    require_voice_pause: bool,
+    owner_task: "asyncio.Task[Any] | None",
+) -> "asyncio.Task[MeasurementWindowError | None] | None":
+    """MEASURE_PAUSE the voice daemon. On "ok", start renewing the pause and
+    return that task; None when voice was not paused and the window may
+    proceed anyway (never in a strict window, which raises instead)."""
+    try:
+        resp = await _voice_uds_command(
+            voice_socket_path, wire.VOICE_MEASURE_PAUSE, timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
+        )
+        pause_result = resp.get("result")
+        if pause_result == "ok":
+            drained = resp.get("drained")
+            if require_voice_pause and drained is not True:
+                raise MeasurementWindowError(
+                    "Voice pause was armed, but the daemon did not "
+                    "prove prior assistant audio drained."
+                )
+            lease_task = asyncio.create_task(
+                _refresh_voice_lease(voice_socket_path, require_voice_pause, owner_task)
+            )
+            if drained is False:
+                logger.warning(
+                    "MEASURE_PAUSE timed out draining prior assistant "
+                    "audio — proceeding under the historical permissive "
+                    "correction policy; MEASURE_RESUME remains required"
+                )
+            return lease_task
+        if require_voice_pause:
+            raise MeasurementWindowError(
+                "Voice daemon refused MEASURE_PAUSE: "
+                f"{resp.get('result', 'missing result')}."
+            )
+        logger.warning(
+            "MEASURE_PAUSE returned non-ok: %s — proceeding "
+            "anyway, but the WakeLoop may still consume mic "
+            "during the sweep",
+            resp,
+        )
+    except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+        if require_voice_pause:
+            raise MeasurementWindowError(
+                f"Could not pause voice for measurement: {e}"
+            ) from e
+        logger.warning(
+            "voice_daemon MEASURE_PAUSE failed (%s) — proceeding "
+            "without WakeLoop pause. The voice loop will probably "
+            "still work fine if the daemon is simply down.",
+            e,
+        )
+    except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
+        if require_voice_pause:
+            raise MeasurementWindowError(
+                f"Could not pause voice for measurement: {e}"
+            ) from e
+        raise
+    return None
+
+
+async def _resume_voice(voice_socket_path: str, require_voice_pause: bool) -> None:
+    try:
+        # A plain read deadline, NOT VOICE_MEASURE_PAUSE_TIMEOUT_SEC:
+        # RESUME has no in-playout drain to wait out, and giving up
+        # here is recoverable via the daemon's auto-clear.
+        await _voice_uds_command(voice_socket_path, wire.VOICE_MEASURE_RESUME, timeout=3.0)
+    except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+        logger.error(
+            "voice_daemon MEASURE_RESUME failed: %s — the "
+            "daemon's auto-clear safety timer will recover",
+            e,
+        )
+    except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
+        if not require_voice_pause:
+            raise
+        logger.error(
+            "voice_daemon MEASURE_RESUME returned malformed data: %s; "
+            "the daemon's auto-clear safety timer will recover",
+            e,
+        )
+
+
 @asynccontextmanager
 async def measurement_window(
     *,
@@ -435,14 +646,12 @@ async def measurement_window(
 
     measurement_gate_cleanup_required = False
     measurement_gate_acquired = False
-    measurement_gate_refresh_task: asyncio.Task[None] | None = None
-    measurement_gate_lease_error: MeasurementWindowError | None = None
-    hold_acquired = False
+    measurement_gate_refresh_task: asyncio.Task[MeasurementWindowError | None] | None = None
+    hold_ours = asyncio.Event()
     hold_refresh_task: asyncio.Task[None] | None = None
     voice_paused = False
     voice_pause_cleanup_required = False
-    lease_refresh_task: asyncio.Task[None] | None = None
-    voice_lease_error: MeasurementWindowError | None = None
+    lease_refresh_task: asyncio.Task[MeasurementWindowError | None] | None = None
     measurement_owner_task = asyncio.current_task()
 
     try:
@@ -450,50 +659,18 @@ async def measurement_window(
         # flag is cleared even when this raises.
         if not skip_voice_pause:
             await _check_no_active_voice_session(
-                voice_socket_path,
-                require_voice_pause=require_voice_pause,
+                voice_socket_path, require_voice_pause=require_voice_pause,
             )
 
         # Taken BEFORE the mux gate and the voice pause so a conflicting second
         # measurement is refused before this window disturbs anything, and
         # released LAST. `gate_owner` doubles as the hold owner so ONE name
         # identifies this measurement across mux, jasper-control and /state.
-        hold_acquired = await _acquire_measurement_hold(gate_owner)
-
-        async def _refresh_measurement_hold() -> None:
-            # Started UNCONDITIONALLY, including when the first acquire did not
-            # land, because this loop both renews and RETRIES: jasper-control is
-            # restarted by every deploy and is not socket-activated. A renewal
-            # that cannot land retries on the shared back-off and does NOT clear
-            # `hold_acquired` (a lost response may still have landed). A 409 is
-            # the one definitive answer — a different owner holds it — so
-            # renewal stops and cleanup responsibility is dropped.
-            nonlocal hold_acquired
-            delay = (
-                MEASUREMENT_LEASE_REFRESH_SEC
-                if hold_acquired
-                else MEASUREMENT_LEASE_RETRY_SEC
-            )
-            while True:
-                await asyncio.sleep(delay)
-                try:
-                    landed = await _acquire_measurement_hold(gate_owner)
-                except MeasurementWindowError as exc:
-                    logger.warning(
-                        "measurement hold lost to another owner (%s); "
-                        "stopping renewal", exc,
-                    )
-                    hold_acquired = False
-                    return
-                if landed:
-                    hold_acquired = True
-                delay = (
-                    MEASUREMENT_LEASE_REFRESH_SEC
-                    if landed
-                    else MEASUREMENT_LEASE_RETRY_SEC
-                )
-
-        hold_refresh_task = asyncio.create_task(_refresh_measurement_hold())
+        if await _acquire_measurement_hold(gate_owner):
+            hold_ours.set()
+        hold_refresh_task = asyncio.create_task(
+            _refresh_measurement_hold(gate_owner, hold_ours)
+        )
 
         if not skip_music_isolation:
             # Gate first: even a renderer that races its stop cannot enter the
@@ -501,175 +678,25 @@ async def measurement_window(
             # a lost response still releases this exact owner and never
             # commissioning's gate.
             measurement_gate_cleanup_required = True
-            if gate_owner == MEASUREMENT_GATE_OWNER:
-                await _acquire_measurement_gate()
-            else:
-                await _acquire_measurement_gate(gate_owner=gate_owner)
+            await _acquire_gate_for(gate_owner)
             measurement_gate_acquired = True
-
-            async def _refresh_measurement_gate_lease() -> None:
-                nonlocal measurement_gate_lease_error
-                delay = MEASUREMENT_GATE_REFRESH_SEC
-                last_confirmed = time.monotonic()
-                while True:
-                    await asyncio.sleep(delay)
-                    try:
-                        if gate_owner == MEASUREMENT_GATE_OWNER:
-                            await _acquire_measurement_gate()
-                        else:
-                            await _acquire_measurement_gate(
-                                gate_owner=gate_owner,
-                            )
-                    except MeasurementWindowError as exc:
-                        logger.warning(
-                            "measurement gate lease refresh failed: %s",
-                            exc,
-                        )
-                        if (
-                            time.monotonic() - last_confirmed
-                            >= MEASUREMENT_GATE_ABORT_SEC
-                        ):
-                            measurement_gate_lease_error = MeasurementWindowError(
-                                "Measurement isolation could not be renewed; "
-                                "the sweep was stopped before household music "
-                                "could re-enter the mix. Check System status "
-                                "and try again."
-                            )
-                            if measurement_owner_task is not None:
-                                measurement_owner_task.cancel()
-                            return
-                        delay = MEASUREMENT_LEASE_RETRY_SEC
-                    else:
-                        last_confirmed = time.monotonic()
-                        delay = MEASUREMENT_GATE_REFRESH_SEC
-
             measurement_gate_refresh_task = asyncio.create_task(
-                _refresh_measurement_gate_lease()
+                _refresh_measurement_gate_lease(gate_owner, measurement_owner_task)
             )
 
         if not skip_voice_pause:
             # Establish cleanup responsibility before PAUSE: a lost response may
             # still have armed the voice gate.
             voice_pause_cleanup_required = require_voice_pause
-            try:
-                resp = await _voice_uds_command(
-                    voice_socket_path,
-                    wire.VOICE_MEASURE_PAUSE,
-                    timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
-                )
-                pause_result = resp.get("result")
-                if pause_result == "ok":
-                    voice_paused = True
-                    voice_pause_cleanup_required = True
-                    drained = resp.get("drained")
-                    if require_voice_pause and drained is not True:
-                        raise MeasurementWindowError(
-                            "Voice pause was armed, but the daemon did not "
-                            "prove prior assistant audio drained."
-                        )
-
-                    async def _refresh_voice_lease() -> None:
-                        nonlocal voice_lease_error
-
-                        def _abort_strict_window() -> None:
-                            nonlocal voice_lease_error
-                            voice_lease_error = MeasurementWindowError(
-                                "Voice isolation could not be renewed; "
-                                "the measurement was stopped."
-                            )
-                            if measurement_owner_task is not None:
-                                measurement_owner_task.cancel()
-
-                        delay = MEASUREMENT_LEASE_REFRESH_SEC
-                        while True:
-                            await asyncio.sleep(delay)
-                            try:
-                                renewal = await _voice_uds_command(
-                                    voice_socket_path,
-                                    wire.VOICE_MEASURE_PAUSE,
-                                    timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
-                                )
-                            except (
-                                FileNotFoundError,
-                                OSError,
-                                asyncio.TimeoutError,
-                                RuntimeError,
-                                ValueError,
-                                TypeError,
-                                UnicodeError,
-                            ) as exc:
-                                logger.warning(
-                                    "measurement lease refresh failed: %s",
-                                    exc,
-                                )
-                                if require_voice_pause:
-                                    _abort_strict_window()
-                                    return
-                                delay = MEASUREMENT_LEASE_RETRY_SEC
-                                continue
-                            renewal_ok = (
-                                isinstance(renewal, dict)
-                                and renewal.get("result") == "ok"
-                                and (
-                                    not require_voice_pause
-                                    or renewal.get("drained") is True
-                                )
-                            )
-                            if not renewal_ok:
-                                logger.warning(
-                                    "measurement lease refresh returned non-ok: %s",
-                                    renewal,
-                                )
-                                if require_voice_pause:
-                                    _abort_strict_window()
-                                    return
-                                delay = MEASUREMENT_LEASE_RETRY_SEC
-                            else:
-                                delay = MEASUREMENT_LEASE_REFRESH_SEC
-
-                    lease_refresh_task = asyncio.create_task(
-                        _refresh_voice_lease()
-                    )
-                    if drained is False:
-                        logger.warning(
-                            "MEASURE_PAUSE timed out draining prior assistant "
-                            "audio — proceeding under the historical permissive "
-                            "correction policy; MEASURE_RESUME remains required"
-                        )
-                else:
-                    if require_voice_pause:
-                        raise MeasurementWindowError(
-                            "Voice daemon refused MEASURE_PAUSE: "
-                            f"{resp.get('result', 'missing result')}."
-                        )
-                    logger.warning(
-                        "MEASURE_PAUSE returned non-ok: %s — proceeding "
-                        "anyway, but the WakeLoop may still consume mic "
-                        "during the sweep",
-                        resp,
-                    )
-            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                if require_voice_pause:
-                    raise MeasurementWindowError(
-                        f"Could not pause voice for measurement: {e}"
-                    ) from e
-                logger.warning(
-                    "voice_daemon MEASURE_PAUSE failed (%s) — proceeding "
-                    "without WakeLoop pause. The voice loop will probably "
-                    "still work fine if the daemon is simply down.",
-                    e,
-                )
-            except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
-                if require_voice_pause:
-                    raise MeasurementWindowError(
-                        f"Could not pause voice for measurement: {e}"
-                    ) from e
-                raise
+            lease_refresh_task = await _pause_voice(
+                voice_socket_path, require_voice_pause, measurement_owner_task,
+            )
+            if lease_refresh_task is not None:
+                voice_paused = voice_pause_cleanup_required = True
 
         logger.info(
             "measurement window OPEN (voice_paused=%s, volume_hold=%s)",
-            voice_paused,
-            hold_acquired,
+            voice_paused, hold_ours.is_set(),
         )
         yield
     finally:
@@ -678,57 +705,29 @@ async def measurement_window(
         # let a queued second window run during restoration; clearing it only on
         # the success path would strand it True forever after a raising restore.
         try:
-            await _stop_lease_refresh(
+            measurement_gate_lease_error = await _stop_lease_refresh(
                 measurement_gate_refresh_task, "measurement gate",
             )
-            await _stop_lease_refresh(
-                hold_refresh_task, "measurement hold",
-            )
-            await _stop_lease_refresh(
+            await _stop_lease_refresh(hold_refresh_task, "measurement hold")
+            voice_lease_error = await _stop_lease_refresh(
                 lease_refresh_task, "measurement lease",
             )
             # Restore voice first, then release mux's music-isolation gate.
             if voice_pause_cleanup_required:
-                try:
-                    # A plain read deadline, NOT VOICE_MEASURE_PAUSE_TIMEOUT_SEC:
-                    # RESUME has no in-playout drain to wait out, and giving up
-                    # here is recoverable via the daemon's auto-clear.
-                    await _voice_uds_command(
-                        voice_socket_path, wire.VOICE_MEASURE_RESUME, timeout=3.0,
-                    )
-                except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                    logger.error(
-                        "voice_daemon MEASURE_RESUME failed: %s — the "
-                        "daemon's auto-clear safety timer will recover",
-                        e,
-                    )
-                except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
-                    if not require_voice_pause:
-                        raise
-                    logger.error(
-                        "voice_daemon MEASURE_RESUME returned malformed data: %s; "
-                        "the daemon's auto-clear safety timer will recover",
-                        e,
-                    )
+                await _resume_voice(voice_socket_path, require_voice_pause)
             gate_release_error: MeasurementWindowError | None = None
             if measurement_gate_cleanup_required:
                 try:
-                    if gate_owner == MEASUREMENT_GATE_OWNER:
-                        await _release_measurement_gate(
-                            allow_other_owner=not measurement_gate_acquired,
-                        )
-                    else:
-                        await _release_measurement_gate(
-                            gate_owner=gate_owner,
-                            allow_other_owner=not measurement_gate_acquired,
-                        )
+                    await _release_gate_for(
+                        gate_owner, allow_other_owner=not measurement_gate_acquired,
+                    )
                 except MeasurementWindowError as exc:
                     # If release truly did not land, the still-held mux gate
                     # keeps music silent; surface the action required.
                     gate_release_error = exc
             # Hold last: LIFO against the acquire order, so no second
             # measurement can take the speaker while this one still restores.
-            if hold_acquired:
+            if hold_ours.is_set():
                 await _release_measurement_hold(gate_owner)
             logger.info("measurement window CLOSED")
             if measurement_gate_lease_error is not None:

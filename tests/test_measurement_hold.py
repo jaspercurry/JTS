@@ -814,9 +814,9 @@ async def test_a_failed_first_acquire_is_retried_until_it_lands(monkeypatch):
     reporting nothing, the doctor seeing nothing, and no cross-process mutex —
     off ONE lost round trip against a daemon that came back seconds later.
 
-    Mutation-verified: restoring `if hold_acquired:` around the
-    `asyncio.create_task(_refresh_measurement_hold())` makes this time out on
-    `landed`, and the release assertion fails with it.
+    Mutation-verified: restoring `if hold_ours.is_set():` around the
+    `asyncio.create_task(_refresh_measurement_hold(...))` makes this time out
+    on `landed`, and the release assertion fails with it.
     """
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.01)
     calls: list[tuple[str, dict]] = []
