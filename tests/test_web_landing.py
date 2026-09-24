@@ -180,7 +180,7 @@ def test_hub_is_static_and_gates_fail_closed(path: str, profile: str) -> None:
 
 
 def test_install_writes_one_page_per_hub(tmp_path: Path) -> None:
-    write_hub_pages(tmp_path, caps={"content_dsp": True}, app_css_version="abc1234")
+    write_hub_pages(tmp_path, caps={"voice_brain": True}, app_css_version="abc1234")
 
     assert sorted(
         page.relative_to(tmp_path).as_posix() for page in tmp_path.rglob("*.html")

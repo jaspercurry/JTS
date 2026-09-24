@@ -41,7 +41,7 @@ compute the same map at different times (install.sh bakes it into the
 static landing page; jasper-control serves it live at ``/system``), and
 they agree only because both derive from the marker and nothing else.
 The moment a capability reads something dynamic, a baked page can be
-wrong at runtime and the landing page's ``applyCapabilities`` fails
+wrong at runtime and the landing page's ``initSettingsStatus`` fails
 closed — hiding a section forever with no error. Pinned by
 tests/test_install_profile_capabilities.py.
 """
@@ -284,8 +284,6 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         # only appears if the function is called directly with one.
         "install_profile": profile,
         "role": role,
-        "local_sources": True,
-        "content_dsp": True,
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
         # having the headroom to listen for a wake word all day. The
@@ -299,9 +297,7 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "speaker_settings": True,
         "pair_management": True,
         "developer_tools": full,
-        "audio_quality": True,
         "restart_voice": voice_brain,
-        "restart_audio": True,
         "reboot": True,
         "poweroff": True,
         "diagnostics": True,

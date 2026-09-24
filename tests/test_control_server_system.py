@@ -709,13 +709,9 @@ def test_system_snapshot_reports_streambox_capabilities(
     caps = body["system_capabilities"]
     assert caps["install_profile"] == "streambox"
     assert caps["role"] == "streambox"
-    assert caps["local_sources"] is True
-    assert caps["content_dsp"] is True
     assert caps["voice_brain"] is True
     assert caps["wake_detection"] is False
-    assert caps["audio_quality"] is True
     assert caps["restart_voice"] is True
-    assert caps["restart_audio"] is True
     assert caps["network_settings"] is True
     assert caps["speaker_settings"] is True
     assert caps["pair_management"] is True

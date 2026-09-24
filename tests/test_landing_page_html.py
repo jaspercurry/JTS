@@ -520,7 +520,7 @@ def test_landing_page_capability_gates_fail_closed() -> None:
 
 def test_landing_page_data_requires_match_capability_map() -> None:
     # Every data-requires="X" gate must have a key X in the capability map
-    # (system_capabilities_for_profile) — otherwise applyCapabilities reads
+    # (system_capabilities_for_profile) — otherwise initSettingsStatus reads
     # caps["X"] === undefined, fails closed, and the section is hidden forever
     # with no error. Pin the seam so a typo'd or new gate fails the suite, not
     # silently in the field. (Cap keys are profile-independent — only the

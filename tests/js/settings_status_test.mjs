@@ -43,8 +43,8 @@ function gatedRow(cap) {
   return row;
 }
 
-const rows = [gatedRow("pair_management"), gatedRow("local_sources"), gatedRow(null)];
-const [pairRow, sourcesRow, ungatedRow] = rows;
+const rows = [gatedRow("pair_management"), gatedRow("wake_detection"), gatedRow(null)];
+const [pairRow, wakeRow, ungatedRow] = rows;
 
 const STATUS_IDS = [
   "status-speaker-name",
@@ -111,7 +111,7 @@ async function gating_is_applied_synchronously_on_return() {
   // Asserted before the in-flight snapshot resolves: the layout owes the
   // network nothing.
   check(pairRow.hidden === false, "a granted row is revealed");
-  check(sourcesRow.hidden === true, "an ungranted row stays hidden");
+  check(wakeRow.hidden === true, "an ungranted row stays hidden");
   check(ungatedRow.hidden === false, "an element with no cap name is untouched");
   check(typeof stop === "function", "the caller gets a stop()");
   await settle();
@@ -123,7 +123,7 @@ async function gating_fails_closed_without_a_capability_map() {
   const stop = start(undefined);
 
   check(pairRow.hidden === true, "no caps means a gated row stays hidden");
-  check(sourcesRow.hidden === true, "...for every gated row");
+  check(wakeRow.hidden === true, "...for every gated row");
   await settle();
   stop();
 }

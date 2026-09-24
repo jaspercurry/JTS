@@ -217,13 +217,10 @@ def test_system_capabilities_map_per_profile():
     full = caps("full")
     streambox = caps("streambox")
     # Both tiers hold the voice brain now; only full has developer tools.
-    # Both run the local audio graph (sources + DSP) and keep the
-    # management surfaces.
+    # Both keep the management surfaces.
     assert full["voice_brain"] is True and full["developer_tools"] is True
     assert streambox["voice_brain"] is True
     assert streambox["developer_tools"] is False
-    for k in ("local_sources", "content_dsp"):
-        assert full[k] is True and streambox[k] is True
     for k in ("network_settings", "speaker_settings", "pair_management", "reboot"):
         assert full[k] is True and streambox[k] is True
 
@@ -234,7 +231,7 @@ def test_system_capabilities_map_per_profile():
     legacy = caps("endpoint")
     assert legacy["install_profile"] == "endpoint"
     assert legacy["role"] == "streambox"
-    assert legacy["voice_brain"] is True and legacy["local_sources"] is True
+    assert legacy["voice_brain"] is True and legacy["developer_tools"] is False
 
 
 def test_bash_normalize_maps_legacy_tokens_to_streambox():

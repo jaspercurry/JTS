@@ -65,7 +65,6 @@ export function buildSystemPanel(handlers) {
   // poll. This avoids a tiny cold-load window where a streambox
   // could show full-speaker actions before its profile arrives.
   restartVoice.disabled = true;
-  restartAudio.disabled = true;
   const actions = titledCard("Actions");
   actions.section.classList.add("system-actions");
   actions.body.append(
@@ -124,29 +123,17 @@ export function buildSystemPanel(handlers) {
     vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
     actionsStatus,
-    actionButtons: { restartVoice, restartAudio },
+    restartVoice,
     forensics,
     _memo: {},
   };
   return { panel, refs };
 }
 
-function capabilityAllows(caps, key) {
-  return !caps || caps[key] !== false;
-}
-
-function setActionAvailable(btn, allowed) {
-  btn.hidden = !allowed;
-  btn.disabled = !allowed;
-}
-
 function applySystemCapabilities(refs, caps) {
-  refs.systemCapabilities = caps || null;
-  const canRestartVoice = capabilityAllows(caps, "restart_voice");
-  const canRestartAudio = capabilityAllows(caps, "restart_audio");
-
-  setActionAvailable(refs.actionButtons.restartVoice, canRestartVoice);
-  setActionAvailable(refs.actionButtons.restartAudio, canRestartAudio);
+  const allowed = !caps || caps.restart_voice !== false;
+  refs.restartVoice.hidden = !allowed;
+  refs.restartVoice.disabled = !allowed;
 }
 
 export function update(refs, snap) {

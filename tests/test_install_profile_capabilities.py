@@ -20,7 +20,7 @@ Three things are pinned here:
    landing page; jasper-control serves it live at /system) and agree only
    because of this. A capability that read something dynamic would let a
    baked page be wrong at runtime, and the landing page's
-   ``applyCapabilities`` fails closed — a section hidden forever, no error.
+   ``initSettingsStatus`` fails closed — a section hidden forever, no error.
 3. **The grant table's derived map, pinned.** Every
    ``system_capabilities_for_profile`` boolean is a thin view over
    ``PROFILE_CAPABILITIES`` — data, not a second place to restate a grant.
@@ -248,34 +248,26 @@ def test_capability_map_is_deterministic_across_calls():
 # code actually produces.
 _EXPECTED_CAPABILITIES = {
     "full": {
-        "audio_quality": True,
-        "content_dsp": True,
         "developer_tools": True,
         "diagnostics": True,
         "install_profile": "full",
-        "local_sources": True,
         "network_settings": True,
         "pair_management": True,
         "poweroff": True,
         "reboot": True,
-        "restart_audio": True,
         "restart_voice": True,
         "role": "full",
         "speaker_settings": True,
         "voice_brain": True,
     },
     "streambox": {
-        "audio_quality": True,
-        "content_dsp": True,
         "developer_tools": False,
         "diagnostics": True,
         "install_profile": "streambox",
-        "local_sources": True,
         "network_settings": True,
         "pair_management": True,
         "poweroff": True,
         "reboot": True,
-        "restart_audio": True,
         "restart_voice": True,
         "role": "streambox",
         "speaker_settings": True,
