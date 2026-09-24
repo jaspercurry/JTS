@@ -365,19 +365,15 @@ def compose_audio_health(
         active_source, previous_overall, sampled_at,
     )
     current_incident, recent_incidents = _incident_views(issues, active_source, sampled_at)
-    current_stream = build_current_stream(
-        active_source=active_source,
-        airplay=ap,
-        outputd=outputd,
-        route=route_state,
-        timing=latency,
-        sampled_at=sampled_at,
-        session=session,
-        restart_watch_units=RESTART_WATCH_UNITS,
-        service_states=service_states,
+    current_stream = (
+        _activity_unknown_stream(ap, session) if activity_unknown
+        else build_current_stream(
+            active_source=active_source, airplay=ap, outputd=outputd,
+            route=route_state, timing=latency, sampled_at=sampled_at,
+            session=session, restart_watch_units=RESTART_WATCH_UNITS,
+            service_states=service_states,
+        )
     )
-    if activity_unknown:
-        current_stream = _activity_unknown_stream(ap, session)
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at": sampled_at,
