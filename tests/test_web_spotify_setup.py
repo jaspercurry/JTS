@@ -470,8 +470,11 @@ def test_post_unknown_route_404s():
 
 @pytest.mark.parametrize("pasted, expected", [
     ("http://127.0.0.1:8888/callback?code=c&state=s", ("c", "s")),
+    ("http://127.0.0.1:8888/callback?code=c&state=s#top", ("c", "s")),
     ("?code=c&state=s", ("c", "s")),
-    ("http://[::1/callback?code=c&state=s", None),
+    ("code=c&state=s", ("c", "s")),
+    ("http://[::1/callback?code=c&state=s", ("c", "s")),
+    ("http://127.0.0.1:8888/callback?code=c", None),
 ])
 def test_parse_callback_url_reads_code_and_state_or_none(pasted, expected):
     assert spotify_setup._parse_callback_url(pasted) == expected

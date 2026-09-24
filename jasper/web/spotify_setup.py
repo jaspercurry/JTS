@@ -845,22 +845,8 @@ def _parse_callback_url(pasted: str) -> tuple[str, str] | None:
     """Pull `code` and `state` out of an arbitrary pasted string. Accepts
     a full URL, just the query-string fragment, or just `code=…&state=…`.
     Returns None if either parameter is missing."""
-    s = pasted.strip()
-    if not s:
-        return None
-    # Strip a leading `?` so a bare query-string fragment parses too.
-    if s.startswith("?"):
-        s = s[1:]
-    # If it looks like a URL, take the query-string portion. Otherwise
-    # treat the whole thing as a query string.
-    if "://" in s:
-        try:
-            qs = urllib.parse.urlparse(s).query
-        except ValueError:  # an unbalanced IPv6 bracket
-            return None
-    else:
-        qs = s
-    parts = urllib.parse.parse_qs(qs)
+    head, sep, tail = pasted.strip().partition("?")
+    parts = urllib.parse.parse_qs((tail if sep else head).partition("#")[0])
     code = (parts.get("code") or [""])[0]
     state = (parts.get("state") or [""])[0]
     if not code or not state:
