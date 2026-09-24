@@ -20,7 +20,7 @@ import grimp
 TUNING = ("jasper.active_speaker", "jasper.audio_measurement", "jasper.sound")
 
 #: Lower this when a change shrinks the cycle; it must never rise.
-LARGEST_TUNING_CYCLE = 9
+LARGEST_TUNING_CYCLE = 0
 
 
 def _cycles(graph: grimp.ImportGraph) -> list[set[str]]:
