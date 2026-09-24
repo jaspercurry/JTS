@@ -13,7 +13,7 @@ from typing import Any
 
 from ...accessories import status as accessory_status
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
-from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
+from ...control.restart_broker import SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import (
     JASPER_VOICE_SERVICE,

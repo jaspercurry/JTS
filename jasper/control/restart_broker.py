@@ -108,7 +108,7 @@ from jasper.source_intent_units import (
 )
 
 logger = logging.getLogger(__name__)
-_SELF_UNIT = "jasper-control.service"
+SELF_UNIT = "jasper-control.service"
 
 # The broker socket. jasper-control declares RuntimeDirectory=jasper-control,
 # so /run/jasper-control exists owned by the unit's user. Overridable for
@@ -433,8 +433,8 @@ def _run_systemctl_request(
         )
         return None, "", True
 
-    if verb == "restart" and _SELF_UNIT in units:
-        non_self_units = [u for u in units if u != _SELF_UNIT]
+    if verb == "restart" and SELF_UNIT in units:
+        non_self_units = [u for u in units if u != SELF_UNIT]
         if non_self_units:
             first = subprocess.run(
                 _build_argv(verb, non_self_units, no_block=no_block),
@@ -448,9 +448,9 @@ def _run_systemctl_request(
                 return first.returncode, (first.stderr or "").strip(), False
 
         _spawn_detached(
-            _build_argv(verb, [_SELF_UNIT], no_block=True),
+            _build_argv(verb, [SELF_UNIT], no_block=True),
             verb=verb,
-            units_label=_SELF_UNIT,
+            units_label=SELF_UNIT,
         )
         return None, "", True
 
