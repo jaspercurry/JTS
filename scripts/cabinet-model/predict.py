@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Predicted woofer-pair response without a room, and at a seat in front of a back wall.
 
-    .venv/bin/python scripts/cabinet-model/predict.py --transfer transfer.npz --nearfield nearfield.npz \\
+    .venv/bin/python scripts/cabinet-model/predict.py --transfer transfer.npz --nearfield nearfield_view.json \\
         --dsp live.yml --dsp prescription.json --png compare.png --xmax-mm 14.7
 
 --dsp takes the speaker's live CamillaDSP graph or a rear-calibration or prescription JSON. Only the
@@ -67,7 +67,7 @@ def plot(curves: dict, grid: np.ndarray, png: Path, listener_m: float, gap_m: fl
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--transfer", type=Path, required=True, help="bem-transfer.py output")
-    ap.add_argument("--nearfield", type=Path, required=True, help="nearfield-analyze.py output")
+    ap.add_argument("--nearfield", type=Path, required=True, help="jasper-round-views nearfield output (nearfield_view.json)")
     ap.add_argument("--dsp", type=Path, action="append", required=True,
                     help="live graph YAML or rear-calibration/prescription JSON; repeat to compare (up to 3)")
     ap.add_argument("--listener-m", type=float, default=2.0)

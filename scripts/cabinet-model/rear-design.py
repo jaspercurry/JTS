@@ -15,7 +15,7 @@ all-pass) with a seat objective in place of a cardioid target, per unit front dr
     below 900 Hz.
 The result leans on the wall: set --wall-gap-m from the room and read the robustness rows.
 
-    .venv/bin/python scripts/cabinet-model/rear-design.py --transfer transfer.npz --nearfield nearfield.npz \\
+    .venv/bin/python scripts/cabinet-model/rear-design.py --transfer transfer.npz --nearfield nearfield_view.json \\
         --live live.yml --out prescription.json
 
 Writes a jts_prescription with the rear unmuted, for a listening trial through the speaker's
@@ -57,7 +57,7 @@ FLAT_BOOST_HZ = 16000.0  # a Lowshelf this high is flat to 0.001 dB and 0.7 degr
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--transfer", type=Path, required=True, help="bem-transfer.py output")
-    ap.add_argument("--nearfield", type=Path, required=True, help="nearfield-analyze.py output")
+    ap.add_argument("--nearfield", type=Path, required=True, help="jasper-round-views nearfield output (nearfield_view.json)")
     ap.add_argument("--out", type=Path, required=True, help="prescription JSON to write")
     ap.add_argument("--live", type=Path, help="the live graph YAML (or a document) to compare against")
     ap.add_argument("--wall-gap-m", type=float, default=0.2, help="cabinet back to the wall behind it")
