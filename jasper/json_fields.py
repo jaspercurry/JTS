@@ -51,7 +51,7 @@ def as_float(value: Any) -> float | None:
     convert, and NaN and infinities pass through."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

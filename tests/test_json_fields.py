@@ -51,7 +51,8 @@ def test_finite_float_reads_only_a_real_number(value, expected):
 @pytest.mark.parametrize(
     "value,expected",
     [(True, 1.0), (" 1.5 ", 1.5), ("-inf", float("-inf")), (3, 3.0),
-     (None, None), ("junk", None), ([1], None)],
+     (None, None), ("junk", None), ([1], None),
+     pytest.param(10**400, None, id="int-past-float-range")],
 )
 def test_as_float_coerces_whatever_float_accepts(value, expected):
     result = as_float(value)

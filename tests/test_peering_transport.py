@@ -137,6 +137,15 @@ def test_missing_required_fields_returns_none():
     assert decode(raw) is None
 
 
+@pytest.mark.parametrize("raw", [
+    b'{"t": "HEART", "proto": %d, "epoch": "ep", "peer": "p", "ts": 1e400}' % PROTO_VERSION,
+    b'{"t": "WAKE", "proto": %d, "epoch": "ep", "peer": "p", "score": 1%s}'
+    % (PROTO_VERSION, b"0" * 400),
+], ids=["heartbeat-ts-inf", "wake-score-400-digits"])
+def test_a_number_that_overflows_drops_the_datagram(raw):
+    assert decode(raw) is None
+
+
 def test_unknown_message_type_returns_none():
     import json
     raw = json.dumps({"t": "FUTURE_TYPE", "proto": PROTO_VERSION}).encode()

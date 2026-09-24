@@ -201,7 +201,7 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
             )
         logger.debug("peering: dropped unknown t=%r", t)
         return None
-    except (KeyError, ValueError, TypeError) as e:
+    except (KeyError, ValueError, TypeError, OverflowError) as e:
         logger.debug("peering: dropped bad %s payload: %s", t, e)
         return None
 
