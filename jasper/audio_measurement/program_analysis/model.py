@@ -437,7 +437,7 @@ class MeasurementPriors:
     a decision; its presence permits verification only.
 
     ``mic_tier`` is the correction-envelope trust tier
-    (``linearization_envelope.MIC_TIERS``); ``None`` means "no tier known",
+    (``mic_identity.MIC_TIERS``); ``None`` means "no tier known",
     which the v2 session's Layer-1a gate treats as ineligible, never a guess.
     """
 

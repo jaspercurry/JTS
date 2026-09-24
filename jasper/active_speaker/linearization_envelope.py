@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.audio_measurement.spatial_combine import BandSpread
 
 from ._common import DRIVER_CLASSES
@@ -40,9 +41,6 @@ class ReasonCode(StrEnum):
     BEYOND_MEASUREMENT_CONFIDENCE = "envelope_beyond_measurement_confidence"
     OUT_OF_BAND = "envelope_out_of_band"
 
-
-# Closed vocabulary (design doc "Microphone doctrine").
-MIC_TIERS: tuple[str, ...] = ("reference", "consumer", "phone")
 
 # Shared working grid: log spacing from 150 Hz (the design doc's gated-
 # measurement validity floor) to 20 kHz. 176 points is >=4x finer than the

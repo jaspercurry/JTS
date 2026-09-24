@@ -26,10 +26,7 @@ from typing import Any
 # default (the vendor_model) when a mic's OS device label does not contain its
 # vendor model string.
 #
-# `tier` is the correction-envelope trust tier — vocabulary owned by
-# jasper.active_speaker.linearization_envelope.MIC_TIERS ("reference" /
-# "consumer" / "phone"), duplicated here as plain literals because
-# audio_measurement never imports upward into active_speaker.
+# `tier` is the correction-envelope trust tier, one of MIC_TIERS.
 #
 # `usb_ids` is the device's USB `vid:pid` as the kernel spells it in
 # `/proc/asound/<card>/usbid`, so the rest of JTS can recognise measurement
@@ -48,6 +45,9 @@ from typing import Any
 # physical proof (one UMIK-2's 0° and 90° files differ ~9.4 dB at 20 kHz with
 # the 90° file MORE negative, which only a response can be), Dayton by REW's
 # documented cal-file semantics, which both vendors publish for.
+# Closed vocabulary (design doc "Microphone doctrine").
+MIC_TIERS: tuple[str, ...] = ("reference", "consumer", "phone")
+
 SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
     "dayton_imm6": {
         "provider": "dayton_audio",

@@ -21,8 +21,8 @@ import pytest
 # source must not (audio_measurement is the lower layer) -- a test
 # asserting cross-layer consistency between the two is exactly what the
 # boundary is for.
-from jasper.active_speaker import linearization_envelope
 from jasper.audio_measurement import calibration
+from jasper.audio_measurement.mic_identity import MIC_TIERS
 
 
 SAMPLE_CAL = """# freq correction phase
@@ -574,17 +574,8 @@ def test_mic_tier_for_model_unknown_key_falls_back_to_consumer_not_a_crash():
 
 
 def test_supported_models_every_entry_declares_a_valid_tier():
-    """Belt-and-braces: the literal set pins the vocabulary even if the
-    import below ever broke, and the cross-module check pins it against
-    the ACTUAL source of truth (linearization_envelope.MIC_TIERS) so a
-    tier-vocabulary rename there fails this test immediately instead of
-    the two copies silently drifting apart."""
-    valid_tiers = {"reference", "consumer", "phone"}
     for key, spec in calibration.SUPPORTED_MODELS.items():
-        assert spec.get("tier") in valid_tiers, key
-    assert {
-        spec["tier"] for spec in calibration.SUPPORTED_MODELS.values()
-    } <= set(linearization_envelope.MIC_TIERS)
+        assert spec.get("tier") in MIC_TIERS, key
 
 
 # --- F2: repeat lookup re-uses the stored calibration (no vendor round-trip)
