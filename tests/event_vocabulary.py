@@ -35,7 +35,7 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
 # Removal condition: drop an entry when its prefix has one owner again; delete
 # the table when it is empty.
 PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
-    "active_speaker": ("active_speaker", "cli"),
+    "active_speaker": ("active_speaker", "cli", "jasper"),
     "aec": ("aec", "control"),
     "aec_bridge": ("aec", "cli"),
     "airplay": ("jasper",),
