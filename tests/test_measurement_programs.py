@@ -271,13 +271,13 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
 
 
-_WOOFER_RESEAT = (("woofer", 0.015), ("woofer", 0.03), ("woofer", 0.015))
+_WOOFER_STEP = (("woofer", 0.015), ("woofer", 0.03))
 
 
 @pytest.mark.parametrize("program_id,poses,resolved", [
-    ("nearfield", None, ("woofer", _WOOFER_RESEAT)),
-    ("nearfield", "nearfield/cardioid", ("cardioid", (*_WOOFER_RESEAT, *(
-        ("woofer:rear", distance) for _, distance in _WOOFER_RESEAT)))),
+    ("nearfield", None, ("woofer", _WOOFER_STEP)),
+    ("nearfield", "nearfield/cardioid", ("cardioid", (*_WOOFER_STEP, *(
+        ("woofer:rear", distance) for _, distance in _WOOFER_STEP)))),
     ("nearfield", '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.012, "driver": "woofer:rear"}]',
      ("custom", (("woofer:rear", 0.012),))),
     ("speaker", "nearfield/woofer", None),
@@ -472,7 +472,8 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
     """A driver's pose plays the neutral drivers graph, so ``--candidates``
     cannot stamp its takes with a candidate or repeat its poses (ADR-0360)."""
     if accepted:
-        assert len(ac.request_for_program(mp.program("nearfield"), candidates=candidates).stops) == 3
+        row = mp.program("nearfield")
+        assert len(ac.request_for_program(row, candidates=candidates).stops) == len(row.poses)
     else:
         with pytest.raises(CrossoverV2FlowError):
             ac.request_for_program(mp.program("nearfield"), candidates=candidates)

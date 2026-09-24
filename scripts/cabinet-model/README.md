@@ -26,13 +26,13 @@ document, which goes through the same judge → compose → apply gates as any o
 ## Steps
 
 1. **Capture.** On the speaker, run the near-field row for the cabinet, one woofer per take at
-   15, 30 and 15 mm again ([the runbook's near-field section](../../docs/tuning-operator-runbook.md#near-field)):
+   15 and 30 mm ([the runbook's near-field section](../../docs/tuning-operator-runbook.md#near-field)):
    `jasper-round run --program nearfield --poses nearfield/cardioid --wait --timeout 3600`. Each
    placement levels itself to 80 dB at the mic under the unchanged 85 dB stop.
 
 2. **Read and pull.** The view divides the fader and the played graph out of each take, and gives
-   each woofer's raw curve per distance, the SNR per band (trust a band it marks `trusted`), the
-   re-seat spread, and the 15 → 30 mm step that gate 2 checks:
+   each woofer's raw curve per distance, the SNR per band (trust a band it marks `trusted`), and
+   the 15 → 30 mm step that gate 2 checks:
 
    ```bash
    ssh pi@<speaker> "sudo /opt/jasper/.venv/bin/jasper-round-views nearfield <round>"   # prints the view's path
