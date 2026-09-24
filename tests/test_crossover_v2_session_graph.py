@@ -57,7 +57,7 @@ def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
     emitted = emits if emits is not None else []
 
     def _emit(
-        inverted_roles=(), measurement_delays_us=None, level_trims_db=None,
+        inverted_roles=(), measurement_delays_us=None, level_trims_db=None, excited_channels=None,
     ) -> str:
         # One distinct text per measurement variant, the way the real emitter
         # produces one: a flipped mixer is different bytes, so is a Delay
@@ -70,6 +70,8 @@ def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
             text += f"delays: {sorted(measurement_delays_us.items())}\n"
         if level_trims_db:
             text += f"trims: {sorted(level_trims_db.items())}\n"
+        if excited_channels:
+            text += f"excited: {sorted(excited_channels.items())}\n"
         emitted.append(text)
         return text
 
@@ -100,6 +102,23 @@ def _entry(tmp_path):
     path = tmp_path / ENTRY_PATH_NAME
     path.write_text("entry: graph\n", encoding="utf-8")
     return str(path)
+
+
+def test_a_drivers_take_naming_one_target_is_its_own_graph_variant(tmp_path):
+    """A one-driver take never reuses the cached graph of the session's own
+    roles: the target reaches the emitter and names a distinct graph. A drivers
+    scope naming two targets is a branch take and is refused."""
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+    both = asyncio.run(graph.install())
+
+    graph.select_scope("drivers", "", {"woofer:rear": 0})
+    alone = asyncio.run(graph.install())
+
+    assert alone != both
+    assert graph.emitted == [GRAPH, GRAPH + "excited: [('woofer:rear', 0)]\n"]
+    with pytest.raises(SessionGraphError):
+        graph.select_scope("drivers", "", {"woofer": 0, "tweeter": 1})
 
 
 def test_the_graph_is_emitted_once_no_matter_how_many_stimuli(tmp_path):

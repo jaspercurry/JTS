@@ -16,7 +16,9 @@ from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
-from jasper.speaker_layout import cardioid_cabinet_channels
+from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
+
+from .measurement import active_driver_targets
 
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
@@ -126,6 +128,12 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
+# A reference take may also be one driver near its cone (ADR-0360).
+_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
+#: Farthest a reference near-field pose sits from the dust cap (ADR-0360).
+NEAR_FIELD_MAX_DISTANCE_M = 0.1
+#: The size of a run whose poses are its own, not a bundled layout's.
+CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 
 
@@ -142,6 +150,15 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     ) is not None for group in topology.speaker_groups)
     return tuple(name for name in RUNNABLE_PROGRAMS
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
+
+
+def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
+    """The drivers a near-field row may play here: every measured driver of a
+    mono speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
+    return tuple(sorted(
+        measurement_target_id(target["role"], target.get("output_variant", "primary"))
+        for target in active_driver_targets(topology)
+        if target["speaker_group_id"] == topology.routing.mono_group_id))
 
 
 #: WHICH two measurement targets a :data:`REGIME_BRANCHES` take excites: the
@@ -188,6 +205,22 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     return resolved
 
 
+def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind: str,
+                          distance_m: float | None) -> str:
+    """The one driver a pose plays, a measurement target id (ADR-0360): a pose
+    names one exactly when it is a reference near-field pose, and then sits
+    close, within :data:`NEAR_FIELD_MAX_DISTANCE_M` of the dust cap."""
+    if not isinstance(driver, str):
+        raise ValueError(f"a pose driver is a measurement target id, got {driver!r}")
+    if bool(driver) != (purpose == PURPOSE_REFERENCE and regime == REGIME_NEAR_FIELD):
+        raise ValueError(f"a pose names its driver exactly when it is a {PURPOSE_REFERENCE} "
+                         f"{REGIME_NEAR_FIELD} pose")
+    if driver and not (kind == POSE_KIND_CLOSE and distance_m is not None
+                       and distance_m <= NEAR_FIELD_MAX_DISTANCE_M):
+        raise ValueError(f"a driver's pose is a close pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m")
+    return driver
+
+
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
     """The branch pair a take names, judged against the regime that plays it."""
     if branch_pair not in BRANCH_PAIRS:
@@ -198,9 +231,12 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 
 
 def run_purpose(run_program: str | None) -> str:
-    """The purpose behind a run manifest's program id (``speaker`` or ``speaker/full``)."""
+    """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
+    or a custom layout's ``nearfield/custom``)."""
     name, _, size = str(run_program or "").partition("/")
-    return name if not name or name in PURPOSES else program(name, size or None).purpose
+    if not name or name in PURPOSES:
+        return name
+    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -213,10 +249,14 @@ def run_purposes(run_program: str) -> tuple[str, ...]:
     return (row.purpose, *row.co_purposes)
 
 
-def gate_exemption(purpose: str | None) -> str | None:
-    from jasper.audio_measurement.gating import SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+def gate_exemption(purpose: str | None, *, driver: str = "") -> str | None:
+    """Why a take is read ungated: a room, bass or rear take measures the
+    room; a pose at one driver is too close for the room to matter (ADR-0360)."""
+    from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
-    return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR) else None
+    if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR):
+        return SEAT_EXEMPT
+    return NEAR_FIELD_EXEMPT if driver else None
 
 
 def validated_pose(
@@ -258,9 +298,13 @@ def pose_place(
     elevation_deg: int,
     distance_m: float | None,
     seat_offset_m: tuple[float, float, float] | None,
+    driver: str = "",
 ) -> tuple[object, ...]:
-    """What distinguishes one microphone position from another."""
-    return (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
+    """What distinguishes one microphone position from another; a pose at a
+    driver is also that driver's, so the front and rear woofer at one distance
+    are two placements."""
+    place = (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
+    return (*place, driver) if driver else place
 
 
 @dataclass(frozen=True)
@@ -274,6 +318,10 @@ class ProgramPose:
     seat_offset_m: tuple[float, float, float] | None = None
     headline: str = ""
     detail: str = ""
+    #: The one driver this pose plays and sits at, a measurement target id
+    #: (``woofer``, ``woofer:rear``); empty when the pose plays the program's own
+    #: scope (:func:`validated_pose_driver`).
+    driver: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "azimuth_deg", validated_angle(self.azimuth_deg))
@@ -290,7 +338,7 @@ class ProgramPose:
     def place(self) -> tuple[object, ...]:
         return pose_place(
             self.kind, self.azimuth_deg, self.elevation_deg,
-            self.distance_m, self.seat_offset_m,
+            self.distance_m, self.seat_offset_m, self.driver,
         )
 
 
@@ -319,6 +367,9 @@ class MeasurementProgram:
                 raise ValueError("co_purposes must be distinct from each other and the primary purpose")
             validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
+        for pose in self.poses:
+            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose,
+                                  kind=pose.kind, distance_m=pose.distance_m)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
@@ -503,6 +554,9 @@ SEAT_OFFSET_M = max(
     for component in pose.seat_offset_m or ()
 )
 CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
+#: Programs a run may name beside the tuning programs: reference evidence no
+#: tuning reader admits (ADR-0360).
+REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))
 
 
 def available_programs() -> tuple[tuple[str, str], ...]:
@@ -521,24 +575,27 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
         raise UnknownProgramError(program_id, requested_size, available_programs()) from None
 
 
-def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
-    """Resolve the run's named layout or explicit bearing list (ADR-0298)."""
-    selected = program(purpose)
+def run_program(program_id: str, poses: str | None = None) -> MeasurementProgram:
+    """Resolve the run's named layout, inline JSON pose list or bearing list
+    (ADR-0298) under the program's own purpose."""
+    selected = program(program_id)
     if poses is None:
         return selected
-    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
+    purpose = selected.purpose
+    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != program_id):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             own = row.purpose == purpose
             regime = row.regime if own else selected.regime
-            return replace(row, program_id=purpose, purpose=purpose, regime=regime,
+            return replace(row, program_id=program_id, purpose=purpose, regime=regime,
                            co_purposes=row.co_purposes if own else selected.co_purposes,
                            branch_pair=row.branch_pair if own else selected.branch_pair,
                            room_sweep=(selected.room_sweep and purpose == PURPOSE_SPEAKER
                                        and regime == REGIME_PER_DRIVER),
                            levels=selected.levels, stimulus=row.stimulus if own else selected.stimulus)
-    return replace(selected, size="custom", layout="", poses=tuple(
-        ProgramPose(int(value.strip()), 0) for value in poses.split(",")
-    ))
+    layout = json.loads(poses) if poses.lstrip().startswith("[") else [
+        {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
+    return replace(selected, size=CUSTOM_SIZE, layout="", poses=tuple(
+        _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(layout)))
 
 
 def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram | None:

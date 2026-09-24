@@ -10,6 +10,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
+from jasper.platform.route_health import snapshot_route_health
 
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 
@@ -32,6 +33,7 @@ from jasper.active_speaker.baseline_profile import load_applied_baseline_profile
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
+from jasper.active_speaker.crossover_v2.programs import excitation_from_context
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
 from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
@@ -130,6 +132,7 @@ def _wired_stimulus_capture(
         device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
         setup_reference=lambda: setup_from_hint(v2evidence.default_setup_calibration_for_v2()),
         spl_monitor=spl_monitor, read_loudness_volume_db=read_loudness_volume_db,
+        read_route_health=snapshot_route_health,
     )
 
 
@@ -237,6 +240,7 @@ def prepare_v2_session(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         safety_profile=context.safety_profile, role_targets=context.role_targets,
+        excitation=excitation_from_context(context),
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
@@ -289,6 +293,7 @@ def prepare_v2_session(
             fc_hz=context.fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
             driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+            target_bands=context.driver_bands,
             session_volume_db=context.session_volume_db,
             seams=seams,
             index_phase_map=stage1_index_phase,

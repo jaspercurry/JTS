@@ -14,7 +14,9 @@ from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology
-from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, programs_for_topology
+from .measurement_programs import (
+    PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, near_field_drivers, programs_for_topology,
+)
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
@@ -130,6 +132,7 @@ def build_commissioning_view(
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
         "steps": steps, "current_step": current, "next_action": action, "programs": programs,
+        "near_field_drivers": near_field_drivers(topology),
         "first_experiment": {**experiment, "complete": experiment_complete}, "combined_groups": [],
         "applied_profile": {
             "stands": profile_applied, "verdict": applied_profile_verdict if profile_applied else "",

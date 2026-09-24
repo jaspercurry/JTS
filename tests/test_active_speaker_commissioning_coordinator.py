@@ -8,13 +8,14 @@ from types import SimpleNamespace
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.round_copy import RUN_ENDED
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
 from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import REFERENCE_PROGRAMS, RUNNABLE_PROGRAMS
 from jasper.active_speaker import tuning_handoff
 from jasper.cli.round import build_parser
 from jasper.active_speaker.crossover_v2 import round_inputs
@@ -143,6 +144,8 @@ def test_program_order_consumers(consumer):
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
+        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("close", "nearfield")
+        order = order[:len(RUNNABLE_PROGRAMS)]
     else:
         order = tuple(next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
@@ -165,12 +168,15 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     monkeypatch.setattr(applied_tune, "compile_commissioning_profile", lambda **kw: {})
 
     choices = round_choices({}, "front_rear/express")
-    ids = {choice["id"] for choice in choices}
+    ids = {choice["id"] for choice in choices if choice.get("code") != REASON_MEASUREMENT_PROGRAM_NOT_OFFERED}
+    assert (len(ids) < len(choices)) is not rear
     rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
     assert ids & rear_ids == (rear_ids if rear else set())
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
     assert {"seat/cube", "room/cloud", "room/seat", "close/spot"} <= ids
+    near_field = {"nearfield/woofer", "nearfield/rear", "nearfield/cardioid"}
+    assert ids & near_field == (set() if passive else near_field if rear else {"nearfield/woofer"})
     assert sum(choice["default"] for choice in choices) == 1
     programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})
@@ -354,12 +360,15 @@ def test_household_experiment_reads_packet_alignment(monkeypatch, tmp_path, pack
     assert view["first_experiment"]["complete"] is bool(packet)
 
 
-@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark"])
+@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/woofer"])
 def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
-    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    roles = tuple(_roles())
+    context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs={r.role: 0.0 for r in roles}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={r.role: 10.0 for r in roles},
+                              driver_bands={r.role: r.band for r in roles}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
+        "next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS, "near_field_drivers": ("tweeter", "woofer")})
     status = {"active": True, "setup": {"active": True, "status": "ready"},
               "capture": {"status": "complete", "run": {"status": "complete", "poses": 1}}}
     choices = round_choices(status, selected_id)

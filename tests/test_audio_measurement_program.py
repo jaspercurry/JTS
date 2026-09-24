@@ -194,20 +194,15 @@ def test_measure_sweep_ceiling_constant_is_in_lockstep_with_test_signal_plan():
     assert MEASURE_SWEEP_F_HI_HZ == MAX_DRIVER_TEST_FREQUENCY_HZ
 
 
-def test_measure_composer_raises_clear_error_if_ceiling_ever_exceeded_nyquist(monkeypatch):
-    """Defense in depth (design item 4): MEASURE_SWEEP_F_HI_HZ is always
-    < Nyquist today, so this can't fire in production — but if a future edit
-    ever raised the ceiling past Nyquist without noticing, the composer must
-    fail with ITS OWN clear error rather than the sweep kernel's deep raise."""
-    monkeypatch.setattr(
-        "jasper.audio_measurement.program.MEASURE_SWEEP_F_HI_HZ", 25_000.0,
-    )
+def test_measure_composer_refuses_a_sweep_band_past_nyquist():
+    """A caller-stated sweep band reaching Nyquist is refused by the composer
+    before any sweep is synthesized (design item 4)."""
     roles = [
         RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
         RoleBand("tweeter", 1, FrequencyBand(300.0, 30_000.0)),
     ]
-    with pytest.raises(ValueError, match="Nyquist"):
-        build_measure_program(_gain_plan(), roles)
+    with pytest.raises(ValueError):
+        build_measure_program(_gain_plan(), roles, sweep_band_hz=(150.0, 25_000.0))
 
 
 def test_measure_takes_one_or_two_drivers_and_needs_every_gain():

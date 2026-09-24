@@ -166,6 +166,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
+        target_bands: Mapping[str, Any] | None = None,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -280,6 +281,7 @@ class CrossoverV2Session:
             summed_sweep_band_hz=_plan.room_sweep_band_hz(
                 self._roles, self._lateral_prompts
             ),
+            target_bands=target_bands or {},
         )
         # Composed ONCE and held: ``program_for_phase`` answers by object identity;
         # before→after comparability depends on it.
@@ -807,7 +809,7 @@ class CrossoverV2Session:
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(self._capture_purpose(phase, index))
+            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver)
         return replace(
             self._geometry,
             gate_exempt_reason=exemption,

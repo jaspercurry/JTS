@@ -66,7 +66,7 @@ __all__ = [
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
     "grades", "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
     "frequency", "distortion", "dsp_replay", "classify_features", "close_reference",
-    "delay", "room", "room_grade", "bass", "rear", "inventory", "speaker_fit",
+    "delay", "room", "room_grade", "bass", "rear", "inventory", "speaker_fit", "nearfield",
 ))
 
 

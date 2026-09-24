@@ -79,6 +79,18 @@ AMBIENT_SEGMENT_ID = "ambient"
 # test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ (PR-A, #1668) by a test.
 MEASURE_SWEEP_F_LO_HZ = 150.0
 MEASURE_SWEEP_F_HI_HZ = 23_000.0
+MEASURE_SWEEP_BAND_HZ = (MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
+
+# --- one-driver near-field take (#5684) ---
+# From the driver's own floor to where a close mic stops resolving a woofer's
+# piston; 8 s sweeps buy the low-end SNR the protected drivers graph's missing
+# bass boost costs.
+NEAR_FIELD_SWEEP_BAND_HZ = (ROOM_FLOOR_HZ, 2_000.0)
+NEAR_FIELD_SWEEP_S = 8.0
+# Longest silence after the first sound, so a signal-sensing amplifier (jts3's
+# TPA3255) never drops into standby mid-take. The silence before each sweep must
+# still cover the analysis's deconvolution pre-guard (DECONV_PRE_GUARD_S, 0.25 s).
+NEAR_FIELD_SILENCE_S = 0.5
 
 # Per-driver occurrences in MEASURE (#1668): N-1 bit-identical repeats feed
 # the drift/glitch estimator (§3.1); must stay under
@@ -786,6 +798,9 @@ def build_measure_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
+    sweep_band_hz: tuple[float, float] = MEASURE_SWEEP_BAND_HZ,
+    gap_s: float | None = None,
+    channels: int | None = None,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
     interleaved sweep cycles, one per declared driver. ``roles_bands[0]`` is
@@ -802,6 +817,10 @@ def build_measure_program(
     ``sweep_t``; later ones follow :func:`_occurrence_suffix`.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
     docstring), byte-identical to the pre-v2 shape when omitted.
+    ``sweep_band_hz`` bounds every sweep and pilot inside each role's own
+    band. ``gap_s`` replaces the MESM inter-sweep rule (:func:`mesm_gap_samples`)
+    for a take that reads no harmonics. ``channels`` widens the program past
+    one channel per declared driver; the extra channels stay silent.
     """
     roles = _validate_roles(roles_bands)
     if not 1 <= len(roles) <= 2:
@@ -818,10 +837,14 @@ def build_measure_program(
         durations[tweeter.role] = DEFAULT_TWEETER_SWEEP_S
     if sweep_durations:
         durations.update(sweep_durations)
-    channels = 1 + max(rb.channel for rb in roles)
+    width = 1 + max(rb.channel for rb in roles)
+    if channels is None:
+        channels = width
+    elif type(channels) is not int or channels < width:
+        raise ValueError(f"channels must cover every declared driver's channel, got {channels!r}")
 
     def _band(rb: RoleBand) -> tuple[float, float]:
-        f1, f2 = _intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
+        f1, f2 = _intersect_band(rb.band, *sweep_band_hz)
         # Defense in depth: MEASURE_SWEEP_F_HI_HZ < Nyquist today (#1668).
         nyquist_hz = PROGRAM_SAMPLE_RATE_HZ / 2.0
         if not f2 < nyquist_hz:
@@ -868,16 +891,18 @@ def build_measure_program(
         )
         return fitted
 
+    def _gap_n(meta: SweepMeta) -> int:
+        if gap_s is None:
+            return mesm_gap_samples(meta, ir_tail_s=ir_tail_s)
+        return _seconds_to_samples(gap_s, PROGRAM_SAMPLE_RATE_HZ)
+
     w_f1, w_f2 = _band(woofer)
-    w_meta = _fitted_meta(woofer, w_f1, w_f2)
-    gap_w_n = mesm_gap_samples(w_meta, ir_tail_s=ir_tail_s)
+    gap_w_n = _gap_n(_fitted_meta(woofer, w_f1, w_f2))
     t_band: tuple[float, float] | None = None
     gap_t_n = 0
     if tweeter is not None:
         t_band = _band(tweeter)
-        gap_t_n = mesm_gap_samples(
-            _fitted_meta(tweeter, *t_band), ir_tail_s=ir_tail_s
-        )
+        gap_t_n = _gap_n(_fitted_meta(tweeter, *t_band))
 
     segments: list[ProgramSegment] = []
     cursor = 0

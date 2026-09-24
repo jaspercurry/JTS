@@ -23,6 +23,9 @@ THIRD_OCTAVE_BASS_BANDS_HZ = tuple(
     (center / _THIRD_OCTAVE_EDGE_FACTOR, center * _THIRD_OCTAVE_EDGE_FACTOR)
     for center in _THIRD_OCTAVE_CENTERS_HZ
 )
+# A near-field take: the low bass a gated take cannot resolve, up to its sweep's ~2 kHz top.
+NEAR_FIELD_BANDS_HZ = ((20.0, 35.0), (35.0, 50.0), (50.0, 100.0), (100.0, 200.0),
+                       (200.0, 400.0), (400.0, 800.0), (800.0, 2000.0))
 OCTAVE_BAND_CENTERS_HZ = (31.5, 63.0, 125.0, 250.0, 500.0, 1000.0,
                           2000.0, 4000.0, 8000.0, 16000.0)
 OCTAVE_BANDS_HZ = tuple(
@@ -59,6 +62,7 @@ BAND_LADDERS = MappingProxyType({
     "bass": BASS_BANDS_HZ,
     "third_octave_bass": THIRD_OCTAVE_BASS_BANDS_HZ,
     "octave": OCTAVE_BANDS_HZ,
+    "near_field": NEAR_FIELD_BANDS_HZ,
     "room": ROOM_BAND_SPLITS_HZ,  # Splits, not edges; outer edges follow coverage and ceiling; band_ladder_name never matches this entry.
     "speaker_spec": SPEC_BAND_EDGES_HZ,
     "snr": tuple((lo, hi) for _, lo, hi in SNR_BANDS_HZ),

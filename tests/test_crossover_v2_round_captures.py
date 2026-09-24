@@ -224,6 +224,21 @@ def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:
     assert all(key.endswith("_dna") for key in raised_keys)
 
 
+def test_a_capture_keys_its_driver_pose_as_its_record_does(tmp_path: Path) -> None:
+    """The front and rear woofer at one distance are two poses, read from the
+    bound capture or its record alike (ADR-0360)."""
+    root = _write_round(tmp_path, distance_m=0.015, positions_deg=[0, 0])
+    docs = []
+    for sidecar, driver in zip(sorted((root / "bundle" / "b0" / "summed").glob("*.json")), ("woofer", "woofer:rear")):
+        docs.append({**json.loads(sidecar.read_text()), "pose_kind": "close", "pose_driver": driver})
+        sidecar.write_text(json.dumps(docs[-1]))
+
+    keys = [capture.pose_key for capture in discover_captures(root)]
+
+    assert keys == [doc_pose_key(doc) for doc in docs]
+    assert len(set(keys)) == 2
+
+
 @pytest.mark.parametrize(
     "make, reason, evidence",
     [
@@ -305,8 +320,20 @@ def test_a_missing_input_is_refused_by_name(
             },
             "behind_az+0.00_el+0.00_d+0.10",
         ),
+        # A driver's own pose keys the driver and its millimetres, so the
+        # front and rear woofer at one distance key apart (ADR-0360).
+        *(
+            (
+                {
+                    "position_deg": 0, "vertical_deg": 0, "mark_distance_m": 0.015,
+                    "pose_kind": "close", "seat_offset_m": None, "pose_driver": driver,
+                },
+                f"close_az+0.00_el+0.00_d+0.01_{driver}_15mm",
+            )
+            for driver in ("woofer", "woofer:rear")
+        ),
     ],
-    ids=["bearing", "offset-without-a-kind", "seat", "close", "behind"],
+    ids=["bearing", "offset-without-a-kind", "seat", "close", "behind", "front-driver", "rear-driver"],
 )
 def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
     doc: dict, key: str

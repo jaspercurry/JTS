@@ -34,6 +34,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
+from jasper.speaker_layout import measurement_target_parts
 
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
@@ -51,10 +52,11 @@ from .journey import (
 )
 from .programs import (
     SessionExcitation,
+    compose_target_program,
     courtesy_prelude_for_phase,
     measurement_band_hz,
 )
-from .measure_spec import MeasureSpec, branch_channels_for
+from .measure_spec import MeasureSpec, branch_channels_for, solo_target
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
 
@@ -65,6 +67,7 @@ def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
     safety_profile: Mapping[str, Any] | None = None, role_targets: Mapping[str, str] | None = None,
+    excitation: SessionExcitation | None = None,
     acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
@@ -73,7 +76,10 @@ def build_inline_session_spec(
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
-        if spec.stimulus is not None:
+        if solo_target(spec):
+            assert excitation is not None
+            program = compose_target_program(excitation, spec)  # never played; duration only
+        elif spec.stimulus is not None:
             from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
             program = build_bass_program(
@@ -218,11 +224,13 @@ class CloudPositionPrompt:
     seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
     preserve_text: bool = False
+    #: The one driver a near-field row sits at and plays (ADR-0360).
+    driver: str = ""
 
     @property
     def place(self) -> tuple[object, ...]:
         return pose_place(self.kind, position_angle_deg(self), position_elevation_deg(self),
-                          self.distance_m, self.seat_offset_m)
+                          self.distance_m, self.seat_offset_m, self.driver)
 
     @property
     def wide(self) -> bool:
@@ -560,6 +568,14 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     if prompt.kind == POSE_KIND_SEAT:
         return replace(prompt, headline=_seat_headline(prompt.seat_offset_m), detail=_SEAT_DETAIL)
     distance = prompt.mark_distance_m
+    if prompt.kind == POSE_KIND_CLOSE and prompt.driver:
+        role, variant = measurement_target_parts(prompt.driver)
+        return replace(
+            prompt,
+            headline=(f"Put the microphone {round(distance * 1000, 1):g} mm from the centre of the "
+                      f"{role if variant == 'primary' else f'{variant} {role}'}, on its axis."),
+            detail="Measured from the dust cap, pointed straight at it.",
+        )
     if prompt.kind == POSE_KIND_CLOSE:
         return replace(
             prompt,

@@ -116,6 +116,7 @@ from .gates import (
     _assert_view_tweeters_protected as _assert_view_tweeters_protected,
     _assert_volume_limit as _assert_volume_limit,
     _validate_program_role_channels as _validate_program_role_channels,
+    preset_target_ids as preset_target_ids,
 )
 from .ledger import (
     BASELINE_HEADROOM_DB as BASELINE_HEADROOM_DB,
@@ -146,6 +147,7 @@ from .pipeline import (
     _validated_inverted_roles as _validated_inverted_roles,
     _validated_measurement_trims as _validated_measurement_trims,
     channel_select_mixer_name as channel_select_mixer_name,
+    program_channel_count as program_channel_count,
 )
 from .topology import (
     _bass_management_active as _bass_management_active,

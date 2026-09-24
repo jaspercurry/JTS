@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.route_latency_harness import (
+from jasper.platform.route_health import (
     KNOWN_HEALTH_COUNTER_PATHS,
     KNOWN_HEALTH_COUNTER_SUFFIXES,
 )

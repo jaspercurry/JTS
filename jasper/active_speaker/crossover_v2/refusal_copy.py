@@ -58,6 +58,7 @@ REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
+REASON_LEVEL_OFF_TARGET = "level_off_target"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_CAPTURE_OVERRUN = LOST_AT_CAPTURE_OVERRUN
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
@@ -106,6 +107,7 @@ REASON_SPL_CEILING_EXCEEDED = SPL_CEILING_EXCEEDED
 REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
 REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH = "measurement_candidate_speaker_mismatch"
 REASON_MEASUREMENT_CANDIDATE_REQUIRED = "measurement_candidate_required"
+REASON_MEASUREMENT_PROGRAM_NOT_OFFERED = "measurement_program_not_offered"
 REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
@@ -583,6 +585,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
                             "Retake."),
         capture_quality=True,
     ),
+    REASON_LEVEL_OFF_TARGET: _retriable_reason(
+        REASON_LEVEL_OFF_TARGET, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy("That was not at the measuring level.", "measuring again at the right level.",
+                            joiner=" — ", strip_before_join="."),
+        auto_retry=True, capture_quality=True,
+    ),
     REASON_CAPTURE_OVERRUN: _retriable_reason(
         REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy("JTS was busy and missed part of the recording.", "measuring again.",
@@ -749,6 +757,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
         next_action={"id": 'select_candidate', "label": 'Select a tuning',
                      "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_MEASUREMENT_PROGRAM_NOT_OFFERED: ReasonSpec(
+        REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, TEMPLATE_HARD_STOP, 0, "",
+        "This speaker does not offer that measurement. Choose one from the list.",
     ),
     REASON_MEASUREMENT_CANDIDATE_INVALID: ReasonSpec(
         REASON_MEASUREMENT_CANDIDATE_INVALID, TEMPLATE_HARD_STOP, 0, "",

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
+from itertools import count
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock, Mock
@@ -18,9 +19,11 @@ import pytest
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
-from jasper.active_speaker.measurement_programs import run_program, program as measurement_program
+from jasper.active_speaker.measurement_programs import (
+    MeasurementProgram, ProgramPose, run_program, program as measurement_program,
+)
 from jasper.active_speaker.crossover_v2 import capture_dispatch
-from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
+from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
@@ -35,11 +38,14 @@ from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, T
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
-from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from jasper.web import correction_run_host
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis, _roles
+from tests.crossover_v2_fixtures import (
+    FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
+)
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_active_speaker_program_admission import _profile_and_targets
@@ -748,6 +754,138 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
                for capture in captures[-repeats:])
 
 
+def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes():
+    """Each pose plays its own driver alone, the gate asks for the microphone
+    at every pose (the front and rear woofer at one distance included), and
+    every take banks as reference evidence at its driver (ADR-0360)."""
+    layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
+    program = MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
+        purpose="reference", regime="near_field")
+    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_program(program).to_dict())))
+    captures = plan_run.prepare_plan_captures(request)
+    gate = AnsweredGate()
+
+    result, fakes = asyncio.run(_run_gated(request, gate=gate, captures=captures,
+                                           assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept")))
+
+    assert [(c.spec.graph_scope, c.spec.branch_target_ids, c.spec.regime, c.spec.program_phase) for c in captures] == [
+        ("drivers", (driver,), "near_field", "lateral") for driver, _ in layout]
+    assert result.status == "complete"
+    assert len(gate.grants) == result.mic_moves == len(layout)
+    assert [(take["measurement_purpose"], take["pose_driver"], take["mark_distance_m"]) for take in fakes.banked] == [
+        ("reference", driver, mm / 1000) for driver, mm in layout]
+
+
+class _LevelStore(_Store):
+    """Banks each take as the web host does: the program it played, at the
+    peak it asked for under its ceiling, and what the microphone read."""
+
+    def __init__(self, records, readings, opener_db, ceiling_db):
+        super().__init__(records)
+        self.readings, self.opener_db, self.ceiling_db = iter(readings), opener_db, ceiling_db
+
+    async def bank(self, record):
+        if record.get("kind") != RUN_MANIFEST_KIND:
+            peak = min(self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
+            reading = next(self.readings)
+            record.update(
+                program=build_measure_program({"woofer": peak}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
+                                              repeat_count=1, sweep_durations={"woofer": 0.2}).to_dict(),
+                capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
+                                           "ceiling_db_spl": 85.0}})
+        return await super().bank(record)
+
+
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
+    """A plan whose recordings pass, judged on the level each take read; the
+    microphone is re-placed at take ``replace_at``, and the operator presses
+    Redo during each take in ``redo_at``."""
+    fakes, takes, gate, signals = FakeSeams(), count(1), AnsweredGate(), plan_run.RunSignals()
+    manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
+
+    def assessor(analysis, **kwargs):
+        take = next(takes)
+        if take in redo_at:
+            signals.retake.set()
+        if take == replace_at:
+            return TakeVerdict(False, next="fix_and_retake", charge="operator")
+        return capture_dispatch.assess(analysis, **kwargs)
+
+    async def run():
+        async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
+                session, _):
+            return await plan_run.run_plan(
+                request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
+                analyze=lambda record, _id: _measure_analysis(ExcitationProgram.from_dict(record["program"])),
+                captures=plan_run.prepare_plan_captures(request), assessor=assessor)
+
+    result = asyncio.run(run())
+    selected = [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
+    return result, fakes, selected, gate
+
+
+def test_a_near_field_take_levels_itself_before_it_is_kept():
+    """Each placement's first attempt plays under the target and is retaken at
+    the solved peak; the rest of that placement starts there, a re-placement
+    starts quiet again, and in-band re-seats are never sent back as drift
+    (ADR-0361)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
+
+    result, fakes, selected, _ = _run_levelled(request, (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0),
+                                               replace_at=3)
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
+    assert selected == [False, True, False, False, True, False, True, False, True]
+
+
+def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
+    """A take its ceiling played under the peak it asked for is kept too quiet:
+    a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+        ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purpose="reference", regime="near_field"))
+
+    result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
+
+    assert result.status == "complete"
+    assert (fakes.play.rungs, selected) == ([None, -28.0], [False, True])
+
+
+def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
+    """Only a take at one driver's pose is held to the near-field target: a
+    far-field repeat that reads 3 dB off its first is retaken as drift, at the
+    same level (ADR-0361)."""
+    result, fakes, selected, gate = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None, None, None]
+    assert selected == [True, False, True]
+    assert not any("level_step" in progress for progress in gate.progress)
+
+
+def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round():
+    """Each redo asks for the microphone again and starts the pose over, quiet
+    and with its retries, so redos past the pose's budget never end the round;
+    the page is told which plays are the quiet opener (ADR-0361)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver="woofer") for mm in (15, 30)),
+        purpose="reference", regime="near_field"))
+    redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
+    # The operator presses Redo during each of the first openers, then lets each pose land.
+    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 64.0, 80.0),
+                                                  redo_at=range(1, redos + 1))
+
+    assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
+    assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
+    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, -27.0]
+    assert selected == [False] * (redos + 1) + [True, False, True]
+    steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
+    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+
+
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
     ("speaker", "baseline/express", True, 5), ("room", "seat_express", False, 3),
     ("rear", "rear/express", False, 3),
@@ -755,7 +893,7 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
 def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_program(run_program(purpose, layout))
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     assert any(c.spec.program_phase == "entry_baseline" for c in captures) is entry
     assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
@@ -1169,7 +1307,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
     program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
     if trial:
         context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                                  driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                                  driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
         preview = plan_run.preview_schedule(request, captures, context)
         assert (preview["measurements"], preview["measurements_per_pose"], preview["sweeps"]) == (trial, counts, trial * 3)
     gate = AnsweredGate()
@@ -1214,7 +1352,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)

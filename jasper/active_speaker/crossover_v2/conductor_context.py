@@ -56,7 +56,7 @@ class V2ConductorContext(Generic[_Level]):
     #: none. Never a stand-in figure — see ``resolve_conductor_context``.
     fc_hz: float | None
     driver_caps_dbfs: dict[str, float]
-    # Per-role longest admissible ONE sweep, in seconds, from the SAME owner
+    # Per-target longest admissible ONE sweep, in seconds, from the SAME owner
     # the admission gate reads (``effective_sweep_duration_limit_s``), so a
     # MEASURE segment cannot overshoot the ceiling admission judges it against.
     driver_sweep_duration_limits_s: dict[str, float]
@@ -88,6 +88,9 @@ class V2ConductorContext(Generic[_Level]):
     # AND the play-time readmission so the composed levels and the admission
     # gate cannot disagree about a derived HF ceiling.
     declared_sensitivities: dict[str, float] = field(default_factory=dict)
+    #: Per-target permitted excitation band, from the resolver the caps come
+    #: from; keyed like :attr:`role_targets`, so a rear woofer has its own.
+    driver_bands: dict[str, Any] = field(default_factory=dict)
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
     # Per-role declared effective radiating diameter in mm, the ka/beaming
     # prior, which is DISCLOSURE and never a bound. It reaches the conductor by
@@ -336,27 +339,22 @@ def resolve_conductor_context(
     roles_bands = []
     caps: dict[str, float] = {}
     bands = {}
+    sweep_duration_limits_s: dict[str, float] = {}
     for target_id, fingerprint in role_targets.items():
         try:
             bands[target_id], caps[target_id] = resolve_driver_excitation_ceilings(
                 safety_profile, fingerprint, program_admission=True,
                 declared_sensitivities=declared_sensitivities,
             )
+            sweep_duration_limits_s[target_id] = effective_sweep_duration_limit_s(
+                safety_profile, fingerprint,
+            )
         except (ExcitationSafetyPlanError, ValueError) as exc:
             raise CrossoverV2Refused(
                 f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
             ) from exc
-    sweep_duration_limits_s: dict[str, float] = {}
     measurement_bands: dict[str, tuple[float, float]] = {}
     for channel, role in enumerate(roles):
-        try:
-            sweep_duration_limits_s[role] = effective_sweep_duration_limit_s(
-                safety_profile, role_targets[role],
-            )
-        except (ExcitationSafetyPlanError, ValueError) as exc:
-            raise CrossoverV2Refused(
-                f"the {role}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
-            ) from exc
         # Flat-linearization plan PR-4: this role's confirmed measurement band.
         # Its OWN except arm: a declared-metadata gap on this optional surface
         # must never refuse a session.
@@ -396,6 +394,7 @@ def resolve_conductor_context(
         roles_bands=tuple(roles_bands),
         fc_hz=fc_hz,
         driver_caps_dbfs=caps,
+        driver_bands=bands,
         driver_sweep_duration_limits_s=sweep_duration_limits_s,
         role_targets=role_targets,
         safety_profile=safety_profile,

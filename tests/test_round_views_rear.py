@@ -34,7 +34,7 @@ from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, round_inputs
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping, bank_round
@@ -890,3 +890,40 @@ def test_another_purpose_gets_no_rear_entry(tmp_path, program):
     assert packet["artifacts"]["rear_views"] == []
     assert "rear" not in {row["view"] for row in views}
     assert not (root / ARTIFACT_BY_VIEW["rear"].artifact).exists()
+
+
+def test_a_near_field_round_moves_no_tuning_reader(tmp_path):
+    """A near-field round banked after a rear pair round is reference evidence
+    (ADR-0360): its packet carries no views, fits or bass table, and the latest
+    round of every tuning program and the rear-pair level match stay the pair
+    round's."""
+    pair = pair_round(tmp_path)
+    (pair / "packet.json").write_text(json.dumps({"program": "rear/pair"}))
+    near = bank_seat_round(pair.parent, name="nearfield")
+    source, store = _round_source(near)
+    layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
+    records = [{**source, "take_id": f"nearfield-{index}", "position_id": f"nearfield-{index}", "repeat": 1,
+                "pose_kind": "close", "position_deg": 0, "vertical_deg": 0, "mark_distance_m": mm / 1000,
+                "pose_driver": driver, "measurement_purpose": "reference", "gating_applied": False,
+                "graph_scope": "drivers", "regime": "near_field"}
+               for index, (driver, mm) in enumerate(layout)]
+    group = manifest_set(_banked(store, records))
+    for take, (driver, _mm) in zip(group["takes"], layout):
+        take["role"] = driver
+    write_manifest(near, program="nearfield/cardioid", groups=[group])
+
+    def readers():
+        session_dir = round_inputs(pair).session_dir
+        return (latest_banked_rounds({}, session_dir, include_stale=True),
+                rear_pair_round.newest_rear_pair_round(pair.parent))
+
+    (pair / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-23T12:00:00Z"}))
+    before = readers()
+    (near / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-24T12:00:00Z"}))
+    packet, views = packet_of(near)
+
+    assert views == []
+    assert packet["fits"] == packet["series"] == packet["room"] == packet["bass"] == packet["rear"] == []
+    assert "bass_table" not in packet
+    assert readers() == before
+    assert before[0]["rear"]["round_id"] == before[1]["round_id"] == pair.name

@@ -14,7 +14,7 @@ from jasper.audio_measurement.evidence_reasons import (
 from .run_manifest import RUN_MANIFEST_FILENAME
 from .bench.replay import DSP_LEVELS_SCHEMA, DSP_REPLAY_SCHEMA
 from .measurement_bass import BASS_VIEW_SCHEMA
-from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
+from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .frequency_view import FREQUENCY_VIEW_FILENAME, SCHEMA as FREQUENCY_VIEW_SCHEMA
 from .crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT
 from .crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
@@ -95,6 +95,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     ), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/1"),
     "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,), schema="jts_delay_landscape/1"),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,), schema="jts_close_reference/1"),
+    "nearfield": ViewArtifact("nearfield_view.json", purposes=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1"),
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.

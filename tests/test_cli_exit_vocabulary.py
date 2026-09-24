@@ -51,6 +51,7 @@ from tests.test_cli_close_reference import _compare_argv as close_compare_argv, 
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
+from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
@@ -343,6 +344,15 @@ def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
 
 
+def _nearfield_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    bundle = root / "sessions" / "nearfield"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
+    takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)]
+    write_manifest(bundle, program="nearfield/woofer", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+    return ["nearfield", str(bundle)]
+
+
 def _bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
     path = asyncio.run(bank("baseline"))
@@ -468,6 +478,10 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         frozenset({"fc_hz", "step_us", "path_difference_m", "inverted_role"}), frozenset({"round_id", "take_ids"}),
         lambda p, a: p["step_us"] == a["landscape"]["spec"]["step_us"]),
     "inventory": _ViewRun(_on_fixture_round(lambda r: ["inventory", str(r.measured)])),
+    "nearfield": _ViewRun(
+        _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_band_hz", "step_tolerance_db"}),
+        frozenset({"take_ids"}),
+        lambda p, a: p["step_tolerance_db"] == a["parameters"]["step_tolerance_db"]),
 }
 
 

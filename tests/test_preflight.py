@@ -11,7 +11,7 @@ import pytest
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_program
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
+    REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
@@ -122,6 +122,21 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+@pytest.mark.parametrize("offered,unoffered", [(("tweeter", "woofer"), ("woofer:rear",)),
+                                               (("tweeter", "woofer", "woofer:rear"), ()),
+                                               ((), ("woofer", "woofer:rear"))],
+                         ids=["two_way", "cardioid", "stereo_pair"])
+def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offered, unoffered):
+    plan = AngleCaptureRequest(tuple(
+        AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference", driver=driver)
+        for driver in ("woofer", "woofer:rear")))
+    report = preflight(plan, ready_facts(plan, declared_target_ids=("tweeter", "woofer", "woofer:rear"),
+                                         near_field_drivers=offered))
+    assert report.blocking is bool(unoffered)
+    assert [(issue.code, issue.evidence["unoffered_drivers"]) for issue in report.issues] == (
+        [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
 
 
 @pytest.mark.parametrize("layout", ["active_3_way", "cardioid", "active_2_way"],

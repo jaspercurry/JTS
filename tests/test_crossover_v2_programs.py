@@ -59,14 +59,29 @@ from jasper.active_speaker.crossover_v2.programs import (
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
     NoProgramForPhaseError,
+    NEAR_FIELD_OPENER_BACKOFF_DB,
     SessionExcitation,
     back_off_gain,
+    compose_target_program,
     courtesy_prelude_for_phase,
     program_for_phase,
 )
-from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.active_speaker import graph_safety as gs
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, solo_target
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import (
+    KIND_COURTESY_TONE,
+    KIND_SUMMED_SWEEP,
+    KIND_SWEEP,
+    RoleBand,
+)
+from jasper.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
+from tests.test_active_speaker_audition import ACTIVE_PCM
 from tests.test_active_speaker_program_admission import _profile_and_targets
+from tests.test_rear_output_foundation import _rear_pair
 
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -225,6 +240,23 @@ def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroo
     for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
         backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
         assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
+
+
+@pytest.mark.parametrize("asked_db,played_db", [(-6.0, -6.0), (4.0, 0.0)])
+def test_a_summed_retake_plays_the_peak_it_asks_for(asked_db, played_db):
+    """A boosted candidate's summed retake plays the peak it asks for, never
+    above its first attempt's, whatever the scope backoff (#5709)."""
+    spec = MeasureSpec(kind="baseline", program_phase="verify", graph_scope="timing", candidate_id="trial",
+                       scope_gains_db={"woofer": 0.0, "tweeter": 9.0})
+
+    def summed_peak(stimulus_dbfs=None):
+        program = programs.program_for_spec(spec, _excitation({"woofer": 0.0, "tweeter": 0.0}), GAIN_PLAN_DB,
+                                            stimulus_dbfs, safety_profile={}, role_targets={})
+        peak, = {segment.gain_db for segment in program.segments if segment.kind == KIND_SUMMED_SWEEP}
+        return peak
+
+    first = summed_peak()
+    assert summed_peak(first + asked_db) == pytest.approx(first + played_db)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
@@ -657,3 +689,77 @@ def test_summed_room_band_reads_resolved_driver_bands(floor):
     assert room_sweep_band_hz(
         roles, (CloudPositionPrompt("room", purpose="room"),)
     ) == (20.0, 20000.0)
+
+
+@pytest.mark.parametrize("scope,ids,refused", [
+    ("drivers", ("woofer:rear",), False),
+    ("drivers", ("woofer", "tweeter"), True),
+    ("drivers", ("",), True),
+    ("candidate_branches", ("woofer",), True),
+    ("candidate", ("woofer",), True),
+])
+def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
+    """A drivers take plays one named target alone or the session's own roles;
+    two named targets are a branch take, which needs the candidate graph."""
+    def make():
+        return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids,
+                           candidate_id="" if scope == "drivers" else "trial")
+
+    if refused:
+        with pytest.raises(ValueError):
+            make()
+        return
+    assert solo_target(make()) == ids[0]
+
+
+@pytest.mark.parametrize("asked_db,played_db", [
+    (None, -NEAR_FIELD_OPENER_BACKOFF_DB), (-14.0, -14.0), (6.0, 0.0),
+])
+def test_a_near_field_take_opens_under_the_seat_level_and_retakes_at_the_peak_it_asks(asked_db, played_db):
+    """A near-field take's first attempt plays well under the level a far-field
+    take plays at; a retake plays the peak it asks for, never above it
+    (ADR-0361). Levels are relative to that seat-equivalent peak."""
+    band = FrequencyBand(20.0, 4000.0)
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": 0.0}, -20.0, None,
+                                   {"woofer:rear": 8.0}, target_bands={"woofer:rear": band})
+    spec = MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime="near_field")
+
+    def sweep_peak(spec, stimulus_dbfs=None):
+        return {s.gain_db for s in compose_target_program(excitation, spec, stimulus_dbfs).segments
+                if s.kind == KIND_SWEEP}
+
+    seat, = sweep_peak(spec, 100.0)
+    played, = sweep_peak(spec, None if asked_db is None else seat + asked_db)
+    assert played == pytest.approx(seat + played_db)
+
+
+@pytest.mark.parametrize("rear,target", [
+    (False, "woofer"), (False, "tweeter"),
+    (True, "woofer"), (True, "woofer:rear"), (True, "tweeter"),
+])
+def test_a_one_driver_take_routes_its_target_alone(rear, target):
+    """The protected neutral graph a one-driver take plays through sources that
+    target's output from program channel 0 and parks every other declared
+    output. An unfitted rear keeps its terminal mute unless it is the target.
+    The capture stays at the ring's width and the volume ceiling at 0 dB."""
+    topology, safety, targets = _profile_and_targets(rear=rear, woofer_floor=20, woofer_upper=4000)
+    preset = _rear_pair("mono")[0] if rear else _preset()
+    profile = MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,))
+
+    payload = yaml.safe_load(emit_measurement_graph(profile, excited_channels=branch_channels_for(spec)))
+
+    outputs = {o.index: measurement_target_id(o.driver_role, o.output_variant)
+               for o in preset.channel_map.outputs}
+    assert {entry["dest"]: [source["channel"] for source in entry["sources"]]
+            for entry in payload["mixers"]["split_active_2way"]["mapping"]} == {
+        index: [0] if target_id == target else [] for index, target_id in outputs.items()}
+    assert payload["devices"]["capture"]["channels"] == 2
+    assert payload["devices"]["volume_limit"] == 0.0
+    if rear:
+        assert gs.output_terminally_muted(
+            payload, gs.view_from_yaml_dict(payload), 2,
+            mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+        ) is (target != "woofer:rear")

@@ -47,6 +47,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,
 )
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
+from jasper.active_speaker.crossover_v2 import wired_stimulus
 from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
@@ -61,6 +62,7 @@ from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
     MAX_CONSECUTIVE_READ_FAILURES,
     SPL_BATCH_S,
+    WiredCaptureAnswer,
     WiredCaptureError,
     WiredMicDevice,
     WiredMicMissing,
@@ -449,6 +451,38 @@ async def test_a_loud_read_waiting_at_a_reader_exit_stops_the_take_as_the_spl_st
         await capture.around(play, program=SimpleNamespace(sample_rate_hz=RATE, total_samples=RATE))
     assert caught.value.code == SPL_CEILING_EXCEEDED
     assert float(event_fields(caplog, "active_speaker.measurement_spl_ceiling_stop")["observed_db_spl"]) > 85
+
+
+
+async def test_a_take_banks_how_the_playback_route_counters_moved(monkeypatch, tmp_path):
+    """A wired take banks the route counters' deltas across its capture and the
+    surfaces that answered both reads, so a playback fault is named per take
+    (#5684)."""
+    lane = {"label": "correction", "xrun_count": 2, "catchup_events": 5}
+    snapshots = iter([{"fanin": {"inputs": [lane]}, "outputd": None},
+                      {"fanin": {"inputs": [{**lane, "xrun_count": 3}]}, "outputd": None}])
+
+    class Recorder:
+        def start(self):
+            pass
+
+        def finish(self, **_):
+            return None
+
+        def abort(self):
+            raise AssertionError("a completed take was aborted")
+
+    monkeypatch.setattr(wired_stimulus, "mint_wired_answer", lambda *_, **__: WiredCaptureAnswer(wav=b"", wav_path="a.wav"))
+    monkeypatch.setattr(wired_stimulus, "place_wired_answer", lambda _dir, answer, **_: answer)
+    capture = WiredStimulusCapture(device=None, bundle_dir=tmp_path, recorder_factory=lambda *_: Recorder(),
+                                   read_route_health=lambda: next(snapshots))
+
+    async def play():
+        pass
+
+    await capture.around(play, program=SimpleNamespace(sample_rate_hz=RATE, total_samples=RATE, phase="measure"))
+    assert capture.take_answer().capture_integrity["playback_path"] == {
+        "read": ["fanin"], "deltas": {"fanin.inputs.0.xrun_count": 1.0}}
 
 
 def test_spl_monitor_keeps_loudest_unweighted_period_below_ceiling():

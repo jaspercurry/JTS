@@ -1084,7 +1084,8 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
                               fc_hz=conductor._excitation.fc_hz, safety_profile=declaring.safety_profile,
                               role_targets=declaring.role_targets,
-                              driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s)
+                              driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s,
+                              driver_bands=conductor._excitation.target_bands)
     predicted = predictive_program_for_spec(context)(spec)
     for stimulus_dbfs in (None, -48.0):
         live = compose_plan_program(conductor, spec, stimulus_dbfs, context=declaring)

@@ -6,7 +6,9 @@ import re
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
-from jasper.active_speaker.round_copy import PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts
+from jasper.active_speaker.round_copy import (
+    LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts,
+)
 from jasper.active_speaker.measurement_view import round_status
 
 
@@ -18,6 +20,15 @@ def test_live_and_placement_lines(pending):
     assert [int(n) for n in re.findall(r"\d+", lines[0])] == ([2, 3, 9, 16, 0] if pending else [11, 24, 2, 3])
     if pending:
         assert lines[-1] == PLACE_MICROPHONE
+
+
+@pytest.mark.parametrize("step", [None, *LEVEL_STEP_LINES])
+def test_a_take_at_a_driver_pose_says_which_level_step_plays(step):
+    facts = {"pose": 1, "poses": 3, "mover": "human", "measurements": 3, "measurement": 1, "role": "woofer",
+             "pose_details": [{}, {}, {}], **({"level_step": step} if step else {})}
+    lines = round_lines(facts)
+    assert [line for line in lines if line in LEVEL_STEP_LINES.values()] == ([LEVEL_STEP_LINES[step]] if step else [])
+    assert not set(LEVEL_STEP_LINES.values()) & set(round_lines(facts, pending=True))
 
 
 @pytest.mark.parametrize("facts, expected", [({}, RUN_ENDED), ({"poses": 3}, ""), ({"poses": 3, "status": "complete"}, RUN_ENDED)])

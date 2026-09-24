@@ -18,6 +18,9 @@ from typing import Any, Callable, Mapping, Sequence
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
+    NEAR_FIELD_SILENCE_S,
+    NEAR_FIELD_SWEEP_BAND_HZ,
+    NEAR_FIELD_SWEEP_S,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -27,7 +30,7 @@ from jasper.audio_measurement.program import (
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
-from .measure_spec import branch_channels_for
+from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -49,6 +52,10 @@ GAIN_CAP_BACKOFF_DB = 0.01
 
 # Without a graph-to-anchor gain reference, blind pilots keep a conservative cut.
 CHECK_PROBE_BACKOFF_DB = 12.0
+
+#: A near-field take's first attempt at a pose plays this far under the
+#: seat-equivalent level, which reads about 96 dB at 15 mm (ADR-0361).
+NEAR_FIELD_OPENER_BACKOFF_DB = 30.0
 
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
@@ -115,7 +122,8 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     backoff = max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
                            if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
     if stimulus_dbfs is not None:
-        backoff += BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+        # A retake plays the peak it asks for, never above its first attempt's (#5709).
+        backoff = max(backoff, BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs)
     if spec.stimulus is not None:
         from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
@@ -126,6 +134,37 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
         program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
                    else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
     return program
+
+
+def compose_target_program(excitation: SessionExcitation, spec: Any,
+                           stimulus_dbfs: float | None = None) -> ExcitationProgram:
+    """A near-field take's program: the one target its spec names, alone, its
+    pilots and bit-identical sweeps on its own channel at its own band, cap and
+    duration limit, with short silences (see #5684).
+
+    The program is as wide as the graph that plays it
+    (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
+    channel but the target's is written silent rather than left to the ring.
+    ``stimulus_dbfs`` is the peak a retake asks for, never above the
+    seat-equivalent level; a first attempt plays under it (ADR-0361).
+    """
+    from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
+
+    target = solo_target(spec)
+    seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
+                                                 else max(0.0, spec.scope_gains_db.get(target, 0.0)))
+    asked = seat_equivalent - NEAR_FIELD_OPENER_BACKOFF_DB if stimulus_dbfs is None else stimulus_dbfs
+    gain = back_off_gain(min(seat_equivalent, asked), excitation.session_volume_db, excitation.caps_dbfs[target])
+    return build_measure_program(
+        {target: gain}, (RoleBand(target, 0, excitation.target_bands[target]),),
+        sweep_durations={target: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
+        gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
+        sweep_duration_limits_s={target: excitation.sweep_duration_limits_s[target]},
+        downstream_gain_db=excitation.session_volume_db,
+        leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=target,
+        courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
+        channels=program_channel_count(branch_channels_for(spec)),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -165,23 +204,20 @@ class SessionExcitation:
     #: The declared crossover corner, for the summed sweep's shape. ``None`` on
     #: a 1-way main, whose summed sweep takes its shape from the declared band.
     fc_hz: float | None
-    #: Per-role longest admissible ONE sweep, seconds — the resolver's
+    #: Per-target longest admissible ONE sweep, seconds — the resolver's
     #: ``effective_sweep_duration_limit_s``, which is also what the admission
     #: gate compares each composed segment against. A role absent here composes
     #: at its nominal.
     sweep_duration_limits_s: Mapping[str, float]
     summed_sweep_band_hz: tuple[float, float] | None = None
+    #: Per-target permitted band, measurement target id -> band, for a take
+    #: that plays one target alone; the roles above carry the primary ones'.
+    target_bands: Mapping[str, Any] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(self.roles))
-        object.__setattr__(
-            self, "caps_dbfs", MappingProxyType(dict(self.caps_dbfs)),
-        )
-        object.__setattr__(
-            self,
-            "sweep_duration_limits_s",
-            MappingProxyType(dict(self.sweep_duration_limits_s)),
-        )
+        for name in ("caps_dbfs", "sweep_duration_limits_s", "target_bands"):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
 
     @property
     def leading_pilot_role(self) -> str:
@@ -340,6 +376,8 @@ def program_for_phase(
 def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,
                      stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
                      role_targets: Mapping[str, str]) -> ExcitationProgram:
+    if solo_target(spec):
+        return compose_target_program(excitation, spec, stimulus_dbfs)
     if spec.program_phase == PHASE_CHECK:
         fallback = CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None else 0.0
         program = excitation.check_program(extra_backoff_db=fallback)
@@ -362,10 +400,15 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
     return program
 
 
+def excitation_from_context(context: Any, session_volume_db: float = 0.0) -> SessionExcitation:
+    """The session's declarations as the conductor context resolved them."""
+    return SessionExcitation(context.roles_bands, context.driver_caps_dbfs, session_volume_db, context.fc_hz,
+                             context.driver_sweep_duration_limits_s, target_bands=context.driver_bands)
+
+
 def predictive_program_for_spec(context: Any) -> Callable[[Any], ExcitationProgram]:
     # Gain changes preserve segment count; preview can precede the CHECK level solve.
-    excitation = SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
-                                   context.driver_sweep_duration_limits_s)
+    excitation = excitation_from_context(context)
     return partial(program_for_spec, excitation=excitation,
                    gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},
                    safety_profile=context.safety_profile, role_targets=context.role_targets)

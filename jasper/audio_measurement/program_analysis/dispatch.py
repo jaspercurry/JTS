@@ -313,6 +313,7 @@ def _repeat_driver_responses(
     n_fft: int,
     impulses: Mapping[str, RecordedImpulse],
     alignment_band_hz: tuple[float, float] | None = None,
+    gate_exempt_reason: str | None = None,
 ) -> tuple[DriverResponse, ...]:
     """Per-repeat responses for ``linearization_envelope.compute_sigma_curve``."""
     out: list[DriverResponse] = []
@@ -328,6 +329,7 @@ def _repeat_driver_responses(
             capture_segment=_raw_sweep_segment(
                 capture, seg, global_offset + seg.start_sample,
             ),
+            gate_exempt_reason=gate_exempt_reason,
         )
         out.append(replace(resp, repeat_index=repeat_index, impulse=impulses[seg.segment_id]))
     return tuple(out)
@@ -392,6 +394,7 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg, global_offset + seg.start_sample,
                 ),
+                gate_exempt_reason=geometry.gate_exempt_reason,
             ),
             impulse=impulses[seg.segment_id],
             repeat_responses=_repeat_driver_responses(
@@ -401,6 +404,7 @@ def _analyze_measure(
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft, impulses=impulses,
                 alignment_band_hz=alignment_band_hz,
+                gate_exempt_reason=geometry.gate_exempt_reason,
             ),
         )
         for seg, full_ir in branches

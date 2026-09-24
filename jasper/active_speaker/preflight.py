@@ -22,7 +22,8 @@ from .angle_capture import (
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
 from .crossover_v2.refusal_copy import (
-    REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT,
+    REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
+    REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT,
     REASON_WALK_BRANCH_PAIR_UNDECLARED, REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
 )
 from .measured_crossover_candidate import (
@@ -81,6 +82,8 @@ class PreflightFacts:
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
+    #: The drivers a near-field pose may play here; read only for a plan naming one.
+    near_field_drivers: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
 
@@ -183,6 +186,14 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                 "invalid_branch_target_ids": invalid_pairs,
             }))
             return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
+
+    # A stereo pair plays no driver alone until #5697 (ADR-0360).
+    unoffered = tuple(sorted({stop.driver for stop in plan.stops if stop.driver} - set(facts.near_field_drivers or ())))
+    if valid_shape and facts.near_field_drivers is not None and unoffered:
+        code = REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
+        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+            "unoffered_drivers": unoffered, "near_field_drivers": facts.near_field_drivers}))
+        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
 
     scopes: dict[str, str] = {}
     bass_extensions: dict[str, Mapping[str, Any]] = {}

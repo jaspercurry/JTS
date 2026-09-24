@@ -228,6 +228,14 @@ def _assert_parked_outputs_muted(yaml_text: str, output_count: int) -> None:
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
+def preset_target_ids(preset: ActiveSpeakerPreset) -> frozenset[str]:
+    """Every physical driver output's measurement target id (ADR-0316)."""
+    return frozenset(
+        measurement_target_id(output.driver_role, output.output_variant)
+        for output in preset.channel_map.outputs
+    )
+
+
 def _validate_program_role_channels(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
