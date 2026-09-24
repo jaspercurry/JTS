@@ -31,11 +31,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 
-# jasper/audio_runtime_settings.py owns the live Camilla statefile paths.
-from jasper.audio_runtime_settings import (
-    DEFAULT_CAMILLA2_STATEFILE_PATH,
-    DEFAULT_CAMILLA_STATEFILE_PATH,
-)
+from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
 
 
 SAMPLE_RATE = 48_000
@@ -281,8 +277,8 @@ def main() -> int:
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
             "/var/lib/jasper/dsp_apply_state.json",
-            DEFAULT_CAMILLA_STATEFILE_PATH,
-            DEFAULT_CAMILLA2_STATEFILE_PATH,
+            str(DEFAULT_CAMILLA_STATEFILE),
+            str(DEFAULT_CAMILLA2_STATEFILE),
         ]
         if isinstance(active_config, str) and active_config.startswith("/"):
             paths.append(active_config)

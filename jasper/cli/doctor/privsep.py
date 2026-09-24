@@ -45,7 +45,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
-from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, systemctl_unavailable_result
@@ -118,7 +118,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # so a 0600 regression silently degrades the dashboard sound card.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
-            "/var/lib/camilladsp/outputd-statefile.yml",
+            str(DEFAULT_CAMILLA_STATEFILE),
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
         ),
     ),

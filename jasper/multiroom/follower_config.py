@@ -40,7 +40,7 @@ import logging
 from pathlib import Path
 
 from ..active_speaker.state_paths import baseline_config_path
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
 from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig
@@ -472,7 +472,6 @@ async def _prove_live_bass_extension_graph(
     """Canonical live graph/profile proof shared by both active bond roles."""
 
     from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
     from jasper.active_speaker.runtime_contract import (
         classify_active_bass_extension_graph,
     )

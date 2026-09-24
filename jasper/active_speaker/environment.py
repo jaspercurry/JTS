@@ -27,6 +27,7 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.paths import DEFAULT_CAMILLA_STATEFILE
 
 from ._common import issue as _issue
 from .camilla_yaml import (
@@ -38,7 +39,6 @@ from .camilla_yaml import (
 SCHEMA_VERSION = 1
 ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
-DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
 # The active-leader's camilla#1 program bake (distributed-active Stage B): a flat
 # (no-Layer-A) program graph whose playback is a File/pipe sink, not a DAC. Its

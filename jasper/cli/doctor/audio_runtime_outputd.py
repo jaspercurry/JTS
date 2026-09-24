@@ -541,10 +541,7 @@ def _outputd_transport_health(
     """
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
     from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
-    from jasper.audio_runtime_settings import (
-        DEFAULT_CAMILLA2_STATEFILE_PATH,
-        DEFAULT_CAMILLA_STATEFILE_PATH,
-    )
+    from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
     from jasper.transport_coherence import (
         transport_coherence_report,
         transport_topology_for_coupling,
@@ -576,8 +573,8 @@ def _outputd_transport_health(
         )
     live_outputd_env = dict(outputd_env)
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
-        DEFAULT_CAMILLA_STATEFILE_PATH,
-        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_CAMILLA_STATEFILE,
+        DEFAULT_CAMILLA2_STATEFILE,
     )
     transport_evidence_warning = ""
     if (

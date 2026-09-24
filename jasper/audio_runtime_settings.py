@@ -71,9 +71,6 @@ SourceKind = Literal[
 ]
 
 
-DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
-DEFAULT_CAMILLA2_STATEFILE_PATH = "/var/lib/camilladsp/crossover-statefile.yml"
-
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
 ROUTE_CORRECTED_48K = "corrected_48k"

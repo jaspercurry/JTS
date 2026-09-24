@@ -41,9 +41,7 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
-from jasper.active_speaker.environment import (
-    DEFAULT_CAMILLA_STATEFILE as STATEFILE_DEFAULT_PATH,
-)
+from jasper.paths import DEFAULT_CAMILLA_STATEFILE as STATEFILE_DEFAULT_PATH
 
 __all__ = [
     'APPLIED_PROFILE_DEFAULT_PATH', 'APPLIED_PROFILE_FILENAME', 'CAPTURE_STATE_FILENAME',

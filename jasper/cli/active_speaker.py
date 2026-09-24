@@ -28,7 +28,6 @@ from jasper.active_speaker.profile import (
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
 from jasper.active_speaker.environment import (
-    DEFAULT_CAMILLA_STATEFILE,
     probe_active_speaker_environment,
     read_camilla_statefile_config_path,
 )
@@ -89,6 +88,7 @@ from jasper.active_speaker.safe_playback import (
 from jasper.dsp_apply import validate_camilla_config
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
+from jasper.paths import DEFAULT_CAMILLA_STATEFILE
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:

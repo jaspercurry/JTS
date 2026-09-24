@@ -287,7 +287,7 @@ def check_content_transport_coherence() -> CheckResult:
     window from a wedge by the reconcile entry lock.
     """
     from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
-    from jasper.audio_runtime_settings import DEFAULT_CAMILLA2_STATEFILE_PATH
+    from jasper.paths import DEFAULT_CAMILLA2_STATEFILE
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -340,7 +340,7 @@ def check_content_transport_coherence() -> CheckResult:
     # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
-        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE_PATH
+        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE
     )
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (

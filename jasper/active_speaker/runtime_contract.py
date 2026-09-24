@@ -47,6 +47,7 @@ from jasper.output_topology import (
     OutputTopologyError,
 )
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
+from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
 from ._common import issue as _issue
@@ -64,7 +65,6 @@ from .graph_safety import (
 from .environment import (
     CAMILLA_CLASS_ACTIVE_PARKED,
     CAMILLA_CLASS_PROGRAM_BAKE,
-    DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
     parse_camilla_statefile_config_path,
     read_camilla_statefile_config_path,
@@ -92,7 +92,6 @@ logger = logging.getLogger(__name__)
 # The ONE flat outputd startup graph. It is a RING graph: the ring is the only
 # transport (ADR-0100), so there is no sibling to re-seed instead of.
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
-DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
 GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"

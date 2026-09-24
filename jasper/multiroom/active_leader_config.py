@@ -67,7 +67,7 @@ import shutil
 from pathlib import Path
 
 from .. import atomic_io
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA2_STATEFILE
 from ..log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig
@@ -97,13 +97,6 @@ CROSSOVER_STATE_PATH = "/var/lib/jasper/active_leader_crossover_profile.json"
 # never fight over one file.
 LEADER_BAKE_PRIOR_STASH = "/var/lib/jasper/grouping-active-leader-prior-camilla.txt"
 
-# camilla#2's OWN statefile (NOT camilla#1's outputd-statefile.yml). The unit
-# loads its config from this file's ``config_path:`` field. The default mirrors
-# deploy/systemd/jasper-camilla-crossover.service + the crossover guard; read
-# via JASPER_CAMILLA2_STATEFILE at CALL time so
-# the env override (and tests) are honoured.
-_DEFAULT_CROSSOVER_STATEFILE = "/var/lib/camilladsp/crossover-statefile.yml"
-
 REGEN_SOURCE = "grouping-active-leader-bake"
 RESTORE_SOURCE = "grouping-active-leader-restore"
 # Tags the shared restore ladder's structured ``result`` lines so the leader arm
@@ -121,7 +114,7 @@ class ActiveLeaderError(RuntimeError):
 def crossover_statefile_path() -> str:
     """camilla#2's statefile path (``JASPER_CAMILLA2_STATEFILE``), read at CALL
     time so an env override / test redirect is honoured."""
-    return os.environ.get("JASPER_CAMILLA2_STATEFILE", _DEFAULT_CROSSOVER_STATEFILE)
+    return os.environ.get("JASPER_CAMILLA2_STATEFILE", str(DEFAULT_CAMILLA2_STATEFILE))
 
 
 # ---------- the fail-closed GATE: build + re-prove BOTH instances ----------
