@@ -559,10 +559,10 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
     spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     calls = {"invalidate": 0, "restart": 0}
 
-    def boom(self, account_name, code, verifier, challenge):
+    def boom(cfg, account_name, code, verifier, challenge):
         raise OSError("disk denied")
 
-    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+    monkeypatch.setattr(spotify_setup, "_exchange_code", boom)
     monkeypatch.setattr(
         spotify_setup,
         "_invalidate_health_cache",
@@ -599,10 +599,10 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     leaked = "GOCSPX-fakefake1234"
 
-    def boom(self, account_name, code, verifier, challenge):
+    def boom(cfg, account_name, code, verifier, challenge):
         raise RuntimeError(f"400 invalid_client: client_secret={leaked}")
 
-    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+    monkeypatch.setattr(spotify_setup, "_exchange_code", boom)
 
     h = _Request(handler_cls, f"/oauth-callback?code=abc&state={state}")
     with caplog.at_level(logging.WARNING, logger="jasper.web.spotify_setup"):
@@ -625,8 +625,8 @@ def test_oauth_callback_with_error_redirects_without_exchange(monkeypatch):
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
     exchanged = []
     monkeypatch.setattr(
-        handler_cls, "_exchange_code",
-        lambda self, *a, **k: exchanged.append(True),
+        spotify_setup, "_exchange_code",
+        lambda *a, **k: exchanged.append(True),
     )
     h = _Request(handler_cls, "/oauth-callback?error=access_denied")
     h.do_GET()
@@ -647,8 +647,8 @@ def test_oauth_callback_rejects_unknown_state_without_exchange(monkeypatch):
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
     exchanged = []
     monkeypatch.setattr(
-        handler_cls, "_exchange_code",
-        lambda self, *a, **k: exchanged.append(True),
+        spotify_setup, "_exchange_code",
+        lambda *a, **k: exchanged.append(True),
     )
     h = _Request(handler_cls, "/oauth-callback?code=abc&state=forged")
     h.do_GET()
