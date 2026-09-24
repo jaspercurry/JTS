@@ -16,11 +16,12 @@ ROUTE_SURFACES = ("fanin", "outputd")
 # Numeric leaves that change between any two snapshots by design, not counters.
 _IGNORED_DELTA_LEAF_KEYS = frozenset({"captured_at_monotonic_ns", "uptime_seconds"})
 
-# The counters whose nonzero change means the route glitched during a window:
-# outputd's content and DAC xruns at stable paths, and each fan-in lane's xruns
-# and USB-resampler unlock/silence/overrun, matched under any lane index since
-# lanes reorder with the topology. Cross-checked against the Rust STATUS
+# Counters whose nonzero change means the route glitched during a window: stable
+# paths, and fan-in lane counters matched under any lane index since lanes
+# reorder with the topology. Every name is cross-checked against the Rust STATUS
 # serializers by tests/test_usbsink_impulse_tap_contract.py.
+# The USB latency harness's set: outputd's content and DAC xruns, and each lane's
+# xruns and USB-resampler unlock/silence/overrun.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
     ("outputd", "content", "xrun_count"),
     ("outputd", "dac", "xrun_count"),
@@ -29,6 +30,19 @@ KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
     ("fanin", "inputs", "xrun_count"),
     ("fanin", "inputs", "resampler", "unlock_count"),
     ("fanin", "inputs", "resampler", "silence_frames"),
+    ("fanin", "inputs", "resampler", "overrun_frames"),
+)
+# A measurement take's set: only real playback faults. Not the resampler's
+# silence_frames, which grows on an idle USB direct lane.
+TAKE_FAULT_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
+    ("outputd", "dac", "xrun_count"),
+    ("outputd", "shm_ring", "empty_reads"),
+    ("outputd", "shm_ring", "reader_resyncs"),
+)
+TAKE_FAULT_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
+    ("fanin", "inputs", "xrun_count"),
+    ("fanin", "inputs", "catchup_events"),
+    ("fanin", "inputs", "resampler", "unlock_count"),
     ("fanin", "inputs", "resampler", "overrun_frames"),
 )
 
@@ -69,13 +83,17 @@ def numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) -> 
     return deltas
 
 
-def known_counter_deltas(deltas: Mapping[str, float]) -> dict[str, float]:
-    """The health counters among :func:`numeric_deltas`' output: each stable
-    path, zero when it did not move, and every lane counter that moved."""
-    known = {".".join(path): deltas.get(".".join(path), 0.0) for path in KNOWN_HEALTH_COUNTER_PATHS}
+def known_counter_deltas(
+    deltas: Mapping[str, float], *,
+    paths: tuple[tuple[str, ...], ...] = TAKE_FAULT_COUNTER_PATHS,
+    suffixes: tuple[tuple[str, ...], ...] = TAKE_FAULT_COUNTER_SUFFIXES,
+) -> dict[str, float]:
+    """The health counters among :func:`numeric_deltas`' output, a take's by
+    default: each stable path, zero when it did not move, and every lane
+    counter that moved."""
+    known = {".".join(path): deltas.get(".".join(path), 0.0) for path in paths}
     for key, delta in deltas.items():
         parts = key.split(".")
-        if (len(parts) > 3 and parts[2].isdigit()
-                and (*parts[:2], *parts[3:]) in KNOWN_HEALTH_COUNTER_SUFFIXES):
+        if len(parts) > 3 and parts[2].isdigit() and (*parts[:2], *parts[3:]) in suffixes:
             known[key] = delta
     return known

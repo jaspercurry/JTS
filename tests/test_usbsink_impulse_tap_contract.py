@@ -17,9 +17,9 @@ consumes:
   * the JSONL event schema (`jasper.route_latency.tap_client.read_tap_events`
     must parse exactly the pinned shape — the SAME shape the fan-in tap emits,
     including malformed-tail tolerance for a file read mid-write), and
-  * the health-counter leaf names the route-health verdict reads out of the
-    fanin + outputd Rust status serializers (a Rust-side rename must
-    fail loudly here, not silently make the verdict vacuous).
+  * the health-counter leaf names the route-health verdict and a take's
+    playback-fault log read out of the fanin + outputd Rust status serializers
+    (a Rust-side rename must fail loudly here, not silently make them vacuous).
 """
 from __future__ import annotations
 
@@ -31,6 +31,9 @@ import pytest
 from jasper.platform.route_health import (
     KNOWN_HEALTH_COUNTER_PATHS,
     KNOWN_HEALTH_COUNTER_SUFFIXES,
+    TAKE_FAULT_COUNTER_PATHS,
+    TAKE_FAULT_COUNTER_SUFFIXES,
+    known_counter_deltas,
 )
 from jasper.route_latency.tap_client import (
     TapArmParams,
@@ -39,7 +42,7 @@ from jasper.route_latency.tap_client import (
 
 _REPO = Path(__file__).resolve().parents[1]
 _FANIN_STATE_RS = _REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
-_OUTPUTD_STATE_RS = _REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
+_OUTPUTD_SNAPSHOT_RS = _REPO / "rust" / "jasper-outputd" / "src" / "snapshot.rs"
 
 
 # --------------------------------------------------------------------------
@@ -158,8 +161,8 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
 
 # --------------------------------------------------------------------------
 # Health-counter names: the harness's route-health verdict
-# (`RouteHealthReport.window_clean`) reads specific counter paths out of
-# fan-in/outputd STATUS snapshots. If a Rust serializer renamed one of those,
+# (`RouteHealthReport.window_clean`) and a take's playback-fault log read
+# specific counter paths out of fan-in/outputd STATUS snapshots. If a Rust serializer renamed one of those,
 # a stable-path lookup could stop observing the real counter and the printed
 # verdict would silently degrade to vacuous-true. Pin the leaf names against
 # the Rust source so a rename fails loudly here — the same cross-language
@@ -183,13 +186,13 @@ def _rust_status_emits_leaf(source: str, leaf: str) -> bool:
 # Rust-side rename fails loudly here instead of silently degrading the verdict.
 _SURFACE_SOURCES = {
     "fanin": _FANIN_STATE_RS,
-    "outputd": _OUTPUTD_STATE_RS,
+    "outputd": _OUTPUTD_SNAPSHOT_RS,
 }
 
 
 def test_known_health_counter_names_exist_in_rust_status_json():
     sources = {name: path.read_text(encoding="utf-8") for name, path in _SURFACE_SOURCES.items()}
-    for path in KNOWN_HEALTH_COUNTER_PATHS:
+    for path in (*KNOWN_HEALTH_COUNTER_PATHS, *TAKE_FAULT_COUNTER_PATHS):
         surface = path[0]
         assert surface in sources, (
             f"health-counter path {path!r} names an unknown surface {surface!r}; "
@@ -197,8 +200,8 @@ def test_known_health_counter_names_exist_in_rust_status_json():
         )
         leaf = path[-1]
         assert _rust_status_emits_leaf(sources[surface], leaf), (
-            f"health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_PATHS path "
-            f"{path!r}) is no longer emitted by {surface}'s status serializer — "
+            f"health counter {leaf!r} (path {path!r}) is no longer emitted "
+            f"by {surface}'s status serializer — "
             "a Rust-side rename would silently make the harness's route-health "
             "verdict vacuous. Update both sides together."
         )
@@ -211,18 +214,26 @@ def test_known_health_counter_suffixes_exist_in_fanin_status_json():
     # the fan-in status serializer, or a rename makes the suffix match — and the
     # verdict for the route's own resampler/xrun health — vacuous.
     fanin_src = _FANIN_STATE_RS.read_text(encoding="utf-8")
-    for suffix in KNOWN_HEALTH_COUNTER_SUFFIXES:
+    for suffix in (*KNOWN_HEALTH_COUNTER_SUFFIXES, *TAKE_FAULT_COUNTER_SUFFIXES):
         assert suffix[:2] == ("fanin", "inputs"), (
             f"unexpected suffix shape {suffix!r}; the fan-in cross-check only "
             "validates fanin.inputs.* per-lane counters"
         )
         leaf = suffix[-1]
         assert _rust_status_emits_leaf(fanin_src, leaf), (
-            f"per-lane health counter {leaf!r} (in KNOWN_HEALTH_COUNTER_SUFFIXES "
-            f"{suffix!r}) is no longer emitted by jasper-fanin's state.rs status "
+            f"per-lane health counter {leaf!r} (suffix {suffix!r}) is no longer "
+            "emitted by jasper-fanin's state.rs status "
             "serializer — a Rust-side rename would silently make the harness's "
             "per-lane route-health verdict vacuous. Update both sides together."
         )
+
+
+def test_a_take_logs_playback_faults_not_an_idle_usb_lanes_silence():
+    deltas = {"fanin.inputs.2.resampler.silence_frames": 4800.0, "fanin.inputs.0.xrun_count": 1.0,
+              "outputd.shm_ring.reader_resyncs": 2.0}
+
+    assert {key: delta for key, delta in known_counter_deltas(deltas).items() if delta} == {
+        "fanin.inputs.0.xrun_count": 1.0, "outputd.shm_ring.reader_resyncs": 2.0}
 
 
 # --------------------------------------------------------------------------

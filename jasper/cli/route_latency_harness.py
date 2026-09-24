@@ -75,7 +75,8 @@ from jasper.route_latency.pairing import (
     pair_events,
 )
 from jasper.platform.route_health import (
-    KNOWN_HEALTH_COUNTER_PATHS, known_counter_deltas, numeric_deltas, snapshot_route_health,
+    KNOWN_HEALTH_COUNTER_PATHS, KNOWN_HEALTH_COUNTER_SUFFIXES, known_counter_deltas, numeric_deltas,
+    snapshot_route_health,
 )
 from jasper.platform.status_socket import (
     DEFAULT_STATUS_TIMEOUT_SECONDS,
@@ -265,7 +266,9 @@ def diff_route_health(before: Mapping[str, Any], after: Mapping[str, Any]) -> Ro
     all_deltas = numeric_deltas(dict(before), dict(after))
     return RouteHealthReport(
         all_deltas=all_deltas,
-        known_counter_deltas=known_counter_deltas(all_deltas),
+        known_counter_deltas=known_counter_deltas(
+            all_deltas, paths=KNOWN_HEALTH_COUNTER_PATHS, suffixes=KNOWN_HEALTH_COUNTER_SUFFIXES,
+        ),
         before=before,
         after=after,
     )
