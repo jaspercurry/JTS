@@ -95,8 +95,7 @@ def test_a_near_field_pose_is_named_by_its_driver_and_distance():
     distance (ADR-0360)."""
     names = [pose_name({"kind": pose.kind, "distance_m": pose.distance_m, "driver": pose.driver})
              for pose in program("nearfield", "cardioid").poses]
-    assert names == ["woofer at 15 mm", "woofer at 30 mm", "woofer at 15 mm",
-                     "rear woofer at 15 mm", "rear woofer at 30 mm", "rear woofer at 15 mm"]
+    assert names == ["woofer at 15 mm", "woofer at 30 mm", "rear woofer at 15 mm", "rear woofer at 30 mm"]
 
 
 @pytest.mark.parametrize("kept,retakes", [(9, 1), (8, 0), (0, 0)])
