@@ -15,7 +15,7 @@ import wave
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -39,6 +39,7 @@ MAX_PENDING_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_AUDIO_BYTES = 128 * 1024 * 1024  # 128 MiB
 
 ROLLED_OFF_SENTINEL = "rolled_off"
+AUDIOLESS_ROW_RETENTION_DAYS = 365
 
 
 _STAGE_TO_COLUMN: dict[str, str] = {
@@ -242,6 +243,17 @@ class WakeEventStore:
                 "wake_events: schema migration added columns: %s",
                 ", ".join(added),
             )
+        # ts_utc is _now_iso() text, so string order is time order.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=AUDIOLESS_ROW_RETENTION_DAYS)
+        pruned = conn.execute(
+            """DELETE FROM wake_events WHERE ts_utc < :cutoff AND COALESCE(
+                 NULLIF(audio_on_path, :gone), NULLIF(audio_off_path, :gone),
+                 NULLIF(audio_dtln_path, :gone), NULLIF(audio_chip_aec_150_path, :gone),
+                 NULLIF(audio_chip_aec_210_path, :gone)) IS NULL""",
+            {"cutoff": cutoff.isoformat(timespec="milliseconds"), "gone": ROLLED_OFF_SENTINEL},
+        ).rowcount
+        if pruned:
+            log_event(logger, "wake_events.rows_pruned", count=pruned)
         logger.info(
             "wake_events: opened %s (max_audio_bytes=%d MB)",
             self._db_path, self._max_audio_bytes // (1024 * 1024),

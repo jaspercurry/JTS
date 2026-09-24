@@ -35,7 +35,8 @@ describe the provider and data path before capture or upload.
 Wake-event telemetry lives under `/var/lib/jasper/wake-events/`, including
 `wake-events.sqlite3` plus per-event WAVs. Audio is an oldest-first ring capped
 by `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES` (default 128 MiB). SQLite rows remain; WAV
-paths are marked rolled off when audio is pruned.
+paths are marked rolled off when audio is pruned, and a row whose audio is gone
+is deleted once it is a year old.
 
 Wake-corpus and wake-enrollment clips are raw WAVs saved under the configured
 wake-corpus directory (`/var/lib/jasper/enrollment_positives/` on an installed

@@ -571,8 +571,8 @@ class Config:
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
             # Wake-event telemetry.
             # Directory holds wake-events.sqlite3 + per-event WAV
-            # files (one per leg, 6 s window). DB rows kept forever;
-            # audio ring rolls oldest-first when the byte cap is hit.
+            # files (one per leg, 6 s window). Audio ring rolls
+            # oldest-first when the byte cap is hit.
             wake_events_dir=_env(
                 "JASPER_WAKE_EVENTS_DIR",
                 "/var/lib/jasper/wake-events",
