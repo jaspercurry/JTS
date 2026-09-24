@@ -313,11 +313,10 @@ def _blockers(
 
 
 def _relay_is_fresh(relay: Mapping[str, Any], now: float) -> bool:
-    try:
-        age = max(0.0, now - float(relay.get("updated_epoch_sec", 0)))
-    except (TypeError, ValueError):
-        return False
-    return bool(relay) and age <= RELAY_STATUS_FRESH_SECONDS
+    updated = as_float(relay.get("updated_epoch_sec", 0))
+    return bool(relay) and updated is not None and (
+        max(0.0, now - updated) <= RELAY_STATUS_FRESH_SECONDS
+    )
 
 
 def _relay_report(relay: Mapping[str, Any], fresh: bool) -> dict[str, Any]:
