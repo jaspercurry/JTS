@@ -437,9 +437,10 @@ layers = [
   "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_models : weather",
   "audio_runtime_settings",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : volume_diagnostics",
-  "aec_engines : bluealsa_probe : identity : mics : net : usb_network : usbgadget : xvf",
+  "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
   "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "audio_measurement : audio_validation_artifacts : bass_extension : model_downloads : volume_owner",
+  "identity : net",
   "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
 ]
 exhaustive = true
