@@ -22,6 +22,12 @@ def power_mean_db(values_db: np.ndarray) -> float:
     return float(10.0 * np.log10(np.mean(linear)))
 
 
+def power_mean_across_db(stack_db: np.ndarray) -> np.ndarray:
+    """Per-column power mean across the rows of a dB matrix: curves pooled to
+    a curve, where :func:`power_mean_db` pools one curve to a scalar."""
+    return 10.0 * np.log10(np.mean(np.power(10.0, stack_db / 10.0), axis=0))
+
+
 def deviation_summary(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
     """One deviation curve as scalars, with the frequency its worst bin sits at."""
     worst = int(np.argmax(np.abs(deviation_db)))

@@ -29,7 +29,7 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
-from jasper.audio_measurement.series_stats import power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
 
 
 def _pool(pairs: list[tuple[float, float]]) -> float | None:
@@ -449,14 +449,6 @@ def role_split_flatness(
     )
 
 
-def _power_mean_across(stack_db: np.ndarray) -> np.ndarray:
-    """Per-column power (energy) mean across rows of a dB matrix. Distinct
-    from ``series_stats.power_mean_db``, which pools one curve across
-    FREQUENCY to a scalar; this pools curves across POSITIONS to a curve.
-    """
-    return 10.0 * np.log10(np.mean(np.power(10.0, stack_db / 10.0), axis=0))
-
-
 @dataclass(frozen=True)
 class DirectivityBand:
     """One band's departure from on-axis: ``d_i = level_offset_db + shape_i``.
@@ -682,7 +674,7 @@ def directivity_table(
             evaluable=False,
             not_evaluated_reason=reason,
         )
-    reference_db = _power_mean_across(
+    reference_db = power_mean_across_db(
         np.vstack([np.asarray(p.magnitude_db, dtype=float) for p in usable_reference]),
     )
     excluded = _exclusion_mask(grid, report.excluded_intervals)
