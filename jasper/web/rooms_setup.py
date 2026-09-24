@@ -156,7 +156,7 @@ def _build_rooms_payload() -> dict:
     stage = time.perf_counter()
     peering = _read_peering_block()
     stages["peering_ms"] = round((time.perf_counter() - stage) * 1000)
-    self_addr = rooms_peers._self_address(own)
+    self_addr = rooms_peers.self_address(own)
     self_block = {
         "name": me.name,
         "hostname": me.hostname,
@@ -365,7 +365,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     topology (this speaker leader/left, peer follower/right); advanced
     same-bond edits may send ``{members: [...]}`` explicitly. The leader is
     always this speaker, so followers get its STABLE mDNS handle
-    (:func:`_leader_handle`) as ``leader_addr``, never a NIC IP.
+    (:func:`rooms_peers.leader_handle`) as ``leader_addr``, never a NIC IP.
 
     A partial failure is surfaced per member, not auto-rolled-back — the
     household retries, and `/state` shows the half-formed bond as degraded.
@@ -386,7 +386,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
-        members = rooms_peers._stereo_pair_members_from_intent(peer_addr)
+        members = rooms_peers.stereo_pair_members_from_intent(peer_addr)
     if not isinstance(members, list) or not members:
         _send_json(
             handler, {"ok": False, "error": "members must be a non-empty list"},
@@ -396,11 +396,11 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
 
     requested_bond_id = str(parsed.get("bond_id") or "").strip()
     fresh_bond = not requested_bond_id
-    bond_id = requested_bond_id or rooms_peers._generate_bond_id()
-    leader_addr = rooms_peers._leader_handle()
+    bond_id = requested_bond_id or rooms_peers.generate_bond_id()
+    leader_addr = rooms_peers.leader_handle()
 
     # Record each member's slot so the positional results from
-    # _fan_out_grouping pair back to the right member.
+    # fan_out_grouping pair back to the right member.
     results: list[dict] = [None] * len(members)  # type: ignore[list-item]
     targets: list[tuple[str, dict]] = []
     target_idx: list[int] = []
@@ -463,8 +463,8 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         target_idx.append(i)
 
     known = rooms_peers.self_addresses()
-    preflight = rooms_peers._map_peers(
-        lambda t: rooms_peers._preflight_grouping_target(t[0], t[1], known),
+    preflight = rooms_peers.map_peers(
+        lambda t: rooms_peers.preflight_grouping_target(t[0], t[1], known),
         targets,
     )
     blocked = [
@@ -518,7 +518,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         )
     token = rooms_peers.request_control_token(handler)
     for slot, (addr, body), (ok, detail) in zip(
-        target_idx, targets, rooms_peers._fan_out_grouping(targets, known=known, token=token)
+        target_idx, targets, rooms_peers.fan_out_grouping(targets, known=known, token=token)
     ):
         results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 
@@ -600,8 +600,8 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
                 for s in rooms_peers.discover_speakers_cached()
             ) if a and a not in known
         ]
-        candidate_groupings = rooms_peers._map_peers(
-            lambda a: rooms_peers._get_member_grouping(a, known), candidate_addrs,
+        candidate_groupings = rooms_peers.map_peers(
+            lambda a: rooms_peers.get_member_grouping(a, known), candidate_addrs,
         )
         peer_addrs = [
             a for a, pg in zip(candidate_addrs, candidate_groupings)
@@ -621,7 +621,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # peer of the credential it needs to authenticate the very unbond that
     # dissolves it.
     household = household_credential.current()
-    fan_results = rooms_peers._fan_out_grouping(
+    fan_results = rooms_peers.fan_out_grouping(
         targets, known=known, token=rooms_peers.request_control_token(handler),
         household=household,
     )
@@ -699,7 +699,7 @@ def resolve_bond_peer(
     """
     if known is None:
         known = rooms_peers.self_addresses()
-    read_grouping = grouping_reader or rooms_peers._get_member_grouping
+    read_grouping = grouping_reader or rooms_peers.get_member_grouping
     bond_id = str(grouping.get("bond_id") or "").strip()
     roster_addr = str(grouping.get("peer_addr") or "").strip()
     roster_name = str(grouping.get("peer_name") or "").strip()
@@ -741,7 +741,7 @@ def resolve_bond_peer(
             for sp in rooms_peers.discover_speakers_cached()
         ) if a and a not in known
     ]
-    candidate_groupings = rooms_peers._map_peers(
+    candidate_groupings = rooms_peers.map_peers(
         lambda a: read_grouping(a, known), candidate_addrs,
     )
     peers = [
@@ -832,7 +832,7 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         (peer_addr, _body(peer_grouping, swapped_peer)),
     ]
     token = rooms_peers.request_control_token(handler)
-    fan_results = rooms_peers._fan_out_grouping(targets, known=known, token=token)
+    fan_results = rooms_peers.fan_out_grouping(targets, known=known, token=token)
     results = [
         {"addr": addr, "channel": body["channel"], "ok": ok, "detail": detail}
         for (addr, body), (ok, detail) in zip(targets, fan_results)
@@ -929,7 +929,7 @@ def _balance_db_from_trims(left_trim_db: float, right_trim_db: float) -> float:
 def _get_member_grouping_for_balance_snapshot(
     addr: str, known: set[str] | None = None,
 ) -> dict | None:
-    return rooms_peers._get_member_grouping(
+    return rooms_peers.get_member_grouping(
         addr, known, timeout=BALANCE_SNAPSHOT_PEER_TIMEOUT_SEC,
     )
 
