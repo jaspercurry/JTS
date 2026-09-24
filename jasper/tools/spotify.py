@@ -70,7 +70,7 @@ SPOTIFY_PLAY_LLM_DESCRIPTION = (
 )
 
 
-def _format_name_list(names: "list[str]") -> str:
+def format_name_list(names: "list[str]") -> str:
     """English list join for spoken output: ['jasper'] → 'jasper';
     ['jasper', 'brittany'] → 'jasper and brittany';
     ['a', 'b', 'c'] → 'a, b, and c'. Lowercased — voice tool error
@@ -444,7 +444,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         reason = router.empty_reason() if router is not None else "no_accounts"
         if reason == "revoked":
             names = router.revoked_account_names() if router is not None else []
-            who = _format_name_list(names) if names else "your spotify account"
+            who = format_name_list(names) if names else "your spotify account"
             base = f"spotify signed {who} out."
             if setup_url:
                 base += f" tell the user to re-link at {setup_url}."

@@ -117,7 +117,7 @@ def test_spotify_transport_commands(source, tool_name, method, playback):
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Jasper's Mac"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.transport.airplay_now_playing",
         new=AsyncMock(return_value={"title": "Hey Jude"}),
     ), patch(
         "jasper.tools.transport._mpris_call", new=AsyncMock(),
@@ -159,7 +159,7 @@ def test_native_transport_commands(source, tool_name, method):
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Some Mac"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.transport.airplay_now_playing",
         new=AsyncMock(return_value={"title": "Apple Music Track"}),
     ), patch(
         "jasper.tools.transport.run_busctl",
@@ -194,7 +194,7 @@ def test_dispatch_airplay_no_match_no_dacp_returns_error():
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Some Mac"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.transport.airplay_now_playing",
         new=AsyncMock(return_value={"title": "Mystery Track"}),
     ), patch(
         "jasper.tools.transport._airplay_remote_available",
@@ -315,7 +315,7 @@ def test_dispatch_failures_return_error_dict():
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Jasper's Mac"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.transport.airplay_now_playing",
         new=AsyncMock(return_value={"title": "Hey Jude"}),
     ):
         result = asyncio.run(tools["next_track"]())
@@ -364,7 +364,7 @@ def test_get_now_playing_routes_to_airplay_mpris_when_no_match():
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Some Mac"),
     ), patch(
-        "jasper.tools.transport._mpris_now_playing",
+        "jasper.tools.transport.airplay_now_playing",
         new=AsyncMock(return_value={"title": "T", "artist": "A", "album": "B"}),
     ):
         result = asyncio.run(tools["get_now_playing"]())

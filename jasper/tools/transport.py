@@ -16,7 +16,7 @@ from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing
 from . import tool
-from .spotify import _format_name_list
+from .spotify import format_name_list
 from ..spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,6 @@ async def _mpris_call(method: str) -> None:
         raise RuntimeError(
             f"mpris {method} failed: {result.stderr.decode(errors='replace').strip()}"
         )
-
-
-async def _mpris_now_playing() -> dict[str, str]:
-    """Read Shairport metadata through the renderer's canonical MPRIS parser."""
-    return await airplay_now_playing()
 
 
 async def _detect_source(renderer) -> str:
@@ -119,7 +114,7 @@ async def _resolve_airplay_account(router):
     if not client_name:
         return None
     try:
-        metadata = await _mpris_now_playing()
+        metadata = await airplay_now_playing()
     except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
         return None
     title = metadata.get("title", "")
@@ -227,7 +222,7 @@ def make_transport_dispatcher(renderer, router):
                     if router.empty_reason() == "revoked":
                         names = router.revoked_account_names()
                         who = (
-                            _format_name_list(names) if names
+                            format_name_list(names) if names
                             else "your spotify account"
                         )
                         return {
@@ -341,7 +336,7 @@ def make_transport_tools(renderer, router):
                             "source": "airplay+spotify",
                             "account": matched.account.name,
                         }
-                return {**await _mpris_now_playing(), "source": "airplay"}
+                return {**await airplay_now_playing(), "source": "airplay"}
             if source == "spotify" and router is not None:
                 active = await router.active(airplay_active=False)
                 if active is not None:
