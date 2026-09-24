@@ -468,6 +468,15 @@ def test_post_unknown_route_404s():
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
+@pytest.mark.parametrize("pasted, expected", [
+    ("http://127.0.0.1:8888/callback?code=c&state=s", ("c", "s")),
+    ("?code=c&state=s", ("c", "s")),
+    ("http://[::1/callback?code=c&state=s", None),
+])
+def test_parse_callback_url_reads_code_and_state_or_none(pasted, expected):
+    assert spotify_setup._parse_callback_url(pasted) == expected
+
+
 def test_manual_start_paste_form_preserves_session_csrf(monkeypatch, tmp_path):
     monkeypatch.setattr(
         spotify_setup, "default_cache_path_for", lambda name: str(tmp_path / name),

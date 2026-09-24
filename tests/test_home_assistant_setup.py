@@ -60,6 +60,7 @@ _REAL_VERIFY_SYNC = ha_setup.verify_sync
         ("https://my-ha.example.com:8443/api", "https://my-ha.example.com:8443"),
         ("  http://x:8123  ", "http://x:8123"),
         ("", ""),
+        ("[::1", ""),
     ],
 )
 def test_normalize_url(raw, expected):

@@ -863,8 +863,10 @@ def _parse_callback_url(pasted: str) -> tuple[str, str] | None:
     # If it looks like a URL, take the query-string portion. Otherwise
     # treat the whole thing as a query string.
     if "://" in s:
-        parsed = urllib.parse.urlparse(s)
-        qs = parsed.query
+        try:
+            qs = urllib.parse.urlparse(s).query
+        except ValueError:  # an unbalanced IPv6 bracket
+            return None
     else:
         qs = s
     parts = urllib.parse.parse_qs(qs)

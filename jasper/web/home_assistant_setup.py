@@ -169,7 +169,10 @@ def _normalize_url(raw: str) -> str:
         return ""
     if not s.startswith(("http://", "https://")):
         s = "http://" + s
-    parsed = urllib.parse.urlparse(s)
+    try:
+        parsed = urllib.parse.urlparse(s)
+    except ValueError:  # an unbalanced IPv6 bracket
+        return ""
     netloc = parsed.netloc or parsed.path  # urlparse oddities on "host:8123"
     if not netloc:
         return ""
