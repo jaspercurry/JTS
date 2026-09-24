@@ -44,6 +44,7 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
+from ... import audio_profile_state, conversation_history, mic_mute_persistence
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from ...env_load import (
     GROUPING_ENV_FILE,
@@ -57,6 +58,7 @@ from ...env_load import (
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
 )
+from ...identity import identity_state
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -119,12 +121,12 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # SSOT files jasper-control re-reads FRESH on every /state / endpoint
             # call (it is not restarted on a wizard save).
             GROUPING_ENV_FILE,
-            "/var/lib/jasper/identity.env",
+            identity_state.DEFAULT_PATH,
             VOICE_PROVIDER_ENV_PATH,
             SPEAKER_NAME_ENV_PATH,
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
-            "/var/lib/jasper/aec_mode.env",
+            str(audio_profile_state.DEFAULT_AEC_MODE_PATH),
             # /state's sound card: load_profile() + load_sound_settings() are
             # called fresh on every /state aggregation (control.state_aggregate),
             # so a 0600 regression silently degrades the dashboard sound card.
@@ -180,8 +182,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # /assistant/chat/ re-reads these fresh so the browser toggle takes effect
             # without restarting jasper-voice or jasper-chat-web.
-            "/var/lib/jasper/conversation_history.env",
-            "/var/lib/jasper/conversation_history.db",
+            conversation_history.DEFAULT_SETTINGS_PATH,
+            conversation_history.DEFAULT_DB_PATH,
         ),
     ),
     DaemonReadSpec(
@@ -246,7 +248,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # repeated here.
             TOOL_STATE_ENV_PATH,
             VOICE_PROVIDER_ENV_PATH,
-            "/var/lib/jasper/mic_mute.env",
+            mic_mute_persistence.DEFAULT_PATH,
         ),
     ),
     # jasper-input's one on-disk read is the accessory reconciler's published

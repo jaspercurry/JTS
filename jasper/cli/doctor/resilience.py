@@ -17,6 +17,7 @@ from ...control.restart_broker import SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import (
     AEC_BRIDGE_SERVICE,
+    GROUPING_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
     SHAIRPORT_SYNC_SERVICE,
@@ -24,10 +25,9 @@ from ...service_units import (
     unit_unstable,
     unit_uptime_sec,
 )
-from ...source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
-from ... import outputd_failure_reconcile_state
+from ... import outputd_failure_reconcile_state, source_intent_units
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -101,6 +101,20 @@ REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
 REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
+# A oneshot normally stays `activating` during its pass; its unit timeout
+# moves a stalled pass to `failed`.
+_ONESHOT_RUNTIME_STATE_UNITS = (
+    # A failed coupling-reconcile pass parks the unit in `failed` with the
+    # evidence only in `systemctl --failed` + the journal; tracking it here
+    # makes that doctor-visible.
+    source_intent_units.USB_COUPLING_UNIT,
+    # Same reasoning (#2802 item 3): a dead grouping or source-intent
+    # reconciler was doctor-invisible except indirectly, via USB combo
+    # consistency.
+    GROUPING_RECONCILE_SERVICE,
+    source_intent_units.RECONCILE_UNIT,
+)
+
 # NO audio-path unit: `service_state_failure` (jasper-fanin, jasper-camilla)
 # and check_outputd_failure_reconcile_park (jasper-outputd, park record and
 # all) own their runtime state, so one down unit is one fail row.
@@ -108,7 +122,7 @@ _RUNTIME_STATE_UNITS = (
     "nginx.service",
     JASPER_VOICE_SERVICE,
     AEC_BRIDGE_SERVICE,
-    "jasper-control.service",
+    _CONTROL_UNIT,
     "jasper-input.service",
     # A .path unit fails on a bad spec; check_required_units_active defers
     # every non-`inactive` state to this row, so both must track it.
@@ -120,24 +134,8 @@ _RUNTIME_STATE_UNITS = (
     "bluealsa.service",
     "bluealsa-aplay.service",
     "bt-agent.service",
-    # A failed coupling-reconcile pass parks the unit in `failed` with the
-    # evidence only in `systemctl --failed` + the journal; tracking it here
-    # makes that doctor-visible.
-    "jasper-fanin-coupling-auto.service",
-    # Same reasoning (#2802 item 3): a dead grouping or source-intent
-    # reconciler was doctor-invisible except indirectly, via USB combo
-    # consistency.
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
+    *_ONESHOT_RUNTIME_STATE_UNITS,
 )
-
-# A oneshot normally stays `activating` during its pass; its unit timeout
-# moves a stalled pass to `failed`.
-_ONESHOT_RUNTIME_STATE_UNITS = frozenset({
-    "jasper-fanin-coupling-auto.service",
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
-})
 
 @doctor_check(core=True)
 def check_service_runtime_state() -> CheckResult:
