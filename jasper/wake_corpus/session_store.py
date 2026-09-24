@@ -4,15 +4,16 @@
 
 """Wake-corpus session metadata persistence.
 
-Finding, parsing, listing, and deleting the
-``enroll_<member>_<session_id>.json`` sidecar files under a recorder's
-metadata directory. No threading, no in-memory session state —
+The ``enroll_<member>_<session_id>.json`` sidecar's schema version and
+clip record, and finding, parsing, listing, and deleting those sidecars
+under a recorder's metadata directory. No threading, no in-memory session state —
 ``RecordingBackend`` owns that and delegates here for the disk side.
 """
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -41,6 +42,43 @@ from .bridge_session import (
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
+
+METADATA_SCHEMA_VERSION = 2
+
+
+@dataclass
+class ClipMetadata:
+    """One recorded clip's complete metadata, written to the per-session
+    JSON sidecar. All fields are JSON-serializable.
+    """
+
+    clip_id: str
+    member: str
+    condition: str
+    distance: str
+    session_id: str
+    seq: int
+    start_ts: str  # ISO8601 UTC
+    stop_ts: str
+    duration_sec: float
+    files: dict[str, str]  # leg → absolute WAV path
+    deleted: bool = False
+    auto_stopped: bool = False
+    # True when the recording was force-stopped because the household
+    # muted the mic mid-clip (see recording_backend.MUTE_POLL_INTERVAL_SEC).
+    # The audio on disk predates the mute flip (±1 poll interval); the
+    # flag tells the operator why the clip ended early.
+    mute_stopped: bool = False
+    notes: str = ""
+    selected_legs: list[str] = field(default_factory=list)
+    capture_plan: dict[str, Any] = field(default_factory=dict)
+    capture_plan_id: str = ""
+    capture_plan_conformance: dict[str, Any] = field(default_factory=dict)
+    audio_context: dict[str, Any] = field(default_factory=dict)
+    capture_health: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def session_metadata_path(
@@ -140,8 +178,8 @@ def parse_session_data(
 ) -> dict[str, Any]:
     """Parse a session JSON sidecar's raw dict into typed session fields.
 
-    Clips are returned as raw dicts; the caller builds its own clip-metadata
-    objects from them. Raises KeyError/TypeError on a malformed sidecar —
+    Clips are returned as raw dicts; the caller builds ``ClipMetadata``
+    from them. Raises KeyError/TypeError on a malformed sidecar —
     callers convert those to a ValueError with session context.
     """
     session_id = data["session_id"]

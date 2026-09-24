@@ -21,7 +21,6 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -69,9 +68,10 @@ from .runtime_probe import (
     XVF_RAW0_DTLN_LEG,
     session_aec3_sweep_source,
 )
+from .session_store import METADATA_SCHEMA_VERSION, ClipMetadata
 from . import session_store
 
-logger = logging.getLogger("jasper-wake-corpus-web")
+logger =logging.getLogger("jasper-wake-corpus-web")
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +136,6 @@ STOP_SHUTDOWN_JOIN_SEC = 5.0
 # exits and this never runs against a live session.
 TEST_MODE_STALE_SEC = 300.0
 
-METADATA_SCHEMA_VERSION = 2
-
 # session_store.parse_session_data()'s keys that map 1:1 onto a
 # RecordingBackend `self._<key>` attribute of the same name.
 _SESSION_STATE_KEYS = (
@@ -153,46 +151,6 @@ _SESSION_SUMMARY_KEYS = (
     "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
     "include_aec3_sweep", "corpus_profile", "aec3_sweep_source",
 )
-
-
-# ---------------------------------------------------------------------------
-# Data shapes
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ClipMetadata:
-    """One recorded clip's complete metadata, written to the per-session
-    JSON sidecar. All fields are JSON-serializable.
-    """
-
-    clip_id: str
-    member: str
-    condition: str
-    distance: str
-    session_id: str
-    seq: int
-    start_ts: str  # ISO8601 UTC
-    stop_ts: str
-    duration_sec: float
-    files: dict[str, str]  # leg → absolute WAV path
-    deleted: bool = False
-    auto_stopped: bool = False
-    # True when the recording was force-stopped because the household
-    # muted the mic mid-clip (see MUTE_POLL_INTERVAL_SEC). The audio on
-    # disk predates the mute flip (±1 poll interval); the flag tells
-    # the operator why the clip ended early.
-    mute_stopped: bool = False
-    notes: str = ""
-    selected_legs: list[str] = field(default_factory=list)
-    capture_plan: dict[str, Any] = field(default_factory=dict)
-    capture_plan_id: str = ""
-    capture_plan_conformance: dict[str, Any] = field(default_factory=dict)
-    audio_context: dict[str, Any] = field(default_factory=dict)
-    capture_health: dict[str, Any] = field(default_factory=dict)
-
-    def to_json(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 _StopGeneration = tuple[str, RecordingTask]

@@ -15,6 +15,9 @@ recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
   - :mod:`jasper.wake_corpus.bridge_session` — bridge env / leg-plan /
     capture-health / systemctl restart primitives + enter/exit corpus
     test mode. Pure-function + subprocess layer (no asyncio).
+  - :mod:`jasper.wake_corpus.session_store` — the session sidecar's schema
+    version and clip record, and finding, parsing, listing and deleting
+    sidecars.
   - :mod:`jasper.wake_corpus.clip_capture` — ``RecordingTask``: one clip's
     multi-leg UDP capture into PCM buffers, with the live level meter.
   - :mod:`jasper.wake_corpus.recording_backend` — ``RecordingBackend``:

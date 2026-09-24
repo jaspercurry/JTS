@@ -25,6 +25,7 @@ from jasper.wake_corpus import (
     clip_capture,
     recording_backend,
     runtime_probe,
+    session_store,
 )
 from jasper.web import wake_corpus_setup
 
@@ -502,7 +503,7 @@ def test_metadata_records_audio_context_snapshot(
     _, data = _session_metadata(tmp_path)
     assert (
         data["metadata_schema_version"]
-        == recording_backend.METADATA_SCHEMA_VERSION
+        == session_store.METADATA_SCHEMA_VERSION
     )
     context = data["audio_context"]
     assert (
@@ -1755,7 +1756,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
         original_write_wav(path, pcm)
 
     monkeypatch.setattr(recording_backend, "write_wav", blocking_write_wav)
-    stopped: list[recording_backend.ClipMetadata] = []
+    stopped: list[session_store.ClipMetadata] = []
     errors: list[BaseException] = []
 
     def stop_clip() -> None:
