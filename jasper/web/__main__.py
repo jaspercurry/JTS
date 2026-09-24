@@ -34,10 +34,12 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
+from typing import Any
 from jasper.install_profile import (
     VALID_INSTALL_PROFILES,
     Capability,
@@ -71,7 +73,7 @@ class WizardSpec:
     label: str
     env_var: str
     default_port: int
-    make_server: Callable[[object], object]
+    make_server: Callable[..., ThreadingHTTPServer]
     requires: Capability | None
 
     def port(self) -> int:
@@ -170,7 +172,7 @@ def _make_lazy_wake_corpus_server(
     *,
     output_dir: Path,
     ports: dict[str, int],
-):
+) -> ThreadingHTTPServer:
     """Bind `/wake-corpus/` without importing NumPy until first use."""
 
     class _LazyWakeCorpusHandler(BaseHTTPRequestHandler):
@@ -235,7 +237,7 @@ def _make_lazy_wake_corpus_server(
     return _systemd.make_http_server(target, _LazyWakeCorpusHandler)
 
 
-def _make_spotify_server(target: object) -> object:
+def _make_spotify_server(target: object) -> ThreadingHTTPServer:
     from . import spotify_setup
 
     return spotify_setup.make_server(
@@ -244,7 +246,7 @@ def _make_spotify_server(target: object) -> object:
     )
 
 
-def _make_voice_server(target: object) -> object:
+def _make_voice_server(target: object) -> ThreadingHTTPServer:
     from . import voice_setup
 
     return voice_setup.make_server(
@@ -256,19 +258,19 @@ def _make_voice_server(target: object) -> object:
     )
 
 
-def _make_google_server(target: object) -> object:
+def _make_google_server(target: object) -> ThreadingHTTPServer:
     from . import google_setup
 
     return google_setup.make_server(target, registry_path=google_registry_path())
 
 
-def _make_sources_server(target: object) -> object:
+def _make_sources_server(target: object) -> ThreadingHTTPServer:
     from . import sources_setup
 
     return sources_setup.make_server(target)
 
 
-def _make_speaker_server(target: object) -> object:
+def _make_speaker_server(target: object) -> ThreadingHTTPServer:
     from . import speaker_setup
 
     return speaker_setup.make_server(
@@ -280,7 +282,7 @@ def _make_speaker_server(target: object) -> object:
     )
 
 
-def _make_wake_server(target: object) -> object:
+def _make_wake_server(target: object) -> ThreadingHTTPServer:
     from . import wake_setup
 
     return wake_setup.make_server(
@@ -296,19 +298,19 @@ def _make_wake_server(target: object) -> object:
     )
 
 
-def _make_wifi_server(target: object) -> object:
+def _make_wifi_server(target: object) -> ThreadingHTTPServer:
     from . import wifi_setup
 
     return wifi_setup.make_server(target)
 
 
-def _make_rooms_server(target: object) -> object:
+def _make_rooms_server(target: object) -> ThreadingHTTPServer:
     from . import rooms_setup
 
     return rooms_setup.make_server(target)
 
 
-def _make_tools_server(target: object) -> object:
+def _make_tools_server(target: object) -> ThreadingHTTPServer:
     from . import tools_setup
 
     return tools_setup.make_server(
@@ -342,7 +344,7 @@ def _weather_state_path() -> str:
     return os.environ.get("JASPER_WEATHER_FILE", WEATHER_ENV_PATH)
 
 
-def _make_transit_server(target: object) -> object:
+def _make_transit_server(target: object) -> ThreadingHTTPServer:
     from . import transit_setup
 
     return transit_setup.make_server(
@@ -353,7 +355,7 @@ def _make_transit_server(target: object) -> object:
     )
 
 
-def _make_ha_server(target: object) -> object:
+def _make_ha_server(target: object) -> ThreadingHTTPServer:
     from . import home_assistant_setup
 
     return home_assistant_setup.make_server(
@@ -365,7 +367,7 @@ def _make_ha_server(target: object) -> object:
     )
 
 
-def _make_weather_server(target: object) -> object:
+def _make_weather_server(target: object) -> ThreadingHTTPServer:
     from . import weather_setup
 
     return weather_setup.make_server(
@@ -375,7 +377,11 @@ def _make_weather_server(target: object) -> object:
     )
 
 
-def _make_sound_server(target: object) -> object:
+def _make_sound_server(
+    target: object,
+    *,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = _systemd.no_hold,
+) -> ThreadingHTTPServer:
     from . import sound_setup
 
     return sound_setup.make_server(
@@ -388,10 +394,11 @@ def _make_sound_server(target: object) -> object:
             "JASPER_SOUND_CONFIG_DIR",
             sound_setup.DEFAULT_CONFIG_DIR,
         ),
+        idle_hold=idle_hold,
     )
 
 
-def _make_wake_corpus_server(target: object) -> object:
+def _make_wake_corpus_server(target: object) -> ThreadingHTTPServer:
     return _make_lazy_wake_corpus_server(
         target,
         output_dir=Path(
@@ -532,10 +539,14 @@ def main() -> int:
         wizards=",".join(spec.label for spec in specs),
     )
 
-    servers: list[tuple[WizardSpec, int, object]] = []
+    # Built before the servers so /sound's handler can hold the process up
+    # across audition work a request starts but never awaits (issue #1854).
+    tracker = _systemd.IdleShutdownTracker()
+    servers: list[tuple[WizardSpec, int, ThreadingHTTPServer]] = []
     for spec in specs:
         port = spec.port()
-        servers.append((spec, port, spec.make_server(target_for(port))))
+        hold = {"idle_hold": tracker.hold} if spec.label == "/sound" else {}
+        servers.append((spec, port, spec.make_server(target_for(port), **hold)))
 
     # The .socket unit is static and binds ports this tier's capabilities may
     # not grant. Left unaccepted they hang nginx and re-trigger the unit
@@ -549,10 +560,8 @@ def main() -> int:
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
     # patch each one's log_request to bump the shared tracker.
-    tracker = _systemd.IdleShutdownTracker()
     for spec, _, server in servers:
         if spec.label == "/sound":
-            server.RequestHandlerClass.idle_hold = staticmethod(tracker.hold)
             with tracker.hold("speaker audition recovery"):
                 asyncio.run(recover_web_audition(primary_controller()))
         _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)

@@ -382,7 +382,6 @@ module = [
     "jasper.wake_corpus.bridge_session",
     "jasper.wake_corpus.recording_backend",
     "jasper.weather",
-    "jasper.web.__main__",
     "jasper.web._common",
     "jasper.web.rooms_setup",
     "jasper.web.sound_active_speaker",
