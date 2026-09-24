@@ -111,7 +111,7 @@ from ._common import (
     send_proxy_json,
     send_see_other,
 )
-from .chrome import canonical_header, canonical_page, toggle_html
+from .chrome import canonical_banner, canonical_header, canonical_page, toggle_html
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +475,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 {canonical_header("Wake word", back_href="/assistant/", back_label="Assistant")}
 {pair_banner_html()}
 <main class="page">
+  {canonical_banner(status_msg)}
   {_mic_status_card_html()}
 
   {_echo_card_html()}
