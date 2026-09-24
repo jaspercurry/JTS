@@ -18,7 +18,7 @@ from jasper.audio_measurement.playback import (
 )
 from jasper.log_event import log_event
 from jasper.dsp_apply import _maybe_call
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, utc_now_iso
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
@@ -231,6 +231,8 @@ class CapturedRecordStore:
         # Analysis owns pose/attempt identity. Engine facts name what actually played.
         payload = {**metadata, **record, **{name: metadata[name] for name in
             ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt", "stimulus_dbfs") if name in metadata}}
+        # The capture ring and the take index order and admit takes by it.
+        payload.setdefault("captured_at", utc_now_iso())
         error = ""
         try:
             loudness = await _maybe_call(getattr(self.capture, "read_loudness_volume_db", None))

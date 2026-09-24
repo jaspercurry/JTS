@@ -146,18 +146,6 @@ async def test_a_take_with_no_evidence_blocks_stays_exactly_as_bankable(real_sto
     assert not set(_banked_file(real_store, record_id)) & set(_EVIDENCE_BLOCKS)
 
 
-async def test_a_banked_take_states_when_it_was_banked(real_store):
-    """The capture ring and the take index order and admit takes by it."""
-    from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
-
-    stamped = _banked_file(real_store, await real_store.bank(_take()))
-    kept = _banked_file(real_store, await real_store.bank({**_take(attempt=2), "captured_at": "2026-09-01T00:00:00Z"}))
-
-    assert stamped["captured_at"].endswith("Z")
-    assert kept["captured_at"] == "2026-09-01T00:00:00Z"
-    assert all(row.captured_at for row in bundle_measurements(real_store.evidence.bundle_dir))
-
-
 async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
     """The two things only the REAL store can be asked about the blocks.
 

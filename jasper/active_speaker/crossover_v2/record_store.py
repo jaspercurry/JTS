@@ -11,7 +11,6 @@ store-relative paths (ADR-0198). Store errors propagate to the host.
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -232,10 +231,6 @@ class BankedRecordStore:
             "capture_session_id": self.capture_session_id,
             **payload,
         }
-        if discriminator == POSITION_EVIDENCE_KIND:
-            # The store states when a take was banked; the capture ring and the
-            # take index read it (record_index._captured_at).
-            payload.setdefault("captured_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         if route.stamp_identity:
             payload = stamp_session_identity(payload, self._identity())
         return payload
