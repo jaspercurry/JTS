@@ -1,8 +1,8 @@
 # ADR-0362: The near-field rows take each woofer at 15 and 30 mm, with no re-seat
 
 - **Date:** 2026-09-24
-- **Status:** Accepted. Supersedes (partial) [ADR-0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md)
-  Consequences: the bundled rows' second 15 mm take.
+- **Status:** Accepted. Supersedes (partial) [ADR-0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md):
+  its Consequences bullet on the bundled rows' second 15 mm take.
 - **Context:** ADR-0360 had the bundled rows (`nearfield/woofer`, `nearfield/rear`,
   `nearfield/cardioid`) take each woofer at 15, 30 and 15 mm again, so the last take re-seated the
   microphone to prove the ruler placement. The 09-23 hand-built runs had already proved it: a
