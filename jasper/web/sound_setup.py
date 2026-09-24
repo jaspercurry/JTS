@@ -79,7 +79,6 @@ from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     _cardioid_compare_payload,
     _active_speaker_commissioning_view_payload,
-    _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
     _active_speaker_rear_calibration_bank_payload,
@@ -103,9 +102,7 @@ from .sound_seat_level import (  # noqa: F401 - resolved by name
     seat_level_status_payload as _seat_level_status_payload,
 )
 
-# The crossover writer is reached through this module by
-# jasper/web/correction_crossover_v2.py.
-from .sound_active_speaker import apply_measured_crossover_geometry  # noqa: F401
+from .sound_design_draft import _active_speaker_design_draft_save_payload
 from .sound_profile_apply import (
     _EQ_CARRIER_NOT_PROBED,
     _apply_profile,

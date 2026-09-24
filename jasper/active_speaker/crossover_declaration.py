@@ -17,7 +17,7 @@ preset recompiled *now* from the saved declaration. So a candidate measured at
 a crossover the declaration does not carry can only be applied by making the
 declaration carry it FIRST. That is what :class:`CrossoverDeclarationChange`
 describes, and what
-``jasper.web.sound_setup.apply_measured_crossover_geometry`` writes.
+``jasper.web.sound_design_draft.apply_measured_crossover_geometry`` writes.
 
 **Why it is derived from the candidate rather than read off a selection
 record.** The candidate is the artifact that will be applied; a persisted

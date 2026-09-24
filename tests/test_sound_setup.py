@@ -87,6 +87,7 @@ from jasper.web import (
     _common,
     nav,
     sound_active_speaker,
+    sound_design_draft,
     sound_profile_apply,
     sound_setup,
     volume_floor_tone,
@@ -2238,6 +2239,7 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({
         "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
     })
@@ -2264,6 +2266,7 @@ def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_p
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
     assert saved["revision"] == 1
     assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
@@ -2287,6 +2290,7 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     request = build_driver_research_context(
         topology,
         _operator_inputs(),
@@ -2335,6 +2339,7 @@ def _declared_candidate_box(
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     candidate = {
         "between_roles": ["woofer", "tweeter"],
         "frequency_hz": 5500,
@@ -2376,7 +2381,7 @@ def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
         monkeypatch, tmp_path, operator_inputs={"notes": "keep this"}
     )
 
-    saved = sound_setup.apply_measured_crossover_geometry(
+    saved = sound_design_draft.apply_measured_crossover_geometry(
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(5750, 24),
@@ -2411,7 +2416,7 @@ def test_apply_measured_crossover_geometry_writes_the_measured_declaration(
     design-draft write, file and directory (#2292)."""
     fsync_calls = _declared_candidate_box(monkeypatch, tmp_path)
 
-    saved = sound_setup.apply_measured_crossover_geometry(
+    saved = sound_design_draft.apply_measured_crossover_geometry(
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(selected_fc_hz, selected_slope),
@@ -2447,7 +2452,7 @@ def test_apply_measured_crossover_geometry_refuses_an_unreconcilable_declaration
     with pytest.raises(
         ValueError, match="Sound changed since this measurement; review afresh"
     ):
-        sound_setup.apply_measured_crossover_geometry(
+        sound_design_draft.apply_measured_crossover_geometry(
             between_roles=("woofer", "tweeter"),
             configured=_geometry(5500, 48),
             selected=_geometry(5500, 24),
@@ -5675,6 +5680,7 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
     topology = mono_output_topology(card_id=None)
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})
     stored = json.loads(path.read_text())

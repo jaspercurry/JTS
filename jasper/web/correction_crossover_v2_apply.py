@@ -27,7 +27,7 @@ from jasper.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_co
 from jasper.log_event import log_event
 from jasper.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
-from .sound_active_speaker import apply_measured_crossover_geometry
+from .sound_design_draft import apply_measured_crossover_geometry
 
 logger = logging.getLogger(__name__)
 
