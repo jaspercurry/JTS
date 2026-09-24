@@ -103,6 +103,12 @@ class TimingByFrequency:
     band_hz: tuple[float, float]
 
 
+def log_grid_hz(band_hz: tuple[float, float], points_per_octave: int) -> np.ndarray:
+    """``points_per_octave`` log-spaced frequencies across ``band_hz``, both ends included."""
+    lo, hi = band_hz
+    return np.geomspace(lo, hi, max(2, int(round(np.log2(hi / lo) * points_per_octave)) + 1))
+
+
 def trusted_band_hz(window_ms: float, radiated_band_hz: tuple[float, float],
                     sample_rate: int) -> tuple[float, float] | None:
     """Where a ``window_ms`` read of a sweep over ``radiated_band_hz`` can be trusted."""
@@ -130,7 +136,7 @@ def timing_by_frequency(
     group_delay_s = local_group_delay_s(freqs, phase, sample_rate)
 
     lo, hi = band_hz
-    grid = np.geomspace(lo, hi, max(2, int(round(np.log2(hi / lo) * points_per_octave)) + 1))
+    grid = log_grid_hz(band_hz, points_per_octave)
     magnitude = 20 * np.log10(np.maximum(np.abs(spectrum), 1e-12))
     in_band = (freqs >= lo) & (freqs <= hi)
     magnitude_db = np.interp(grid, freqs, magnitude) - float(np.max(magnitude[in_band]))

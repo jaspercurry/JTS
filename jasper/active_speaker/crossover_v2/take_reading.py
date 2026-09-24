@@ -22,7 +22,7 @@ from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
-    magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
+    log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
 )
 from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
@@ -222,10 +222,6 @@ def _difference_report(
     }
 
 
-def _grid(band: tuple[float, float], points_per_octave: int) -> np.ndarray:
-    return np.geomspace(band[0], band[1], max(2, int(round(np.log2(band[1] / band[0]) * points_per_octave)) + 1))
-
-
 def compare_report(
     a: TakeRead, b: TakeRead, *, window_ms: float | None = None, smoothing_fraction: int = 6,
     points_per_octave: int = 48, remove_level: bool = False,
@@ -248,7 +244,7 @@ def compare_report(
             "window_ms": window, "a_band_hz": list(a.capture.radiated_band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
         })
-    grid = _grid(band, points_per_octave)
+    grid = log_grid_hz(band, points_per_octave)
     a_db, b_db = (magnitude_db(side.capture.ir, rate, peak_index=side.capture.peak_idx, window_ms=window,
                                lead_ms=PHASE_GATE_LEAD_MS, grid_hz=grid, smoothing_fraction=smoothing_fraction or None)
                   for side in (a, b))
@@ -291,7 +287,7 @@ def compare_preview_report(
             "window_ms": preview.window_ms, "preview_band_hz": list(preview.band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
         })
-    grid = _grid(band, points_per_octave)
+    grid = log_grid_hz(band, points_per_octave)
     predicted = (smooth_fractional_octave(preview.freqs_hz, preview.predicted_db, smoothing_fraction)
                  if smoothing_fraction else preview.predicted_db)
     a_db = np.interp(grid, preview.freqs_hz, predicted)
