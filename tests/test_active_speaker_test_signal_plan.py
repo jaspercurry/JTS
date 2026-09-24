@@ -198,7 +198,6 @@ def test_the_protection_edge_follows_the_declared_low_limit_not_the_class_table(
     assert plan["band_limit"]["highpass_hz"] == 1600.0
     assert plan["driver_protection"]["low_limit_hz"] == 1600.0
     assert plan["driver_protection"]["low_limit_provenance"] == "declared"
-    assert plan["driver_protection"]["band_limit_highpass_ok"] is True
 
     # Same crossover, nothing declared: the class default is still the edge,
     # and still labelled as the fallback it is.

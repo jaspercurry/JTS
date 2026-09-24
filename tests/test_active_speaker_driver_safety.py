@@ -1883,16 +1883,12 @@ def test_protection_policy_view_reads_policy_never_restates_it(
     assert tweeter["role_class"] == "high_frequency"
     assert tweeter["low_limit_hz"] == expected_floor == policy.min_highpass_hz
     assert tweeter["low_limit_provenance"] == "style_default"
-    assert tweeter["low_limit_summary"] == (
-        f"{expected_floor:g} Hz (class fallback; nothing declared)"
-    )
     assert tweeter["max_auto_level_dbfs"] == policy.max_auto_level_dbfs
 
     woofer = by_target["mono:woofer"]
     assert woofer["role_class"] == "low_frequency"
     assert woofer["low_limit_hz"] is None
     assert woofer["low_limit_provenance"] is None
-    assert woofer["low_limit_summary"] is None
 
     # The emitted per-target shape, pinned. `role` is deliberately absent --
     # role_class answers every question the page asks, and a field with no
@@ -1906,7 +1902,6 @@ def test_protection_policy_view_reads_policy_never_restates_it(
         "max_auto_level_dbfs",
         "low_limit_hz",
         "low_limit_provenance",
-        "low_limit_summary",
     }
     assert "min_highpass_hz" not in tweeter
     # `hf_measurement_abs_ceiling_dbfs` is deliberately absent: the provisional
@@ -1923,7 +1918,7 @@ def test_the_policy_view_publishes_the_resolved_floor_with_its_provenance() -> N
     The draft on jts3 showed ``recommended_highpass_hz: 1600`` beside an
     unlabelled ``min_highpass_hz: 2000`` with nothing saying which bounds the
     corner, and two readers independently took the 2000 for a second floor.
-    The view now answers that question in the same document, in words.
+    The view now answers that question in the same document.
     """
 
     from jasper.active_speaker.driver_safety import driver_protection_policy_view
@@ -1939,7 +1934,6 @@ def test_the_policy_view_publishes_the_resolved_floor_with_its_provenance() -> N
 
     assert tweeter["low_limit_hz"] == 1600.0
     assert tweeter["low_limit_provenance"] == "declared"
-    assert tweeter["low_limit_summary"] == "1600 Hz (manufacturer declared)"
     # The class figure is not republished beside it, unlabelled or otherwise.
     assert "min_highpass_hz" not in tweeter
     assert 2000.0 not in tweeter.values()
@@ -1952,9 +1946,7 @@ def test_the_policy_view_publishes_the_resolved_floor_with_its_provenance() -> N
         if entry["target_id"] == "mono:tweeter"
     )
     assert undeclared_tweeter["low_limit_hz"] == 2000.0
-    assert undeclared_tweeter["low_limit_summary"] == (
-        "2000 Hz (class fallback; nothing declared)"
-    )
+    assert undeclared_tweeter["low_limit_provenance"] == "style_default"
 
 
 def test_design_draft_restamps_the_protection_policy_on_every_topology_load(

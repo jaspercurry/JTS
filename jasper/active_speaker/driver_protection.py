@@ -745,10 +745,6 @@ def driver_protection_payload(
         **envelope,
         "low_limit_hz": low_limit.frequency_hz if low_limit is not None else None,
         "low_limit_provenance": low_limit.provenance if low_limit is not None else None,
-        "low_limit_summary": (
-            format_low_limit(low_limit) if low_limit is not None else None
-        ),
-        "band_limit_highpass_ok": highpass_ok,
         "audio_allowed": not issues and profile.role_class in {
             "low_frequency",
             "high_frequency",
