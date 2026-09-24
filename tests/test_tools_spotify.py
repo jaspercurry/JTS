@@ -51,7 +51,7 @@ def test_play_airplay_short_circuits_to_sender_device():
     )
 
     with patch(
-        "jasper.spotify_router.airplay_client_name",
+        "jasper.tools.spotify.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
         "jasper.tools.spotify.airplay_now_playing",
@@ -85,7 +85,7 @@ def test_play_airplay_short_circuit_falls_through_when_no_device_id():
     )
 
     with patch(
-        "jasper.spotify_router.airplay_client_name",
+        "jasper.tools.spotify.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
         "jasper.tools.spotify.airplay_now_playing",
