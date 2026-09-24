@@ -16,7 +16,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from ._health_fields import _MONITOR_ERRORS
+from ._health_fields import MONITOR_ERRORS
 from .. import paths
 from ..output_topology import OutputTopologyError
 from ..output_topology_store import load_output_topology_strict, load_output_topology
@@ -169,7 +169,7 @@ def read_route_claim() -> dict[str, Any]:
         # route claim to "unavailable" and take the latency card with it.
         try:
             transport = _read_transport_state(plan)
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio transport coherence read failed", exc_info=True)
             transport = _empty_transport()
         return {
@@ -181,7 +181,7 @@ def read_route_claim() -> dict[str, Any]:
             "route_config_hash": plan.route_config_hash,
             "transport": transport,
         }
-    except _MONITOR_ERRORS:
+    except MONITOR_ERRORS:
         logger.debug("audio route claim read failed", exc_info=True)
         return {
             "status": "unavailable",

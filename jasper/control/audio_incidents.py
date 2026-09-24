@@ -21,7 +21,7 @@ from typing import Any
 
 from ..atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from ..log_event import log_event
-from ._health_fields import _duration_label, _finite_number, mapping
+from ._health_fields import duration_label, finite_number, mapping
 from .audio_attribution import ATTRIBUTION_VERDICTS
 
 logger = logging.getLogger(__name__)
@@ -83,10 +83,10 @@ def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     clock_mode = context.get("clock_mode")
     if isinstance(clock_mode, str):
         out["clock_mode"] = clock_mode[:160]
-    rms = _finite_number(mapping(context.get("input")).get("rms_dbfs"))
+    rms = finite_number(mapping(context.get("input")).get("rms_dbfs"))
     if rms is not None:
         out["input"] = {"rms_dbfs": rms}
-    delay = _finite_number(
+    delay = finite_number(
         mapping(context.get("output")).get("snd_pcm_delay_ms"),
     )
     if delay is not None:
@@ -97,7 +97,7 @@ def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     host = {
         field: value
         for field, value in (
-            (name, _finite_number(mapping(context.get("host")).get(name)))
+            (name, finite_number(mapping(context.get("host")).get(name)))
             for name in ("throttled_now", "throttled_history", "mem_psi_some_avg60")
         )
         if value is not None
@@ -132,7 +132,7 @@ def _clean_incident(raw: Any) -> dict[str, Any] | None:
         elif value is None and field == "source_id":
             out[field] = None
     for field in _INCIDENT_NUMBER_FIELDS:
-        value = _finite_number(record.get(field))
+        value = finite_number(record.get(field))
         if value is not None and (field != "observed_seconds" or value >= 0):
             out[field] = value
         elif record.get(field) is None and field == "recovered_at":
@@ -613,7 +613,7 @@ class SessionRollup:
         if self._degraded_seconds:
             details.append({
                 "label": "Time degraded",
-                "value": _duration_label(self._degraded_seconds),
+                "value": duration_label(self._degraded_seconds),
             })
         return {
             "summary": summary,

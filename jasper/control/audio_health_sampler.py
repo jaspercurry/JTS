@@ -30,7 +30,7 @@ from ..platform.status_socket import (
 from ..platform.uds import mux_socket_command
 from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
-from ._health_fields import _MONITOR_ERRORS, mapping
+from ._health_fields import MONITOR_ERRORS, mapping
 from .audio_health import (
     RESTART_WATCH_UNITS,
     _health_prelude,
@@ -82,7 +82,7 @@ def _read_mux_status(
                 timeout=timeout_sec,
             )
         )
-    except _MONITOR_ERRORS:
+    except MONITOR_ERRORS:
         logger.debug("audio health mux STATUS probe failed", exc_info=True)
         return None
 
@@ -92,7 +92,7 @@ def _read_output_hardware() -> Any:
 
     Same reader ``/state.audio.output_hardware``
     (:mod:`jasper.control.state_aggregate`) and the ``/sound/speaker/``
-    hardware-adoption precondition use. ``_MONITOR_ERRORS`` degrades to "no
+    hardware-adoption precondition use. ``MONITOR_ERRORS`` degrades to "no
     record" rather than taking a health tick down; a broken import is
     deliberately NOT in that set — it would fail identically on every call from
     process start, so it is a startup bug, not a per-tick condition.
@@ -101,7 +101,7 @@ def _read_output_hardware() -> Any:
         from ..output_hardware import load_state
 
         return load_state()
-    except _MONITOR_ERRORS:
+    except MONITOR_ERRORS:
         logger.debug("audio health output-hardware probe failed", exc_info=True)
         return None
 
@@ -121,7 +121,7 @@ def _read_output_topology() -> Any:
     try:
 
         return load_output_topology_snapshot()
-    except _MONITOR_ERRORS:
+    except MONITOR_ERRORS:
         logger.debug("audio health output-topology probe failed", exc_info=True)
         return None
 
@@ -282,7 +282,7 @@ class AudioHealthSampler:
             started = time.monotonic()
             try:
                 self._tick()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.exception("audio health sampler tick failed")
             elapsed = time.monotonic() - started
             # Floor bounds the loop rate when a tick overruns the interval,
@@ -295,23 +295,23 @@ class AudioHealthSampler:
         airplay = self._airplay.snapshot()
         try:
             outputd = self._outputd_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health outputd probe failed", exc_info=True)
             outputd = None
         try:
             mux_status = self._mux_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health mux STATUS probe failed", exc_info=True)
             mux_status = None
         try:
             output_hardware = self._output_hardware_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health output-hardware probe failed", exc_info=True)
             output_hardware = None
         if self._service_probe is not None:
             try:
                 service_states = self._service_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health service-state probe failed", exc_info=True)
             else:
                 if isinstance(service_states, dict):
@@ -322,13 +322,13 @@ class AudioHealthSampler:
         ):
             try:
                 route = self._route_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health route probe failed", exc_info=True)
                 route = {"status": "unavailable", "low_latency_claim": False}
             self._route = route if isinstance(route, dict) else None
             try:
                 self._output_topology_snapshot = self._output_topology_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health output-topology probe failed", exc_info=True)
                 # Keep the previously cached snapshot: a transient read failure
                 # must not blank the declared side of the B1/B2 comparison.
@@ -476,7 +476,7 @@ class AudioHealthSampler:
             return None
         try:
             pressure = self._system_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health system-pressure probe failed", exc_info=True)
             return None
         return pressure if isinstance(pressure, Mapping) else None

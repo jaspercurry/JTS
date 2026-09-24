@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import as_int, _finite_number, mapping
+from ._health_fields import as_int, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 from .audio_incidents import issue_row
 
@@ -116,7 +116,7 @@ def record_raw_events(
             )
         else:
             continue
-        event_time = _finite_number(raw.get("ts"))
+        event_time = finite_number(raw.get("ts"))
         when = float(event_time) if event_time is not None else now
         points.append((candidate, when, as_int(raw.get("count"), 1), None, now))
     return points

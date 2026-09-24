@@ -18,15 +18,15 @@ from typing import Any
 from ..fanin.latency_mode import PRESETS
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
-from ._health_fields import as_int, _detail, _finite_number, mapping
+from ._health_fields import as_int, detail_row, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 from .audio_signal_path import _ring_occupancy_ms, _ring_pressure
 from .audio_source_cards import _airplay_timing
 
 
 def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
-    delay = _finite_number(dac.get("snd_pcm_delay_ms"))
-    age = _finite_number(dac.get("snd_pcm_delay_sample_age_ms"))
+    delay = finite_number(dac.get("snd_pcm_delay_ms"))
+    age = finite_number(dac.get("snd_pcm_delay_sample_age_ms"))
     if (
         delay is None
         or age is None
@@ -59,14 +59,14 @@ def _receiver_latency(
     )
     components: list[tuple[str, float]] = []
     if rate > 0 and active_source == Source.USBSINK.value:
-        fill = _finite_number(resampler.get("fill_frames"))
+        fill = finite_number(resampler.get("fill_frames"))
         if fill is not None and float(fill) >= 0.0:
             components.append(("USB input queue", float(fill) * 1000.0 / rate))
     mixing_queue_ms = _ring_occupancy_ms(output)
     if mixing_queue_ms is not None:
         components.append(("Mixing queue", mixing_queue_ms))
     capture_rate = as_int(camilla.get("capture_rate")) or rate
-    camilla_frames = _finite_number(camilla.get("buffer_level"))
+    camilla_frames = finite_number(camilla.get("buffer_level"))
     if (
         capture_rate > 0
         and camilla_frames is not None
@@ -100,7 +100,7 @@ def _receiver_latency(
     else:
         mode_label = None
     details = [
-        _detail(label, f"{value:.1f} ms")
+        detail_row(label, f"{value:.1f} ms")
         for label, value in components
     ]
     estimate: dict[str, float] | None = None
@@ -136,7 +136,7 @@ def _reliability(
     details: list[dict[str, str]] = []
     pressure = _ring_pressure(fanin_output)
     if pressure is not None:
-        details.append(_detail(
+        details.append(detail_row(
             "Output queue pressure", f"{min(1.0, pressure) * 100:.0f}%",
         ))
     restarts = sum(
@@ -144,7 +144,7 @@ def _reliability(
         for unit in restart_watch_units
     )
     if restarts:
-        details.append(_detail("Sound restarts since startup", str(restarts)))
+        details.append(detail_row("Sound restarts since startup", str(restarts)))
     return {"summary": "", "detail": "", "details": details}
 
 
@@ -183,7 +183,7 @@ def _current_stream(
             ),
             "detail": "Configured processing route for this stream.",
             "details": [
-                _detail("DSP rate", f"{as_int(camilla.get('capture_rate')):,} Hz")
+                detail_row("DSP rate", f"{as_int(camilla.get('capture_rate')):,} Hz")
             ] if as_int(camilla.get("capture_rate")) else [],
         }
     if session_state:
@@ -215,7 +215,7 @@ def _current_stream(
     output_details: list[dict[str, str]] = []
     dac_delay = _fresh_dac_delay_ms(dac)
     if dac_delay is not None:
-        output_details.append(_detail(
+        output_details.append(detail_row(
             "DAC queue",
             f"{dac_delay:.1f} ms",
         ))
@@ -233,7 +233,7 @@ def _current_stream(
     )
     if reliability["details"]:
         stream["reliability"] = reliability
-    rms = _finite_number(source_input.get("rms_dbfs"))
+    rms = finite_number(source_input.get("rms_dbfs"))
     if rms is not None:
         stream["signal"] = {
             "summary": f"{float(rms):.1f} dBFS recent signal level",

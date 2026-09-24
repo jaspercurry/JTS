@@ -38,8 +38,8 @@ from jasper.control._health_fields import (
     as_int_or_none,
     nonneg_delta,
     nonneg_rate,
-    _read_int_file,
-    _read_text_file,
+    read_int_file,
+    read_text_file,
 )
 from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
@@ -225,7 +225,7 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
 
 def _read_wireless_iface() -> str | None:
     """Interface name from /proc/net/wireless — never a hardcoded wlan0."""
-    text = _read_text_file(PROC_NET_WIRELESS_PATH)
+    text = read_text_file(PROC_NET_WIRELESS_PATH)
     if text is None:
         return None
     for line in text.splitlines():
@@ -256,10 +256,10 @@ def _read_link_counters() -> dict[str, Any]:
     """
     iface = _read_wireless_iface()
     rx_bytes = (
-        _read_int_file(SYS_CLASS_NET_RX_BYTES_TMPL.format(iface=iface))
+        read_int_file(SYS_CLASS_NET_RX_BYTES_TMPL.format(iface=iface))
         if iface else None
     )
-    snmp_text = _read_text_file(PROC_NET_SNMP_PATH)
+    snmp_text = read_text_file(PROC_NET_SNMP_PATH)
     udp_fields = _read_snmp_line_fields(snmp_text, "Udp:") if snmp_text else {}
     tcp_fields = _read_snmp_line_fields(snmp_text, "Tcp:") if snmp_text else {}
     return {
@@ -278,7 +278,7 @@ def _read_pid_stat_counters(pid: int) -> tuple[int, int] | None:
     field 15; comm (field 2) may itself contain ")", so split after the
     LAST ")" rather than by fixed position.
     """
-    text = _read_text_file(f"/proc/{pid}/stat")
+    text = read_text_file(f"/proc/{pid}/stat")
     if text is None:
         return None
     close = text.rfind(")")
@@ -297,7 +297,7 @@ def _read_pid_stat_counters(pid: int) -> tuple[int, int] | None:
 
 
 def _read_pid_state(pid: int) -> str | None:
-    text = _read_text_file(f"/proc/{pid}/status")
+    text = read_text_file(f"/proc/{pid}/status")
     if text is None:
         return None
     for line in text.splitlines():
@@ -309,7 +309,7 @@ def _read_pid_state(pid: int) -> str | None:
 
 
 def _read_pid_comm(pid: int) -> str | None:
-    return _read_text_file(f"/proc/{pid}/comm")
+    return read_text_file(f"/proc/{pid}/comm")
 
 
 def _read_receiver_stat(pid: int) -> dict[str, Any]:

@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import as_int, _detail, _duration_label, _finite_number, mapping
+from ._health_fields import as_int, detail_row, duration_label, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 
 
@@ -71,21 +71,21 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
         attribution_details = mapping(context.get("attribution")).get("details")
         if isinstance(attribution_details, list):
             evidence.extend(
-                _detail(str(row["label"]), str(row["value"]))
+                detail_row(str(row["label"]), str(row["value"]))
                 for row in attribution_details
                 if isinstance(row, Mapping) and row.get("label") and row.get("value")
             )
     if context.get("clock_mode"):
-        evidence.append(_detail("Clock mode", context["clock_mode"]))
+        evidence.append(detail_row("Clock mode", context["clock_mode"]))
     input_context = mapping(context.get("input"))
-    if _finite_number(input_context.get("rms_dbfs")) is not None:
-        evidence.append(_detail(
+    if finite_number(input_context.get("rms_dbfs")) is not None:
+        evidence.append(detail_row(
             "Input level",
             f"{float(input_context['rms_dbfs']):.1f} dBFS",
         ))
     output_context = mapping(context.get("output"))
-    if _finite_number(output_context.get("snd_pcm_delay_ms")) is not None:
-        evidence.append(_detail(
+    if finite_number(output_context.get("snd_pcm_delay_ms")) is not None:
+        evidence.append(detail_row(
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
@@ -93,22 +93,22 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
     # `throttled_history` never clears within a boot, so it must not be
     # rendered as a live condition (jasper/control/system_metrics.py).
     if as_int(host.get("throttled_now")):
-        evidence.append(_detail("Power or heat throttling", "Now"))
+        evidence.append(detail_row("Power or heat throttling", "Now"))
     elif as_int(host.get("throttled_history")):
-        evidence.append(_detail("Power or heat throttling", "Earlier this boot"))
-    memory_pressure = _finite_number(host.get("mem_psi_some_avg60"))
+        evidence.append(detail_row("Power or heat throttling", "Earlier this boot"))
+    memory_pressure = finite_number(host.get("mem_psi_some_avg60"))
     if memory_pressure is not None and memory_pressure > 0:
-        evidence.append(_detail("Memory pressure", f"{float(memory_pressure):.0f}%"))
+        evidence.append(detail_row("Memory pressure", f"{float(memory_pressure):.0f}%"))
     return evidence
 
 
 def _timestamp(value: Any, default: float) -> float:
-    number = _finite_number(value)
+    number = finite_number(value)
     return float(number) if number is not None else default
 
 
 def _incident_duration(issue: Mapping[str, Any], now: float) -> float:
-    observed = _finite_number(issue.get("observed_seconds"))
+    observed = finite_number(issue.get("observed_seconds"))
     if observed is not None:
         return max(0.0, float(observed))
     started = _timestamp(issue.get("started_at"), now)
@@ -204,7 +204,7 @@ def _present_incident(
         presented["recurrence"] = recurrence
     if issue.get("status") == "recovered" and duration > 0.0:
         presented["duration_seconds"] = round(duration, 1)
-        presented["duration_label"] = _duration_label(duration)
+        presented["duration_label"] = duration_label(duration)
     return presented
 
 

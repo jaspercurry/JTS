@@ -37,7 +37,7 @@ from ._health_fields import (
     DIAGNOSTICS_REMEDY,
     RESTART_REMEDY,
     as_int,
-    _finite_number,
+    finite_number,
     mapping,
 )
 from ._health_sources import _LABEL_TO_SOURCE, SOURCE_LABELS
@@ -230,7 +230,7 @@ def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
     absence must read as "not observed", never as "no pressure".
     """
     ring = mapping(fanin_output.get("ring"))
-    waits = _finite_number(ring.get("full_waits_per_sec"))
+    waits = finite_number(ring.get("full_waits_per_sec"))
     rate = as_int(fanin_output.get("sample_rate"))
     if waits is None or rate <= 0:
         return None
@@ -244,7 +244,7 @@ def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
     (rust/jasper-ring/src/layout.rs), not frames or ms.
     """
     ring = mapping(fanin_output.get("ring"))
-    slots = _finite_number(ring.get("occupancy"))
+    slots = finite_number(ring.get("occupancy"))
     rate = as_int(fanin_output.get("sample_rate"))
     if slots is None or slots < 0 or rate <= 0:
         return None
@@ -427,8 +427,8 @@ def _signal_path(
     # Losing periods, from either end: the ring dropped a period the reader
     # never took, or the active lane is xrunning. Both are rates, so neither
     # latches once the box recovers.
-    ring_drops = _finite_number(ring.get("drops_per_sec"))
-    input_xrun_rate = _finite_number(active_input.get("xruns_per_sec"))
+    ring_drops = finite_number(ring.get("drops_per_sec"))
+    input_xrun_rate = finite_number(active_input.get("xruns_per_sec"))
     if (
         (ring_drops is not None and ring_drops > 0.0)
         or (input_xrun_rate is not None and input_xrun_rate > 0.0)

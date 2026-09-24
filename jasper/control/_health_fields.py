@@ -10,10 +10,10 @@ two ends of one dashboard payload read its untyped daemon JSON through this
 module instead of through each other. Not
 :mod:`jasper.json_fields` — that one raises on a bad field and coerces to
 ``float``; these return ``None`` and keep an ``int`` an ``int``, which is what
-a dashboard field that may simply be absent needs. ``_read_text_file`` and
-``_read_int_file`` apply the same rule to a small /proc or /sys file.
+a dashboard field that may simply be absent needs. ``read_text_file`` and
+``read_int_file`` apply the same rule to a small /proc or /sys file.
 
-Also the shared home for ``_MONITOR_ERRORS``, the fail-soft exception tuple
+Also the shared home for ``MONITOR_ERRORS``, the fail-soft exception tuple
 every observability probe across the audio-health split degrades on, and for
 ``RESTART_REMEDY``/``DIAGNOSTICS_REMEDY``, the two household remedy sentences
 several leaves splice into their own text -- for the same downward-only
@@ -30,7 +30,7 @@ from jasper.json_fields import as_mapping
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
-_MONITOR_ERRORS = (
+MONITOR_ERRORS = (
     AttributeError,
     KeyError,
     OSError,
@@ -48,7 +48,7 @@ RESTART_REMEDY = "Try Restart audio."
 DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 
-def _finite_number(value: Any) -> int | float | None:
+def finite_number(value: Any) -> int | float | None:
     """One real number out of untyped JSON, unwidened, or ``None``.
 
     ``bool`` is an ``int`` and a numeric string is something ``float``
@@ -111,7 +111,7 @@ def nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
     return delta / dt if delta is not None else None
 
 
-def _read_int_file(path: str) -> int | None:
+def read_int_file(path: str) -> int | None:
     try:
         with open(path, encoding="utf-8") as f:
             return int(f.read().strip())
@@ -119,7 +119,7 @@ def _read_int_file(path: str) -> int | None:
         return None
 
 
-def _read_text_file(path: str) -> str | None:
+def read_text_file(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8") as f:
             return f.read().strip() or None
@@ -127,12 +127,12 @@ def _read_text_file(path: str) -> str | None:
         return None
 
 
-def _detail(label: str, value: Any) -> dict[str, str]:
+def detail_row(label: str, value: Any) -> dict[str, str]:
     """One dashboard detail row: a fixed label paired with a stringified value."""
     return {"label": label, "value": str(value)}
 
 
-def _duration_label(seconds: float) -> str:
+def duration_label(seconds: float) -> str:
     """A duration as the dashboard prints it, coarsening as it grows."""
     seconds = max(0.0, seconds)
     if seconds < 1.0:
