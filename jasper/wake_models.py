@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
 from jasper.atomic_io import atomic_write_text, locked_update_env_file
+from jasper.env_load import WAKE_MODEL_ENV_PATH
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -55,11 +56,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Persisted at /var/lib/jasper/wake_model.env. The systemd unit for
-# jasper-voice sources this AFTER /etc/jasper/jasper.env, so wizard-
-# written values win over operator-managed defaults — same pattern as
-# voice_provider.env and spotify_credentials.env.
-WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
+# The systemd unit for jasper-voice sources this AFTER /etc/jasper/jasper.env,
+# so wizard-written values win over operator-managed defaults — same pattern
+# as voice_provider.env and spotify_credentials.env.
+WAKE_MODEL_FILE = WAKE_MODEL_ENV_PATH
 #: Also the header of jasper-control's sensitivity-slider write
 #: (JASPER_WAKE_THRESHOLD), which the /assistant/wake/ page drives too.
 WAKE_MODEL_ENV_OWNER = "jasper.wake_models; change it at /assistant/wake/ or with jasper-settings"

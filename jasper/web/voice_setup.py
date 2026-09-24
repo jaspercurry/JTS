@@ -22,6 +22,7 @@ from jasper.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
     ensure_seed_profile,
 )
+from jasper.env_load import VOICE_PROVIDER_ENV_PATH
 from jasper.voice.catalog import (
     PROVIDERS,
     default_model_id,
@@ -30,7 +31,6 @@ from jasper.voice.catalog import (
 )
 from jasper.voice.provider_state import (
     KEYS_FILE,
-    PROVIDER_FILE,
     PROVIDER_FILE_MODE,
     VOICE_PROVIDER_ENV_OWNER,
     VoiceSelectionRefused,
@@ -646,7 +646,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    state_path: str = PROVIDER_FILE,
+    state_path: str = VOICE_PROVIDER_ENV_PATH,
     keys_path: str = KEYS_FILE,
     discovery_cache_path: str = DEFAULT_CACHE_PATH,
     discovery_http_client: Any | None = None,

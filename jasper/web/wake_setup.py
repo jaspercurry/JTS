@@ -87,6 +87,7 @@ from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..log_event import log_event
 from .. import wake_models
 from ..env_file import read_env_file
+from ..env_load import BASE_ENV_PATH, WAKE_MODEL_ENV_PATH
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
@@ -115,8 +116,6 @@ from .chrome import canonical_header, canonical_page, toggle_html
 logger = logging.getLogger(__name__)
 
 
-WAKE_MODEL_FILE = wake_models.WAKE_MODEL_FILE
-
 # Cache-busted link to this page's own stylesheet. canonical_page() links
 # app.css itself; page CSS rides in via page_css_href.
 WAKE_PAGE_CSS_HREF = "/assets/wake/wake.css"
@@ -133,7 +132,7 @@ DEFAULT_WAKE_THRESHOLD = 0.3
 # ----------------------------------------------------------------------
 
 
-def _load_state(path: str = WAKE_MODEL_FILE) -> dict[str, str]:
+def _load_state(path: str = WAKE_MODEL_ENV_PATH) -> dict[str, str]:
     """Read the wizard-managed env file ({} on missing/blank)."""
     return read_env_file(path)
 
@@ -456,9 +455,9 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
   </div>
   <div class="wake-row__desc">
     Set via <code>JASPER_WAKE_MODEL</code> in
-    <code>/etc/jasper/jasper.env</code>. The wizard won't touch this
+    <code>{html.escape(BASE_ENV_PATH)}</code>. The wizard won't touch this
     unless you pick one of the rows above and hit Save (which writes
-    <code>/var/lib/jasper/wake_model.env</code>, layered on top).
+    <code>{html.escape(WAKE_MODEL_ENV_PATH)}</code>, layered on top).
   </div>
 </label>"""
 
@@ -930,7 +929,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    state_path: str = WAKE_MODEL_FILE,
+    state_path: str = WAKE_MODEL_ENV_PATH,
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd

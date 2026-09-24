@@ -13,7 +13,7 @@ from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
-from .env_load import parse_bool_value
+from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
     TRANSIT_DISPLAY_NAME_ENV,
@@ -440,7 +440,7 @@ class Config:
                 "JASPER_VOICE_PROVIDER is not set — visit "
                 "http://jts.local/assistant/voice/ (or your speaker's "
                 "hostname) and pick a provider. The wizard writes "
-                "/var/lib/jasper/voice_provider.env for you.",
+                f"{VOICE_PROVIDER_ENV_PATH} for you.",
             )
         if provider not in VALID_PROVIDER_IDS:
             raise VoiceProviderNotConfigured(

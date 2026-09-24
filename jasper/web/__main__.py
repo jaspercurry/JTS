@@ -49,7 +49,13 @@ from jasper.active_speaker.audition import recover_web_audition
 from jasper.camilla import primary_controller
 
 from ..accounts import registry_path as spotify_registry_path
-from ..env_load import SPEAKER_NAME_ENV_PATH, TRANSIT_ENV_PATH, WEATHER_ENV_PATH
+from ..env_load import (
+    SPEAKER_NAME_ENV_PATH,
+    TRANSIT_ENV_PATH,
+    VOICE_PROVIDER_ENV_PATH,
+    WAKE_MODEL_ENV_PATH,
+    WEATHER_ENV_PATH,
+)
 from ..google_creds import registry_path as google_registry_path
 from ..platform import systemd as _systemd
 from ..logging_setup import configure_logging
@@ -244,7 +250,7 @@ def _make_voice_server(target: object) -> object:
         target,
         state_path=os.environ.get(
             "JASPER_VOICE_PROVIDER_FILE",
-            voice_setup.PROVIDER_FILE,
+            VOICE_PROVIDER_ENV_PATH,
         ),
     )
 
@@ -280,7 +286,7 @@ def _make_wake_server(target: object) -> object:
         target,
         state_path=os.environ.get(
             "JASPER_WAKE_MODEL_FILE",
-            wake_setup.WAKE_MODEL_FILE,
+            WAKE_MODEL_ENV_PATH,
         ),
         control_base=os.environ.get(
             "JASPER_CONTROL_BASE",

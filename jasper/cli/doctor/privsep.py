@@ -53,6 +53,8 @@ from ...env_load import (
     TOOL_STATE_ENV_PATH,
     TRANSIT_ENV_PATH,
     USB_MIC_ENV_FILE,
+    VOICE_PROVIDER_ENV_PATH,
+    WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
 )
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
@@ -118,7 +120,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # call (it is not restarted on a wizard save).
             GROUPING_ENV_FILE,
             "/var/lib/jasper/identity.env",
-            "/var/lib/jasper/voice_provider.env",
+            VOICE_PROVIDER_ENV_PATH,
             SPEAKER_NAME_ENV_PATH,
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
@@ -155,8 +157,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # EQ editor + the sound config family.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
             # Wizard SSOT / status files re-read fresh on page render.
-            "/var/lib/jasper/voice_provider.env",
-            "/var/lib/jasper/wake_model.env",
+            VOICE_PROVIDER_ENV_PATH,
+            WAKE_MODEL_ENV_PATH,
             TRANSIT_ENV_PATH,
             # weather_setup._load_state opens this on every /assistant/weather/ render,
             # same shape as transit.env above.
@@ -243,7 +245,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # voice and covered by env.check_state_dir_group_writable — not
             # repeated here.
             TOOL_STATE_ENV_PATH,
-            "/var/lib/jasper/voice_provider.env",
+            VOICE_PROVIDER_ENV_PATH,
             "/var/lib/jasper/mic_mute.env",
         ),
     ),
