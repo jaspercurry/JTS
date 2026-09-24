@@ -209,9 +209,8 @@ def test_legacy_aliases_never_raise():
 
 
 def test_system_capabilities_map_per_profile():
-    # The capability map is the single source of truth shared by the runtime
-    # /system snapshot and the install-time landing-page bake; both derive the
-    # boolean caps from the normalized role, so baked and live always agree.
+    # The install-time page bake derives the boolean caps from the
+    # normalized role.
     from jasper.install_profile import system_capabilities_for_profile as caps
 
     full = caps("full")

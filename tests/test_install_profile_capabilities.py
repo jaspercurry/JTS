@@ -15,12 +15,11 @@ Three things are pinned here:
    real capabilities. A tier cannot be added without stating its grants,
    and a typo cannot invent a capability nothing checks.
 2. **Purity.** ``system_capabilities_for_profile`` is a pure function of
-   its argument — no environment, no files, no hardware. Two consumers
-   compute it at DIFFERENT times (install.sh bakes it into the static
-   landing page; jasper-control serves it live at /system) and agree only
-   because of this. A capability that read something dynamic would let a
-   baked page be wrong at runtime, and the landing page's
-   ``initSettingsStatus`` fails closed — a section hidden forever, no error.
+   its argument — no environment, no files, no hardware. install.sh bakes
+   it into the static landing page and hubs once; a capability that read
+   something dynamic would freeze its install-time answer into the page,
+   and ``initSettingsStatus`` fails closed — a section hidden forever, no
+   error.
 3. **The grant table's derived map, pinned.** Every
    ``system_capabilities_for_profile`` boolean is a thin view over
    ``PROFILE_CAPABILITIES`` — data, not a second place to restate a grant.
@@ -142,10 +141,9 @@ class _ForbiddenEnviron(dict):
 def _no_io():
     """Make every route out of the process raise, around ONE call.
 
-    Not a stylistic preference — the two consumers of the capability map
-    run at different times on different machines (install-time bake vs
-    runtime snapshot). Anything the map reads besides its argument can
-    differ between those two moments, and the disagreement is SILENT.
+    Not a stylistic preference — the map is baked into the pages at
+    install time. Anything it reads besides its argument can differ from
+    the running box, and the disagreement is SILENT.
 
     Deliberately a context manager rather than a fixture. Replacing the
     global ``os.environ`` object for a whole test item also poisons
@@ -207,7 +205,7 @@ def test_capability_map_ignores_a_contradicting_environment(profile, monkeypatch
 
     install.sh resolves the profile once and passes it in; if the map
     also consulted JASPER_INSTALL_PROFILE (or any other ambient signal)
-    it could bake one answer and serve another.
+    it could bake an answer the profile does not give.
     """
     baseline = system_capabilities_for_profile(profile)
 
@@ -250,14 +248,12 @@ _EXPECTED_CAPABILITIES = {
     "full": {
         "developer_tools": True,
         "install_profile": "full",
-        "restart_voice": True,
         "role": "full",
         "voice_brain": True,
     },
     "streambox": {
         "developer_tools": False,
         "install_profile": "streambox",
-        "restart_voice": True,
         "role": "streambox",
         "voice_brain": True,
     },
@@ -272,10 +268,9 @@ _PINNED_ELSEWHERE = {"wake_detection"}
 def test_capability_map_matches_the_grant_table(profile):
     """The map's booleans are a thin view over PROFILE_CAPABILITIES.
 
-    voice_brain/restart_voice mirror ``Capability.ASSISTANT`` and
-    wake_detection mirrors ``Capability.WAKE_DETECTION`` for every
-    profile — the landing page and /system must see exactly these
-    answers.
+    voice_brain mirrors ``Capability.ASSISTANT`` and wake_detection
+    mirrors ``Capability.WAKE_DETECTION`` for every profile — the baked
+    pages must see exactly these answers.
     """
     golden = _EXPECTED_CAPABILITIES[profile]
     live = system_capabilities_for_profile(profile)

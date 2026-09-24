@@ -38,7 +38,6 @@ from ...fanin.latency_mode import (
     options as _usb_latency_options,
     read_state as _read_usb_latency_state,
 )
-from ...install_profile import system_capabilities_for_profile
 from ...local_sources import (
     local_source_audio_refresh_units,
     local_source_park_units,
@@ -425,7 +424,6 @@ class SystemRoutes(ControlHandlerMixin):
         )
         park_reader = self._transport_park_reader()
 
-        install_profile = self._install_profile()
         payload: dict[str, Any] = {
             "build": read_build_info(),
             "transport_park": park_reader(),
@@ -444,9 +442,6 @@ class SystemRoutes(ControlHandlerMixin):
             "voice_provider": read_active_provider(),
             "speaker_name": state_aggregate.speaker_name_section(),
             "home_assistant": ha_status,
-            "system_capabilities": system_capabilities_for_profile(
-                install_profile,
-            ),
             "usb_gadget_forensics": usb_gadget_forensics.snapshot(),
         }
         self._send_json(payload)

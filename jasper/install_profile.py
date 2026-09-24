@@ -36,14 +36,11 @@ by lightweight surfaces such as jasper-control, jasper-doctor, and the
 multi-room reconciler without pulling in the full speaker stack.
 
 **Capabilities are a pure function of the tier — no I/O, ever.** They
-must never read hardware, the environment, or a file. Two consumers
-compute the same map at different times (install.sh bakes it into the
-static landing page; jasper-control serves it live at ``/system``), and
-they agree only because both derive from the marker and nothing else.
-The moment a capability reads something dynamic, a baked page can be
-wrong at runtime and the landing page's ``initSettingsStatus`` fails
-closed — hiding a section forever with no error. Pinned by
-tests/test_install_profile_capabilities.py.
+must never read hardware, the environment, or a file: install.sh bakes
+the map into the static landing page and hubs once, so a capability that
+read something dynamic would freeze its install-time answer, and the
+page's ``initSettingsStatus`` fails closed — hiding a section forever
+with no error. Pinned by tests/test_install_profile_capabilities.py.
 """
 from __future__ import annotations
 
@@ -259,16 +256,14 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
 def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     """The management-UI capability map for an install profile.
 
-    Single source of truth, shared by two consumers: jasper-control's
-    /system snapshot (runtime) AND install.sh, which bakes the result into
-    the static landing page so its capability-gated sections are correct at
-    first paint with no network round-trip. Kept here (stdlib-only) so the
-    installer can compute it without importing the full control stack.
+    install.sh bakes the result into the static landing page and hubs so
+    their capability-gated sections are correct at first paint with no
+    network round-trip. Kept here (stdlib-only) so the installer can
+    compute it without importing the full control stack.
 
     Values are derived purely from the profile — no env, no files, no
-    hardware probes — so the baked page and the live snapshot always
-    agree for the same marker. That purity is the whole contract here;
-    see the module docstring for what breaks without it.
+    hardware probes. That purity is the whole contract here; see the
+    module docstring for what breaks without it.
     """
     role = normalize_install_profile(profile)
     full = role == FULL_INSTALL_PROFILE
@@ -277,11 +272,10 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
     return {
         # `install_profile` echoes the token this is CALLED with; the boolean
         # caps below — what the page gates on — derive from the normalized
-        # role. In production both callers (the /system snapshot and the
-        # install.sh bake) pass read_install_profile(), which already
-        # normalizes endpoint/satellite -> streambox, so this field reads
-        # full|streambox and baked vs live always agree. A raw legacy token
-        # only appears if the function is called directly with one.
+        # role. The install.sh bake passes read_install_profile(), which
+        # already normalizes endpoint/satellite -> streambox, so this field
+        # reads full|streambox. A raw legacy token only appears if the
+        # function is called directly with one.
         "install_profile": profile,
         "role": role,
         "voice_brain": voice_brain,
@@ -294,5 +288,4 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         # consumers.
         "wake_detection": wake_detection,
         "developer_tools": full,
-        "restart_voice": voice_brain,
     }

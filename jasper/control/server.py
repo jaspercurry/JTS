@@ -699,7 +699,6 @@ def _make_handler(
         _camilla_port = camilla_port
         _get_op = staticmethod(ops.get)
         _ha_status_cache = ha_status_cache
-        _install_profile = staticmethod(_control_install_profile)
         _mute_set_op = staticmethod(ops.mute_set)
         _mute_toggle_op = staticmethod(ops.mute_toggle)
         _observe_op = staticmethod(ops.observe)

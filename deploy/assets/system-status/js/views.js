@@ -61,10 +61,6 @@ export function buildSystemPanel(handlers) {
   const restartAudio = actionButton("Restart audio", {
     variant: "default", onClick: handlers.restartAudio,
   });
-  // Re-enabled from /system/snapshot capabilities on the first successful
-  // poll. This avoids a tiny cold-load window where a streambox
-  // could show full-speaker actions before its profile arrives.
-  restartVoice.disabled = true;
   const actions = titledCard("Actions");
   actions.section.classList.add("system-actions");
   actions.body.append(
@@ -123,17 +119,10 @@ export function buildSystemPanel(handlers) {
     vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
     actionsStatus,
-    restartVoice,
     forensics,
     _memo: {},
   };
   return { panel, refs };
-}
-
-function applySystemCapabilities(refs, caps) {
-  const allowed = !caps || caps.restart_voice !== false;
-  refs.restartVoice.hidden = !allowed;
-  refs.restartVoice.disabled = !allowed;
 }
 
 export function update(refs, snap) {
@@ -190,11 +179,6 @@ export function update(refs, snap) {
   renderSection(refs, "software", refs.software,
     { b: snap.build, u: cur.uptime_sec, p: snap.voice_provider }, () => softwareList(snap, cur));
   renderSection(refs, "ha", refs.ha, snap.home_assistant, () => haBody(snap.home_assistant));
-  try {
-    applySystemCapabilities(refs, snap.system_capabilities);
-  } catch (e) {
-    console.error("system: applying capabilities failed", e);
-  }
   refs.forensics.card.hidden = usbSourceOff(snap.audio_health);
   refs.forensics.update(snap.usb_gadget_forensics || {});
 }
