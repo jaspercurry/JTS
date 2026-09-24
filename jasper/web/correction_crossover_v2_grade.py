@@ -88,19 +88,24 @@ def _spatial_grade(post_apply: Any) -> str:
     return GRADE_SPATIAL_FAILED
 
 
-def post_apply_grade(
-    state: Mapping[str, Any] | None, *, applied_profile: Any, block: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """The grade the status block publishes as ``post_apply_grade``, read from
-    the durable ``state`` and the applied profile alone. ``block`` is a status
-    block that already holds the fields the grade reads."""
+def grade_inputs(state: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The status fields the post-apply grade reads, projected from the durable ``state``."""
     state = state or {}
-    applied = bool(state.get("applied"))
-    return _post_apply_grade(block if block is not None else {
-        "applied": applied, "candidate": state.get("candidate"), "verify": state.get("verify"),
+    return {
+        "applied": bool(state.get("applied")), "candidate": state.get("candidate"), "verify": state.get("verify"),
         "prediction": projection.prediction_status(state),
         "cloud": projection.compact_cloud_status(state.get("cloud"), current_session_id=state.get("session_id")),
-    }, spatial_required=applied and asked_beyond_mark(state, applied_profile=applied_profile))
+    }
+
+
+def post_apply_grade(
+    state: Mapping[str, Any] | None, *, applied_profile: Any, inputs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The grade the status block publishes as ``post_apply_grade``. ``inputs``
+    are :func:`grade_inputs` of ``state``, built here when the caller has not."""
+    inputs = grade_inputs(state) if inputs is None else inputs
+    return _post_apply_grade(inputs, spatial_required=bool(inputs["applied"]) and asked_beyond_mark(
+        state or {}, applied_profile=applied_profile))
 
 
 def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = False) -> dict[str, Any]:

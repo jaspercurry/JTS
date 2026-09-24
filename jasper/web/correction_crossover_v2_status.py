@@ -80,13 +80,14 @@ def crossover_v2_status_block(
         needs_recovery = True  # unreadable volume state fails closed
     applied_profile = load_applied_baseline_profile_state()
     identity = applied_identity(applied_profile)
+    graded = v2grade.grade_inputs(state)
     block: dict[str, Any] = {
         "phase": _projection.crossover_v2_phase(
             state, review_declined=v2state.review_declined(state),
         ),
         # save_v2_state stamps transitions; polls must not create a second clock (#1947).
         "updated_at": (state or {}).get("updated_at"),
-        "candidate": (state or {}).get("candidate"),
+        **graded,
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
         "level": seat_level_reference_status(),
         # MEASURE's own verdict-time disclosures — today just G1's ripple
@@ -97,22 +98,15 @@ def crossover_v2_status_block(
         "measure": (state or {}).get("measure"),
         # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
-        "verify": (state or {}).get("verify"),
         "execution": (state or {}).get("execution"),
         "failure": (state or {}).get("failure"),
         "needs_recovery": needs_recovery,
-        "applied": bool(state and state.get("applied")),
         "applied_identity": identity,
         "session_id": session_id,
         "attempts_loop": {
             "store_count": store_count,
         },
-        "cloud": _projection.compact_cloud_status(
-            (state or {}).get("cloud"),
-            current_session_id=session_id,
-        ),
         "cloud_chart": _projection.chart_cloud_status((state or {}).get("cloud")),
-        "prediction": _projection.prediction_status(state),
         "findings": _projection.household_findings_status(state),
         # The across-rounds view no single receipt can carry: per spec band,
         # how much of what was commanded arrived, over how many banked rounds,
@@ -125,7 +119,7 @@ def crossover_v2_status_block(
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status() if controllability is False else controllability,
     }
-    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile, block=block)
+    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile, inputs=graded)
     return block
 
 

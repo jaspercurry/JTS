@@ -215,7 +215,7 @@ def capture_prediction(
         if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
         channel_map = candidate.source_preset.channel_map
-        channels = {output.driver_role: output.index for output in channel_map.primary_outputs}
+        channels = channel_map.primary_index_by_role
         if len(channel_map.primary_outputs) != 2 or set(channels) != set(basis.branches):
             raise ForwardModelError("candidate prediction needs an unambiguous output binding for each recorded branch",
                                     detail={"field": "branch_output_binding", "branches": list(basis.branches)})

@@ -23,9 +23,8 @@ from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
 from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S
-from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S
-from jasper.audio_measurement.program_analysis.response import polarity_label
+from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, polarity_label
+from jasper.audio_measurement.recorded_impulse import kept_end
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
     log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
@@ -57,17 +56,17 @@ class TakeRead:
     def arrival_ms(self) -> float | None:
         """The direct peak on the take's own recording clock; ``None`` for a
         take whose impulse was rebuilt without that clock."""
-        pre = self.capture.preprocessing.get("pre_guard_samples")
-        if pre is None:
+        if not self.capture.clocked:
             return None
+        pre = float(self.capture.preprocessing["pre_guard_samples"])
         shift = float(self.capture.preprocessing.get("clock_shift_samples") or 0.0)
-        return 1000.0 * (self.capture.peak_idx - float(pre) - shift) / self.capture.sample_rate
+        return 1000.0 * (self.capture.peak_idx - pre - shift) / self.capture.sample_rate
 
     def parameters(self) -> dict[str, Any]:
         return {
             "role": self.role,
             "impulse_source": self.capture.preprocessing.get("impulse_source", "rebuilt"),
-            "time_reference": "the take's recording schedule" if self.arrival_ms is not None else "the direct peak",
+            "time_reference": "the take's recording schedule" if self.capture.clocked else "the direct peak",
             "calibration_applied": False,
         }
 
@@ -88,11 +87,10 @@ def read_take(round_dir: Path, *, take_id: str, role: str) -> TakeRead:
     over about the span a kept one holds, the deconvolution pre-guard before
     its peak and the verify tail after it, so the two read alike."""
     capture = select_capture(Path(round_dir), capture_id=take_id, role=role)
-    if "pre_guard_samples" not in capture.preprocessing:
+    if not capture.clocked:
         rate, peak = capture.sample_rate, capture.peak_idx
         start = max(0, peak - round(DECONV_PRE_GUARD_S * rate))
-        capture = replace(capture, ir=capture.ir[start:peak + round(DEFAULT_VERIFY_TAIL_S * rate) + 1],
-                          peak_idx=peak - start)
+        capture = replace(capture, ir=capture.ir[start:kept_end(peak, capture.ir.size, rate)], peak_idx=peak - start)
     return TakeRead(capture, role)
 
 
@@ -223,6 +221,7 @@ class PreviewSide:
     lead_ms: float
     candidate_id: str | None
     basis_capture_id: str | None
+    fingerprint: str
 
 
 def read_preview(document: Any) -> PreviewSide:
@@ -238,6 +237,7 @@ def read_preview(document: Any) -> PreviewSide:
             band_hz=(float(prediction["sum_band_hz"][0]), float(prediction["sum_band_hz"][1])),
             window_ms=float(summary["window"]["window_ms"]), lead_ms=float(summary["window"]["lead_ms"]),
             candidate_id=summary.get("candidate_id"), basis_capture_id=(summary.get("basis") or {}).get("capture_id"),
+            fingerprint=str(summary["prediction_fingerprint"]),
         )
     except (KeyError, TypeError, ValueError, IndexError) as exc:
         raise RoundCapturesRefused(REFUSE_PREVIEW_UNREADABLE, {"detail": str(exc)}) from exc
@@ -295,7 +295,7 @@ def compare_report(
     return {
         "parameters": {
             "roles": [a.role, b.role], "window_ms": window,
-            "window_source": a_source if a_source == b_source == "argument"
+            "window_source": "argument" if a_source == b_source == "argument"
             else f"shorter take window ({a_source}, {b_source})",
             "lead_ms": PHASE_GATE_LEAD_MS, "smoothing_fraction": smoothing_fraction or None,
             "points_per_octave": points_per_octave, "band_hz": [round(edge, 1) for edge in band],

@@ -293,6 +293,10 @@ class ActiveChannelMap:
         return tuple(output for output in self.outputs if output.output_variant == "primary")
 
     @property
+    def primary_index_by_role(self) -> dict[str, int]:
+        return {output.driver_role: output.index for output in self.primary_outputs}
+
+    @property
     def variant_outputs(self) -> tuple[OutputChannel, ...]:
         """Outputs beyond a role's primary, such as a cardioid's rear woofer."""
         return tuple(output for output in self.outputs if output.output_variant != "primary")

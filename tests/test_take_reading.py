@@ -93,7 +93,8 @@ def test_a_forecast_is_compared_through_its_own_window():
     forecast = 20 * np.log10(np.abs(np.fft.rfft(segment, n=capture_prediction.N_FFT)[in_band])) - 20.0
     preview = read_preview({"section": "emitted_graph", "preview": {
         "kind": "jts_capture_prediction",
-        "summary": {"window": {"window_ms": 7.0, "lead_ms": 1.0}, "candidate_id": "cand", "basis": {}},
+        "summary": {"window": {"window_ms": 7.0, "lead_ms": 1.0}, "candidate_id": "cand", "basis": {},
+                    "prediction_fingerprint": "f" * 64},
         "prediction": {"freqs_hz": grid.tolist(), "predicted_db": forecast.tolist(),
                        "sum_band_hz": [300.0, 18_000.0]},
     }})

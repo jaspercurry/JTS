@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .program import DEFAULT_VERIFY_TAIL_S
+
 
 @dataclass(frozen=True)
 class RecordedImpulse:
@@ -28,3 +30,10 @@ class RecordedImpulse:
     origin_index: int
     segment_id: str
     clock_shift_samples: float = 0.0
+
+
+def kept_end(anchor_index: int, size: int, sample_rate_hz: int) -> int:
+    """Where a kept impulse ends: :data:`DEFAULT_VERIFY_TAIL_S` past
+    ``anchor_index``, its sweep's scheduled start, which the direct peak
+    follows by milliseconds."""
+    return min(size, anchor_index + round(DEFAULT_VERIFY_TAIL_S * sample_rate_hz) + 1)

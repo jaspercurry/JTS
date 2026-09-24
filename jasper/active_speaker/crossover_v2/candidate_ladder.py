@@ -177,9 +177,10 @@ def _pair_delta(
 ) -> dict[str, Any] | None:
     """``a`` minus ``b`` on ``a``'s grid, level offset removed and published.
 
-    The level comes off as :func:`~.forward_model.predicted_minus_measured_db`
-    takes it off (ADR-0358): the raw offset between two graphs is a level
-    difference, and the shape difference is what a ladder is asking about.
+    The level comes off by
+    :func:`~jasper.audio_measurement.series_stats.curve_difference`: the raw
+    offset between two graphs is a level difference, and the shape difference
+    is what a ladder is asking about.
     ``level_offset_db`` is what was removed, read on ``a``'s grid, so it is not
     the two published ``median_db`` values differenced.
     """

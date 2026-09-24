@@ -27,6 +27,7 @@ from .crossover_v2.round_inputs import (
 )
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
+from .linearization_fit import unavailable_fit
 from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
 from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
@@ -126,9 +127,9 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                     computed[take_id] = {role: {**proposal, "trim_decision": result["trim_decision"]}
                                          for role, proposal in result["linearization"].items()}
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[take_id] = {take["role"]: {"fit": {"reason_summary": {
-                        "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
-                    }}}}
+                    computed[take_id] = {take["role"]: {"fit": unavailable_fit(
+                        take["role"], getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
+                    )}}
             for role, proposal in computed[take_id].items():
                 if role != take["role"]:
                     continue

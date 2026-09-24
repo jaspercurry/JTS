@@ -86,6 +86,12 @@ class PoseCapture:
     curve: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
+    def clocked(self) -> bool:
+        """On the take's recording clock: a kept impulse or one its branch
+        diagnostic retained. An impulse rebuilt from the whole program is not."""
+        return "pre_guard_samples" in self.preprocessing
+
+    @property
     def pose_key(self) -> str:
         """The FULL declared pose. Never a seat index (#3503)."""
         return _pose_key(

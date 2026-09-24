@@ -25,6 +25,7 @@ from jasper.audio_measurement.program import (
     segment_stimulus,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.recorded_impulse import kept_end
 from jasper.log_event import log_event
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
@@ -118,8 +119,7 @@ def recorded_impulse(
     no more. Everything before the start is kept, the deconvolution pre-guard
     included, as the noise a reader measures the peak against.
     """
-    end = min(full_ir.size, origin_index + int(round(DEFAULT_VERIFY_TAIL_S * sample_rate)) + 1)
-    samples = np.asarray(full_ir[:end], dtype=np.float32)
+    samples = np.asarray(full_ir[:kept_end(origin_index, full_ir.size, sample_rate)], dtype=np.float32)
     return RecordedImpulse(
         samples=samples,
         sample_rate_hz=int(sample_rate),

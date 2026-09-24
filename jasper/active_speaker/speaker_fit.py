@@ -26,12 +26,13 @@ from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import (
-    FitVocabulary, LinearizationFit, complex_correction_response, linearization_filters_by_role,
+    FitVocabulary, LinearizationFit, complex_correction_response, linearization_filters_by_role, unavailable_fit,
 )
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.series_stats import power_mean_db
@@ -155,11 +156,6 @@ def _fit_vocabularies(
     return vocabularies
 
 
-#: A fit with a NaN or infinite filter term: published as unavailable, never
-#: as a number JSON cannot carry.
-REASON_FIT_NOT_FINITE = "fit_not_finite"
-
-
 def _filters_finite(fit: LinearizationFit) -> bool:
     return bool(np.isfinite([(one.freq, one.q, one.gain) for one in fit.filters]).all())
 
@@ -257,10 +253,10 @@ def speaker_fit(
         "excited_band_hz": list(driver.excited_band_hz),
         "envelope": _envelope_answer(branches.envelopes[driver.role]),
         "handover_level_shift_db": handover_shifts[driver.role],
-        "fit": branches.fits[driver.role].to_dict() if finite[driver.role] else {
-            "role": driver.role, "reason_summary": {"unavailable": REASON_FIT_NOT_FINITE}},
+        "fit": (branches.fits[driver.role].to_dict() if finite[driver.role]
+                else unavailable_fit(driver.role, REASON_FIT_NOT_FINITE)),
     } for driver in drivers}
-    selected_fit = linearization.get(selected.capture_basis.get("role") or drivers[0].role, linearization[drivers[0].role])
+    selected_fit = linearization.get(selected.role, linearization[drivers[0].role])
     return dict(
         set_id=selected.set_id, take_id=take_id,
         boost_evidence=selected_fit["boost_evidence"], linearization=linearization,

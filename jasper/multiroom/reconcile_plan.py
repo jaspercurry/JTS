@@ -5,7 +5,7 @@
 """Multiroom grouping — the pure plan, unit names, and argv/derived-args
 builders. A leaf: stdlib plus sibling PURE multiroom modules only, no
 subprocess/systemctl/camilla/dsp_apply, so a caller that only needs
-``plan()``, an argv builder, or ``SNAPFIFO``/``ARGS_FILE`` does not pay
+``plan()``, an argv builder, or ``ARGS_FILE`` does not pay
 ``jasper.multiroom.reconcile``'s heavier import cost (ADR-0226; a
 Type=oneshot on a Pi Zero 2 W).
 

@@ -528,6 +528,11 @@ class LinearizationFit:
         }
 
 
+def unavailable_fit(role: str, reason: str) -> dict[str, Any]:
+    """The published fit document of a fit that has no numbers, and why."""
+    return {"role": role, "reason_summary": {"unavailable": reason}}
+
+
 def complex_correction_response(
     filters: Sequence[LinearizationFilter], freqs_hz: np.ndarray,
 ) -> np.ndarray:

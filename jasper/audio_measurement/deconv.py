@@ -200,7 +200,7 @@ def magnitude_response(
     magnitude_db = 20 * np.log10(np.maximum(magnitude, 1e-12))
     if normalize:
         magnitude_db = magnitude_db - float(np.max(magnitude_db))
-    return freqs.astype(np.float64), magnitude_db.astype(np.float64)
+    return freqs.astype(np.float64, copy=False), magnitude_db.astype(np.float64, copy=False)
 
 
 # How far a harmonic window reaches from its center, as a fraction of the

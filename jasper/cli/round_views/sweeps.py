@@ -21,7 +21,7 @@ from ._common import (
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
-    resolve_set, read_run_manifest, round_inputs,
+    resolve_set, resolve_set_take, read_run_manifest, round_inputs,
     _write,
     add_rungs_ms_argument,
     add_set_argument, answer,
@@ -80,10 +80,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
 
 
 def _cmd_windows(args: argparse.Namespace) -> int:
-    inputs = round_inputs(Path(args.round_dir))
-    selected = resolve_set(inputs, args.set)
-    take_id = selected.take_id(args.take)
-    role = args.role or selected.role
+    take_subject, take_id, role = resolve_set_take(Path(args.round_dir), args.set, args.take, args.role)
     try:
         report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=role)
     except RoundCapturesRefused as exc:
@@ -91,7 +88,7 @@ def _cmd_windows(args: argparse.Namespace) -> int:
     spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
     written = _write(report, args.out, resolved_out(Path(args.round_dir), spec.artifact, args.set), schema=spec.schema)
     run, = report["runs"]
-    return answer(args.command, schema=spec.schema, subject=subject(inputs, selected, take_ids=[take_id]),
+    return answer(args.command, schema=spec.schema, subject=take_subject,
                   parameters={**_frame_parameters(run["metadata"]["frame"]), "role": role},
                   out=written, scope=args.scope, **render_image(args, report), capture_id=take_id,
                   line=f"sweep take: {take_id} -> {written}")

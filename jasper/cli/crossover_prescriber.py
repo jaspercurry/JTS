@@ -15,6 +15,7 @@ from typing import Any
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
 from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
 from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -542,7 +543,7 @@ def _next_commands(
     # Nothing that would fail for the reason already reported: these two read
     # the same evidence this verb just could not.
     if session_dir and not packet_error:
-        commands.append(shlex.join(["jasper-round-views", "inventory", session_dir]))
+        commands.append(shlex.join([ROUND_VIEWS_PROG, "inventory", session_dir]))
         commands.append(shlex.join([
             PROG, "contract", "--round", session_dir,
         ]))
@@ -580,7 +581,7 @@ def status_document(
                     "bundle_session_dir": str(bundle),
                     "next": [
                         shlex.join([PROG, "status", path]),
-                        shlex.join(["jasper-round-views", "inventory", path]),
+                        shlex.join([ROUND_VIEWS_PROG, "inventory", path]),
                     ],
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:
