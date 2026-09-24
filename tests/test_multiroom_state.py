@@ -557,7 +557,7 @@ def test_leader_with_pipe_wired_config_is_ok(tmp_path, monkeypatch):
     """The Increment 5 happy path end-to-end through PRODUCTION wiring:
     statefile -> active config -> pipe scan -> ok. The active config is a
     REAL emit_sound_config artifact (emitter/scanner drift fails here)."""
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 

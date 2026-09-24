@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE, RESULT_KEEP_PREVIOUS
+from jasper.active_speaker import driver_base_trim
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -303,12 +304,11 @@ def _resolve_measurement_level_trims(
     """
     if not spec.level_matched:
         return {}, ""
-    from jasper.active_speaker.driver_base_trim import measured_level_trims
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft()
-    trims, meta = measured_level_trims(
+    trims, meta = driver_base_trim.measured_level_trims(
         preset, build_crossover_preview(draft), design_draft=draft,
     )
     return (

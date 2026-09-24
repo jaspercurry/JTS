@@ -157,8 +157,8 @@ def load_commissioning_view(
     A caller that omits ``commission`` silently degrades the view; ``None``
     composes identical steps.
     """
-    from jasper.active_speaker.applied_tune import compile_commissioning_profile
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: import cost (graph compilation)
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
     from jasper.active_speaker.crossover_preview import build_crossover_preview

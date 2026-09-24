@@ -95,11 +95,11 @@ def predicted_minus_measured_db(
 ) -> dict[str, Any]:
     """The predicted-vs-measured delta, as facts and no verdict.
 
-    Both curves are level-normalised against their OWN median over the compared
-    band before subtracting: a forward model over banked solos carries no
-    absolute SPL reference, so the raw offset between it and a measured sum is a
-    level difference rather than a shape error. The offset removed is published
-    as ``level_offset_db``.
+    The level comes off before the shapes are compared: a forward model over
+    banked solos carries no absolute SPL reference, so the raw offset between it
+    and a measured sum is a level difference rather than a shape error. The
+    offset removed is the median of the per-bin difference over the compared
+    band (ADR-0358), published as ``level_offset_db``.
 
     ``band_hz`` defaults to the prediction's own
     :attr:`PredictedSum.sum_band_hz` intersected with the measured curve's

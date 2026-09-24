@@ -35,6 +35,7 @@ from typing import Any
 from ..env_load import GROUPING_ENV_FILE
 from . import config
 from .config import GroupingConfig
+from .snapfifo import SNAPFIFO
 
 # `load_config` / `is_active_leader` are resolved through the `config` module
 # at call time (``config.load_config`` / ``config.is_active_leader``), NOT
@@ -62,7 +63,6 @@ def member_camilla_kwargs(
         cfg = config.load_config(path)
     if not config.is_active_leader(cfg):
         return {}
-    from .reconcile_plan import SNAPFIFO
 
     out: dict[str, Any] = {"playback_pipe_path": SNAPFIFO}
     if cfg.left_delay_ms > 0.0 or cfg.right_delay_ms > 0.0:

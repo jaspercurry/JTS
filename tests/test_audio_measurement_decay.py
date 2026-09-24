@@ -52,3 +52,10 @@ def test_only_bands_inside_the_swept_band_are_read():
     bands = octave_decays(_decay(0.3, -80.0), RATE, start_index=START, band_hz=(1500.0, 20_000.0))
 
     assert [band.centre_hz for band in bands] == [2000.0, 4000.0, 8000.0, 16000.0]
+
+
+def test_a_low_octave_reads_its_decay_from_the_onset():
+    """The time-reversed filter's ringing before the onset is not decay."""
+    edt = np.median([_band(_decay(0.3, -80.0, seed=seed), 63.0).edt_s for seed in range(8)])
+
+    assert edt == pytest.approx(0.3, rel=0.15)

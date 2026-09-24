@@ -51,6 +51,7 @@ from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
+from .snapfifo import SNAPFIFO
 from jasper.output_topology_store import load_output_topology_strict
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,6 @@ def _is_pipe_config(path: str) -> bool:
     Unreadable resolves to False — the write guard then skips stashing
     (defensive) and the read guard's separate ``exists()`` check already
     rejects missing files."""
-    from .reconcile_plan import SNAPFIFO
-
     return devices_playback_is_pipe(read_camilla_devices_config(path) or {}, SNAPFIFO)
 
 
@@ -359,8 +358,6 @@ def active_leader_pipe_path() -> str:
     # pulls it under the same role set that gates `/rooms`; the doctor's
     # correction and grouping modules import it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
-
-    from .reconcile_plan import SNAPFIFO
 
     devices = read_camilla_devices_config(read_camilla_statefile_config_path()) or {}
     return SNAPFIFO if devices_playback_is_pipe(devices, SNAPFIFO) else ""

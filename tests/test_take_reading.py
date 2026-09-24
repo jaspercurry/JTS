@@ -12,7 +12,8 @@ import pytest
 from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture, RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, decay_report, read_preview,
+    REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, decay_report,
+    group_delay_report, read_preview,
 )
 from tests.test_audio_measurement_decay import _decay
 
@@ -118,3 +119,13 @@ def test_an_ungated_take_reads_no_further_than_its_impulse_holds():
 
     assert _take("t1", gate_ms=None, ir=short).window() == (pytest.approx(99.98, abs=0.05), "retained")
     assert _take("t1", gate_ms=None, ir=np.pad(short, (0, 48_000))).window() == (500.0, "ungated")
+
+
+def test_a_read_says_which_window_it_used_and_bands_only_what_it_read():
+    short = _take("t2", ir=_take("t2").capture.ir[:ORIGIN + 100 + round(0.01 * RATE)])
+    compared = compare_report(_take("t1"), short, window_ms=20.0)["parameters"]
+    timing = group_delay_report(_take("t1", band=(100.0, 900.0), gate_ms=7.0))
+    lo, hi = timing["parameters"]["band_hz"]
+
+    assert (compared["window_ms"] < 20.0, compared["window_source"]) == (True, "shorter take window (argument, retained)")
+    assert all(lo <= band["hz"] <= hi for band in timing["summary"]["bands"])

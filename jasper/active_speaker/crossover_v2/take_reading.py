@@ -189,11 +189,12 @@ def group_delay_report(
         inside = inside[np.isfinite(inside)]
         return _number(float(np.mean(inside)), 3) if inside.size else None
 
+    # Only octaves centred inside the read band: a phase read at a centre past its edge is the edge's.
     bands = [
         {"hz": center, "group_delay_ms": band_mean(timing.group_delay_ms, lo, hi),
          "excess_group_delay_ms": band_mean(excess, lo, hi),
          "phase_deg": _number(float(np.interp(center, grid, timing.phase_deg)), 1)}
-        for center, lo, hi in octave_bands_hz(*timing.band_hz)
+        for center, lo, hi in octave_bands_hz(*timing.band_hz) if timing.band_hz[0] <= center <= timing.band_hz[1]
     ]
     return {
         "parameters": {
@@ -294,7 +295,8 @@ def compare_report(
     return {
         "parameters": {
             "roles": [a.role, b.role], "window_ms": window,
-            "window_source": "argument" if window_ms is not None else f"shorter take window ({a_source}, {b_source})",
+            "window_source": a_source if a_source == b_source == "argument"
+            else f"shorter take window ({a_source}, {b_source})",
             "lead_ms": PHASE_GATE_LEAD_MS, "smoothing_fraction": smoothing_fraction or None,
             "points_per_octave": points_per_octave, "band_hz": [round(edge, 1) for edge in band],
             "level_removed": remove_level, "calibration_applied": False,

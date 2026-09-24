@@ -88,12 +88,15 @@ def _spatial_grade(post_apply: Any) -> str:
     return GRADE_SPATIAL_FAILED
 
 
-def post_apply_grade(state: Mapping[str, Any] | None, *, applied_profile: Any) -> dict[str, Any]:
+def post_apply_grade(
+    state: Mapping[str, Any] | None, *, applied_profile: Any, block: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The grade the status block publishes as ``post_apply_grade``, read from
-    the durable ``state`` and the applied profile alone."""
+    the durable ``state`` and the applied profile alone. ``block`` is a status
+    block that already holds the fields the grade reads."""
     state = state or {}
     applied = bool(state.get("applied"))
-    return _post_apply_grade({
+    return _post_apply_grade(block if block is not None else {
         "applied": applied, "candidate": state.get("candidate"), "verify": state.get("verify"),
         "prediction": projection.prediction_status(state),
         "cloud": projection.compact_cloud_status(state.get("cloud"), current_session_id=state.get("session_id")),

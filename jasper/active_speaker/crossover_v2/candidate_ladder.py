@@ -177,14 +177,11 @@ def _pair_delta(
 ) -> dict[str, Any] | None:
     """``a`` minus ``b`` on ``a``'s grid, level offset removed and published.
 
-    Both halves are level-normalised before subtracting, exactly as
-    :func:`~.forward_model.predicted_minus_measured_db` normalises its pair:
-    the raw offset between two graphs is a level difference, and the shape
-    difference is what a ladder is asking about. ``level_offset_db`` is what
-    was removed. It is taken over ``a``'s grid for BOTH halves, so on two
-    curves banked at different resolutions it is not the two published
-    ``median_db`` values differenced -- those are each over that curve's own
-    bins, and the delta needs one grid.
+    The level comes off as :func:`~.forward_model.predicted_minus_measured_db`
+    takes it off (ADR-0358): the raw offset between two graphs is a level
+    difference, and the shape difference is what a ladder is asking about.
+    ``level_offset_db`` is what was removed, read on ``a``'s grid, so it is not
+    the two published ``median_db`` values differenced.
     """
     difference = curve_difference(a.freqs_hz, a.magnitude_db, b.freqs_hz, b.magnitude_db, band_hz=band_hz)
     if difference is None:

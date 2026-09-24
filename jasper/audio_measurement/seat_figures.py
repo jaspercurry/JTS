@@ -129,14 +129,13 @@ def late_energy_change(
     is a difference of medians, unlike the preview's muted/predicted pairs from
     the same take. An empty side gives ``REASON_NO_COMPARISON`` and ``None``
     figures."""
-    sides = {"candidate": late_energy_medians(candidate), "reference": late_energy_medians(reference)}
-    compared = sides["candidate"] is not None and sides["reference"] is not None
+    candidate_medians, reference_medians = late_energy_medians(candidate), late_energy_medians(reference)
     return {
-        **{label: sides["candidate"][key] - sides["reference"][key] if compared else None
-           for label, key in LATE_ENERGY_CHANGE_KEYS},
-        **sides,
+        **{label: None if candidate_medians is None or reference_medians is None
+           else candidate_medians[key] - reference_medians[key] for label, key in LATE_ENERGY_CHANGE_KEYS},
+        "candidate": candidate_medians, "reference": reference_medians,
         "repeats": [len(candidate), len(reference)],
-        "reason": "" if compared else REASON_NO_COMPARISON,
+        "reason": "" if candidate and reference else REASON_NO_COMPARISON,
     }
 
 

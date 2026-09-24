@@ -708,7 +708,7 @@ def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch
 
     from jasper.fanin import ring_readiness
     from jasper.fanin_coupling import resolve_ring_wire
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _active_topology("stereo", "active_2_way")
     monkeypatch.setattr(ring_readiness, "load_topology_for_wire", lambda: topology)

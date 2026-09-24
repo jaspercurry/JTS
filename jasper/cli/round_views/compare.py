@@ -17,6 +17,7 @@ from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview,
 )
 from jasper.cli._refusal import EXIT_UNREADABLE
+from jasper.json_fields import sha256_file
 
 from ._common import (
     ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _write, add_set_argument, answer, read_set_take,
@@ -39,7 +40,8 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             report = compare_preview_report(preview, b, smoothing_fraction=args.smoothing,
                                             points_per_octave=args.points_per_octave)
             a_subject: dict[str, Any] = {"candidate_id": preview.candidate_id}
-            a_label = "preview"
+            # Named by content, so two forecasts read against one take keep two artifacts.
+            a_label = f"preview-{sha256_file(Path(args.a_preview))[:12]}"
         else:
             a_subject, a = read_set_take(Path(args.source_a), args.a_set, args.a_take, args.a_role)
             report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,

@@ -79,8 +79,10 @@ def _slope_db_per_s(level_db: np.ndarray, sample_rate: int) -> tuple[float, floa
 def band_decay(
     band: np.ndarray, sample_rate: int, *, start_index: int, centre_hz: float, lead: int,
 ) -> BandDecay:
-    """One band's decay from ``start_index``, where the sound starts, integrated
-    from ``lead`` samples before it."""
+    """One band's decay from ``start_index``, where the sound starts. Its noise
+    and decay line are read from ``lead`` samples before that, where the
+    time-reversed filter's ringing lands; its Schroeder curve and figures are
+    read from the onset (ISO 3382-1)."""
     first = max(0, start_index - lead)
     energy = np.asarray(band, dtype=np.float64)[first:] ** 2
     empty = BandDecay(centre_hz, None, None, None, None, None, np.empty(0))
@@ -104,8 +106,11 @@ def band_decay(
     if slope >= 0:
         return BandDecay(centre_hz, range_db, None, None, None, None, np.empty(0))
     crossing = min(energy.size - 1, upper + int(round(-intercept / slope * sample_rate)))
+    onset = start_index - first
+    if crossing - onset < 2:
+        return BandDecay(centre_hz, range_db, None, None, None, None, np.empty(0))
     tail_energy = noise * 10.0 / (-slope * np.log(10.0)) * sample_rate
-    integral = np.cumsum(energy[:crossing + 1][::-1])[::-1] + tail_energy
+    integral = np.cumsum(energy[:crossing + 1][::-1])[::-1][onset:] + tail_energy
     schroeder_db = 10 * np.log10(integral / integral[0])
 
     def figure(upper_db: float, lower_db: float) -> float | None:
@@ -119,7 +124,7 @@ def band_decay(
         return -60.0 / fit if fit < 0 else None
 
     return BandDecay(
-        centre_hz, range_db, 1000.0 * (crossing - (start_index - first)) / sample_rate,
+        centre_hz, range_db, 1000.0 * (crossing - onset) / sample_rate,
         **{name: figure(*levels) for name, levels in FIGURE_RANGES_DB.items()},
         schroeder_db=schroeder_db,
     )

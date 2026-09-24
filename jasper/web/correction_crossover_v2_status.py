@@ -125,7 +125,7 @@ def crossover_v2_status_block(
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status() if controllability is False else controllability,
     }
-    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile)
+    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile, block=block)
     return block
 
 
