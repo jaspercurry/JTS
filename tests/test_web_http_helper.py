@@ -33,7 +33,7 @@ underlying poll ticks, so a faster caller doesn't pay for DOM writes it
 didn't ask for.
 
 Mirrors ``tests/test_dialog_helper.py`` / ``test_web_rooms_setup.py``'s
-``test_dom_append_children_export_via_node`` — skip (not fail) when node
+``test_rooms_page_modules_via_node`` — skip (not fail) when node
 isn't on PATH; this repo has no browser-based JS runner.
 """
 from __future__ import annotations
