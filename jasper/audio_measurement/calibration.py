@@ -21,6 +21,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -92,7 +93,7 @@ class CalibrationCurve:
             if any(
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
-                or not np.isfinite(float(value))
+                or not math.isfinite(value)
                 for value in raw
             ):
                 raise ValueError(f"calibration curve {name} must be finite numbers")
