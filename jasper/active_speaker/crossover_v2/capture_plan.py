@@ -34,7 +34,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
-from jasper.speaker_layout import measurement_target_parts
+from jasper.speaker_layout import measurement_target_name
 
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
@@ -569,11 +569,10 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
         return replace(prompt, headline=_seat_headline(prompt.seat_offset_m), detail=_SEAT_DETAIL)
     distance = prompt.mark_distance_m
     if prompt.kind == POSE_KIND_CLOSE and prompt.driver:
-        role, variant = measurement_target_parts(prompt.driver)
         return replace(
             prompt,
             headline=(f"Put the microphone {round(distance * 1000, 1):g} mm from the centre of the "
-                      f"{role if variant == 'primary' else f'{variant} {role}'}, on its axis."),
+                      f"{measurement_target_name(prompt.driver)}, on its axis."),
             detail="Measured from the dust cap, pointed straight at it.",
         )
     if prompt.kind == POSE_KIND_CLOSE:

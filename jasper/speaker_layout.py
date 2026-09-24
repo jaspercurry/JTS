@@ -69,6 +69,12 @@ def measurement_target_parts(target_id: str) -> tuple[str, str]:
     return role, variant or "primary"
 
 
+def measurement_target_name(target_id: str) -> str:
+    """A :func:`measurement_target_id` in words: ``woofer``, ``rear woofer``."""
+    role, variant = measurement_target_parts(target_id)
+    return role if variant == "primary" else f"{variant} {role}"
+
+
 def declared_radiating_diameters_mm(draft: Mapping[str, Any]) -> dict[str, float]:
     """Per-role declared effective radiating diameter, mm (#1665 / #1675), read
     off a design draft's ``manual_settings.drivers``.

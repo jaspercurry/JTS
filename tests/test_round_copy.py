@@ -9,6 +9,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFU
 from jasper.active_speaker.round_copy import (
     LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts,
 )
+from jasper.active_speaker.measurement_programs import program
 from jasper.active_speaker.measurement_view import round_status
 
 
@@ -87,6 +88,15 @@ def test_unmeasured_poses_are_distinct_and_counted_once():
         assert pose["kind"] in pose_name(pose)
         assert pose_name(pose) in line
         assert "2" in line
+
+
+def test_a_near_field_pose_is_named_by_its_driver_and_distance():
+    """A cardioid near-field round names each placement by driver and distance,
+    so a pose that was not measured says which one (ADR-0360)."""
+    names = [pose_name({"kind": pose.kind, "distance_m": pose.distance_m, "driver": pose.driver})
+             for pose in program("nearfield", "cardioid").poses]
+    assert names == ["woofer at 15 mm", "woofer at 30 mm", "woofer at 15 mm",
+                     "rear woofer at 15 mm", "rear woofer at 30 mm", "rear woofer at 15 mm"]
 
 
 @pytest.mark.parametrize("kept,retakes", [(9, 1), (8, 0), (0, 0)])
