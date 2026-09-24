@@ -20,7 +20,12 @@ import pytest
 
 from jasper import audio_profile_state, wake_conditions
 from jasper.cli import wake_enroll
-from jasper.wake_corpus import bridge_session, recording_backend, runtime_probe
+from jasper.wake_corpus import (
+    bridge_session,
+    clip_capture,
+    recording_backend,
+    runtime_probe,
+)
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
@@ -45,7 +50,7 @@ _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 async def test_recording_task_collects_frames_per_leg() -> None:
     _FakeUdpMicCapture.port_to_value = {9876: 11, 9877: 22, 9878: 33}
-    task = recording_backend.RecordingTask(
+    task = clip_capture.RecordingTask(
         ports={"on": 9876, "off": 9877, "dtln": 9878},
     )
     await task.start()
@@ -64,7 +69,7 @@ async def test_recording_task_collects_frames_per_leg() -> None:
 
 
 async def test_recording_task_elapsed_grows() -> None:
-    task = recording_backend.RecordingTask(ports={"on": 9876})
+    task = clip_capture.RecordingTask(ports={"on": 9876})
     await task.start()
     assert task.elapsed_sec() < 0.05
     await asyncio.sleep(0.1)
@@ -852,7 +857,7 @@ async def test_recording_task_stop_idempotent() -> None:
     double-await of a cancelled task. Defensive against state-machine
     bugs in callers."""
     _FakeUdpMicCapture.port_to_value = {9876: 7}
-    task = recording_backend.RecordingTask(ports={"on": 9876})
+    task = clip_capture.RecordingTask(ports={"on": 9876})
     await task.start()
     await asyncio.sleep(0.05)
     pcm_first = await task.stop()
@@ -1847,19 +1852,19 @@ def test_compute_rms_dbfs_silent_returns_floor() -> None:
     """All-zeros frame returns the -100 dBFS floor (avoids -inf
     from log(0); UI clamps below this anyway)."""
     frame = np.zeros(1280, dtype=np.int16)
-    assert recording_backend.compute_rms_dbfs(frame) == -100.0
+    assert clip_capture.compute_rms_dbfs(frame) == -100.0
 
 
 def test_compute_rms_dbfs_empty_returns_floor() -> None:
     """Zero-length frame returns the floor instead of NaN."""
     frame = np.zeros(0, dtype=np.int16)
-    assert recording_backend.compute_rms_dbfs(frame) == -100.0
+    assert clip_capture.compute_rms_dbfs(frame) == -100.0
 
 
 def test_compute_rms_dbfs_full_scale_is_zero() -> None:
     """A constant int16 max-amplitude frame is ~0 dBFS."""
     frame = np.full(1280, 32767, dtype=np.int16)
-    dbfs = recording_backend.compute_rms_dbfs(frame)
+    dbfs = clip_capture.compute_rms_dbfs(frame)
     # Within rounding of 0 dBFS
     assert -0.01 < dbfs <= 0.0
 
@@ -1868,7 +1873,7 @@ def test_compute_rms_dbfs_half_scale_is_about_minus_6() -> None:
     """A constant int16 half-amplitude frame is ~-6 dBFS
     (20*log10(0.5) ≈ -6.02)."""
     frame = np.full(1280, 16384, dtype=np.int16)
-    dbfs = recording_backend.compute_rms_dbfs(frame)
+    dbfs = clip_capture.compute_rms_dbfs(frame)
     assert -6.1 < dbfs < -5.9
 
 
@@ -1879,9 +1884,9 @@ def test_compute_rms_dbfs_monotonic_with_amplitude() -> None:
     medium = np.full(1280, 3000, dtype=np.int16)
     loud = np.full(1280, 20000, dtype=np.int16)
     assert (
-        recording_backend.compute_rms_dbfs(quiet)
-        < recording_backend.compute_rms_dbfs(medium)
-        < recording_backend.compute_rms_dbfs(loud)
+        clip_capture.compute_rms_dbfs(quiet)
+        < clip_capture.compute_rms_dbfs(medium)
+        < clip_capture.compute_rms_dbfs(loud)
     )
 
 

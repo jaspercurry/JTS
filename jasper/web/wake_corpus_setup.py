@@ -46,11 +46,8 @@ Usage:
   jasper-web.socket holds). The `jasper-wake-corpus-web` CLI runs the
   same page standalone; on a speaker, give it a free `--port`.
 
-Module layout: this file is a thin HTTP adapter. The recording engine
-(``RecordingBackend`` + capture task + clip/metadata writing + test-mode
-marker recovery) lives in ``jasper.wake_corpus.recording_backend``; the
-bridge env / leg-plan / systemctl + enter/exit corpus-test-mode layer
-lives in ``jasper.wake_corpus.bridge_session``.
+Module layout: this file is a thin HTTP adapter over the recording engine
+in ``jasper.wake_corpus``, whose package docstring maps its modules.
 """
 from __future__ import annotations
 

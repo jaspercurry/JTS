@@ -31,9 +31,8 @@ import pytest
 
 from jasper import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
-from jasper.wake_corpus import runtime_probe
+from jasper.wake_corpus import clip_capture, recording_backend, runtime_probe
 from jasper.wake_corpus.capture_plan import PlanConformance
-from jasper.wake_corpus import recording_backend
 from jasper.mics import xvf3800
 from jasper.web import wake_corpus_setup
 from jasper.web._common import CSRF_COOKIE_NAME
@@ -131,16 +130,16 @@ def _block_recording_task_start(
     """
     entered = threading.Event()
     release = threading.Event()
-    original_start = recording_backend.RecordingTask.start
+    original_start = clip_capture.RecordingTask.start
 
-    async def blocking_start(task: recording_backend.RecordingTask) -> None:
+    async def blocking_start(task: clip_capture.RecordingTask) -> None:
         entered.set()
         if not release.wait(timeout=2):
             raise TimeoutError("test did not release RecordingTask.start")
         await original_start(task)
 
     monkeypatch.setattr(
-        recording_backend.RecordingTask,
+        clip_capture.RecordingTask,
         "start",
         blocking_start,
     )
