@@ -866,13 +866,15 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     assert not any("level_step" in progress for progress in gate.progress)
 
 
-def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round():
+@pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
+def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
     """Each redo asks for the microphone again and starts the pose over, quiet
-    and with its retries, so redos past the pose's budget never end the round;
-    the page is told which plays are the quiet opener (ADR-0361)."""
+    and with its retries, so redos past the pose's budget never end the round,
+    even one with no retries; the page is told which plays are the quiet
+    opener (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver="woofer") for mm in (15, 30)),
-        purpose="reference", regime="near_field"))
+        purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first openers, then lets each pose land.
     result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 64.0, 80.0),
