@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Active-speaker route capacity over :mod:`jasper.output_topology` resolution."""
+"""Active-speaker output route: where a saved topology's active lane plays, and its capacity."""
 
 from __future__ import annotations
 

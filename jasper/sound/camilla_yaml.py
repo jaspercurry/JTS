@@ -725,7 +725,7 @@ def flat_graph_channel_plan(
     (``CONTRACT_NORMAL_MONO_FULL_RANGE``) that assigns exactly one output, and
     only when the SSOT's mute set is that output's exact complement. That last
     equality is the load-bearing one: it is how every case the SSOT withholds
-    muting for — unconfigured, roleful/protected, corrupt, or a sink whose
+    muting for — unconfigured, roleful/protected, or a sink whose
     program-to-output mapping does not resolve — withholds the fold too, without
     this function re-deriving (or drifting from) any of those rules. A composite
     mono box in particular must NOT fold here: outputd owns the program's
@@ -742,7 +742,7 @@ def flat_graph_channel_plan(
     is, and for the same reason: this lane cannot say which output that program
     belongs on. Deciding that is the deferred mapping work.
 
-    Fails SOFT — the empty plan — on a corrupt topology, matching the SSOT.
+    Fails SOFT — the empty plan — on a corrupt topology.
     The graph is checked either way: ``classify_camilla_graph`` and
     ``safe_graph_for_current_topology`` both fail closed on that topology.
     """
