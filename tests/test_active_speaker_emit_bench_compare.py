@@ -31,7 +31,7 @@ from jasper.active_speaker.linearization_fit import (
     complex_correction_response,
 )
 from jasper.audio_measurement.sweep import synchronized_swept_sine
-from jasper.camilla_config_contract import SHELF_Q
+from jasper.biquad import SHELF_Q
 from tests._fake_camilladsp import rbj_biquad, slope6_shelf_q
 
 FS = 48000
@@ -122,7 +122,7 @@ def test_a_shelf_realized_at_slope6_q_is_caught() -> None:
     """The 2026-07-27 class: the graph says one Q, the DSP realizes another.
 
     The claim is built at the Butterworth Q every evaluator in the flow assumes
-    (:data:`jasper.camilla_config_contract.SHELF_Q`); the render is at the Q
+    (:data:`jasper.biquad.SHELF_Q`); the render is at the Q
     ``slope: 6`` actually produces. Nothing inside the fit could see this — its
     gate, its residual, and its VERIFY prediction all evaluate the shelf the
     config claims. This harness sees it because it measures the render.

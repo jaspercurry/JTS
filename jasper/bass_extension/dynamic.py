@@ -11,11 +11,15 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-from jasper.camilla_config_contract import SHELF_Q, FilterSpec
-from jasper.json_fields import finite_float
-from jasper.sound.profile import (  # Share CamillaDSP math so boost and profile predictions agree.
-    RESPONSE_SAMPLE_RATE_HZ, _biquad_response_complex, _filter_response_complex, _freq_trig,
+from jasper.biquad import (
+    FilterSpec,
+    RESPONSE_SAMPLE_RATE_HZ,
+    SHELF_Q,
+    biquad_response_complex,
+    filter_response_complex,
+    freq_trig,
 )
+from jasper.json_fields import finite_float
 
 
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
@@ -244,18 +248,18 @@ def _delta_response(
     trig: list[tuple[float, float, float, float]],
 ) -> list[complex]:
     """The added bass before compression: HP * S * (L - 1), S = 1 when unshaped."""
-    shelf = _filter_response_complex(
+    shelf = filter_response_complex(
         FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost_db), frequencies, trig,
     )
     delta = [low - 1.0 for low in shelf]
     shape = delta_shape(descriptor)
     if shape is not None:
         gain = 10.0 ** (shape.gain_db / 20.0)
-        poles = _biquad_response_complex(_linkwitz_coeffs(shape.poles), trig)
-        zero = _biquad_response_complex(_lowshelf_fo_coeffs(shape.zero), trig)
+        poles = biquad_response_complex(_linkwitz_coeffs(shape.poles), trig)
+        zero = biquad_response_complex(_lowshelf_fo_coeffs(shape.zero), trig)
         delta = [value * gain * p * z for value, p, z in zip(delta, poles, zero)]
     if descriptor.delta_highpass_hz is not None:
-        highpass = _filter_response_complex(
+        highpass = filter_response_complex(
             FilterSpec("delta_highpass", "Highpass", descriptor.delta_highpass_hz, 0.0, SHELF_Q), frequencies, trig,
         )
         delta = [value * hp for value, hp in zip(delta, highpass)]
@@ -266,7 +270,7 @@ def expected_boost_db(
     descriptor: DynamicBassDescriptor, fader_db: float, freqs_hz: Iterable[float],
 ) -> list[float]:
     frequencies = list(freqs_hz)
-    delta = _delta_response(descriptor, loudness_boost_db(fader_db, descriptor), frequencies, _freq_trig(frequencies))
+    delta = _delta_response(descriptor, loudness_boost_db(fader_db, descriptor), frequencies, freq_trig(frequencies))
     return [20.0 * math.log10(abs(1.0 + value)) for value in delta]
 
 
@@ -283,5 +287,5 @@ def dynamic_bass_gain_reserve_db(descriptor: DynamicBassDescriptor, fader_db: fl
         return 20.0 * math.log10(1.0 + delta_ratio * delta_gain)
     steps = int(48 * math.log2(RESPONSE_SAMPLE_RATE_HZ / 2.0)) + 1
     grid = [2.0 ** (step / 48.0) for step in range(steps)]
-    peak = max(abs(value) for value in _delta_response(descriptor, boost, grid, _freq_trig(grid)))
+    peak = max(abs(value) for value in _delta_response(descriptor, boost, grid, freq_trig(grid)))
     return 20.0 * math.log10(1.0 + peak) + _RESERVE_GRID_MARGIN_DB

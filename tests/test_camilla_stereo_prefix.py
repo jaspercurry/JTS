@@ -19,7 +19,7 @@ from __future__ import annotations
 
 # FilterSpec is imported from the neutral contract (not jasper.sound) on
 # purpose: the builder must be usable without depending on the sound package.
-from jasper.camilla_config_contract import FilterSpec, PeqFilter
+from jasper.biquad import FilterSpec, PeqFilter
 from jasper.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
 
 
@@ -168,7 +168,7 @@ def test_zero_delays_emit_nothing():
 def test_emit_filter_spec_dispatches_by_biquad_type():
     # Both shelf types: the fixed Butterworth q + gain, never a slope.
     # SHELF_Q is the number every evaluator in this codebase draws a shelf at,
-    # so it is the honest one to write (see camilla_config_contract.SHELF_Q).
+    # so it is the honest one to write (see biquad.SHELF_Q).
     # A stray `slope` would NOT be caught downstream — CamillaDSP's
     # ShelfSteepness is #[serde(untagged)] and silently ignores it once `q`
     # matches — so the guarantee is structural: FilterSpec carries no

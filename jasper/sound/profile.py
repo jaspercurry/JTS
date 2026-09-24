@@ -29,11 +29,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
-from jasper.camilla_config_contract import (
-    DEFAULT_SAMPLE_RATE as RESPONSE_SAMPLE_RATE_HZ,
+from jasper.biquad import (
     GAINLESS_BIQUAD_TYPES,
-    SHELF_Q,
     FilterSpec,
+    filter_response_db,
+    freq_trig,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,17 +62,6 @@ MAX_Q = 10.0
 # it is meant to be surgical and narrow.
 CUT_MAX_Q = 1.4
 
-# Every shelf is drawn AND emitted at the one Butterworth (non-resonant,
-# no-overshoot) shelf Q, so the preview curve is the curve CamillaDSP realises.
-# Q is therefore not a user control for shelves. Imported, not re-derived: the
-# emitter (jasper.camilla_stereo_prefix.emit_filter_spec) spells this same
-# number into the YAML, and a second literal here is how the two drift.
-#
-# Until 2026-07-27 the emitter wrote ``slope: 6.0`` believing that was
-# Butterworth; it is not (Butterworth is ``slope: 12``), so the realised shelf
-# missed this drawn one by up to 1.7 dB at -11 dB. See
-# jasper.camilla_config_contract.SHELF_Q for the full defect note.
-_SHELF_Q = SHELF_Q
 STOCK_PROFILE_PREFIX = "stock:"
 CUSTOM_PROFILE_PREFIX = "custom_"
 _CUSTOM_PROFILE_ID_RE = re.compile(r"^custom_[a-f0-9]{12}$")
@@ -731,7 +720,7 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
             band = idle
         if band.biquad_type in {"Lowshelf", "Highshelf"}:
             # No steepness field: the emitter spells every shelf at SHELF_Q,
-            # which is the Q _biquad_coeffs draws it at. A band-level Q here
+            # which is the Q biquad_coeffs draws it at. A band-level Q here
             # would be a steepness no evaluator reads.
             specs.append(
                 FilterSpec(
@@ -839,202 +828,22 @@ def build_sound_filter_slots(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     return declared
 
 
-# The clamp floor _biquad_coeffs applies to eff_q below, and the smallest Q
-# jasper.camilla_emit.fmt's "%.4f" spells faithfully into CamillaDSP's YAML
-# (below it the emitter writes "q: 0.0000", a document that fails at apply
-# time). Below this floor an evaluated chain is not the filter that was
-# asked for: the evaluator silently widens it and the emitter silently
-# truncates it.
-EVALUABLE_Q_MIN = 1e-4
-
-# Above this Q, alpha = sin(w0)/(2Q) falls within ~8 orders of f64 epsilon of
-# 1 in the Peaking numerator/denominator's "1 +/- alpha/amp", and the two
-# stop cancelling symmetrically: measured +6.99 dB REALIZED from a requested
-# Q 8e14 CUT (an admitted -3.0 dB), exact unity pole radius by Q 1e16. The
-# ceiling keeps alpha/amp >= ~1e-8 across the audio band, so a cut's |H| <= 1
-# stays true in the arithmetic this module actually does, not only in the
-# algebra that assumes infinite precision.
-EVALUABLE_Q_MAX = 1e6
-
-
-def _biquad_coeffs(
-    biquad_type: str, freq: float, gain_db: float, q: float | None
-) -> tuple[float, float, float, float, float, float]:
-    """RBJ Audio EQ Cookbook biquad coefficients (un-normalised).
-
-    https://www.w3.org/TR/audio-eq-cookbook/ — the same digital biquad
-    family CamillaDSP realises, so the magnitude we draw matches the
-    speaker's actual output for every Q-parameterised type.
-
-    ``q`` is the width the SPEC declares. ``None`` means it declares none, and
-    the shape then falls back to the width the emitter writes for it: the fixed
-    Butterworth ``_SHELF_Q`` for a shelf, 1.0 elsewhere. (Before 2026-07-27 the
-    emitter wrote ``slope: 6.0``, whose realised Q is gain-dependent and NOT
-    Butterworth; Butterworth is ``slope: 12``.) A shelf that DOES declare a q is
-    evaluated at it, because CamillaDSP honours the ``q`` field the graph
-    carries — ``active_speaker.rear_calibration`` admits shelves up to q 1.0 and
-    emits them verbatim, and reading one of those at ``_SHELF_Q`` under-reports
-    its corner peak by up to 0.78 dB per shelf.
-
-    This MUST stay byte-for-byte equivalent to biquadCoeffs() in
-    deploy/assets/sound-profile/js/eq-math.js for every input the /sound/ UI can
-    produce. That UI has no shelf-steepness control (``FilterSpec.q`` is None
-    for a shelf), so the explicit-shelf-q branch is unreachable from it and the
-    JS twin does not carry it. Both are checked against
-    tests/fixtures/peq_response_fixture.json.
-    """
-    w0 = 2.0 * math.pi * max(freq, 1e-6) / RESPONSE_SAMPLE_RATE_HZ
-    cw = math.cos(w0)
-    sw = math.sin(w0)
-    if q is None:
-        q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else 1.0
-    alpha = sw / (2.0 * max(q, EVALUABLE_Q_MIN))
-    if biquad_type == "Lowpass":
-        return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
-    if biquad_type == "Highpass":
-        return ((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
-    if biquad_type == "Notch":
-        return (1.0, -2 * cw, 1.0, 1 + alpha, -2 * cw, 1 - alpha)
-    amp = 10.0 ** (gain_db / 40.0)
-    if biquad_type == "Lowshelf":
-        beta = 2.0 * math.sqrt(amp) * alpha
-        return (
-            amp * ((amp + 1) - (amp - 1) * cw + beta),
-            2 * amp * ((amp - 1) - (amp + 1) * cw),
-            amp * ((amp + 1) - (amp - 1) * cw - beta),
-            (amp + 1) + (amp - 1) * cw + beta,
-            -2 * ((amp - 1) + (amp + 1) * cw),
-            (amp + 1) + (amp - 1) * cw - beta,
-        )
-    if biquad_type == "Highshelf":
-        beta = 2.0 * math.sqrt(amp) * alpha
-        return (
-            amp * ((amp + 1) + (amp - 1) * cw + beta),
-            -2 * amp * ((amp - 1) + (amp + 1) * cw),
-            amp * ((amp + 1) + (amp - 1) * cw - beta),
-            (amp + 1) - (amp - 1) * cw + beta,
-            2 * ((amp - 1) - (amp + 1) * cw),
-            (amp + 1) - (amp - 1) * cw - beta,
-        )
-    # Peaking (default).
-    return (
-        1 + alpha * amp,
-        -2 * cw,
-        1 - alpha * amp,
-        1 + alpha / amp,
-        -2 * cw,
-        1 - alpha / amp,
-    )
-
-
-def _freq_trig(freqs: Iterable[float]) -> list[tuple[float, float, float, float]]:
-    """Per-frequency (cos ω, sin ω, cos 2ω, sin 2ω) at the response rate.
-
-    Depends only on the frequency grid, not on any filter, so a summed
-    response computes it once and reuses it across every band — the trig is
-    the bulk of the per-point cost. Pass the result to _filter_response_db.
-    """
-    table: list[tuple[float, float, float, float]] = []
-    for freq in freqs:
-        w = 2.0 * math.pi * max(float(freq), 1e-6) / RESPONSE_SAMPLE_RATE_HZ
-        table.append((math.cos(w), math.sin(w), math.cos(2.0 * w), math.sin(2.0 * w)))
-    return table
-
-
-def _filter_response_db(
-    spec: FilterSpec,
-    freqs: Iterable[float],
-    trig: list[tuple[float, float, float, float]] | None = None,
-) -> list[float]:
-    """Magnitude response in dB of one biquad across ``freqs``.
-
-    Evaluates |H(e^{jω})| of the RBJ biquad. Cascading is exact in dB
-    (|H1·H2| = |H1|·|H2| ⇒ dB adds), so callers sum per-band results. Pass
-    a shared ``trig`` table (from _freq_trig) to avoid recomputing the
-    per-frequency trig once per band in a multi-band sum.
-    """
-    b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
-        spec.biquad_type, spec.freq, spec.gain, spec.q
-    )
-    if trig is None:
-        trig = _freq_trig(freqs)
-    out: list[float] = []
-    for c1, s1, c2, s2 in trig:
-        num_re = b0 + b1 * c1 + b2 * c2
-        num_im = -(b1 * s1 + b2 * s2)
-        den_re = a0 + a1 * c1 + a2 * c2
-        den_im = -(a1 * s1 + a2 * s2)
-        num = num_re * num_re + num_im * num_im
-        den = den_re * den_re + den_im * den_im
-        out.append(10.0 * math.log10(max(num / den, 1e-12)) if den > 0.0 else 0.0)
-    return out
-
-
-def _filter_response_complex(
-    spec: FilterSpec,
-    freqs: Iterable[float],
-    trig: list[tuple[float, float, float, float]] | None = None,
-) -> list[complex]:
-    """Complex response H(e^{jω}) of one biquad across ``freqs`` — the
-    minimum-phase complement of :func:`_filter_response_db`.
-
-    Same RBJ ``_biquad_coeffs`` SSOT, same ``num``/``den`` construction, so
-    ``|_filter_response_complex(spec, f)| == 10**(_filter_response_db(spec, f)
-    / 20)`` bin-for-bin (pinned by a magnitude-consistency test). The magnitude
-    twin discards phase; this keeps it. That phase is load-bearing wherever a
-    correction is applied to a branch that is then SUMMED with another branch:
-    the emitted CamillaDSP biquads are minimum-phase and rotate phase near
-    their corners, and a crossover's two-branch summation is phase-dominated,
-    so modeling a correction as a zero-phase magnitude scale (``10**(db/20)``)
-    mispredicts the summed response. Measured on JTS3: the zero-phase model
-    mistracked the VERIFY summation by ~2 dB where this complex model tracks it
-    to ~0.5 dB (see ``jasper.active_speaker.linearization_fit.
-    complex_correction_response``). Callers apply it in the LINEAR domain:
-    ``H = H * _filter_response_complex(spec, freqs)``.
-
-    (The ``den == 0`` fallback returns unity, matching the magnitude twin's
-    ``den > 0.0`` guard; a stable biquad has ``a0 > 0`` so it never triggers.
-    Unlike the magnitude twin this does not floor the result at 1e-12 — the
-    floor only bites at unphysical ~-120 dB nulls a peaking/shelf correction
-    never produces, and flooring a complex value would break the phase.)
-    """
-    coeffs = _biquad_coeffs(spec.biquad_type, spec.freq, spec.gain, spec.q)
-    return _biquad_response_complex(coeffs, _freq_trig(freqs) if trig is None else trig)
-
-
-def _biquad_response_complex(
-    coeffs: tuple[float, float, float, float, float, float],
-    trig: list[tuple[float, float, float, float]],
-) -> list[complex]:
-    """Complex response of raw ``(b0, b1, b2, a0, a1, a2)`` over a :func:`_freq_trig` grid."""
-    b0, b1, b2, a0, a1, a2 = coeffs
-    out: list[complex] = []
-    for c1, s1, c2, s2 in trig:
-        num = complex(b0 + b1 * c1 + b2 * c2, -(b1 * s1 + b2 * s2))
-        den = complex(a0 + a1 * c1 + a2 * c2, -(a1 * s1 + a2 * s2))
-        out.append(num / den if den != 0 else complex(1.0, 0.0))
-    return out
-
-
 def response_preview(
     profile: SoundProfile,
     freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,
 ) -> list[dict[str, float]]:
     """Summed magnitude response (dB) for UI preview and headroom.
 
-    Real RBJ biquad magnitude (see _biquad_coeffs), evaluated at
-    RESPONSE_SAMPLE_RATE_HZ so it matches CamillaDSP's actual output for the
-    Q-parameterised types. Shelves are drawn at the fixed Butterworth
-    ``_SHELF_Q``, which is the Q the emitter writes into the shelf's ``q``
-    field, so they match too. Cascading is exact in dB, so per-band results
+    Real RBJ biquad magnitude from :mod:`jasper.biquad`, so it matches
+    CamillaDSP's actual output. Cascading is exact in dB, so per-band results
     sum.
     """
 
     freq_list = [float(freq) for freq in freqs]
-    trig = _freq_trig(freq_list)
+    trig = freq_trig(freq_list)
     totals = [0.0 for _ in freq_list]
     for spec in build_sound_filters(profile):
-        for i, db in enumerate(_filter_response_db(spec, freq_list, trig)):
+        for i, db in enumerate(filter_response_db(spec, freq_list, trig)):
             totals[i] += db
     return [
         {"freq_hz": round(freq, 3), "db": round(db, 3)}

@@ -7,7 +7,7 @@
 // Pure, DOM-free module shared by the live /sound/ graph (main.js) and the
 // node parity check (scripts/check-peq-parity.mjs). It MUST stay
 // byte-for-byte equivalent to the Python reference in
-// jasper/sound/profile.py (_biquad_coeffs / _filter_response_db). Both are
+// jasper/biquad.py (biquad_coeffs / filter_response_db). Both are
 // checked against tests/fixtures/peq_response_fixture.json — drift is a test
 // failure, not a field bug.
 //
@@ -24,7 +24,7 @@ export var GAINLESS_TYPES = ['Highpass', 'Lowpass', 'Notch'];
 
 // Every shelf is drawn AND emitted at this one Butterworth (non-resonant) Q,
 // so Q is not a user control for shelves. The Python twin is
-// jasper.camilla_config_contract.SHELF_Q, which the emitter writes straight
+// jasper.biquad.SHELF_Q, which the emitter writes straight
 // into the shelf's CamillaDSP `q` field. (Before 2026-07-27 the emitter wrote
 // `slope: 6.0` believing it was Butterworth — CamillaDSP's Butterworth is
 // `slope: 12`, and at `slope: 6` the realised Q falls with the shelf's gain,

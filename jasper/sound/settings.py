@@ -41,7 +41,7 @@ from ..volume_floor import (
     VOLUME_FLOOR_MIN_DB,
     normalize_volume_floor_db,
 )
-from jasper.camilla_config_contract import FilterSpec
+from jasper.biquad import FilterSpec
 from .profile import (
     SoundProfile,
     _coerce_bool,

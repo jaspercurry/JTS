@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.camilla_config_contract import PeqFilter
+from jasper.biquad import PeqFilter
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import ParametricBand, SimpleEq, SoundProfile
 

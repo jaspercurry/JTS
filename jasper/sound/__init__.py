@@ -6,7 +6,6 @@
 
 from .profile import (
     CURVE_PRESETS,
-    GAINLESS_BIQUAD_TYPES,
     SIMPLE_BANDS,
     SIMPLE_EQ_FIELDS,
     ParametricBand,
@@ -34,7 +33,6 @@ from .settings import (
 
 __all__ = [
     "CURVE_PRESETS",
-    "GAINLESS_BIQUAD_TYPES",
     "SIMPLE_BANDS",
     "SIMPLE_EQ_FIELDS",
     "ParametricBand",

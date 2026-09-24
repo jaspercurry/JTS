@@ -7,7 +7,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE, FilterSpec, PeqFilter
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.biquad import FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.camilla_stereo_prefix import emit_filter_spec
 
@@ -238,7 +239,7 @@ LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
 # CamillaDSP through ``emit_filter_spec``, which spells the one Butterworth
-# ``camilla_config_contract.SHELF_Q`` — the same Q the fit engine designed the
+# ``biquad.SHELF_Q`` — the same Q the fit engine designed the
 # shelf at and scored its residual with. Both shelf types share it.
 #
 # CamillaDSP's Butterworth is ``slope: 12`` (S = slope/12, S = 1); at

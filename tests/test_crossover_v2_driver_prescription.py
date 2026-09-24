@@ -74,7 +74,7 @@ from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     linearization_filters_by_role,
 )
-from jasper.camilla_config_contract import SHELF_Q
+from jasper.biquad import SHELF_Q
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
@@ -455,7 +455,7 @@ def test_a_declared_band_past_nyquist_is_clamped_not_dropped():
     the evaluator's own limit, and the packet publishes the clamped value so a
     prescriber is shown the band it will actually be judged against.
     """
-    from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+    from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
 
     profile = _draft()["driver_safety_profile"]
     profile["targets"][1]["measurement_band_hz"] = [1000.0, 40000.0]
@@ -865,7 +865,7 @@ def test_the_passband_edges_are_inclusive_and_refuse_by_name(packet, freq, ok):
     (14.0, True, None),
     (100.0, True, None),
     (1e6, True, None),
-    # Below the evaluator's floor: silently clamped by _biquad_coeffs and
+    # Below the evaluator's floor: silently clamped by biquad_coeffs and
     # spelled "q: 0.0000" by the emitter, whatever the gain's sign.
     (5e-5, False, "driver_filter_malformed"),
     (0.0, False, "driver_filter_malformed"),
@@ -932,7 +932,7 @@ def test_a_cut_is_admitted_at_any_depth(packet, gain):
 
 def test_a_gain_that_underflows_f64_is_refused_as_malformed(packet):
     """The evaluability floor, not a depth policy: 10**(-13000/40) is exactly
-    0.0, and _biquad_coeffs divides by it — an uncaught ZeroDivisionError the
+    0.0, and biquad_coeffs divides by it — an uncaught ZeroDivisionError the
     gate must fail closed on rather than let an unevaluable filter through to
     ``_check_composed``."""
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
@@ -3185,7 +3185,7 @@ def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
 
     ``camilla_yaml._emit_driver_linearization_definitions`` builds a shelf's
-    ``FilterSpec`` with no ``q`` at all, and ``profile._biquad_coeffs`` forces
+    ``FilterSpec`` with no ``q`` at all, and ``biquad.biquad_coeffs`` forces
     ``SHELF_Q`` for both shelf types whatever the record says — so a banked
     number that was not that one would be a number nothing in the loop reads.
     The gate writes the emitter's, whether the document states one or not.
@@ -3328,7 +3328,7 @@ def test_a_total_cascade_can_offset_a_filter_above_headroom(packet):
 @pytest.mark.parametrize("trim,room_gain", [(-9.52, 0.0), (0.0, 6.0)])
 @pytest.mark.parametrize("offset", [-0.1, 0.1])
 def test_door_charges_total_program_headroom(packet, trim, room_gain, offset):
-    from jasper.camilla_config_contract import PeqFilter
+    from jasper.biquad import PeqFilter
 
     gain = 40.0 - HEADROOM_MARGIN_DB - trim - room_gain + offset
     document = _document([_boost(gain=gain / 2)] * 2, packet)

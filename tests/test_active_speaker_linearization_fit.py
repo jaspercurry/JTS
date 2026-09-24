@@ -457,11 +457,11 @@ def test_reason_summary_values_are_plain_strings_not_enum_members():
 
 def test_complex_correction_response_magnitude_matches_filter_response_db():
     """Magnitude-consistency parity: ``abs(complex_correction_response)`` equals
-    ``10**(sum of jasper.sound.profile._filter_response_db over filters / 20)``
+    ``10**(sum of jasper.biquad.filter_response_db over filters / 20)``
     bin-for-bin. The complex correction and the emitted graph's magnitude share
-    the ``_biquad_coeffs`` SSOT, so the applied correction's magnitude can never
+    the ``biquad_coeffs`` SSOT, so the applied correction's magnitude can never
     silently drift from what CamillaDSP realizes -- only its phase is added."""
-    from jasper.sound.profile import _filter_response_db
+    from jasper.biquad import filter_response_db
 
     q_shelf = 1.0 / np.sqrt(2.0)
     filters = (
@@ -473,7 +473,7 @@ def test_complex_correction_response_magnitude_matches_filter_response_db():
     H = complex_correction_response(filters, freqs)
     mag_db = np.zeros_like(freqs)
     for f in filters:
-        mag_db = mag_db + np.asarray(_filter_response_db(f, freqs))
+        mag_db = mag_db + np.asarray(filter_response_db(f, freqs))
     np.testing.assert_allclose(np.abs(H), 10.0 ** (mag_db / 20.0), atol=1e-6, rtol=0)
 
 
@@ -517,7 +517,7 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     from jasper.audio_measurement.program_analysis import (
         VERIFY_NOTCH_EXCLUSION_DB, predicted_branch_sum,
     )
-    from jasper.sound.profile import _filter_response_db
+    from jasper.biquad import filter_response_db
 
     fc = 2000.0
     freqs = np.geomspace(500.0, 8000.0, 4096)
@@ -532,7 +532,7 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     # minimum-phase rotation shifts the (near-null) two-branch interference.
     corr = (LinearizationFilter(biquad_type="Peaking", freq=1600.0, q=1.5, gain=-6.0),)
     H_complex = complex_correction_response(corr, freqs)
-    mag_db = np.asarray(_filter_response_db(corr[0], freqs))
+    mag_db = np.asarray(filter_response_db(corr[0], freqs))
     H_zero_phase = 10.0 ** (mag_db / 20.0)  # the OLD model: magnitude, no phase
 
     to_db = lambda z: 20.0 * np.log10(np.maximum(np.abs(z), 1e-12))
@@ -581,12 +581,12 @@ def test_highshelf_matches_sound_profile_reference_implementation():
     against jasper.sound.profile's own general, FilterSpec-dispatched
     implementation (the two are kept separate because their interfaces
     differ -- see this function's own docstring for why)."""
-    from jasper.sound.profile import FilterSpec, _filter_response_db
+    from jasper.biquad import FilterSpec, filter_response_db
 
     freqs = [200.0, 1000.0, 4000.0, 12000.0, 19000.0]
     corner, gain, q = 3000.0, -5.5, 1.0 / np.sqrt(2.0)
     ours = _highshelf_response_db(np.array(freqs), corner, gain, q)
-    reference = _filter_response_db(FilterSpec("x", "Highshelf", corner, gain, q=q), freqs)
+    reference = filter_response_db(FilterSpec("x", "Highshelf", corner, gain, q=q), freqs)
     for a, b in zip(ours, reference):
         assert a == pytest.approx(b, abs=1e-6)
 

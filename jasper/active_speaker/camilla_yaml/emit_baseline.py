@@ -12,12 +12,9 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
-    SHELF_Q,
-    SHELF_Q_EMIT_DECIMALS,
-    FilterSpec,
-    PeqFilter,
     resolve_enable_rate_adjust,
 )
+from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..graph_safety import view_from_yaml_dict

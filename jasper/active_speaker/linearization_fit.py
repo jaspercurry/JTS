@@ -27,8 +27,7 @@ import numpy as np
 
 from jasper.audio_measurement.peq import design_peq, predicted_response
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
-from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q as _HIGHSHELF_Q
 
 from .branch_chain import chain_response, branch_headroom_db
 from .branch_target import (
@@ -94,7 +93,7 @@ _PEAKING_Q_MIN: float = 1.0
 _PEAKING_FLATNESS_TARGET_DB: float = 1.0
 
 # The RBJ Highshelf's fixed Butterworth Q, from
-# ``camilla_config_contract.SHELF_Q`` — the APPLY stage spells this same
+# ``biquad.SHELF_Q`` — the APPLY stage spells this same
 # number into the emitted CamillaDSP ``q``, so this module's model matches
 # what the speaker realizes. Keep in lockstep;
 # ``tests/test_sound_peq_response.py`` pins CamillaDSP's slope<->Q formula.
@@ -342,8 +341,8 @@ def _highshelf_response_db(
     ``freqs_hz`` for a filter designed at ``corner_hz``/``gain_db``/``q``.
 
     The same digital biquad family CamillaDSP realizes, at
-    :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`. Separate from
-    ``sound.profile._filter_response_db`` — Highshelf-only, vectorized,
+    :data:`jasper.biquad.RESPONSE_SAMPLE_RATE_HZ`. Separate from
+    ``biquad.filter_response_db`` — Highshelf-only, vectorized,
     returns an ndarray (the shape this fit loop needs).
     """
     fs = float(RESPONSE_SAMPLE_RATE_HZ)
@@ -544,7 +543,7 @@ def complex_correction_response(
     omitting the filters entirely (measured on JTS3, #1667: 2.0 dB
     mistracking vs. 1.7 dB uncorrected, vs. ~0.5 dB for this complex model).
     Every entry is the exact RBJ biquad CamillaDSP realizes, IMPORTED from
-    :func:`jasper.sound.profile._filter_response_complex` rather than
+    :func:`jasper.biquad.filter_response_complex` rather than
     re-derived. Apply in the LINEAR domain: ``W_lin = W *
     complex_correction_response(...)``.
     """
