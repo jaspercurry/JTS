@@ -191,7 +191,11 @@ def _date_fields(raw_date: str) -> dict[str, str]:
     dt = _parse_rfc2822_date(raw_date)
     if dt is None:
         return {}
-    return {"date": _format_relative_date(dt), "date_iso": dt.isoformat()}
+    try:
+        spoken = _format_relative_date(dt)
+    except OverflowError:  # a parsed date local time cannot hold, e.g. year 9999 at -2359
+        return {}
+    return {"date": spoken, "date_iso": dt.isoformat()}
 
 
 # from / subject / snippet / body are attacker-controllable third-party text:

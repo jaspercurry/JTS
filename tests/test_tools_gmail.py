@@ -169,6 +169,10 @@ def test_decode_body_walks_nested_parts():
 # --- relative-date formatting (pure helper) -----------------------
 
 
+def test_date_fields_are_empty_for_a_date_past_the_calendar():
+    assert gmail_mod._date_fields("Fri, 31 Dec 9999 23:59:59 -2359") == {}
+
+
 def test_format_relative_date_today():
     now = datetime(2026, 5, 9, 14, 0, tzinfo=timezone.utc).astimezone()
     target = datetime(2026, 5, 9, 9, 30, tzinfo=timezone.utc)
