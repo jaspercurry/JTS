@@ -42,7 +42,7 @@ from .audio_health_events import (
     record_counter_events,
     record_raw_events,
 )
-from .audio_incident_view import _present_incident
+from .audio_incident_view import present_incident
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
 from .audio_signal_path import (
@@ -260,7 +260,7 @@ class AudioHealthSampler:
                     "details": [],
                 },
             }
-            snapshot["current_incident"] = _present_incident(
+            snapshot["current_incident"] = present_incident(
                 stale_issue,
                 self._time(),
                 issues,

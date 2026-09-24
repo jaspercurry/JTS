@@ -36,7 +36,7 @@ _ATTRIBUTION_LABELS = {
 ATTRIBUTION_VERDICTS = frozenset(_ATTRIBUTION_LABELS)
 
 
-def _input_attribution(
+def input_attribution(
     airplay: Mapping[str, Any],
     active_source: str | None,
 ) -> dict[str, Any] | None:

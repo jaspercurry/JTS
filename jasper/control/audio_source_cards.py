@@ -37,7 +37,7 @@ _SOURCE_PRIMARY_UNITS = {
 }
 
 
-def _usb_timing(
+def usb_timing(
     route: Mapping[str, Any],
     host_clock: Mapping[str, Any] | None,
     usb_input: Mapping[str, Any] | None = None,
@@ -180,7 +180,9 @@ def _usb_timing(
     }
 
 
-def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, Any]:
+def airplay_sync_timing(
+    airplay: Mapping[str, Any], *, active: bool,
+) -> dict[str, Any]:
     if not active:
         status = "idle"
         headline = "AirPlay idle"
@@ -212,7 +214,7 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
     }
 
 
-def _not_applicable_timing() -> dict[str, Any]:
+def not_applicable_timing() -> dict[str, Any]:
     return {
         "applicable": False,
         "source_id": None,
@@ -262,7 +264,7 @@ def _source_service_summary(
     return None
 
 
-def _source_cards(
+def build_source_cards(
     airplay: Mapping[str, Any],
     signal_path: Mapping[str, Any],
     route: Mapping[str, Any],
@@ -300,11 +302,11 @@ def _source_cards(
                 status = "issue"
         timing: dict[str, Any] | None = None
         if spec.id == Source.AIRPLAY:
-            timing = _airplay_timing(airplay, active=active)
+            timing = airplay_sync_timing(airplay, active=active)
             if active and timing["status"] in {"warn", "unknown"}:
                 status = "warn"
         elif spec.id == Source.USBSINK:
-            timing = _usb_timing(
+            timing = usb_timing(
                 route, host_clock, mapping(inputs.get(source_id)), active=active
             )
             if active and timing["status"] in {"warn", "unknown"}:

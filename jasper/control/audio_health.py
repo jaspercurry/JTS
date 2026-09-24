@@ -32,11 +32,11 @@ from ..service_units import (
 )
 from ._health_fields import mapping as _mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_attribution import _input_attribution
+from .audio_attribution import input_attribution
 from .audio_incident_view import (
-    _incident_is_relevant,
-    _incident_priority,
-    _present_incident,
+    incident_is_relevant,
+    incident_priority,
+    present_incident,
 )
 from .audio_signal_path import (
     _transport_park_signal,
@@ -50,11 +50,11 @@ from .audio_signal_path import (
     undeclared_hardware_signal,
 )
 from .audio_source_cards import (
-    _not_applicable_timing,
-    _source_cards,
-    _usb_timing,
+    build_source_cards,
+    not_applicable_timing,
+    usb_timing,
 )
-from .audio_stream_card import _current_stream, _fresh_dac_delay_ms
+from .audio_stream_card import build_current_stream, fresh_dac_delay_ms
 
 SCHEMA_VERSION = 1
 
@@ -117,7 +117,7 @@ def _incident_context(
     context: dict[str, Any] = {
         "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
         "input": {"rms_dbfs": source_input.get("rms_dbfs")},
-        "output": {"snd_pcm_delay_ms": _fresh_dac_delay_ms(output)},
+        "output": {"snd_pcm_delay_ms": fresh_dac_delay_ms(output)},
         # Why the box could not keep up, frozen with the incident: SoC
         # throttling and memory stall pressure are the two host conditions
         # that starve the audio path without leaving a trace in it.
@@ -127,7 +127,7 @@ def _incident_context(
             "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
         },
     }
-    attribution = _input_attribution(airplay, active_source)
+    attribution = input_attribution(airplay, active_source)
     if attribution is not None:
         context["attribution"] = attribution
     return context
@@ -156,14 +156,14 @@ def _health_prelude(
         signal_path = activity_unavailable_signal()
     fanin = _mapping(_mapping(ap.get("current")).get("fanin"))
     if active_source == Source.USBSINK.value:
-        latency = _usb_timing(
+        latency = usb_timing(
             route_state,
             _mapping(fanin.get("host_clock")) or None,
             _mapping(_mapping(fanin.get("inputs")).get(Source.USBSINK.value)),
             active=True,
         )
     else:
-        latency = _not_applicable_timing()
+        latency = not_applicable_timing()
     return active_source, activity_unknown, signal_path, latency
 
 
@@ -240,7 +240,7 @@ def compose_audio_health(
         signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
-    source_cards = _source_cards(
+    source_cards = build_source_cards(
         ap,
         signal_path,
         route_state,
@@ -304,30 +304,30 @@ def compose_audio_health(
     ongoing_issues = [
         issue for issue in issues
         if issue.get("status") == "ongoing"
-        and _incident_is_relevant(issue, active_source)
+        and incident_is_relevant(issue, active_source)
     ]
     ongoing = max(
         ongoing_issues,
-        key=lambda issue: _incident_priority(issue, active_source),
+        key=lambda issue: incident_priority(issue, active_source),
         default=None,
     )
     current_incident = (
-        _present_incident(ongoing, sampled_at, issues)
+        present_incident(ongoing, sampled_at, issues)
         if ongoing is not None else None
     )
     secondary_ongoing = sorted(
         (issue for issue in ongoing_issues if issue is not ongoing),
-        key=lambda issue: _incident_priority(issue, active_source),
+        key=lambda issue: incident_priority(issue, active_source),
         reverse=True,
     )
     recovered = [
         issue for issue in issues if issue.get("status") == "recovered"
     ]
     recent_incidents = [
-        _present_incident(issue, sampled_at, issues)
+        present_incident(issue, sampled_at, issues)
         for issue in (*secondary_ongoing, *recovered)
     ][:5]
-    current_stream = _current_stream(
+    current_stream = build_current_stream(
         active_source=active_source,
         airplay=ap,
         outputd=outputd,

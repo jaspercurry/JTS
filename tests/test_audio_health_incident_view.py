@@ -269,7 +269,7 @@ def test_input_attribution_rules(
         majflt_per_sec=majflt_per_sec,
     )
 
-    attribution = audio_attribution._input_attribution(airplay, "airplay")
+    attribution = audio_attribution.input_attribution(airplay, "airplay")
 
     assert attribution["verdict"] == expected_verdict
     assert expected_verdict in audio_attribution.ATTRIBUTION_VERDICTS
@@ -281,8 +281,8 @@ def test_input_attribution_is_none_off_the_airplay_source() -> None:
         rx_bytes_per_sec_baseline=1000.0,
     )
 
-    assert audio_attribution._input_attribution(airplay, "usbsink") is None
-    assert audio_attribution._input_attribution(airplay, None) is None
+    assert audio_attribution.input_attribution(airplay, "usbsink") is None
+    assert audio_attribution.input_attribution(airplay, None) is None
 
 
 def test_incident_evidence_keeps_attribution_and_legacy_rows_uncapped() -> None:

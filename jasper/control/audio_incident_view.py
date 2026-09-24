@@ -9,7 +9,7 @@ the dashboard renders: impact sentence, likely area, evidence rows, and the
 :func:`~jasper.control.audio_health.compose_audio_health` and
 :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` are this
 module's only callers; a raw ``IssueTracker``/``IncidentStore`` record never
-reaches a management surface unmapped by :func:`_present_incident`.
+reaches a management surface unmapped by :func:`present_incident`.
 """
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def _incident_duration(issue: Mapping[str, Any], now: float) -> float:
     return max(0.0, end - started)
 
 
-def _present_incident(
+def present_incident(
     issue: Mapping[str, Any],
     now: float,
     history: list[dict[str, Any]],
@@ -208,11 +208,11 @@ def _present_incident(
     return presented
 
 
-def _incident_priority(
+def incident_priority(
     issue: Mapping[str, Any],
     active_source: str | None,
 ) -> tuple[int, int, int, float]:
-    relevant = _incident_is_relevant(issue, active_source)
+    relevant = incident_is_relevant(issue, active_source)
     key = str(issue.get("key") or "")
     return (
         1 if relevant else 0,
@@ -224,7 +224,7 @@ def _incident_priority(
     )
 
 
-def _incident_is_relevant(
+def incident_is_relevant(
     issue: Mapping[str, Any],
     active_source: str | None,
 ) -> bool:

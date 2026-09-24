@@ -21,7 +21,7 @@ from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
 from ._health_fields import as_int, detail_row, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_source_cards import _airplay_timing
+from .audio_source_cards import airplay_sync_timing
 
 
 def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
@@ -60,7 +60,7 @@ def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
     return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
 
 
-def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
+def fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
     delay = finite_number(dac.get("snd_pcm_delay_ms"))
     age = finite_number(dac.get("snd_pcm_delay_sample_age_ms"))
     if (
@@ -112,7 +112,7 @@ def _receiver_latency(
             "DSP queue",
             float(camilla_frames) * 1000.0 / capture_rate,
         ))
-    dac_delay = _fresh_dac_delay_ms(dac)
+    dac_delay = fresh_dac_delay_ms(dac)
     if dac_delay is not None:
         components.append(("DAC presentation queue", float(dac_delay)))
 
@@ -184,7 +184,7 @@ def _reliability(
     return {"summary": "", "detail": "", "details": details}
 
 
-def _current_stream(
+def build_current_stream(
     *,
     active_source: str | None,
     airplay: Mapping[str, Any],
@@ -233,7 +233,7 @@ def _current_stream(
             timing,
         )
     elif active_source == Source.AIRPLAY.value:
-        airplay_timing = _airplay_timing(airplay, active=True)
+        airplay_timing = airplay_sync_timing(airplay, active=True)
         stream["latency"] = {
             "summary": airplay_timing["headline"],
             "detail": airplay_timing["detail"],
@@ -249,7 +249,7 @@ def _current_stream(
             }
     output_rate = as_int(dac.get("sample_rate"))
     output_details: list[dict[str, str]] = []
-    dac_delay = _fresh_dac_delay_ms(dac)
+    dac_delay = fresh_dac_delay_ms(dac)
     if dac_delay is not None:
         output_details.append(detail_row(
             "DAC queue",
