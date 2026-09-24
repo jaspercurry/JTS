@@ -51,7 +51,7 @@ from .audio_signal_path import (
     parked_signal,
     undeclared_hardware_signal,
 )
-from .audio_state_issues import _state_issues
+from .audio_state_issues import state_issues
 from .audio_stream_card import fresh_dac_delay_ms
 from ..output_topology_store import load_output_topology_snapshot
 
@@ -353,14 +353,14 @@ class AudioHealthSampler:
         except RuntimeError:
             logger.debug("audio health source-intent probe failed", exc_info=True)
             intents = None
-        # Computed once here and passed to _state_issues below, so the incident
+        # Computed once here and passed to state_issues below, so the incident
         # rows and the overall headline cannot present a different verdict for
         # the same tick: the raw path.outputd_unavailable row must not
         # contradict the headline when the setup hint wins (#2812).
         undeclared_hardware = undeclared_hardware_signal(
             output_hardware, self._output_topology_snapshot
         )
-        state_issues = _state_issues(
+        issue_rows = state_issues(
             airplay,
             outputd,
             signal_path,
@@ -374,7 +374,7 @@ class AudioHealthSampler:
             transport_park=self._transport_park,
         )
         tracked_state_issues = [
-            issue for issue in state_issues
+            issue for issue in issue_rows
             if not (
                 issue.get("impact") == "availability"
                 and issue.get("source_id") != active_source

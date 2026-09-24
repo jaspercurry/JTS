@@ -38,7 +38,6 @@ from .audio_incident_view import (
     present_incident,
 )
 from .audio_signal_path import (
-    _transport_park_signal,
     activity_truth_unknown,
     activity_unavailable_signal,
     classify_signal_path,
@@ -46,6 +45,7 @@ from .audio_signal_path import (
     parked_signal,
     resolve_active_source,
     stopped_dsp_signal,
+    transport_park_signal,
     undeclared_hardware_signal,
 )
 from .audio_source_cards import (
@@ -108,7 +108,7 @@ def health_prelude(
     sampler's ``_tick`` both need before their two paths diverge: this
     composer layers its cause-naming overrides onto the returned
     ``signal_path``, while the sampler passes this bare version straight to
-    :func:`~jasper.control.audio_state_issues._state_issues` alongside those
+    :func:`~jasper.control.audio_state_issues.state_issues` alongside those
     same overrides as separate arguments.
 
     ``mux`` and ``route_state`` are the already-resolved observations --
@@ -149,7 +149,7 @@ def _named_cause_path(
     for cause in (
         stopped_dsp_signal(ap, service_states),
         parked_signal(route_state),
-        _transport_park_signal(transport_park),
+        transport_park_signal(transport_park),
     ):
         if cause is not None and _yields_to_a_named_cause(signal_path):
             signal_path = cause

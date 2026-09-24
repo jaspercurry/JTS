@@ -15,7 +15,7 @@ it feeds only this classifier.
 
 The cause-naming detectors ``compose_audio_health`` layers onto that verdict
 also live here: a parked transport (:func:`parked_signal`,
-:func:`_transport_park_signal`), a stopped CamillaDSP
+:func:`transport_park_signal`), a stopped CamillaDSP
 (:func:`stopped_dsp_signal`, :func:`camilla_stopped_verdict`), and hardware the
 reconciler has found but the household never declared
 (:func:`undeclared_hardware_signal`). The override SEQUENCE and its guard
@@ -50,7 +50,7 @@ from .transport_eligibility import (
 
 # `classify_signal_path`'s generic "outputd never started" and "fan-in is not
 # reporting" sentences. Written once because
-# `jasper.control.audio_state_issues._state_issues` raises the matching
+# `jasper.control.audio_state_issues.state_issues` raises the matching
 # `path.outputd_unavailable` / `path.fanin_unavailable` incidents from the
 # same two facts and neither pair may drift.
 OUTPUT_ABSENT_TITLE = "The speaker's sound output is not running"
@@ -99,7 +99,7 @@ SIGNAL_PATH_CODES = frozenset({
 #
 # TWO detectors carry it, for the same household fact through different
 # evidence: :func:`parked_signal` (a live transport contradiction) and
-# :func:`_transport_park_signal` (one of ADR-0178's shapes the ring cannot
+# :func:`transport_park_signal` (one of ADR-0178's shapes the ring cannot
 # serve). One sentence, so a household cannot be told two things about a
 # speaker that is silent either way.
 PARKED_HEADLINE = "Sound cannot come out of the speaker"
@@ -468,7 +468,7 @@ def parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _park_detail(parks: Any) -> str:
+def park_detail(parks: Any) -> str:
     """The household sentence for one or more live transport parks.
 
     Composed from :data:`_PARK_MESSAGES` plus the park record's OWN ``issue``
@@ -494,7 +494,7 @@ def _park_detail(parks: Any) -> str:
     return " ".join(messages) if messages else PARKED_DETAIL
 
 
-def _transport_park_signal(
+def transport_park_signal(
     transport_park: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
@@ -503,7 +503,7 @@ def _transport_park_signal(
     transport serves this box and it emits nothing.
 
     Presentation only, like :func:`parked_signal`: the incident rows
-    :func:`~jasper.control.audio_state_issues._state_issues` writes from the
+    :func:`~jasper.control.audio_state_issues.state_issues` writes from the
     same snapshot keep one row per park class, named by its key.
     """
     state = mapping(transport_park)
@@ -513,7 +513,7 @@ def _transport_park_signal(
         "code": "transport_unservable",
         "status": "issue",
         "headline": PARKED_HEADLINE,
-        "detail": _park_detail(state.get("parks")),
+        "detail": park_detail(state.get("parks")),
     }
 
 
@@ -534,7 +534,7 @@ def stopped_dsp_signal(
 
     Presentation only, like :func:`parked_signal`:
     :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` feeds
-    :func:`~jasper.control.audio_state_issues._state_issues` the raw signal
+    :func:`~jasper.control.audio_state_issues.state_issues` the raw signal
     path, so `path.camilla_stopped` keeps its own incident row.
 
     Shares the boot-warmup gate with that issue, so a deploy's coordinated

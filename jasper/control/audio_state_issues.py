@@ -5,7 +5,7 @@
 """The incident-row builder: signal-path and service-state facts, turned into
 one ``/state``/``/system`` audio incident row per condition.
 
-:func:`_state_issues` is what
+:func:`state_issues` is what
 :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` calls every
 fast tick, and what ADR-0178's parked-transport tests
 (:mod:`tests.test_transport_eligibility`) call directly, one row per park
@@ -37,8 +37,8 @@ from .audio_signal_path import (
     PATH_UNREPORTED_DETAIL,
     PATH_UNREPORTED_TITLE,
     STOPPED_DSP_HEADLINE,
-    _park_detail,
     camilla_stopped_verdict,
+    park_detail,
 )
 
 # Signal-path codes whose incident row IS that path shape, so the row carries
@@ -111,7 +111,7 @@ def _park_rows(
             rows.append(_path_row(
                 f"path.transport_park.{park_class}",
                 PARKED_HEADLINE,
-                _park_detail([park]),
+                park_detail([park]),
             ))
     return rows
 
@@ -251,7 +251,7 @@ def _source_service_rows(
     return rows
 
 
-def _state_issues(
+def state_issues(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
     signal_path: Mapping[str, Any],

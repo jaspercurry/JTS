@@ -18,7 +18,6 @@ from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
 
-_VOICE_UNIT = JASPER_VOICE_SERVICE
 _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
     "activating",
     "deactivating",
@@ -47,8 +46,10 @@ def _voice_starting_mic_payload() -> dict[str, Any] | None:
     not "offline". The distinction is drawn here so the landing page stays a
     dumb renderer of /mic state.
     """
-    states = read_unit_states((_VOICE_UNIT,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS)
-    record = (states or {}).get(_VOICE_UNIT) or {}
+    states = read_unit_states(
+        (JASPER_VOICE_SERVICE,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS,
+    )
+    record = (states or {}).get(JASPER_VOICE_SERVICE) or {}
     active_state = str(record.get("active_state") or "")
     if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
         return None
@@ -59,7 +60,7 @@ def _voice_starting_mic_payload() -> dict[str, Any] | None:
         "muted": True,
         "message": "Voice control is restarting",
         "unit": {
-            "name": _VOICE_UNIT,
+            "name": JASPER_VOICE_SERVICE,
             "active_state": active_state,
             "sub_state": record.get("sub_state"),
             "result": record.get("result"),

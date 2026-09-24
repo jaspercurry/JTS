@@ -354,7 +354,7 @@ def record_counter_events(
     """Diff every monotonic counter this sampler watches against the last
     tick's baseline, returning ``(points, clipping_issue, preserve_clipping)``
     -- clipping is singled out because it alone must merge into the SAME
-    tick's ``_state_issues`` rows rather than ride as an independent point,
+    tick's ``state_issues`` rows rather than ride as an independent point,
     and ``preserve_clipping`` tells the caller when a clean baseline
     (first read, a gap, or a counter reset) must not be read as recovery."""
     fanin = mapping(mapping(airplay.get("current")).get("fanin"))
