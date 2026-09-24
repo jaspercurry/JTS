@@ -141,8 +141,7 @@ def packet_index(
         bearings = {(take["pose"].get("deg"), take["pose"].get("elevation_deg"), take["pose"].get("distance_m"))
                     for take in set_takes.takes
                     if take["selected"] and take["pose"].get("kind") == POSE_KIND_BEARING}
-        # The ladder levels every pose on a 2.5-8 kHz band only a full-band take carries.
-        if len(bearings) >= 2 and role == "summed":
+        if len(bearings) >= 2:
             commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", set_id]))
         # One take per pose kind, on-axis first. A take with no curve (a CHECK
         # take plays pilots only) has no band to read.
