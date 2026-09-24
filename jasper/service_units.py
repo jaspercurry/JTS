@@ -199,7 +199,7 @@ def unit_not_running(record: Mapping[str, Any] | None) -> str | None:
       jasper-camilla-recover park).
 
     Shared by :mod:`jasper.control.audio_health` and jasper-doctor's
-    ``_service_state_failure``/``check_camilla_service`` (#2163, ADR-0175).
+    ``service_state_failure``/``check_camilla_service`` (#2163, ADR-0175).
     """
     if record is None:
         return "missing"

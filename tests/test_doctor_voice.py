@@ -853,7 +853,7 @@ def test_check_home_assistant_probe_raised_redacts_credential_shaped_text(
     monkeypatch,
 ):
     """probe_status runs with the live ha_token; a raised exception's text
-    must route through `_exception_detail` (redact + cap) like every other
+    must route through `exception_detail` (redact + cap) like every other
     crash branch, not bare `{e}` — and its literal ha_token pass must catch
     the token even in a shape none of the keyword patterns recognise (no
     `token=`/`Bearer` neighbour), unlike the keyword-matched value alongside

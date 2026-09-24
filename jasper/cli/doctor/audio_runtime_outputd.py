@@ -21,7 +21,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _service_state_failure,
+    service_state_failure,
     systemctl_unavailable_result,
 )
 from .audio_runtime_fanin import (
@@ -658,7 +658,7 @@ def check_outputd_service() -> CheckResult:
     outputd owns the physical DAC, so disabled/inactive is a real audio-path
     failure.
     """
-    service_failure = _service_state_failure(
+    service_failure = service_state_failure(
         "jasper-outputd",
         OUTPUTD_SERVICE,
         missing=REASON_OUTPUTD_UNIT_MISSING,

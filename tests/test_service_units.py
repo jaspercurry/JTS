@@ -90,7 +90,7 @@ def test_unit_predicates_match_read_unit_states_record_shape(
 )
 def test_unit_not_running_reads_the_unit_record(record, code):
     """The one classification :mod:`jasper.control.audio_health` and
-    jasper-doctor's ``_service_state_failure`` share for "this unit is not
+    jasper-doctor's ``service_state_failure`` share for "this unit is not
     doing its job". ``load_state == "error"`` is NOT ``"missing"`` (#2163):
     origin/main's ladder only treats ``"not-found"`` that way."""
     assert service_units.unit_not_running(record) == code

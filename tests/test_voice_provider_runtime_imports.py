@@ -303,7 +303,7 @@ def test_child_output_is_length_capped(monkeypatch, probe):
     result = doctor_voice.check_provider_importable()
     assert result.status == "fail"
     assert "x" * 5000 not in result.detail
-    assert result.detail.count("x") <= doctor_voice._EXCEPTION_DETAIL_LIMIT
+    assert result.detail.count("x") <= doctor_voice.EXCEPTION_DETAIL_LIMIT
 
 
 def test_probe_timeout_warns(monkeypatch, probe):

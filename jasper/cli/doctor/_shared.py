@@ -80,9 +80,9 @@ _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
 # jasper-control can build contract rows without importing this package).
 DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 
-_EXCEPTION_DETAIL_LIMIT = 240
+EXCEPTION_DETAIL_LIMIT = 240
 
-def _exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
+def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
     """Redact + cap an exception's message for a doctor row.
 
     ``literals`` are secret values the caller holds (e.g. a probed
@@ -91,8 +91,8 @@ def _exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> st
     skipped by ``redact_secrets`` itself.
     """
     message = redact_secrets(str(exc), literals=literals)
-    if len(message) > _EXCEPTION_DETAIL_LIMIT:
-        message = message[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    if len(message) > EXCEPTION_DETAIL_LIMIT:
+        message = message[: EXCEPTION_DETAIL_LIMIT - 3] + "..."
     if not message:
         return type(exc).__name__
     return f"{type(exc).__name__}: {message}"
@@ -101,7 +101,7 @@ def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
     return CheckResult(
         name,
         "fail",
-        f"check crashed: {_exception_detail(exc)}",
+        f"check crashed: {exception_detail(exc)}",
         reason=REASON_CHECK_CRASHED,
     )
 
@@ -182,7 +182,7 @@ REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
 _CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
 
 
-def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
+def parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
     """How long ago a park record's epoch stamp was, for the rows both park
     readers render (jasper.control.park_record)."""
     if parked_at is None:
@@ -201,7 +201,7 @@ def run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
 #: 48 kHz, per channel, so rc 0 means open → prepare → transfer → drain all
 #: completed (~0.16 s on a Pi). Every probe's timeout stays a BACKSTOP: a kill
 #: is a FAILURE, since a probe that never finished proved nothing.
-_PROBE_FRAMES = "4800"
+PROBE_FRAMES = "4800"
 
 def _parse_systemd_environment(text: str) -> dict[str, str]:
     """Parse ``systemctl show -p Environment`` output into key/value pairs."""
@@ -250,7 +250,7 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
             return match.group(1).strip().strip("'\"")
     return None
 
-def _group_writable_dir(
+def group_writable_dir(
     st: os.stat_result, *, expected_group: str, require_setgid: bool = True
 ) -> tuple[bool, str]:
     """Whether a non-root process in group ``expected_group`` could create or
@@ -319,7 +319,7 @@ def _parked_as_bonded_follower() -> bool:
         return False
 
 
-def _service_state_failure(
+def service_state_failure(
     label: str,
     unit: str,
     *,
@@ -387,7 +387,7 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
-# NO audio-path unit: `_service_state_failure` (jasper-fanin, jasper-camilla)
+# NO audio-path unit: `service_state_failure` (jasper-fanin, jasper-camilla)
 # and resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
 # record and all) own their runtime state, so one down unit is one fail row.
 _RUNTIME_STATE_UNITS = (
@@ -453,7 +453,7 @@ def _loopback_playback_active() -> bool:
     )
 
 
-def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
+def nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     """Drill a nested dict out of a jasper-control HTTP payload along
     ``keys``, fail-soft to None on any shape mismatch."""
     for key in keys:
@@ -494,13 +494,13 @@ _SIGNAL_PATH_SILENT_CODES = frozenset({
 def _control_audio_health() -> dict[str, Any]:
     from ._evidence import evidence  # lazy: _evidence imports _shared
 
-    return _nested_dict(
+    return nested_dict(
         evidence.control_system_snapshot().payload, "audio_health",
     ) or {}
 
 
 def _signal_path_code(audio_health: dict[str, Any]) -> str:
-    code = (_nested_dict(audio_health, "signal_path") or {}).get("code")
+    code = (nested_dict(audio_health, "signal_path") or {}).get("code")
     return code if isinstance(code, str) else ""
 
 
@@ -509,7 +509,7 @@ def control_signal_path() -> dict[str, Any]:
     when control is unreachable. The block does not always carry a ``code``:
     the sampler's own stale override publishes a codeless "unavailable" shape.
     """
-    return _nested_dict(_control_audio_health(), "signal_path") or {}
+    return nested_dict(_control_audio_health(), "signal_path") or {}
 
 
 def speaker_silence_code() -> str:
@@ -534,7 +534,7 @@ def silence_unobserved() -> bool:
     control reports a healthy path for a box that emits nothing.
     """
     audio_health = _control_audio_health()
-    sampler = _nested_dict(audio_health, "technical", "sampler") or {}
+    sampler = nested_dict(audio_health, "technical", "sampler") or {}
     if sampler.get("warmup_active") is True:
         return True
     code = _signal_path_code(audio_health)

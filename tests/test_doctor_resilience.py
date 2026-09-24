@@ -148,7 +148,7 @@ def test_runtime_state_units_are_queryable_on_the_doctor_roster():
 
 def test_a_failed_camilla_is_exactly_one_fail_row(monkeypatch):
     """One fact, one row: this check no longer tracks the units
-    `_shared._service_state_failure` already owns, so the failed camilla is
+    `_shared.service_state_failure` already owns, so the failed camilla is
     audio_runtime_camilla.check_camilla_service's row alone."""
     monkeypatch.setattr(
         _evidence, "read_unit_states",
@@ -873,7 +873,7 @@ def test_a_failed_outputd_is_exactly_one_fail_row(tmp_path, monkeypatch):
 def test_a_pre_2020_park_stamp_is_named_not_counted(parked_at, shown):
     """A Pi with no RTC stamps 1970 until NTP lands; "2000000000s ago" is
     worse than saying the clock was unset."""
-    assert shown in resilience._parked_ago(parked_at, now=1_800_000_100.0)
+    assert shown in resilience.parked_ago(parked_at, now=1_800_000_100.0)
 
 
 # ------------------------------------------------------------ speaker silence
@@ -952,7 +952,7 @@ def test_a_down_audio_unit_leads_with_silence_only_without_a_control_verdict(
         }}),
     )
 
-    result = _shared._service_state_failure(
+    result = _shared.service_state_failure(
         "jasper-outputd", "jasper-outputd.service",
         missing="m", not_enabled="n", inactive="i",
     )

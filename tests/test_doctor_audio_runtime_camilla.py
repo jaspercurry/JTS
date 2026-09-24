@@ -457,7 +457,7 @@ def test_status_consumers_classify_non_object_root_without_crashing(
 
 # Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path out,
 # so a fail from any of these three means no source can be heard now. They
-# share one systemd ladder, `_shared._service_state_failure`; delete the
+# share one systemd ladder, `_shared.service_state_failure`; delete the
 # guards below when it is replaced.
 _OUTPUT_CHAIN_CHECKS = (
     audio_runtime_fanin.check_fanin_service,

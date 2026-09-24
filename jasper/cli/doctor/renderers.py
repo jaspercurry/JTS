@@ -27,8 +27,8 @@ from ._shared import (
     REASON_HOSTNAME_UNREADABLE,
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
-    _PROBE_FRAMES,
-    _exception_detail,
+    PROBE_FRAMES,
+    exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
     run,
@@ -694,7 +694,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
-            f"could not build Spotify clients: {_exception_detail(e)}. "
+            f"could not build Spotify clients: {exception_detail(e)}. "
             f"This usually means no accounts have OAuth tokens — visit "
             f"{cfg.spotify_setup_url} to link an account.",
             reason=REASON_SPOTIFY_CLIENT_BUILD_FAILED,
@@ -715,7 +715,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             devices = ac.sp.devices()
         except Exception as e:  # noqa: BLE001
             missed_accounts.append(
-                f"{account_name} (devices fetch failed: {_exception_detail(e)})"
+                f"{account_name} (devices fetch failed: {exception_detail(e)})"
             )
             continue
         names = [(d.get("name") or "") for d in devices.get("devices", [])]
@@ -1020,7 +1020,7 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
-#: `timeout(1)`'s kill guard over a `_PROBE_FRAMES` burst: a kill (124) is a
+#: `timeout(1)`'s kill guard over a `PROBE_FRAMES` burst: a kill (124) is a
 #: FAILURE, since a probe that never finished proved nothing.
 _PROBE_TIMEOUT_SEC = "2.0"
 
@@ -1059,7 +1059,7 @@ def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     cannot carry one and exit 0, the marker being fatal where it prints.
 
     Otherwise ONLY a clean exit is success: aplay bounds itself at
-    `_PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
+    `PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
     completed. Everything else failed, 124 included: a killed probe finished
     nothing and proves nothing.
     """
@@ -1082,7 +1082,7 @@ def _probe_open_as_user(
     Why aplay + /dev/zero: it exercises the same code path the renderer uses
     (alsalib's snd_pcm_open through the user-space plugin chain) while writing
     only silence — additive into any mix, so safe while music is playing. The
-    burst is `_PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
+    burst is `PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
     notes before changing either.
     """
     # `env LC_ALL=C` rides INSIDE the command because sudo resets the
@@ -1091,7 +1091,7 @@ def _probe_open_as_user(
         "env", "LC_ALL=C",
         "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
-        "-s", _PROBE_FRAMES,
+        "-s", PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",

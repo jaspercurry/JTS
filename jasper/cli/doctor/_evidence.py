@@ -34,7 +34,7 @@ from ...service_units import (
     read_unit_property,
     read_unit_states,
 )
-from ._shared import _nested_dict
+from ._shared import nested_dict
 from ._shared import install_profile_is_streambox as _install_profile_is_streambox
 
 T = TypeVar("T")
@@ -267,7 +267,7 @@ class Evidence:
         is missing — jasper-control is the only vcgencmd poller (ADR-0226),
         so a wedged sampler cannot report a supply-voltage verdict."""
         snapshot = self.control_system_snapshot()
-        metrics = _nested_dict(snapshot.payload, "metrics")
+        metrics = nested_dict(snapshot.payload, "metrics")
         if metrics is None:
             return None
         sampled_at = metrics.get("last_sample_at")

@@ -27,7 +27,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _service_state_failure,
+    service_state_failure,
     silence_unobserved,
 )
 from .audio_runtime_camilla import _loaded_device_fields
@@ -353,7 +353,7 @@ def check_fanin_service() -> CheckResult:
         them — and the reported reason is the FIRST fault found, not the
         "worst" one.
     """
-    service_failure = _service_state_failure(
+    service_failure = service_state_failure(
         "jasper-fanin service",
         FANIN_SERVICE,
         missing=REASON_FANIN_UNIT_MISSING,

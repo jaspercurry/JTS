@@ -30,9 +30,9 @@ from ._shared import (
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
     control_signal_path,
-    _nested_dict,
+    nested_dict,
     _ONESHOT_RUNTIME_STATE_UNITS,
-    _parked_ago,
+    parked_ago,
     _RUNTIME_STATE_UNITS,
     silence_unobserved,
     speaker_silence_code,
@@ -154,7 +154,7 @@ def check_service_runtime_state() -> CheckResult:
 # state no other row reports. One down unit is one row, so a unit whose own
 # check already names it stays out: nginx and jasper-control belong to
 # `web.check_management_surface`, and the audio-path daemons to
-# `_service_state_failure`, `check_outputd_failure_reconcile_park`,
+# `service_state_failure`, `check_outputd_failure_reconcile_park`,
 # `renderers` and `check_voice_unit_running` below.
 _REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
     "jasper-input.service",
@@ -423,7 +423,7 @@ def _classify_supervisor_snapshots(
 
 
 def _read_resilience_state() -> dict[str, Any] | None:
-    return _nested_dict(evidence.control_state().payload, "resilience")
+    return nested_dict(evidence.control_state().payload, "resilience")
 
 
 @doctor_check()
@@ -467,7 +467,7 @@ def check_supply_voltage() -> CheckResult:
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
-        metrics = _nested_dict(evidence.control_system_snapshot().payload, "metrics")
+        metrics = nested_dict(evidence.control_system_snapshot().payload, "metrics")
         sampled_at = metrics.get("last_sample_at") if metrics else None
         if metrics is not None:
             age = (
@@ -641,7 +641,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
         return CheckResult(
             label, "fail",
             "PARKED — jasper-outputd's stop helper recorded a park "
-            f"{_parked_ago(state.get('parked_at'))} "
+            f"{parked_ago(state.get('parked_at'))} "
             f"(exit_status={state.get('exit_status') or '?'}, "
             f"reason={state.get('park_reason') or '?'}) and nothing retries "
             "it. Fix the output env, then run "
@@ -685,7 +685,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
     last_park = state.get("last_park")
     detail = f"{reader.UNIT} is running and carries no park record"
     if isinstance(last_park, dict):
-        detail += f" (last park {_parked_ago(last_park.get('parked_at'))})"
+        detail += f" (last park {parked_ago(last_park.get('parked_at'))})"
         return CheckResult(label, "ok", detail, reason=REASON_OUTPUTD_PREVIOUSLY_PARKED)
     return CheckResult(label, "ok", detail)
 

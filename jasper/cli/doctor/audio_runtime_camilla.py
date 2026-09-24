@@ -33,9 +33,9 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_MISSING,
     REASON_CAMILLA_CONFIG_UNREADABLE,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
-    _group_writable_dir,
-    _parked_ago,
-    _service_state_failure,
+    group_writable_dir,
+    parked_ago,
+    service_state_failure,
 )
 
 REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
@@ -98,7 +98,7 @@ def check_camilla_service() -> CheckResult:
       - fail when the unit is missing, disabled, or enabled and not active.
     """
     label = "jasper-camilla service"
-    service_failure = _service_state_failure(
+    service_failure = service_state_failure(
         label,
         CAMILLA_SERVICE,
         missing=REASON_CAMILLA_UNIT_MISSING,
@@ -178,7 +178,7 @@ def _camilla_configs_writable_result(
             reason=REASON_CAMILLA_CONFIG_DIR_UNREADABLE,
         )
 
-    writable, group_name = _group_writable_dir(st, expected_group=expected_group)
+    writable, group_name = group_writable_dir(st, expected_group=expected_group)
     mode = st.st_mode & 0o7777
     detail = f"{path} mode={mode:04o} group={group_name}"
     if not writable:
@@ -590,7 +590,7 @@ def check_camilla_recover_park() -> CheckResult:
         detail = "no core-graph recovery park this boot"
         if isinstance(last_park, dict):
             detail += (
-                f" (parked {_parked_ago(last_park.get('parked_at'))}, since "
+                f" (parked {parked_ago(last_park.get('parked_at'))}, since "
                 f"retired: {last_park.get('reason') or '?'})"
             )
         return CheckResult(label, "ok", detail)

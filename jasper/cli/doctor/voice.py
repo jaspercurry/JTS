@@ -27,10 +27,10 @@ from ...voice.provider_state import (
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    _EXCEPTION_DETAIL_LIMIT,
+    EXCEPTION_DETAIL_LIMIT,
     CheckResult,
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
-    _exception_detail,
+    exception_detail,
     run,
 )
 
@@ -328,8 +328,8 @@ def check_provider_importable() -> CheckResult:
     # Arbitrary text from a child's traceback goes through the doctor's
     # redaction + length policy, not straight into the report.
     failure = redact_secrets(failure)
-    if len(failure) > _EXCEPTION_DETAIL_LIMIT:
-        failure = failure[:_EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    if len(failure) > EXCEPTION_DETAIL_LIMIT:
+        failure = failure[:EXCEPTION_DETAIL_LIMIT - 3] + "..."
     return CheckResult(
         "voice provider imports", "fail",
         f"{state.provider} is the active provider but its code will not "
@@ -839,7 +839,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
-            f"probe raised: {_exception_detail(e, literals=(cfg.ha_token,))}",
+            f"probe raised: {exception_detail(e, literals=(cfg.ha_token,))}",
             reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
         )
     if not result.get("connected"):

@@ -21,7 +21,7 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_MISSING,  # noqa: F401 — re-exported, see below
     REASON_CAMILLA_CONFIG_UNREADABLE,  # noqa: F401 — re-exported, see below
     REASON_CAMILLA_STATEFILE_UNREADABLE,  # noqa: F401 — re-exported, see below
-    _group_writable_dir,
+    group_writable_dir,
     run,
     systemctl_unavailable_result,
 )
@@ -341,7 +341,7 @@ def _not_writable_by_group(
     root, and ``os.access`` reports every path writable to the *caller* — root
     can write regardless of a directory's actual mode — so a root:root 0700
     directory reads as "ok" while the dropped ``jasper-web`` writer is locked
-    out. The predicate itself is ``_shared._group_writable_dir``; see its
+    out. The predicate itself is ``_shared.group_writable_dir``; see its
     docstring for the write+search+setgid reasoning."""
     not_writable: list[str] = []
     for p in paths:
@@ -349,7 +349,7 @@ def _not_writable_by_group(
             st = p.stat()
         except OSError:
             continue
-        writable, _ = _group_writable_dir(st, expected_group=expected_group)
+        writable, _ = group_writable_dir(st, expected_group=expected_group)
         if not writable:
             not_writable.append(str(p))
     return not_writable
