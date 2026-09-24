@@ -697,7 +697,7 @@ class SystemRoutes(ControlHandlerMixin):
         # (consistent with the wizards). Anyone already on the
         # trusted WiFi can trigger these; the dashboard's
         # confirm dialogs are UX, not security.
-        parked = _peering._pair_follower_leader_addr() is not None
+        parked = _peering.pair_follower_leader_addr() is not None
         restart_units: list[str] = []
         try_restart_units: list[str] = []
         if self.path == "/system/restart/voice":

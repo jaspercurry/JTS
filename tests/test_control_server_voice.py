@@ -223,7 +223,6 @@ def test_get_mic_reports_voice_starting_when_socket_missing(
     """A restart/provider switch can remove the UDS socket before voice is ready.
     While systemd says jasper-voice is activating, /mic reports a temporary
     starting state instead of the permanent-offline 503 shape."""
-    import jasper.control.handlers.peering as peering_mod
     import jasper.control.handlers.voice as voice_mod
 
     async def missing_socket(_socket_path, _cmd, **_kwargs):
@@ -231,7 +230,7 @@ def test_get_mic_reports_voice_starting_when_socket_missing(
 
     monkeypatch.setattr(voice_mod, "voice_socket_command", missing_socket)
     monkeypatch.setattr(
-        peering_mod,
+        voice_mod,
         "_voice_starting_mic_payload",
         lambda: {
             "status": "starting",
@@ -255,14 +254,13 @@ def test_get_mic_reports_voice_starting_when_socket_missing(
 def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.handlers.peering as peering_mod
     import jasper.control.handlers.voice as voice_mod
 
     async def missing_socket(_socket_path, _cmd, **_kwargs):
         raise FileNotFoundError(_socket_path)
 
     monkeypatch.setattr(voice_mod, "voice_socket_command", missing_socket)
-    monkeypatch.setattr(peering_mod, "_voice_starting_mic_payload", lambda: None)
+    monkeypatch.setattr(voice_mod, "_voice_starting_mic_payload", lambda: None)
 
     base, _fake = server_with_coordinator
     status, body = _get(f"{base}/mic")
@@ -285,10 +283,10 @@ def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
 def test_voice_starting_mic_payload_tracks_transient_systemd_state(
     monkeypatch, active_state, sub_state, starting,
 ):
-    import jasper.control.handlers.peering as srv_mod
+    import jasper.control.handlers.voice as voice_mod
 
     monkeypatch.setattr(
-        srv_mod,
+        voice_mod,
         "read_unit_states",
         lambda units, *, timeout: {
             units[0]: {
@@ -301,7 +299,7 @@ def test_voice_starting_mic_payload_tracks_transient_systemd_state(
         },
     )
 
-    payload = srv_mod._voice_starting_mic_payload()
+    payload = voice_mod._voice_starting_mic_payload()
 
     if not starting:
         assert payload is None
@@ -313,10 +311,10 @@ def test_voice_starting_mic_payload_tracks_transient_systemd_state(
 
 
 def test_voice_starting_mic_payload_is_none_without_systemctl(monkeypatch):
-    import jasper.control.handlers.peering as srv_mod
+    import jasper.control.handlers.voice as voice_mod
 
     monkeypatch.setattr(
-        srv_mod, "read_unit_states", lambda units, *, timeout: None,
+        voice_mod, "read_unit_states", lambda units, *, timeout: None,
     )
 
-    assert srv_mod._voice_starting_mic_payload() is None
+    assert voice_mod._voice_starting_mic_payload() is None

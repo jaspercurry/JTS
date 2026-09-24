@@ -827,7 +827,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     ]
     for cfg, want in cases:
         monkeypatch.setattr(mcfg, "load_config", lambda *a, _c=cfg, **k: _c)
-        assert srv_mod._pair_follower_leader_addr() == want
+        assert srv_mod.pair_follower_leader_addr() == want
 
 
 def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
@@ -849,7 +849,7 @@ def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
         },
     )
 
-    assert srv_mod._pair_follower_leader_addr() is None
+    assert srv_mod.pair_follower_leader_addr() is None
 
 
 @pytest.fixture
@@ -860,7 +860,7 @@ def follower_server(monkeypatch, server_with_coordinator):
     from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
     seen: list = []
 
@@ -934,7 +934,7 @@ def test_follower_forward_failure_is_502_with_leader_named(
     import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
 
     def exploding_request(method, path, **kwargs):
@@ -959,7 +959,7 @@ def test_follower_forward_relays_leader_http_verdict(
     from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
 
     def rejecting_request(method, path, **kwargs):

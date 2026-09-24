@@ -1641,7 +1641,7 @@ def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordin
     daemon on a bonded follower — refuse with the pair story."""
     import jasper.control.handlers.peering as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    monkeypatch.setattr(srv_mod, "pair_follower_leader_addr", lambda: "jts.local")
     base, _fake = server_with_coordinator
     status, body = _post(f"{base}/system/restart/voice", {})
     assert status == 409
@@ -1752,7 +1752,7 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     keeps alive (camilla) — never parked source resources."""
     import jasper.control.handlers.peering as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    monkeypatch.setattr(srv_mod, "pair_follower_leader_addr", lambda: "jts.local")
     calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
     status, _body = _post(f"{base}/system/restart/audio", {})
