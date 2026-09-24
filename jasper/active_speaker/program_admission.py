@@ -781,7 +781,7 @@ def readmit_summed_program_from_wav(
                       program_id=program.program_id, role=target_id, output_index=output,
                       result="excited_output_muted")
             return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
-        # Reserve the maximum lift; admission remains valid across Aux updates.
+        # The bass boost plays in full at every volume (ADR-0359); reserve its lift.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
         requirements = declared[fingerprint]["required_protection_filters"]

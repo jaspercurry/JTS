@@ -130,6 +130,10 @@ async def level_window(
     volume_open = False
     opened_door: OpenMeasurementDoor | None = None
     try:
+        # The plan persists its intent before it reads the fader back; with no household
+        # level to restore, a failed open would latch the emergency floor.
+        if await hold.volume_door.read_household_level_db() is None:
+            raise MeasurementDoorRefused(REFUSE_VOLUME_NOT_OPEN, "the household volume is unreadable")
         try:
             opened = await plan.open(level_db, hold.volume_door)
         except SessionVolumePlanError as exc:
@@ -177,8 +181,9 @@ async def _give_back(
 ) -> SessionVolumeRestoreResult | None:
     """Release the Main claim and close the volume plan inside the graph hold.
 
-    Every step runs even when an earlier one raises. A cleanup failure is
-    attached to the body error, so the original cause remains visible.
+    Every step runs even when an earlier one raises, and the first failure is
+    kept. With a body error, that failure becomes its context unless it already
+    has one, so the original cause stays the one raised.
     """
     first: BaseException | None = None
     result: SessionVolumeRestoreResult | None = None
