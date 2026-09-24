@@ -30,18 +30,23 @@ from jasper.audio_measurement.comparison_bands import (
 )
 from jasper.audio_measurement.frame_fit import fit_frame, FrameComparison
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+from jasper.audio_measurement.level import LevelReading, stimulus_level
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
+    KIND_SUMMED_SWEEP,
+    KIND_SWEEP,
     ExcitationProgram,
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
     PROGRAM_PHASE_VERIFY,
+    segment_emitted_band_hz,
 )
 from jasper.log_event import log_event
 from .check import (
     _aggregate_linearity_ok,
     _aggregate_tri_state_ok,
     _ambient_from_capture,
+    _pilot_ambient_samples,
     _pilot_observations,
     _pilot_verdicts,
     _solve_gain_plan,
@@ -187,7 +192,24 @@ def analyze_program_capture(
             float(discontinuity) if isinstance(discontinuity, (int, float)) else None
         ),
         pilots=pilots, mic_meter_status=mic_meter_status,
+        stimulus_level=_stimulus_level(program, capture, sample_rate, global_offset, locations),
     )
+
+
+def _stimulus_level(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
+    global_offset: int, locations: Sequence[SegmentLocation],
+) -> LevelReading | None:
+    """The located sweeps' level over the pre-pilot room, when they share one band (ADR-0363)."""
+    sweeps = [seg for seg in program.segments if seg.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)]
+    bands = {segment_emitted_band_hz(seg) for seg in sweeps}
+    if len(bands) != 1:
+        return None
+    by_id = {loc.segment_id: loc for loc in locations}
+    stimuli = [capture[loc.located_start:loc.located_start + seg.n_samples]
+               for seg in sweeps if (loc := by_id.get(seg.segment_id)) is not None]
+    return stimulus_level(stimuli, _pilot_ambient_samples(program, capture, global_offset),
+                          sample_rate=sample_rate, band_hz=bands.pop())
 
 
 def _analyze_check(

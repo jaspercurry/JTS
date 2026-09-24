@@ -20,7 +20,8 @@ from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
-from jasper.audio_measurement.ramp import capped_gap_step_db
+from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.active_speaker.program_failure import read_output_volume
@@ -44,8 +45,6 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 #: here, never above the admission bound under its own stop (ADR-0361).
 NEAR_FIELD_TARGET_DB_SPL = 80.0
 NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
-#: The most one level retake raises a take (ADR-0361).
-LEVEL_SOLVE_MAX_RAISE_DB = 15.0
 
 
 def capped_gain_ceilings(
@@ -69,25 +68,29 @@ def level_drift_verdict(
 
 
 class _LevelTarget(NamedTuple):
-    """A near-field take's reading against its target, and the peak it played at."""
+    """A near-field take's reading in dB SPL against its target, and the peak it played at."""
 
-    reading_db_spl: float
+    reading: LevelReading
     target_db_spl: float
     peak_dbfs: float
 
     @property
     def gap_db(self) -> float:
-        return self.target_db_spl - self.reading_db_spl
+        return self.target_db_spl - self.reading.level_db
 
 
-def _level_target(spl: Mapping[str, Any] | None, program: ExcitationProgram | None) -> _LevelTarget | None:
-    """The target a take at one driver's pose is held to, never above the
-    admission bound under its own stop (ADR-0361)."""
-    reading = finite_float((spl or {}).get("max_window_db_spl"))
+def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
+                  program: ExcitationProgram | None) -> _LevelTarget | None:
+    """The take's located sweeps in dB SPL (ADR-0363), held to a target never
+    above the admission bound under its own stop (ADR-0361)."""
+    heard = analysis.stimulus_level
+    sens_factor_db = finite_float((spl or {}).get("sens_factor_db"))
     stop = finite_float((spl or {}).get("ceiling_db_spl"))
     peak = stimulus_peak_dbfs(program) if program is not None else None
-    if reading is None or stop is None or peak is None:
+    if heard is None or sens_factor_db is None or stop is None or peak is None:
         return None
+    to_spl = MicSensitivity(sens_factor_db).db_spl_from_dbfs
+    reading = LevelReading(to_spl(heard.level_db), None if heard.floor_db is None else to_spl(heard.floor_db))
     return _LevelTarget(reading, min(NEAR_FIELD_TARGET_DB_SPL,
                                      spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB), peak)
 
@@ -109,7 +112,7 @@ def assess(
     near_field: bool = False, level_asked_dbfs: float | None = None,
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
-    level = _level_target(kwargs.get("spl"), kwargs.get("program")) if near_field else None
+    level = _level_target(analysis, kwargs.get("spl"), kwargs.get("program")) if near_field else None
     # A take the microphone heard is levelled before its recording is judged; one it
     # did not hear is judged, never levelled blind; one its ceiling held under the peak
     # it asked for is kept too quiet, since a louder retake would replay it (ADR-0361).
@@ -117,11 +120,10 @@ def assess(
               and level.peak_dbfs < level_asked_dbfs)
     if (prior_verdict is None and level is not None and abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB
             and not capped and _stimulus_locate_ok(analysis)):
-        step = capped_gap_step_db(measured_db=level.reading_db_spl, target_db=level.target_db_spl,
-                                  cap_db=LEVEL_SOLVE_MAX_RAISE_DB)
+        solve = solve_gain([(level.peak_dbfs, level.reading)], target_db=level.target_db_spl)
         prior_verdict = TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                                     next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
-                                    next_gain_db=level.peak_dbfs + step)
+                                    next_gain_db=solve.gain_db)
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
     # Removal condition: see the output mute guard in preflight.py.
     if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
@@ -133,7 +135,9 @@ def assess(
     verdict = replace(verdict, screens=[] if verdict.fault == reasons.REASON_MEASUREMENT_OUTPUT_MUTED
                       else pilot_screens(analysis, program=kwargs.get("program")))
     if level is not None:
-        verdict = replace(verdict, evidence={**verdict.evidence, "max_window_db_spl": level.reading_db_spl,
+        floor = level.reading.floor_db
+        verdict = replace(verdict, evidence={**verdict.evidence, "level_db_spl": level.reading.level_db,
+                                             **({"level_floor_db_spl": floor} if floor is not None else {}),
                                              "level_target_db_spl": level.target_db_spl,
                                              **({"level_capped": True} if capped else {})})
         if verdict.next == "retake_louder" and verdict.next_gain_db is not None:
