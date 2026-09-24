@@ -58,6 +58,7 @@ from jasper.source_intent_units import (
     UNIT_ENABLEMENT_VERBS,
     UNIT_STATE_QUERY_TIMEOUT_SEC,
     USB_COUPLING_UNIT,
+    USB_DIRECT_PROBE_TIMEOUT_SEC,
     USB_DIRECT_SETTLE_ATTEMPTS,
     USB_DIRECT_SETTLE_SECONDS,
     unit_action_timeout_sec,
@@ -215,7 +216,7 @@ def _local_sources_allowed() -> bool:
 
 
 def _usb_direct_sample():
-    return extract_direct_sample(read_fanin_status())
+    return extract_direct_sample(read_fanin_status(timeout_sec=USB_DIRECT_PROBE_TIMEOUT_SEC))
 
 
 def _usb_direct_present() -> bool:

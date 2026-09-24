@@ -115,7 +115,7 @@ def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
     server = JsonStatusSocket(
         {"ok": True},
         name="control.sock",
-        accept_delay_seconds=0.35,
+        accept_delay_seconds=0.6,
     )
     with server as socket_path:
         assert read_fanin_status(str(socket_path)) == {"ok": True}

@@ -449,6 +449,24 @@ def test_failed_usb_on_cleanup_budget_matches_its_enumerated_waits() -> None:
     assert units._USB_FAILED_ON_CLEANUP_BUDGET_SEC == enumerated
 
 
+def test_usb_direct_settle_budget_prices_the_reconciler_probe(monkeypatch) -> None:
+    """Each settle attempt is one fan-in STATUS read at the timeout the budget
+    prices, then a settle sleep before the next attempt."""
+    timeouts: list[float] = []
+    monkeypatch.setattr(
+        reconcile,
+        "read_fanin_status",
+        lambda *, timeout_sec: timeouts.append(timeout_sec),
+    )
+
+    assert reconcile._usb_direct_ready() is False
+    assert timeouts == [units.USB_DIRECT_PROBE_TIMEOUT_SEC]
+    assert units._USB_DIRECT_WAIT_BUDGET_SEC == (
+        units.USB_DIRECT_SETTLE_ATTEMPTS * units.USB_DIRECT_PROBE_TIMEOUT_SEC
+        + (units.USB_DIRECT_SETTLE_ATTEMPTS - 1) * units.USB_DIRECT_SETTLE_SECONDS
+    )
+
+
 def test_control_unit_client_bounds_match_packaged_dropins() -> None:
     assert set(units._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC) == set(CONTROL_UNIT_FILES)
     for unit, path in CONTROL_UNIT_FILES.items():
