@@ -33,6 +33,7 @@ from jasper.audio_measurement.impulse_reading import (
 from jasper.audio_measurement.series_stats import band_change_db, curve_difference, deviation_summary
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
+from ..prediction_document import CAPTURE_PREDICTION_KIND
 from .measurement_context import capture_basis, compare_capture_basis
 from .round_captures import PoseCapture, RoundCapturesRefused, capture_row, select_capture
 
@@ -73,14 +74,13 @@ class TakeRead:
     def window(self, window_ms: float | None = None) -> tuple[float, str]:
         """The window to read through, and whose it is: ``argument``, ``take``
         (the analysis's own gate), ``ungated`` (a take the analysis did not
-        gate) or ``retained`` (an ungated take whose impulse ends sooner)."""
-        if window_ms is not None:
-            return float(window_ms), "argument"
+        gate) or ``retained`` (an impulse that ends sooner than any of those)."""
         gate = self.capture.curve.get("gate_window_ms")
-        if isinstance(gate, (int, float)) and gate > 0:
-            return float(gate), "take"
+        wanted, source = ((float(window_ms), "argument") if window_ms is not None
+                          else (float(gate), "take") if isinstance(gate, (int, float)) and gate > 0
+                          else (DEFAULT_POST_ARRIVAL_MS, "ungated"))
         held_ms = 1000.0 * (self.capture.ir.size - 1 - self.capture.peak_idx) / self.capture.sample_rate
-        return (DEFAULT_POST_ARRIVAL_MS, "ungated") if held_ms >= DEFAULT_POST_ARRIVAL_MS else (held_ms, "retained")
+        return (wanted, source) if wanted <= held_ms else (held_ms, "retained")
 
 
 def read_take(round_dir: Path, *, take_id: str, role: str) -> TakeRead:
@@ -213,7 +213,7 @@ def group_delay_report(
 
 @dataclass(frozen=True)
 class PreviewSide:
-    """A driver/blend forecast (``jts_capture_prediction``) read as one side of a comparison."""
+    """A driver/blend forecast read as one side of a comparison."""
 
     freqs_hz: np.ndarray
     predicted_db: np.ndarray
@@ -228,8 +228,8 @@ def read_preview(document: Any) -> PreviewSide:
     """The forecast inside ``jasper-crossover-prescriber judge --preview`` output, or the bare record."""
     preview = document.get("preview", document) if isinstance(document, dict) else None
     try:
-        if not isinstance(preview, dict) or preview.get("kind") != "jts_capture_prediction":
-            raise ValueError("not a jts_capture_prediction document")
+        if not isinstance(preview, dict) or preview.get("kind") != CAPTURE_PREDICTION_KIND:
+            raise ValueError(f"not a {CAPTURE_PREDICTION_KIND} document")
         prediction, summary = preview["prediction"], preview["summary"]
         return PreviewSide(
             freqs_hz=np.asarray(prediction["freqs_hz"], dtype=float),

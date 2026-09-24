@@ -13,32 +13,29 @@ from typing import Any, Callable
 
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
-from jasper.active_speaker.crossover_v2.take_reading import (
-    TakeRead, decay_report, group_delay_report, impulse_report, read_take,
-)
+from jasper.active_speaker.crossover_v2.take_reading import TakeRead, decay_report, group_delay_report, impulse_report
 
 from ._common import (
-    ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _write, add_set_argument, answer,
-    refused_by_name, resolve_set, resolved_out, round_inputs, subject,
+    ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _write, add_set_argument, answer, read_set_take,
+    refused_by_name, resolved_out,
 )
 
 
 def _run(args: argparse.Namespace, report: Callable[[TakeRead], dict[str, Any]], line: str) -> int:
     round_dir = Path(args.round_dir)
-    inputs = round_inputs(round_dir)
-    selected = resolve_set(inputs, args.set)
-    take_id = selected.take_id(args.take)
     try:
-        written_report = report(read_take(round_dir, take_id=take_id, role=args.role))
+        take_subject, read = read_set_take(round_dir, args.set, args.take, args.role)
+        written_report = report(read)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
+    take_id, = take_subject["take_ids"]
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(written_report, args.out,
-                     resolved_out(round_dir, take_artifact_name(spec.artifact, take_id, args.role)),
+                     resolved_out(round_dir, take_artifact_name(spec.artifact, take_id, read.role)),
                      schema=spec.schema)
-    return answer(args.command, schema=spec.schema, subject=subject(inputs, selected, take_ids=[take_id]),
+    return answer(args.command, schema=spec.schema, subject=take_subject,
                   parameters=written_report["parameters"], out=written, **written_report["summary"],
-                  line=f"{line}: {take_id} {args.role} -> {written}")
+                  line=f"{line}: {take_id} {read.role} -> {written}")
 
 
 def _cmd_impulse(args: argparse.Namespace) -> int:
@@ -56,10 +53,9 @@ def _cmd_decay(args: argparse.Namespace) -> int:
 
 def _take_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    add_set_argument(parser)
-    parser.add_argument("--take", help="take id within the set; defaults to the set's on-axis take")
-    parser.add_argument("--role", default="summed",
-                        help="which recorded response: summed, or a driver role the take recorded")
+    add_set_argument(parser, take=True)
+    parser.add_argument("--role", help="which recorded response: summed, or a driver role the take recorded; "
+                                       "default: the set's own")
     parser.add_argument("--out", help="artifact destination")
 
 

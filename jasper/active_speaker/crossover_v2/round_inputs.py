@@ -419,6 +419,11 @@ class SetTakes(NamedTuple):
         return tuple(take["take_id"] for take in self.takes if take["selected"])
 
     @property
+    def role(self) -> str:
+        """The response the set measured: a driver target, or ``summed``."""
+        return str(self.capture_basis.get("role") or "summed")
+
+    @property
     def on_axis(self) -> tuple[Mapping[str, Any], ...]:
         return tuple(take for take in self.takes if take["selected"]
                      and take["pose"].get("kind") == POSE_KIND_BEARING

@@ -19,6 +19,7 @@ from .crossover_v2.round_frequency_view import position_label
 from .crossover_v2.round_inputs import PACKET_FILENAME, PICTURE_FILENAME, SetTakes
 from .measurement_programs import POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE
 from .round_copy import pose_name
+from .round_view_artifacts import PROG
 
 
 def gate_fields(take: Mapping[str, Any]) -> dict[str, Any]:
@@ -60,7 +61,7 @@ def _pose_token(pose: Mapping[str, Any]) -> str:
 
 def _compare(target: Path, a: tuple[str, str, str], b: tuple[str, str, str]) -> str:
     """``compare`` of ``(set, take, role)`` b against a, both in ``target``."""
-    return shlex.join(["jasper-round-views", "compare", str(target),
+    return shlex.join([PROG, "compare", str(target),
                        "--a-set", a[0], "--a-take", a[1], "--a-role", a[2],
                        "--b-set", b[0], "--b-take", b[1], "--b-role", b[2]])
 
@@ -118,31 +119,31 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
                 f"headroom_change_db={number(candidate['headroom_change_db'])}; "
                 f"worst_regression={worst_repr}"
             )
-    lines.append(shlex.join(["jasper-round-views", "rear", str(target)]))
+    lines.append(shlex.join([PROG, "rear", str(target)]))
     return lines
 
 
 def packet_index(
     packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]], manifest: Mapping[str, Any],
 ) -> str:
-    commands = [shlex.join(["jasper-round-views", row["view"], str(target), *(["--set", row["set_id"]] if row.get("set_id") else []),
+    commands = [shlex.join([PROG, row["view"], str(target), *(["--set", row["set_id"]] if row.get("set_id") else []),
                             *(["--incumbent", row["incumbent_set_id"]] if row.get("incumbent_set_id") else [])])
                 for row in views if row["view"] not in ("frequency", "rear")]
     if packet["artifacts"]["frequency_view"]:
-        commands.append(shlex.join(["jasper-round-views", "frequency", packet["artifacts"]["frequency_view"],
+        commands.append(shlex.join([PROG, "frequency", packet["artifacts"]["frequency_view"],
                                    "--image", str(target / PICTURE_FILENAME)]))
-    commands += [shlex.join(["jasper-round-views", "speaker-fit", str(target), "--set", fit["set_id"], "--take", fit["take_id"]])
+    commands += [shlex.join([PROG, "speaker-fit", str(target), "--set", fit["set_id"], "--take", fit["take_id"]])
                  for fit in packet["fits"]]
     rear = measurement_target_id("woofer", "rear")
     roles_by_take: dict[str, dict[str, str]] = {}
     for group in manifest.get("sets", ()):
         set_takes, set_id = SetTakes.from_row(group), group["set_id"]
-        role = str(set_takes.capture_basis.get("role") or "summed")
+        role = set_takes.role
         bearings = {(take["pose"].get("deg"), take["pose"].get("elevation_deg"), take["pose"].get("distance_m"))
                     for take in set_takes.takes
                     if take["selected"] and take["pose"].get("kind") == POSE_KIND_BEARING}
         if len(bearings) >= 2:
-            commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", set_id]))
+            commands.append(shlex.join([PROG, "sweep", str(target), "--scope", "round", "--set", set_id]))
         # One take per pose kind, on-axis first. A take with no curve (a CHECK
         # take plays pilots only) has no band to read.
         firsts: dict[Any, Mapping[str, Any]] = {}
@@ -150,7 +151,7 @@ def packet_index(
             if take["selected"] and take.get("curve"):
                 firsts.setdefault(take["pose"].get("kind"), take)
         for take in firsts.values():
-            commands += [shlex.join(["jasper-round-views", view, str(target), "--set", set_id,
+            commands += [shlex.join([PROG, view, str(target), "--set", set_id,
                                      "--take", take["take_id"], "--role", role])
                          for view in ("impulse", "group-delay", *(("decay",) if role == "summed" else ()))]
             roles_by_take.setdefault(take["take_id"], {})[role] = set_id

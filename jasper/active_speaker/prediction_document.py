@@ -12,6 +12,9 @@ from typing import Any
 from .frequency_reference import band_limited_curve, share_run_reference
 from .frequency_view import FrequencyRun, FrequencySeries, frequency_series
 
+#: The document ``judge --preview`` writes: one take's forecast.
+CAPTURE_PREDICTION_KIND = "jts_capture_prediction"
+
 
 def _identity(
     source: Any, candidate_id: Any, take_path: Any, *, prediction: bool = False,

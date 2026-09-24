@@ -23,6 +23,7 @@ from jasper.active_speaker.round_view_artifacts import (
     context_artifacts as context_artifacts,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
+from jasper.active_speaker.crossover_v2.take_reading import TakeRead, read_take
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundInputs, RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
     resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
@@ -148,6 +149,18 @@ def subject(
         ("round_id", banked.name if banked else None), ("set_id", set_id),
         ("take_ids", None if take_ids is None else list(take_ids)), ("candidate_id", candidate_id),
     ) if value is not None}
+
+
+def read_set_take(
+    round_dir: Path, set_id: str | None, take: str | None, role: str | None,
+) -> tuple[dict[str, Any], TakeRead]:
+    """One take of a set, read as ``role`` or else as the response the set
+    measured, and the subject naming it."""
+    inputs = round_inputs(round_dir)
+    selected = resolve_set(inputs, set_id)
+    take_id = selected.take_id(take)
+    return (subject(inputs, selected, take_ids=[take_id]),
+            read_take(round_dir, take_id=take_id, role=role or selected.role))
 
 
 def calibration_id(calibration: Mapping[str, Any] | None) -> str | None:

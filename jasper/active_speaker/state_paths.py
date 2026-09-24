@@ -58,7 +58,6 @@ def commission_load_state_path(path: str | Path | None = None) -> Path:
     )
 
 
-
 def baseline_config_path(path: str | Path | None = None) -> Path:
     return resolve_state_path(path, BASELINE_CONFIG_PATH_ENV, DEFAULT_BASELINE_CONFIG_PATH)
 

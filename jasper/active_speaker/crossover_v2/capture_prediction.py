@@ -19,6 +19,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
+from jasper.active_speaker.prediction_document import CAPTURE_PREDICTION_KIND
 from jasper.output_topology import measurement_target_id
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
@@ -254,7 +255,7 @@ def capture_prediction(
         "prediction": {key: value for key, value in predicted.to_dict().items() if key != "take_path"},
     })
     return {
-        "schema_version": 1, "kind": "jts_capture_prediction", "summary": summary,
+        "schema_version": 1, "kind": CAPTURE_PREDICTION_KIND, "summary": summary,
         "prediction": predicted.to_dict(), "reconstruction": reconstruction,
         "relative_graph": changes.to_dict() if changes is not None else None,
         "limitations": [

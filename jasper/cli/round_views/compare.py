@@ -14,21 +14,14 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview, read_take,
+    REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview,
 )
 from jasper.cli._refusal import EXIT_UNREADABLE
 
 from ._common import (
-    ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _write, add_set_argument, answer,
-    refused_by_name, resolve_set, resolved_out, round_inputs, subject,
+    ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _write, add_set_argument, answer, read_set_take,
+    refused_by_name, resolved_out,
 )
-
-
-def _side(round_dir: Path, set_id: str | None, take: str | None, role: str) -> tuple[dict[str, Any], Any]:
-    inputs = round_inputs(round_dir)
-    selected = resolve_set(inputs, set_id)
-    take_id = selected.take_id(take)
-    return subject(inputs, selected, take_ids=[take_id]), read_take(round_dir, take_id=take_id, role=role)
 
 
 def _cmd_compare(args: argparse.Namespace) -> int:
@@ -40,7 +33,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         return refused_by_name(REFUSE_PREVIEW_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
     try:
-        b_subject, b = _side(b_round, args.b_set, args.b_take, args.b_role)
+        b_subject, b = read_set_take(b_round, args.b_set, args.b_take, args.b_role)
         if preview_document is not None:
             preview = read_preview(preview_document)
             report = compare_preview_report(preview, b, smoothing_fraction=args.smoothing,
@@ -48,7 +41,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             a_subject: dict[str, Any] = {"candidate_id": preview.candidate_id}
             a_label = "preview"
         else:
-            a_subject, a = _side(Path(args.source_a), args.a_set, args.a_take, args.a_role)
+            a_subject, a = read_set_take(Path(args.source_a), args.a_set, args.a_take, args.a_role)
             report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,
                                     points_per_octave=args.points_per_octave, remove_level=args.remove_level)
             a_label = f"{a.capture.capture_id}-{a.role}"
@@ -70,8 +63,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("source_b", metavar="<round-b>", nargs="?", help="side B's round; default: side A's")
     for side in ("a", "b"):
         add_set_argument(parser, name=f"--{side}-set", take=True)
-        parser.add_argument(f"--{side}-role", default="summed",
-                            help=f"side {side.upper()}'s recorded response: summed, or a driver role")
+        parser.add_argument(f"--{side}-role",
+                            help=f"side {side.upper()}'s recorded response: summed, or a driver role; "
+                                 "default: its set's own")
     parser.add_argument("--a-preview", metavar="PREVIEW.json",
                         help="side A is this forecast (judge --preview --out), read through its own window")
     parser.add_argument("--window-ms", type=float,
