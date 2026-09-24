@@ -4430,7 +4430,7 @@ class _RecordingEvidenceStore:
 
     def publish_json_artifact(self, relpath, payload):
         self.published.append((relpath, payload))
-        return SimpleNamespace(fingerprint="fp-check")
+        return SimpleNamespace(fingerprint="fp-check", byte_size=0)
 
     def identify_artifact(self, relpath):
         return SimpleNamespace(relative_path=relpath, fingerprint="fp-check")
