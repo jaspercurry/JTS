@@ -120,12 +120,6 @@ logger = logging.getLogger(__name__)
 # app.css itself; page CSS rides in via page_css_href.
 WAKE_PAGE_CSS_HREF = "/assets/wake/wake.css"
 
-# Compiled-in default mirrored from jasper/config.py:_validate.
-# Tests + `_active_threshold` reference it; the slider's min/max/step
-# constants live inline in the rendered HTML (no Python tests exercise
-# them so a duplicate Python constant would just rot).
-DEFAULT_WAKE_THRESHOLD = 0.3
-
 
 # ----------------------------------------------------------------------
 # State helpers — pure where possible.
@@ -149,29 +143,6 @@ def _active_model(state: dict[str, str]) -> str:
     if val:
         return val
     return os.environ.get("JASPER_WAKE_MODEL", "").strip() or "hey_jarvis"
-
-
-def _active_threshold(state: dict[str, str]) -> float:
-    """The wake threshold the daemon would actually load right now.
-
-    Same precedence ladder as `_active_model`: wizard-managed env file
-    wins over process env (systemd-merged /etc/jasper/jasper.env) wins
-    over the compiled default. Malformed values fall through to the
-    next layer rather than crashing the page — the daemon's validator
-    catches genuinely-broken values at startup.
-    """
-    for source in (state.get("JASPER_WAKE_THRESHOLD", ""),
-                   os.environ.get("JASPER_WAKE_THRESHOLD", "")):
-        raw = source.strip()
-        if not raw:
-            continue
-        try:
-            val = float(raw)
-        except ValueError:
-            continue
-        if 0.0 <= val <= 1.0:
-            return val
-    return DEFAULT_WAKE_THRESHOLD
 
 
 # ----------------------------------------------------------------------

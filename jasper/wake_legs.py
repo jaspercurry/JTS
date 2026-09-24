@@ -135,13 +135,7 @@ REGISTRY: tuple[LegSpec, ...] = (
 )
 
 
-_BY_NAME = {leg.name: leg for leg in REGISTRY}
 _BY_TOKEN = {leg.token: leg for leg in REGISTRY}
-
-
-def by_name(name: str) -> LegSpec:
-    """Look up a leg by its code slug. Raises ``KeyError`` on miss."""
-    return _BY_NAME[name]
 
 
 def by_token(token: str) -> LegSpec:

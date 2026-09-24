@@ -83,17 +83,14 @@ def test_corpus_legs_are_not_wake_inputs():
         assert wake_legs.by_token(token).wake_input is False
 
 
-def test_by_token_and_by_name_round_trip():
+def test_by_token_round_trip():
     for leg in wake_legs.REGISTRY:
         assert wake_legs.by_token(leg.token) is leg
-        assert wake_legs.by_name(leg.name) is leg
 
 
-def test_lookups_raise_keyerror_on_miss():
+def test_lookup_raises_keyerror_on_miss():
     with pytest.raises(KeyError):
         wake_legs.by_token("nope")
-    with pytest.raises(KeyError):
-        wake_legs.by_name("nope")
 
 
 def test_wake_ports_constants_derive_from_registry():

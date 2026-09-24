@@ -84,7 +84,6 @@ logger = logging.getLogger("jasper-wake-corpus-web")
 # Recorder-backend constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_OUTPUT_DIR = Path("data/enrollment_positives")
 DEFAULT_METADATA_SUBDIR = "metadata"
 ACTIVE_SESSION_MARKER = ".active_session.json"
 # Crash-safety marker for corpus test mode. Entering test mode stops
