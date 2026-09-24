@@ -528,16 +528,17 @@ async def test_commissioning_uses_current_draft_and_checks_protection_before_cle
 async def test_commissioning_and_declaration_refuse_unusable_routes(monkeypatch, commissioning_box, route, code):
     from dataclasses import replace
     from jasper import output_topology
+    from jasper.active_speaker import playback_route
     from jasper.active_speaker.measurement_emit import load_tuning_declaration, MeasurementGraphRefused
     from jasper.web import sound_active_speaker as web
 
     topology, cam = commissioning_box
     declaration = load_tuning_declaration(topology)
     if route in {"narrow", "missing"}:
-        dac = output_topology._dac_by_id(topology.hardware.device_id)
+        dac = playback_route._dac_by_id(topology.hardware.device_id)
         dac = replace(dac, supports_active_outputd_lane=route == "narrow",
                       active_outputd_lane_channels=1 if route == "narrow" else None)
-        monkeypatch.setattr(output_topology, "_dac_by_id", lambda _: dac)
+        monkeypatch.setattr(playback_route, "_dac_by_id", lambda _: dac)
     else:
         monkeypatch.setenv(output_topology.ACTIVE_PLAYBACK_DEVICE_ENV,
                           declaration.playback_device if route == "saved_ring" else "hw:CARD=DAC,DEV=0")

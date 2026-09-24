@@ -59,11 +59,11 @@ from jasper.fanin_coupling import (
     ring_active_endpoint_armed,
     resolve_ring_wire,
 )
+from jasper.active_speaker.playback_route import resolve_output_layout
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
-    resolve_output_layout,
 )
 from jasper.output_topology_store import save_output_topology
 

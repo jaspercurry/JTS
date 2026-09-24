@@ -523,7 +523,7 @@ def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> N
     no device) rather than building a lane-less topology: the rule under test is
     "the surface honours a no-device answer", and a hand-built fixture would pin
     the fixture instead. The real branch this stands in for is
-    `output_topology.resolve_output_layout`'s fall-through, which returns
+    `playback_route.resolve_output_layout`'s fall-through, which returns
     `playback_device=None` for a profile with no active outputd lane — reachable,
     not theoretical.
     """
