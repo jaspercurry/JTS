@@ -69,6 +69,8 @@ Given Boundary Lab and a solved case of the cabinet from the CAD repo, [`scripts
 
 Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibration. Fix the named fault's action, then continue with the same loop. After an apply timeout, inspect saved state before another write. A losing candidate stays banked.
 
+Each take banks how the playback route's counters moved across its capture in `capture_integrity.playback_path` (fan-in lane xruns and catch-ups, ring waits and drops, outputd empty periods, DAC xruns), and the journal logs one `event=active_speaker.take_playback_path` line per take, at warning level when a fault counter moved.
+
 <!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->
 | Tool | Does | Authority | Where |
 |---|---|---|---|

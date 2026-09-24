@@ -16,6 +16,7 @@ from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationProgram
 from jasper.audio_measurement.snr_policy import framed_ambient_band_report
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder, select_capture_channel
+from jasper.platform.route_health import snapshot_route_health
 
 from .auto_level import reading_budget
 from .capture_provenance import stimulus_peak_dbfs
@@ -55,6 +56,7 @@ class SweepLevelReader:
         self._last: tuple[tuple[bool, float], ProgramForStimulus] | None = None
         self.capture = WiredStimulusCapture(
             device=device, bundle_dir=Path(store.bundle_dir), spl_monitor=monitor,
+            read_route_health=snapshot_route_health,
         )
         self.spec = MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id=candidate.fingerprint)
         self.compose: Any = bind_program_composer(

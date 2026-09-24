@@ -10,6 +10,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
+from jasper.platform.route_health import snapshot_route_health
 
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 
@@ -131,6 +132,7 @@ def _wired_stimulus_capture(
         device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
         setup_reference=lambda: setup_from_hint(v2evidence.default_setup_calibration_for_v2()),
         spl_monitor=spl_monitor, read_loudness_volume_db=read_loudness_volume_db,
+        read_route_health=snapshot_route_health,
     )
 
 
