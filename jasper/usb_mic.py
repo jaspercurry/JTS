@@ -24,7 +24,7 @@ from .atomic_io import (
     read_json_mapping,
     read_regular_bytes_nofollow,
 )
-from .json_fields import as_mapping as _mapping
+from .json_fields import as_float, as_mapping as _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
 from .music_sources import Source
@@ -221,15 +221,6 @@ def _status_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _status_optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _status_text(value: Any) -> str:
     return str(value or "")
 
@@ -242,10 +233,10 @@ _RELAY_REPORT_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
     ("source_age_sample_count", _status_int),
     ("source_age_samples_appended", _status_int),
     ("source_age_window_generation", _status_int),
-    ("source_age_window_started_epoch_sec", _status_optional_float),
-    ("source_age_ms_p50", _status_optional_float),
-    ("source_age_ms_p95", _status_optional_float),
-    ("source_age_ms_p99", _status_optional_float),
+    ("source_age_window_started_epoch_sec", as_float),
+    ("source_age_ms_p50", as_float),
+    ("source_age_ms_p95", as_float),
+    ("source_age_ms_p99", as_float),
     ("packets_lost", _status_int),
     ("sequence_resets", _status_int),
     ("sequence_reorders", _status_int),
@@ -254,8 +245,8 @@ _RELAY_REPORT_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
     ("periods_dropped_idle", _status_int),
     ("drop_regime_basis", _status_text),
     ("periods_dropped", _status_int),
-    ("writer_fill_ms", _status_optional_float),
-    ("writer_target_ms", _status_optional_float),
+    ("writer_fill_ms", as_float),
+    ("writer_target_ms", as_float),
     ("writer_pcm_rate_hz", _status_int),
     ("writer_pcm_period_frames", _status_int),
     ("writer_pcm_buffer_frames", _status_int),
