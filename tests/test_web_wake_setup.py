@@ -47,7 +47,7 @@ def _stage_bundled_assets(monkeypatch, tmp_path: Path) -> None:
         path.write_bytes(b"model")
         return path
 
-    monkeypatch.setattr(wake_setup, "_bundled_asset_path", fake_path)
+    monkeypatch.setattr(wake_setup.wake_models, "_bundled_asset_path", fake_path)
 
 
 # ----------------------------------------------------------------------
@@ -147,51 +147,6 @@ def test_render_custom_row_when_active_model_off_registry():
     html = _render({"JASPER_WAKE_MODEL": "/abs/path/to/custom.onnx"})
     assert "Custom:" in html
     assert "custom.onnx" in html
-
-
-# ----------------------------------------------------------------------
-# Pure save-logic — behaviour preserved.
-# ----------------------------------------------------------------------
-
-
-def test_apply_save_rejects_empty_selection():
-    new, err = wake_setup._apply_save({}, {})
-    assert err is not None
-    assert new == {}
-
-
-def test_apply_save_rejects_custom_token():
-    new, err = wake_setup._apply_save({"model": "__custom__"}, {})
-    assert err is not None
-
-
-def test_apply_save_rejects_unknown_model():
-    new, err = wake_setup._apply_save({"model": "nope-not-real"}, {})
-    assert err is not None
-
-
-def test_apply_save_rejects_undownloaded_model():
-    # A non-bundled model whose .onnx is absent on disk is rejected with a
-    # re-deploy hint (this is the jarvis_v2 default on a fresh dev box).
-    nonbundled = next(
-        (e for e in wake_setup.wake_models.REGISTRY if not e.bundled), None
-    )
-    if nonbundled is None:
-        return  # registry is all-bundled; nothing to assert
-    new, err = wake_setup._apply_save({"model": nonbundled.key}, {})
-    assert err is not None
-    assert "deploy" in err
-
-
-def test_apply_save_preserves_existing_threshold(monkeypatch, tmp_path):
-    _stage_bundled_assets(monkeypatch, tmp_path)
-    entry = _bundled_entry()
-    current = {"JASPER_WAKE_THRESHOLD": "0.42"}
-    new, err = wake_setup._apply_save({"model": entry.key}, current)
-    assert err is None
-    assert new["JASPER_WAKE_MODEL"] == entry.model
-    # The slider's value (written separately) must survive a model save.
-    assert new["JASPER_WAKE_THRESHOLD"] == "0.42"
 
 
 # ----------------------------------------------------------------------

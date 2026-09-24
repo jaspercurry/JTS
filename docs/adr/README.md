@@ -199,6 +199,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0270](0270-state-is-the-daemons-posture-and-a-health-fact-is-a-snapshot.md) | `/state` is the daemon's posture, and a health fact is a snapshot | accepted |
 | [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | superseded by 0349 |
 | [0349](0349-jasper-heal-is-deleted.md) | jasper-heal is deleted | accepted |
+| [0350](0350-agents-change-settings-through-the-owner-function-and-jasper-settings.md) | Agents change settings through the owner function and `jasper-settings` | accepted |
 
 ## Web & UI
 

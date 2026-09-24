@@ -8,7 +8,8 @@ One source of truth, consumed by three callers:
   - `install.sh` decides which openWakeWord package assets and
     non-bundled `.onnx` files to fetch.
   - The `/assistant/wake/` web wizard (`jasper/web/wake_setup.py`) renders one
-    row per entry so the household can flip models without SSH.
+    row per entry, and it and `jasper-settings wake` switch models through
+    `select_wake_model`, the selection's one writer (ADR-0350).
   - The voice daemon's `Config.wake_model` resolves the active
     selection (a registry key OR a raw path/stock name the operator
     set by hand) into something `WakeWordDetector` can load.
@@ -37,16 +38,21 @@ Adding a model:
 """
 from __future__ import annotations
 
+import importlib.util
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_text, locked_update_env_file
+from jasper.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.model_downloads import StageAsset
+
+logger = logging.getLogger(__name__)
 
 
 # Persisted at /var/lib/jasper/wake_model.env. The systemd unit for
@@ -54,9 +60,9 @@ if TYPE_CHECKING:
 # written values win over operator-managed defaults — same pattern as
 # voice_provider.env and spotify_credentials.env.
 WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
-#: Written by both the /assistant/wake/ wizard (model picker) and
-#: jasper-control's sensitivity slider endpoint (JASPER_WAKE_THRESHOLD).
-WAKE_MODEL_ENV_OWNER = "JTS /assistant/wake wizard"
+#: Also the header of jasper-control's sensitivity-slider write
+#: (JASPER_WAKE_THRESHOLD), which the /assistant/wake/ page drives too.
+WAKE_MODEL_ENV_OWNER = "jasper.wake_models; change it at /assistant/wake/ or with jasper-settings"
 
 # Where install.sh stages downloaded non-bundled models. Files here
 # survive package reinstalls because they live under /var/lib, not
@@ -77,8 +83,8 @@ class WakeModelEntry:
         loaded by file path. The path MUST exist at daemon startup
         or the daemon will fail to start (caught at install time:
         install.sh seeds wake_model.env only when the file is
-        present, and the wizard's _available_models() filter hides
-        rows whose file isn't downloaded yet).
+        present, and `is_available()` keeps a row whose file isn't
+        downloaded yet from being selected).
 
     `fa_per_hour` is the trainer/author's published self-report — not
     independently measured. Treat as ballpark, not guarantee.
@@ -360,6 +366,89 @@ def default() -> WakeModelEntry:
             "update jasper/wake_models.py"
         )
     return entry
+
+
+# ---- Selecting a model (ADR-0350) ---------------------------------------
+
+def is_available(entry: WakeModelEntry) -> bool:
+    """Return whether the model can be selected without crashing voice.
+
+    Bundled openWakeWord names are install-owned package resources. We
+    check their resource path via importlib metadata rather than importing
+    openwakeword on every page render. External files have to exist on
+    disk to be loadable; a missing file means a failed install-time
+    download, flagged in the UI so the household knows what's going on.
+    """
+    if entry.bundled:
+        asset_path = _bundled_asset_path(entry)
+        if asset_path is None:
+            return False
+        try:
+            return asset_path.is_file() and asset_path.stat().st_size > 0
+        except OSError:
+            return False
+    return os.path.exists(entry.model)
+
+
+def _bundled_asset_path(entry: WakeModelEntry) -> Path | None:
+    asset = openwakeword_asset_by_key(entry.key)
+    if asset is None:
+        return None
+    spec = importlib.util.find_spec("openwakeword")
+    if spec is None or spec.origin is None:
+        return None
+    return Path(spec.origin).resolve().parent / "resources" / "models" / asset.filename
+
+
+class WakeModelRefused(ValueError):
+    """:func:`select_wake_model` declined; ``reason`` is the slug a front end prints."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class WakeSelection:
+    """The entry :func:`select_wake_model` selected, and the sensitivity the
+    file still carries (``""`` when unset)."""
+
+    entry: WakeModelEntry
+    threshold: str
+
+
+def select_wake_model(
+    key: str, *, via: str, client: str | None = None, path: str | None = None,
+) -> WakeSelection:
+    """Select the registry entry ``key`` names for every front end.
+
+    Refuses (:class:`WakeModelRefused`) a key outside the registry and a model
+    not on this speaker. Only ``JASPER_WAKE_MODEL`` is written, under the lock
+    the sensitivity slider's writer shares, so its threshold survives. ``via``
+    names the front end on the ``event=wake.model`` line. Raises OSError when
+    the file cannot be written.
+    """
+    entry = by_key(key)
+    if entry is None:
+        raise WakeModelRefused(
+            "unknown_model",
+            f"Unknown model: {key!r}. Choose one of: "
+            f"{', '.join(e.key for e in REGISTRY)}.",
+        )
+    if not is_available(entry):
+        raise WakeModelRefused(
+            "not_downloaded",
+            f"{entry.label} isn't downloaded yet on this speaker. Re-run "
+            "`bash scripts/deploy-to-pi.sh` to fetch it, then try again.",
+        )
+    state = locked_update_env_file(
+        path or WAKE_MODEL_FILE,
+        {"JASPER_WAKE_MODEL": entry.model},
+        mode=0o644,
+        owner=WAKE_MODEL_ENV_OWNER,
+    )
+    log_event(logger, "wake.model", model=entry.model, via=via, client=client)
+    return WakeSelection(entry, state.get("JASPER_WAKE_THRESHOLD", ""))
 
 
 # ---- install.sh staging (jasper.model_downloads is a leaf; this registry

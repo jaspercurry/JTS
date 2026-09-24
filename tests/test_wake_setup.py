@@ -7,11 +7,13 @@
 Two layers:
   1. `jasper.wake_models` — registry sanity. Entries can't all be
      bundled (we need at least one downloadable to install), the
-     default has to be in the registry, lookup helpers behave.
-  2. `jasper.web.wake_setup` — save validation (the registry is the
-     allowlist; unavailable models can't be selected; "__custom__"
-     can't be persisted) plus HTML render correctness (active row
-     gets the active badge, unavailable rows get disabled).
+     default has to be in the registry, lookup helpers behave, and
+     availability tracks the staged model file.
+  2. `jasper.web.wake_setup` — a save `select_wake_model` refuses (the
+     registry is the allowlist; unavailable models can't be selected;
+     "__custom__" can't be persisted) writes nothing, plus HTML render
+     correctness (active row gets the active badge, unavailable rows
+     get disabled).
 
 The HTTP handler itself is exercised end-to-end via ThreadingHTTPServer
 on a random port to match `tests/test_voice_setup.py`.
@@ -50,7 +52,7 @@ def _stage_bundled_asset(
             path.write_bytes(b"model")
         return path
 
-    monkeypatch.setattr(wake_setup, "_bundled_asset_path", fake_path)
+    monkeypatch.setattr(wake_models, "_bundled_asset_path", fake_path)
 
 
 # ---------- Registry sanity -----------------------------------------------
@@ -251,14 +253,14 @@ def test_is_available_for_present_bundled_asset(monkeypatch, tmp_path: Path):
     _stage_bundled_asset(monkeypatch, tmp_path)
     entry = wake_models.by_key("hey_jarvis")
     assert entry is not None
-    assert wake_setup._is_available(entry) is True
+    assert wake_models.is_available(entry) is True
 
 
 def test_is_available_for_missing_bundled_asset(monkeypatch, tmp_path: Path):
     _stage_bundled_asset(monkeypatch, tmp_path, present=False)
     entry = wake_models.by_key("hey_jarvis")
     assert entry is not None
-    assert wake_setup._is_available(entry) is False
+    assert wake_models.is_available(entry) is False
 
 
 def test_is_available_for_missing_external_file(tmp_path: Path):
@@ -272,7 +274,7 @@ def test_is_available_for_missing_external_file(tmp_path: Path):
         source_url="https://example.invalid",
         download_url="https://example.invalid/x.onnx",
     )
-    assert wake_setup._is_available(fake) is False
+    assert wake_models.is_available(fake) is False
 
 
 def test_is_available_for_present_external_file(tmp_path: Path):
@@ -288,103 +290,10 @@ def test_is_available_for_present_external_file(tmp_path: Path):
         source_url="https://example.invalid",
         download_url="https://example.invalid/x.onnx",
     )
-    assert wake_setup._is_available(fake) is True
-
-
-# ---------- Save logic -----------------------------------------------------
-
-
-def test_apply_save_writes_registered_bundled_model(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _stage_bundled_asset(monkeypatch, tmp_path)
-    new, err = wake_setup._apply_save(
-        {"model": "hey_jarvis"}, current={},
-    )
-    assert err is None
-    assert new == {"JASPER_WAKE_MODEL": "hey_jarvis"}
-
-
-def test_apply_save_rejects_unknown_key():
-    new, err = wake_setup._apply_save(
-        {"model": "totally-not-a-thing"}, current={},
-    )
-    assert err is not None
-    assert "Unknown model" in err
-    assert new == {}
-
-
-def test_apply_save_rejects_empty_selection():
-    new, err = wake_setup._apply_save({}, current={"existing": "x"})
-    assert err is not None
-    assert "No model selected" in err
-    # Current state is preserved on rejection so a bad submit doesn't
-    # wipe out a valid prior selection.
-    assert new == {"existing": "x"}
-
-
-def test_apply_save_rejects_custom_placeholder():
-    """A crafted POST could submit value=__custom__ from a hand-edited
-    page (the rendered radio is disabled). The save handler must
-    refuse it explicitly — persisting `__custom__` as the wake model
-    would crash the daemon at startup with no clear remedy in the UI."""
-    new, err = wake_setup._apply_save({"model": "__custom__"}, current={})
-    assert err is not None
-    assert "read-only" in err.lower() or "custom" in err.lower()
-
-
-def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
-    """A downloadable entry whose .onnx file isn't on disk yet is in
-    the registry but not loadable. The save handler must refuse
-    rather than land a config that crashes the daemon."""
-    # Inject a registry that points at a definitely-missing file.
-    fake = wake_models.WakeModelEntry(
-        key="probe_missing",
-        label="Probe Missing",
-        pronunciation="...",
-        description="...",
-        model=str(tmp_path / "missing.onnx"),
-        fa_per_hour=None,
-        source_url="https://example.invalid",
-        download_url="https://example.invalid/x.onnx",
-    )
-    monkeypatch.setattr(wake_models, "REGISTRY", (fake,))
-    new, err = wake_setup._apply_save({"model": "probe_missing"}, current={})
-    assert err is not None
-    assert "isn't downloaded" in err
-    assert new == {}
+    assert wake_models.is_available(fake) is True
 
 
 # ---------- Threshold logic -----------------------------------------------
-# _parse_threshold + the threshold codepath in _apply_save were
-# removed when the sensitivity slider became its own JSON POST through
-# jasper/control/server.py POST /aec/threshold. _active_threshold stays
-# as a clean "read what the daemon will load" helper independent of
-# where the UI control is rendered.
-#
-# Threshold-preservation across a /assistant/wake/ model save is now covered
-# by test_apply_save_preserves_threshold_in_state below; the daemon-
-# facing JASPER_WAKE_THRESHOLD validation is in jasper/config.py and
-# in jasper.control.aec_endpoints._write_wake_threshold.
-
-
-def test_apply_save_preserves_threshold_in_state(monkeypatch, tmp_path: Path):
-    """The sensitivity slider writes the same wake_model.env file. A
-    model save must preserve any JASPER_WAKE_THRESHOLD already in the
-    state dict, otherwise saving a new model would silently zap the
-    slider's value."""
-    current = {
-        "JASPER_WAKE_MODEL": "hey_jarvis",
-        "JASPER_WAKE_THRESHOLD": "0.35",
-    }
-    _stage_bundled_asset(monkeypatch, tmp_path)
-    new, err = wake_setup._apply_save({"model": "alexa"}, current=current)
-    assert err is None
-    assert new == {
-        "JASPER_WAKE_MODEL": "alexa",
-        "JASPER_WAKE_THRESHOLD": "0.35",
-    }
 
 
 @pytest.mark.parametrize(
@@ -634,6 +543,30 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     assert state["JASPER_WAKE_MODEL"] == "alexa"
     assert state["JASPER_WAKE_THRESHOLD"] == "0.42"
     assert called == ["restart"]
+
+
+@pytest.mark.parametrize("model", [
+    pytest.param("", id="custom_active_posts_no_model"),
+    pytest.param("__custom__", id="custom_placeholder"),
+    pytest.param("totally-not-a-thing", id="unknown"),
+    pytest.param("hey_jarvis", id="not_downloaded"),
+])
+def test_http_post_save_refusal_writes_nothing(running_server, monkeypatch, model):
+    """A refused save flashes and leaves the file and the daemon alone: a
+    `__custom__` or undownloaded model would crash voice at startup, and a
+    bad submit must not wipe a valid prior selection."""
+    from ._web_test_helpers import post_with_csrf
+    base, state_path = running_server
+    _stage_bundled_asset(monkeypatch, Path(state_path).parent, present=False)
+    restarts = []
+    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: restarts.append(1))
+    Path(state_path).write_text("JASPER_WAKE_MODEL=alexa\n")
+
+    jar = post_with_csrf(base, "/save", {"model": model})
+
+    assert Path(state_path).read_text() == "JASPER_WAKE_MODEL=alexa\n"
+    assert restarts == []
+    assert any(cookie.name == "jts_flash" for cookie in jar)
 
 
 # ---------- Mic/wake proxy routes ------------------------------------------

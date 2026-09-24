@@ -207,14 +207,6 @@ cleanup_remote_capture() {
         || echo "WARN: could not remove remote capture directory $remote_dir" >&2
 }
 
-JASPER_VOICE_JOURNAL_NOISE_RE='GetGpuDevices|device_discovery'
-
-# restart_voice_and_verify_cmd
-restart_voice_and_verify_cmd() {
-    printf 'sudo systemctl restart jasper-voice && sleep 2 && systemctl is-active jasper-voice && sudo journalctl -u jasper-voice -n 5 --no-pager 2>&1 | grep -v -E %s | tail -5' \
-        "$(shell_quote "$JASPER_VOICE_JOURNAL_NOISE_RE")"
-}
-
 # remote_env_file_set_cmd FILE KEY VALUE FILE_MODE DIR_MODE
 # Print the remote command that upserts KEY into FILE via the installed
 # jasper-env-file.sh lib (locked, atomic) — the one laptop-side Pi env-file

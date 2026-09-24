@@ -127,6 +127,8 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   reconciler-owned; the writer is named in each file's header). Never move
   their keys into `/etc/jasper/jasper.env`; long-lived daemons re-read these
   files fresh — never cache wizard-owned values from `os.environ`.
+- Change a setting with `jasper-settings` (`--help`); it and the wizard call
+  one owner function. Never write these files by hand.
 - Laptop state: `.env.local` (`PI_HOST`, `PI_USER`, `JASPER_HOSTNAME`) +
   `CLAUDE.local.md`, written by `scripts/onboard.sh` / `scripts/use`. One
   checkout per Pi.

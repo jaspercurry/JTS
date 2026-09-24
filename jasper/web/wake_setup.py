@@ -77,16 +77,13 @@ reads as a coherent wake page rather than leaking the AEC internals.
 from __future__ import annotations
 
 import html
-import importlib.util
 import json
 import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 
 from ..audio_input_view import profile_choice_specs, valid_profile_ids
-from ..atomic_io import locked_update_env_file
 from ..log_event import log_event
 from .. import wake_models
 from ..env_file import read_env_file
@@ -176,36 +173,6 @@ def _active_threshold(state: dict[str, str]) -> float:
         if 0.0 <= val <= 1.0:
             return val
     return DEFAULT_WAKE_THRESHOLD
-
-
-def _is_available(entry: wake_models.WakeModelEntry) -> bool:
-    """Return whether the model can be selected without crashing voice.
-
-    Bundled openWakeWord names are install-owned package resources. We
-    check their resource path via importlib metadata rather than importing
-    openwakeword on every page render. External files have to exist on
-    disk to be loadable; a missing file means a failed install-time
-    download, flagged in the UI so the household knows what's going on.
-    """
-    if entry.bundled:
-        asset_path = _bundled_asset_path(entry)
-        if asset_path is None:
-            return False
-        try:
-            return asset_path.is_file() and asset_path.stat().st_size > 0
-        except OSError:
-            return False
-    return os.path.exists(entry.model)
-
-
-def _bundled_asset_path(entry: wake_models.WakeModelEntry) -> Path | None:
-    asset = wake_models.openwakeword_asset_by_key(entry.key)
-    if asset is None:
-        return None
-    spec = importlib.util.find_spec("openwakeword")
-    if spec is None or spec.origin is None:
-        return None
-    return Path(spec.origin).resolve().parent / "resources" / "models" / asset.filename
 
 
 # ----------------------------------------------------------------------
@@ -527,7 +494,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
         rows.append(_row_html(
             entry,
             is_active=(active_entry is entry),
-            available=_is_available(entry),
+            available=wake_models.is_available(entry),
         ))
     # The CSRF meta tag (read by the detection-card module for state-changing
     # fetches) is emitted by canonical_page() when csrf_token is given; the
@@ -573,50 +540,6 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
         csrf_token=csrf_token,
         page_css_href=WAKE_PAGE_CSS_HREF,
     )
-
-
-# ----------------------------------------------------------------------
-# Save logic — pure where possible.
-# ----------------------------------------------------------------------
-
-
-def _apply_save(
-    form: dict[str, str],
-    current: dict[str, str],
-) -> tuple[dict[str, str], str | None]:
-    """Validate the form selection and produce the new wake_model.env
-    state. Returns `(state, error)`; the caller writes the file iff
-    error is None.
-
-    The sensitivity slider lives in the same page but posts directly
-    to jasper-control via /assistant/wake/sensitivity, which writes
-    JASPER_WAKE_THRESHOLD into the same env file. Starting from
-    `dict(current)` keeps that value in the returned state so a model
-    save can't zap it."""
-    key = (form.get("model") or "").strip()
-    new = dict(current)
-    if not key:
-        # No `model` field submitted — happens when a Custom wake
-        # model is active (the radio is rendered with `disabled`,
-        # so the browser skips it). With the slider gone from this
-        # form, there's nothing else to save in this case.
-        return current, "No model selected."
-    if key == "__custom__":
-        # Defensive — the input is disabled in the rendered form,
-        # but a crafted POST could submit it. Reject so we never
-        # persist a nonsense token to the env file.
-        return current, "The custom row is read-only — pick a registered model."
-    entry = wake_models.by_key(key)
-    if entry is None:
-        return current, f"Unknown model: {key!r}."
-    if not _is_available(entry):
-        return current, (
-            f"{entry.label} isn't downloaded yet on this speaker. "
-            "Re-run `bash scripts/deploy-to-pi.sh` to fetch it, then "
-            "try again."
-        )
-    new["JASPER_WAKE_MODEL"] = entry.model
-    return new, None
 
 
 # ----------------------------------------------------------------------
@@ -930,49 +853,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     def _post_save(
         handler: BaseHTTPRequestHandler, form: dict[str, str],
     ) -> None:
-        current = _load_state(cfg["state_path"])
-        new, err = _apply_save(form, current)
-        if err is not None:
-            send_see_other(handler, "./", flash=err)
+        key = (form.get("model") or "").strip()
+        if not key:
+            # A Custom model's radio renders disabled, so the browser posts none.
+            send_see_other(handler, "./", flash="No model selected.")
             return
         try:
-            # _apply_save always stamps JASPER_WAKE_MODEL on the success
-            # path (errors are guarded above via `err`), so `new` is never
-            # empty. Only update that key under the shared lock: the
-            # sensitivity slider writes JASPER_WAKE_THRESHOLD to this same
-            # file from jasper-control, and stale form state must not erase
-            # a concurrent threshold save.
-            new = locked_update_env_file(
-                cfg["state_path"],
-                {"JASPER_WAKE_MODEL": new["JASPER_WAKE_MODEL"]},
-                mode=0o644,
-                owner=wake_models.WAKE_MODEL_ENV_OWNER,
+            picked = wake_models.select_wake_model(
+                key, via="wizard", client=handler.address_string(),
+                path=cfg["state_path"],
             )
+        except wake_models.WakeModelRefused as e:
+            send_see_other(handler, "./", flash=str(e))
+            return
         except OSError as e:
             logger.exception("could not write wake-model env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
         clause = RESTART_CLAUSE[restart_voice_daemon()]
-        picked = new.get("JASPER_WAKE_MODEL", "")
-        # Parity with the wake.layer/profile/sensitivity sub-actions above —
-        # the primary model change was the one mutation this page didn't log.
-        # The model name is not a secret.
-        log_event(
-            logger,
-            "wake.model",
-            model=picked,
-            client=handler.address_string(),
-        )
-        entry = wake_models.by_model(picked)
-        label = entry.label if entry else picked
-        threshold_str = new.get("JASPER_WAKE_THRESHOLD", "")
-        extra = (
-            f" (sensitivity {threshold_str})"
-            if threshold_str else ""
-        )
+        extra = f" (sensitivity {picked.threshold})" if picked.threshold else ""
         send_see_other(
             handler, "./",
-            flash=f"Saved {label}{extra}.{clause}",
+            flash=f"Saved {picked.entry.label}{extra}.{clause}",
         )
 
     _POST_ROUTES = {

@@ -163,34 +163,6 @@ def test_apply_save_non_empty_key_replaces():
     assert new["OPENAI_API_KEY"] == "sk-new"
 
 
-def test_apply_save_rejects_active_provider_with_no_key(monkeypatch):
-    """The 'set active' button should not let the user shoot
-    themselves in the foot. Pasting an OpenAI key elsewhere on the
-    page must NOT activate Grok."""
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    current = {}
-    form = _form_for(active="grok", openai_key="sk-new")
-    new, err = voice_setup._apply_save(form, current)
-    assert err is not None
-    assert "Grok" in err
-    # State is unchanged on error.
-    assert new == current
-
-
-def test_apply_save_active_provider_via_existing_env(monkeypatch):
-    """If the operator set GEMINI_API_KEY in /etc/jasper/jasper.env,
-    the wizard sees it via os.environ and should let the user pick
-    Gemini as active even without a wizard-saved key."""
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-from-etc")
-    current = {}
-    form = _form_for(active="gemini")
-    new, err = voice_setup._apply_save(form, current)
-    assert err is None
-    assert new["JASPER_VOICE_PROVIDER"] == "gemini"
-    # Wizard didn't shadow the env key — it stays sourced from /etc.
-    assert "GEMINI_API_KEY" not in new
-
-
 def test_apply_save_rejects_unknown_provider():
     new, err = voice_setup._apply_save(_form_for(active="anthropic"), {})
     assert err is not None
@@ -244,9 +216,9 @@ def test_apply_save_drops_blank_values_to_keep_file_tidy():
 
 
 def test_apply_save_keeps_unknown_model_value():
-    """A newly released model can be submitted before the curated
-    catalog knows about it. Saving must persist that explicit choice
-    rather than collapsing back to the default."""
+    """A newly released model the wizard's Refresh discovered is not in
+    the curated catalog yet. The form's explicit choice must survive
+    rather than collapse back to the default."""
     form = _form_for(
         active="openai",
         openai_key="sk-x",
@@ -851,24 +823,59 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
 
 
 @pytest.mark.parametrize("route", ["save", "save-test"])
-def test_e2e_rejected_save_keeps_choices_without_echoing_key(tmp_path, monkeypatch, route):
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
+@pytest.mark.parametrize(("fields", "saved_keys"), [
+    pytest.param(
+        {"grok_key": "invalid-key with-whitespace", "grok_model": "custom-model"}, {},
+        id="malformed_key",
+    ),
+    pytest.param({"grok_model": "custom-model"}, {}, id="model_not_offered"),
+    pytest.param({"grok_model": "grok-voice-think-fast-1.0"}, {}, id="no_key"),
+    pytest.param(
+        {"grok_key": "xai-valid-0123456789", "grok_model": "custom-model"},
+        {"XAI_API_KEY": "xai-valid-0123456789"},
+        id="key_saved_before_the_selection_refusal",
+    ),
+])
+def test_e2e_rejected_save_keeps_choices_without_echoing_key(
+    tmp_path, monkeypatch, route, fields, saved_keys,
+):
+    monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
     restarts = []
     monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: restarts.append(True))
     server, base, _ = _start_server(tmp_path)
     try:
-        key = "invalid-key with-whitespace"
         status, _, body = _post(f"{base}/{route}", {
-            "active": "grok", "grok_key": key,
-            "grok_model": "custom-model", "grok_voice": "rex",
+            "active": "grok", "grok_voice": "rex", **fields,
         })
         assert status == 422
-        assert key not in body
-        assert 'value="custom-model" selected' in body
+        if "grok_key" in fields:
+            assert fields["grok_key"] not in body
+        assert f'value="{fields["grok_model"]}" selected' in body
         assert 'value="rex" selected' in body
         assert 'name="active" value="grok"' in body
         assert restarts == []
         assert not (tmp_path / "voice_provider.env").exists()
+        assert env_file.read_env_file(str(tmp_path / "voice_keys.env")) == saved_keys
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_save_accepts_a_key_only_the_operator_env_holds(tmp_path, monkeypatch):
+    """A key an operator set in /etc/jasper/jasper.env lets the wizard select
+    that provider with no wizard-saved key, and the save never copies it into
+    the wizard's files."""
+    operator_env = tmp_path / "jasper.env"
+    operator_env.write_text("GEMINI_API_KEY=AIza-from-etc\n")
+    monkeypatch.setenv("JASPER_ENV_FILE", str(operator_env))
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
+    server, base, _ = _start_server(tmp_path)
+    try:
+        status, _, _ = _post(f"{base}/save", _form_for(active="gemini"))
+        assert status == 303
+        state = env_file.read_env_file(str(tmp_path / "voice_provider.env"))
+        assert state["JASPER_VOICE_PROVIDER"] == "gemini"
+        assert "GEMINI_API_KEY" not in state
         assert not (tmp_path / "voice_keys.env").exists()
     finally:
         server.shutdown()

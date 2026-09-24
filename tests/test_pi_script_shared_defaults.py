@@ -22,18 +22,12 @@ from tests.shell_runner import run_bash
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_NAMES = (
-    "switch-gemini-model.sh",
-    "switch-voice-provider.sh",
-    "switch-wake-word.sh",
     "tail-pi-logs.sh",
     "jasper-trace.sh",
     "verify-ref-no-silence-bug.sh",
     "wake-rate-test.sh",
 )
 INVOCATIONS = {
-    "switch-gemini-model.sh": (["3.1"], 0),
-    "switch-voice-provider.sh": (["gemini"], 0),
-    "switch-wake-word.sh": (["jarvis_v2"], 0),
     "tail-pi-logs.sh": (["jasper-voice"], 0),
     "jasper-trace.sh": ([], 0),
     "verify-ref-no-silence-bug.sh": ([], 1),
@@ -108,23 +102,6 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
             if [[ "${FAKE_SSH_FAIL:-0}" == "1" ]]; then
                 exit 23
             fi
-            case "$*" in
-                *"/opt/jasper/.venv/bin/python - 3.1"*)
-                    printf 'catalog-default.test\n'
-                    ;;
-                *"from jasper.wake_models import by_key"*)
-                    printf '/tmp/jarvis-v2.onnx|1\n'
-                    ;;
-                *"from jasper.wake_models import REGISTRY"*)
-                    printf '  jarvis_v2      Jarvis v2 (recommended)\n'
-                    ;;
-                *"from jasper.voice.catalog import PROVIDERS"*)
-                    printf 'gemini\tGEMINI_API_KEY\tJASPER_GEMINI_MODEL\n'
-                    ;;
-                *"GEMINI_API_KEY=.*"*)
-                    printf 'set\n'
-                    ;;
-            esac
             """
         ),
     )
@@ -404,39 +381,6 @@ def test_help_needs_no_target_but_the_action_still_refuses(
     assert _run(action_args).returncode == NO_TARGET_EXIT
 
 
-def test_gemini_unknown_alias_exits_without_network(
-    script_repo: tuple[Path, Path, Path],
-) -> None:
-    result, calls = _run_script(
-        script_repo,
-        "switch-gemini-model.sh",
-        env_local=None,
-        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
-        args=["unknown"],
-    )
-
-    assert result.returncode == 2
-    assert "unknown model alias" in result.stderr
-    assert calls == ""
-
-
-def test_wake_word_current_and_usage_path_is_safe_with_stubbed_ssh(
-    script_repo: tuple[Path, Path, Path],
-) -> None:
-    result, calls = _run_script(
-        script_repo,
-        "switch-wake-word.sh",
-        env_local=None,
-        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
-        args=[],
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Current wake model on explicit.invalid:" in result.stdout
-    assert "Usage:  bash scripts/switch-wake-word.sh <key>" in result.stdout
-    assert calls.count("operator@explicit.invalid") == 2
-
-
 @pytest.mark.parametrize(
     "value",
     ["plain", "with space", "a $value with a \\backslash"],
@@ -470,43 +414,23 @@ def test_remote_env_file_set_cmd_executes_the_upsert_it_prints(
     assert get_result.stdout == f"{value}\n"
 
 
-@pytest.mark.parametrize(
-    ("script", "file", "key", "value", "modes", "prefix", "chained"),
-    [
-        ("switch-wake-word.sh", "/var/lib/jasper/wake_model.env", "JASPER_WAKE_MODEL",
-         "/tmp/jarvis-v2.onnx", ("0644", "0770"), "sudo", True),
-        ("rename-speaker.sh", "/etc/jasper/jasper.env", "JASPER_HOSTNAME",
-         "jts4.local", ("0640", "0755"), "sudo -n", False),
-        ("switch-voice-provider.sh", "/var/lib/jasper/voice_provider.env",
-         "JASPER_VOICE_PROVIDER", "gemini", ("0640", "0770"), "sudo", True),
-        ("switch-gemini-model.sh", "/var/lib/jasper/voice_provider.env",
-         "JASPER_GEMINI_MODEL", "catalog-default.test", ("0640", "0770"), "sudo", False),
-    ],
-    ids=["switch-wake-word", "rename-speaker", "switch-voice-provider", "switch-gemini-model"],
-)
 def test_env_file_write_matches_the_shared_helper(
     script_repo: tuple[Path, Path, Path],
-    script: str, file: str, key: str, value: str,
-    modes: tuple[str, str], prefix: str, chained: bool,
 ) -> None:
-    """Each script's write is exactly remote_env_file_set_cmd's own
-    rendering — no second, hand-built spelling. The fixture's fake ssh cans
-    every preflight/registry call, so nothing but the write is recorded;
-    execution of the write is the helper test's job above."""
+    """rename-speaker's write is exactly remote_env_file_set_cmd's own
+    rendering — no second, hand-built spelling. Execution of the write is
+    the helper test's job above."""
     result, calls = _run_script(
-        script_repo, script, env_local=None,
+        script_repo, "rename-speaker.sh", env_local=None,
         inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     write_calls = [line for line in calls.splitlines() if "jasper_env_file_set" in line]
     assert len(write_calls) == 1, calls
-    recorded = write_calls[0].split("\t")[-1]
-
-    expected = f"{prefix} {_remote_env_file_set_cmd(file, key, value, *modes)}"
-    if chained:
-        expected += f" && {_lib_function_output('restart_voice_and_verify_cmd')}"
-    assert recorded == expected
+    assert write_calls[0].split("\t")[-1] == "sudo -n " + _remote_env_file_set_cmd(
+        "/etc/jasper/jasper.env", "JASPER_HOSTNAME", "jts4.local", "0640", "0755",
+    )
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
