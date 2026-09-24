@@ -23,7 +23,6 @@ the constant without importing each other.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from jasper.json_fields import as_mapping
@@ -70,13 +69,13 @@ def _finite_number(value: Any) -> int | float | None:
 mapping = as_mapping
 
 
-def _as_int(value: Any, default: int = 0) -> int:
+def as_int(value: Any, default: int = 0) -> int:
     """``value`` as an ``int``, or ``default`` when it is not one."""
-    parsed = _as_int_or_none(value)
+    parsed = as_int_or_none(value)
     return default if parsed is None else parsed
 
 
-def _as_float(value: Any) -> float | None:
+def as_float(value: Any) -> float | None:
     """``value`` as a ``float``, or ``None`` when it is not one."""
     try:
         return float(value)
@@ -84,7 +83,7 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def _as_int_or_none(value: Any) -> int | None:
+def as_int_or_none(value: Any) -> int | None:
     """``value`` as an ``int``, or ``None`` when it is not one — ``0`` would
     misread as "confirmed zero" rather than "couldn't tell".
 
@@ -99,40 +98,17 @@ def _as_int_or_none(value: Any) -> int | None:
         return None
 
 
-def _nonneg_delta(curr: Any, prev: Any) -> int | None:
+def nonneg_delta(curr: Any, prev: Any) -> int | None:
     """``curr - prev`` when both are ``int`` and non-decreasing, else ``None``."""
     if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
         return None
     return curr - prev
 
 
-def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+def nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
     """A monotonic counter's per-second delta, or ``None`` on wrap/reset/absence."""
-    delta = _nonneg_delta(curr, prev)
+    delta = nonneg_delta(curr, prev)
     return delta / dt if delta is not None else None
-
-
-def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
-    """Sum of the named counters, or ``None`` unless every one of them is present."""
-    total = 0
-    for key in keys:
-        value = _as_int_or_none(block.get(key))
-        if value is None:
-            return None
-        total += value
-    return total
-
-
-def _nonnegative_counter(value: Any) -> int | None:
-    """A monotonic counter's current reading, or ``None`` when unreadable.
-
-    A negative value cannot be a counter (they only go up between resets);
-    a bare ``float``/``str`` is rejected rather than coerced, since a counter
-    field that is not already an ``int`` in the daemon's JSON is corrupt.
-    """
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
 
 
 def _read_int_file(path: str) -> int | None:

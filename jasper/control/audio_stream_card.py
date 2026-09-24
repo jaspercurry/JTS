@@ -18,7 +18,7 @@ from typing import Any
 from ..fanin.latency_mode import PRESETS
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
-from ._health_fields import _as_int, _detail, _finite_number, mapping
+from ._health_fields import as_int, _detail, _finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 from .audio_signal_path import _ring_occupancy_ms, _ring_pressure
 from .audio_source_cards import _airplay_timing
@@ -53,9 +53,9 @@ def _receiver_latency(
     camilla = mapping(current.get("camilla"))
     dac = mapping(mapping(outputd).get("dac"))
     rate = (
-        _as_int(output.get("sample_rate"))
-        or _as_int(route.get("fixed_sample_rate"))
-        or _as_int(dac.get("sample_rate"))
+        as_int(output.get("sample_rate"))
+        or as_int(route.get("fixed_sample_rate"))
+        or as_int(dac.get("sample_rate"))
     )
     components: list[tuple[str, float]] = []
     if rate > 0 and active_source == Source.USBSINK.value:
@@ -65,7 +65,7 @@ def _receiver_latency(
     mixing_queue_ms = _ring_occupancy_ms(output)
     if mixing_queue_ms is not None:
         components.append(("Mixing queue", mixing_queue_ms))
-    capture_rate = _as_int(camilla.get("capture_rate")) or rate
+    capture_rate = as_int(camilla.get("capture_rate")) or rate
     camilla_frames = _finite_number(camilla.get("buffer_level"))
     if (
         capture_rate > 0
@@ -140,7 +140,7 @@ def _reliability(
             "Output queue pressure", f"{min(1.0, pressure) * 100:.0f}%",
         ))
     restarts = sum(
-        _as_int(mapping(mapping(service_states).get(unit)).get("n_restarts"))
+        as_int(mapping(mapping(service_states).get(unit)).get("n_restarts"))
         for unit in restart_watch_units
     )
     if restarts:
@@ -183,8 +183,8 @@ def _current_stream(
             ),
             "detail": "Configured processing route for this stream.",
             "details": [
-                _detail("DSP rate", f"{_as_int(camilla.get('capture_rate')):,} Hz")
-            ] if _as_int(camilla.get("capture_rate")) else [],
+                _detail("DSP rate", f"{as_int(camilla.get('capture_rate')):,} Hz")
+            ] if as_int(camilla.get("capture_rate")) else [],
         }
     if session_state:
         stream["session"] = dict(session_state)
@@ -204,14 +204,14 @@ def _current_stream(
             "details": [],
         }
     if active_source == Source.USBSINK.value:
-        rate = _as_int(route.get("fixed_sample_rate"))
+        rate = as_int(route.get("fixed_sample_rate"))
         if rate:
             stream["media"] = {
                 "summary": f"{rate / 1000:g} kHz · Stereo PCM",
                 "detail": "The format advertised by JTS to the connected USB host.",
                 "details": [],
             }
-    output_rate = _as_int(dac.get("sample_rate"))
+    output_rate = as_int(dac.get("sample_rate"))
     output_details: list[dict[str, str]] = []
     dac_delay = _fresh_dac_delay_ms(dac)
     if dac_delay is not None:

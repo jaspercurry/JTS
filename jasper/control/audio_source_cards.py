@@ -18,7 +18,7 @@ from typing import Any
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
-from ._health_fields import _as_int, mapping
+from ._health_fields import as_int, mapping
 from ._health_sources import (
     SOURCE_OFF_DRIFT_DETAIL,
     SOURCE_UNAVAILABLE_DETAIL,
@@ -180,9 +180,9 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
     else:
         recent = mapping(airplay.get("summary_5m"))
         sync_events = (
-            _as_int(recent.get("shairport_packet_drops"))
-            + _as_int(recent.get("shairport_sync_errors"))
-            + _as_int(recent.get("shairport_underruns"))
+            as_int(recent.get("shairport_packet_drops"))
+            + as_int(recent.get("shairport_sync_errors"))
+            + as_int(recent.get("shairport_underruns"))
         )
         if sync_events:
             status = "warn"

@@ -18,17 +18,27 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from jasper.control._health_fields import (
-    _as_float,
-    _as_int,
-    _as_int_or_none,
-    _nonneg_rate,
-    _sum_or_none,
+    as_float,
+    as_int,
+    as_int_or_none,
+    nonneg_rate,
 )
 from jasper.fanin.status import fanin_inputs_by_label, read_fanin_status
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 
 # Fallback mixer rate when fan-in STATUS omits output.sample_rate.
 DEFAULT_MIXER_RATE_HZ = 48000
+
+
+def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Sum of the named counters, or ``None`` unless every one of them is present."""
+    total = 0
+    for key in keys:
+        value = as_int_or_none(block.get(key))
+        if value is None:
+            return None
+        total += value
+    return total
 
 
 class FaninView:
@@ -70,14 +80,14 @@ class FaninView:
         if not isinstance(watchdog, dict):
             watchdog = {}
 
-        airplay_frames = _as_int(airplay.get("frames_read")) if airplay else 0
-        airplay_xruns = _as_int(airplay.get("xrun_count")) if airplay else 0
-        output_frames = _as_int(output.get("frames_written"))
+        airplay_frames = as_int(airplay.get("frames_read")) if airplay else 0
+        airplay_xruns = as_int(airplay.get("xrun_count")) if airplay else 0
+        output_frames = as_int(output.get("frames_written"))
         output_ring = (
             output.get("ring") if isinstance(output.get("ring"), dict) else None
         )
         output_full_waits = (
-            _as_int_or_none(output_ring.get("full_waits"))
+            as_int_or_none(output_ring.get("full_waits"))
             if output_ring is not None else None
         )
         # The ring's two loss counters, summed: both mean "a period the reader
@@ -103,14 +113,14 @@ class FaninView:
         }
         input_frames = {
             spec.id.value: (
-                _as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
+                as_int(inputs_by_label[spec.fanin_label].get("frames_read"))
                 if spec.fanin_label in inputs_by_label else 0
             )
             for spec in MUSIC_SOURCE_SPECS
         }
         input_xruns = {
             spec.id.value: (
-                _as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
+                as_int(inputs_by_label[spec.fanin_label].get("xrun_count"))
                 if spec.fanin_label in inputs_by_label else 0
             )
             for spec in MUSIC_SOURCE_SPECS
@@ -123,13 +133,13 @@ class FaninView:
             lane = inputs_by_label.get(spec.fanin_label)
             ring_block = lane.get("ring") if isinstance(lane, dict) else None
             input_empty_reads[spec.id.value] = (
-                _as_int_or_none(ring_block.get("empty_reads"))
+                as_int_or_none(ring_block.get("empty_reads"))
                 if isinstance(ring_block, dict) else None
             )
         if prev is not None:
             dt = max(0.001, now - float(prev.get("ts", now)))
-            prev_airplay_frames = _as_int(prev.get("airplay_frames"))
-            prev_output_frames = _as_int(prev.get("output_frames"))
+            prev_airplay_frames = as_int(prev.get("airplay_frames"))
+            prev_output_frames = as_int(prev.get("output_frames"))
             if airplay_frames >= prev_airplay_frames:
                 airplay_rate = (airplay_frames - prev_airplay_frames) / dt
             if output_frames >= prev_output_frames:
@@ -137,27 +147,27 @@ class FaninView:
             previous_inputs = prev.get("input_frames")
             if isinstance(previous_inputs, Mapping):
                 for source_id, frames in input_frames.items():
-                    previous_frames = _as_int(previous_inputs.get(source_id))
+                    previous_frames = as_int(previous_inputs.get(source_id))
                     if frames >= previous_frames:
                         input_rates[source_id] = (frames - previous_frames) / dt
             previous_empty_reads = prev.get("input_empty_reads")
             if isinstance(previous_empty_reads, Mapping):
                 for source_id, empty_reads in input_empty_reads.items():
-                    input_empty_reads_rates[source_id] = _nonneg_rate(
+                    input_empty_reads_rates[source_id] = nonneg_rate(
                         empty_reads, previous_empty_reads.get(source_id), dt,
                     )
             previous_input_xruns = prev.get("input_xruns")
             if isinstance(previous_input_xruns, Mapping):
                 for source_id, xruns in input_xruns.items():
-                    input_xrun_rates[source_id] = _nonneg_rate(
+                    input_xrun_rates[source_id] = nonneg_rate(
                         xruns, previous_input_xruns.get(source_id), dt,
                     )
 
-            airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
-            full_waits_rate = _nonneg_rate(
+            airplay_delta = airplay_xruns - as_int(prev.get("airplay_xruns"))
+            full_waits_rate = nonneg_rate(
                 output_full_waits, prev.get("output_full_waits"), dt,
             )
-            ring_drops_rate = _nonneg_rate(
+            ring_drops_rate = nonneg_rate(
                 output_ring_drops, prev.get("output_ring_drops"), dt,
             )
             if airplay_delta > 0 and not suppress_events:
@@ -185,8 +195,8 @@ class FaninView:
             "input_empty_reads": input_empty_reads,
         }
 
-        input_buffer_frames = _as_int(status.get("input_buffer_frames"))
-        mixer_rate_hz = _as_int(output.get("sample_rate")) or DEFAULT_MIXER_RATE_HZ
+        input_buffer_frames = as_int(status.get("input_buffer_frames"))
+        mixer_rate_hz = as_int(output.get("sample_rate")) or DEFAULT_MIXER_RATE_HZ
         # Fixed-shape, source-neutral observations for the outer audio-health
         # composer. Keep only what explains health; /state retains the full
         # fan-in STATUS for deep debugging. Every declared source gets a slot,
@@ -213,7 +223,7 @@ class FaninView:
                 else None
             )
             slot_frames = (
-                _as_int_or_none(ring.get("slot_frames")) if ring is not None else None
+                as_int_or_none(ring.get("slot_frames")) if ring is not None else None
             )
             frames_rate = input_rates[spec.id.value]
             empty_reads_rate = input_empty_reads_rates[spec.id.value]
@@ -223,7 +233,7 @@ class FaninView:
                 "present": isinstance(entry, dict),
                 "source": entry.get("source") if isinstance(entry, dict) else None,
                 "frames_read": (
-                    _as_int(entry.get("frames_read"))
+                    as_int(entry.get("frames_read"))
                     if isinstance(entry, dict) else 0
                 ),
                 "frames_per_sec": (
@@ -241,14 +251,14 @@ class FaninView:
                     if empty_reads_rate is not None and slot_frames else None
                 ),
                 "xrun_count": (
-                    _as_int(entry.get("xrun_count"))
+                    as_int(entry.get("xrun_count"))
                     if isinstance(entry, dict) else 0
                 ),
                 "xruns_per_sec": (
                     round(xrun_rate, 3) if xrun_rate is not None else None
                 ),
                 "rms_dbfs": (
-                    _as_float(entry.get("rms_dbfs"))
+                    as_float(entry.get("rms_dbfs"))
                     if isinstance(entry, dict) else None
                 ),
                 "muted": (
@@ -376,15 +386,15 @@ class FaninView:
                     round(output_rate, 1)
                     if output_rate is not None else None
                 ),
-                "sample_rate": _as_int(output.get("sample_rate")),
-                "period_frames": _as_int(output.get("period_frames")),
+                "sample_rate": as_int(output.get("sample_rate")),
+                "period_frames": as_int(output.get("period_frames")),
                 "ring": ring_observation,
             },
             "watchdog": {
-                "last_progress_age_ms": _as_int(
+                "last_progress_age_ms": as_int(
                     watchdog.get("last_progress_age_ms"),
                 ),
-                "pings_skipped": _as_int(watchdog.get("pings_skipped")),
+                "pings_skipped": as_int(watchdog.get("pings_skipped")),
             },
             "tts": (
                 copy.deepcopy(status.get("tts"))

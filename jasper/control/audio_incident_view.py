@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _as_int, _detail, _duration_label, _finite_number, mapping
+from ._health_fields import as_int, _detail, _duration_label, _finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 
 
@@ -92,9 +92,9 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
     host = mapping(context.get("host"))
     # `throttled_history` never clears within a boot, so it must not be
     # rendered as a live condition (jasper/control/system_metrics.py).
-    if _as_int(host.get("throttled_now")):
+    if as_int(host.get("throttled_now")):
         evidence.append(_detail("Power or heat throttling", "Now"))
-    elif _as_int(host.get("throttled_history")):
+    elif as_int(host.get("throttled_history")):
         evidence.append(_detail("Power or heat throttling", "Earlier this boot"))
     memory_pressure = _finite_number(host.get("mem_psi_some_avg60"))
     if memory_pressure is not None and memory_pressure > 0:
@@ -140,7 +140,7 @@ def _present_incident(
         # not every timestamp. If it straddles the window boundary, only its
         # last occurrence is provably inside, so expose a lower bound.
         count = sum(
-            max(1, _as_int(item.get("count"), 1))
+            max(1, as_int(item.get("count"), 1))
             if _timestamp(
                 item.get("first_occurrence_at") or item.get("started_at"),
                 0.0,
@@ -194,7 +194,7 @@ def _present_incident(
         "started_at": started,
         "last_seen_at": issue.get("last_seen_at"),
         "recovered_at": issue.get("recovered_at"),
-        "count": max(1, _as_int(issue.get("count"), 1)),
+        "count": max(1, as_int(issue.get("count"), 1)),
         "impact": _incident_impact(issue),
         "observed": str(issue.get("detail") or "JTS observed an audio-path change."),
         "likely_area": _likely_area(issue),

@@ -36,7 +36,7 @@ from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
     DIAGNOSTICS_REMEDY,
     RESTART_REMEDY,
-    _as_int,
+    as_int,
     _finite_number,
     mapping,
 )
@@ -231,7 +231,7 @@ def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
     """
     ring = mapping(fanin_output.get("ring"))
     waits = _finite_number(ring.get("full_waits_per_sec"))
-    rate = _as_int(fanin_output.get("sample_rate"))
+    rate = as_int(fanin_output.get("sample_rate"))
     if waits is None or rate <= 0:
         return None
     return float(waits) * RING_SLOT_FRAMES / rate
@@ -245,7 +245,7 @@ def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
     """
     ring = mapping(fanin_output.get("ring"))
     slots = _finite_number(ring.get("occupancy"))
-    rate = _as_int(fanin_output.get("sample_rate"))
+    rate = as_int(fanin_output.get("sample_rate"))
     if slots is None or slots < 0 or rate <= 0:
         return None
     return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
@@ -258,10 +258,10 @@ def _tts_backlog_ratio(*lanes: Any) -> float:
         lane = mapping(lane_raw)
         if lane.get("enabled") is not True:
             continue
-        budget_frames = _as_int(lane.get("budget_frames"))
+        budget_frames = as_int(lane.get("budget_frames"))
         if budget_frames <= 0:
             continue
-        deepest = max(deepest, _as_int(lane.get("pending_frames")) / budget_frames)
+        deepest = max(deepest, as_int(lane.get("pending_frames")) / budget_frames)
     return deepest
 
 
@@ -315,7 +315,7 @@ def _signal_path(
             ),
         }
     outputd_watchdog = mapping(outputd_map.get("watchdog"))
-    outputd_progress_age = _as_int(
+    outputd_progress_age = as_int(
         outputd_watchdog.get("last_progress_age_ms"),
     )
     if outputd_watchdog and outputd_progress_age > OUTPUTD_STALE_MS:
@@ -331,7 +331,7 @@ def _signal_path(
 
     fanin = mapping(fanin_raw)
     watchdog = mapping(fanin.get("watchdog"))
-    if _as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
+    if as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
         return {
             "code": "path_stalled",
             "status": "issue",

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _as_int, _finite_number, mapping, _nonnegative_counter
+from ._health_fields import as_int, _finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 from .audio_incidents import issue_row
 
@@ -118,8 +118,20 @@ def record_raw_events(
             continue
         event_time = _finite_number(raw.get("ts"))
         when = float(event_time) if event_time is not None else now
-        points.append((candidate, when, _as_int(raw.get("count"), 1), None, now))
+        points.append((candidate, when, as_int(raw.get("count"), 1), None, now))
     return points
+
+
+def _nonnegative_counter(value: Any) -> int | None:
+    """A monotonic counter's current reading, or ``None`` when unreadable.
+
+    A negative value cannot be a counter (they only go up between resets);
+    a bare ``float``/``str`` is rejected rather than coerced, since a counter
+    field that is not already an ``int`` in the daemon's JSON is corrupt.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def record_counter_events(
@@ -149,7 +161,7 @@ def record_counter_events(
     current = mapping(airplay.get("current"))
     fanin = mapping(current.get("fanin"))
     watchdog = mapping(fanin.get("watchdog"))
-    pings_skipped = _as_int(watchdog.get("pings_skipped"))
+    pings_skipped = as_int(watchdog.get("pings_skipped"))
     if baselines.fanin_pings_skipped is not None:
         skipped_delta = pings_skipped - baselines.fanin_pings_skipped
         if skipped_delta > 0:
@@ -177,7 +189,7 @@ def record_counter_events(
     baselines.fanin_pings_skipped = pings_skipped
     inputs = mapping(fanin.get("inputs"))
     input_counts = {
-        source_id: _as_int(mapping(observation).get("xrun_count"))
+        source_id: as_int(mapping(observation).get("xrun_count"))
         for source_id, observation in inputs.items()
         if isinstance(source_id, str)
         and bool(mapping(observation).get("present"))
@@ -321,8 +333,8 @@ def record_counter_events(
             preserve_clipping = True
         baselines.outputd_clipped = clipped_samples
     outputd_counts = {
-        "content": _as_int(mapping(outputd_map.get("content")).get("xrun_count")),
-        "dac": _as_int(mapping(outputd_map.get("dac")).get("xrun_count")),
+        "content": as_int(mapping(outputd_map.get("content")).get("xrun_count")),
+        "dac": as_int(mapping(outputd_map.get("dac")).get("xrun_count")),
     }
     if baselines.outputd_xruns is not None:
         for stage, count in outputd_counts.items():
