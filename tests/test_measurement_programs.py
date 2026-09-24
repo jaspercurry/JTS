@@ -254,7 +254,8 @@ def test_available_programs_is_the_sorted_registry() -> None:
     assert choices == (
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
         ("bass", "nearfield"), ("bass", "quick"), ("branches", "express"), ("close", "spot"),
-        ("front_rear", "express"), ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
+        ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
+        ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
         ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
         ("room", "arm"), ("room", "cloud"), ("room", "seat"),
         ("seat", "cloud"), ("seat", "cube"), ("seat", "express"), ("speaker", "mark"),

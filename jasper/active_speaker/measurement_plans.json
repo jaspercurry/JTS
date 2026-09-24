@@ -79,6 +79,9 @@
       {"azimuth_deg": 45, "elevation_deg": 0}
     ],
     "close_spot": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}],
+    "nearfield_woofer": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}]},
+    "nearfield_rear": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer:rear"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer:rear"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer:rear"}]},
+    "nearfield_cardioid": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer:rear"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer:rear"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer:rear"}]},
     "rear_behind": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
   "programs": [
@@ -106,7 +109,10 @@
     {"id": "bass", "size": "cloud", "layout": "seat_cloud", "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
     {"id": "bass", "size": "quick", "layout": "room_quick", "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
     {"id": "bass", "size": "nearfield", "layout": "bass_nearfield", "purpose": "bass", "regime": "near_field", "levels": "auto", "stimulus": "bass"},
-    {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"}
+    {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"},
+    {"id": "nearfield", "size": "woofer", "layout": "nearfield_woofer", "purpose": "reference", "regime": "near_field"},
+    {"id": "nearfield", "size": "rear", "layout": "nearfield_rear", "purpose": "reference", "regime": "near_field"},
+    {"id": "nearfield", "size": "cardioid", "layout": "nearfield_cardioid", "purpose": "reference", "regime": "near_field"}
   ],
   "default_sizes": {
     "speaker": "mark",
@@ -118,6 +124,7 @@
     "seat": "cloud",
     "room": "seat",
     "bass": "axis",
-    "close": "spot"
+    "close": "spot",
+    "nearfield": "woofer"
   }
 }

@@ -15,7 +15,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.output_topology import OutputTopology, cardioid_cabinet_channels, topology_is_subless_passive_mains
+from jasper.output_topology import (
+    OutputTopology, cardioid_cabinet_channels, measurement_target_id, topology_is_subless_passive_mains,
+)
 
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
@@ -145,6 +147,15 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     ) is not None for group in topology.speaker_groups)
     return tuple(name for name in RUNNABLE_PROGRAMS
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
+
+
+def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
+    """The drivers a near-field row may play here: every declared output of a
+    mono speaker, and none of a stereo pair's until #5697 (ADR-0354)."""
+    group = next((group for group in topology.speaker_groups if group.id == topology.routing.mono_group_id), None)
+    return () if group is None else tuple(sorted(
+        measurement_target_id(channel.role, channel.output_variant)
+        for channel in group.channels if channel.physical_output_index is not None))
 
 
 #: WHICH two measurement targets a :data:`REGIME_BRANCHES` take excites: the

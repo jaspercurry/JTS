@@ -60,7 +60,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
              if f"{name}/{size}" not in _ALIAS_PLAN_IDS}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
-                     or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs))}
+                     or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
+                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(view["near_field_drivers"]))}
     default = program(view["next_action"].get("program") or programs[0])
     default_id = selected_id if selected_id in plans else f"{default.program_id}/{default.size}"
     choices = []

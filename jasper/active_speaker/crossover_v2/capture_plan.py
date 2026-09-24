@@ -567,6 +567,14 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     if prompt.kind == POSE_KIND_SEAT:
         return replace(prompt, headline=_seat_headline(prompt.seat_offset_m), detail=_SEAT_DETAIL)
     distance = prompt.mark_distance_m
+    if prompt.kind == POSE_KIND_CLOSE and prompt.driver:
+        role, _, variant = prompt.driver.partition(":")
+        return replace(
+            prompt,
+            headline=(f"Put the microphone {round(distance * 1000, 1):g} mm from the centre of the "
+                      f"{f'{variant} {role}' if variant else role}, on its axis."),
+            detail="Measured from the dust cap, pointed straight at it.",
+        )
     if prompt.kind == POSE_KIND_CLOSE:
         return replace(
             prompt,

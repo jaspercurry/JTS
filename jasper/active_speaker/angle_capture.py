@@ -612,6 +612,7 @@ def pose_at_angle(
     kind: str = POSE_KIND_BEARING,
     distance_m: float | None = None,
     seat_offset_m: tuple[float, float, float] | None = None,
+    driver: str = "",
 ) -> CloudPositionPrompt:
     """The pose at a stated bearing -- the exact inverse of :func:`position_angle_deg`.
 
@@ -650,6 +651,7 @@ def pose_at_angle(
         kind=kind,
         distance_m=distance_m,
         seat_offset_m=seat_offset_m,
+        driver=driver,
     )
     return remote_position_prompt(geometric)
 
@@ -899,11 +901,10 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
     for offset, stop in enumerate(request.stops):
         pose = pose_at_angle(
             stop.angle_deg, stop.elevation_deg, kind=stop.kind,
-            distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m,
+            distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m, driver=stop.driver,
         )
         pose = replace(pose, purpose=stop.purpose, preserve_text=bool(stop.headline or stop.detail),
-                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail,
-                       driver=stop.driver)
+                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,

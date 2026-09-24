@@ -22,12 +22,16 @@ from jasper.active_speaker.measurement_programs import available_programs
 from tests.crossover_v2_fixtures import _roles
 
 
+_VIEW = {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS,
+         "near_field_drivers": ("tweeter", "woofer", "woofer:rear")}
+
+
 def test_choices_use_registry_and_engine_counts(monkeypatch):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
     planned = []
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
@@ -52,7 +56,7 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
     monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
         "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
     picked = {}
@@ -80,7 +84,7 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
     monkeypatch.setattr(
         "jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", _refuse,
     )
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
     monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
         "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
 
@@ -104,7 +108,7 @@ def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
 
     choices = measurement_view.round_choices({}, "speaker/mark")
 

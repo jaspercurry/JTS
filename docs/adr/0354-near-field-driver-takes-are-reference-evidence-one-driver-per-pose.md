@@ -57,7 +57,11 @@ what was missing was a take naming the one target it plays.
   enters. A near-field view reads each take's own sweep for that: a
   three-sweep program deconvolved whole misreads the bass by over 10 dB.
 - Preflight refuses a plan naming a driver the speaker does not declare.
-- Stereo presets are not offered a near-field program until
+- The bundled rows (`nearfield/woofer`, `nearfield/rear`, `nearfield/cardioid`)
+  take each driver at 15, 30 and 15 mm again, so the second 15 mm take is a
+  re-seat, not a repeat at one placement.
+- The measure page offers a near-field row only on a mono speaker that
+  declares every driver the row names. A stereo pair is not offered one until
   [#5697](https://github.com/jaspercurry/JTS/issues/5697): a target id names a
   role within a speaker group, so it would play in both cabinets.
 - Rejected: purpose `speaker` (it adds a whole-speaker timing take first,
