@@ -797,17 +797,36 @@ class _LevelStore(_Store):
         return await super().bank(record)
 
 
+class _RedoOnPlacementGate(AnsweredGate):
+    """Presses Redo once, just after the operator confirms the first placement."""
+
+    def __init__(self, signals):
+        super().__init__()
+        self.signals = signals
+
+    def gate(self, index, attempt, entry):
+        if self.signals.retake.is_set() or self.grants:
+            return super().gate(index, attempt, entry)
+        try:
+            PositionGate.gate(self, index, attempt, entry)
+        except CaptureBeginDeferred:
+            held = (self.published()["pending"]["index"], self.published()["pending"]["attempt"])
+            self.grants.append(held)
+            self.release(*held)
+            self.signals.retake.set()
+            raise
+
+
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
     and judged on the level each take read; the microphone is re-placed at take
     ``replace_at``, and the operator presses Redo during each take in
-    ``redo_at``, take 0 being the first placement's hold."""
-    fakes, takes, gate, signals = FakeSeams(), count(1), AnsweredGate(), plan_run.RunSignals()
+    ``redo_at``, take 0 being just after the first placement is confirmed."""
+    fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
+    gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
-    if 0 in redo_at:
-        signals.retake.set()
 
     def assessor(analysis, **kwargs):
         take = next(takes)
@@ -902,11 +921,12 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     ((0,), (66.0, 80.0, 80.0), 0),
     ((3,), (66.0, 80.0, 80.0, 66.0, 80.0, 80.0), 2),
 ], ids=["before_any_take", "during_the_second_take"])
-def test_a_redo_leaves_a_driver_pose_its_retries(redo_at, readings, allowed):
+def test_a_redo_leaves_a_driver_pose_its_retries(monkeypatch, redo_at, readings, allowed):
     """Admission charges every attempt after a take's first. A redo before any
-    take plays redoes nothing, and a redo after two takes carries a retry for
-    each take it plays again, so a pose with no retries still completes
-    (ADR-0361)."""
+    take played only asks for the placement again, and a redo after two takes
+    carries a retry for each take it plays again, so a pose with no retries
+    still completes (ADR-0361)."""
+    monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
         ProgramPose(0, 0, repeats=2, kind="close", distance_m=0.015, driver="woofer"),),
         purpose="reference", regime="near_field"), retries_per_pose=0)
@@ -914,6 +934,7 @@ def test_a_redo_leaves_a_driver_pose_its_retries(redo_at, readings, allowed):
     result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
+    assert [index for index, _ in gate.grants] == [1, 1]
     assert selected[-2:] == [True, True]
     assert [p["budget"]["allowed"] for p in gate.progress if "budget" in p][-1] == allowed
 

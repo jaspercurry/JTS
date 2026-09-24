@@ -464,11 +464,14 @@ async def _run(
                 if work[offset].stop["pose"].get("driver"):
                     # A redo places a driver's pose again from its start with its retries (ADR-0361).
                     # Admission charges every attempt after a take's first, so each take it
-                    # replays carries one retry; before any take played there is nothing to redo.
+                    # replays carries one retry; before any take played it only asks again.
                     replayed = sum(1 for index, row in enumerate(work) if row.pose_index == pose and attempts[index])
                     ledgers[pose] = SlotAttempts(retries_per_pose=retries + replayed)
                     if not replayed:
                         retry = None
+                        grant_epoch += 1
+                        if gate:
+                            gate.abandon_hold()
             item = work[offset]
             at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
