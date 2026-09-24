@@ -36,6 +36,7 @@ from jasper.voice._supervisor import (
     outage_cue,
 )
 from tests._log_events import event_fields, event_records
+from tests._provider_fakes import no_wait
 from tests.failure_detail_fixtures import Rejected
 
 try:
@@ -497,8 +498,8 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
         model="fake-model",
         voice="Aoede",
         rotate_after_sec=0.0,
-        backoff_schedule=(0.0, 0.0, 0.0),
         connect_factory=factory,
+        sleep=no_wait,
     )
 
     cue_calls: list[str] = []

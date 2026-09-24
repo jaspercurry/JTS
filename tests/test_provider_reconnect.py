@@ -22,11 +22,12 @@ from jasper.voice._supervisor import (
 )
 from jasper.voice.session import ConnectionState
 from tests._async_wait import wait_until as _wait_until
+from tests._provider_fakes import never_elapses, stop_after
 from tests._provider_fakes import persistent_provider as persistent_provider
 
 
 async def test_reconnect_with_backoff_eventually_succeeds(persistent_provider):
-    conn, factory = persistent_provider(backoff_schedule=(0.0, 0.05))
+    conn, factory = persistent_provider()
     await conn.start(ToolRegistry(), "system")
     try:
         factory.sessions[0].feed_error(ConnectionError("abnormal closure"))
@@ -59,14 +60,15 @@ async def test_drop_signalled_during_a_reconnect_is_not_swallowed(persistent_pro
         await conn.stop()
 
 
-@pytest.mark.parametrize("attempts", [1, 2])
-async def test_exhausted_backoff_rejects_acquire(persistent_provider, attempts):
-    conn, factory = persistent_provider(backoff_schedule=(0.0,) * attempts)
+async def test_acquire_raises_when_the_connection_never_returns(persistent_provider, monkeypatch):
+    """The raise sends the wake down its failure path, which plays a cue,
+    instead of hanging it (non-negotiable 6)."""
+    monkeypatch.setattr("jasper.voice._supervisor.AWAIT_CONNECTED_TIMEOUT_SEC", 0.05)
+    conn, factory = persistent_provider(sleep=never_elapses)
     await conn.start(ToolRegistry(), "system")
     try:
-        factory.next_exceptions = [RuntimeError("dead")] * attempts
         factory.sessions[0].feed_error(ConnectionError("abnormal closure"))
-        await _wait_until(lambda: conn._state is ConnectionState.FAILED, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.PAUSED_FOR_BACKOFF, timeout=3.0)
         with pytest.raises(RuntimeError):
             await asyncio.wait_for(conn.acquire_turn(), timeout=3.0)
         assert conn.is_paused()
@@ -76,7 +78,7 @@ async def test_exhausted_backoff_rejects_acquire(persistent_provider, attempts):
 
 @pytest.mark.parametrize("attr,value", [("status_code", 403), ("code", 1007), (None, None)])
 async def test_initial_failure_stays_up_and_heals(persistent_provider, attr, value):
-    conn, factory = persistent_provider(backoff_schedule=(0.0,))
+    conn, factory = persistent_provider()
     exc = (type("Rejected", (Exception,), {attr: value})("rejected") if attr
            else OSError(-3, "Temporary failure in name resolution"))
     factory.next_exceptions = [exc]
@@ -102,7 +104,7 @@ async def test_initial_failure_stays_up_and_heals(persistent_provider, attr, val
 
 
 async def test_reconnect_escalation_cue_fires_once_per_outage(persistent_provider):
-    conn, factory = persistent_provider(backoff_schedule=(0.0,) * 4)
+    conn, factory = persistent_provider()
     cue_calls: list[str] = []
 
     async def cue_cb(slug: str) -> None:
@@ -141,11 +143,10 @@ async def test_reconnect_escalation_cue_fires_once_per_outage(persistent_provide
         await _outage(lambda: RuntimeError("transient"), opens=4)
         assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 2
 
+        stop_after(conn, 4)
         factory.next_exceptions = [_Terminal() for _ in range(8)]
         factory.sessions[-1].feed_error(_Drop("active socket dropped"))
-        await _wait_until(
-            lambda: conn._state is ConnectionState.FAILED, timeout=3.0,
-        )
+        await _wait_until(conn._stopping.is_set, timeout=3.0)
         assert conn.wake_cue() == NEEDS_ATTENTION_CUE_SLUG
         assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 3
     finally:
@@ -155,25 +156,17 @@ async def test_reconnect_escalation_cue_fires_once_per_outage(persistent_provide
 
 async def _reconnect_delays(persistent_provider, exc, count: int = 4):
     excs = list(exc) if isinstance(exc, list) else [exc]
-    delays: list[float] = []
-    holder: dict = {"raised": 0}
-
-    async def _sleep(seconds: float) -> None:
-        delays.append(seconds)
-        if len(delays) >= count:
-            holder["conn"]._stopping.set()
+    raised = 0
 
     def _factory(**kwargs):
-        i = min(holder["raised"], len(excs) - 1)
-        holder["raised"] += 1
+        nonlocal raised
+        i = min(raised, len(excs) - 1)
+        raised += 1
         raise excs[i]
 
-    conn, _ = persistent_provider(
-        backoff_schedule=None,
-        sleep=_sleep,
-    )
+    conn, _ = persistent_provider()
     conn._connect_factory = _factory
-    holder["conn"] = conn
+    delays = stop_after(conn, count - 1)
     await asyncio.wait_for(run_reconnect_with_backoff(conn), timeout=10.0)
     return conn, delays
 
@@ -262,10 +255,7 @@ async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short(persistent
         await asyncio.sleep(3600)
 
     connect = _SlowThenDeadConnect(connecting, release)
-    conn, _ = persistent_provider(
-        backoff_schedule=None,
-        sleep=_sleep,
-    )
+    conn, _ = persistent_provider(sleep=_sleep)
     conn._connect_factory = lambda **kwargs: connect
     task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
     try:
@@ -301,10 +291,7 @@ async def test_cancelling_a_long_backoff_unwinds_at_once(persistent_provider):
         started.set()
         await asyncio.sleep(seconds)
 
-    conn, _ = persistent_provider(
-        backoff_schedule=None,
-        sleep=_sleep,
-    )
+    conn, _ = persistent_provider(sleep=_sleep)
     conn._connect_factory = _dead
     holder["conn"] = conn
     task = asyncio.ensure_future(run_reconnect_with_backoff(conn))
@@ -319,9 +306,7 @@ async def test_the_first_connect_reads_as_paused_while_it_dials(persistent_provi
     connecting = asyncio.Event()
     release = asyncio.Event()
     connect = _SlowThenDeadConnect(connecting, release)
-    conn, _ = persistent_provider(
-        backoff_schedule=(0.0,),
-    )
+    conn, _ = persistent_provider()
     conn._connect_factory = lambda **kwargs: connect
     task = asyncio.ensure_future(conn.start(ToolRegistry(), ""))
     try:

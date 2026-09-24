@@ -25,11 +25,7 @@ from tests._log_events import parse_event
 
 def _make_grok_conn() -> tuple[GrokRealtimeConnection, _FakeConnectFactory]:
     factory = _FakeConnectFactory()
-    conn = GrokRealtimeConnection(
-        api_key="fake",
-        backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
-    )
+    conn = GrokRealtimeConnection(api_key="fake", connect_factory=factory)
     return conn, factory
 
 

@@ -149,7 +149,7 @@ def test_grok_inherits_openai_seam():
 async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_order(conn_cls, boundary, result_fails):
     gemini = conn_cls is GeminiLiveConnection
     factory = _FakeConnect() if gemini else _FakeConnectFactory()
-    conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory)
     entered, completed = asyncio.Event(), asyncio.Event()
     finish_thread = threading.Event()
     loop = asyncio.get_running_loop()
@@ -208,7 +208,7 @@ async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_orde
         await old.release()
         if boundary == "other_connection":
             factory = _FakeConnect() if gemini else _FakeConnectFactory()
-            conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory, backoff_schedule=(0.0,))
+            conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory)
             connections.append(conn)
             factories.append(factory)
             await conn.start(registry, "")
