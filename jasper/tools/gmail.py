@@ -75,18 +75,14 @@ _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def _parse_rfc2822_date(raw: str) -> datetime | None:
-    if not raw:
-        return None
+    """The header as an aware datetime local time can hold, else None."""
     try:
         dt = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
+        if dt.tzinfo is None:  # no zone, or "-0000": read as UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt.astimezone()
+    except (TypeError, ValueError, OverflowError):
         return None
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        # Some senders ship naive timestamps. Treat as UTC — better
-        # than crashing on the astimezone() call below.
-        dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
 
@@ -191,11 +187,7 @@ def _date_fields(raw_date: str) -> dict[str, str]:
     dt = _parse_rfc2822_date(raw_date)
     if dt is None:
         return {}
-    try:
-        spoken = _format_relative_date(dt)
-    except OverflowError:  # a parsed date local time cannot hold, e.g. year 9999 at -2359
-        return {}
-    return {"date": spoken, "date_iso": dt.isoformat()}
+    return {"date": _format_relative_date(dt), "date_iso": dt.isoformat()}
 
 
 # from / subject / snippet / body are attacker-controllable third-party text:
