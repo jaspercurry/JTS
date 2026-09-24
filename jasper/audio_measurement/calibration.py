@@ -21,7 +21,6 @@ import hashlib
 import html
 import json
 import logging
-import math
 import os
 import re
 import time
@@ -35,6 +34,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 import numpy as np
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import finite_float
 
 # The model registry -- SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
 # measurement_mic_usb_ids, mic_tier_for_model -- lives in the numpy-free leaf
@@ -90,12 +90,7 @@ class CalibrationCurve:
             raw = data.get(name)
             if not isinstance(raw, list) or len(raw) < 2:
                 raise ValueError(f"calibration curve {name} needs at least two points")
-            if any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                for value in raw
-            ):
+            if any(finite_float(value) is None for value in raw):
                 raise ValueError(f"calibration curve {name} must be finite numbers")
             return [float(value) for value in raw]
 
