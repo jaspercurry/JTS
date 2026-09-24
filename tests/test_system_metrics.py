@@ -510,20 +510,12 @@ def test_read_cgroup_cpu_usec_returns_none_when_missing(tmp_path) -> None:
     ) is None
 
 
-def test_read_cgroup_memory_bytes_parses(tmp_path) -> None:
+def test_tick_services_reports_unreadable_memory_as_none(tmp_path) -> None:
     slice_dir = _make_fake_slice(str(tmp_path), {
-        "jasper-voice.service": {"memory.current": "157286400\n"},
+        "jasper-voice.service": {"cpu.stat": "usage_usec 1\n"},
     })
-    assert SystemSampler._read_cgroup_memory_bytes_path(
-        os.path.join(slice_dir, "jasper-voice.service"),
-    ) == 157286400
-
-
-def test_read_cgroup_memory_bytes_returns_none_on_missing(tmp_path) -> None:
-    slice_dir = _make_fake_slice(str(tmp_path), {"jasper-voice.service": {}})
-    assert SystemSampler._read_cgroup_memory_bytes_path(
-        os.path.join(slice_dir, "jasper-voice.service"),
-    ) is None
+    [row] = SystemSampler()._tick_services(slice_dir)
+    assert row["memory_mb"] is None
 
 
 def test_tick_services_first_sample_has_no_cpu_pct(tmp_path) -> None:

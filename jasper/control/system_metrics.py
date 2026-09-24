@@ -44,6 +44,7 @@ from ..service_units import (
     JASPER_SERVICE_GROUPS,
     read_unit_states,
 )
+from ._health_fields import read_int_file
 
 logger = logging.getLogger(__name__)
 
@@ -559,7 +560,7 @@ class SystemSampler:
             sample_key = service["cgroup"]
             seen_units.add(unit)
             usec = self._read_cgroup_cpu_usec_path(path)
-            memory_bytes = self._read_cgroup_memory_bytes_path(path)
+            memory_bytes = read_int_file(os.path.join(path, "memory.current"))
             if usec is None and memory_bytes is None:
                 # Cgroup vanished between listdir and read — race
                 # with service teardown. Skip silently.
@@ -752,17 +753,6 @@ class SystemSampler:
         except (OSError, ValueError, IndexError):
             return None
         return None
-
-    @staticmethod
-    def _read_cgroup_memory_bytes_path(cgroup_dir: str) -> int | None:
-        """Resident memory of the cgroup in bytes (memory.current).
-        None if unreadable (race with cgroup teardown)."""
-        path = os.path.join(cgroup_dir, "memory.current")
-        try:
-            with open(path) as f:
-                return int(f.read().strip())
-        except (OSError, ValueError):
-            return None
 
     @staticmethod
     def _read_memory_cgroup_enabled(
