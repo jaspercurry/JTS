@@ -42,11 +42,13 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     inputs = round_inputs(round_dir)
     manifest = read_run_manifest(inputs)
     selected = resolve_set(inputs, args.set, manifest=manifest) if args.set else None
+    role = str(selected.capture_basis.get("role") or "summed") if selected else "summed"
     try:
         report = stage(
             EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
             rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
             candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids if selected else None,
+            role=role,
         )
     except RoundCapturesRefused as exc:
         # The ladder's own named refusal, never the resolver's coarser bucket.
@@ -57,7 +59,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
         args.command, schema=spec.schema,
         subject=subject(inputs, selected, take_ids=[pose["capture_id"] for pose in report["poses"]],
                         candidate_id=args.candidate),
-        parameters={**_frame_parameters(report["frame"]), "at_hz": list(args.at_hz or ())},
+        parameters={**_frame_parameters(report["frame"]), "at_hz": list(args.at_hz or ()), "role": role},
         out=written, scope=args.scope, poses=len(report["poses"]),
         omitted=report["omitted"], rungs_ms=report["frame"]["rungs_ms"],
         ladder=report["ladder"], bands=[
@@ -110,7 +112,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--scope", required=True, choices=("round", "take"))
     add_set_argument(parser)
     parser.add_argument("--take", help="selected take ID within the set; required for take scope")
-    parser.add_argument("--role", choices=("summed", "woofer", "tweeter"), default="summed")
+    parser.add_argument("--role", default="summed",
+                        help="take scope: the recorded response to read, summed or a target such as woofer:rear")
     parser.add_argument("--candidate", help="round scope: candidate ID")
     parser.add_argument("--graph", help="round scope: played graph fingerprint")
     parser.add_argument("--at-hz", type=float, nargs="+", metavar="HZ", help="round scope: extra bins")

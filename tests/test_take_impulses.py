@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused, select_capture
 from jasper.active_speaker.crossover_v2.take_impulses import (
     IMPULSES_KIND, TakeImpulsesUnreadable, analysis_impulses, impulse_for, take_impulses,
@@ -140,6 +141,11 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
                                driver_responses=(_response("woofer", 300), _response("tweeter", 310)))
     doc["impulses"] = write_take_impulses(bundle, doc["take_id"], analysis, recording=doc["wav_path"])
     record.write_text(json.dumps(doc))
+    second = bundle / "summed" / "summed_cloud_verify_01.json"
+    sidecar = json.loads(second.read_text())
+    sidecar["impulses"] = write_take_impulses(bundle, "cloud_verify_01", analysis, recording=None)
+    sidecar["candidate_id"] = doc["candidate_id"]
+    second.write_text(json.dumps(sidecar))
 
     tweeter = select_capture(round_dir, capture_id=doc["take_id"], role="tweeter")
     assert (tweeter.peak_idx, tweeter.preprocessing["impulse_source"],
@@ -151,3 +157,5 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
         select_capture(round_dir, capture_id=doc["take_id"], role="mid")
     assert (refused.value.reason, refused.value.detail["roles"]) == (
         "round_role_not_recorded", ["tweeter", "woofer"])
+    ladder = sweep_round(round_dir, role="tweeter")
+    assert [pose["direct_peak_ms"] for pose in ladder["poses"]] == [pytest.approx(1000 * 310 / 48000)] * 2

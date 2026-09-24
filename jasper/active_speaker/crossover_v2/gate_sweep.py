@@ -1122,6 +1122,7 @@ def sweep_round(
     candidate_id: str | None = None,
     graph_fingerprint: str | None = None,
     take_ids: Sequence[str] | None = None,
+    role: str = "summed",
 ) -> dict[str, Any]:
     """Sweep one banked round's gate and report what moved with the window.
 
@@ -1139,7 +1140,7 @@ def sweep_round(
         (take_ids is None or document_capture_id(doc) in take_ids)
         and (candidate_id is None or str(doc.get("candidate_id") or "") == candidate_id)
         and (graph_fingerprint is None or played_graph_fingerprint(doc) == graph_fingerprint)
-    ), omitted=omitted)
+    ), role=role, omitted=omitted)
     try:
         grid, reads, sigma, axes = _prepare(captures, rungs)
     except RoundCapturesRefused as exc:

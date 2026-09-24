@@ -402,7 +402,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         _ROUND_SET_TAKES, lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
     "sweep": _ViewRun(
-        _sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz"}), frozenset({"round_id", "take_ids"}),
+        _sweep_argv, frozenset({"rungs_ms", "smoothing_fraction", "at_hz", "role"}), frozenset({"round_id", "take_ids"}),
         lambda p, a: p["rungs_ms"] == a["frame"]["rungs_ms"]),
     "impulse": _ViewRun(
         _kept_take_argv("impulse"),
