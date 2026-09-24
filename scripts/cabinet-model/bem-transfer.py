@@ -99,7 +99,7 @@ def main() -> int:
     ap.add_argument("--step-m", type=float, default=0.015, help="second spot this much farther out")
     ap.add_argument("--max-hz", type=float, default=1000.0)
     ap.add_argument("--measured-step", action="append", default=[], type=measured_step, metavar="WOOFER=DB",
-                    help="nearfield-analyze.py --compare's printed step, e.g. front=-2.37")
+                    help="the near-field view's 15 -> 30 mm step_db for that woofer, e.g. front=-2.37")
     args = ap.parse_args()
 
     pts, tri, tags, rows = load(args.case, args.run, args.max_hz)

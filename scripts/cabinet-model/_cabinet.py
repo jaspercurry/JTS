@@ -56,12 +56,29 @@ def min_phase(freqs: np.ndarray, level_db: np.ndarray, grid: np.ndarray) -> np.n
     return interp_complex(fu[1:], h[1:], grid)
 
 
+#: The near-field view's driver id for each woofer the model reads (ADR-0316).
+WOOFERS = {"front": "woofer", "rear": "woofer:rear"}
+
+
+def nearfield_raw(view: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Each woofer's raw curve at its nearest distance, from `jasper-round-views nearfield`."""
+    drivers = {driver["driver"]: driver for driver in json.loads(view.read_text())["drivers"]}
+    curves = {}
+    for name, driver in WOOFERS.items():
+        raw = next((placement["raw"] for placement in drivers.get(driver, {}).get("placements", ())
+                    if placement["raw"]), None)
+        if raw is None:
+            raise SystemExit(f"{view}: no raw near-field curve for the {name} woofer ({driver})")
+        curves[name] = (np.asarray(raw["freqs_hz"], float), np.asarray(raw["level_db"], float))
+    return curves
+
+
 class Cabinet:
     """Measured near-field x BEM transfer for both woofers, with a back-wall seat model."""
 
     def __init__(self, transfer: Path, nearfield: Path, grid: np.ndarray):
         t = np.load(transfer)
-        nf = np.load(nearfield)
+        nf = nearfield_raw(nearfield)
         self.grid, self.angles = grid, t["angles_deg"]
         self.front_z, self.depth, self.radius = float(t["front_z_m"]), float(t["depth_m"]), float(t["radius_m"])
         k = 2 * np.pi * t["f"] / C
@@ -69,7 +86,7 @@ class Cabinet:
         self.A, self.v = {}, {}
         for w in ("front", "rear"):
             trans = np.conj(t[f"far_{w}"] / t[f"nf_{w}"][:, None]) * np.exp(1j * k * self.radius)[:, None]
-            near = min_phase(nf["freqs"], nf[f"{w}_raw_db"], grid)
+            near = min_phase(*nf[w], grid)
             p_nf = interp_complex(t["f"], np.conj(t[f"nf_{w}"]), grid)
             p_nf[below] *= grid[below] / t["f"][0]  # near-field pressure per m/s rises with f below the solve
             self.v[w] = near / p_nf

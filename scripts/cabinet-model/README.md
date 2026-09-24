@@ -25,27 +25,23 @@ document, which goes through the same judge → compose → apply gates as any o
 
 ## Steps
 
-1. **Capture.** Run `nearfield-plan.py` on the speaker (its `--help` has the commands). It plays
-   the raw woofers: the rear stage and the bass boost are cleared for the takes. The mic tip goes
-   on the dust-cap axis, level with a ruler across the surround (~15 mm from the cap). Take each
-   spacing as its own run: 3–4 front takes and one rear take at `--gap-m 0.0146`, then one of each
-   at `--gap-m 0.0296` (for gate 2). The Pi's pair check refuses near-field takes (the far woofer
-   is ~30 dB down) and asks again, so one `placed` can give two recordings; each is kept as a
-   numbered attempt. Set the fader from one measured take (the mic reads ~33 dB above the 1 m
-   level) and keep the peak under the 85 dB SPL stop.
+1. **Capture.** On the speaker, run the near-field row for the cabinet, one woofer per take at
+   15, 30 and 15 mm again ([the runbook's near-field section](../../docs/tuning-operator-runbook.md#near-field)):
+   `jasper-round run --program nearfield --poses nearfield/cardioid --wait --timeout 3600`. Each
+   placement levels itself to 80 dB at the mic under the unchanged 85 dB stop.
 
-2. **Pull and analyze.** One folder per run (`<run>` is the `wired-*` id that `jasper-round run`
-   printed). Read the SNR per band (trust a band above ~20 dB) and the take spread.
+2. **Read and pull.** The view divides the fader and the played graph out of each take, and gives
+   each woofer's raw curve per distance, the SNR per band (trust a band it marks `trusted`), the
+   re-seat spread, and the 15 → 30 mm step that gate 2 checks:
 
    ```bash
-   mkdir -p $D/nf_front && ssh pi@<speaker> "sudo sh -c 'cd \$(dirname \$(dirname \$(ls -d /var/lib/jasper/active_speaker/sessions/*/crossover_v2/<run>))) && tar -cf - summed crossover_v2/<run> evidence/v1/artifacts/crossover_v2/<run>'" | tar -x -C $D/nf_front
-   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py $D/nf_front $D/nf_rear --out $D/nearfield.npz
-   .venv/bin/python scripts/cabinet-model/nearfield-analyze.py $D/nf_front30 $D/nf_rear30 --out $D/nf30.npz --compare $D/nearfield.npz
+   ssh pi@<speaker> "sudo /opt/jasper/.venv/bin/jasper-round-views nearfield <round>"   # prints the view's path
+   mkdir -p $D && ssh pi@<speaker> "sudo cat <that path>" > $D/nearfield_view.json
    ```
 
 3. **Transfer.** Integrate the solved case to the mic spots on each woofer's axis. Gate 1 (the
    integral reproduces the solver's own probes) must pass. Gate 2 checks the model's level step
-   against the `--measured-step` values that step 2's `--compare` printed.
+   against each woofer's measured `step_db` from step 2's view.
 
    ```bash
    .venv/bin/python scripts/cabinet-model/bem-transfer.py --case "$CAD/build/workbench/boundary_lab_mac/<case>" \
@@ -57,7 +53,7 @@ document, which goes through the same judge → compose → apply gates as any o
    ```bash
    graph=$(curl -s http://<speaker>:8780/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["audio"]["camilla_active_config_path"])')
    ssh pi@<speaker> "sudo cat $graph" > $D/live.yml
-   .venv/bin/python scripts/cabinet-model/predict.py --transfer $D/transfer.npz --nearfield $D/nearfield.npz \
+   .venv/bin/python scripts/cabinet-model/predict.py --transfer $D/transfer.npz --nearfield $D/nearfield_view.json \
        --dsp $D/live.yml --png $D/live.png --xmax-mm 14.7
    ```
 
@@ -68,7 +64,7 @@ document, which goes through the same judge → compose → apply gates as any o
    and keep the old fingerprint to go back.
 
    ```bash
-   .venv/bin/python scripts/cabinet-model/rear-design.py --transfer $D/transfer.npz --nearfield $D/nearfield.npz \
+   .venv/bin/python scripts/cabinet-model/rear-design.py --transfer $D/transfer.npz --nearfield $D/nearfield_view.json \
        --live $D/live.yml --out $D/prescription.json --wall-gap-m 0.2
    ```
 
@@ -102,8 +98,8 @@ Levels are predict.py's: per unit front drive, 0 dB = the front woofer alone, on
   and the bass boost are not in the prediction.
 - One image source stands in for the wall. There are no room modes, and both amplifier channels
   are assumed to have the same latency.
-- `nearfield-analyze.py` models the played path with the repo's graph walker and an ADR-0352 plain
-  Loudness boost; it stops on any other bass boost, so `nearfield-plan.py` clears the bass layer.
+- The view divides the played one-driver graph out with the repo's graph walker; that graph
+  carries no bass boost.
 - The model has not been checked against a gated far-field measurement yet.
 
 Related: #5684 (near-field takes in the web flow), #5692 (shaped bass boost).
