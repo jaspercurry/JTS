@@ -66,6 +66,7 @@ from .. import home_assistant as _ha_mod
 from ..log_event import log_event
 from ..atomic_io import write_env_file
 from ..env_file import delete_env_file, read_env_file
+from ..env_load import parse_bool_value
 from ._common import (
     RESTART_CLAUSE,
     RestartOutcome,
@@ -189,11 +190,8 @@ def _normalize_url(raw: str) -> str:
 # ---- verify_ssl ------------------------------------------------------------
 
 def _verify_ssl_from_state(state: dict[str, str]) -> bool:
-    """Read JASPER_HA_VERIFY_SSL from the env-file state. Default True;
-    the wizard only writes "0" when the user explicitly enables the
-    self-signed-cert checkbox. Mirrors config.py's parsing."""
-    raw = state.get(ENV_VERIFY_SSL, "1").strip()
-    return raw not in ("0", "false", "no")
+    """JASPER_HA_VERIFY_SSL, parsed the way ``Config.ha_verify_ssl`` reads it."""
+    return parse_bool_value(state.get(ENV_VERIFY_SSL)) is not False
 
 
 # ---- Recent-URLs persistence ------------------------------------------------

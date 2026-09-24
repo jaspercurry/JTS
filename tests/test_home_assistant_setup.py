@@ -33,6 +33,7 @@ import urllib.request
 import httpx
 import pytest
 
+from jasper.config import Config
 from jasper.web import home_assistant_setup as ha_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
@@ -416,6 +417,23 @@ def test_verify_ssl_env_var_constant_matches_module():
     assert ha_setup.ENV_AGENT_ID == ha_mod.ENV_AGENT_ID == "JASPER_HA_AGENT_ID"
     assert ha_setup.ENV_VERIFY_SSL == ha_mod.ENV_VERIFY_SSL == "JASPER_HA_VERIFY_SSL"
     assert ha_setup.ENV_RECENT_URLS == ha_mod.ENV_RECENT_URLS == "JASPER_HA_RECENT_URLS"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "1", "yes", "0", "false", "no", "off", "disabled", " FALSE ", "potato"],
+)
+def test_verify_ssl_reading_agrees_with_config(monkeypatch, value):
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    if value is None:
+        monkeypatch.delenv(ha_setup.ENV_VERIFY_SSL, raising=False)
+        state = {}
+    else:
+        monkeypatch.setenv(ha_setup.ENV_VERIFY_SSL, value)
+        state = {ha_setup.ENV_VERIFY_SSL: value}
+
+    assert ha_setup._verify_ssl_from_state(state) is Config.from_env().ha_verify_ssl
 
 
 def test_save_persists_verify_ssl_off_when_user_accepts_self_signed(wizard_server):
