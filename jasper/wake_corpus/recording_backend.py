@@ -917,33 +917,10 @@ class RecordingBackend:
         with self._lock:
             return self._corpus_profile
 
-    def chip_aec_config(self) -> dict[str, object] | None:
-        with self._lock:
-            return dict(self._chip_aec_config) if self._chip_aec_config else None
-
-    def aec3_sweep_variants(self) -> list[dict[str, object]]:
-        """Effective AEC3 sweep variants for the active session or UI status."""
-        with self._lock:
-            if self._include_aec3_sweep and self._aec3_sweep_variants:
-                return list(self._aec3_sweep_variants)
-        return variant_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
-
-    def aec3_sweep_config(self) -> dict[str, object]:
-        """Effective AEC3 sweep config provenance for the active session/status."""
-        with self._lock:
-            if self._include_aec3_sweep and self._aec3_sweep_config:
-                return dict(self._aec3_sweep_config)
-        return config_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
-
     def enabled_legs(self) -> tuple[str, ...]:
         """The active session's leg set, in recording/playback order."""
         with self._lock:
             return self._enabled_legs
-
-    def capture_plan(self) -> dict[str, Any] | None:
-        """Layered mic/channel/transform plan for the active session."""
-        with self._lock:
-            return dict(self._capture_plan) if self._capture_plan else None
 
     def audio_context(self) -> dict[str, Any] | None:
         """Production-profile/corpus-context snapshot for the active session."""
@@ -951,14 +928,9 @@ class RecordingBackend:
             return dict(self._audio_context) if self._audio_context else None
 
     def status_snapshot(self) -> dict[str, Any]:
-        """Every `/api/status` field, read under one lock acquisition.
-
-        The route this feeds used to call over a dozen separate
-        single-field getters, each independently locked — a session
-        switch (begin/load/unload) between two of those calls could mix
-        fields from two different sessions in one response. Reading them
-        together here means every value in the snapshot reflects the
-        same instant.
+        """Every `/api/status` field, read under one lock acquisition so a
+        session switch (begin/load/unload) cannot mix fields from two
+        sessions in one response.
         """
         with self._lock:
             include_aec3_sweep = self._include_aec3_sweep
@@ -1003,10 +975,9 @@ class RecordingBackend:
                 ),
                 "clip_count": sum(1 for c in self._clips if not c.deleted),
             }
-        # Stateless fallbacks + the conformance re-check, all pure functions
-        # of the values already snapshotted above — done outside the lock
-        # (matching what each getter this replaces did) without re-reading
-        # any `self._*` field, so the snapshot stays internally consistent.
+        # Stateless fallbacks + the conformance re-check are pure functions
+        # of the values snapshotted above, so they run outside the lock
+        # without re-reading any `self._*` field.
         snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
             input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
         )
