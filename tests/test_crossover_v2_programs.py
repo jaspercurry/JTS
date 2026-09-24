@@ -59,8 +59,10 @@ from jasper.active_speaker.crossover_v2.programs import (
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
     NoProgramForPhaseError,
+    NEAR_FIELD_OPENER_BACKOFF_DB,
     SessionExcitation,
     back_off_gain,
+    compose_target_program,
     courtesy_prelude_for_phase,
     program_for_phase,
 )
@@ -68,8 +70,10 @@ from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, solo_target
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
+from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
+    KIND_SWEEP,
     RoleBand,
 )
 from jasper.output_topology import measurement_target_id
@@ -688,6 +692,27 @@ def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
             make()
         return
     assert solo_target(make()) == ids[0]
+
+
+@pytest.mark.parametrize("asked_db,played_db", [
+    (None, -NEAR_FIELD_OPENER_BACKOFF_DB), (-14.0, -14.0), (6.0, 0.0),
+])
+def test_a_near_field_take_opens_under_the_seat_level_and_retakes_at_the_peak_it_asks(asked_db, played_db):
+    """A near-field take's first attempt plays well under the level a far-field
+    take plays at; a retake plays the peak it asks for, never above it
+    (ADR-0355). Levels are relative to that seat-equivalent peak."""
+    band = FrequencyBand(20.0, 4000.0)
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": 0.0}, -20.0, None,
+                                   {"woofer:rear": 8.0}, target_bands={"woofer:rear": band})
+    spec = MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime="near_field")
+
+    def sweep_peak(spec, stimulus_dbfs=None):
+        return {s.gain_db for s in compose_target_program(excitation, spec, stimulus_dbfs).segments
+                if s.kind == KIND_SWEEP}
+
+    seat, = sweep_peak(replace(spec, regime="reference_axis"))
+    played, = sweep_peak(spec, None if asked_db is None else seat + asked_db)
+    assert played == pytest.approx(seat + played_db)
 
 
 @pytest.mark.parametrize("rear,target", [

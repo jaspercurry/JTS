@@ -333,3 +333,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
 | [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |
 | [0354](0354-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | accepted |
+| [0355](0355-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md) | A near-field take levels itself to 80 dB at the microphone, in its digital gain under the seat-equivalent level | accepted |

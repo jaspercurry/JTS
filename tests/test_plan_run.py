@@ -37,7 +37,8 @@ from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, T
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
-from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from jasper.web import correction_run_host
@@ -771,6 +772,71 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     assert len(gate.grants) == result.mic_moves == len(layout)
     assert [(take["measurement_purpose"], take["pose_driver"], take["mark_distance_m"]) for take in fakes.banked] == [
         ("reference", driver, mm / 1000) for driver, mm in layout]
+
+
+class _LevelStore(_Store):
+    """Banks each take as the web host does: the program it played, at the
+    peak it asked for, and what the microphone read."""
+
+    def __init__(self, records, readings, opener_db):
+        super().__init__(records)
+        self.readings, self.opener_db = iter(readings), opener_db
+
+    async def bank(self, record):
+        if record.get("kind") != RUN_MANIFEST_KIND:
+            peak = self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"]
+            reading = next(self.readings)
+            record.update(
+                program=build_measure_program({"woofer": peak}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
+                                              repeat_count=1, sweep_durations={"woofer": 0.2}).to_dict(),
+                capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
+                                           "ceiling_db_spl": 85.0}})
+        return await super().bank(record)
+
+
+def _run_levelled(request, readings):
+    """A plan whose recordings pass, judged only on the level each take read."""
+    fakes = FakeSeams()
+    manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0))
+
+    async def run():
+        async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
+                session, _):
+            return await plan_run.run_plan(
+                request, session=session, manifest=manifest, analyze=_analysis, aborts=_ABORTS,
+                captures=plan_run.prepare_plan_captures(request),
+                assessor=lambda analysis, **kw: capture_dispatch.assess(
+                    analysis, prior_verdict=TakeVerdict(True, next="accept"), **kw))
+
+    result = asyncio.run(run())
+    return result, fakes, [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
+
+
+def test_a_near_field_take_levels_itself_before_it_is_kept():
+    """Each pose's first attempt plays under the target and is retaken at the
+    solved peak; the in-band retake is the kept take, and in-band re-seats are
+    never sent back as drift between repeats (ADR-0355)."""
+    layout = [("woofer", 15), ("woofer", 30), ("woofer", 15)]
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
+        purpose="reference", regime="near_field"))
+
+    result, fakes, selected = _run_levelled(request, (66.0, 79.0, 64.0, 79.0, 66.0, 81.5))
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None, -28.0, None, -27.0, None, -28.0]
+    assert selected == [False, True] * 3
+
+
+def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
+    """Only a take at one driver's pose is held to the near-field target: a
+    far-field repeat that reads 3 dB off its first is retaken as drift, at the
+    same level (ADR-0355)."""
+    result, fakes, selected = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None, None, None]
+    assert selected == [True, False, True]
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [

@@ -58,6 +58,7 @@ REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
 REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
+REASON_LEVEL_OFF_TARGET = "level_off_target"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_CAPTURE_OVERRUN = LOST_AT_CAPTURE_OVERRUN
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
@@ -582,6 +583,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         RetryableReasonCopy("The microphone read a different level at the same gain — something changed in the room.",
                             "Retake."),
         capture_quality=True,
+    ),
+    REASON_LEVEL_OFF_TARGET: _retriable_reason(
+        REASON_LEVEL_OFF_TARGET, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy("That was not at the measuring level.", "measuring again at the right level.",
+                            joiner=" — ", strip_before_join="."),
+        auto_retry=True, capture_quality=True,
     ),
     REASON_CAPTURE_OVERRUN: _retriable_reason(
         REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1,

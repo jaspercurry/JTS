@@ -38,6 +38,12 @@ ACROSS_POSE_DRIFT_DB = 6.0
 CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
+#: A take at one driver's pose aims its loudest 21 ms window at the microphone
+#: here, never above the admission bound under its own stop (ADR-0355).
+NEAR_FIELD_TARGET_DB_SPL = 80.0
+NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
+#: The most one level retake raises a take (ADR-0355).
+LEVEL_SOLVE_MAX_RAISE_DB = 15.0
 
 
 def capped_gain_ceilings(
@@ -58,6 +64,27 @@ def level_drift_verdict(
                        evidence={key: value for key, value in
                                  (("loudest_half_second_db_spl", loudest_half_second_db_spl), ("level_delta_db", delta))
                                  if value is not None})
+
+
+def level_target_verdict(record: Mapping[str, Any]) -> TakeVerdict:
+    """A near-field take judged against its level target, never its repeats:
+    outside the band it is retaken at the sweep peak that lands the target."""
+    spl = (record.get("capture_integrity") or {}).get("spl") or {}
+    reading, stop = finite_float(spl.get("max_window_db_spl")), finite_float(spl.get("ceiling_db_spl"))
+    peak = max((gain for segment in (record.get("program") or {}).get("segments", ())
+                if segment.get("kind") == KIND_SWEEP and (gain := finite_float(segment.get("gain_db"))) is not None),
+               default=None)
+    if reading is None or stop is None or peak is None:
+        return TakeVerdict(True, next="accept", charge="none")
+    target = min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB)
+    gap = target - reading
+    evidence: dict[str, float | bool | str] = {"max_window_db_spl": reading, "level_target_db_spl": target,
+                                               "level_gap_db": gap}
+    if abs(gap) <= NEAR_FIELD_TARGET_TOLERANCE_DB:
+        return TakeVerdict(True, next="accept", charge="none", evidence=evidence)
+    return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
+                       next="retake_louder" if gap > 0 else "retake_quieter", charge="speaker",
+                       next_gain_db=peak + min(gap, LEVEL_SOLVE_MAX_RAISE_DB), evidence=evidence)
 
 
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
@@ -91,7 +118,8 @@ def assess(
     verdict = replace(verdict, evidence={**verdict.evidence, **level_verdict.evidence})
     if verdict.ok and verdict.next == "accept" and not level_verdict.ok:
         return replace(verdict, ok=False, fault=level_verdict.fault, next=level_verdict.next,
-                       charge=level_verdict.charge, capabilities={key: False for key in verdict.capabilities})
+                       charge=level_verdict.charge, next_gain_db=level_verdict.next_gain_db,
+                       capabilities={key: False for key in verdict.capabilities})
     return verdict
 
 

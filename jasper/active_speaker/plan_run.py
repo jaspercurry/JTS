@@ -34,7 +34,7 @@ from .angle_capture import (
 )
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
-from .crossover_v2.capture_dispatch import assess, level_drift_verdict
+from .crossover_v2.capture_dispatch import assess, level_drift_verdict, level_target_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
@@ -420,7 +420,8 @@ async def _run(
     def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
+            level_observations[take_id] = (level_target_verdict(record) if record.get("pose_driver")
+                                           else level_drift_verdict(**manifest.level_observation(record)))
         return level_observations[take_id]
 
     admit = admit or default_admit

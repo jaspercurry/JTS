@@ -552,6 +552,25 @@ def test_session_level_drift_has_margin(same_pose, delta, accepted):
         assert (verdict.fault, verdict.next, verdict.charge) == ("level_drift_at_session_gain", "retake_same", "none")
 
 
+@pytest.mark.parametrize("reading,stop,next_,gain", [
+    (80.0, 85.0, "accept", None), (78.5, 85.0, "accept", None),
+    (66.0, 85.0, "retake_louder", -26.0), (50.0, 85.0, "retake_louder", -25.0),
+    (84.0, 85.0, "retake_quieter", -44.0),
+    (75.0, 80.0, "accept", None), (80.0, 80.0, "retake_quieter", -45.0),
+    (None, 85.0, "accept", None),
+])
+def test_a_near_field_take_is_retaken_toward_its_level_target(reading, stop, next_, gain):
+    """A near-field take lands 80 dB (±2) in its loudest 21 ms window, never above
+    the admission bound under its own stop: outside the band it is retaken at the
+    sweep peak that lands the target, raised at most 15 dB a step (ADR-0355)."""
+    record = {"capture_integrity": {"spl": {"max_window_db_spl": reading, "ceiling_db_spl": stop}},
+              "program": {"segments": [{"kind": "pilot", "gain_db": -30.0}, {"kind": "sweep", "gain_db": -40.0}]}}
+    verdict = cd.assess(_analysis(), phase="measure", level_verdict=cd.level_target_verdict(record))
+    assert (verdict.next, verdict.next_gain_db) == (next_, gain)
+    if next_ != "accept":
+        assert (verdict.ok, verdict.fault, verdict.charge) == (False, "level_off_target", "speaker")
+
+
 def test_run_host_passes_the_excitation_caps_and_preset_spl_stop_unchanged(monkeypatch):
     from jasper.web import correction_run_host
     from tests.crossover_v2_fixtures import _run_phase

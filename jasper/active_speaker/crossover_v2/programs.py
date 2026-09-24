@@ -53,6 +53,10 @@ GAIN_CAP_BACKOFF_DB = 0.01
 # Without a graph-to-anchor gain reference, blind pilots keep a conservative cut.
 CHECK_PROBE_BACKOFF_DB = 12.0
 
+#: A near-field take's first attempt at a pose plays this far under the
+#: seat-equivalent level, which reads about 96 dB at 15 mm (ADR-0355).
+NEAR_FIELD_OPENER_BACKOFF_DB = 30.0
+
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
@@ -140,16 +144,18 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
     channel but the target's is written silent rather than left to the ring.
     A near-field take sweeps its own band with short silences (see #5684).
+    ``stimulus_dbfs`` is the peak a retake asks for, never above the
+    seat-equivalent level; a near-field take's first attempt plays under it.
     """
     from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
 
     target = solo_target(spec)
-    backoff = (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
-               else max(0.0, spec.scope_gains_db.get(target, 0.0)))
-    if stimulus_dbfs is not None:
-        backoff += BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
-    gain = back_off_gain(BASE_STIMULUS_PEAK_DBFS - backoff, excitation.session_volume_db,
-                         excitation.caps_dbfs[target])
+    seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
+                                                 else max(0.0, spec.scope_gains_db.get(target, 0.0)))
+    if stimulus_dbfs is None and spec.regime == REGIME_NEAR_FIELD:
+        stimulus_dbfs = seat_equivalent - NEAR_FIELD_OPENER_BACKOFF_DB
+    peak = seat_equivalent if stimulus_dbfs is None else min(seat_equivalent, stimulus_dbfs)
+    gain = back_off_gain(peak, excitation.session_volume_db, excitation.caps_dbfs[target])
     shape: dict[str, Any] = dict(
         sweep_durations={target: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
         gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
