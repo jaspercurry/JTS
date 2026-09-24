@@ -379,7 +379,7 @@ def apply_requested_mode(
     """Save one preset and run the fan-in env's existing single writer."""
     canonical = write_requested_mode(mode, state_path)
     if reconcile is None:
-        from .coupling_reconcile import reconcile_auto
+        from .coupling_reconcile import reconcile_auto  # lazy: cycle, coupling_reconcile imports this module
 
         reconcile = reconcile_auto
     result = reconcile(reason="usb_latency_mode", usb_latency_mode=canonical)
