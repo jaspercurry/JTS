@@ -60,17 +60,11 @@ from typing import Any, Iterable, Mapping, Protocol
 from jasper.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
+from jasper.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
 
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
 from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
-from jasper.volume_latch import (
-    EMERGENCY_MEASUREMENT_VOLUME_DB,
-    GetMainVolumeDb,
-    SetMainVolumeDb,
-    hold_fader_at,
-    read_fader_db,
-    set_and_confirm_volume,
-)
+from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB, hold_fader_at
 
 logger = logging.getLogger(__name__)
 
@@ -745,7 +739,7 @@ class SessionVolumePlan:
         volume to hold (nothing open, unresolved, crash-hydrated, or past its
         ceiling), which leaves the fader alone rather than refusing — that is
         :meth:`assert_ready`'s question, already answered by ``play_program``.
-        Raises :class:`~jasper.volume_latch.MeasurementFaderDrift`
+        Raises :class:`~jasper.active_speaker.fader_hold.MeasurementFaderDrift`
         when the fader cannot be proven at the declared level.
 
         **Under the restore lock**, which is why this lives on the plan rather

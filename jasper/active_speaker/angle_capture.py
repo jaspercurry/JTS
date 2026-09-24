@@ -34,7 +34,7 @@ from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
-from jasper.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
+from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (

@@ -165,7 +165,7 @@ class _FakePlan:
         be: a record only exists at all when the fader was proven at the
         declared volume, because the hold refuses the capture otherwise.
         """
-        from jasper.volume_latch import hold_fader_at
+        from jasper.active_speaker.fader_hold import hold_fader_at
 
         self.holds.append(context)
         if self.measurement_volume_db is None:
