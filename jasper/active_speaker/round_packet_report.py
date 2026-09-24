@@ -12,11 +12,13 @@ from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.json_fields import finite_float
+from jasper.output_topology import measurement_target_id
 
 from .bass_table_report import bass_table_markdown, bass_table_rows
 from .crossover_v2.round_frequency_view import position_label
 from .crossover_v2.round_inputs import PACKET_FILENAME, PICTURE_FILENAME, SetTakes
-from .measurement_programs import POSE_KIND_BEARING
+from .measurement_programs import POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE
+from .round_copy import pose_name
 
 
 def gate_fields(take: Mapping[str, Any]) -> dict[str, Any]:
@@ -50,8 +52,17 @@ def _decision(contract: Mapping[str, Any]) -> str:
 def _pose_token(pose: Mapping[str, Any]) -> str:
     if pose.get("kind") == "seat":
         return str(pose.get("name") or pose.get("id") or f"seat{tuple(pose.get('seat_offset_m') or ())}")
+    if pose.get("kind") in (POSE_KIND_BEHIND, POSE_KIND_CLOSE):
+        return pose_name(pose)
     return position_label({"position_deg": pose.get("deg"),
                            "vertical_deg": pose.get("elevation_deg")})
+
+
+def _compare(target: Path, a: tuple[str, str, str], b: tuple[str, str, str]) -> str:
+    """``compare`` of ``(set, take, role)`` b against a, both in ``target``."""
+    return shlex.join(["jasper-round-views", "compare", str(target),
+                       "--a-set", a[0], "--a-take", a[1], "--a-role", a[2],
+                       "--b-set", b[0], "--b-take", b[1], "--b-role", b[2]])
 
 
 def _span(rows: list[Mapping[str, Any]], key: str) -> str:
@@ -122,20 +133,34 @@ def packet_index(
                                    "--image", str(target / PICTURE_FILENAME)]))
     commands += [shlex.join(["jasper-round-views", "speaker-fit", str(target), "--set", fit["set_id"], "--take", fit["take_id"]])
                  for fit in packet["fits"]]
+    rear = measurement_target_id("woofer", "rear")
+    roles_by_take: dict[str, dict[str, str]] = {}
     for group in manifest.get("sets", ()):
-        set_takes = SetTakes.from_row(group)
+        set_takes, set_id = SetTakes.from_row(group), group["set_id"]
+        role = str(set_takes.capture_basis.get("role") or "summed")
         bearings = {(take["pose"].get("deg"), take["pose"].get("elevation_deg"), take["pose"].get("distance_m"))
                     for take in set_takes.takes
                     if take["selected"] and take["pose"].get("kind") == POSE_KIND_BEARING}
-        if len(bearings) >= 2:
-            commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", group["set_id"]]))
-        role = str(set_takes.capture_basis.get("role") or "summed")
-        # A take with no curve (a CHECK take plays pilots only) has no band to read.
-        for take in [take for take in set_takes.on_axis or set_takes.takes
-                     if take["selected"] and take.get("curve")][:1]:
-            commands += [shlex.join(["jasper-round-views", view, str(target), "--set", group["set_id"],
+        # The ladder levels every pose on a 2.5-8 kHz band only a full-band take carries.
+        if len(bearings) >= 2 and role == "summed":
+            commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", set_id]))
+        # One take per pose kind, on-axis first. A take with no curve (a CHECK
+        # take plays pilots only) has no band to read.
+        firsts: dict[Any, Mapping[str, Any]] = {}
+        for take in (*set_takes.on_axis, *set_takes.takes):
+            if take["selected"] and take.get("curve"):
+                firsts.setdefault(take["pose"].get("kind"), take)
+        for take in firsts.values():
+            commands += [shlex.join(["jasper-round-views", view, str(target), "--set", set_id,
                                      "--take", take["take_id"], "--role", role])
-                         for view in ("impulse", "group-delay")]
+                         for view in ("impulse", "group-delay", *(("decay",) if role == "summed" else ()))]
+            roles_by_take.setdefault(take["take_id"], {})[role] = set_id
+        front, behind = firsts.get(POSE_KIND_BEARING), firsts.get(POSE_KIND_BEHIND)
+        if role == "summed" and front and behind:
+            commands.append(_compare(target, (set_id, front["take_id"], role), (set_id, behind["take_id"], role)))
+    # A pair take's front and rear woofer share one recording, so their arrival compares too.
+    commands += [_compare(target, (roles["woofer"], take_id, "woofer"), (roles[rear], take_id, rear))
+                 for take_id, roles in roles_by_take.items() if {"woofer", rear} <= roles.keys()]
     decisions: dict[str, dict[str, list[str]]] = {}
     for set_id, limits in packet["limits"].items():
         if limits.get("status") == "unavailable":
