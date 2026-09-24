@@ -93,24 +93,16 @@ def test_watchdog_covers_the_sweep_and_loop_budget(start, cap, duration):
 
 @pytest.fixture
 def box(tmp_path, monkeypatch):
-    state = SimpleNamespace(gain=-8.0, loudness=-15.0, level=75.0, ambient=35.0, events=[], programs=[], admissions=[],
+    state = SimpleNamespace(gain=-8.0, level=75.0, ambient=35.0, events=[], programs=[], admissions=[],
                             playback_failure=None, ambient_failure=None, ambient_start_fails=True, bundle_failed=False,
-                            missing_spl=False, loudness_failure=None, renders=[], room_floor=False,
+                            missing_spl=False, renders=[], room_floor=False,
                             ambient_spans=[], period_maxima=[], room_levels=[])
     async def get(**kwargs):
         return state.gain
     async def set_gain(gain):
         state.gain = gain
         return True
-    async def get_loudness():
-        return state.loudness
-    async def set_loudness(gain, **kwargs):
-        if state.loudness_failure and gain != -15.0:
-            raise state.loudness_failure
-        state.loudness = gain
-        return True
-    cam = SimpleNamespace(get_volume_db=get, set_volume_db=set_gain,
-                          get_loudness_volume_db=get_loudness, set_loudness_volume_db=set_loudness)
+    cam = SimpleNamespace(get_volume_db=get, set_volume_db=set_gain)
     class Plan:
         def __init__(self, *, state_path):
             assert state_path == seat_level.DEFAULT_SESSION_VOLUME_STATE_PATH
@@ -231,7 +223,6 @@ def box(tmp_path, monkeypatch):
         state.programs.append(program)
         return SimpleNamespace(allowed=True, refusals=())
     async def player(bundle_dir, artifact, **kwargs):
-        assert state.loudness == state.gain
         state.artifact = artifact
         (tmp_path / "capture.wav").write_bytes(b"raw")
         state.room_levels.append(58 + .5 * (len(state.programs) % 2))
@@ -280,7 +271,7 @@ def box(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'ambient_start_lost', 'ambient_reads_lost', 'missing_spl',
-                                            'loudness_refused', 'cancelled', 'error', 'bundle_failed'])
+                                            'cancelled', 'error', 'bundle_failed'])
 def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     if outcome == 'stop':
         box.level = 86.0
@@ -291,9 +282,6 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         box.ambient_start_fails = outcome == 'ambient_start_lost'
     elif outcome == 'missing_spl':
         box.missing_spl = True
-    elif outcome == 'loudness_refused':
-        from jasper.active_speaker.crossover_v2.door import MeasurementDoorRefused
-        box.loudness_failure = MeasurementDoorRefused("measurement_door_volume_not_open", "unconfirmed")
     elif outcome == 'cancelled':
         box.playback_failure = asyncio.CancelledError()
     elif outcome == 'error':
@@ -311,15 +299,12 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
             assert result['restored'] is True
             if outcome in ('ambient_start_lost', 'ambient_reads_lost', 'missing_spl'):
                 assert result['reason'] == 'mic_feed_lost'
-            if outcome == 'loudness_refused':
-                assert result['reason'] == 'measurement_door_volume_not_open'
             if 'stop' in outcome:
 
                 assert result['reason'] == 'spl_ceiling_exceeded'
                 assert result['readings'][-1][1] == pytest.approx(86.0)
                 assert event_fields(caplog, 'active_speaker.seat_level_result')['reason'] == 'spl_ceiling_exceeded'
     assert box.gain == -8.0
-    assert box.loudness == -15.0
     if outcome == 'bundle_failed':
         assert box.events[-3:] == ['restore_graph', 'close', 'ungate']
         assert not box.programs
