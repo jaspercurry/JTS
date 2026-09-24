@@ -898,7 +898,7 @@ class CamillaController:
 
     def _graph_replaced(self) -> None:
         if (self._host, self._port) == _primary_endpoint():
-            from .active_speaker.audition_claim import graph_replaced  # lazy: only the primary controller consults the audition claim
+            from .active_speaker.audition_claim import graph_replaced  # lazy: import cost (keeps active_speaker out of every camilla importer)
 
             graph_replaced()
 
