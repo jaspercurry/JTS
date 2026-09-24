@@ -416,6 +416,12 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
                    "window_source", "lead_ms", "band_hz", "points_per_octave", "slope_span_octave"}),
         frozenset({"set_id", "take_ids", "candidate_id"}),
         lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),
+    "decay": _ViewRun(
+        _kept_take_argv("decay"),
+        frozenset({"role", "impulse_source", "time_reference", "calibration_applied", "band_filter",
+                   "figure_ranges_db", "noise_margin_db", "envelope_ms", "noise_tail_fraction"}),
+        frozenset({"set_id", "take_ids", "candidate_id"}),
+        lambda p, a: p["figure_ranges_db"] == a["parameters"]["figure_ranges_db"]),
     "compare": _ViewRun(
         _compare_argv,
         frozenset({"roles", "window_ms", "window_source", "lead_ms", "smoothing_fraction", "points_per_octave",

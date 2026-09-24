@@ -329,3 +329,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0354](0354-every-take-keeps-its-measured-impulses.md) | Every take keeps its measured impulses: one `.npz` per take beside its recording, read before any rebuild | accepted |
 | [0355](0355-take-views-read-the-way-rew-reads-traces.md) | Take views read the way REW reads traces: `impulse`, `group-delay` and `compare`; magnitude compares across recordings, timing only within one | accepted |
 | [0356](0356-a-views-artifact-is-a-file.md) | A view's artifact is a file: `--out -` is retired; depth on demand is reading the `out` path the answer names | accepted |
+| [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |

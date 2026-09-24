@@ -12,8 +12,9 @@ import pytest
 from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture, RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, read_preview,
+    REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, decay_report, read_preview,
 )
+from tests.test_audio_measurement_decay import _decay
 
 RATE = 48_000
 ORIGIN = 12_000
@@ -21,15 +22,16 @@ ORIGIN = 12_000
 
 def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: float = 1.0,
           gate_ms: float | None = 8.0, band: tuple[float, float] = (100.0, 20_000.0),
-          record: dict | None = None, echo_ms: float | None = None) -> TakeRead:
-    ir = np.zeros(36_000)
-    ir[ORIGIN + delay] = gain
-    if echo_ms is not None:
-        ir[ORIGIN + delay + round(echo_ms * RATE / 1000)] = gain / 2
+          record: dict | None = None, echo_ms: float | None = None, ir: np.ndarray | None = None) -> TakeRead:
+    if ir is None:
+        ir = np.zeros(36_000)
+        ir[ORIGIN + delay] = gain
+        if echo_ms is not None:
+            ir[ORIGIN + delay + round(echo_ms * RATE / 1000)] = gain / 2
     return TakeRead(PoseCapture(
         capture_id=capture_id, phase=None, wav=None, program=None, program_sha256="",
         azimuth_deg=0.0, vertical_deg=0.0, mark_distance_m=1.0, radiated_band_hz=band,
-        sample_rate=RATE, ir=ir, peak_idx=ORIGIN + delay,
+        sample_rate=RATE, ir=ir, peak_idx=int(np.argmax(np.abs(ir))),
         preprocessing={"impulse_source": "kept", "pre_guard_samples": ORIGIN, "clock_shift_samples": 0.0},
         curve={"gate_window_ms": gate_ms} if gate_ms else {}, record_document=record or {},
     ), role)
@@ -99,3 +101,12 @@ def test_a_forecast_is_compared_through_its_own_window():
     assert report["parameters"]["window_ms"] == 7.0
     assert report["summary"]["level_offset_db"] == pytest.approx(20.0, abs=0.05)
     assert report["summary"]["rms_db"] < 0.05
+
+
+def test_a_take_decays_from_its_own_onset_over_its_swept_band():
+    report = decay_report(_take("t1", ir=_decay(0.4, -80.0), band=(100.0, 20_000.0)))
+    bands = {band["hz"]: band for band in report["summary"]["bands"]}
+
+    assert bands[2000.0]["t20_s"] == pytest.approx(0.4, rel=0.05)
+    assert min(bands) == 125.0
+    assert report["summary"]["kept_after_onset_ms"] == pytest.approx(500.0, abs=5.0)

@@ -30,8 +30,9 @@ the packet did not answer. Never recompute a number it prints.
 
 To look inside one take the way you would in REW, ask `impulse` (arrival,
 onset, noise, decay), `group-delay` (phase and group delay by octave, and the
-excess that EQ cannot remove) or `compare` (b minus a in dB: two takes, two
-roles of one take, or a `judge --preview --out` forecast against its trial).
+excess that EQ cannot remove), `decay` (EDT, T20 and T30 by octave: how long
+each octave rings) or `compare` (b minus a in dB: two takes, two roles of one
+take, or a `judge --preview --out` forecast against its trial).
 Each reads the take's kept impulse through the window its analysis used and
 names it in `parameters`. Timing compares only within one recording.
 

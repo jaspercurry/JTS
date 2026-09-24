@@ -77,6 +77,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "impulse": ViewArtifact("impulse.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_impulse/1", per_take=True),
     "group-delay": ViewArtifact("group_delay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_group_delay/1",
                                 per_take=True),
+    "decay": ViewArtifact("decay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_decay/1", per_take=True),
     "compare": ViewArtifact("compare.json", (
         "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
     ), schema="jts_compare/1", per_take=True),

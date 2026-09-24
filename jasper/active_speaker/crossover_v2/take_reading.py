@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """One take's impulse, read the way a person reads it in Room EQ Wizard: the
-impulse itself, and its timing by frequency. See ADR-0355.
+impulse itself, its timing by frequency, and its decay. See ADR-0355 and ADR-0357.
 
 By default a take is read through the span its own analysis gated at; a
 caller may name another.
@@ -16,6 +16,9 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.decay import (
+    ENVELOPE_MS, FIGURE_RANGES_DB, FILTER_ORDER, NOISE_MARGIN_DB, NOISE_TAIL_FRACTION, octave_decays,
+)
 from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
 from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
@@ -115,6 +118,32 @@ def impulse_report(read: TakeRead, *, span_ms: tuple[float, float] = (5.0, 100.0
         "impulse": _numbers(segment, 8),
         "etc_db": _numbers(energy_time_db(capture.ir, peak_index=capture.peak_idx)[start:end], 2),
         "step": _numbers(step_response(segment), 5),
+    }
+
+
+def decay_report(read: TakeRead, *, step_ms: float = 1.0) -> dict[str, Any]:
+    """How the take's sound decays from its onset, octave by octave (ISO 3382-1)."""
+    capture, rate = read.capture, read.capture.sample_rate
+    onset = impulse_shape(capture.ir, rate, peak_index=capture.peak_idx).onset_index
+    bands = octave_decays(capture.ir, rate, start_index=onset, band_hz=capture.radiated_band_hz)
+    step = max(1, round(step_ms * rate / 1000))
+    return {
+        "parameters": {
+            **read.parameters(), "band_filter": f"octave; Butterworth order {FILTER_ORDER} edges; time-reversed",
+            "figure_ranges_db": {name: list(levels) for name, levels in FIGURE_RANGES_DB.items()},
+            "noise_margin_db": NOISE_MARGIN_DB, "envelope_ms": ENVELOPE_MS,
+            "noise_tail_fraction": NOISE_TAIL_FRACTION,
+        },
+        "capture": capture_row(capture),
+        "summary": {
+            "arrival_ms": _number(read.arrival_ms, 3),
+            "kept_after_onset_ms": round(1000 * (capture.ir.size - onset) / rate, 1),
+            "bands": [{"hz": band.centre_hz, "edt_s": _number(band.edt_s, 3), "t20_s": _number(band.t20_s, 3),
+                       "t30_s": _number(band.t30_s, 3), "decay_range_db": _number(band.decay_range_db, 1),
+                       "noise_crossing_ms": _number(band.noise_crossing_ms, 1)} for band in bands],
+        },
+        "schroeder_step_ms": step_ms,
+        "schroeder_db": [{"hz": band.centre_hz, "db": _numbers(band.schroeder_db[::step], 2)} for band in bands],
     }
 
 
