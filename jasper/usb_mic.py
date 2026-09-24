@@ -230,6 +230,41 @@ def _status_optional_float(value: Any) -> float | None:
         return None
 
 
+def _status_text(value: Any) -> str:
+    return str(value or "")
+
+
+# The relay's own status fields the switch payload carries through, in payload
+# order, each read the way the relay writes it.
+_RELAY_REPORT_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
+    ("source_age_basis", _status_text),
+    ("source_age_scope", _status_text),
+    ("source_age_sample_count", _status_int),
+    ("source_age_samples_appended", _status_int),
+    ("source_age_window_generation", _status_int),
+    ("source_age_window_started_epoch_sec", _status_optional_float),
+    ("source_age_ms_p50", _status_optional_float),
+    ("source_age_ms_p95", _status_optional_float),
+    ("source_age_ms_p99", _status_optional_float),
+    ("packets_lost", _status_int),
+    ("sequence_resets", _status_int),
+    ("sequence_reorders", _status_int),
+    ("sequence_discontinuities", _status_int),
+    ("periods_dropped_streaming", _status_int),
+    ("periods_dropped_idle", _status_int),
+    ("drop_regime_basis", _status_text),
+    ("periods_dropped", _status_int),
+    ("writer_fill_ms", _status_optional_float),
+    ("writer_target_ms", _status_optional_float),
+    ("writer_pcm_rate_hz", _status_int),
+    ("writer_pcm_period_frames", _status_int),
+    ("writer_pcm_buffer_frames", _status_int),
+    ("writer_splices", _status_int),
+    ("writer_xruns", _status_int),
+    ("writer_resets", _status_int),
+)
+
+
 def relay_audio_issue(relay: Mapping[str, Any]) -> str:
     """Return one stable operator-facing reason for unhealthy relay audio."""
 
@@ -249,6 +284,103 @@ def _speaker_name() -> str:
         return DEFAULT_SPEAKER_NAME
 
 
+def _source_intent(source_intent_path: str | os.PathLike[str]) -> tuple[bool, str]:
+    """USB Audio Input's own intent, and why it cannot be read when it cannot."""
+    try:
+        return source_intent_enabled(
+            Source.USBSINK,
+            env_path=os.fspath(source_intent_path),
+        ), ""
+    except RuntimeError as exc:
+        return False, f"USB Audio Input preference is invalid: {exc}"
+
+
+def _blockers(
+    aec_status: Mapping[str, Any],
+    intent: IntentState,
+    source_enabled: bool,
+    source_detail: str,
+    uac2_present: bool,
+) -> list[str]:
+    """Why the switch cannot turn on, first cause first; empty when it can."""
+    microphone = _mapping(aec_status.get("microphone"))
+    active_profile = str(_mapping(aec_status.get("audio_profile")).get("active") or "")
+    blockers: list[str] = []
+    if not intent.valid:
+        blockers.append(intent.detail)
+    if not source_enabled:
+        blockers.append(source_detail or "Turn on USB Audio Input in Sources first.")
+    if not microphone.get("detected"):
+        blockers.append("Connect a supported microphone first.")
+    if active_profile == "direct_mic":
+        blockers.append("Choose an echo-cancelled microphone mode first.")
+    elif not aec_status.get("bridge_active"):
+        blockers.append("Waiting for the echo-cancellation microphone path.")
+    if source_enabled and not uac2_present:
+        blockers.append("Waiting for the USB Audio Input device to be composed.")
+    return blockers
+
+
+def _relay_is_fresh(relay: Mapping[str, Any], now: float) -> bool:
+    try:
+        age = max(0.0, now - float(relay.get("updated_epoch_sec", 0)))
+    except (TypeError, ValueError):
+        return False
+    return bool(relay) and age <= RELAY_STATUS_FRESH_SECONDS
+
+
+def _relay_report(relay: Mapping[str, Any], fresh: bool) -> dict[str, Any]:
+    """The relay's status as the switch payload carries it: its zero values
+    while the relay's status file is stale."""
+    report = relay if fresh else {}
+    return {
+        "host_streaming": bool(report.get("host_streaming")),
+        "relay_audio_healthy": fresh and bool(report.get("audio_healthy", True)),
+        "relay_audio_issue": relay_audio_issue(report),
+        "relay_schema_version": _status_int(report.get("schema_version")),
+        **{key: read(report.get(key)) for key, read in _RELAY_REPORT_FIELDS},
+        "drop_rate_periods_per_sec": float(
+            report.get("drop_rate_periods_per_sec", 0.0) or 0.0
+        ),
+    }
+
+
+def _switch_state(
+    enabled: bool,
+    blockers: list[str],
+    *,
+    advertised: bool,
+    revision_ok: bool,
+    relay_active: bool,
+    relay_fresh: bool,
+    report: Mapping[str, Any],
+    microphone_name: str,
+) -> tuple[str, str]:
+    """The switch's ``(state, detail)``; the first rule that matches wins."""
+    if not enabled:
+        if advertised or not revision_ok:
+            return "stopping", "Removing the computer microphone; USB is reconnecting."
+        return "off", blockers[0] if blockers else "Computer microphone is off."
+    if blockers:
+        return "unavailable", blockers[0]
+    if not advertised:
+        return "starting", "Adding the computer microphone; USB is reconnecting."
+    if not revision_ok:
+        return "degraded", (
+            "The microphone descriptor revision is stale; "
+            "USB needs to reconnect again."
+        )
+    if relay_active and relay_fresh:
+        if report["relay_audio_issue"]:
+            return "degraded", report["relay_audio_issue"]
+        if report["host_streaming"]:
+            return "streaming", f"Your computer is currently using {microphone_name}."
+        return "ready", f"{microphone_name} is available on the connected computer."
+    if relay_active:
+        return "starting", "The computer microphone relay is starting."
+    return "degraded", "The microphone is advertised, but its audio relay is not running."
+
+
 def build_usb_mic_status(
     aec_status: Mapping[str, Any],
     *,
@@ -262,22 +394,7 @@ def build_usb_mic_status(
     """Project desired/advertised/relay truth for the wake-page switch."""
 
     intent = read_intent(intent_path)
-    try:
-        source_enabled = source_intent_enabled(
-            Source.USBSINK,
-            env_path=os.fspath(source_intent_path),
-        )
-        source_detail = ""
-    except RuntimeError as exc:
-        source_enabled = False
-        source_detail = f"USB Audio Input preference is invalid: {exc}"
-
-    microphone = _mapping(aec_status.get("microphone"))
-    audio_profile = _mapping(aec_status.get("audio_profile"))
-    mic_detected = bool(microphone.get("detected"))
-    bridge_active = bool(aec_status.get("bridge_active"))
-    active_profile = str(audio_profile.get("active") or "")
-
+    source_enabled, source_detail = _source_intent(source_intent_path)
     gadget = Path(gadget_path)
     function = gadget / "functions/uac2.usb0"
     uac2_present = function.is_dir()
@@ -290,200 +407,36 @@ def build_usb_mic_status(
     descriptor_revision_ok = (
         not uac2_present or bcd_device == expected_bcd_device
     )
-    relay = _read_relay_status(Path(relay_status_path))
-    current_time = time.time() if now is None else now
-    try:
-        relay_age = max(0.0, current_time - float(relay.get("updated_epoch_sec", 0)))
-    except (TypeError, ValueError):
-        relay_age = float("inf")
-    relay_fresh = bool(relay) and relay_age <= RELAY_STATUS_FRESH_SECONDS
-    relay_active = systemd_active(USBMIC_UNIT)
-    host_streaming = bool(relay.get("host_streaming")) if relay_fresh else False
-    audio_issue = relay_audio_issue(relay) if relay_fresh else ""
-    microphone_name = f"{_speaker_name()} Mic"
-
-    blockers: list[str] = []
-    if not intent.valid:
-        blockers.append(intent.detail)
-    if not source_enabled:
-        blockers.append(source_detail or "Turn on USB Audio Input in Sources first.")
-    if not mic_detected:
-        blockers.append("Connect a supported microphone first.")
-    if active_profile == "direct_mic":
-        blockers.append("Choose an echo-cancelled microphone mode first.")
-    elif not bridge_active:
-        blockers.append("Waiting for the echo-cancellation microphone path.")
-    if source_enabled and not uac2_present:
-        blockers.append("Waiting for the USB Audio Input device to be composed.")
-
-    can_enable = (
-        intent.valid
-        and source_enabled
-        and mic_detected
-        and bridge_active
-        and active_profile != "direct_mic"
-        and uac2_present
+    blockers = _blockers(
+        aec_status, intent, source_enabled, source_detail, uac2_present,
     )
-
-    if not intent.enabled:
-        if advertised or not descriptor_revision_ok:
-            state = "stopping"
-            detail = "Removing the computer microphone; USB is reconnecting."
-        else:
-            state = "off"
-            detail = blockers[0] if blockers else "Computer microphone is off."
-    elif blockers and not can_enable:
-        state = "unavailable"
-        detail = blockers[0]
-    elif not advertised:
-        state = "starting"
-        detail = "Adding the computer microphone; USB is reconnecting."
-    elif not descriptor_revision_ok:
-        state = "degraded"
-        detail = (
-            "The microphone descriptor revision is stale; "
-            "USB needs to reconnect again."
-        )
-    elif relay_active and relay_fresh and audio_issue:
-        state = "degraded"
-        detail = audio_issue
-    elif relay_active and relay_fresh:
-        state = "streaming" if host_streaming else "ready"
-        detail = (
-            f"Your computer is currently using {microphone_name}."
-            if host_streaming
-            else f"{microphone_name} is available on the connected computer."
-        )
-    elif relay_active:
-        state = "starting"
-        detail = "The computer microphone relay is starting."
-    else:
-        state = "degraded"
-        detail = "The microphone is advertised, but its audio relay is not running."
-
+    relay = _read_relay_status(Path(relay_status_path))
+    relay_fresh = _relay_is_fresh(relay, time.time() if now is None else now)
+    relay_active = systemd_active(USBMIC_UNIT)
+    microphone_name = f"{_speaker_name()} Mic"
+    report = _relay_report(relay, relay_fresh)
+    state, detail = _switch_state(
+        intent.enabled,
+        blockers,
+        advertised=advertised,
+        revision_ok=descriptor_revision_ok,
+        relay_active=relay_active,
+        relay_fresh=relay_fresh,
+        report=report,
+        microphone_name=microphone_name,
+    )
     return {
         "schema_version": 1,
         "enabled": bool(intent.enabled),
         "intent_valid": bool(intent.valid),
-        "available": bool(can_enable),
-        "toggle_enabled": bool(can_enable or intent.enabled),
+        "available": not blockers,
+        "toggle_enabled": bool(not blockers or intent.enabled),
         "state": state,
         "detail": detail,
         "advertised": advertised,
         "relay_active": relay_active,
         "relay_fresh": relay_fresh,
-        "host_streaming": host_streaming,
-        "relay_audio_healthy": bool(relay.get("audio_healthy", True))
-        if relay_fresh
-        else False,
-        "relay_audio_issue": audio_issue,
-        "relay_schema_version": _status_int(relay.get("schema_version"))
-        if relay_fresh
-        else 0,
-        "source_age_basis": str(relay.get("source_age_basis") or "")
-        if relay_fresh
-        else "",
-        "source_age_scope": str(relay.get("source_age_scope") or "")
-        if relay_fresh
-        else "",
-        "source_age_sample_count": _status_int(
-            relay.get("source_age_sample_count")
-        )
-        if relay_fresh
-        else 0,
-        "source_age_samples_appended": _status_int(
-            relay.get("source_age_samples_appended")
-        )
-        if relay_fresh
-        else 0,
-        "source_age_window_generation": _status_int(
-            relay.get("source_age_window_generation")
-        )
-        if relay_fresh
-        else 0,
-        "source_age_window_started_epoch_sec": _status_optional_float(
-            relay.get("source_age_window_started_epoch_sec")
-        )
-        if relay_fresh
-        else None,
-        "source_age_ms_p50": _status_optional_float(
-            relay.get("source_age_ms_p50")
-        )
-        if relay_fresh
-        else None,
-        "source_age_ms_p95": _status_optional_float(
-            relay.get("source_age_ms_p95")
-        )
-        if relay_fresh
-        else None,
-        "source_age_ms_p99": _status_optional_float(
-            relay.get("source_age_ms_p99")
-        )
-        if relay_fresh
-        else None,
-        "packets_lost": _status_int(relay.get("packets_lost"))
-        if relay_fresh
-        else 0,
-        "sequence_resets": _status_int(relay.get("sequence_resets"))
-        if relay_fresh
-        else 0,
-        "sequence_reorders": _status_int(relay.get("sequence_reorders"))
-        if relay_fresh
-        else 0,
-        "sequence_discontinuities": _status_int(
-            relay.get("sequence_discontinuities")
-        )
-        if relay_fresh
-        else 0,
-        "periods_dropped_streaming": _status_int(
-            relay.get("periods_dropped_streaming")
-        )
-        if relay_fresh
-        else 0,
-        "periods_dropped_idle": _status_int(
-            relay.get("periods_dropped_idle")
-        )
-        if relay_fresh
-        else 0,
-        "drop_regime_basis": str(relay.get("drop_regime_basis") or "")
-        if relay_fresh
-        else "",
-        "periods_dropped": _status_int(relay.get("periods_dropped"))
-        if relay_fresh
-        else 0,
-        "writer_fill_ms": _status_optional_float(relay.get("writer_fill_ms"))
-        if relay_fresh
-        else None,
-        "writer_target_ms": _status_optional_float(relay.get("writer_target_ms"))
-        if relay_fresh
-        else None,
-        "writer_pcm_rate_hz": _status_int(relay.get("writer_pcm_rate_hz"))
-        if relay_fresh
-        else 0,
-        "writer_pcm_period_frames": _status_int(
-            relay.get("writer_pcm_period_frames")
-        )
-        if relay_fresh
-        else 0,
-        "writer_pcm_buffer_frames": _status_int(
-            relay.get("writer_pcm_buffer_frames")
-        )
-        if relay_fresh
-        else 0,
-        "writer_splices": _status_int(relay.get("writer_splices"))
-        if relay_fresh
-        else 0,
-        "writer_xruns": _status_int(relay.get("writer_xruns"))
-        if relay_fresh
-        else 0,
-        "writer_resets": _status_int(relay.get("writer_resets"))
-        if relay_fresh
-        else 0,
-        "drop_rate_periods_per_sec": float(
-            relay.get("drop_rate_periods_per_sec", 0.0) or 0.0
-        )
-        if relay_fresh
-        else 0.0,
+        **report,
         "source_enabled": source_enabled,
         "uac2_present": uac2_present,
         "p_chmask": p_chmask,
