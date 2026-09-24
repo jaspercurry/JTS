@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .atomic_io import advisory_file_lock, atomic_write_text
-from .camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from .log_event import log_event
 from .output_hardware import load_state as load_output_hardware_state
 from .output_topology import (
@@ -30,6 +29,7 @@ from .output_topology import (
     unknown_output_hardware,
 )
 from .paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
+from .speaker_layout import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from .transition_log import TransitionLog
 
 logger = logging.getLogger(__name__)

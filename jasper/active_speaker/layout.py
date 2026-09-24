@@ -5,7 +5,8 @@
 
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError, OUTPUT_VARIANT_SCHEMA_VERSION, physical_target_id
+from jasper.output_topology import OutputTopology, OutputTopologyError
+from jasper.speaker_layout import OUTPUT_VARIANT_SCHEMA_VERSION, physical_target_id
 
 
 def layout_choices(topology: OutputTopology) -> dict[str, Any]:

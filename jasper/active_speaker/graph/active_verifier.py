@@ -16,10 +16,9 @@ from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DR
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.output_topology import (
+from jasper.output_topology import SUB_CROSSOVER_HZ_HI, SUB_CROSSOVER_HZ_LO
+from jasper.speaker_layout import (
     LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
-    SUB_CROSSOVER_HZ_HI,
-    SUB_CROSSOVER_HZ_LO,
     WAY_COUNT_BY_MAIN_MODE,
     cardioid_cabinet_channels,
     measurement_target_id,

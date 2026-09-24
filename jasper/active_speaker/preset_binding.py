@@ -11,14 +11,13 @@ from dataclasses import replace
 from typing import Any
 
 from jasper.output_topology import (
-    ADJACENT_PAIRS_BY_MAIN_MODE,
-    WAY_COUNT_BY_MAIN_MODE,
     OutputTopology,
     SpeakerChannel,
     SpeakerGroup,
     main_speaker_groups,
     subwoofer_speaker_groups,
 )
+from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE, WAY_COUNT_BY_MAIN_MODE
 
 from ._common import gate as _gate, issue as _issue
 from .crossover_preview import CROSSOVER_PREVIEW_KIND

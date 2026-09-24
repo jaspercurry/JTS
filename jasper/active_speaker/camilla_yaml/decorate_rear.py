@@ -8,7 +8,7 @@ import re
 from typing import Any, Collection, Mapping
 
 from jasper.camilla_emit import emit_gain_filter
-from jasper.output_topology import cardioid_cabinet_channels, measurement_target_id
+from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
 
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration

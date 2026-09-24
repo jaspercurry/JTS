@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper import output_topology_store as output_topology_mod
-from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
+from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputHardware,

@@ -12,7 +12,7 @@ from jasper.active_speaker.profile import (
     SUB_CROSSOVER_HZ_HI as PROFILE_HI,
     SUB_CROSSOVER_HZ_LO as PROFILE_LO,
 )
-from jasper.camilla_emit import (
+from jasper.speaker_layout import (
     BASS_MANAGEMENT_CORNER_HZ_HI as SHARED_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO as SHARED_LO,
 )
@@ -604,7 +604,7 @@ def test_sub_crossover_fc_out_of_range_is_loud_blocker(fc: float) -> None:
 
 def test_sub_crossover_bounds_mirror_profile() -> None:
     # output_topology, the active-speaker profile, AND the one shared corner
-    # home (jasper.camilla_emit) must all agree — since P5 they are bound to the
+    # home (jasper.speaker_layout) must all agree — since P5 they are bound to the
     # same constant, not three independent numbers.
 
     assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0

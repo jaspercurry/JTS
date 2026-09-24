@@ -746,7 +746,7 @@ def _sub_view(*, lp_freq: float) -> gs.GraphView:
 def _sub_guard(view: gs.GraphView) -> bool:
     # The ceiling is the SHARED bass-management upper bound — the exact number
     # runtime_contract passes (SUB_CROSSOVER_HZ_HI, bound to the shared const).
-    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+    from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_HI
 
     return gs.sub_audible_guard_present(
         view,
@@ -759,14 +759,14 @@ def _sub_guard(view: gs.GraphView) -> bool:
 
 
 def test_sub_audible_guard_passes_at_and_below_the_shared_ceiling():
-    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+    from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_HI
 
     assert _sub_guard(_sub_view(lp_freq=80.0))  # the default corner
     assert _sub_guard(_sub_view(lp_freq=BASS_MANAGEMENT_CORNER_HZ_HI))  # AT ceiling
 
 
 def test_sub_audible_guard_fails_above_the_shared_ceiling():
-    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+    from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_HI
 
     # A degenerate high-corner "low-pass" (e.g. 1000 Hz) is full-range to a bass
     # driver — MUST fail closed.

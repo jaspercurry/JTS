@@ -38,7 +38,8 @@ import yaml
 from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.log_event import log_event
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
-from jasper.output_topology import OutputTopology, measurement_target_id
+from jasper.output_topology import OutputTopology
+from jasper.speaker_layout import measurement_target_id
 
 from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from .graph_safety import (

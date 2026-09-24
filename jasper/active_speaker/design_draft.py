@@ -21,7 +21,8 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_text
 from jasper.json_fields import CodedFieldError
 from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.output_topology import ADJACENT_PAIRS_BY_MAIN_MODE, OutputTopology
+from jasper.output_topology import OutputTopology
+from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
 from jasper.paths import resolve_state_path
 from ._common import (
     DRIVER_CLASSES,

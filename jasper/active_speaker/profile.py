@@ -16,21 +16,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from jasper.camilla_emit import (
+from jasper.speaker_layout import (
+    ADJACENT_PAIRS_BY_MAIN_MODE,
     BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
     BASS_MANAGEMENT_CROSSOVER_ORDER,
-)
-from jasper.json_fields import CodedFieldError, JsonFields
-from jasper.output_topology import (
-    ADJACENT_PAIRS_BY_MAIN_MODE,
     LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     MAIN_DRIVER_ROLES_BY_MODE,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     SUPPORTED_OUTPUT_VARIANTS,
     WAY_COUNT_BY_MAIN_MODE,
 )
+from jasper.json_fields import CodedFieldError, JsonFields
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
@@ -60,7 +58,7 @@ LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
 }
 
 # Local-subwoofer bass-management crossover corner. BOUND TO the one shared
-# bass-management corner definition (jasper.camilla_emit) — the same values the
+# bass-management corner definition (jasper.speaker_layout) — the same values the
 # safety guard references — so the corner cannot drift. The public spelling
 # stays for this module's importers (graph_safety, runtime_contract,
 # output_topology's mirror test).

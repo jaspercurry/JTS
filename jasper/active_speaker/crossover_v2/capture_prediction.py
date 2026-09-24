@@ -20,7 +20,7 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_bank
 from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
 from jasper.active_speaker.prediction_document import CAPTURE_PREDICTION_KIND
-from jasper.output_topology import measurement_target_id
+from jasper.speaker_layout import measurement_target_id
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS

@@ -24,7 +24,8 @@ from .refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
 )
-from jasper.output_topology import measurement_target_id, topology_is_subless_passive_mains
+from jasper.output_topology import topology_is_subless_passive_mains
+from jasper.speaker_layout import measurement_target_id
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import FrequencyBand

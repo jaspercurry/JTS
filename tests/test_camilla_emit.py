@@ -271,7 +271,7 @@ def test_master_gain_pipeline_right_names_differ_and_parse():
 
 
 def test_bass_management_corner_shared_constant_values():
-    from jasper.camilla_emit import (
+    from jasper.speaker_layout import (
         BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
         BASS_MANAGEMENT_CORNER_HZ_HI,
         BASS_MANAGEMENT_CORNER_HZ_LO,
@@ -300,7 +300,7 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
         SUB_CROSSOVER_HZ_LO,
         SUB_CROSSOVER_ORDER,
     )
-    from jasper.camilla_emit import (
+    from jasper.speaker_layout import (
         BASS_MANAGEMENT_CORNER_HZ_DEFAULT,
         BASS_MANAGEMENT_CORNER_HZ_HI,
         BASS_MANAGEMENT_CORNER_HZ_LO,
@@ -339,6 +339,6 @@ def test_audible_sub_guard_ceiling_uses_the_shared_upper_bound():
     they to drift apart, a wider-than-legal sub low-pass could slip past.
     """
     from jasper.active_speaker.profile import SUB_CROSSOVER_HZ_HI
-    from jasper.camilla_emit import BASS_MANAGEMENT_CORNER_HZ_HI
+    from jasper.speaker_layout import BASS_MANAGEMENT_CORNER_HZ_HI
 
     assert SUB_CROSSOVER_HZ_HI == BASS_MANAGEMENT_CORNER_HZ_HI == 200.0
