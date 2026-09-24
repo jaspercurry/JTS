@@ -35,6 +35,7 @@ from jasper.active_speaker.environment import (
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
+    path_safety_evidence_payload,
     requirements_payload,
     write_path_safety_evidence,
 )
@@ -271,7 +272,7 @@ def _cmd_environment_probe(args: argparse.Namespace) -> int:
     payload = probe_active_speaker_environment(
         config_path=args.config,
         statefile_path=args.statefile,
-        path_safety_evidence_path=args.path_safety_evidence,
+        path_safety=path_safety_evidence_payload(args.path_safety_evidence),
         run_config_check=args.check_config,
     )
     if args.json:

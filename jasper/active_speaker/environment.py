@@ -12,7 +12,6 @@ CamillaDSP websocket client, no tone playback, and no state mutation.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -35,8 +34,6 @@ from .camilla_yaml import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     forbidden_playback_token,
 )
-from .path_safety import evaluate_path_safety_evidence
-from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
 ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
@@ -522,61 +519,6 @@ def _validation_payload(
     return validate(path).to_dict()
 
 
-def _path_safety_payload(path: str | Path | None) -> dict[str, Any]:
-    if path is None:
-        return {
-            "provided": False,
-            "status": "missing",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_missing",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_missing",
-                    "active-speaker path-safety evidence was not provided",
-                )
-            ],
-        }
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-    except OSError as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "unreadable",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_unreadable",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_unreadable",
-                    f"could not read active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    try:
-        payload = json.loads(raw)
-        report = evaluate_path_safety_evidence(payload)
-    except (json.JSONDecodeError, ActiveSpeakerConfigError) as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "invalid",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_invalid",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_invalid",
-                    f"invalid active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    report["provided"] = True
-    report["path"] = str(path)
-    return report
-
-
 def _combine_issues(*sections: dict[str, Any]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for section in sections:
@@ -652,14 +594,16 @@ def probe_active_speaker_environment(
     *,
     config_path: str | Path | None = None,
     statefile_path: str | Path | None = None,
-    path_safety_evidence_path: str | Path | None = None,
+    path_safety: dict[str, Any],
     run_config_check: bool = True,
     runner: Runner = _default_runner,
     validate: Callable[
         [str | Path], CamillaConfigValidationResult
     ] = validate_camilla_config,
 ) -> dict[str, Any]:
-    """Build a versioned, read-only active-speaker environment report."""
+    """Build a versioned, read-only active-speaker environment report around
+    ``path_safety``, the evaluated evidence
+    (:func:`~.path_safety.path_safety_evidence_payload`)."""
 
     alsa = probe_alsa_playback_devices(runner=runner)
     camilla_config = _read_config_summary(
@@ -671,8 +615,6 @@ def probe_active_speaker_environment(
         run_config_check=run_config_check,
         validate=validate,
     )
-    path_safety = _path_safety_payload(path_safety_evidence_path)
-
     load_blockers = _combine_issues(alsa, camilla_config, path_safety)
     validation_status = validation.get("status")
     if validation_status not in {"valid"}:
