@@ -142,6 +142,8 @@ class FakeTts:
         flush_error: BaseException | None = None,
         flush_ack: dict | None = None,
         on_drain: Callable[[], Awaitable[None]] | None = None,
+        on_meter_pause: Callable[[float], Awaitable[None]] | None = None,
+        on_meter_resume: Callable[[], Awaitable[None]] | None = None,
         on_call: Callable[[str], None] | None = None,
     ) -> None:
         self._accept = accept
@@ -151,6 +153,8 @@ class FakeTts:
         self._flush_error = flush_error
         self._flush_ack = flush_ack
         self._on_drain = on_drain
+        self._on_meter_pause = on_meter_pause
+        self._on_meter_resume = on_meter_resume
         self._on_call = on_call
         self.calls: list[str] = []
         self.prepares: list[dict] = []
@@ -210,12 +214,15 @@ class FakeTts:
     async def pause_content_meter_for_measurement(
         self, deadline_monotonic: float,
     ) -> None:
-        del deadline_monotonic
         self._note("pause_content_meter_for_measurement")
+        if self._on_meter_pause is not None:
+            await self._on_meter_pause(deadline_monotonic)
 
     async def resume_content_meter(self) -> None:
         self._note("resume_content_meter")
         self.meter_resumes += 1
+        if self._on_meter_resume is not None:
+            await self._on_meter_resume()
 
     async def end_segment(self) -> None:
         self._note("end_segment")
