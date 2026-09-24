@@ -220,7 +220,7 @@ def emit_measurement_graph(
 ) -> str:
     """Compile the protected neutral graph for separate driver analysis.
 
-    Trims arrive resolved by ``baseline_profile.measured_level_trims``. Device
+    Trims arrive resolved by ``driver_base_trim.measured_level_trims``. Device
     fields travel together because ring capture and playback share one wire.
     """
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)

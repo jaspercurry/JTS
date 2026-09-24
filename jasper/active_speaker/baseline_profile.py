@@ -15,40 +15,16 @@ from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_apply import (
     same_config_file,
 )
-from jasper.log_event import log_event
 from jasper.output_topology import (
     canonical_fingerprint as _fingerprint,
 )
 
-from ._common import coerce_finite_float
 from .camilla_yaml import (
     _branch_context,
     linearization_headroom_db,
 )
-from .crossover_contract import (
-    measured_level_match_applied,
-)
-from .crossover_preview import crossover_preview_fingerprint
-from .driver_base_trim import (
-    BANK_CLEAR_FAILED,
-    BANK_CORRECTION_ENTRY_UNREADABLE,
-    BANK_CORRECTIONS_UNREADABLE,
-    BANK_PARTLY_MEASURED,
-    BANK_READINESS_UNREADABLE,
-    BANK_UNMEASURED,
-    BANK_WRITE_FAILED,
-    BANK_WRITE_REFUSED,
-    REFUSE_NO_FRAME,
-    DriverBaseTrimError,
-    banked_base_trims,
-    clear_base_trim,
-    load_base_trim,
-    write_base_trim,
-)
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
-from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
-from .profile import snapshot_declares_single_branch
-from . import passive_profile as _passive
+from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from .state_paths import (
     baseline_profile_state_path,
 )
@@ -63,11 +39,6 @@ PROVENANCE_MANUAL = "manual"
 PROVENANCE_MEASURED = "measured"
 PROVENANCE_AUTHORED_BY_MODEL = "authored_by_model"
 PROVENANCE_SET_BY_USER = "set_by_user"
-
-#: ``corrections_source`` values an operator set by hand. Every other source
-#: that is not ``measured`` fell back to weaker evidence (the datasheet, an
-#: estimate, a preserved manual crossover).
-_PINNED_GAIN_SOURCES = frozenset({"operator_pinned", "explicit"})
 
 
 def applied_bass_extension(profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -101,52 +72,6 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
         ),
         "recomposition_snapshot": hashed_snapshot,
     })
-
-
-def measured_level_trims(
-    preset: ActiveSpeakerPreset,
-    crossover_preview: Mapping[str, Any] | None = None,
-    *,
-    design_draft: Mapping[str, Any] | None = None,
-) -> tuple[dict[str, float], dict[str, Any]]:
-    """This box's banked per-driver level offsets for the declaration in hand.
-
-    The one owner of *"what does this box's own evidence say the per-driver
-    level offsets are?"*, which the crossover-v2 MEASUREMENT graph levels by.
-    ``meta['source']`` names the evidence that answered, which is what a caller
-    discloses beside the trims; empty trims mean none did (``meta['base_trim']``
-    says why), and no caller may substitute an estimate for them.
-    """
-    roles = required_driver_roles(preset.way_count)
-    declaration_fingerprint = (
-        crossover_preview_fingerprint(crossover_preview, design_draft)
-        if isinstance(crossover_preview, Mapping) and crossover_preview
-        else None
-    )
-    base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
-    if not base_trims:
-        return {}, {"base_trim": base_trim_meta}
-    banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
-    return base_trims, {
-        "source": "banked_base_trim",
-        "base_trim": base_trim_meta,
-        "newest_capture_at": base_trim_meta.get("measured_at"),
-        # The record's own trim source, not a second word for it: the
-        # apply that banked it stamped WHICH evidence levelled the
-        # graph, and this ledger repeats that rather than minting a
-        # comparison of its own.
-        "comparison": base_trim_meta.get("trim_source"),
-        "groups_total": len(banked_group_ids),
-        "groups_measured": len(banked_group_ids),
-        "measured_group_ids": list(banked_group_ids),
-        # Empty because the record banks an ALREADY-APPLIED level
-        # match: the per-crossover evidence behind it lives with the
-        # profile that was applied, which ``base_trim.trim_source``
-        # names.
-        "deltas": [],
-        "incomparable_groups": [],
-        "trims": dict(base_trims),
-    }
 
 
 def _load_saved_state(path: Path) -> dict[str, Any] | None:
@@ -469,208 +394,3 @@ def applied_profile_displacement(
     # until an adversarial gate caught them. Its own docstring carries the
     # resolve-vs-string-compare reasoning.
     return "" if same_config_file(running, recorded) else APPLIED_PROFILE_DISPLACED
-
-
-def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
-    """Bank (or clear) the base trim the applied profile is actually playing.
-
-    The single writer of
-    :mod:`jasper.active_speaker.driver_base_trim`'s record, and the fix for the
-    blind run's F-1: a box could apply a measured level match, report
-    ``corrections_source: measured``, and still refuse a ``--level-matched``
-    walk ``walk_level_match_no_evidence``, because the resolver
-    (:func:`measured_level_trims`) reads only the banked record — never a
-    candidate's applied corrections. Banking here makes the applied trim the
-    very thing the resolver already looks for, so the walk door and the
-    acoustic confirm unblock with no change of their own.
-
-    Three answers, not two, and the middle one is the whole point:
-
-    * **every** role sourced ``measured`` (beside ``level_match.applied``) —
-      BANK. The profile is levelled by measurement end to end.
-    * **some measured, and every other role OPERATOR-PINNED** — leave the bank
-      ALONE, neither banking nor clearing. Pinning one driver by hand does not
-      un-measure the speaker, so the prior full measurement is still the best
-      evidence anyone has and destroying it on the strength of a pin loses
-      real information.
-    * **anything else** — CLEAR. No measured role at all, or a role that fell
-      back to the datasheet (``sensitivity``/``estimate``) or to a preserved
-      manual crossover. That is weaker evidence, not a pin, and a banked trim
-      the box is not playing is the same lie pointing the other way.
-
-    The pin/fallback line is drawn by :data:`_PINNED_GAIN_SOURCES` rather than
-    by the ANY predicate alone, because ``level_match.applied`` is ITSELF only
-    "some role was measured" — see the ANY-arm comment below.
-
-    Fail-soft by contract, exactly as :func:`promote_applied_baseline_candidate`
-    is: the graph is applied and read back by the time this runs, so a
-    statefile that cannot be written must never turn a successful apply into a
-    failure. The speaker then behaves as it did before this seam existed.
-    """
-    def emit(result: str, reason: str, detail: str, *, level: int) -> None:
-        log_event(
-            logger,
-            "dsp.baseline_base_trim_banked",
-            level=level,
-            result=result,
-            reason=reason,
-            detail=detail,
-        )
-
-    def refused(reason: str, detail: str) -> None:
-        emit("failed", reason, detail, level=logging.WARNING)
-
-    def left_standing(reason: str, detail: str) -> None:
-        emit("left_standing", reason, detail, level=logging.INFO)
-
-    def cleared(reason: str, detail: str) -> None:
-        if clear_base_trim():
-            # A successful clear is a state change an operator must be able to
-            # see: without this, the only evidence that a bank was dropped was
-            # the absence of the file.
-            emit("cleared", reason, detail, level=logging.INFO)
-            return
-        # The clear could not HAPPEN (EACCES, a read-only /var/lib), which is
-        # the opposite of nothing-to-clear: a banked trim survives an apply
-        # that is not playing it, and a --level-matched walk would level its
-        # graph by numbers nothing applies.
-        refused(BANK_CLEAR_FAILED, "a banked trim survived an apply it does not match")
-
-    # Grouping artifacts must not replace the solo trim record.
-    snapshot = candidate.get("recomposition_snapshot")
-    if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
-        return
-
-    # A base trim is a FRAME — one role's level relative to the others.
-    if snapshot_declares_single_branch(snapshot):
-        left_standing(REFUSE_NO_FRAME, "one driver declared, so no roles to level")
-        return
-
-    corrections = candidate.get("corrections")
-    sources = candidate.get("corrections_source")
-    level_match = candidate.get("level_match")
-    if not isinstance(corrections, Mapping) or not isinstance(sources, Mapping):
-        refused(
-            BANK_CORRECTIONS_UNREADABLE,
-            "the applied profile names no corrections",
-        )
-        return
-    measured = (
-        isinstance(level_match, Mapping)
-        and level_match.get("applied") is True
-        and bool(corrections)
-        and all(sources.get(role) == "measured" for role in corrections)
-    )
-    if not measured:
-        # The middle arm, and it is narrower than "not every role measured".
-        # `level_match.applied` is ALREADY only "some role was measured" (see
-        # this module's own `level_match["applied"] = bool(measured_notes)`),
-        # so the contract's ANY predicate alone cannot tell an operator PIN
-        # from a measurement that was REFUSED and fell back to the datasheet.
-        # Those are opposites: a pin leaves the speaker measured, while a
-        # `sensitivity`/`estimate` fallback IS the weaker evidence the clear
-        # exists for.
-        if (
-            measured_level_match_applied(candidate)
-            and all(str(sources.get(role) or "") in _PINNED_GAIN_SOURCES
-                    for role in corrections if sources.get(role) != "measured")
-        ):
-            left_standing(
-                BANK_PARTLY_MEASURED,
-                "some roles are operator-pinned; the prior banked trim "
-                "remains the best measurement of this speaker",
-            )
-            return
-        cleared(
-            BANK_UNMEASURED,
-            "the applied profile is not level-matched by measurement",
-        )
-        return
-    assert isinstance(level_match, Mapping)  # narrowed by `measured` above
-    readiness = candidate.get("automatic_candidate")
-    source = candidate.get("source")
-    if (
-        not isinstance(readiness, Mapping)
-        or not readiness.get("measured_group_ids")
-        or not isinstance(source, Mapping)
-    ):
-        # Leave the bank standing rather than clearing it. A frozen applied
-        # profile persisted before `_frozen_applied_profile` carried
-        # `automatic_candidate` reaches the restore leg in exactly this shape,
-        # and it is a MEASURED profile whose readiness block simply was not
-        # kept — not evidence that the speaker was never measured.
-        left_standing(
-            BANK_READINESS_UNREADABLE,
-            "the applied profile names no readiness or source block",
-        )
-        return
-    trims_db: dict[str, float] = {}
-    for role, entry in corrections.items():
-        gain = (
-            coerce_finite_float(entry.get("gain_db"))
-            if isinstance(entry, Mapping)
-            else None
-        )
-        if gain is None:
-            # Typed refusal, never an exception: `float((entry or {}).get(...))`
-            # raised AttributeError on a non-Mapping entry, and AttributeError
-            # is not something a fail-soft seam catches — it escaped past
-            # `persist_applied_baseline_profile` and failed a successful apply.
-            left_standing(
-                BANK_CORRECTION_ENTRY_UNREADABLE,
-                f"correction {str(role)!r} names no finite gain_db",
-            )
-            return
-        trims_db[str(role)] = gain
-    # The record's ``measured_at`` is the EVIDENCE time, never this persist's
-    # wall clock: this seam re-runs on frozen candidates (the apply retry
-    # before the idempotent early-return, any re-apply of an older candidate),
-    # and stamping now would re-date old evidence. Candidates carry their own
-    # recency in the ledger; a frozen candidate from before that field existed
-    # inherits the standing record's time (never re-dated forward), and only a
-    # box with no dated evidence and no record lets the writer mint now.
-    evidence_at = str(level_match.get("newest_capture_at") or "") or None
-    if evidence_at is None:
-        existing = load_base_trim()
-        if existing is not None:
-            evidence_at = str(existing.get("measured_at") or "") or None
-    try:
-        record = write_base_trim(
-            trims_db=trims_db,
-            roles=sorted(trims_db),
-            speaker_group_ids=readiness.get("measured_group_ids") or [],
-            declaration_fingerprint=str(
-                source.get("crossover_preview_fingerprint") or ""
-            ),
-            trim_source=str(level_match.get("comparison") or ""),
-            # WHICH CHAIN this trim was co-fitted with (#3479). The resolving
-            # candidate's own fingerprint, already on the profile's source
-            # block — passed through rather than derived, because the frame
-            # exists at fit time and no later reader can reconstruct it. A
-            # profile that names none banks as "frame unknown" rather than as
-            # the bare frame.
-            chain_fingerprint=_passive.measured_candidate_fingerprint(source) or None,
-            measured_at=evidence_at,
-        )
-    except (OSError, DriverBaseTrimError) as exc:
-        refused(
-            exc.reason if isinstance(exc, DriverBaseTrimError) else BANK_WRITE_FAILED,
-            str(exc),
-        )
-        # A measured graph is now playing and could not be banked, so whatever
-        # was banked before describes some OTHER apply. Absent beats wrong:
-        # the resolver's empty answer is conservative, while a stale record
-        # levels the graph by numbers nothing is playing.
-        cleared(BANK_WRITE_REFUSED, "the measured trim could not be banked")
-        return
-    log_event(
-        logger,
-        "dsp.baseline_base_trim_banked",
-        result="ok",
-        trims=" ".join(
-            f"{role}={value:.1f}"
-            for role, value in sorted(record["trims_db"].items())
-        ),
-        trim_source=record["trim_source"],
-        declaration=record["declaration_fingerprint"][:12],
-    )

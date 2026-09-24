@@ -1270,7 +1270,7 @@ async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_
     topology, candidate, cam, config_dir = active_sound_box
     before = baseline_profile.load_baseline_profile_state()
     bookkeeping = mock.Mock(side_effect=AssertionError("sound save ran apply bookkeeping"))
-    monkeypatch.setattr(baseline_apply, "_bank_applied_base_trim", bookkeeping)
+    monkeypatch.setattr(baseline_apply, "bank_applied_base_trim", bookkeeping)
     declaration = load_tuning_declaration(topology)
     save_sound_settings(SoundSettings(headroom_trim_db=3.0))
     profile_path = tmp_path / "sound.json"

@@ -20,10 +20,9 @@ from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology, canonical_fingerprint as _fingerprint
 
 from ._common import issue as _issue
-from .baseline_profile import (
-    _bank_applied_base_trim, applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state,
-)
+from .baseline_profile import applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state
 from .baseline_record import protection_projection
+from .driver_base_trim import bank_applied_base_trim
 from .state_paths import (
     baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path, config_text_sha256,
 )
@@ -144,7 +143,7 @@ def persist_applied_baseline_profile(
 ) -> dict[str, Any]:
     if apply_state.get("result") != "success":
         raise ValueError("successful apply proof is required")
-    _bank_applied_base_trim(candidate)
+    bank_applied_base_trim(candidate)
     target = baseline_profile_state_path(state_path)
     existing = load_baseline_profile_state(target)
     identity = baseline_candidate_fingerprint(candidate)

@@ -223,7 +223,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
         "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
     })
     preset = resolve_commission_preset(topology, crossover_preview=preview)
-    trims, meta = baseline_profile_mod.measured_level_trims(preset, preview, design_draft=draft)
+    trims, meta = dbt.measured_level_trims(preset, preview, design_draft=draft)
     assert trims == {"woofer": 0.0, "tweeter": -6.0}
     assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
 
@@ -372,7 +372,7 @@ def test_baseline_config_emits_single_net_inversion_not_double():
 # --- lifecycle events (lane E, docs/active-crossover-information-design.md
 # "Structured events") -------------------------------------------------------
 
-_BASELINE_LOGGER = "jasper.active_speaker.baseline_profile"
+_BASELINE_LOGGER = "jasper.active_speaker.driver_base_trim"
 
 
 
@@ -835,7 +835,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     if source == "composed":
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
-    monkeypatch.setattr(baseline_apply, "_bank_applied_base_trim", lambda *a: None)
+    monkeypatch.setattr(baseline_apply, "bank_applied_base_trim", lambda *a: None)
     prepared = baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})

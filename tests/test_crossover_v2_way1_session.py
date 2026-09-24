@@ -253,11 +253,10 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
     """
     import logging
 
-    from jasper.active_speaker import baseline_profile as baseline_profile_mod
     from jasper.active_speaker import driver_base_trim as dbt
 
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
-    caplog.set_level(logging.INFO, logger=baseline_profile_mod.logger.name)
+    caplog.set_level(logging.INFO, logger=dbt.logger.name)
 
     baseline_apply.persist_applied_baseline_profile(
         _way1_ready_to_apply_payload(tmp_path),

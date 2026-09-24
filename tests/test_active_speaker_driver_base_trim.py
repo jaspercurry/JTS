@@ -228,7 +228,7 @@ def test_banked_trims_are_returned_when_the_declaration_matches(tmp_path: Path):
     assert meta["declaration_fingerprint"] == "a" * 64
     assert meta["speaker_group_ids"] == ["mono"]
     # Derivable from `speaker_group_ids` by construction (post-#3388); the
-    # one caller (`baseline_profile.measured_level_trims`) already computes
+    # one caller (`driver_base_trim.measured_level_trims`) already computes
     # its own count rather than reading this one.
     assert "groups_total" not in meta
     assert meta["trim_source"] == "strict_measured_candidate"

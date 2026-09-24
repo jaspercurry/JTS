@@ -258,7 +258,7 @@ _HOST_STATE_FILES = (
     # identity.reader.resolve_hostname's JASPER_HOSTNAME source; absent falls back to the
     # env-or-DEFAULT_HOSTNAME baseline.
     ("JASPER_IDENTITY_FILE", "identity.env"),
-    # baseline_profile.measured_level_trims reads this; absent means no measured driver level.
+    # driver_base_trim.measured_level_trims reads this; absent means no measured driver level.
     ("JASPER_ACTIVE_SPEAKER_DRIVER_BASE_TRIM_STATE", "driver_base_trim.json"),
     # output_hardware.load_state defaults to /run/jasper-output-hardware/...; absent means
     # load_state() returns None, the hermetic baseline.

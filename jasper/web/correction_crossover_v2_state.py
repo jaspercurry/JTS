@@ -287,7 +287,7 @@ def _resolve_measurement_level_trims(
     nothing: no statefile is read and no preview is loaded.
 
     The answer is NOT decided here:
-    :func:`~jasper.active_speaker.baseline_profile.measured_level_trims` owns
+    :func:`~jasper.active_speaker.driver_base_trim.measured_level_trims` owns
     it, and this function only loads the declaration that answer is keyed to.
 
     **No/unreadable evidence answers empty WITHOUT raising, and there is no
@@ -303,7 +303,7 @@ def _resolve_measurement_level_trims(
     """
     if not spec.level_matched:
         return {}, ""
-    from jasper.active_speaker.baseline_profile import measured_level_trims
+    from jasper.active_speaker.driver_base_trim import measured_level_trims
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
 
