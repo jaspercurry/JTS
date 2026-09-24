@@ -197,6 +197,9 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
         role = group["capture_basis"].get("role") or "summed"
         assert any(f"impulse {tmp_path} --set {group['set_id']} --take " in line and line.endswith(f"--role {role}`")
                    for line in index.splitlines())
+    curveless = {**manifest, "sets": [{**group, "takes": [{**take, "curve": None} for take in group["takes"]]}
+                                      for group in manifest["sets"]]}
+    assert "jasper-round-views impulse" not in packet_index(packet, tmp_path, [], curveless)
 
 
 @pytest.mark.parametrize("change", [

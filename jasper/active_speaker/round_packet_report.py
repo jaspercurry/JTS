@@ -130,7 +130,9 @@ def packet_index(
         if len(bearings) >= 2:
             commands.append(shlex.join(["jasper-round-views", "sweep", str(target), "--scope", "round", "--set", group["set_id"]]))
         role = str(set_takes.capture_basis.get("role") or "summed")
-        for take in (set_takes.on_axis or tuple(take for take in set_takes.takes if take["selected"]))[:1]:
+        # A take with no curve (a CHECK take plays pilots only) has no band to read.
+        for take in [take for take in set_takes.on_axis or set_takes.takes
+                     if take["selected"] and take.get("curve")][:1]:
             commands += [shlex.join(["jasper-round-views", view, str(target), "--set", group["set_id"],
                                      "--take", take["take_id"], "--role", role])
                          for view in ("impulse", "group-delay")]
