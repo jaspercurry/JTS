@@ -111,8 +111,7 @@ def read_preflight_facts(
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
         # A driver is offered only when the near-field sweep covers an octave of its band.
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
-                                  if driver in context.driver_bands
-                                  and 2 * context.driver_bands[driver].lower_hz <= NEAR_FIELD_SWEEP_BAND_HZ[1])
+                                  if 2 * context.driver_bands[driver].lower_hz <= NEAR_FIELD_SWEEP_BAND_HZ[1])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
     )
