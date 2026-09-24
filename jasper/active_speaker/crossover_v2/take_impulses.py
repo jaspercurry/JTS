@@ -38,9 +38,6 @@ class TakeImpulsesUnreadable(ValueError):
     """A take names impulses its bundle cannot give back as written."""
 
 
-REFUSE_TAKE_IMPULSES_UNREADABLE = "take_impulses_unreadable"
-
-
 @dataclass(frozen=True)
 class TakeImpulse:
     """One response's impulse within a take: its role, which occurrence, the samples."""
