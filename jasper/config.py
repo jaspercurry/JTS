@@ -159,6 +159,33 @@ def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
     return MappingProxyType(result)
 
 
+def _weather_defaults() -> tuple[str, float | None, float | None, str]:
+    """``(location, lat, lon, display_name)`` for a weather question that names
+    no place. With neither weather coordinate set, a complete transit location
+    stands in (its display name too, when none is set); an unset display name
+    falls back to ``location``."""
+    location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
+    lat = _env_optional_float(WEATHER_LAT_ENV)
+    lon = _env_optional_float(WEATHER_LON_ENV)
+    display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
+    if lat is None and lon is None:
+        transit_lat_raw = os.environ.get(TRANSIT_LAT_ENV, "").strip()
+        transit_lon_raw = os.environ.get(TRANSIT_LON_ENV, "").strip()
+        if transit_lat_raw and transit_lon_raw:
+            try:
+                lat = float(transit_lat_raw)
+                lon = float(transit_lon_raw)
+            except ValueError:
+                lat = None
+                lon = None
+            else:
+                if not display_name:
+                    display_name = _env(TRANSIT_DISPLAY_NAME_ENV, "").strip()
+    if not display_name:
+        display_name = location
+    return location, lat, lon, display_name
+
+
 def _validate(cfg: "Config") -> "Config":
     if not 0.0 <= cfg.wake_threshold <= 1.0:
         raise VoiceConfigError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
@@ -457,27 +484,7 @@ class Config:
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
         hostname = resolve_hostname()
-        weather_default_location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
-        weather_default_lat = _env_optional_float(WEATHER_LAT_ENV)
-        weather_default_lon = _env_optional_float(WEATHER_LON_ENV)
-        weather_default_display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
-        if weather_default_lat is None and weather_default_lon is None:
-            transit_lat_raw = os.environ.get(TRANSIT_LAT_ENV, "").strip()
-            transit_lon_raw = os.environ.get(TRANSIT_LON_ENV, "").strip()
-            if transit_lat_raw and transit_lon_raw:
-                try:
-                    weather_default_lat = float(transit_lat_raw)
-                    weather_default_lon = float(transit_lon_raw)
-                except ValueError:
-                    weather_default_lat = None
-                    weather_default_lon = None
-                else:
-                    if not weather_default_display_name:
-                        weather_default_display_name = _env(
-                            TRANSIT_DISPLAY_NAME_ENV, "",
-                        ).strip()
-        if not weather_default_display_name:
-            weather_default_display_name = weather_default_location
+        weather_location, weather_lat, weather_lon, weather_name = _weather_defaults()
         return _validate(cls(
             voice_provider=provider,
             hostname=hostname,
@@ -492,15 +499,7 @@ class Config:
             openai_live_model=_env("JASPER_OPENAI_LIVE_MODEL", default_model_id("openai_live")),
             openai_live_voice=_env("JASPER_OPENAI_LIVE_VOICE", default_voice_id("openai_live")),
             openai_live_backend_model=_env("JASPER_OPENAI_LIVE_BACKEND_MODEL", default_extra_value("openai_live", "backend_model")),
-            # Default model is the post-2026-05-07 reasoning-capable
-            # GA: gpt-realtime-2 ($32 / $64 / $0.40 per 1M audio tokens
-            # in / out / cached). For the cheaper non-reasoning sibling
-            # set JASPER_OPENAI_MODEL=gpt-realtime-mini ($10 / $20 /
-            # $0.30) — same wire format, no `reasoning.effort` field.
             openai_model=_env("JASPER_OPENAI_MODEL", default_model_id("openai")),
-            # OpenAI Realtime voices include marin, cedar, alloy, ash,
-            # ballad, coral, echo, sage, shimmer, verse. `marin` is the
-            # default in the post-GA SDK quickstarts.
             openai_voice=_env("JASPER_OPENAI_VOICE", default_voice_id("openai")),
             # Reasoning effort for gpt-realtime-2: minimal | low |
             # medium | high | xhigh. Default `low` matches the SDK
@@ -520,13 +519,7 @@ class Config:
                 _env("JASPER_OPENAI_NOISE_REDUCTION", "auto"),
             ),
             grok_api_key=grok_key,
-            # xAI Grok Voice Agent. The `grok-voice-think-fast-1.0`
-            # model claims sub-second latency and is OpenAI-Realtime-
-            # protocol-compatible per xAI's docs (we run it through the
-            # same adapter as OpenAI with a base-URL override).
             grok_model=_env("JASPER_GROK_MODEL", default_model_id("grok")),
-            # Grok voice list is disjoint from OpenAI's: eve, ara, rex,
-            # sal, leo. Default is `eve` per xAI docs.
             grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
             # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
             # (e.g. "hey_jarvis", "alexa") or an absolute path to a
@@ -779,14 +772,11 @@ class Config:
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.
-            weather_default_location=weather_default_location,
-            weather_default_lat=weather_default_lat,
-            weather_default_lon=weather_default_lon,
-            weather_default_display_name=weather_default_display_name,
+            weather_default_location=weather_location,
+            weather_default_lat=weather_lat,
+            weather_default_lon=weather_lon,
+            weather_default_display_name=weather_name,
             weather_units=_env(WEATHER_UNITS_ENV, "celsius"),
-            # (Transit — subway / bus / Citi Bike — is no longer parsed here:
-            # each jasper.transit provider reads its own JASPER_SUBWAY_* /
-            # JASPER_BUS_* / JASPER_CITIBIKE_* keys in build_client(env).)
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /ha
             # wizard writes these to /var/lib/jasper-intsecrets/home_assistant.env;
