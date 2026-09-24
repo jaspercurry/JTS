@@ -213,177 +213,178 @@ async def _resolve_query(
     sp, query: str, kind: str,
     configured_playlists: "dict[str, str] | None" = None,
 ) -> "tuple[str, str, str] | None":
-    """Resolve a 'play X' query to (uri, resolved_kind, display_name).
-
-    Strategy:
-      - kind="playlist"  → fuzzy-match user library (loose threshold,
-                            tolerant of voice-to-text mishears); fall
-                            back to public playlist search.
-      - kind in {artist, album} → field-qualified Spotify search so the
-                            query matches the entity NAME, not the
-                            contents of its discography.
-      - kind="track"     → unqualified Spotify search (preserves
-                            "X by Y" phrasing).
-      - kind="auto"      → fan out artist + track + album + library
-                            scans, score with rapidfuzz, gate on
-                            confidence threshold, tiebreak by
-                            preference order.
+    """Resolve a 'play X' query to (uri, resolved_kind, display_name); a
+    kind other than playlist/artist/album/track resolves as "auto".
 
     Returns None when no candidate clears the confidence bar — caller
     should surface a clarification error to the user.
     """
-    safe_q = query.replace(chr(34), "")
-
     if kind == "playlist":
-        # Defensive query normalization: strip a trailing "playlist" /
-        # "playlists" before fuzzy-matching. The tool docstring tells
-        # the model to set `kind="playlist"` and pass just the playlist
-        # NAME (e.g. user says "play my Covers playlist" → query="Covers"),
-        # but in practice the model sometimes leaves the word "playlist"
-        # in the query string. That breaks fuzz.ratio: e.g. against the
-        # library [Covers, untitled playlist], query="covers playlist"
-        # scores ('untitled playlist', 62) > ('Covers', 57) because the
-        # shared word "playlist" tips the Levenshtein balance toward
-        # OTHER names that happen to contain "playlist". After this
-        # strip, query="covers playlist" → "covers" → ('Covers', 100).
-        # We only strip TRAILING occurrences so playlist names that
-        # actually start with "Playlist" (e.g. "Playlist Best of 2026")
-        # match correctly.
-        playlist_q = query.strip()
-        lower = playlist_q.lower()
-        for suffix in (" playlists", " playlist"):
-            if lower.endswith(suffix):
-                playlist_q = playlist_q[: -len(suffix)].rstrip()
-                break
+        return await _resolve_playlist(sp, query, configured_playlists)
+    if kind in ("artist", "album"):
+        return await _resolve_named(sp, query, kind)
+    if kind == "track":
+        return await _resolve_track(sp, query)
+    return await _resolve_auto(sp, query, configured_playlists)
 
-        # User said the word "playlist". First try THEIR pool — the
-        # account's configured-via-web-UI playlists merged with their
-        # Spotify library. Configured wins ties (stable sort).
-        # Fall back to Spotify-owned catalog search (Discover Weekly,
-        # Release Radar, Daily Mix N) — but per the 2026 API, that
-        # endpoint no longer returns the real Spotify-owned versions
-        # for newly-issued credentials, so the configured map is the
-        # only reliable path for those. Kept for the rare account that
-        # still has access.
-        # We do NOT fall back to general public playlist search —
-        # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
-        # Jams', which is exactly what we don't want.
-        ranked = await _user_library_ranked(sp, playlist_q, configured=configured_playlists)
-        if ranked:
-            logger.info(
-                "spotify_play: library candidates for query=%r → %s",
-                query, [(name, score) for _, name, score in ranked[:5]],
-            )
-            top = ranked[0]
-            if top[2] >= _PLAYLIST_THRESHOLD:
-                return top[0], "playlist", top[1]
-            # Best-by-far: take the top match even at low absolute score
-            # if it's well clear of #2. Single-playlist libraries naturally
-            # hit this; so do users with 3-10 distinctively-named playlists.
-            runner_up_score = ranked[1][2] if len(ranked) > 1 else 0
-            if (
-                top[2] >= _PLAYLIST_BEST_BY_FAR_FLOOR
-                and top[2] - runner_up_score >= _PLAYLIST_BEST_BY_FAR_GAP
-            ):
-                logger.info(
-                    "spotify_play: picking %r at score=%d via best-by-far "
-                    "(gap to #2 = %d)",
-                    top[1], top[2], top[2] - runner_up_score,
-                )
-                return top[0], "playlist", top[1]
 
-        # Library miss: try Spotify-owned playlists. Discover Weekly /
-        # Release Radar / Daily Mix N are owned by 'spotify' and are
-        # personalized to the listener when fetched with a user token.
-        # Use the normalized query here too — searching Spotify's
-        # catalog for "covers playlist" matches differently than
-        # "covers".
-        spotify_owned = await _spotify_owned_playlist_match(sp, playlist_q)
-        if spotify_owned and spotify_owned[2] >= _PLAYLIST_THRESHOLD:
-            logger.info(
-                "spotify_play: spotify-owned playlist hit %r (score=%d)",
-                spotify_owned[1], spotify_owned[2],
-            )
-            return spotify_owned[0], "playlist", spotify_owned[1]
+async def _safe_search(sp, q: str, type_: str):
+    """The top-hit search for one type; None, logged, when it fails."""
+    try:
+        return await asyncio.to_thread(sp.search, q=q, type=type_, limit=1)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s search failed: %s", type_, e)
         return None
 
-    if kind in ("artist", "album"):
-        q = f'{kind}:"{safe_q}"'
-        try:
-            results = await asyncio.to_thread(sp.search, q=q, type=kind, limit=1)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("%s search failed: %s", kind, e)
-            return None
-        items = ((results or {}).get(f"{kind}s") or {}).get("items") or []
-        if not items or not items[0]:
-            return None
-        return items[0]["uri"], kind, items[0].get("name") or query
 
-    if kind == "track":
-        try:
-            results = await asyncio.to_thread(
-                sp.search, q=query, type="track", limit=1
+async def _resolve_playlist(
+    sp, query: str, configured_playlists: "dict[str, str] | None",
+) -> "tuple[str, str, str] | None":
+    """Fuzzy-match the user's own playlists (loose threshold, tolerant of
+    voice-to-text mishears), then Spotify-owned catalog playlists."""
+    # Defensive query normalization: strip a trailing "playlist" /
+    # "playlists" before fuzzy-matching. The tool docstring tells
+    # the model to set `kind="playlist"` and pass just the playlist
+    # NAME (e.g. user says "play my Covers playlist" → query="Covers"),
+    # but in practice the model sometimes leaves the word "playlist"
+    # in the query string. That breaks fuzz.ratio: e.g. against the
+    # library [Covers, untitled playlist], query="covers playlist"
+    # scores ('untitled playlist', 62) > ('Covers', 57) because the
+    # shared word "playlist" tips the Levenshtein balance toward
+    # OTHER names that happen to contain "playlist". After this
+    # strip, query="covers playlist" → "covers" → ('Covers', 100).
+    # We only strip TRAILING occurrences so playlist names that
+    # actually start with "Playlist" (e.g. "Playlist Best of 2026")
+    # match correctly.
+    playlist_q = query.strip()
+    lower = playlist_q.lower()
+    for suffix in (" playlists", " playlist"):
+        if lower.endswith(suffix):
+            playlist_q = playlist_q[: -len(suffix)].rstrip()
+            break
+
+    # User said the word "playlist". First try THEIR pool — the
+    # account's configured-via-web-UI playlists merged with their
+    # Spotify library. Configured wins ties (stable sort).
+    # Fall back to Spotify-owned catalog search (Discover Weekly,
+    # Release Radar, Daily Mix N) — but per the 2026 API, that
+    # endpoint no longer returns the real Spotify-owned versions
+    # for newly-issued credentials, so the configured map is the
+    # only reliable path for those. Kept for the rare account that
+    # still has access.
+    # We do NOT fall back to general public playlist search —
+    # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
+    # Jams', which is exactly what we don't want.
+    ranked = await _user_library_ranked(sp, playlist_q, configured=configured_playlists)
+    if ranked:
+        logger.info(
+            "spotify_play: library candidates for query=%r → %s",
+            query, [(name, score) for _, name, score in ranked[:5]],
+        )
+        top = ranked[0]
+        if top[2] >= _PLAYLIST_THRESHOLD:
+            return top[0], "playlist", top[1]
+        # Best-by-far: take the top match even at low absolute score
+        # if it's well clear of #2. Single-playlist libraries naturally
+        # hit this; so do users with 3-10 distinctively-named playlists.
+        runner_up_score = ranked[1][2] if len(ranked) > 1 else 0
+        if (
+            top[2] >= _PLAYLIST_BEST_BY_FAR_FLOOR
+            and top[2] - runner_up_score >= _PLAYLIST_BEST_BY_FAR_GAP
+        ):
+            logger.info(
+                "spotify_play: picking %r at score=%d via best-by-far "
+                "(gap to #2 = %d)",
+                top[1], top[2], top[2] - runner_up_score,
             )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("track search failed: %s", e)
-            return None
-        items = ((results or {}).get("tracks") or {}).get("items") or []
-        if not items or not items[0]:
-            return None
-        name = items[0].get("name") or ""
-        # Relevance gate — mirror the auto-path's WRatio check so a misrouted
-        # query (e.g. a "new song by <artist>" recency request that lands here
-        # instead of spotify_play_latest_by_artist) refuses rather than playing
-        # whatever Spotify's search happened to return. Only gate when we have a
-        # name to score against; a missing name can't be assessed.
-        if name:
-            score = int(fuzz.WRatio(query.lower(), name.lower()))
-            if score < _TRACK_PLAY_THRESHOLD:
-                logger.info(
-                    "spotify_play: track %r scored %d (< %d) against %r — "
-                    "refusing rather than playing an unrelated track",
-                    query, score, _TRACK_PLAY_THRESHOLD, name,
-                )
-                return None
-        return items[0]["uri"], "track", name or query
+            return top[0], "playlist", top[1]
 
-    # kind == "auto" or anything unrecognized — unified resolution.
-    artist_q = f'artist:"{safe_q}"'
-    album_q = f'album:"{safe_q}"'
+    # Library miss: try Spotify-owned playlists. Discover Weekly /
+    # Release Radar / Daily Mix N are owned by 'spotify' and are
+    # personalized to the listener when fetched with a user token.
+    # Use the normalized query here too — searching Spotify's
+    # catalog for "covers playlist" matches differently than
+    # "covers".
+    spotify_owned = await _spotify_owned_playlist_match(sp, playlist_q)
+    if spotify_owned and spotify_owned[2] >= _PLAYLIST_THRESHOLD:
+        logger.info(
+            "spotify_play: spotify-owned playlist hit %r (score=%d)",
+            spotify_owned[1], spotify_owned[2],
+        )
+        return spotify_owned[0], "playlist", spotify_owned[1]
+    return None
 
-    async def _safe_search(q: str, type_: str):
-        try:
-            return await asyncio.to_thread(sp.search, q=q, type=type_, limit=1)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("%s search failed: %s", type_, e)
+
+async def _resolve_named(sp, query: str, kind: str) -> "tuple[str, str, str] | None":
+    """artist/album: a field-qualified search, so the query matches the
+    entity NAME, not the contents of its discography."""
+    safe_q = query.replace(chr(34), "")
+    results = await _safe_search(sp, f'{kind}:"{safe_q}"', kind)
+    items = ((results or {}).get(f"{kind}s") or {}).get("items") or []
+    if not items or not items[0]:
+        return None
+    return items[0]["uri"], kind, items[0].get("name") or query
+
+
+async def _resolve_track(sp, query: str) -> "tuple[str, str, str] | None":
+    """An unqualified search (preserves "X by Y" phrasing)."""
+    results = await _safe_search(sp, query, "track")
+    items = ((results or {}).get("tracks") or {}).get("items") or []
+    if not items or not items[0]:
+        return None
+    name = items[0].get("name") or ""
+    # Relevance gate — mirror the auto-path's WRatio check so a misrouted
+    # query (e.g. a "new song by <artist>" recency request that lands here
+    # instead of spotify_play_latest_by_artist) refuses rather than playing
+    # whatever Spotify's search happened to return. Only gate when we have a
+    # name to score against; a missing name can't be assessed.
+    if name:
+        score = int(fuzz.WRatio(query.lower(), name.lower()))
+        if score < _TRACK_PLAY_THRESHOLD:
+            logger.info(
+                "spotify_play: track %r scored %d (< %d) against %r — "
+                "refusing rather than playing an unrelated track",
+                query, score, _TRACK_PLAY_THRESHOLD, name,
+            )
             return None
+    return items[0]["uri"], "track", name or query
 
+
+def _top_candidate(results, type_: str, q_lower: str) -> "tuple[str, str, str, int] | None":
+    """(uri, kind, name, score) for one search's top hit, or None."""
+    if results is None:
+        return None
+    items = ((results or {}).get(f"{type_}s") or {}).get("items") or []
+    if not items or not items[0]:
+        return None
+    name = items[0].get("name") or ""
+    uri = items[0].get("uri") or ""
+    if not uri:
+        return None
+    return uri, type_, name, int(fuzz.WRatio(q_lower, name.lower()))
+
+
+async def _resolve_auto(
+    sp, query: str, configured_playlists: "dict[str, str] | None",
+) -> "tuple[str, str, str] | None":
+    """Fan out artist + track + album + library scans, score with
+    rapidfuzz, gate on the confidence threshold, tiebreak by preference
+    order."""
+    safe_q = query.replace(chr(34), "")
     artist_res, track_res, album_res, lib_match = await asyncio.gather(
-        _safe_search(artist_q, "artist"),
-        _safe_search(query, "track"),
-        _safe_search(album_q, "album"),
+        _safe_search(sp, f'artist:"{safe_q}"', "artist"),
+        _safe_search(sp, query, "track"),
+        _safe_search(sp, f'album:"{safe_q}"', "album"),
         _user_library_match(sp, query, configured=configured_playlists),
     )
 
     q_lower = query.lower()
-    candidates: list[tuple[str, str, str, int]] = []  # (uri, kind, name, score)
-
-    def _add_top(results, type_):
-        if results is None:
-            return
-        items = ((results or {}).get(f"{type_}s") or {}).get("items") or []
-        if not items or not items[0]:
-            return
-        name = items[0].get("name") or ""
-        uri = items[0].get("uri") or ""
-        if not uri:
-            return
-        score = int(fuzz.WRatio(q_lower, name.lower()))
-        candidates.append((uri, type_, name, score))
-
-    _add_top(artist_res, "artist")
-    _add_top(track_res, "track")
-    _add_top(album_res, "album")
+    tops = (
+        _top_candidate(artist_res, "artist", q_lower),
+        _top_candidate(track_res, "track", q_lower),
+        _top_candidate(album_res, "album", q_lower),
+    )
+    candidates: list[tuple[str, str, str, int]] = [c for c in tops if c is not None]
     if lib_match is not None:
         candidates.append((lib_match[0], "playlist", lib_match[1], lib_match[2]))
 
