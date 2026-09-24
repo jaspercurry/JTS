@@ -529,7 +529,7 @@ def silence_unobserved() -> bool:
     doctor row that directly observed a down audio-path daemon is the only
     evidence of silence there is.
 
-    Includes the sampler's warmup window: `_signal_path` answers `starting` and
+    Includes the sampler's warmup window: `classify_signal_path` answers `starting` and
     the stopped-DSP and `output_deaf` detectors are gated off under it, so
     control reports a healthy path for a box that emits nothing.
     """

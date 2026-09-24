@@ -45,7 +45,11 @@ from .audio_health_events import (
 from .audio_incident_view import _present_incident
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
-from .audio_signal_path import _parked_signal, _selected_source, _undeclared_hardware_signal
+from .audio_signal_path import (
+    fanin_selected_source,
+    parked_signal,
+    undeclared_hardware_signal,
+)
 from .audio_state_issues import _state_issues
 from ..output_topology_store import load_output_topology_snapshot
 
@@ -175,7 +179,7 @@ class AudioHealthSampler:
         # Refreshed on the slow `_route_interval` cadence, not every fast tick:
         # declared topology changes only when a household saves a new layout. A
         # SNAPSHOT (topology + revision), not a bare topology -- see
-        # `_undeclared_hardware_signal` for why revision matters.
+        # `undeclared_hardware_signal` for why revision matters.
         self._output_topology_snapshot: Any = None
         self._transport_park: dict[str, Any] | None = None
         self._service_states: dict[str, dict[str, Any]] = {}
@@ -346,7 +350,7 @@ class AudioHealthSampler:
         active_source, activity_unknown, signal_path, latency = _health_prelude(
             airplay, outputd, mux_status, route_state,
         )
-        selected_source = _selected_source(airplay)
+        selected_source = fanin_selected_source(airplay)
         if activity_unknown:
             if (
                 self._session.source_id is not None
@@ -370,7 +374,7 @@ class AudioHealthSampler:
         # rows and the overall headline cannot present a different verdict for
         # the same tick: the raw path.outputd_unavailable row must not
         # contradict the headline when the setup hint wins (#2812).
-        undeclared_hardware = _undeclared_hardware_signal(
+        undeclared_hardware = undeclared_hardware_signal(
             output_hardware, self._output_topology_snapshot
         )
         state_issues = _state_issues(
@@ -382,7 +386,7 @@ class AudioHealthSampler:
             self._service_states,
             intents,
             activity_unknown=activity_unknown,
-            coherence_park=_parked_signal(route_state),
+            coherence_park=parked_signal(route_state),
             undeclared_hardware=undeclared_hardware,
             transport_park=self._transport_park,
         )

@@ -31,14 +31,14 @@ from ._health_sources import (
 from .audio_incidents import issue_row
 from .audio_signal_path import (
     ACTIVITY_UNKNOWN_DETAIL,
+    OUTPUT_ABSENT_DETAIL,
+    OUTPUT_ABSENT_TITLE,
     PARKED_HEADLINE,
     PATH_UNREPORTED_DETAIL,
     PATH_UNREPORTED_TITLE,
     STOPPED_DSP_HEADLINE,
-    _OUTPUT_ABSENT_DETAIL,
-    _OUTPUT_ABSENT_TITLE,
-    _camilla_stopped,
     _park_detail,
+    camilla_stopped_verdict,
 )
 
 
@@ -109,7 +109,7 @@ def _state_issues(
             detail=PATH_UNREPORTED_DETAIL,
         ))
     if not warmup:
-        camilla_stopped = _camilla_stopped(
+        camilla_stopped = camilla_stopped_verdict(
             mapping(service_states).get(CAMILLA_SERVICE)
         )
         if camilla_stopped is not None:
@@ -131,8 +131,8 @@ def _state_issues(
             title = str(undeclared_hardware.get("headline"))
             detail = str(undeclared_hardware.get("detail"))
         else:
-            title = _OUTPUT_ABSENT_TITLE
-            detail = _OUTPUT_ABSENT_DETAIL
+            title = OUTPUT_ABSENT_TITLE
+            detail = OUTPUT_ABSENT_DETAIL
         issues.append(issue_row(
             "path.outputd_unavailable",
             scope="path",

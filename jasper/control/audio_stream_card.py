@@ -16,12 +16,48 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..fanin.latency_mode import PRESETS
+from ..fanin_coupling import RING_SLOT_FRAMES
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
 from ._health_fields import as_int, detail_row, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_signal_path import _ring_occupancy_ms, _ring_pressure
 from .audio_source_cards import _airplay_timing
+
+
+def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
+    """Fraction of fan-in's ring publishes that had to wait for a free slot.
+
+    `full_waits` ticks once per SLOT publish that waited, so its rate is read
+    against the publish rate (sample_rate / RING_SLOT_FRAMES): jts4 measured
+    162 waits/s against 375 publishes/s in lockstep (issue #4124).
+
+    INFORMATIONAL ONLY. Ring A is a blocking handshake pinned near full by
+    design (ADR-0205), so a saturated ring is the steady state, not a fault:
+    this must never reach a verdict.
+
+    None whenever any term is absent or the publish rate is underivable —
+    absence must read as "not observed", never as "no pressure".
+    """
+    ring = mapping(fanin_output.get("ring"))
+    waits = finite_number(ring.get("full_waits_per_sec"))
+    rate = as_int(fanin_output.get("sample_rate"))
+    if waits is None or rate <= 0:
+        return None
+    return float(waits) * RING_SLOT_FRAMES / rate
+
+
+def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
+    """Fan-in's queued program depth, in ms.
+
+    ``occupancy`` counts ring SLOTS, each ``RING_SLOT_FRAMES`` frames wide
+    (rust/jasper-ring/src/layout.rs), not frames or ms.
+    """
+    ring = mapping(fanin_output.get("ring"))
+    slots = finite_number(ring.get("occupancy"))
+    rate = as_int(fanin_output.get("sample_rate"))
+    if slots is None or slots < 0 or rate <= 0:
+        return None
+    return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
 
 
 def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:

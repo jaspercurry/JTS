@@ -39,15 +39,15 @@ from .audio_incident_view import (
     _present_incident,
 )
 from .audio_signal_path import (
-    _active_source,
-    _activity_truth_unknown,
-    _activity_unavailable_signal,
-    _parked_signal,
-    _selected_source,
-    _signal_path,
-    _stopped_dsp_signal,
     _transport_park_signal,
-    _undeclared_hardware_signal,
+    activity_truth_unknown,
+    activity_unavailable_signal,
+    classify_signal_path,
+    fanin_selected_source,
+    parked_signal,
+    resolve_active_source,
+    stopped_dsp_signal,
+    undeclared_hardware_signal,
 )
 from .audio_source_cards import (
     _not_applicable_timing,
@@ -67,13 +67,13 @@ SCHEMA_VERSION = 1
 # CamillaDSP is gone, so a named cause must still displace it.
 _SYMPTOM_ONLY_CODES = frozenset({"output_deaf", "output_ring_stalled"})
 
-# The two `_signal_path` codes that mean "outputd is not delivering audio, for
-# a reason `_signal_path` cannot see": outputd never started at all (its
-# missing-declaration `ExecCondition` kept the unit down, so its control socket
-# never answers) or it is up but self-reports a non-ALSA backend
+# The two `classify_signal_path` codes that mean "outputd is not delivering
+# audio, for a reason `classify_signal_path` cannot see": outputd never started
+# at all (its missing-declaration `ExecCondition` kept the unit down, so its
+# control socket never answers) or it is up but self-reports a non-ALSA backend
 # (`action=park_until_active_graph` keeps sockets alive on a `fake` backend
-# without opening ALSA). `_undeclared_hardware_signal` refines only these two;
-# every other concrete `_signal_path` issue is left untouched.
+# without opening ALSA). `undeclared_hardware_signal` refines only these two;
+# every other concrete `classify_signal_path` issue is left untouched.
 _UNDECLARED_OUTPUT_CODES = frozenset({"output_absent", "output_backend_inactive"})
 
 # The shared-path units whose restart interrupts every source, and the incident
@@ -149,11 +149,11 @@ def _health_prelude(
     ``mux`` and ``route_state`` are the already-resolved observations --
     each caller keeps its own fallback for producing them.
     """
-    active_source = _active_source(ap, mux)
-    activity_unknown = _activity_truth_unknown(ap, mux)
-    signal_path = _signal_path(ap, outputd, active_source)
+    active_source = resolve_active_source(ap, mux)
+    activity_unknown = activity_truth_unknown(ap, mux)
+    signal_path = classify_signal_path(ap, outputd, active_source)
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
-        signal_path = _activity_unavailable_signal()
+        signal_path = activity_unavailable_signal()
     fanin = _mapping(_mapping(ap.get("current")).get("fanin"))
     if active_source == Source.USBSINK.value:
         latency = _usb_timing(
@@ -190,7 +190,7 @@ def compose_audio_health(
     ``output_topology_snapshot`` is a
     :class:`~jasper.output_topology_store.OutputTopologySnapshot` or ``None``
     (before the sampler's first slow-cadence read) — deliberately the
-    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`.
+    snapshot, not the bare topology; see :func:`undeclared_hardware_signal`.
     Both typed loosely because this module imports those layers lazily (same
     convention as ``topology`` in
     :func:`~jasper.control.audio_route_claim._transport_state`).
@@ -206,13 +206,13 @@ def compose_audio_health(
     active_source, activity_unknown, signal_path, latency = _health_prelude(
         ap, outputd, mux, route_state,
     )
-    stopped_dsp = _stopped_dsp_signal(ap, service_states)
+    stopped_dsp = stopped_dsp_signal(ap, service_states)
     if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
         # Ahead of both parked states: a daemon that is not running is
         # happening NOW and is fixed by starting it, while parked is persistent
         # and fixed by changing the layout.
         signal_path = stopped_dsp
-    parked = _parked_signal(route_state)
+    parked = parked_signal(route_state)
     if parked is not None and _yields_to_a_named_cause(signal_path):
         # A verified structural fault outranks ok / warn / idle / unknown: the
         # box cannot emit audio at all, and absence of evidence should not hide
@@ -225,7 +225,7 @@ def compose_audio_health(
         # while a transport park is cleared only by rebuilding the topology on
         # the ring.
         signal_path = transport_parked
-    undeclared_hardware = _undeclared_hardware_signal(
+    undeclared_hardware = undeclared_hardware_signal(
         output_hardware, output_topology_snapshot
     )
     if (
@@ -233,10 +233,10 @@ def compose_audio_health(
         and signal_path.get("code") in _UNDECLARED_OUTPUT_CODES
     ):
         # Checked by CODE, not the `_yields_to_a_named_cause` guard above:
-        # `_signal_path`'s outputd-absent/non-ALSA branch is already "issue"
-        # status, so this refines its generic wording rather than outranking a
-        # different concrete issue. Runs last, so `stopped_dsp` and `parked`
-        # keep priority.
+        # `classify_signal_path`'s outputd-absent/non-ALSA branch is already
+        # "issue" status, so this refines its generic wording rather than
+        # outranking a different concrete issue. Runs last, so `stopped_dsp`
+        # and `parked` keep priority.
         signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
@@ -339,7 +339,7 @@ def compose_audio_health(
         service_states=service_states,
     )
     if activity_unknown:
-        selected = _selected_source(ap)
+        selected = fanin_selected_source(ap)
         current_stream = {
             "source_id": selected,
             "label": SOURCE_LABELS.get(selected or "", "Audio activity"),
