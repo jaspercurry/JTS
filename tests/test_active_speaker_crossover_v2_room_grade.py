@@ -266,18 +266,19 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
 
-def test_medians_banked_at_different_levels_compare():
-    """A basis banked before ADR-0359 still carries its Aux1 value; the grade ignores it."""
-    candidate = _comparison_document(graph="candidate")
+@pytest.mark.parametrize(("aux1", "available"), [(True, False), (False, True)])
+def test_medians_at_different_levels_compare_unless_both_played_the_taper(aux1, available):
+    """Medians banked under ADR-0352 carry their Aux1 level, and the taper then differed; later ones do not."""
+    candidate, incumbent = _comparison_document(graph="candidate"), _comparison_document(graph="incumbent")
     candidate["evidence"]["basis"].update(level_db=-24.0, loudness_volume_db=-24.0)
+    if not aux1:
+        for document in (candidate, incumbent):
+            del document["evidence"]["basis"]["loudness_volume_db"]
 
-    artifact = grade_room_median(
-        read_room_median(candidate),
-        incumbent=read_room_median(_comparison_document(graph="incumbent")),
-    ).to_dict()
+    artifact = grade_room_median(read_room_median(candidate), incumbent=read_room_median(incumbent)).to_dict()
 
-    assert artifact["comparison"]["available"] is True
-    assert artifact["comparison"]["incompatible_fields"] == []
+    assert artifact["comparison"]["available"] is available
+    assert artifact["comparison"]["incompatible_fields"] == ([] if available else ["loudness_volume_db"])
 
 
 @pytest.mark.parametrize(("changed_field", "change"), [

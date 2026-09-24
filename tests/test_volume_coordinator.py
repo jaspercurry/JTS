@@ -1798,6 +1798,18 @@ async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
 # drifted, catching any other writer or transient that creates a desync.
 
 
+@pytest.mark.parametrize("source", [Source.SPOTIFY, Source.IDLE])
+async def test_every_tick_refreshes_the_level_another_process_saved(tmp_path, source):
+    coord, _cam, persistence = _build(
+        _RecordingCoordinator, tmp_path, selected=source.value, level=40, handoff_settle_sec=0.0,
+    )
+    persistence.save_listening_level(70, mark_user_change=True)
+
+    await coord.maybe_reconcile_camilla(source=source)
+
+    assert coord.get_listening_level() == 70
+
+
 @pytest.mark.parametrize(
     ("current_db", "level", "writes"),
     [

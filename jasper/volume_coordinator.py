@@ -1422,16 +1422,16 @@ class VolumeCoordinator:
         self._lapse_stranded_measurement_flag()
         if self._voice_session_active or self._measurement_active:
             return
+        # Refresh from disk on every tick, push-mode sources too: a remote twist
+        # that landed via jasper-control must reach `_level` (the voice daemon
+        # reads it for TTS loudness) and the expected dB below.
+        self._refresh_from_disk()
         try:
             source = source if source is not None else await self._active_source()
         except Exception:  # noqa: BLE001
             return
         if not await self._camilla_carries_level(source):
             return
-        # Refresh from disk so a remote twist that landed via
-        # jasper-control between our own set/adjust calls reflects
-        # in `_level` before we compute the expected dB.
-        self._refresh_from_disk()
         expected_level = self._effective_level()
         expected_db = percent_to_db(expected_level)
         expected_mute = main_mute_for_level(expected_level)

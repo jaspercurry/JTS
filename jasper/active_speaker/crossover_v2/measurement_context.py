@@ -17,7 +17,7 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
     device = record.get("capture_device") or {}
     calibration = record.get("capture_calibration") or {}
     stimulus = provenance.get("stimulus") or {}
-    return {
+    basis = {
         "candidate_id": record.get("candidate_id") or None,
         "speaker_candidate_id": (provenance.get("graph") or {}).get("speaker_candidate_id"),
         "submitted_graph_fingerprint": record.get("graph_fingerprint") or None,
@@ -33,11 +33,14 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
         "stimulus_dbfs": record.get("stimulus_dbfs"),
         "program_id": record.get("program_id", (record.get("program") or {}).get("program_id")),
-        "loudness_volume_db": record.get("loudness_volume_db"),
         "stimulus_wav_sha256": stimulus.get("wav_sha256"),
         "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
         "gating_applied": record.get("gating_applied"),
     }
+    # A take banked under ADR-0352 played the Aux1 Loudness taper, which shaped its bass by level.
+    if record.get("loudness_volume_db") is not None:
+        basis["loudness_volume_db"] = record["loudness_volume_db"]
+    return basis
 
 
 GRAPH_FIELDS = (

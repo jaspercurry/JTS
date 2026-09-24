@@ -127,8 +127,11 @@ def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, An
         raw = evidence.get("basis")
         return {**(raw if isinstance(raw, Mapping) else {}),
                 "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
+    now, was = basis(median), basis(incumbent)
+    # Medians banked under ADR-0352 played the Aux1 taper, which level alignment cannot remove (ADR-0359).
+    taper = ("loudness_volume_db",) if "loudness_volume_db" in now and "loudness_volume_db" in was else ()
     return compare_capture_basis(
-        basis(median), basis(incumbent), required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"),
+        now, was, required=(*CAPTURE_FIELDS, "n_positions", "pose_keys", *taper),
         exempt=("level_db", "program_id"),
     )
 
