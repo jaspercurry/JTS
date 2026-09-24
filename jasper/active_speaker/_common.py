@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from jasper.json_fields import JsonFields
-from jasper.output_topology import SpeakerGroup
+
+if TYPE_CHECKING:
+    from jasper.output_topology import SpeakerGroup
 
 
 # Float round-trip noise only; must never bridge a real crossover setting change.
