@@ -73,6 +73,7 @@ from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
+    KIND_SUMMED_SWEEP,
     KIND_SWEEP,
     RoleBand,
 )
@@ -239,6 +240,23 @@ def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroo
     for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
         backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
         assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
+
+
+@pytest.mark.parametrize("asked_db,played_db", [(-6.0, -6.0), (4.0, 0.0)])
+def test_a_summed_retake_plays_the_peak_it_asks_for(asked_db, played_db):
+    """A boosted candidate's summed retake plays the peak it asks for, never
+    above its first attempt's, whatever the scope backoff (#5709)."""
+    spec = MeasureSpec(kind="baseline", program_phase="verify", graph_scope="timing", candidate_id="trial",
+                       scope_gains_db={"woofer": 0.0, "tweeter": 9.0})
+
+    def summed_peak(stimulus_dbfs=None):
+        program = programs.program_for_spec(spec, _excitation({"woofer": 0.0, "tweeter": 0.0}), GAIN_PLAN_DB,
+                                            stimulus_dbfs, safety_profile={}, role_targets={})
+        peak, = {segment.gain_db for segment in program.segments if segment.kind == KIND_SUMMED_SWEEP}
+        return peak
+
+    first = summed_peak()
+    assert summed_peak(first + asked_db) == pytest.approx(first + played_db)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):

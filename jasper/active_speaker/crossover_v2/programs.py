@@ -122,7 +122,8 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     backoff = max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
                            if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
     if stimulus_dbfs is not None:
-        backoff += BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+        # A retake plays the peak it asks for, never above its first attempt's (#5709).
+        backoff = max(backoff, BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs)
     if spec.stimulus is not None:
         from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
