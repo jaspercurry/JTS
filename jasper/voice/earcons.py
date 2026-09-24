@@ -15,7 +15,7 @@ cuelume Web Audio palette (https://github.com/Danilaa1/cuelume):
 layered sine notes, each with an exponential attack→decay envelope, over
 a lowpass feedback-delay "shimmer" tail. The exponential envelope starts
 and ends at near-silence, so a rendered earcon has no onset/offset step
-— the source of the old mute click's roughness.
+(an audible click).
 
 cuelume is MIT-licensed (Copyright (c) 2026 Daniel Belyi); its full
 notice is preserved verbatim at `jasper/voice/CUELUME_LICENSE` and logged
@@ -23,10 +23,7 @@ in the attribution inventory `LICENSE-third-party.md`. The Python in this
 module is JTS's own reimplementation (Apache-2.0) — only the sound
 *designs* (note choices, envelopes, shimmer) are cuelume's.
 
-Name → sound (the function names predate this recipe port and are kept
-to avoid a rename ripple across the daemon + ~10 test files; the
-`going_on` flag still means "the up-cue" when True, "the down-cue" when
-False):
+Name → sound (`going_on=True` is the up-cue, `going_on=False` the down-cue):
 
   generate_listening_chirp(going_on=True)  → chime, ascending 5th (wake)
   generate_listening_chirp(going_on=False) → chime, descending 5th one
@@ -382,9 +379,8 @@ def generate_mute_click(*, going_on: bool, wide: bool = False) -> bytes:
     resumed) is the ascending arpeggio; `going_on=False` (mute / paused)
     is the descending arpeggio one octave lower.
 
-    Named `generate_mute_click` for historical reasons — see the module
-    docstring. Rendered once at startup and cached by the caller; not a
-    registered TTS cue (those are spoken text)."""
+    Rendered once at startup and cached by the caller; not a registered
+    TTS cue (those are spoken text)."""
     return render_recipe(
         _SPARKLE_ASCENDING if going_on else _SPARKLE_DESCENDING, wide=wide
     )
@@ -396,8 +392,7 @@ def generate_listening_chirp(*, going_on: bool, wide: bool = False) -> bytes:
     perfect fifth; `going_on=False` (end of turn) is the descending fifth
     one octave lower, so "closing" reads as downward and lower.
 
-    Named `generate_listening_chirp` for historical reasons — see the
-    module docstring. Rendered once at startup and cached by the caller."""
+    Rendered once at startup and cached by the caller."""
     return render_recipe(
         _CHIME_ASCENDING if going_on else _CHIME_DESCENDING, wide=wide
     )
