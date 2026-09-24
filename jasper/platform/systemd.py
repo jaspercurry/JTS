@@ -89,8 +89,7 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 
 # Past this much CONTINUOUS busy time with nothing inbound, a hold is reported
 # at WARNING instead of INFO: no legitimate work runs this long, so the process
-# is stuck — it cannot idle-exit, and whatever its on-idle-exit hook converges
-# never converges.
+# is stuck and cannot idle-exit.
 #
 # Derivation (this module stays generic — it deliberately does NOT import the
 # correction session model, so the number is a literal and this comment is the
@@ -279,7 +278,6 @@ class IdleShutdownTracker:
         self,
         idle_threshold_sec: float = DEFAULT_IDLE_SHUTDOWN_SEC,
         watchdog_period_sec: float = DEFAULT_WATCHDOG_NOTIFY_SEC,
-        on_idle_exit=None,
     ) -> None:
         self._lock = threading.Lock()
         self._last_request = time.monotonic()
@@ -299,12 +297,6 @@ class IdleShutdownTracker:
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
-        # Optional zero-arg callable run once, exception-guarded, after the
-        # idle decision and before os._exit — the wizard's last in-process
-        # chance to converge state it left mid-flow (e.g. correction-web's
-        # abandoned-capture production restore). Keep hooks bounded: the
-        # process is exiting and a slow hook delays the socket rearm.
-        self._on_idle_exit = on_idle_exit
         self._thread = threading.Thread(
             target=self._run, name="jasper-web-idle", daemon=True,
         )
@@ -413,8 +405,7 @@ class IdleShutdownTracker:
 
         Past HOLD_LEAK_WARN_AFTER_SEC of unbroken busy time the same line
         escalates to WARNING: at that age it is not a long session, it is a
-        stuck one, and the process can no longer idle-exit OR run the
-        on-idle-exit hook that converges what it left mid-flow. This escalates
+        stuck one, and the process can no longer idle-exit. This escalates
         only — nothing here ends the process; a wedged worker is a bug to fix
         at its own layer, not something to reap out from under.
 
@@ -472,17 +463,6 @@ class IdleShutdownTracker:
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
                     idle, self._idle_threshold,
                 )
-                if self._on_idle_exit is not None:
-                    # Same specific tuple the service-start claim boundary
-                    # catches around this hook's restore (correction_setup):
-                    # correction_runtime.run_async timeouts are TimeoutError
-                    # (an OSError), and CamillaUnavailable is a RuntimeError.
-                    # Hooks are expected to be fail-soft themselves; os._exit
-                    # below still runs.
-                    try:
-                        self._on_idle_exit()
-                    except (OSError, RuntimeError, ValueError):
-                        log.exception("idle-exit hook failed; exiting anyway")
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)

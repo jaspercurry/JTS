@@ -580,16 +580,9 @@ def test_deferred_idle_exit_is_logged_and_rate_limited(
     assert len(deferred) == 3
 
 
-def test_idle_exit_hook_runs_before_process_exit(
+def test_idle_exit_notifies_stopping_then_exits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """on_idle_exit runs once, before os._exit; a failing hook never blocks exit.
-
-    correction-web hangs its abandoned-capture production restore on this hook
-    (the user closed the tab; idle shutdown is the daemon's last in-process
-    chance to converge the speaker off the all-muted staged anchor).
-    """
-
     class _Exit(Exception):
         pass
 
@@ -607,26 +600,10 @@ def test_idle_exit_hook_runs_before_process_exit(
     tracker = _systemd.IdleShutdownTracker(
         idle_threshold_sec=0.0,
         watchdog_period_sec=0.001,
-        on_idle_exit=lambda: events.append("hook"),
     )
     with pytest.raises(_Exit):
         tracker._run()
-    assert events == ["hook", "stopping"]
-
-    # A raising hook must not block the exit (the process is going away).
-    def broken_hook() -> None:
-        events.append("broken-hook")
-        raise RuntimeError("hook blew up")
-
-    events.clear()
-    tracker_broken = _systemd.IdleShutdownTracker(
-        idle_threshold_sec=0.0,
-        watchdog_period_sec=0.001,
-        on_idle_exit=broken_hook,
-    )
-    with pytest.raises(_Exit):
-        tracker_broken._run()
-    assert events == ["broken-hook", "stopping"]
+    assert events == ["stopping"]
 
 
 def test_notify_with_no_socket_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
