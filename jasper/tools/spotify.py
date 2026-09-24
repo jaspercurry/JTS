@@ -237,6 +237,18 @@ async def _safe_search(sp, q: str, type_: str):
         return None
 
 
+def _field_query(kind: str, text: str) -> str:
+    """`kind:"text"`, so the search matches the entity NAME, not the
+    contents of its discography; a stray quote would end the field early."""
+    return f'{kind}:"{text.replace(chr(34), "")}"'
+
+
+def _top_hit(results, kind: str) -> "dict | None":
+    """The first `kind` item of a search response, or None."""
+    items = ((results or {}).get(f"{kind}s") or {}).get("items") or [None]
+    return items[0] or None
+
+
 async def _resolve_playlist(
     sp, query: str, configured_playlists: "dict[str, str] | None",
 ) -> "tuple[str, str, str] | None":
@@ -316,23 +328,19 @@ async def _resolve_playlist(
 
 
 async def _resolve_named(sp, query: str, kind: str) -> "tuple[str, str, str] | None":
-    """artist/album: a field-qualified search, so the query matches the
-    entity NAME, not the contents of its discography."""
-    safe_q = query.replace(chr(34), "")
-    results = await _safe_search(sp, f'{kind}:"{safe_q}"', kind)
-    items = ((results or {}).get(f"{kind}s") or {}).get("items") or []
-    if not items or not items[0]:
+    """artist/album: a field-qualified search."""
+    top = _top_hit(await _safe_search(sp, _field_query(kind, query), kind), kind)
+    if top is None:
         return None
-    return items[0]["uri"], kind, items[0].get("name") or query
+    return top["uri"], kind, top.get("name") or query
 
 
 async def _resolve_track(sp, query: str) -> "tuple[str, str, str] | None":
     """An unqualified search (preserves "X by Y" phrasing)."""
-    results = await _safe_search(sp, query, "track")
-    items = ((results or {}).get("tracks") or {}).get("items") or []
-    if not items or not items[0]:
+    top = _top_hit(await _safe_search(sp, query, "track"), "track")
+    if top is None:
         return None
-    name = items[0].get("name") or ""
+    name = top.get("name") or ""
     # Relevance gate — mirror the auto-path's WRatio check so a misrouted
     # query (e.g. a "new song by <artist>" recency request that lands here
     # instead of spotify_play_latest_by_artist) refuses rather than playing
@@ -347,21 +355,16 @@ async def _resolve_track(sp, query: str) -> "tuple[str, str, str] | None":
                 query, score, _TRACK_PLAY_THRESHOLD, name,
             )
             return None
-    return items[0]["uri"], "track", name or query
+    return top["uri"], "track", name or query
 
 
 def _top_candidate(results, type_: str, q_lower: str) -> "tuple[str, str, str, int] | None":
     """(uri, kind, name, score) for one search's top hit, or None."""
-    if results is None:
+    top = _top_hit(results, type_)
+    if top is None or not top.get("uri"):
         return None
-    items = ((results or {}).get(f"{type_}s") or {}).get("items") or []
-    if not items or not items[0]:
-        return None
-    name = items[0].get("name") or ""
-    uri = items[0].get("uri") or ""
-    if not uri:
-        return None
-    return uri, type_, name, int(fuzz.WRatio(q_lower, name.lower()))
+    name = top.get("name") or ""
+    return top["uri"], type_, name, int(fuzz.WRatio(q_lower, name.lower()))
 
 
 async def _resolve_auto(
@@ -370,11 +373,10 @@ async def _resolve_auto(
     """Fan out artist + track + album + library scans, score with
     rapidfuzz, gate on the confidence threshold, tiebreak by preference
     order."""
-    safe_q = query.replace(chr(34), "")
     artist_res, track_res, album_res, lib_match = await asyncio.gather(
-        _safe_search(sp, f'artist:"{safe_q}"', "artist"),
+        _safe_search(sp, _field_query("artist", query), "artist"),
         _safe_search(sp, query, "track"),
-        _safe_search(sp, f'album:"{safe_q}"', "album"),
+        _safe_search(sp, _field_query("album", query), "album"),
         _user_library_match(sp, query, configured=configured_playlists),
     )
 
@@ -559,22 +561,10 @@ def _play_confirm(kind: str, name: str, shuffle: bool) -> str:
 
 async def _find_artist(sp, artist: str) -> "tuple[str, str] | None":
     """(id, name) of the top field-qualified artist match, or None."""
-    safe_artist = artist.replace(chr(34), "")
-    try:
-        artist_res = await asyncio.to_thread(
-            sp.search, q=f'artist:"{safe_artist}"', type="artist", limit=1
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("artist search failed: %s", e)
+    top = _top_hit(await _safe_search(sp, _field_query("artist", artist), "artist"), "artist")
+    if top is None or not top.get("id"):
         return None
-    items = ((artist_res or {}).get("artists") or {}).get("items") or []
-    if not items or not items[0]:
-        return None
-    artist_id = items[0].get("id")
-    artist_name = items[0].get("name") or artist
-    if not artist_id:
-        return None
-    return artist_id, artist_name
+    return top["id"], top.get("name") or artist
 
 
 async def _artist_releases(sp, artist_id: str, artist_name: str) -> "list[dict] | None":
@@ -813,16 +803,10 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         if not device_id:
             return _device_not_linked_error(librespot_name)
         results = await asyncio.to_thread(sp.search, q=query, type="track", limit=1)
-        items = results.get("tracks", {}).get("items", [])
-        if not items:
+        top = _top_hit(results, "track")
+        if top is None:
             return {"error": f"no track found for: {query}"}
-        await asyncio.to_thread(
-            sp.add_to_queue, items[0]["uri"], device_id=device_id
-        )
-        return {
-            "ok": True,
-            "queued": items[0].get("name", query),
-            "account": account_name,
-        }
+        await asyncio.to_thread(sp.add_to_queue, top["uri"], device_id=device_id)
+        return {"ok": True, "queued": top.get("name", query), "account": account_name}
 
     return [spotify_play, spotify_play_latest_by_artist, spotify_queue]
