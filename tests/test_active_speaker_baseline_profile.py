@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import yaml as yaml_lib
 
+from jasper.active_speaker import baseline_record
 from jasper.active_speaker import driver_base_trim as dbt
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
@@ -170,8 +171,8 @@ def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
         "confidence"
     ] = "high"
 
-    first = baseline_profile_mod._source_payload(topology, draft, preview)
-    changed = baseline_profile_mod._source_payload(topology, draft, changed_preview)
+    first = baseline_record._source_payload(topology, draft, preview)
+    changed = baseline_record._source_payload(topology, draft, changed_preview)
 
     assert (
         first["crossover_preview_fingerprint"]
@@ -192,7 +193,7 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
             operator_inputs={"notes": "edited" if changed and index else "same"},
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
-        sources.append(baseline_profile_mod._source_payload(
+        sources.append(baseline_record._source_payload(
             topology, draft, build_crossover_preview(draft),
         ))
     first, second = sources
@@ -213,7 +214,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     draft = preview_draft()
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
-    source = baseline_profile_mod._source_payload(topology, draft, preview)
+    source = baseline_record._source_payload(topology, draft, preview)
     fingerprint = "6f72a93df72681846819bf3a40e1495a4881ee7e0c57ee1fa065f64fea03c8af"
     assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
@@ -835,7 +836,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
     monkeypatch.setattr(baseline_apply, "_bank_applied_base_trim", lambda *a: None)
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
+    prepared = baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
@@ -856,7 +857,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     assert {key: value for key, value in asdict(applied_profile_timing(applied)).items() if value is not None} == expected
     corrections = applied["corrections"]
     assert 1000 * (corrections["tweeter"]["delay_ms"] - corrections["woofer"]["delay_ms"]) == pytest.approx(delay)
-    later = baseline_profile_mod.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
+    later = baseline_record.prepare_applied_baseline_profile(bank_candidate(replace(candidate, analysis={"measurement_status": "unmeasured"})), declaration=declaration,
         design_draft=draft, provenance=applied)
     assert later["timing"] == expected
     assert later["corrections"] == corrections
@@ -890,7 +891,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
                                   sections={"rear_calibration": document})
     text = compile_tuning_graph(declaration, candidate=candidate)
 
-    applied = baseline_profile_mod.prepare_applied_baseline_profile(
+    applied = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=tmp_path / "baseline.yml",
         config_sha256=hashlib.sha256(text.encode()).hexdigest(),
@@ -904,7 +905,7 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     assert (proof.allowed, proof.classification) == (True, GRAPH_APPROVED_ACTIVE_RUNTIME)
     assert not proof.issues
 
-    pre_apply = baseline_profile_mod.recomposition_snapshot_for(
+    pre_apply = baseline_record.recomposition_snapshot_for(
         candidate, declaration=declaration, design_draft=draft)
     assert set(pre_apply) == set(applied["recomposition_snapshot"])
     assert classify({"recomposition_snapshot": pre_apply}).classification == GRAPH_APPROVED_ACTIVE_RUNTIME
@@ -919,7 +920,7 @@ def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration)
     topology, draft, declaration, declared = cardioid_declaration
     candidate = replace(declared, rear_calibration=_rear_document())
 
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+    prepared = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(candidate), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )

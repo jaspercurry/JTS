@@ -66,7 +66,7 @@ def bank_trial(candidate, profile, topology, *, record_fields=None, wav_bytes=b"
 
 def prepare_candidate(candidate, topology, config_path, *, design_draft=None):
     import hashlib
-    from jasper.active_speaker.baseline_profile import prepare_applied_baseline_profile
+    from jasper.active_speaker.baseline_record import prepare_applied_baseline_profile
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
     from jasper.active_speaker.playback_route import resolve_active_playback_device

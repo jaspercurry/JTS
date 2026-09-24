@@ -9,7 +9,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, runtime_contract
+from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -68,13 +68,13 @@ async def apply_candidate(
                     preference_filters=preference_filters, output_trim_db=trim_db)
             sha = config_text_sha256(text)
             proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
-                applied_baseline_state={"recomposition_snapshot": baseline_profile.recomposition_snapshot_for(
+                applied_baseline_state={"recomposition_snapshot": baseline_record.recomposition_snapshot_for(
                     selected, declaration=declaration, design_draft=draft)})
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
             target = baseline_candidate_config_path(text)
-            prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
+            prepared = baseline_record.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
                 config_path=target, config_sha256=sha,
                 saved_timing=(incumbent or {}).get("timing"))
             prepared.update(issues=list(selected.analysis.get("issues") or []),

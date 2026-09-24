@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper.active_speaker import baseline_record
 from jasper import output_topology_store as topology_mod
 from jasper.active_speaker.candidate_bank import bank_candidate
 
@@ -3058,7 +3059,6 @@ def test_reset_reports_the_reconcile_verdict(
 def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     """An applied baseline on a rear-output topology, so ``--base saved``
     resolves — the shape ``candidate_from_applied_profile`` needs."""
-    from jasper.active_speaker import baseline_profile as baseline_profile_mod
     from .active_speaker_fixtures import declared_graph_fixture, standard_design_draft
     from .test_rear_output_foundation import _rear_pair
 
@@ -3072,7 +3072,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     save_output_topology(topology, path=Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"]))
     draft = standard_design_draft(topology)
     declaration, declared = declared_graph_fixture(topology, draft)
-    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+    prepared = baseline_record.prepare_applied_baseline_profile(
         bank_candidate(declared), declaration=declaration, design_draft=draft,
         config_path=None, config_sha256="",
     )

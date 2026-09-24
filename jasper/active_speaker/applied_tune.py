@@ -16,7 +16,7 @@ from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
-from . import baseline_profile, candidate_bank, commissioning_experiment, measurement_emit, runtime_contract
+from . import baseline_profile, baseline_record, candidate_bank, commissioning_experiment, measurement_emit, runtime_contract
 from . import design_draft as design_drafts
 from ._common import issue as _issue
 from .crossover_declaration import assert_crossover_honours_declared_floor
@@ -59,7 +59,7 @@ def compile_applied_tune(
 ) -> tuple[str, dict[str, Any]]:
     text = measurement_emit.compile_tuning_graph(tune.declaration, candidate=tune.banked.candidate,
         preference_filters=preference_filters, output_trim_db=output_trim_db)
-    prepared = baseline_profile.prepare_applied_baseline_profile(tune.banked, declaration=tune.declaration,
+    prepared = baseline_record.prepare_applied_baseline_profile(tune.banked, declaration=tune.declaration,
         design_draft=tune.draft, provenance=tune.applied)
     proof = runtime_contract.classify_bass_extension_graph(tune.declaration.topology, evidence_source="desired",
         graph_text=text, applied_baseline_state=prepared)
@@ -160,7 +160,7 @@ def compile_commissioning_profile(
         text = measurement_emit.compile_tuning_graph(declaration, candidate=candidate,
                                                      preference_filters=preference_filters, output_trim_db=trim_db)
         target = baseline_candidate_config_path(text)
-        profile.update(baseline_profile.prepare_applied_baseline_profile(
+        profile.update(baseline_record.prepare_applied_baseline_profile(
             banked, declaration=declaration, design_draft=draft,
             config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
             saved_timing=(applied or {}).get("timing"),

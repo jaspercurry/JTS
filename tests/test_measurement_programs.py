@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
+from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
 from jasper.active_speaker.candidate_bank import BankedCandidate
@@ -59,7 +60,7 @@ def test_program_table_projections(site):
     candidate = _candidate()
     composed = compose_candidate(BankedCandidate(candidate, "", "", Path("candidate.json")), base_profile={},
                                  sections={section.name: None for section in sections if section.reset})
-    snapshot = bp.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
+    snapshot = baseline_record.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
         candidate.source_preset, mono_output_topology(), {}, "null"))
     snapshot_header = {"schema_version", "domain", "topology_id", "topology_fingerprint", "preset", "corrections",
                        "driver_protection", "playback_device", "measured_candidate_fingerprint"}

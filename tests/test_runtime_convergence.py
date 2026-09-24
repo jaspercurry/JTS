@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import baseline_reemit, measurement_emit
-from jasper.active_speaker.baseline_profile import prepare_applied_baseline_profile
+from jasper.active_speaker.baseline_record import prepare_applied_baseline_profile
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.environment import read_camilla_statefile_config_path
 from tests.active_speaker_fixtures import (

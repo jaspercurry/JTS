@@ -21,9 +21,9 @@ from jasper.output_topology import OutputTopology, canonical_fingerprint as _fin
 
 from ._common import issue as _issue
 from .baseline_profile import (
-    _bank_applied_base_trim, _protection_projection, applied_profile_anchor, baseline_candidate_fingerprint,
-    load_baseline_profile_state,
+    _bank_applied_base_trim, applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state,
 )
+from .baseline_record import protection_projection
 from .state_paths import (
     baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path, config_text_sha256,
 )
@@ -58,7 +58,7 @@ async def load_composed_graph(
                 anchor = applied_profile_anchor(saved) or {}
                 if not anchor.get("recomposition_snapshot") or not anchor.get("source"):
                     raise ValueError("Applied speaker record is incomplete")
-                protection = _protection_projection((profile.get("recomposition_snapshot") or {}).get("driver_protection"))
+                protection = protection_projection((profile.get("recomposition_snapshot") or {}).get("driver_protection"))
                 applied = {**anchor, "source": {**anchor.get("source", {}),
                            "driver_protection_fingerprint": _fingerprint(protection)},
                            "recomposition_snapshot": {**anchor.get("recomposition_snapshot", {}), "driver_protection": protection}}
