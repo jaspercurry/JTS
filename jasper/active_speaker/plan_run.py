@@ -215,6 +215,7 @@ HUMAN_MOVE_ALLOWANCE_S = 30
 def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
     poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
+    opener_seconds = 0.0
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
@@ -224,6 +225,9 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             excitation = program_for_spec(spec)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
+            if measurement == 1 and pose.get("driver"):
+                # A driver's pose plays a quiet opener before its levelled take (ADR-0361).
+                opener_seconds += sum(segment.n_samples for segment in segments) / excitation.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
@@ -242,7 +246,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
-            "estimated_seconds": sum(row["seconds"] for row in rows) +
+            "estimated_seconds": sum(row["seconds"] for row in rows) + opener_seconds +
                                  (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 

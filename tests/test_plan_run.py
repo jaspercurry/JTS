@@ -1355,6 +1355,19 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
         assert all("retake_reason" not in p for p in live)
 
 
+def test_a_driver_pose_is_timed_as_its_opener_and_its_takes():
+    """A driver's pose plays a quiet opener before its levelled take, so its
+    first measurement is timed twice; a far-field pose's once (ADR-0361)."""
+    program = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: (
+        SimpleNamespace(role="woofer", kind="sweep", n_samples=8),))
+    spec = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
+    captures = [({"place": "at_driver", "driver": "woofer"}, spec)] * 2 + [({"place": "far"}, spec)]
+
+    facts = plan_run.schedule_facts(captures, lambda _spec: program, mover="arm")
+
+    assert facts["estimated_seconds"] == 8 * (3 + 1)
+
+
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
