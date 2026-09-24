@@ -940,7 +940,6 @@ def ring_endpoint_anchor_converged(
     if not is_anchor:
         return False, identity_problem
 
-
     at_endpoint, endpoint_detail = graph_at_active_ring_endpoint(graph)
     if not at_endpoint:
         return False, endpoint_detail

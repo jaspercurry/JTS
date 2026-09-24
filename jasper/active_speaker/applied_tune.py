@@ -138,8 +138,8 @@ def compile_commissioning_profile(
 ) -> dict[str, Any]:
     """Review the applied candidate, or bootstrap from the declared crossover.
 
-    Read-only: the review compiles and proves the graph an apply would load,
-    and writes nothing."""
+    The review compiles and proves the graph an apply would load and writes no
+    CamillaDSP config."""
     profile: dict[str, Any] = {"artifact_schema_version": baseline_profile.SCHEMA_VERSION,
                               "kind": baseline_profile.BASELINE_PROFILE_KIND,
                               "status": "blocked", "permissions": {"may_apply": False}, "issues": []}

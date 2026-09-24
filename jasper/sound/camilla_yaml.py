@@ -269,7 +269,6 @@ def _master_gain_mixer_yaml(
         )
 
     def surplus_source() -> str:
-
         return source(0, fmt(STARTUP_MUTE_GAIN_DB), False)
 
     program_dests = _program_dests(program_dest_map)
@@ -548,14 +547,6 @@ def emit_sound_config(
     # Structure is the shared primitive; this module owns only which
     # names go in each chain (room L/R segments + the shared tail).
     if muted_channels:
-        # The repo's ONE hard-mute idiom, imported from its owner rather than
-        # respelled here — the runtime contract re-proves the emitted graph with
-        # the same name and gain, so a drifted copy would silently stop proving.
-        # Lazy because jasper.active_speaker.camilla_yaml imports THIS module at
-        # module scope (emit_sound_config); a top-level edge back would be
-        # circular. Same lazy-import idiom runtime_contract uses for its own
-        # reverse edges.
-
         # Append each mute LAST in its channel's chain. CamillaDSP applies a
         # step's filters in order and these per-channel steps are the pipeline's
         # last, so the mute is terminal — nothing downstream can re-amplify it.

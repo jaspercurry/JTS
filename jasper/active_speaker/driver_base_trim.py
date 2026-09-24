@@ -72,7 +72,7 @@ REFUSE_NOT_ATTENUATION = "base_trim_not_attenuation"
 #: a way-1 speaker's only bankable value is the vacuous ``{"full_range": 0.0}``.
 REFUSE_NO_FRAME = "base_trim_no_frame"
 
-#: What the apply seam (``baseline_profile.bank_applied_base_trim``) did.
+#: What the apply seam (:func:`bank_applied_base_trim`) did.
 #: Separate from ``REFUSE_*`` above: those name the writer envelope this module
 #: enforces, these the seam's own reading of the applied profile.
 BANK_CORRECTIONS_UNREADABLE = "corrections_unreadable"
