@@ -744,7 +744,7 @@ def _stored_records(paths: Iterable[Path]) -> Iterator[CalibrationRecord]:
     for path in paths:
         try:
             record = CalibrationRecord.from_dict(json.loads(path.read_text()))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
             log_event(
                 logger,
                 "correction.calibration_record_unreadable",

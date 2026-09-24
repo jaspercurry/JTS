@@ -1168,18 +1168,28 @@ def test_migration_scope_is_keyed_on_provider_and_model(tmp_path: Path):
         file_sha256=record.file_sha256, root=root,
     ),
 ], ids=["by_serial", "by_content_hash"])
-def test_a_corrupt_stored_record_is_journaled_and_skipped(tmp_path: Path, caplog, find):
+@pytest.mark.parametrize("corrupt_body, reason", [
+    (lambda raw: "{", "JSONDecodeError"),
+    (lambda raw: json.dumps({**raw, "curve": {
+        **raw["curve"], "correction_db": [10**400, *raw["curve"]["correction_db"][1:]],
+    }}), "ValueError"),
+    (lambda raw: json.dumps({**raw, "fetched_at": 10**400}), "OverflowError"),
+], ids=["truncated", "curve_point_past_float", "fetched_at_past_float"])
+def test_a_corrupt_stored_record_is_journaled_and_skipped(
+    tmp_path: Path, caplog, find, corrupt_body, reason,
+):
     record = calibration.store_calibration(
         text=SAMPLE_CAL, provider="minidsp", model="minidsp_umik1",
         source="vendor", serial="7001234", root=tmp_path,
     )
+    raw = json.loads(Path(record.metadata_path).read_text(encoding="utf-8"))
     corrupt = Path(record.metadata_path).with_name("corrupt.json")
-    corrupt.write_text("{", encoding="utf-8")
+    corrupt.write_text(corrupt_body(raw), encoding="utf-8")
 
     with caplog.at_level("WARNING"):
         found = find(record, tmp_path)
 
     assert found is not None and found.calibration_id == record.calibration_id
     assert event_fields(caplog, "correction.calibration_record_unreadable") == {
-        "path": str(corrupt), "reason": "JSONDecodeError",
+        "path": str(corrupt), "reason": reason,
     }
