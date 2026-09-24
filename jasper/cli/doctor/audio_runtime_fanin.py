@@ -30,7 +30,7 @@ from ._shared import (
     service_state_failure,
     silence_unobserved,
 )
-from .audio_runtime_camilla import _loaded_device_fields
+from .audio_runtime_camilla import loaded_device_fields
 from ...service_units import FANIN_SERVICE
 
 
@@ -137,13 +137,13 @@ def check_fanin_binary_installed() -> CheckResult:
         "jasper-fanin binary", "ok", f"{path} ({size_kb} KB)"
     )
 
-_ASOUND_CONF_PATH = Path("/etc/asound.conf")
+ASOUND_CONF_PATH = Path("/etc/asound.conf")
 
 # The snd-aloop card id, pinned by deploy/modprobe.d/snd-aloop.conf.
 _ALOOP_CARD_ID = "Loopback"
 
 
-def _asound_pcm_block(text: str, name: str) -> str | None:
+def asound_pcm_block(text: str, name: str) -> str | None:
     """Return a top-level pcm.NAME block body from an asoundrc.
 
     Not a general ALSA parser: a drift detector for our own generated file,
@@ -198,7 +198,7 @@ _ASSISTANT_GAIN_FLOOR_DB = -60.0
 _ASSISTANT_GAIN_ROUNDING_DB = 0.15
 
 
-def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
+def assistant_gain_fault(loudness: dict[str, object]) -> str | None:
     """Return a one-clause WARN reason when ``final_gain_db`` breaks the shared
     loudness contract, else None.
 
@@ -240,7 +240,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     `check_ring_platform_assets` and `check_ring_geometry_coherence`.
     """
     label = "fan-in ALSA wiring"
-    path = _ASOUND_CONF_PATH
+    path = ASOUND_CONF_PATH
     if not path.exists():
         return CheckResult(
             label,
@@ -281,7 +281,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     wrong: list[str] = []
     sheared: list[str] = []
     for alias, slave in _ASOUND_EXPECTED_ALIASES.items():
-        block = _asound_pcm_block(active, alias)
+        block = asound_pcm_block(active, alias)
         if block is None:
             missing.append(alias)
         elif (
@@ -532,7 +532,7 @@ def check_fanin_service() -> CheckResult:
                 "assistant_loudness.decision_seen=true without a numeric "
                 "final_gain_db",
             ))
-        elif (gain_fault := _assistant_gain_fault(loudness)) is not None:
+        elif (gain_fault := assistant_gain_fault(loudness)) is not None:
             faults.append(
                 (REASON_FANIN_ASSISTANT_GAIN_OFF_CONTRACT, f"assistant_loudness.{gain_fault}")
             )
@@ -892,7 +892,7 @@ def check_fanin_coupling() -> CheckResult:
     label = "fan-in coupling"
     active_path = evidence.camilla_config_path()
     config_path = Path(active_path or CANONICAL_CAMILLA_CONFIG_DIR / "sound_current.yml")
-    devices = _loaded_device_fields(config_path)
+    devices = loaded_device_fields(config_path)
     if not devices and config_path.exists():
         # A config IS loaded and its devices block did not parse (an absent or
         # duplicated top-level `devices:` key, or a file this process cannot

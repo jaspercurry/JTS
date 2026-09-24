@@ -37,7 +37,7 @@ def _make(path: Path, mode: int) -> os.stat_result:
 
 
 # --------------------------------------------------------------------------- #
-# _process_can_read — POSIX owner/group/other precedence
+# process_can_read — POSIX owner/group/other precedence
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "mode, as_owner, shares_group, readable",
@@ -60,7 +60,7 @@ def test_process_can_read_follows_posix_precedence(
     uid = st.st_uid if as_owner else 999_999
     gids = frozenset({st.st_gid if shares_group else 777_777})
 
-    assert privsep._process_can_read(st, uid, gids) is readable
+    assert privsep.process_can_read(st, uid, gids) is readable
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +195,7 @@ def test_household_secret_absent_is_skipped(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# _unit_runtime_identity — the evidence-cache seams
+# unit_runtime_identity — the evidence-cache seams
 # --------------------------------------------------------------------------- #
 def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
     """User/Group/SupplementaryGroups are read once for the whole manifest,
@@ -214,8 +214,8 @@ def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
     monkeypatch.setattr(_evidence, "read_unit_property", fake_property)
     monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
 
-    first = privsep._unit_runtime_identity("jasper-control")
-    second = privsep._unit_runtime_identity("jasper-web")
+    first = privsep.unit_runtime_identity("jasper-control")
+    second = privsep.unit_runtime_identity("jasper-web")
 
     assert first["User"] == "User-value"
     assert second["User"] == "User-value"
@@ -236,7 +236,7 @@ def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch
         _evidence, "read_unit_property", lambda prop, units, *, timeout: None,
     )
 
-    assert privsep._unit_runtime_identity("jasper-control") is None
+    assert privsep.unit_runtime_identity("jasper-control") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +290,7 @@ def test_merged_check_is_total_without_systemctl(monkeypatch):
     """With systemctl unavailable, every real per-daemon check resolves to a
     skip, and the merged row stays skipped rather than raising or reporting
     ok — mirrors the pre-merge per-daemon total-without-systemctl guarantee."""
-    monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
+    monkeypatch.setattr(privsep, "unit_runtime_identity", lambda unit: None)
 
     result = privsep.check_daemon_readable_inputs()
     assert result.status == "skipped"

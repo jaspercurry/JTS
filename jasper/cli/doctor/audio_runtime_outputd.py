@@ -25,9 +25,9 @@ from ._shared import (
     systemctl_unavailable_result,
 )
 from .audio_runtime_fanin import (
-    _ASOUND_CONF_PATH,
-    _asound_pcm_block,
-    _assistant_gain_fault,
+    ASOUND_CONF_PATH,
+    asound_pcm_block,
+    assistant_gain_fault,
 )
 from ...service_units import OUTPUTD_SERVICE
 
@@ -87,7 +87,7 @@ _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 #: ahead of any nested slave.
 _ASOUND_BLOCK_TYPE_RE = re.compile(r"^[ \t]*type[ \t]+(\S+)", re.MULTILINE)
 
-def _outputd_reconciled_env() -> dict[str, str]:
+def outputd_reconciled_env() -> dict[str, str]:
     """outputd's env as its own unit layers it, read once per doctor run.
 
     :func:`jasper.env_load.outputd_reconciled_env` plus the
@@ -95,9 +95,9 @@ def _outputd_reconciled_env() -> dict[str, str]:
     """
 
     def read() -> dict[str, str]:
-        from ...env_load import outputd_reconciled_env
+        from ... import env_load
 
-        return outputd_reconciled_env(
+        return env_load.outputd_reconciled_env(
             os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None
         )
 
@@ -289,7 +289,7 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
             "numeric final_gain_db.",
             reason=REASON_OUTPUTD_ASSISTANT_GAIN_NOT_NUMERIC,
         )
-    gain_fault = _assistant_gain_fault(loudness)
+    gain_fault = assistant_gain_fault(loudness)
     if gain_fault is not None:
         return CheckResult(
             "jasper-outputd",
@@ -534,7 +534,7 @@ def _outputd_transport_health(
 
     OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``
     (which under ADR-0100 selects nothing). ``outputd_env`` is read through the
-    unit's ``EnvironmentFile=`` layering (:func:`_outputd_reconciled_env`), so
+    unit's ``EnvironmentFile=`` layering (:func:`outputd_reconciled_env`), so
     the question here is "is the running daemon on the env it was last given?".
     Whether that env is the RIGHT one for this box is
     :func:`check_content_transport_coherence`'s.
@@ -680,7 +680,7 @@ def check_outputd_service() -> CheckResult:
             reason=REASON_OUTPUTD_BACKEND_NOT_ALSA,
         )
     sink_mode = data.get("sink_mode") or "single_alsa"
-    outputd_env = _outputd_reconciled_env()
+    outputd_env = outputd_reconciled_env()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     expected_dac_pcm = (
@@ -888,7 +888,7 @@ def check_outputd_dac_render() -> CheckResult:
     rendered ALSA config can. See issue #4605.
     """
     label = "outputd DAC render"
-    env = _outputd_reconciled_env()
+    env = outputd_reconciled_env()
     # Both keys default as the unit's own Environment= lines do
     # (deploy/systemd/jasper-outputd.service): a box with no outputd.env runs
     # alsa on outputd_dac. The reconciler writes the DAC PCM on every branch
@@ -906,28 +906,28 @@ def check_outputd_dac_render() -> CheckResult:
             f"backend={backend!r}, dac_pcm={dac_pcm!r}",
             reason=REASON_OUTPUTD_DAC_RENDER_NOT_OPENED,
         )
-    active = evidence.asound_conf_text(_ASOUND_CONF_PATH)
+    active = evidence.asound_conf_text(ASOUND_CONF_PATH)
     if active is None:
         return CheckResult(
             label,
             "skipped",
-            f"can't read {_ASOUND_CONF_PATH}",
+            f"can't read {ASOUND_CONF_PATH}",
             reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
         )
-    block = _asound_pcm_block(active, dac_pcm)
+    block = asound_pcm_block(active, dac_pcm)
     rendered = _ASOUND_BLOCK_TYPE_RE.search(block) if block is not None else None
     if rendered is None:
         return CheckResult(
             label,
             "skipped",
-            f"{_ASOUND_CONF_PATH} declares no pcm.{dac_pcm} type",
+            f"{ASOUND_CONF_PATH} declares no pcm.{dac_pcm} type",
             reason=REASON_OUTPUTD_DAC_RENDER_UNRESOLVED,
         )
     if rendered.group(1) == "null":
         return CheckResult(
             label,
             "fail",
-            f"{_ASOUND_CONF_PATH} renders pcm.{dac_pcm} as `type null` while "
+            f"{ASOUND_CONF_PATH} renders pcm.{dac_pcm} as `type null` while "
             f"outputd opens it as the DAC (JASPER_OUTPUTD_BACKEND={backend}): "
             "playback is discarded. Re-run jasper-audio-hardware-reconcile "
             "with the DAC attached.",

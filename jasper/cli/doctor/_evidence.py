@@ -316,7 +316,7 @@ class Evidence:
     def outputd_env(self) -> dict[str, str] | None:
         """``outputd.env``'s own parsed mapping — just that single-writer
         file's text, NOT the merged ``outputd_reconciled_env`` three-layer
-        stack (see ``audio_runtime_outputd._outputd_reconciled_env``). None
+        stack (see ``audio_runtime_outputd.outputd_reconciled_env``). None
         when it could not be read."""
         from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
 

@@ -284,7 +284,7 @@ def test_reports_never_contain_the_secret_value(tmp_path: Path):
 # Decorated checks — total off the Pi (systemctl unavailable / absent dirs)
 # --------------------------------------------------------------------------- #
 def test_decorated_checks_skip_without_systemctl(monkeypatch):
-    monkeypatch.setattr(sc.privsep, "_unit_runtime_identity", lambda unit: None)
+    monkeypatch.setattr(sc.privsep, "unit_runtime_identity", lambda unit: None)
     for fn in (
         sc.check_jasper_secrets_compartment,
         sc.check_jasper_intsecrets_compartment,

@@ -10,6 +10,7 @@ from pathlib import Path
 from ...audio_profile_state import (
     AEC_MODE_AUTO,
     normalize_aec_mode,
+    probe_xvf_mic,
     resolve_audio_input_intent,
 )
 from ...config import Config, local_mic_present_from_env
@@ -18,10 +19,7 @@ from ...openwakeword_guard import ensure_openwakeword_import_safe
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult
-from .aec import (
-    _chip_aec_available_for_doctor,
-    _doctor_aec_intent,
-)
+from .aec import doctor_aec_intent
 
 # Warn threshold: a box can sit idle overnight, so under a day is not stale.
 WAKE_RECENCY_STALE_SEC = 24 * 60 * 60  # seconds
@@ -301,8 +299,8 @@ def check_wake_legs_configured() -> CheckResult:
     bridge emitting on the UDP ports they consume — and on a push-to-talk-only
     speaker, which arms no legs by design."""
     effective = resolve_audio_input_intent(
-        _doctor_aec_intent(),
-        chip_available=_chip_aec_available_for_doctor(),
+        doctor_aec_intent(),
+        chip_available=probe_xvf_mic().chip_aec_supported,
     )
     # Only worth a control-plane round-trip when AEC (and thus the legs) is
     # actually on; _assess_wake_legs skips otherwise.

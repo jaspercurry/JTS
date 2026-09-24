@@ -253,7 +253,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     # mic sources, which decide whether this process also runs an accessory mic
     # adapter task (ADR-0225); an unreadable file costs the box its remote
     # microphone. The adapter's 'bluetooth' grant is absent here because the
-    # unit does not declare it either — _resolve_identity picks it up from the
+    # unit does not declare it either — resolve_identity picks it up from the
     # user's own group memberships.
     DaemonReadSpec(
         unit="jasper-input",
@@ -290,11 +290,11 @@ OUT_OF_SCOPE_NONROOT_UNITS: frozenset[str] = frozenset(
 )
 
 
-def _is_glob(pattern: str) -> bool:
+def is_glob(pattern: str) -> bool:
     return any(c in pattern for c in "*?[")
 
 
-def _process_can_read(st: os.stat_result, uid: int, gids: frozenset[int]) -> bool:
+def process_can_read(st: os.stat_result, uid: int, gids: frozenset[int]) -> bool:
     """Could a process with ``uid`` and supplementary group set ``gids`` read
     the ``stat``'d file? POSIX owner/group/other precedence; uid 0 is never
     one of these daemons, so no CAP_DAC_READ_SEARCH special case."""
@@ -305,7 +305,7 @@ def _process_can_read(st: os.stat_result, uid: int, gids: frozenset[int]) -> boo
     return bool(st.st_mode & _stat.S_IROTH)
 
 
-def _describe(path: str, st: os.stat_result) -> str:
+def describe(path: str, st: os.stat_result) -> str:
     """``path (owner:group 0NNN)`` for the WARN detail. Resolves owner/group
     names where possible, falling back to numeric ids."""
     try:
@@ -338,15 +338,15 @@ def _classify_readable_inputs(
     unreadable: list[str] = []
     checked = 0
     for pattern in paths:
-        matches = sorted(glob_fn(pattern)) if _is_glob(pattern) else [pattern]
+        matches = sorted(glob_fn(pattern)) if is_glob(pattern) else [pattern]
         for match in matches:
             try:
                 st = stat_fn(match)
             except OSError:
                 continue  # absent / unstat-able → not the present-but-unreadable bug
             checked += 1
-            if not _process_can_read(st, uid, gids):
-                unreadable.append(_describe(match, st))
+            if not process_can_read(st, uid, gids):
+                unreadable.append(describe(match, st))
     if not checked:
         return CheckResult(
             label, "skipped", f"no declared inputs present yet ({user})",
@@ -378,7 +378,7 @@ def _household_secret_verdict(
     """OK/FAIL for a PRESENT household_secret, identity-parameterized for tests.
     Present-but-unreadable = the M2M ``/grouping/set`` gate is silently open."""
     label = "household secret readable"
-    if _process_can_read(st, uid, gids):
+    if process_can_read(st, uid, gids):
         return CheckResult(
             label,
             "ok",
@@ -388,7 +388,7 @@ def _household_secret_verdict(
     return CheckResult(
         label,
         "fail",
-        f"present but UNREADABLE by {user} ({_describe('household_secret', st)}) — "
+        f"present but UNREADABLE by {user} ({describe('household_secret', st)}) — "
         "the device-to-device /grouping/set auth gate has silently fail-safe-OPENED "
         "(household_credential.verify treats an unreadable secret as 'not paired' "
         "and accepts any X-JTS-Household). Expected group `jasper`-readable (0640); "
@@ -414,7 +414,7 @@ def _manifest_unit_property_map(prop: str) -> dict[str, str] | None:
     return dict(zip(_MANIFEST_UNITS, values))
 
 
-def _unit_runtime_identity(unit: str) -> dict[str, str] | None:
+def unit_runtime_identity(unit: str) -> dict[str, str] | None:
     """``LoadState`` / ``User`` / ``Group`` / ``SupplementaryGroups`` for
     ``unit``, or ``None`` when systemctl is unavailable (dev / non-Linux
     host) so callers can fall through to a skipped-ok path.
@@ -433,7 +433,7 @@ def _unit_runtime_identity(unit: str) -> dict[str, str] | None:
     return fields
 
 
-def _resolve_identity(
+def resolve_identity(
     user: str, group: str, supplementary_groups: tuple[str, ...]
 ) -> tuple[int, frozenset[int]] | None:
     """Resolve ``user`` to ``(uid, {gids})`` — the full group set a process
@@ -469,7 +469,7 @@ def _resolve_runtime(
     daemon, or an early-return ``CheckResult`` (skip-ok) when systemctl is
     unavailable, the unit isn't installed, it runs as root, or its user can't be
     resolved."""
-    info = _unit_runtime_identity(unit)
+    info = unit_runtime_identity(unit)
     if info is None:
         return systemctl_unavailable_result(label)
     if info.get("LoadState", "") in ("not-found", "masked"):
@@ -483,7 +483,7 @@ def _resolve_runtime(
             label, "skipped", f"{unit} runs as root (reads all inputs; n/a)",
             reason=REASON_UNIT_RUNS_AS_ROOT,
         )
-    resolved = _resolve_identity(
+    resolved = resolve_identity(
         user,
         info.get("Group", "").strip() or "jasper",
         tuple(info.get("SupplementaryGroups", "").split()),
@@ -503,7 +503,7 @@ def _check_daemon(unit: str) -> CheckResult:
     if not spec.paths:
         # Still honour "not installed" so a streambox shows the skip; a
         # read-less daemon needs no identity resolution beyond that.
-        info = _unit_runtime_identity(unit)
+        info = unit_runtime_identity(unit)
         if info is not None and info.get("LoadState", "") in ("not-found", "masked"):
             return CheckResult(
                 label, "skipped", f"{unit} not installed",

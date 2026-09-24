@@ -24,9 +24,9 @@ from ...output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, PROBE_FRAMES, run
-from .audio_runtime_camilla import _camilla_statefile
+from .audio_runtime_camilla import camilla_statefile
 from .audio_runtime_fanin import _requires_roleful_graph
-from .audio_runtime_outputd import _outputd_reconciled_env
+from .audio_runtime_outputd import outputd_reconciled_env
 from ...service_units import FANIN_SERVICE
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
@@ -303,7 +303,7 @@ def check_content_transport_coherence() -> CheckResult:
     label = "content transport coherence"
     # LAYERED, because a bonded box's grouping env carries the marker and the
     # unit reads that file last — the stand-downs have to see what outputd sees.
-    outputd_env = _outputd_reconciled_env()
+    outputd_env = outputd_reconciled_env()
     if dac_content_ring_served(outputd_env):
         return CheckResult(
             label,
@@ -340,7 +340,7 @@ def check_content_transport_coherence() -> CheckResult:
     # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
-        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE
+        camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE
     )
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (

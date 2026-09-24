@@ -28,7 +28,6 @@ from ...audio_profile_state import (
     intent_from_env,
     normalize_aec_mode,
     normalize_audio_input_profile,
-    probe_xvf_mic,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
 )
@@ -189,7 +188,7 @@ def _doctor_env_file() -> dict[str, str]:
     return _shared_parse_env_file(env_file_path())
 
 
-def _doctor_aec_intent() -> AecIntent:
+def doctor_aec_intent() -> AecIntent:
     """The operator-requested AEC state, from the wizard-owned mode file."""
 
     return replace(
@@ -202,15 +201,12 @@ def _doctor_aec_intent() -> AecIntent:
 def _doctor_audio_input_selection() -> str:
     """The profile this box is on — the same resolution /aec applies."""
 
-    intent = _doctor_aec_intent()
+    intent = doctor_aec_intent()
     return normalize_audio_input_profile(
         intent.profile_selection,
         default=infer_audio_input_profile(intent),
     )
 
-
-def _chip_aec_available_for_doctor() -> bool:
-    return probe_xvf_mic().chip_aec_supported
 
 def _audio_profile_status_for_doctor(
     *,
@@ -235,7 +231,7 @@ def _audio_profile_status_for_doctor(
     )
     gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     return audio_profile_status(
-        _doctor_aec_intent(),
+        doctor_aec_intent(),
         runtime_env_from_mapping(env, process_env=os.environ),
         bridge_active=bridge_active,
         mic=mic_probe,
