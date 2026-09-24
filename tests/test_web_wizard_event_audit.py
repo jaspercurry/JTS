@@ -19,7 +19,8 @@ that calls a known restart helper must also contain an audit-line call somewhere
 in its body — either a hand-written `logger.{info,warning,debug}("event=...")`
 or a call to the canonical emitter `log_event(logger, "<domain.action>", ...)`
 (the `event=` prefix is added by the emitter, so the audited token is the 2nd
-positional string arg, not a literal starting with "event="). It does NOT verify
+positional string arg, not a literal starting with "event="), or a call to a
+settings owner in `AUDITING_OWNERS`, which emits the line itself. It does NOT verify
 the event name matches the action (not statically knowable) — only that the
 handler audits *something*. The real bug is a restart with NO audit line at all.
 A handler that legitimately restarts but isn't an audit-worthy config change
@@ -68,6 +69,12 @@ DELIBERATELY_UNLOGGED: dict[tuple[str, str], str] = {
         "saved-playlist content, not connection identity; frequent → journal noise",
 }
 
+# Settings owners every front end calls, each emitting its setting's `event=`
+# line itself (ADR-0350; tests/test_settings_cli.py runs them and checks it),
+# and the one wizard helper both voice save handlers reach select_voice
+# through; a handler's call to any is its audit line.
+AUDITING_OWNERS = {"select_voice", "select_wake_model", "_save_provider_state"}
+
 
 def _calls_restart(fn: ast.FunctionDef) -> bool:
     for n in ast.walk(fn):
@@ -101,6 +108,8 @@ def _emits_event_log(fn: ast.FunctionDef) -> bool:
             if (isinstance(event_name, ast.Constant)
                     and isinstance(event_name.value, str)):
                 return True
+        if name in AUDITING_OWNERS:
+            return True
     return False
 
 

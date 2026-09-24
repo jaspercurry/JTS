@@ -266,8 +266,8 @@ def check_provider_importable() -> CheckResult:
     """Check that the *configured* voice provider's adapter and its
     lazily-imported SDK can actually be imported in this venv.
 
-    Neither the ``/voice`` wizard nor ``switch-voice-provider.sh`` verifies
-    that the selected provider's code loads, so a venv missing one package
+    ``select_voice`` (the ``/assistant/voice/`` wizard, ``jasper-settings``) does
+    not verify that the selected provider's code loads, so a venv missing one package
     otherwise surfaces only as a jasper-voice that will not start.
 
     Precisely: a fresh interpreter can import each module in the provider's

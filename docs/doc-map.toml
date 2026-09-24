@@ -206,8 +206,7 @@ code = [
   "jasper/web/voice_setup.py",
   "jasper/web/voice_page.py",
   "deploy/systemd/jasper-voice.service",
-  "scripts/switch-voice-provider.sh",
-  "scripts/switch-gemini-model.sh",
+  "jasper/cli/settings.py",
   "tests/voice_eval/**",
 ]
 docs = [
