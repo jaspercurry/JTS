@@ -242,7 +242,7 @@ def _complete_hardware_validation_result(
 
 
 def _run_outputd_stability_validation(
-    *, profile: str, system_env: Mapping[str, str], directory: Path | None,
+    *, system_env: Mapping[str, str], directory: Path | None,
     duration_seconds: float, report_only: bool, force: bool, stdout: bool, now: datetime,
 ) -> HardwareValidationRun:
     service_states = _collect_service_states()
@@ -258,7 +258,7 @@ def _run_outputd_stability_validation(
             outputd_samples.append(final_outputd)
     artifact = build_outputd_stability_hardware_validation_artifact(
         now=now,
-        profile=profile,
+        profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
         system_env=system_env,
         service_states=service_states,
         outputd_status=first_outputd,
@@ -450,7 +450,7 @@ def run_audio_hardware_validation(
     system_env = read_system_env()
     if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
         return _run_outputd_stability_validation(
-            profile=profile, system_env=system_env, directory=directory,
+            system_env=system_env, directory=directory,
             duration_seconds=duration_seconds, report_only=report_only,
             force=force, stdout=stdout, now=now,
         )

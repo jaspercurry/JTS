@@ -110,10 +110,13 @@ def _take(
     }
 
 
+def _banked_path(store: BankedRecordStore, record_id: str) -> Path:
+    return Path(store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
+
+
 def _banked_file(store: BankedRecordStore, record_id: str) -> dict[str, Any]:
     """The bytes on disk, read without going through the store's own reader."""
-    path = Path(store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
-    return json.loads(path.read_text())
+    return json.loads(_banked_path(store, record_id).read_text())
 
 
 #: The analysis blocks a banked take may carry, with a real value each: three
@@ -413,8 +416,7 @@ async def test_a_banked_candidate_is_where_candidate_bank_globs(real_store):
     sessions_root = Path(real_store.evidence.bundle_dir).parent
 
     assert [str(path) for path in sessions_root.glob(CANDIDATE_ARTIFACT_GLOB)] == [
-        str(Path(real_store.evidence.bundle_dir)
-            / "evidence/v1/artifacts" / record_id)
+        str(_banked_path(real_store, record_id))
     ]
 
 
@@ -530,8 +532,7 @@ async def test_a_banked_record_logs_its_kind_path_and_size(real_store, caplog, r
 
     record_id = await real_store.bank(record)
 
-    written = Path(real_store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
     assert event_fields(caplog, "active_speaker.record_banked") == {
         "kind": record["kind"], "path": record_id, "live": live,
-        "bytes": str(written.stat().st_size),
+        "bytes": str(_banked_path(real_store, record_id).stat().st_size),
     }
