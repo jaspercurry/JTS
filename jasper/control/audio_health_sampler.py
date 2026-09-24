@@ -31,11 +31,11 @@ from ..platform.uds import mux_socket_command
 from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
 from ._health_fields import MONITOR_ERRORS, mapping
+from .audio_attribution import input_attribution
 from .audio_health import (
     RESTART_WATCH_UNITS,
-    _health_prelude,
-    _incident_context,
     compose_audio_health,
+    health_prelude,
 )
 from .audio_health_events import (
     CounterBaselines,
@@ -51,6 +51,7 @@ from .audio_signal_path import (
     undeclared_hardware_signal,
 )
 from .audio_state_issues import _state_issues
+from .audio_stream_card import fresh_dac_delay_ms
 from ..output_topology_store import load_output_topology_snapshot
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,40 @@ def _read_output_topology() -> Any:
     except MONITOR_ERRORS:
         logger.debug("audio health output-topology probe failed", exc_info=True)
         return None
+
+
+def _incident_context(
+    airplay: Mapping[str, Any],
+    outputd: Mapping[str, Any] | None,
+    active_source: str | None,
+    system: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Capture persisted incident evidence."""
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    source_input = (
+        mapping(mapping(fanin.get("inputs")).get(active_source))
+        if active_source is not None else {}
+    )
+    output = mapping(mapping(outputd).get("dac"))
+    host = mapping(system)
+    context: dict[str, Any] = {
+        "clock_mode": mapping(fanin.get("host_clock")).get("ladder"),
+        "input": {"rms_dbfs": source_input.get("rms_dbfs")},
+        "output": {"snd_pcm_delay_ms": fresh_dac_delay_ms(output)},
+        # Why the box could not keep up, frozen with the incident: SoC
+        # throttling and memory stall pressure are the two host conditions
+        # that starve the audio path without leaving a trace in it.
+        "host": {
+            "throttled_now": host.get("throttled_now"),
+            "throttled_history": host.get("throttled_history"),
+            "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
+        },
+    }
+    attribution = input_attribution(airplay, active_source)
+    if attribution is not None:
+        context["attribution"] = attribution
+    return context
 
 
 class AudioHealthSampler:
@@ -347,7 +382,7 @@ class AudioHealthSampler:
             self._last_route_sample_at = now
 
         route_state = mapping(self._route)
-        active_source, activity_unknown, signal_path, latency = _health_prelude(
+        active_source, activity_unknown, signal_path, latency = health_prelude(
             airplay, outputd, mux_status, route_state,
         )
         selected_source = fanin_selected_source(airplay)

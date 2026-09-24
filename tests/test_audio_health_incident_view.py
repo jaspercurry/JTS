@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.control import audio_attribution, audio_health, audio_incident_view
+from jasper.control import (
+    audio_attribution,
+    audio_health_sampler,
+    audio_incident_view,
+)
 from jasper.control.audio_health import compose_audio_health
 
 from .audio_health_fixtures import _airplay, _airplay_link, _mux, _outputd, _route
@@ -295,7 +299,9 @@ def test_incident_evidence_keeps_attribution_and_legacy_rows_uncapped() -> None:
     airplay["current"]["fanin"]["host_clock"] = {
         "enabled": True, "ladder": "l0_locked",
     }
-    context = audio_health._incident_context(airplay, _outputd(), "airplay")
+    context = audio_health_sampler._incident_context(
+        airplay, _outputd(), "airplay",
+    )
     issue = {"key": "airplay.input_unavailable", "context": {"started": context}}
 
     evidence = audio_incident_view._incident_evidence(issue)

@@ -32,7 +32,6 @@ from ..service_units import (
 )
 from ._health_fields import mapping as _mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_attribution import input_attribution
 from .audio_incident_view import (
     incident_is_relevant,
     incident_priority,
@@ -54,7 +53,7 @@ from .audio_source_cards import (
     not_applicable_timing,
     usb_timing,
 )
-from .audio_stream_card import build_current_stream, fresh_dac_delay_ms
+from .audio_stream_card import build_current_stream
 
 SCHEMA_VERSION = 1
 
@@ -99,41 +98,7 @@ def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
     )
 
 
-def _incident_context(
-    airplay: Mapping[str, Any],
-    outputd: Mapping[str, Any] | None,
-    active_source: str | None,
-    system: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Capture persisted incident evidence."""
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    source_input = (
-        _mapping(_mapping(fanin.get("inputs")).get(active_source))
-        if active_source is not None else {}
-    )
-    output = _mapping(_mapping(outputd).get("dac"))
-    host = _mapping(system)
-    context: dict[str, Any] = {
-        "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
-        "input": {"rms_dbfs": source_input.get("rms_dbfs")},
-        "output": {"snd_pcm_delay_ms": fresh_dac_delay_ms(output)},
-        # Why the box could not keep up, frozen with the incident: SoC
-        # throttling and memory stall pressure are the two host conditions
-        # that starve the audio path without leaving a trace in it.
-        "host": {
-            "throttled_now": host.get("throttled_now"),
-            "throttled_history": host.get("throttled_history"),
-            "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
-        },
-    }
-    attribution = input_attribution(airplay, active_source)
-    if attribution is not None:
-        context["attribution"] = attribution
-    return context
-
-
-def _health_prelude(
+def health_prelude(
     ap: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
     mux: Mapping[str, Any] | None,
@@ -203,7 +168,7 @@ def compose_audio_health(
     ap = _mapping(airplay)
     route_state = _mapping(route)
     mux = mux_status
-    active_source, activity_unknown, signal_path, latency = _health_prelude(
+    active_source, activity_unknown, signal_path, latency = health_prelude(
         ap, outputd, mux, route_state,
     )
     stopped_dsp = stopped_dsp_signal(ap, service_states)
