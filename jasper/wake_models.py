@@ -41,7 +41,6 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
@@ -498,17 +497,12 @@ def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
     ]
 
 
-def seed_default_wake_model_env(
-    *,
-    log: Callable[[str], None] | None = print,
-) -> None:
+def seed_default_wake_model_env() -> None:
     if os.path.exists(WAKE_MODEL_FILE):
         return
     entry = default()
     if not os.path.exists(entry.model):
-        if log is not None:
-            log(f"  skipping wake_model.env seed: default file missing ({entry.model})")
+        print(f"  skipping wake_model.env seed: default file missing ({entry.model})")
         return
     atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
-    if log is not None:
-        log(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
+    print(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")

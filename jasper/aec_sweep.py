@@ -224,15 +224,9 @@ def normalize_aec3_sweep_source(
     return source
 
 
-def current_aec3_sweep_source(
-    *,
-    default: str = DEFAULT_AEC3_SWEEP_SOURCE,
-) -> str:
+def current_aec3_sweep_source() -> str:
     """Return the effective runtime AEC3 sweep input source."""
-    return normalize_aec3_sweep_source(
-        os.environ.get(AEC3_SWEEP_SOURCE_ENV),
-        default=default,
-    )
+    return normalize_aec3_sweep_source(os.environ.get(AEC3_SWEEP_SOURCE_ENV))
 
 
 def _canonical_variant_payload(
@@ -461,14 +455,12 @@ def load_aec3_sweep_config(
 def write_aec3_sweep_config(
     payload: Any,
     path: str | Path | None = None,
-    *,
-    mode: int = 0o644,
 ) -> Aec3SweepConfig:
     """Validate and atomically write a runtime sweep config file."""
     config_path = _config_path(path)
     variants = validate_aec3_sweep_config_payload(payload)
     data = json.dumps(aec3_sweep_config_payload(variants), indent=2) + "\n"
-    atomic_write_text(config_path, data, mode=mode)
+    atomic_write_text(config_path, data, mode=0o644)
     return Aec3SweepConfig(
         variants=variants,
         source="file",

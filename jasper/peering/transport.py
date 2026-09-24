@@ -222,7 +222,6 @@ def open_multicast_socket(
     group: str = MULTICAST_GROUP,
     port: int = MULTICAST_PORT,
     ttl: int = MULTICAST_TTL,
-    bind_addr: str = "0.0.0.0",
 ) -> socket.socket:
     """Open a UDP socket configured for our peering multicast group.
 
@@ -247,7 +246,7 @@ def open_multicast_socket(
             pass
 
     try:
-        sock.bind((bind_addr, port))
+        sock.bind(("0.0.0.0", port))
 
         # Outbound TTL: 1 = single subnet, dies at first router hop.
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
