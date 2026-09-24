@@ -29,7 +29,7 @@ from tests.crossover_v2_fixtures import _verify_analysis
 from tests.test_audio_measurement_program_analysis import (
     FC_HZ, SR, _band_impulse, _roles, _synthesize,
 )
-from tests.test_crossover_v2_round_captures import _bank_canonical, _write_round
+from tests.test_crossover_v2_round_captures import PEAK_IDX, _bank_canonical, _write_round
 
 
 def _arrival(impulse: RecordedImpulse) -> float:
@@ -134,7 +134,10 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
     tweeter = select_capture(round_dir, capture_id=doc["take_id"], role="tweeter")
     assert (tweeter.peak_idx, tweeter.preprocessing["impulse_source"],
             tweeter.preprocessing["pre_guard_samples"]) == (310, "kept", 240)
+    summed = select_capture(round_dir, capture_id=doc["take_id"], role="summed")
+    assert "impulse_source" not in summed.preprocessing
+    assert abs(summed.peak_idx - PEAK_IDX) <= 1
     with pytest.raises(RoundCapturesRefused) as refused:
-        select_capture(round_dir, capture_id=doc["take_id"], role="summed")
+        select_capture(round_dir, capture_id=doc["take_id"], role="mid")
     assert (refused.value.reason, refused.value.detail["roles"]) == (
         "round_role_not_recorded", ["tweeter", "woofer"])

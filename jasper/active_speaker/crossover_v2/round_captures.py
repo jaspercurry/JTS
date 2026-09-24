@@ -426,22 +426,27 @@ def _capture_response(
     program_audio: dict[str, tuple[np.ndarray, int]], *, root: Path,
     manifest: Mapping[str, Any] | None,
 ) -> tuple[np.ndarray, int, tuple[float, float] | None, dict[str, Any]]:
-    """One role's impulse: the one the take kept, else rebuilt from the recording."""
+    """One role's impulse: the one the take kept, else rebuilt from the recording.
+
+    A per-driver take keeps no summed impulse; its summed read is still the
+    recording deconvolved against the whole program.
+    """
     try:
         if isinstance(doc.get(IMPULSES_KEY), Mapping):
             kept = take_impulses(root, doc)
             stored = impulse_for(kept, role)
-            if stored is None:
+            if stored is not None:
+                return stored.samples, stored.sample_rate_hz, _role_band(_role_curve(doc, manifest, role)), {
+                    "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
+                    "pre_guard_samples": stored.origin_index,
+                    "clock_shift_samples": stored.clock_shift_samples,
+                    "microphone_correction": False,
+                }
+            if role != "summed":
                 raise RoundCapturesRefused(REFUSE_ROLE_NOT_RECORDED, {
                     "role": role, "capture": str(wav),
                     "roles": sorted({one.role for one in kept}),
                 })
-            return stored.samples, stored.sample_rate_hz, _role_band(_role_curve(doc, manifest, role)), {
-                "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
-                "pre_guard_samples": stored.origin_index,
-                "clock_shift_samples": stored.clock_shift_samples,
-                "microphone_correction": False,
-            }
         band = None
         diagnostic = doc.get("branch_diagnostic")
         retained = None
