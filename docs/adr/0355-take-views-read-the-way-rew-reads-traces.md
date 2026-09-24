@@ -17,8 +17,10 @@
      group delay by octave, time zero at the direct peak) and `compare`
      (b minus a in dB).
   2. A take is read through the window its own analysis used unless the
-     caller names one. `compare` reads both sides through the shorter of the
-     two, over the band both trust, at one smoothing (1/6 octave by default).
+     caller names one, in the shape a forecast and the window ladder use
+     (`gating.gated_segment`: flat past the peak, a half-Hann over the last
+     quarter). `compare` reads both sides through the shorter of the two,
+     over the band both trust, at one smoothing (1/6 octave by default).
   3. Across recordings only magnitude compares. `compare` reports relative
      arrival only for two roles of one recording, and discloses a calibration
      or capture-basis difference instead of refusing it.

@@ -7,7 +7,8 @@ its energy decays, and its timing by frequency.
 
 Pure functions of an impulse and its sample rate. Each takes the window it
 reads through as an argument, since a phase or a group delay means nothing
-without one (ADR-0355).
+without one (ADR-0355), and reads through :func:`~.gating.gated_segment`, the
+shape a banked curve and a forecast use.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .analysis import smooth_fractional_octave
-from .excess_phase import PHASE_NFFT, excess_group_delay, gate, local_group_delay_s
-from .gating import analytic_envelope, f_trusted_floor_hz
+from .excess_phase import PHASE_NFFT, excess_group_delay, local_group_delay_s
+from .gating import analytic_envelope, f_trusted_floor_hz, gated_segment
 
 #: ISO 3382-1's start of an impulse: the first sample within this of its peak.
 ONSET_BELOW_PEAK_DB = 20.0
@@ -121,8 +122,7 @@ def timing_by_frequency(
     points_per_octave: int = 24,
 ) -> TimingByFrequency:
     """Read ``samples`` through a fixed window from its peak over ``band_hz``."""
-    segment = gate(samples, sample_rate, gate_ms=window_ms, lead_ms=lead_ms, peak=peak_index)
-    lead = peak_index - max(0, peak_index - int(round(lead_ms * 1e-3 * sample_rate)))
+    segment, lead = gated_segment(samples, sample_rate, gate_ms=window_ms, peak_idx=peak_index, lead_ms=lead_ms)
     freqs = np.fft.rfftfreq(PHASE_NFFT, d=1.0 / sample_rate)
     omega = 2 * np.pi * freqs
     spectrum = np.fft.rfft(segment, n=PHASE_NFFT) * np.exp(1j * omega * lead / sample_rate)
@@ -163,7 +163,7 @@ def magnitude_db(
     """The magnitude of ``samples`` read through a fixed window from its peak,
     power-smoothed to 1/``smoothing_fraction`` octave when given, on ``grid_hz``.
     Uncalibrated dB."""
-    segment = gate(samples, sample_rate, gate_ms=window_ms, lead_ms=lead_ms, peak=peak_index)
+    segment, _ = gated_segment(samples, sample_rate, gate_ms=window_ms, peak_idx=peak_index, lead_ms=lead_ms)
     spectrum = np.fft.rfft(segment, n=max(PHASE_NFFT, 1 << (segment.size - 1).bit_length()))
     freqs = np.fft.rfftfreq(2 * (spectrum.size - 1), d=1.0 / sample_rate)[1:]
     db = 20 * np.log10(np.maximum(np.abs(spectrum[1:]), 1e-12))

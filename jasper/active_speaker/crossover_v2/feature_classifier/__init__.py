@@ -55,13 +55,13 @@ from jasper.audio_measurement.excess_phase import (
     smoothed_curve,
 )
 from jasper.audio_measurement.gating import (
+    PHASE_GATE_LEAD_MS,
     SEARCH_T_MAX_MS,
     f_trusted_floor_hz,
 )
 
 from ..feature_classification import GATE_MOVED as GATE_MOVED
 from ..feature_optics import (
-    PHASE_GATE_LEAD_MS as PHASE_GATE_LEAD_MS,
     biquad_peaking as biquad_peaking,
     detrend,
     feature_q,

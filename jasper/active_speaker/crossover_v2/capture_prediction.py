@@ -14,14 +14,14 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement.alignment import fractional_shift
-from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
+from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS, f_trusted_floor_hz, f_valid_floor_hz, gated_segment
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
-from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segment
+from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 

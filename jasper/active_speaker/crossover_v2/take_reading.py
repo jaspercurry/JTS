@@ -4,8 +4,8 @@
 """One take's impulse, read the way a person reads it in Room EQ Wizard: the
 impulse itself, and its timing by frequency. See ADR-0355.
 
-By default a take is read through the window its own analysis used, so a
-reading agrees with the take's banked curve; a caller may name another.
+By default a take is read through the span its own analysis gated at; a
+caller may name another.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import numpy as np
 
 from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
-from jasper.audio_measurement.gating import FLOOR_MEASURED, gate_impulse_response
+from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
@@ -27,7 +27,6 @@ from jasper.audio_measurement.impulse_reading import (
 from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
-from .feature_optics import PHASE_GATE_LEAD_MS
 from .measurement_context import capture_basis, compare_capture_basis
 from .round_captures import PoseCapture, RoundCapturesRefused, capture_row, select_capture
 

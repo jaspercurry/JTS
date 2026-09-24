@@ -9,11 +9,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture, RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, read_preview,
 )
-from jasper.audio_measurement.impulse_reading import magnitude_db
 
 RATE = 48_000
 ORIGIN = 12_000
@@ -21,9 +21,11 @@ ORIGIN = 12_000
 
 def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: float = 1.0,
           gate_ms: float | None = 8.0, band: tuple[float, float] = (100.0, 20_000.0),
-          record: dict | None = None) -> TakeRead:
+          record: dict | None = None, echo_ms: float | None = None) -> TakeRead:
     ir = np.zeros(36_000)
     ir[ORIGIN + delay] = gain
+    if echo_ms is not None:
+        ir[ORIGIN + delay + round(echo_ms * RATE / 1000)] = gain / 2
     return TakeRead(PoseCapture(
         capture_id=capture_id, phase=None, wav=None, program=None, program_sha256="",
         azimuth_deg=0.0, vertical_deg=0.0, mark_distance_m=1.0, radiated_band_hz=band,
@@ -77,11 +79,15 @@ def test_sides_that_share_no_trusted_band_are_refused_by_name():
 
 
 def test_a_forecast_is_compared_through_its_own_window():
-    measured = _take("t1", gate_ms=None)
-    freqs = np.fft.rfftfreq(65_536, 1 / RATE)[1:]
-    grid = freqs[(freqs >= 300.0) & (freqs <= 18_000.0)]
-    forecast = magnitude_db(measured.capture.ir, RATE, peak_index=measured.capture.peak_idx,
-                            window_ms=7.0, lead_ms=1.0, grid_hz=grid) - 20.0
+    """A forecast of the take itself, gated as forecasts are, reads as no error,
+    with a reflection inside the window where another taper would differ."""
+    measured = _take("t1", gate_ms=None, echo_ms=4.0)
+    freqs = np.fft.rfftfreq(capture_prediction.N_FFT, 1 / RATE)
+    in_band = (freqs >= 300.0) & (freqs <= 18_000.0)
+    segment, _ = capture_prediction.gated_segment(
+        measured.capture.ir, RATE, gate_ms=7.0, peak_idx=measured.capture.peak_idx)
+    grid = freqs[in_band]
+    forecast = 20 * np.log10(np.abs(np.fft.rfft(segment, n=capture_prediction.N_FFT)[in_band])) - 20.0
     preview = read_preview({"section": "emitted_graph", "preview": {
         "kind": "jts_capture_prediction",
         "summary": {"window": {"window_ms": 7.0, "lead_ms": 1.0}, "candidate_id": "cand", "basis": {}},

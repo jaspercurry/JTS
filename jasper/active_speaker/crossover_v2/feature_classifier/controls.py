@@ -23,11 +23,9 @@ from jasper.audio_measurement.excess_phase import (
     injection_excess_gd,
     tau_for_first_null_ms,
 )
+from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS
 
-from ..feature_optics import (
-    PHASE_GATE_LEAD_MS,
-    biquad_peaking,
-)
+from ..feature_optics import biquad_peaking
 
 CONTROL_PEAKING_GAIN_DB = 2.0
 CONTROL_PEAKING_Q = 2.0
