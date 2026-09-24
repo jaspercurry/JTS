@@ -286,7 +286,16 @@ class ActiveChannelMap:
 
     @property
     def schema_version(self) -> int:
-        return OUTPUT_VARIANT_SCHEMA_VERSION if any(o.output_variant != "primary" for o in self.outputs) else SCHEMA_VERSION
+        return OUTPUT_VARIANT_SCHEMA_VERSION if self.variant_outputs else SCHEMA_VERSION
+
+    @property
+    def primary_outputs(self) -> tuple[OutputChannel, ...]:
+        return tuple(output for output in self.outputs if output.output_variant == "primary")
+
+    @property
+    def variant_outputs(self) -> tuple[OutputChannel, ...]:
+        """Outputs beyond a role's primary, such as a cardioid's rear woofer."""
+        return tuple(output for output in self.outputs if output.output_variant != "primary")
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "ActiveChannelMap":

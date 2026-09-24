@@ -126,12 +126,11 @@ def _capture_reference(bundle_dir: Path, row: Measurement, preset: Any) -> Summe
     if summed is None:
         return None
     configured, polarity = configured_crossover_transfers(preset)
-    outputs = preset.channel_map.outputs
     reference = reference_from_graph(
         summed.freqs_hz, summed.magnitude_db, graph,
-        output_channels={output.driver_role: output.index for output in outputs if output.output_variant == "primary"},
+        output_channels={output.driver_role: output.index for output in preset.channel_map.primary_outputs},
         unmodelled_channels={measurement_target_id(output.driver_role, output.output_variant): output.index
-                             for output in outputs if output.output_variant != "primary"},
+                             for output in preset.channel_map.variant_outputs},
         configured_response_by_role=configured or {}, configured_polarity_by_role=polarity,
         band_hz=(max(1200.0, summed.validity_floor_hz or 0), 5000.0),
     )

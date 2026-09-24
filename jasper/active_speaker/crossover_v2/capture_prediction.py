@@ -24,7 +24,10 @@ from jasper.output_topology import measurement_target_id
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
-from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
+from .round_captures import (
+    REFUSE_BRANCH_DIAGNOSTIC_MISSING, PoseCapture, RoundCapturesRefused, capture_fingerprint, capture_row,
+    select_capture_roles,
+)
 
 DEFAULT_BRANCHES = ("woofer", "tweeter")
 
@@ -60,6 +63,10 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
     if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
         raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
     captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"), omitted=omitted)
+    # A per-driver take's summed read is rebuilt from the whole program, off the take's recording clock.
+    unclocked = sorted(role for role, capture in captures.items() if "pre_guard_samples" not in capture.preprocessing)
+    if unclocked:
+        raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"capture": capture_id, "roles": unclocked})
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())
@@ -212,15 +219,14 @@ def capture_prediction(
             })
         if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
-        outputs = candidate.source_preset.channel_map.outputs
-        primary = [output for output in outputs if output.output_variant == "primary"]
-        channels = {output.driver_role: output.index for output in primary}
-        if len(primary) != 2 or set(channels) != set(basis.branches):
+        channel_map = candidate.source_preset.channel_map
+        channels = {output.driver_role: output.index for output in channel_map.primary_outputs}
+        if len(channel_map.primary_outputs) != 2 or set(channels) != set(basis.branches):
             raise ForwardModelError("candidate prediction needs an unambiguous output binding for each recorded branch",
                                     detail={"field": "branch_output_binding", "branches": list(basis.branches)})
         # A cardioid's rear plays no branch of a front take, so it has no transfer to scale.
         unmodelled = sorted(measurement_target_id(output.driver_role, output.output_variant)
-                            for output in outputs if output.output_variant != "primary")
+                            for output in channel_map.variant_outputs)
         _recorded_graph(basis)
         source_graph, target_graph = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
         stereo = {role: {0: 1.0, 1: 1.0} for role in channels}

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2.capture_prediction import read_diagnostic
 from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused, select_capture
 from jasper.active_speaker.crossover_v2.take_impulses import (
@@ -159,3 +160,7 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
         "round_role_not_recorded", ["tweeter", "woofer"])
     ladder = sweep_round(round_dir, role="tweeter")
     assert [pose["direct_peak_ms"] for pose in ladder["poses"]] == [pytest.approx(1000 * 310 / 48000)] * 2
+    # The rebuilt sum stands off the take's recording clock, so the forecast refuses it by name.
+    with pytest.raises(RoundCapturesRefused) as unclocked:
+        read_diagnostic(round_dir, doc["take_id"], 5.0)
+    assert (unclocked.value.reason, unclocked.value.detail["roles"]) == ("round_branch_diagnostic_missing", ["summed"])
