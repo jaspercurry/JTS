@@ -420,8 +420,8 @@ async def _run(
         take_id = str(record["take_id"])
         if take_id not in level_observations:
             # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
-            level_observations[take_id] = (TakeVerdict(True) if at_driver
-                                           else level_drift_verdict(**manifest.level_observation(record)))
+            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record)
+                                                              | ({"level_reference_db_spl": None} if at_driver else {}))
         return level_observations[take_id]
 
     admit = admit or default_admit

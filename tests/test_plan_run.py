@@ -828,18 +828,20 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
 def test_a_near_field_take_levels_itself_before_it_is_kept():
     """Each placement's first attempt plays under the target and is retaken at
     the solved peak; the rest of that placement starts there, a re-placement
-    starts quiet again, and in-band re-seats are never sent back as drift
-    (ADR-0361)."""
+    starts quiet again, and in-band re-seats are never sent back as drift,
+    though each banks its reading (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
+    readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
 
-    result, fakes, selected, _ = _run_levelled(request, (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0),
-                                               replace_at=3)
+    result, fakes, selected, _ = _run_levelled(request, readings, replace_at=3)
 
     assert result.status == "complete"
     assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
+    assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
+        _takes(result.to_dict()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
 
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
