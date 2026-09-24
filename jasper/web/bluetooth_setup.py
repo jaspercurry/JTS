@@ -48,6 +48,7 @@ from ._common import (
     prefix_route,
     read_json_object,
     resolve_samples,
+    RouteTable,
     route_path,
     send_html_response,
     send_json_response,
@@ -817,6 +818,7 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                     return
 
     # The POST table stays local because device actions bind `idle_hold`.
+    _POST_ROUTES: RouteTable
     _POST_ROUTES = {
         "/power": _post_power,
         "/discoverable": _post_discoverable,

@@ -66,6 +66,7 @@ from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
 from ..tool_state import read_tool_state, write_tool_state
 from ._common import (
     RestartOutcome,
+    RouteTable,
     begin_request,
     bonded_follower_active,
     dispatch_get,
@@ -738,11 +739,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # body to `cfg`. GET's two detail routes (/pack/<id>, /tool/<name>) carry
     # a path parameter, so `_detail_route` binds them through the seam's
     # `resolve=` hook instead of a table key.
+    _GET_ROUTES: RouteTable
     _GET_ROUTES = {
         "/": _get_index,
         "/catalog.json": functools.partial(_get_catalog, cfg),
         "/guide": _get_guide,
     }
+    _POST_ROUTES: RouteTable
     _POST_ROUTES = {
         "/toggle": json_body(functools.partial(_post_toggle, cfg)),
         "/toggle-pack": json_body(functools.partial(_post_toggle_pack, cfg)),
