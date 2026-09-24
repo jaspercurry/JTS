@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,10 +17,8 @@ from jasper.tools.transport import (
     make_transport_dispatcher,
     make_transport_tools,
 )
-from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer, FakeSpotify
-from tests._spotify_tool_fakes import FakeRouter as _SharedFakeRouter
-
-FakeRouter = partial(_SharedFakeRouter, populate_clients=False)
+from jasper.tools.spotify import no_account_msg
+from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer, FakeRouter, FakeSpotify
 
 _TWO_DEVICES = {
     "devices": [
@@ -226,51 +223,19 @@ def test_dispatch_airplay_no_router_falls_back_to_dacp():
 # --- Other source dispatches ---
 
 
-def test_dispatch_spotify_revoked_returns_signed_out_message_with_name():
-    """When source=spotify and every account is revoked, transport must
-    say "signed <name> out" (action-oriented + names the affected
-    account) — not "no account configured" (different action)."""
+@pytest.mark.parametrize("router", [
+    None,
+    FakeRouter(empty_reason="no_accounts"),
+    FakeRouter(empty_reason="revoked", revoked_names=["jasper", "brittany"]),
+], ids=["no-router", "no-accounts", "revoked"])
+def test_dispatch_spotify_without_an_account_speaks_the_spotify_tools_answer(
+    monkeypatch, router,
+):
+    monkeypatch.setattr("jasper.tools.transport.resolve_hostname", lambda: "jts.local")
     renderer = FakeRenderer(renderers={"spotactive": True})
-    # No active account; empty_reason indicates revoked; name the
-    # household member so the LLM can speak it.
-    router = FakeRouter(
-        active_account=None, empty_reason="revoked",
-        revoked_names=["jasper"],
-    )
     tools = _by_name(make_transport_tools(renderer, router))
     result = asyncio.run(tools["pause"]())
-    assert "error" in result
-    assert "signed jasper out" in result["error"]
-    assert "re-link" in result["error"]
-    # The message must include the speaker hostname so the LLM can read
-    # it aloud and the user knows where to go.
-    assert "/spotify" in result["error"]
-
-
-def test_dispatch_spotify_revoked_multi_account_lists_all_names():
-    """Two-household scenario via transport tool. Both members' tokens
-    revoked; transport names both so the user knows the full re-link
-    scope."""
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    router = FakeRouter(
-        active_account=None, empty_reason="revoked",
-        revoked_names=["jasper", "brittany"],
-    )
-    tools = _by_name(make_transport_tools(renderer, router))
-    result = asyncio.run(tools["pause"]())
-    assert "jasper and brittany" in result["error"]
-
-
-def test_dispatch_spotify_no_account_returns_old_message():
-    """When source=spotify and no accounts are even registered (not
-    revoked, just never set up), transport keeps the older message —
-    no behavior change for that path."""
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    router = FakeRouter(active_account=None, empty_reason="no_accounts")
-    tools = _by_name(make_transport_tools(renderer, router))
-    result = asyncio.run(tools["pause"]())
-    assert "error" in result
-    assert "no spotify account configured" in result["error"]
+    assert result == {"error": no_account_msg(router, "jts.local/spotify")}
 
 
 def test_dispatch_spotify_lazy_rebuild_recovers():

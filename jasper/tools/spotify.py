@@ -414,7 +414,7 @@ async def _resolve_auto(
     return pick[0], pick[1], pick[2]
 
 
-def _no_account_msg(router, setup_url: str) -> str:
+def no_account_msg(router, setup_url: str) -> str:
     """Pick the right user-facing message based on why the router is
     empty. Spoken verbatim by the LLM, so the phrasing is tuned for
     speech: short, no jargon, names the affected account(s) so a
@@ -453,7 +453,7 @@ def _device_not_linked_error(librespot_name: str) -> dict[str, str]:
     }
 
 
-async def _ensure_clients(router) -> bool:
+async def ensure_clients(router) -> bool:
     """Per-call client availability check. Returns True iff the
     router has at least one usable client after attempting a
     lazy rebuild. Cheap when clients are already loaded; rate-
@@ -483,7 +483,7 @@ async def _resolve_for_play(
     visible to that account. resolve_target's heuristics (which
     re-derive the AirPlay→Spotify match from the renderer's
     currentsong) only run for cold-start cases."""
-    if not await _ensure_clients(router):
+    if not await ensure_clients(router):
         return None
     renderers = await renderer.active_renderers()
     airplay_active = bool(
@@ -690,7 +690,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         """
         resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg(router, setup_url)}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, stops, account_name, configured_playlists = resolved
         if not device_id:
             return _device_not_linked_error(librespot_name)
@@ -742,7 +742,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         """
         resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg(router, setup_url)}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, stops, account_name, _ = resolved
         if not device_id:
             return _device_not_linked_error(librespot_name)
@@ -798,7 +798,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         """
         resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg(router, setup_url)}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, _, account_name, _ = resolved
         if not device_id:
             return _device_not_linked_error(librespot_name)

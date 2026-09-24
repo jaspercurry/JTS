@@ -50,14 +50,12 @@ class FakeRouter:
         empty_reason: str = "no_accounts",
         rebuild_clients=None,
         revoked_names=None,
-        *,
-        populate_clients: bool = True,
     ) -> None:
         self._transport_match = transport_match
         self._active_account = active_account
         self.clients = (
             {"jasper": active_account or transport_match}
-            if populate_clients and (active_account or transport_match)
+            if active_account or transport_match
             else {}
         )
         self._empty_reason = empty_reason
