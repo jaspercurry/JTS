@@ -74,7 +74,9 @@ from jasper.route_latency.pairing import (
     TapEvent,
     pair_events,
 )
-from jasper.platform.route_health import numeric_deltas, snapshot_route_health
+from jasper.platform.route_health import (
+    KNOWN_HEALTH_COUNTER_PATHS, known_counter_deltas, numeric_deltas, snapshot_route_health,
+)
 from jasper.platform.status_socket import (
     DEFAULT_STATUS_TIMEOUT_SECONDS,
     FANIN_STATUS_SOCKET,
@@ -121,53 +123,6 @@ MIN_MATCH_RATE_DEFAULT = 0.90
 # cross the tap threshold at a conservative volume; a LARGE deficit is the
 # truncation signal, not a small one.
 MIN_TAP_DETECT_RATE_DEFAULT = 0.90
-
-# Counters where a nonzero change during the measurement window means the
-# route was NOT healthy for the whole window — a latency number measured
-# across an xrun/drop/resampler-unlock is not trustworthy evidence either way.
-# This is a curated subset of the full snapshot (which is diffed and printed in
-# full for transparency) rather than the only thing compared: any nonzero delta
-# anywhere is worth an operator's eyes, but these are the ones this CLI
-# explicitly calls out as "this alone means unhealthy."
-#
-# The set encodes the same "clean window" contract: no fan-in USB
-# resampler unlock/silence/overrun and no outputd/fan-in xruns. The names are
-# cross-checked against the Rust status serializers by
-# `test_known_health_counter_names_exist_in_rust_status_json`, so a Rust-side
-# rename fails loudly rather than silently degrading the verdict to
-# vacuous-true.
-#
-# Two shapes, because the route's counters live at two kinds of location:
-#   * KNOWN_HEALTH_COUNTER_PATHS — counters at a STABLE dict path (navigated to
-#     a single dotted key): the outputd content/DAC xruns.
-#   * KNOWN_HEALTH_COUNTER_SUFFIXES — counters that live inside the fan-in
-#     `inputs` ARRAY (per-lane xruns and the per-lane USB-resampler
-#     unlock/silence/overrun). Their dotted path carries a lane INDEX
-#     (`fanin.inputs.0.xrun_count`) that is not stable across a topology
-#     change, so they are matched by dotted-path SUFFIX instead of exact path —
-#     any lane's xrun/unlock/silence/overrun counts. `numeric_deltas`
-#     recurses into lists so these are visible in `all_deltas`.
-KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
-    # outputd content-capture and final-DAC xruns — stable dict paths.
-    ("outputd", "content", "xrun_count"),
-    ("outputd", "dac", "xrun_count"),
-)
-
-# Dotted-path suffixes matched against any array-indexed fan-in input lane. The
-# fan-in STATUS `inputs` array carries per-lane `xrun_count` and, on the
-# clock-crossing USB lane, a `resampler` object with `unlock_count` /
-# `silence_frames` / `overrun_frames`. Any lane's nonzero delta on one of these
-# marks the window unclean (the contract's "no fan-in USB resampler
-# unlock/silence/overrun, and no outputd/fan-in xruns"). Suffix-matched because
-# the lane index is not
-# stable across topology changes; leaf names cross-checked against
-# `rust/jasper-fanin/src/state.rs` by the contract test.
-KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
-    ("fanin", "inputs", "xrun_count"),
-    ("fanin", "inputs", "resampler", "unlock_count"),
-    ("fanin", "inputs", "resampler", "silence_frames"),
-    ("fanin", "inputs", "resampler", "overrun_frames"),
-)
 
 
 # --------------------------------------------------------------------------
@@ -306,48 +261,11 @@ class RouteHealthReport:
         return all(delta == 0 for delta in self.known_counter_deltas.values())
 
 
-def _dotted_key_matches_input_lane_suffix(key: str, suffix: tuple[str, ...]) -> bool:
-    """True iff `key` is an array-indexed fan-in-input path matching `suffix`.
-
-    A suffix like ``("fanin", "inputs", "resampler", "unlock_count")`` matches
-    any dotted key of the form ``fanin.inputs.<N>.resampler.unlock_count`` where
-    ``<N>`` is a numeric lane index — i.e. the fixed ``fanin.inputs`` head, then
-    exactly one integer index component, then the remaining suffix components.
-    Matching by shape (not by a fixed index) keeps the verdict correct across a
-    topology change that reorders or adds lanes.
-    """
-
-    head = suffix[:2]  # ("fanin", "inputs")
-    tail = suffix[2:]
-    parts = key.split(".")
-    if len(parts) != len(head) + 1 + len(tail):
-        return False
-    if tuple(parts[: len(head)]) != head:
-        return False
-    if not parts[len(head)].isdigit():  # the lane index
-        return False
-    return tuple(parts[len(head) + 1 :]) == tail
-
-
 def diff_route_health(before: Mapping[str, Any], after: Mapping[str, Any]) -> RouteHealthReport:
     all_deltas = numeric_deltas(dict(before), dict(after))
-    # Stable dict-path counters: present-or-zero so a clean run still reports
-    # each known counter (and the cross-check that the names exist stays honest).
-    known: dict[str, float] = {
-        ".".join(path): all_deltas.get(".".join(path), 0.0)
-        for path in KNOWN_HEALTH_COUNTER_PATHS
-    }
-    # Array-indexed fan-in-input lane counters: fold in every observed delta
-    # whose dotted path matches a per-lane suffix. Unlike the stable paths these
-    # are only added when actually present (the lane index is not known ahead of
-    # time), so a clean/absent lane contributes nothing — but any nonzero
-    # per-lane xrun/unlock/silence/overrun lands here and disqualifies.
-    for key, delta in all_deltas.items():
-        if any(_dotted_key_matches_input_lane_suffix(key, s) for s in KNOWN_HEALTH_COUNTER_SUFFIXES):
-            known[key] = delta
     return RouteHealthReport(
         all_deltas=all_deltas,
-        known_counter_deltas=known,
+        known_counter_deltas=known_counter_deltas(all_deltas),
         before=before,
         after=after,
     )

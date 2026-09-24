@@ -18,7 +18,7 @@ from jasper.audio_measurement.playback import (
     WavPlaybackCancelledBeforeSpawn,
 )
 from jasper.log_event import log_event
-from jasper.platform.route_health import ROUTE_SURFACES, numeric_deltas
+from jasper.platform.route_health import ROUTE_SURFACES, known_counter_deltas, numeric_deltas
 from jasper.dsp_apply import _maybe_call
 from jasper.json_fields import finite_float, utc_now_iso
 from .playback_transaction import PlaybackInterrupted
@@ -142,8 +142,7 @@ class WiredStimulusCapture:
             if isinstance(program, ExcitationProgram):
                 answer = replace(answer, program=program.to_dict())
             if path is not None:
-                faults = {key: delta for key, delta in path["deltas"].items()
-                          if any(word in key.rsplit(".", 1)[-1] for word in _FAULT_WORDS)}
+                faults = {key: delta for key, delta in known_counter_deltas(path["deltas"]).items() if delta}
                 log_event(logger, "active_speaker.take_playback_path", level=logging.WARNING if faults else logging.INFO,
                           wav=answer.wav_path, read=",".join(path["read"]), faults=json.dumps(faults, sort_keys=True))
             self._pending.append(answer)
@@ -232,10 +231,6 @@ class WiredStimulusCapture:
 
     def take_answer(self) -> WiredCaptureAnswer | None:
         return self._pending.pop() if self._pending else None
-
-
-#: Leaf-name words of a route counter that counts a playback fault, not progress.
-_FAULT_WORDS = ("xrun", "catchup", "drop", "empty", "resync", "reset")
 
 
 def _playback_path(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> dict[str, Any] | None:

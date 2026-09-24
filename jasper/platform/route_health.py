@@ -16,6 +16,22 @@ ROUTE_SURFACES = ("fanin", "outputd")
 # Numeric leaves that change between any two snapshots by design, not counters.
 _IGNORED_DELTA_LEAF_KEYS = frozenset({"captured_at_monotonic_ns", "uptime_seconds"})
 
+# The counters whose nonzero change means the route glitched during a window:
+# outputd's content and DAC xruns at stable paths, and each fan-in lane's xruns
+# and USB-resampler unlock/silence/overrun, matched under any lane index since
+# lanes reorder with the topology. Cross-checked against the Rust STATUS
+# serializers by tests/test_usbsink_impulse_tap_contract.py.
+KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
+    ("outputd", "content", "xrun_count"),
+    ("outputd", "dac", "xrun_count"),
+)
+KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
+    ("fanin", "inputs", "xrun_count"),
+    ("fanin", "inputs", "resampler", "unlock_count"),
+    ("fanin", "inputs", "resampler", "silence_frames"),
+    ("fanin", "inputs", "resampler", "overrun_frames"),
+)
+
 
 def snapshot_route_health() -> dict[str, Any]:
     """Fan-in's and outputd's STATUS; a surface whose daemon is unreachable is ``None``."""
@@ -51,3 +67,15 @@ def numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) -> 
             and isinstance(after, numeric) and not isinstance(after, bool) and after != before):
         deltas[".".join(prefix)] = float(after) - float(before)
     return deltas
+
+
+def known_counter_deltas(deltas: Mapping[str, float]) -> dict[str, float]:
+    """The health counters among :func:`numeric_deltas`' output: each stable
+    path, zero when it did not move, and every lane counter that moved."""
+    known = {".".join(path): deltas.get(".".join(path), 0.0) for path in KNOWN_HEALTH_COUNTER_PATHS}
+    for key, delta in deltas.items():
+        parts = key.split(".")
+        if (len(parts) > 3 and parts[2].isdigit()
+                and (*parts[:2], *parts[3:]) in KNOWN_HEALTH_COUNTER_SUFFIXES):
+            known[key] = delta
+    return known
