@@ -819,8 +819,7 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                     return
 
     # The POST table stays local because device actions bind `idle_hold`.
-    _POST_ROUTES: RouteTable
-    _POST_ROUTES = {
+    _POST_ROUTES: RouteTable = {
         "/power": _post_power,
         "/discoverable": _post_discoverable,
         "/scan": _post_scan,

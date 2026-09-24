@@ -1171,8 +1171,7 @@ def _post_disconnect(
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # The tables live in this closure because they bind each route body to
     # `cfg`. Three POST guards sit side by side, so each entry wears its own.
-    _GET_ROUTES: RouteTable
-    _GET_ROUTES = {
+    _GET_ROUTES: RouteTable = {
         "/": functools.partial(_get_index, cfg),
         "/reset": read_guarded(functools.partial(_get_reset, cfg)),
     }

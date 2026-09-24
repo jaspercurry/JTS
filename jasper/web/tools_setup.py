@@ -739,14 +739,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # body to `cfg`. GET's two detail routes (/pack/<id>, /tool/<name>) carry
     # a path parameter, so `_detail_route` binds them through the seam's
     # `resolve=` hook instead of a table key.
-    _GET_ROUTES: RouteTable
-    _GET_ROUTES = {
+    _GET_ROUTES: RouteTable = {
         "/": _get_index,
         "/catalog.json": functools.partial(_get_catalog, cfg),
         "/guide": _get_guide,
     }
-    _POST_ROUTES: RouteTable
-    _POST_ROUTES = {
+    _POST_ROUTES: RouteTable = {
         "/toggle": json_body(functools.partial(_post_toggle, cfg)),
         "/toggle-pack": json_body(functools.partial(_post_toggle_pack, cfg)),
         "/prompt": json_body(functools.partial(_post_prompt, cfg)),
