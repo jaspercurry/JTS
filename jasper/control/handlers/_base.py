@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..server import VolumeOps
 
 # Not `__name__`: one journal name for every route body, not one per mixin.
 logger = logging.getLogger("jasper.control")
@@ -24,19 +27,14 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     runtime dispatch shape.
     """
 
-    _adjust_op: Any
     _audio_health_sampler: Any
     _camilla_host: str
     _camilla_port: int
-    _get_op: Any
     _ha_status_cache: Any
-    _mute_set_op: Any
-    _mute_toggle_op: Any
-    _observe_op: Any
     _sampler: Any
-    _set_op: Any
     _state_response_cache: Any
     _voice_socket_path: str
+    _volume: VolumeOps
     server: ThreadingHTTPServer
 
     def _collect_state(
@@ -50,9 +48,8 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     ) -> Any:
         """The cross-daemon /state aggregate, as an awaitable.
 
-        A whole-callable seam (not one of the per-op attributes above):
-        route-level tests replace it outright to test caching/error
-        handling without running the real aggregation.
+        A whole-callable seam: route-level tests replace it outright to test
+        caching/error handling without running the real aggregation.
         """
         raise NotImplementedError
 

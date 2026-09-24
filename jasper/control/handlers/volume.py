@@ -88,7 +88,7 @@ class VolumeRoutes(ControlHandlerMixin):
         if self._maybe_forward_pair_action_to_leader():
             return
         try:
-            state = self._get_op()
+            state = self._volume.get()
         except Exception as e:  # noqa: BLE001
             logger.exception("get volume failed")
             self._send_json({"error": str(e)}, status=502)
@@ -208,7 +208,7 @@ class VolumeRoutes(ControlHandlerMixin):
         ):
             return
         try:
-            state = asyncio.run(self._adjust_op(delta_pct))
+            state = asyncio.run(self._volume.adjust(delta_pct))
         except Exception as e:  # noqa: BLE001
             logger.exception("adjust volume failed")
             self._send_json({"error": str(e)}, status=502)
@@ -291,7 +291,7 @@ class VolumeRoutes(ControlHandlerMixin):
                     return
             else:
                 try:
-                    state = self._get_op()
+                    state = self._volume.get()
                 except Exception as e:  # noqa: BLE001
                     # Same shape as _get_volume's guard: this reads the
                     # persisted projection, and a read failure is a 502, not a
@@ -310,14 +310,14 @@ class VolumeRoutes(ControlHandlerMixin):
         try:
             if source_name:
                 state, observation_applied = asyncio.run(
-                    self._observe_op(
+                    self._volume.observe(
                         str(source_name),
                         target_pct,
                         initial=observation_initial,
                     ),
                 )
             else:
-                state = asyncio.run(self._set_op(target_pct))
+                state = asyncio.run(self._volume.set(target_pct))
         except Exception as e:  # noqa: BLE001
             logger.exception("set volume failed")
             self._send_json({"error": str(e)}, status=502)
@@ -379,7 +379,7 @@ class VolumeRoutes(ControlHandlerMixin):
             resolves_unmuted = explicit is False
             if explicit is None:
                 try:
-                    state = self._get_op()
+                    state = self._volume.get()
                 except Exception:  # noqa: BLE001
                     # An unreadable latch must not close the emergency door:
                     # the toggle proceeds as a MUTE, and toggle_mute's own
@@ -396,9 +396,9 @@ class VolumeRoutes(ControlHandlerMixin):
                 return
         try:
             if explicit is None:
-                state = asyncio.run(self._mute_toggle_op())
+                state = asyncio.run(self._volume.mute_toggle())
             else:
-                state = asyncio.run(self._mute_set_op(explicit))
+                state = asyncio.run(self._volume.mute_set(explicit))
         except Exception as e:  # noqa: BLE001
             logger.exception("mute failed")
             self._send_json({"error": str(e)}, status=502)

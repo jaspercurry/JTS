@@ -286,7 +286,7 @@ def _make_duck_active_probe(
     )
 
 
-class _VolumeOps:
+class VolumeOps:
     """The volume operations one handler class serves.
 
     Each mutating op runs on a fresh coordinator (`_with_coordinator`) and
@@ -685,7 +685,6 @@ def _make_handler(
     audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
-    ops = _VolumeOps(camilla_host, camilla_port, voice_socket_path)
     state_response_cache = SingleFlightTTLCache(
         STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
     )
@@ -693,19 +692,14 @@ def _make_handler(
         ha_status_cache = HomeAssistantStatusCache()
 
     class Handler(_ControlHandler):
-        _adjust_op = staticmethod(ops.adjust)
         _audio_health_sampler = audio_health_sampler
         _camilla_host = camilla_host
         _camilla_port = camilla_port
-        _get_op = staticmethod(ops.get)
         _ha_status_cache = ha_status_cache
-        _mute_set_op = staticmethod(ops.mute_set)
-        _mute_toggle_op = staticmethod(ops.mute_toggle)
-        _observe_op = staticmethod(ops.observe)
         _sampler = sampler
-        _set_op = staticmethod(ops.set)
         _state_response_cache = state_response_cache
         _voice_socket_path = voice_socket_path
+        _volume = VolumeOps(camilla_host, camilla_port, voice_socket_path)
 
     return Handler
 
