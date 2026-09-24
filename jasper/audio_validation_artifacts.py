@@ -90,10 +90,6 @@ class ArtifactLoadResult:
     def ok(self) -> bool:
         return self.state == "loaded" and self.artifact is not None
 
-    @property
-    def has_artifact(self) -> bool:
-        return self.artifact is not None
-
 
 def make_artifact(
     *,

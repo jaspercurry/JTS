@@ -365,30 +365,16 @@ def _sha256(path: Path) -> str | None:
         return None
 
 
-def config_file_sha256(path: str | Path) -> str | None:
-    """The digest :func:`apply_dsp_config`'s proof compares against.
-
-    Public so a caller that must verify the same bytes verifies them with the
-    same hasher (#2519): the restore path checks its Undo anchor's integrity
-    before entering the apply transaction, and a second hasher there is a
-    second answer waiting to disagree with the proof's. ``None`` when the file
-    cannot be read, exactly as the proof reads it.
-    """
-    return _sha256(Path(path))
-
-
 def same_config_file(
     left: str | Path | None, right: str | Path | None
 ) -> bool:
     """Do two paths name ONE config file? (#2537)
 
-    Beside :func:`config_file_sha256` and public for the same reason: every
-    caller asking "is this the same config" must get one answer — the applied-
-    profile record against CamillaDSP's statefile
+    Public because every caller asking "is this the same config" must get one
+    answer — the applied-profile record against CamillaDSP's statefile
     (:func:`~jasper.active_speaker.baseline_profile.applied_profile_displacement`),
     the reconcile deciding whether its write lands in place, the apply deciding
-    whether its rollback can be a re-load. It shipped as two near-verbatim
-    copies until an adversarial gate caught them.
+    whether its rollback can be a re-load.
 
     **A missing path is not a match.** ``None`` means "nothing is loaded there",
     which is never the same file as something; callers that used to guard the
@@ -408,7 +394,7 @@ def same_config_file(
     type at all.
 
     This answers only sameness of the FILE. Whether its bytes still match what
-    was recorded is :func:`config_file_sha256`'s question, and the callers ask
+    was recorded is the apply proof's sha256 question, and the callers ask
     both because a same-fingerprint recompile can rewrite a file under its own
     name.
     """

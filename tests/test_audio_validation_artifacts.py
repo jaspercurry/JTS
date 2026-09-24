@@ -59,7 +59,6 @@ def test_write_and_load_artifact_round_trip(tmp_path):
     assert result.state == "loaded"
     assert result.artifact == artifact
     assert result.ok is True
-    assert result.has_artifact is True
     assert result.path == path
     assert result.stale is False
     assert path.name.endswith("__xvf3800__apple_usb_c_dongle__xvf_chip_aec__pass.json")
@@ -242,7 +241,6 @@ def test_load_artifact_marks_stale_when_older_than_threshold(tmp_path):
     assert result.state == "stale"
     assert result.artifact == artifact
     assert result.ok is False
-    assert result.has_artifact is True
     assert result.stale is True
 
 
@@ -255,7 +253,6 @@ def test_load_artifact_rejects_future_timestamps_beyond_skew(tmp_path):
     assert result.state == "future"
     assert result.artifact == artifact
     assert result.ok is False
-    assert result.has_artifact is True
     assert "future" in result.errors[0]
 
 
