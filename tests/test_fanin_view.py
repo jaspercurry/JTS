@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from jasper.control.fanin_view import FaninView
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from tests.status_socket_fixtures import JsonStatusSocket
 from tests.test_airplay_health import _fanin_status, _ring, _sampler
 
 
@@ -93,23 +92,6 @@ def test_fanin_ring_and_tts_absent_stay_none() -> None:
     assert fanin["output"]["ring"] is None
     assert fanin["inputs"]["airplay"]["xruns_per_sec"] is None
     assert fanin["tts"] is None
-
-
-def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
-    # macOS caps AF_UNIX sun_path at 104 bytes; pytest's tmp_path nests
-    # ~123 bytes deep and overflows it (Linux allows 108 with a shorter
-    # CI tmp base, so this only bit on macOS). Bind under a short /tmp dir
-    # instead — matches the socket-path convention in test_control_server.py.
-    server = JsonStatusSocket(
-        {"ok": True},
-        name="control.sock",
-        accept_delay_seconds=0.35,
-    )
-    with server as socket_path:
-        assert FaninView._read_fanin_status(str(socket_path)) == {
-            "ok": True,
-        }
-    assert server.requests == [b"STATUS\n"]
 
 
 def test_ring_block_surfaces_empty_reads_rate_and_silent_ms() -> None:

@@ -43,7 +43,7 @@ from jasper.control._health_fields import (
 )
 from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
-from jasper.service_units import JournalctlUnavailable, run_journalctl_json
+from jasper.service_units import SHAIRPORT_SYNC_SERVICE, JournalctlUnavailable, run_journalctl_json
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ try:
 except (ValueError, OSError, AttributeError):
     _CLK_TCK = 100
 
-SHAIRPORT_UNIT = "shairport-sync"
+SHAIRPORT_UNIT = SHAIRPORT_SYNC_SERVICE.removesuffix(".service")
 
 
 def _empty_bucket(t: float) -> dict[str, Any]:

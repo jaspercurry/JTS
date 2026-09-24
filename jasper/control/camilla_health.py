@@ -31,10 +31,11 @@ from jasper.control.camilla_rate_storm import (
     STORM_SAMPLE_INTERVAL_SEC,
     CamillaRateStorm,
 )
+from jasper.service_units import CAMILLA_SERVICE
 
 logger = logging.getLogger(__name__)
 
-CAMILLA_UNIT = "jasper-camilla"
+CAMILLA_UNIT = CAMILLA_SERVICE.removesuffix(".service")
 CAMILLA_INTERVAL_SEC = 30.0
 CAMILLA_SHORT_READ_RE = re.compile(
     r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
