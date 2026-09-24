@@ -306,7 +306,11 @@ the only prediction above the pair's coverage. `stage.headroom_charge_db`
 is the broadband attenuation cost already included in `change_db`.
 
 At the mark, positive `late_energy.early_late_change_db` means a higher
-early-to-late energy ratio. Read `arrival_shift_ms` beside it.
+early-to-late energy ratio. Read `arrival_shift_ms` beside it. A preview's
+change is against its own document with the rear muted; a trial's is against
+the batch's played rear-muted candidate. When their front chains differ, the
+two changes have different zeros: re-base on the absolutes each `late_energy`
+carries (`muted`/`predicted` in a preview, `reference`/`candidate` in a trial).
 `gradient_residual.db` measures distance from an ideal gradient at the measured
 gap: hardware cardioids read below about −6 dB at every bearing, while fills
 read −2 to −4. `figures.muted` and `figures.predicted` use the packet's figures.

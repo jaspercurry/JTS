@@ -114,19 +114,29 @@ def impulse_late_energy(ir: np.ndarray, *, sample_rate_hz: int) -> dict[str, flo
     return impulse_energy_figures(impulse, sample_rate_hz=sample_rate_hz)
 
 
+def late_energy_medians(rows: Sequence[Mapping[str, float]]) -> dict[str, float] | None:
+    """Each late-energy figure's median over ``rows``, on its own absolute
+    scale; ``None`` for no rows. Two changes measured against different
+    references compare only after both are re-based on one of these."""
+    return {key: float(np.median([row[key] for row in rows])) for _, key in LATE_ENERGY_CHANGE_KEYS} if rows else None
+
+
 def late_energy_change(
     candidate: Sequence[Mapping[str, float]], reference: Sequence[Mapping[str, float]],
 ) -> dict[str, Any]:
-    """Candidate minus reference at ONE position: each side's median over takes.
-    These unpaired repeat sets may differ in count, so this is a difference of
-    medians, unlike the preview's muted/predicted pairs from the same take.
-    An empty side gives ``REASON_NO_COMPARISON`` and ``None`` figures."""
+    """Candidate minus reference at ONE position: each side's median over takes,
+    and those medians. These unpaired repeat sets may differ in count, so this
+    is a difference of medians, unlike the preview's muted/predicted pairs from
+    the same take. An empty side gives ``REASON_NO_COMPARISON`` and ``None``
+    figures."""
+    sides = {"candidate": late_energy_medians(candidate), "reference": late_energy_medians(reference)}
+    compared = sides["candidate"] is not None and sides["reference"] is not None
     return {
-        **{label: float(np.median([row[key] for row in candidate])
-                        - np.median([row[key] for row in reference]))
-           if candidate and reference else None for label, key in LATE_ENERGY_CHANGE_KEYS},
+        **{label: sides["candidate"][key] - sides["reference"][key] if compared else None
+           for label, key in LATE_ENERGY_CHANGE_KEYS},
+        **sides,
         "repeats": [len(candidate), len(reference)],
-        "reason": "" if candidate and reference else REASON_NO_COMPARISON,
+        "reason": "" if compared else REASON_NO_COMPARISON,
     }
 
 

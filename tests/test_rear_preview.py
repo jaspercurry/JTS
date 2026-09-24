@@ -230,6 +230,8 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
         for output, source in (("early_late_change_db", "early_late_db"),
                                ("arrival_shift_ms", "centroid_ms"), ("band_energy_change_db", "energy_db")):
             assert row["late_energy"][output] == pytest.approx(predicted_energy[source] - muted[source], abs=0.0005)
+            for side, energy in (("muted", muted), ("predicted", predicted_energy)):
+                assert row["late_energy"][side][source] == pytest.approx(energy[source], abs=0.0005)
 
 
 @pytest.mark.parametrize("case,code", [

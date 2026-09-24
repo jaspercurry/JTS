@@ -106,7 +106,9 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     late = {"band_hz": LATE_ENERGY_BAND_HZ,
             "reason": "" if late_covered else REASON_COVERAGE_SHORT,
             **{label: float(np.median([after[key] - before[key] for before, after in energies]))
-               if energies else None for label, key in figures.LATE_ENERGY_CHANGE_KEYS}}
+               if energies else None for label, key in figures.LATE_ENERGY_CHANGE_KEYS},
+            "muted": figures.late_energy_medians([before for before, _ in energies]),
+            "predicted": figures.late_energy_medians([after for _, after in energies])}
     gap = rear_evidence.confident_arrival_gap_s(row["arrival_gap"])
     keep = (grid >= coverage[0]) & (grid <= min(coverage[1], 5000.0))
     display = (freqs >= coverage[0]) & (freqs <= min(coverage[1], 5000.0))
