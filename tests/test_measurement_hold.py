@@ -657,7 +657,7 @@ async def test_state_carries_the_same_projection(tmp_path):
     from jasper.control import state_aggregate
 
     mh.acquire("seat-level")
-    state = await state_aggregate._get_state(
+    state = await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),

@@ -401,7 +401,7 @@ class SystemRoutes(ControlHandlerMixin):
         from ..system_metrics import read_build_info
         from ...voice.provider_state import read_active_provider
 
-        ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
+        ha_status = state_aggregate.ha_status(self._ha_status_cache.snapshot)
 
         def _read_airplay_health() -> Any:
             if self._audio_health_sampler is None:
@@ -413,8 +413,8 @@ class SystemRoutes(ControlHandlerMixin):
             # route re-probes nothing (ADR-0233 rule 2); same shaper either way.
             cached = getattr(self._audio_health_sampler, "outputd_snapshot", None)
             if cached is None:
-                return asyncio.run(state_aggregate._outputd_status())
-            return state_aggregate._outputd_section(cached())
+                return asyncio.run(state_aggregate.outputd_status())
+            return state_aggregate.outputd_section(cached())
 
         airplay_health = _safe("airplay health", _read_airplay_health)
         outputd_status = _safe("outputd status", _read_outputd_status)
@@ -444,7 +444,7 @@ class SystemRoutes(ControlHandlerMixin):
             "audio_quality": _safe_audio_quality_state(),
             "usb_latency": _safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
-            "speaker_name": state_aggregate._speaker_name_section(),
+            "speaker_name": state_aggregate.speaker_name_section(),
             "home_assistant": ha_status,
             "system_capabilities": system_capabilities_for_profile(
                 install_profile,

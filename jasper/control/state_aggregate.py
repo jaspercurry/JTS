@@ -229,7 +229,7 @@ def _sound_runtime_status(
     return runtime
 
 
-def _outputd_section(status: dict | None) -> dict | None:
+def outputd_section(status: dict | None) -> dict | None:
     """jasper-outputd's STATUS body as every operator surface publishes it.
 
     The chip-reference writer's per-write ring is dropped (~25 KB of every
@@ -244,7 +244,7 @@ def _outputd_section(status: dict | None) -> dict | None:
     return status
 
 
-async def _outputd_status(
+async def outputd_status(
     *,
     local_status_json: Callable[..., Any] = local_status_json,
 ) -> dict | None:
@@ -253,7 +253,7 @@ async def _outputd_status(
     Missing socket is fail-soft here so /state remains available while
     jasper-doctor owns the actionable cutover failure.
     """
-    return _outputd_section(await local_status_json(OUTPUTD_STATUS_SOCKET))
+    return outputd_section(await local_status_json(OUTPUTD_STATUS_SOCKET))
 
 
 async def _soft_read(
@@ -481,7 +481,7 @@ async def _voice_status(cmd: Callable[..., Any], socket_path: str) -> dict | Non
         return None
 
 
-def _ha_status(snapshot: Callable[[], dict[str, Any]]) -> dict:
+def ha_status(snapshot: Callable[[], dict[str, Any]]) -> dict:
     """HA status for /system/snapshot via the child-process cache boundary.
 
     The cache reads the wizard env-file signature fresh, so saves are
@@ -502,7 +502,7 @@ async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
         return None
 
 
-def _speaker_name_section() -> dict[str, Any]:
+def speaker_name_section() -> dict[str, Any]:
     """The display-name record every operator surface publishes.
 
     Named fields rather than the dataclass's ``__dict__``, so a new field
@@ -512,7 +512,7 @@ def _speaker_name_section() -> dict[str, Any]:
     return {"name": state.name, "room": state.room, "source": state.source}
 
 
-async def _get_state(
+async def get_state(
     *,
     camilla_host: str,
     camilla_port: int,
@@ -556,7 +556,7 @@ async def _get_state(
                 _camilla_status(host=camilla_host, port=camilla_port),
                 _voice_status(voice_socket_command, voice_socket_path),
                 local_status_json(FANIN_STATUS_SOCKET),
-                _outputd_status(local_status_json=local_status_json),
+                outputd_status(local_status_json=local_status_json),
                 _mux_status(mux_socket_command),
             ),
             timeout=_remaining(deadline),

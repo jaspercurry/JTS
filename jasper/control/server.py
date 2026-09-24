@@ -235,7 +235,7 @@ async def _get_state(
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    return await _state_aggregate._get_state(
+    return await _state_aggregate.get_state(
         airplay_playing_snapshot=airplay_playing_snapshot,
         audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,

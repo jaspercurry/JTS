@@ -851,7 +851,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert "music_dbfs" in body["voice"]
     # /state.voice is hand-curated, NOT a session_status pass-through, so a
     # new session_status field is silently dropped if it isn't pulled
-    # through in _get_state. wake_legs (jasper-doctor's runtime cross-check
+    # through in get_state. wake_legs (jasper-doctor's runtime cross-check
     # source) is exactly such a field — guard that its key is present.
     assert "wake_legs" in body["voice"]
     # tool_packs is the same shape of curated pull-through (jasper-doctor's
@@ -930,7 +930,7 @@ async def test_state_section_read_past_the_deadline_reports_unavailable(
     A section read that never returns used to park the compute, and with it
     every /state client behind the single-flight cache. It now costs that
     section only: the key stays, its value is the same null every other
-    fail-soft section serves. Retire with the deadline in _get_state.
+    fail-soft section serves. Retire with the deadline in get_state.
     """
     from tests.test_wire_contracts import _state_payload
 
@@ -994,7 +994,7 @@ async def test_state_outputd_section_drops_the_chip_ref_write_ring():
             "recent_writes_capacity": 256,
         }}}
 
-    body = await state_aggregate._outputd_status(local_status_json=status)
+    body = await state_aggregate.outputd_status(local_status_json=status)
 
     writer = body["reference_outputs"]["chip_ref_writer"]
     assert "recent_writes" not in writer
@@ -1005,7 +1005,7 @@ def test_state_voice_wake_legs_flows_from_session_status(
     server_with_coordinator, monkeypatch,
 ):
     """Regression for the curated-vs-passthrough drop: /state.voice is
-    hand-built in _get_state, so a session_status field (here wake_legs —
+    hand-built in get_state, so a session_status field (here wake_legs —
     the runtime-armed legs jasper-doctor cross-checks against configured
     intent) only reaches /state if it's explicitly pulled through. Before
     that pull-through, wake_legs lived in session_status but was absent
@@ -1108,7 +1108,7 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     `Wake legs` check does not read it: the doctor re-derives the same fact
     from the published env + accessory file to report `n/a` instead of a
     permanent yellow on such a box. Pinned here at the aggregator seam
-    specifically: _get_state hand-curates /state.voice field-by-field, so a
+    specifically: get_state hand-curates /state.voice field-by-field, so a
     key silently dropped from that dict literal is invisible to daemon-side
     coverage of session_status() (tests/test_voice_daemon_wake_triple_stream.py)
     and to source-level checks that the key is merely present somewhere in
@@ -1526,7 +1526,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
 
     with caplog.at_level("WARNING", logger="jasper.control.state_aggregate"):
         with pytest.raises(asyncio.TimeoutError):
-            await sa._get_state(
+            await sa.get_state(
                 camilla_host="127.0.0.1",
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
@@ -1549,7 +1549,7 @@ async def test_state_airplay_row_and_active_source_come_from_the_injected_reader
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 
-    body = await state_aggregate._get_state(
+    body = await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),

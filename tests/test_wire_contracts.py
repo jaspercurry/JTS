@@ -666,7 +666,7 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
     monkeypatch.setattr(asyncio, "create_subprocess_shell", record_spawn)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    await state_aggregate._get_state(
+    await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),
@@ -729,7 +729,7 @@ async def _state_payload(monkeypatch, tmp_path, **overrides):
 
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    return await state_aggregate._get_state(**{
+    return await state_aggregate.get_state(**{
         "camilla_host": "127.0.0.1",
         "camilla_port": 1234,
         "voice_socket_path": str(tmp_path / "voice.sock"),
