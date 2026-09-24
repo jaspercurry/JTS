@@ -241,68 +241,45 @@ def _complete_hardware_validation_result(
     return HardwareValidationRun(artifact=artifact, path=path)
 
 
-def run_audio_hardware_validation(
-    *,
-    profile: str = CHIP_AEC_PROFILE,
-    directory: Path | None = None,
-    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
-    poll_interval_seconds: float = DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
-    report_only: bool = False,
-    force: bool = False,
-    allow_long: bool = False,
-    stdout: bool = False,
-    now: datetime | None = None,
+def _run_outputd_stability_validation(
+    *, profile: str, system_env: Mapping[str, str], directory: Path | None,
+    duration_seconds: float, report_only: bool, force: bool, stdout: bool, now: datetime,
 ) -> HardwareValidationRun:
-    """Run a bounded operator-controlled audio hardware validator."""
-
-    now = datetime.now(timezone.utc) if now is None else now
-    duration_seconds = _duration_limit(
-        0.0 if report_only else duration_seconds,
-        allow_long=allow_long,
-    )
-    if poll_interval_seconds <= 0:
-        raise ValueError("poll interval must be positive")
-    configure_logging(fmt="%(message)s")
-    log_event(
-        logger,
-        "audio_hw_validation.start",
+    service_states = _collect_service_states()
+    outputd_socket = outputd_socket_path(system_env)
+    first_outputd = query_outputd_status(outputd_socket)
+    outputd_samples: list[Mapping[str, Any]] = []
+    if isinstance(first_outputd, Mapping):
+        outputd_samples.append(first_outputd)
+    if not report_only and duration_seconds > 0:
+        time.sleep(duration_seconds)
+        final_outputd = query_outputd_status(outputd_socket)
+        if isinstance(final_outputd, Mapping):
+            outputd_samples.append(final_outputd)
+    artifact = build_outputd_stability_hardware_validation_artifact(
+        now=now,
         profile=profile,
-        duration_seconds=f"{duration_seconds:.3f}",
-        report_only=int(report_only),
-        force=int(force),
+        system_env=system_env,
+        service_states=service_states,
+        outputd_status=first_outputd,
+        outputd_status_samples=outputd_samples,
+        duration_seconds=duration_seconds,
+        report_only=report_only,
+        forced=force,
+    )
+    return _complete_hardware_validation_result(
+        artifact,
+        directory=directory,
+        report_only=report_only,
+        stdout=stdout,
     )
 
-    system_env = read_system_env()
-    if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
-        service_states = _collect_service_states()
-        outputd_socket = outputd_socket_path(system_env)
-        first_outputd = query_outputd_status(outputd_socket)
-        outputd_samples: list[Mapping[str, Any]] = []
-        if isinstance(first_outputd, Mapping):
-            outputd_samples.append(first_outputd)
-        if not report_only and duration_seconds > 0:
-            time.sleep(duration_seconds)
-            final_outputd = query_outputd_status(outputd_socket)
-            if isinstance(final_outputd, Mapping):
-                outputd_samples.append(final_outputd)
-        artifact = build_outputd_stability_hardware_validation_artifact(
-            now=now,
-            profile=profile,
-            system_env=system_env,
-            service_states=service_states,
-            outputd_status=first_outputd,
-            outputd_status_samples=outputd_samples,
-            duration_seconds=duration_seconds,
-            report_only=report_only,
-            forced=force,
-        )
-        return _complete_hardware_validation_result(
-            artifact,
-            directory=directory,
-            report_only=report_only,
-            stdout=stdout,
-        )
 
+def _run_chip_aec_validation(
+    *, profile: str, system_env: Mapping[str, str], directory: Path | None,
+    duration_seconds: float, poll_interval_seconds: float,
+    report_only: bool, force: bool, stdout: bool, now: datetime,
+) -> HardwareValidationRun:
     mode_env = read_mode_env()
     mic_probe = probe_xvf_mic()
     service_states = _collect_service_states()
@@ -337,7 +314,7 @@ def run_audio_hardware_validation(
             refusal_reason=refusal_reason,
         )
 
-    outputd_samples = []
+    outputd_samples: list[Mapping[str, Any]] = []
     bridge_samples: list[Mapping[str, Any]] = []
     if isinstance(first_outputd, Mapping):
         outputd_samples.append(first_outputd)
@@ -436,6 +413,51 @@ def run_audio_hardware_validation(
         directory=directory,
         report_only=report_only,
         stdout=stdout,
+    )
+
+
+def run_audio_hardware_validation(
+    *,
+    profile: str = CHIP_AEC_PROFILE,
+    directory: Path | None = None,
+    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
+    poll_interval_seconds: float = DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
+    report_only: bool = False,
+    force: bool = False,
+    allow_long: bool = False,
+    stdout: bool = False,
+    now: datetime | None = None,
+) -> HardwareValidationRun:
+    """Run a bounded operator-controlled audio hardware validator."""
+
+    now = datetime.now(timezone.utc) if now is None else now
+    duration_seconds = _duration_limit(
+        0.0 if report_only else duration_seconds,
+        allow_long=allow_long,
+    )
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll interval must be positive")
+    configure_logging(fmt="%(message)s")
+    log_event(
+        logger,
+        "audio_hw_validation.start",
+        profile=profile,
+        duration_seconds=f"{duration_seconds:.3f}",
+        report_only=int(report_only),
+        force=int(force),
+    )
+
+    system_env = read_system_env()
+    if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
+        return _run_outputd_stability_validation(
+            profile=profile, system_env=system_env, directory=directory,
+            duration_seconds=duration_seconds, report_only=report_only,
+            force=force, stdout=stdout, now=now,
+        )
+    return _run_chip_aec_validation(
+        profile=profile, system_env=system_env, directory=directory,
+        duration_seconds=duration_seconds, poll_interval_seconds=poll_interval_seconds,
+        report_only=report_only, force=force, stdout=stdout, now=now,
     )
 
 
