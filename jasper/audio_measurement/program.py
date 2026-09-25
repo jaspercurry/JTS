@@ -95,8 +95,10 @@ NEAR_FIELD_SILENCE_S = 0.5
 # --- a driver's level probe (ADR-0365) ---
 #: Every probe segment is named from here; see is_level_probe.
 LEVEL_PROBE_SEGMENT_PREFIX = "level_probe_"
-#: A probe's first burst is about this long, and each next burst one phase-closing step longer.
+#: A probe's first burst is about this long.
 LEVEL_PROBE_BURST_S = 0.5
+#: Each next burst is at least this much longer, in whole cycles at the band's floor.
+LEVEL_PROBE_GROWTH_S = 0.125
 
 # Per-driver occurrences in MEASURE (#1668): N-1 bit-identical repeats feed
 # the drift/glitch estimator (§3.1); must stay under
@@ -1145,12 +1147,11 @@ def build_level_probe_program(
 ) -> ExcitationProgram:
     """The room, then one short sweep of the band per gain, quietest first (ADR-0365).
 
-    Each burst closes its phase one cycle at the band's floor later than the one
-    before, so no two share a shape and a matched filter names each alone, however
-    many the room buries.
+    Each burst is longer than the one before by whole cycles at the band's floor
+    (at least :data:`LEVEL_PROBE_GROWTH_S`), so no two share a shape in any band.
     """
     f1_hz, f2_hz = _intersect_band(role_band.band, *sweep_band_hz)
-    step_s = math.log(f2_hz / f1_hz) / f1_hz
+    step_s = max(math.log(f2_hz / f1_hz) / f1_hz, LEVEL_PROBE_GROWTH_S)
     gap_n = _seconds_to_samples(gap_s, PROGRAM_SAMPLE_RATE_HZ)
     segments: list[ProgramSegment] = []
     cursor = _append_pilot_ambient_window(segments, 0)

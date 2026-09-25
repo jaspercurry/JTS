@@ -183,7 +183,7 @@ def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationP
     that ceiling (ADR-0365)."""
     band, seat_equivalent, ceiling, channels = _solo_take(excitation, spec)
     start = min(seat_equivalent - LEVEL_PROBE_START_BACKOFF_DB, ceiling)
-    steps = math.ceil((ceiling - start) / MAX_STEP_DB)
+    steps = math.ceil(round((ceiling - start) / MAX_STEP_DB, 6))
     return build_level_probe_program(
         band, tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
         sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ, gap_s=NEAR_FIELD_SILENCE_S,

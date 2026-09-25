@@ -734,12 +734,13 @@ def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(ask
     assert played == pytest.approx(seat + played_db)
 
 
-@pytest.mark.parametrize("cap_dbfs", [0.0, -40.0])
-def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs):
+@pytest.mark.parametrize("cap_dbfs,scope_gains_db", [(0.0, None), (-40.0, None), (0.0, {"woofer:rear": 0.09})])
+def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db):
     """With no level asked, a driver pose plays its level probe: its take's band,
     bursts rising at most MAX_STEP_DB from well under the seat level to its take's
     own ceiling, no two of one length (ADR-0365)."""
     excitation, spec = _near_field_rear(cap_dbfs)
+    spec = replace(spec, scope_gains_db=scope_gains_db)
     probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
     take = compose_target_program(excitation, spec, 100.0)
     ceiling, = {s.gain_db for s in _sweeps(take)}

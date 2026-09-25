@@ -83,9 +83,9 @@ class _LevelTarget(NamedTuple):
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None) -> _LevelTarget | None:
     """The play's loudest located sweep in dB SPL (ADR-0364), held to a target never
-    above the admission bound under its own stop (ADR-0361). A burst at the level its
-    play stopped at may have been cut short, so it reads only when nothing under it
-    does (ADR-0365)."""
+    above the admission bound under its own stop (ADR-0361). A stopped probe's last
+    burst may have been cut short, so it reads only when no burst before it does
+    (ADR-0365)."""
     spl = spl or {}
     sens_factor_db = finite_float(spl.get("sens_factor_db"))
     stop = finite_float(spl.get("ceiling_db_spl"))
@@ -93,10 +93,10 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
     if not analysis.stimulus_levels or sens_factor_db is None or stop is None or program is None or peak is None:
         return None
     to_spl = MicSensitivity(sens_factor_db).db_spl_from_dbfs
-    stopped_at = finite_float(spl.get("stopped_at_db_spl"))
-    heard = max([reading for reading in analysis.stimulus_levels
-                 if stopped_at is None or to_spl(reading.level_db) < stopped_at] or analysis.stimulus_levels,
-                key=lambda reading: reading.level_db)
+    readings = sorted(analysis.stimulus_levels, key=lambda reading: reading.gain_db)
+    if spl.get("stopped_at_db_spl") is not None and len(readings) > 1:
+        readings.pop()
+    heard = max(readings, key=lambda reading: reading.level_db)
     return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
                                 floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
                         min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),

@@ -206,7 +206,7 @@ class WiredStimulusCapture:
                 if watching in done:
                     failure = watching.result()
                     stopped = failure is None
-                else:
+                if failure is None and playing in done:
                     await playing
             finally:
                 for task in (playing, watching):

@@ -593,8 +593,10 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
 
 
 @pytest.mark.parametrize("gains,heard,floor,stopped_at,next_,gain,shortfall", [
-    # The burst that reached the 76 dB stop may be cut: the loudest one under it solves.
-    ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 77.0, 40.0), 40.0, 76.0, "retake_louder", -31.0, None),
+    # The burst playing when the stop fired may be cut: the loudest one before it solves.
+    ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 74.0), 40.0, 76.0, "retake_louder", -31.0, None),
+    # A stop in the first burst leaves only it to solve from.
+    ((-52.0,), (81.0,), 40.0, 76.0, "retake_quieter", -54.0, None),
     # A room within 10 dB of the loudest burst is never solved from.
     ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
     # A ceiling under the solved gain is said before any take.
@@ -602,8 +604,8 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
 ])
 def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, floor, stopped_at, next_, gain,
                                                                 shortfall):
-    """A probe is solved once, from its loudest burst under the level its play
-    stopped at, when that burst stands trusted over the room (ADR-0365)."""
+    """A probe is solved once, from its loudest burst but the one its stop may have
+    cut, when that burst stands trusted over the room (ADR-0365)."""
     program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
                                         sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     levels = tuple(LevelReading(g, spl - 106.0, floor - 106.0) for g, spl in zip(gains, heard))

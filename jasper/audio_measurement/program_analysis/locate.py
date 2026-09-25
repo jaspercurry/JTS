@@ -19,7 +19,6 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     KIND_SUMMED_SWEEP,
     ProgramSegment,
-    render_program_pcm,
     segment_stimulus,
     STIMULUS_KINDS,
 )
@@ -413,22 +412,30 @@ def _global_offset(
     return global_offset, anchor, stimuli, evidence
 
 
-def _staircase_offset(program: ExcitationProgram, capture: np.ndarray, sample_rate: int) -> int:
-    """A level probe's global offset: its whole program one matched filter at
-    :data:`LOCATOR_RATE_HZ` (ADR-0365).
+def _staircase_offset(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
+) -> tuple[int, dict[str, np.ndarray]]:
+    """A level probe's global offset, and its bursts' stimuli (ADR-0365).
 
-    Its bursts differ in length, so only the true alignment lines up every burst the
-    capture holds, whichever the room buried or the stop cut short. Each burst is then
-    located at the full rate on its own, so nothing is refined here.
+    Its bursts, each at one level and no two of one length, are one matched filter
+    at :data:`LOCATOR_RATE_HZ`, so only the true alignment lines up every burst the
+    capture holds, however long the play took to start, whichever bursts the room
+    buried or the stop cut. Each burst is then located at the full rate on its own.
     """
+    bursts = program.stimulus_segments()
+    stimuli = {burst.segment_id: segment_stimulus(burst) for burst in bursts}
+    template = np.zeros(program.total_samples)
+    for burst in bursts:
+        stimulus = stimuli[burst.segment_id]
+        template[burst.start_sample:burst.start_sample + stimulus.size] = stimulus / np.abs(stimulus).max()
     down = max(1, int(round(sample_rate / LOCATOR_RATE_HZ)))
-    template = resample_poly(render_program_pcm(program).sum(axis=1), 1, down)
+    template = resample_poly(template, 1, down)
     capture_lo = resample_poly(capture, 1, down)
     # Padded so a stopped probe still spans its program, to a length the band-limit FFT runs fast at.
     capture_lo = np.pad(capture_lo, (0, next_fast_len(capture_lo.size + template.size, real=True) - capture_lo.size))
-    burst = program.stimulus_segments()[0]
-    return _earliest_strong_peak(capture_lo, template, band_hz=(burst.f1_hz, burst.f2_hz),
-                                 sample_rate=sample_rate // down) * down
+    offset = _earliest_strong_peak(capture_lo, template, frac=1.0, band_hz=(bursts[0].f1_hz, bursts[0].f2_hz),
+                                   sample_rate=sample_rate // down) * down
+    return offset, stimuli
 
 
 def _resolve_sweep_anchor(

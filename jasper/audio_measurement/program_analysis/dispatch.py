@@ -73,6 +73,7 @@ from .model import (
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RecordedImpulse,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SegmentLocation,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_NOTCH_EXCLUSION_DB,
@@ -150,7 +151,7 @@ def analyze_program_capture(
     if not probe:
         global_offset, _first, stimuli, anchor = _global_offset(program, capture, sample_rate)
     else:
-        global_offset, stimuli, anchor = _staircase_offset(program, capture, sample_rate), {}, None
+        (global_offset, stimuli), anchor = _staircase_offset(program, capture, sample_rate), None
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if probe:
@@ -204,8 +205,10 @@ def _stimulus_levels(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
     global_offset: int, locations: Sequence[SegmentLocation],
 ) -> tuple[LevelReading, ...]:
-    """One driver's located sweeps over the room before them, one reading per gain (ADR-0364)."""
-    by_role = _sweep_occurrences_by_role(locations)
+    """One driver's located sweeps over the room before them, one reading per gain
+    (ADR-0364). A sweep the capture does not hold, such as a probe's burst after its
+    stop, reads nothing (ADR-0365)."""
+    by_role = _sweep_occurrences_by_role([loc for loc in locations if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR])
     if len(by_role) != 1:
         return ()
     (sweeps,) = by_role.values()
