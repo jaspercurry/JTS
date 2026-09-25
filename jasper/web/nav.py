@@ -8,8 +8,7 @@
 `/assistant/` hub pages (`render_hub`, rows whose `parent` is the hub path).
 Stdlib only, like `chrome`'s page shell it calls:
 this runs under the system interpreter at install time.
-`requires` lists a row's gates outermost first; a group whose rows share the
-outermost one carries it on the `<section>` and the rest gate the row.
+`requires` names the capability a row needs ("" for none).
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ class NavRow(NamedTuple):
     label: str
     path: str
     parent: str
-    requires: tuple[str, ...]
+    requires: str
     icon: str
     status_id: str
     status_text: str
@@ -32,55 +31,55 @@ class NavRow(NamedTuple):
 
 
 NAV: tuple[NavRow, ...] = (
-    NavRow("Sources", "Playback sources", "/sources/", "/", (),
+    NavRow("Sources", "Playback sources", "/sources/", "/", "",
            "source", "status-playback-source", "Auto"),
-    NavRow("Sources", "Spotify accounts", "/spotify/", "/", (),
+    NavRow("Sources", "Spotify accounts", "/spotify/", "/", "",
            "music", "", "Household routing"),
-    NavRow("Sources", "Bluetooth devices", "/bluetooth/", "/", (),
+    NavRow("Sources", "Bluetooth devices", "/bluetooth/", "/", "",
            "bluetooth", "", "Pairing"),
-    NavRow("Sound", "Sound", "/sound/", "/", (),
+    NavRow("Sound", "Sound", "/sound/", "/", "",
            "sliders", "", "EQ · Speakers · Pair · Bass"),
-    NavRow("Sound", "EQ", "/sound/eq/", "/sound/", (),
+    NavRow("Sound", "EQ", "/sound/eq/", "/sound/", "",
            "sound", "", "Profiles · Simple EQ · PEQ"),
-    NavRow("Sound", "Speaker setup", "/sound/speaker/", "/sound/", (),
+    NavRow("Sound", "Speaker setup", "/sound/speaker/", "/sound/", "",
            "sound", "", "Layout · Drivers · Commissioning"),
     NavRow("Sound", "Active speaker", "/sound/speaker/crossover/", "/sound/speaker/",
-           (), "wave", "", "Crossover measurement"),
-    NavRow("Sound", "Output", "/sound/output/", "/sound/", (),
+           "", "wave", "", "Crossover measurement"),
+    NavRow("Sound", "Output", "/sound/output/", "/sound/", "",
            "sliders", "", "Audio HAT · Volume shaping"),
-    NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/", (),
+    NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/", "",
            "peers", "", "Group speakers · Wake response"),
     NavRow("Sound", "Speaker timing", "/sound/pair/sync/", "/sound/pair/",
-           (), "wave", "", "Timing between the two speakers"),
-    NavRow("Sound", "Bass", "/sound/bass/", "/sound/", (),
+           "", "wave", "", "Timing between the two speakers"),
+    NavRow("Sound", "Bass", "/sound/bass/", "/sound/", "",
            "sound", "", "Bass-management status"),
     NavRow("Sound", "Measurements", "/sound/measurements/", "/sound/",
-           (), "wave", "", "Saved sweeps"),
-    NavRow("Assistant", "Assistant", "/assistant/", "/", (),
+           "", "wave", "", "Saved sweeps"),
+    NavRow("Assistant", "Assistant", "/assistant/", "/", "",
            "voice", "", "Voice · Wake word · Services"),
-    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", (),
+    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", "",
            "voice", "status-voice", "Provider"),
     NavRow("Assistant", "Wake word", "/assistant/wake/", "/assistant/",
-           ("wake_detection",), "wake", "", "Model · Sensitivity · Mic"),
-    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", (),
+           "wake_detection", "wake", "", "Model · Sensitivity · Mic"),
+    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", "",
            "tools", "", "Voice tools on/off"),
-    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", (),
+    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", "",
            "chat", "", "Recent voice turns"),
-    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", (),
+    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", "",
            "weather", "", "Location and units"),
-    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", (),
+    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", "",
            "transit", "", "Routes and stops"),
-    NavRow("Services", "Google", "/assistant/google/", "/assistant/", (),
+    NavRow("Services", "Google", "/assistant/google/", "/assistant/", "",
            "calendar", "", "Calendar · Gmail"),
-    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", (),
+    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", "",
            "home", "status-ha", "Not connected"),
-    NavRow("System", "Status", "/system/", "/", (),
+    NavRow("System", "Status", "/system/", "/", "",
            "system", "status-software", "Build"),
-    NavRow("System", "Wi-Fi", "/wifi/", "/", (),
+    NavRow("System", "Wi-Fi", "/wifi/", "/", "",
            "wifi", "", "Network profiles"),
-    NavRow("System", "Speaker name", "/speaker/", "/", (),
+    NavRow("System", "Speaker name", "/speaker/", "/", "",
            "tag", "status-speaker-name", "JTS"),
-    NavRow("System", "Wake corpus", "/wake-corpus/", "/", ("developer_tools",),
+    NavRow("System", "Wake corpus", "/wake-corpus/", "/", "developer_tools",
            "dev", "", "Recordings", True),
 )
 
@@ -108,17 +107,12 @@ def hub_paths() -> tuple[str, ...]:
     return tuple(r.path for r in NAV if r.parent == "/" and r.path in parents)
 
 
-def _gate_attr(gates: tuple[str, ...]) -> str:
-    if len(gates) > 1:
-        raise ValueError(f"one data-requires per element, got {gates}")
-    return f' data-requires="{gates[0]}" hidden' if gates else ""
-
-
-def _row_html(row: NavRow, gates: tuple[str, ...]) -> str:
+def _row_html(row: NavRow) -> str:
     status_id = f' id="{row.status_id}"' if row.status_id else ""
+    gate = f' data-requires="{row.requires}" hidden' if row.requires else ""
     return f"""\
           <a class="setting-row{' operator' if row.operator else ''}" \
-href="{row.path}"{_gate_attr(gates)}>
+href="{row.path}"{gate}>
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-{row.icon}"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">{row.label}</span>
@@ -129,10 +123,8 @@ href="{row.path}"{_gate_attr(gates)}>
 
 
 def _section_html(group: str, rows: Sequence[NavRow], *, heading: bool) -> str:
-    first = rows[0].requires[:1]
-    shared = first if all(row.requires[:1] == first for row in rows) else ()
     slug = group.lower()
-    body = "\n".join(_row_html(row, row.requires[len(shared):]) for row in rows)
+    body = "\n".join(_row_html(row) for row in rows)
     # A section named after the page it is on would repeat the title, so it is
     # labelled instead of headed.
     label = f'aria-labelledby="{slug}-heading"' if heading else f'aria-label="{group}"'
@@ -141,7 +133,7 @@ def _section_html(group: str, rows: Sequence[NavRow], *, heading: bool) -> str:
         if heading else ""
     )
     return f"""\
-      <section class="settings-section" {label}{_gate_attr(shared)}>{title}
+      <section class="settings-section" {label}>{title}
         <div class="settings-list">
 {body}
         </div>

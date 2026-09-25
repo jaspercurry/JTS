@@ -59,18 +59,12 @@ def _hub(path: str, profile: str) -> str:
     )
 
 
-def _rendered_rows(page: str) -> list[tuple[str, frozenset[str]]]:
-    """Each row's href with the gates that hide it: its own plus its
-    section's, where a gate shared by the whole group is hoisted."""
-    rows = []
-    for section in page.split('<section class="settings-section"')[1:]:
-        shared = re.match(r'[^>]*data-requires="([^"]+)"', section)
-        for href, attrs in re.findall(
-            r'<a class="setting-row[^"]*" href="([^"]+)"([^>]*)>', section
-        ):
-            own = re.search(r'data-requires="([^"]+)"', attrs)
-            rows.append((href, frozenset(m.group(1) for m in (shared, own) if m)))
-    return rows
+def _rendered_rows(page: str) -> list[tuple[str, str]]:
+    """Each row's href with the gate that hides it ("" for none)."""
+    return [
+        (href, gate.group(1) if (gate := re.search(r'data-requires="([^"]+)"', attrs)) else "")
+        for href, attrs in re.findall(r'<a class="setting-row[^"]*" href="([^"]+)"([^>]*)>', page)
+    ]
 
 
 def test_renderer_covers_exactly_the_shipped_templates_placeholders() -> None:
@@ -143,7 +137,7 @@ def test_hub_renders_its_manifest_children_in_order_behind_their_gates(
     """A hub IS its manifest children: every row once, in order, carrying
     exactly the capabilities that gate it (docs/UX-AUDIT-2026-09-03.md §2)."""
     assert _rendered_rows(_hub(path, profile)) == [
-        (row.path, frozenset(row.requires)) for row in children(path)
+        (row.path, row.requires) for row in children(path)
     ]
 
 
