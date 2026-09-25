@@ -40,6 +40,11 @@ DEFAULT_MAX_AUDIO_BYTES = 128 * 1024 * 1024  # 128 MiB
 
 ROLLED_OFF_SENTINEL = "rolled_off"
 AUDIOLESS_ROW_RETENTION_DAYS = 365
+# In attach_audio's leg order: on, off, dtln, chip-aec-150, chip-aec-210.
+_AUDIO_PATH_COLUMNS = (
+    "audio_on_path", "audio_off_path", "audio_dtln_path",
+    "audio_chip_aec_150_path", "audio_chip_aec_210_path",
+)
 
 
 _STAGE_TO_COLUMN: dict[str, str] = {
@@ -245,11 +250,9 @@ class WakeEventStore:
             )
         # ts_utc is _now_iso() text, so string order is time order.
         cutoff = datetime.now(timezone.utc) - timedelta(days=AUDIOLESS_ROW_RETENTION_DAYS)
+        audio_left = ", ".join(f"NULLIF({c}, :gone)" for c in _AUDIO_PATH_COLUMNS)
         pruned = conn.execute(
-            """DELETE FROM wake_events WHERE ts_utc < :cutoff AND COALESCE(
-                 NULLIF(audio_on_path, :gone), NULLIF(audio_off_path, :gone),
-                 NULLIF(audio_dtln_path, :gone), NULLIF(audio_chip_aec_150_path, :gone),
-                 NULLIF(audio_chip_aec_210_path, :gone)) IS NULL""",
+            f"DELETE FROM wake_events WHERE ts_utc < :cutoff AND COALESCE({audio_left}) IS NULL",
             {"cutoff": cutoff.isoformat(timespec="milliseconds"), "gone": ROLLED_OFF_SENTINEL},
         ).rowcount
         if pruned:
@@ -468,9 +471,8 @@ class WakeEventStore:
         if self._audio_bytes_estimate is not None:
             self._audio_bytes_estimate += written_bytes
         self._execute(
-            """UPDATE wake_events SET audio_on_path = ?, audio_off_path = ?,
-               audio_dtln_path = ?, audio_chip_aec_150_path = ?,
-               audio_chip_aec_210_path = ? WHERE event_id = ?""",
+            f"UPDATE wake_events SET {', '.join(f'{c} = ?' for c in _AUDIO_PATH_COLUMNS)}"
+            " WHERE event_id = ?",
             (*[name for name, _ in files], event_id),
         )
         self._retention_sweep()
@@ -666,32 +668,10 @@ class WakeEventStore:
         return deleted_event_ids, total
 
     def _mark_audio_rolled_off(self, event_ids: Iterable[str]) -> None:
+        rolled = ", ".join(
+            f"{c} = CASE WHEN {c} IS NOT NULL THEN :gone END" for c in _AUDIO_PATH_COLUMNS
+        )
         self._conn.executemany(  # type: ignore[union-attr]
-            """
-            UPDATE wake_events
-            SET audio_on_path  = CASE WHEN audio_on_path  IS NOT NULL
-                                      THEN ? ELSE NULL END,
-                audio_off_path = CASE WHEN audio_off_path IS NOT NULL
-                                      THEN ? ELSE NULL END,
-                audio_dtln_path = CASE WHEN audio_dtln_path IS NOT NULL
-                                       THEN ? ELSE NULL END,
-                audio_chip_aec_150_path =
-                    CASE WHEN audio_chip_aec_150_path IS NOT NULL
-                         THEN ? ELSE NULL END,
-                audio_chip_aec_210_path =
-                    CASE WHEN audio_chip_aec_210_path IS NOT NULL
-                         THEN ? ELSE NULL END
-            WHERE event_id = ?
-            """,
-            [
-                (
-                    ROLLED_OFF_SENTINEL,
-                    ROLLED_OFF_SENTINEL,
-                    ROLLED_OFF_SENTINEL,
-                    ROLLED_OFF_SENTINEL,
-                    ROLLED_OFF_SENTINEL,
-                    eid,
-                )
-                for eid in event_ids
-            ],
+            f"UPDATE wake_events SET {rolled} WHERE event_id = :eid",
+            [{"gone": ROLLED_OFF_SENTINEL, "eid": eid} for eid in event_ids],
         )
