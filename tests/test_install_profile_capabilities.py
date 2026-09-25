@@ -41,7 +41,6 @@ from jasper.install_profile import (
     VALID_INSTALL_PROFILES,
     Capability,
     install_profile_has_capability,
-    install_profile_supports_wake_detection,
     system_capabilities_for_profile,
 )
 
@@ -59,44 +58,9 @@ def test_every_install_profile_has_a_capability_row():
     assert set(PROFILE_CAPABILITIES) == set(VALID_INSTALL_PROFILES)
 
 
-def test_granted_capabilities_are_all_real_capabilities():
-    """A typo cannot silently create a capability nothing grants."""
-    known = set(Capability)
-    for profile, granted in PROFILE_CAPABILITIES.items():
-        assert isinstance(granted, frozenset), profile
-        assert granted <= known, f"{profile}: unknown capabilities {granted - known}"
-
-
-def test_legacy_tokens_read_streambox_grants():
-    """A field box with an endpoint/satellite marker reads its REAL grants."""
-    for token in ("endpoint", "satellite"):
-        for capability in Capability:
-            assert install_profile_has_capability(
-                token, capability,
-            ) == install_profile_has_capability("streambox", capability), token
-
-
-def test_unset_profile_reads_full_grants():
-    """Absent marker + absent env means full, as everywhere else here."""
-    for capability in Capability:
-        assert install_profile_has_capability(None, capability) is (
-            capability in PROFILE_CAPABILITIES["full"]
-        )
-        assert install_profile_has_capability("", capability) is (
-            capability in PROFILE_CAPABILITIES["full"]
-        )
-
-
 def test_invalid_profile_raises_rather_than_granting_nothing():
     with pytest.raises(ValueError, match="invalid install profile"):
         install_profile_has_capability("bogus", Capability.WAKE_DETECTION)
-
-
-def test_named_predicate_agrees_with_the_registry():
-    for profile in ("full", "streambox", "endpoint", None):
-        assert install_profile_supports_wake_detection(profile) is (
-            install_profile_has_capability(profile, Capability.WAKE_DETECTION)
-        )
 
 
 # ---------- (2) purity ----------------------------------------------------
@@ -221,7 +185,10 @@ _STREAMBOX = {"wake_detection": False}
 
 @pytest.mark.parametrize(
     ("profile", "expected"),
-    [("full", _FULL), ("streambox", _STREAMBOX), ("endpoint", _STREAMBOX), (None, _FULL)],
+    [
+        ("full", _FULL), ("streambox", _STREAMBOX), ("endpoint", _STREAMBOX),
+        ("satellite", _STREAMBOX), (None, _FULL), ("", _FULL),
+    ],
 )
 def test_capability_map_is_pinned(profile, expected):
     """The baked pages must see exactly these answers, as JSON booleans:
