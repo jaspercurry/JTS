@@ -40,11 +40,8 @@ DEFAULT_MAX_AUDIO_BYTES = 128 * 1024 * 1024  # 128 MiB
 
 ROLLED_OFF_SENTINEL = "rolled_off"
 AUDIOLESS_ROW_RETENTION_DAYS = 365
-# In attach_audio's leg order: on, off, dtln, chip-aec-150, chip-aec-210.
-_AUDIO_PATH_COLUMNS = (
-    "audio_on_path", "audio_off_path", "audio_dtln_path",
-    "audio_chip_aec_150_path", "audio_chip_aec_210_path",
-)
+_AUDIO_LEGS = ("on", "off", "dtln", "chip-aec-150", "chip-aec-210")
+_AUDIO_PATH_COLUMNS = tuple(f"audio_{leg.replace('-', '_')}_path" for leg in _AUDIO_LEGS)
 
 
 _STAGE_TO_COLUMN: dict[str, str] = {
@@ -458,11 +455,10 @@ class WakeEventStore:
         audio_chip_aec_150: bytes | None = None,
         audio_chip_aec_210: bytes | None = None,
     ) -> bool:
-        legs = ("on", "off", "dtln", "chip-aec-150", "chip-aec-210")
         audio = (audio_on, audio_off, audio_dtln, audio_chip_aec_150, audio_chip_aec_210)
         files = tuple(
             (f"{event_id}.aec-{leg}.wav", bytes(pcm)) if pcm is not None else (None, None)
-            for leg, pcm in zip(legs, audio)
+            for leg, pcm in zip(_AUDIO_LEGS, audio, strict=True)
         )
         return self._enqueue(self._attach_audio, event_id, files) is not None
 
