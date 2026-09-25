@@ -30,18 +30,21 @@ from jasper.audio_measurement.comparison_bands import (
 )
 from jasper.audio_measurement.frame_fit import fit_frame, FrameComparison
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+from jasper.audio_measurement.level import LevelReading, stimulus_level
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     ExcitationProgram,
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
     PROGRAM_PHASE_VERIFY,
+    segment_emitted_band_hz,
 )
 from jasper.log_event import log_event
 from .check import (
     _aggregate_linearity_ok,
     _aggregate_tri_state_ok,
     _ambient_from_capture,
+    _pilot_ambient_samples,
     _pilot_observations,
     _pilot_verdicts,
     _solve_gain_plan,
@@ -187,7 +190,23 @@ def analyze_program_capture(
             float(discontinuity) if isinstance(discontinuity, (int, float)) else None
         ),
         pilots=pilots, mic_meter_status=mic_meter_status,
+        stimulus_level=_stimulus_level(program, capture, sample_rate, global_offset, locations),
     )
+
+
+def _stimulus_level(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
+    global_offset: int, locations: Sequence[SegmentLocation],
+) -> LevelReading | None:
+    """One driver's located sweeps over the room before its pilots (ADR-0363)."""
+    by_role = _sweep_occurrences_by_role(locations)
+    if len(by_role) != 1:
+        return None
+    (sweeps,) = by_role.values()
+    segments = [program.segment(loc.segment_id) for loc in sweeps]
+    return stimulus_level([_raw_sweep_segment(capture, seg, loc.located_start) for seg, loc in zip(segments, sweeps)],
+                          _pilot_ambient_samples(program, capture, global_offset),
+                          sample_rate=sample_rate, band_hz=segment_emitted_band_hz(segments[0]))
 
 
 def _analyze_check(

@@ -21,7 +21,7 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
     curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz),
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist()} for sweep in sweeps[1:]]}
     return {"take_id": take_id, "selected": selected, "pose": {"driver": driver, "distance_m": distance_mm / 1000},
-            "quality": {"evidence": {"max_window_db_spl": 80.0}}, "curve": curve,
+            "quality": {"evidence": {"level_db_spl": 80.0}}, "curve": curve,
             "level": {"level_db": -30.0}, "artifacts": {"record_id": f"crossover_v2/run/positions/{take_id}.json"}}
 
 

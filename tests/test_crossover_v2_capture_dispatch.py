@@ -20,6 +20,7 @@ from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
+from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis.model import (
@@ -560,29 +561,33 @@ _LOUDER = refusal_copy.TakeVerdict(False, fault="snr_floor", next="retake_louder
 
 @pytest.mark.parametrize("heard,prior,reading,stop,asked,next_,gain", [
     (True, None, 80.0, 85.0, None, "accept", None), (True, None, 78.5, 85.0, None, "accept", None),
-    (True, None, 66.0, 85.0, None, "retake_louder", -26.0), (True, None, 50.0, 85.0, None, "retake_louder", -25.0),
-    (True, None, 84.0, 85.0, None, "retake_quieter", -44.0),
-    (True, None, 75.0, 80.0, None, "accept", None), (True, None, 80.0, 80.0, None, "retake_quieter", -45.0),
+    (True, None, 66.0, 85.0, None, "retake_louder", -27.0), (True, None, 50.0, 85.0, None, "retake_louder", -25.0),
+    (True, None, 84.0, 85.0, None, "retake_quieter", -45.0),
+    (True, None, 75.0, 80.0, None, "accept", None), (True, None, 80.0, 80.0, None, "retake_quieter", -46.0),
     (True, None, None, 85.0, None, "accept", None),
     (False, None, 45.0, 85.0, None, "fix_and_retake", None),
     (True, _LOUDER, 80.0, 85.0, None, "retake_louder", -40.0),
-    (True, None, 75.0, 85.0, -40.0, "retake_louder", -35.0), (True, None, 75.0, 85.0, -35.0, "accept", None),
+    (True, None, 75.0, 85.0, -40.0, "retake_louder", -36.0), (True, None, 75.0, 85.0, -35.0, "accept", None),
 ])
 def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, stop, asked, next_, gain):
-    """A heard near-field take lands 80 dB (±2) in its loudest 21 ms window,
-    never above the admission bound under its own stop: outside the band it is
-    retaken at the sweep peak that lands the target, raised at most 15 dB a
-    step, unless its ceiling already held it under the peak it asked for. One
-    the microphone did not hear is judged by its recording, and no other
-    retake raises a take past its target (ADR-0361)."""
+    """A heard near-field take lands 80 dB (±2), read from its located sweeps
+    and never held above the admission bound under its own stop: outside the
+    band it is retaken 1:1 at a peak aimed 1 dB under the target, raised at most
+    15 dB a step, unless its ceiling already held it under the peak it asked
+    for. One the microphone did not hear is judged by its recording, and no
+    other retake raises a take past its target (ADR-0361, ADR-0363)."""
     program = build_measure_program({"woofer": -40.0}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
                                     repeat_count=1, sweep_durations={"woofer": 0.2})
-    analysis = _analysis() if heard else _analysis(locations=(_loc("sweep_w", confidence=0.05),))
+    # sens_factor_db -12 reads dBFS + 106 as dB SPL; the floor sits 30 dB under.
+    level = None if reading is None else LevelReading(reading - 106.0, reading - 136.0)
+    analysis = _analysis(stimulus_level=level, **({} if heard else {"locations": (_loc("sweep_w", confidence=0.05),)}))
     verdict = cd.assess(analysis, phase="measure", prior_verdict=prior, program=program,
-                        spl={"max_window_db_spl": reading, "ceiling_db_spl": stop},
+                        spl={"sens_factor_db": -12.0, "ceiling_db_spl": stop},
                         near_field=True, level_asked_dbfs=asked)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_capped", False) is (asked == -35.0)
+    if reading is not None:
+        assert verdict.evidence["level_db_spl"] == pytest.approx(reading)
     if heard and prior is None and next_ != "accept":
         assert (verdict.ok, verdict.fault, verdict.charge) == (False, "level_off_target", "speaker")
 

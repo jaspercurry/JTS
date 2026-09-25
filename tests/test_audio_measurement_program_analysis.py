@@ -7477,3 +7477,23 @@ def test_saved_timing_verification_names_why_it_is_not_comparable(monkeypatch, s
     verification = candidate.timing_verification
     assert verification["residual_rms_db"] > verification["residual_floor_db"]
     assert (verification["status"], verification["reasons"]) == ("not_comparable" if reasons else "comparable", reasons)
+
+
+def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them():
+    """A loud room before the sound never reaches a take's level or its floor,
+    which is read in the quiet window before its pilots (ADR-0363)."""
+    program = build_measure_program(
+        {"woofer": -20.0}, (RoleBand("woofer", 0, FrequencyBand(20.0, 2000.0)),),
+        sweep_durations={"woofer": 1.0}, sweep_band_hz=(20.0, 2000.0), gap_s=0.5, guard_s=0.25,
+        pilot_gap_s=0.25, leading_pilot_gains_db=(-30.0, -20.0), leading_pilot_role="woofer",
+    )
+    quiet = _synthesize(program, woofer_ir=_band_impulse(40, 20.0, 2000.0, 0.5), tweeter_ir=np.zeros(1),
+                        global_offset=SR)
+    loud = quiet.copy()
+    loud[:SR // 2] += np.random.default_rng(1).normal(0.0, 0.3, SR // 2)
+
+    levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_level
+              for capture in (quiet, loud)]
+
+    assert levels[0].level_db - levels[0].floor_db > 40.0
+    assert (levels[1].level_db, levels[1].floor_db) == pytest.approx((levels[0].level_db, levels[0].floor_db), abs=0.01)

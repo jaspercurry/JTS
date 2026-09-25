@@ -49,6 +49,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 from jasper.active_speaker.crossover_v2 import wired_stimulus
 from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
+from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
@@ -89,9 +90,9 @@ from tests.wired_capture_fixtures import FakePcm
 UMIK2_USB_ID = "2752:002b"
 
 
-class _Sensitivity:
-    def db_spl_from_dbfs(self, dbfs):
-        return dbfs + 100.0
+def _Sensitivity() -> MicSensitivity:
+    """Reads dBFS + 100 as dB SPL."""
+    return MicSensitivity(sens_factor_db=-6.0)
 
 
 # --------------------------------------------------------------------------- #

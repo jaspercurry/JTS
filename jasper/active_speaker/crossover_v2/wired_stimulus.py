@@ -224,6 +224,7 @@ class WiredStimulusCapture:
                 "max_window_db_spl": round(self.spl_monitor.max_window_db_spl, 2),
                 "loudest_half_second_db_spl": round(self.spl_monitor.loudest_half_second_db_spl, 2),
                 "ceiling_db_spl": self.spl_monitor.ceiling_db_spl,
+                "sens_factor_db": self.spl_monitor.sensitivity.sens_factor_db,
             }
         if playback_path is not None:
             integrity["playback_path"] = playback_path
