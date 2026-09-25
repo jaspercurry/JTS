@@ -84,10 +84,8 @@ def _top_level_sections(text: str) -> dict[str, list[str]]:
 
 def float_matches(value: Any, expected: float) -> bool:
     """True iff ``value`` parses to within 1e-4 of ``expected`` (fail-closed)."""
-    try:
-        return abs(float(value) - expected) < 0.0001
-    except (OverflowError, TypeError, ValueError):
-        return False
+    number = as_float(value)
+    return number is not None and abs(number - expected) < 0.0001
 
 
 def truthy_bool(value: Any) -> bool:
