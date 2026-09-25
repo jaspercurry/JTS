@@ -42,6 +42,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0252](0252-the-python-tree-publishes-from-a-staging-path.md) | The Python tree publishes from a staging path | accepted |
 | [0315](0315-hardware-tier-and-direct-updates.md) | Hardware tier and direct updates | accepted |
 | [0348](0348-the-installer-builds-from-source-on-stock-pi-os.md) | The installer builds from source on stock Pi OS; no prebuilt image or runtime bundle | accepted |
+| [0363](0363-the-assistant-is-on-every-tier-and-wake-detection-is-the-only-tier-capability.md) | The assistant is on every tier; wake detection is the only tier capability | accepted |
 
 ## Audio path & output (ring/fanin/outputd/DAC)
 
@@ -173,7 +174,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0154](0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md) | Reactive cues never cool down; proactive cues are rate-limited | amended by 0215 |
 | [0170](0170-a-selectable-audio-input-profile-owns-its-whole-wake-leg-set.md) | A selectable audio-input profile owns its whole wake-leg set | accepted |
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
-| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | accepted |
+| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363 |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
 | [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
