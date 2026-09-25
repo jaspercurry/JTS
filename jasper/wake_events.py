@@ -245,15 +245,24 @@ class WakeEventStore:
                 "wake_events: schema migration added columns: %s",
                 ", ".join(added),
             )
-        # ts_utc is _now_iso() text, so string order is time order.
+        # ts_utc is _now_iso() text, so string order is time order. The prune
+        # is the only write at open: a locked or full database skips it rather
+        # than costing the run its telemetry.
         cutoff = datetime.now(timezone.utc) - timedelta(days=AUDIOLESS_ROW_RETENTION_DAYS)
         audio_left = ", ".join(f"NULLIF({c}, :gone)" for c in _AUDIO_PATH_COLUMNS)
-        pruned = conn.execute(
-            f"DELETE FROM wake_events WHERE ts_utc < :cutoff AND COALESCE({audio_left}) IS NULL",
-            {"cutoff": cutoff.isoformat(timespec="milliseconds"), "gone": ROLLED_OFF_SENTINEL},
-        ).rowcount
-        if pruned:
-            log_event(logger, "wake_events.rows_pruned", count=pruned)
+        try:
+            pruned = conn.execute(
+                f"DELETE FROM wake_events WHERE ts_utc < :cutoff AND COALESCE({audio_left}) IS NULL",
+                {"cutoff": cutoff.isoformat(timespec="milliseconds"), "gone": ROLLED_OFF_SENTINEL},
+            ).rowcount
+        except sqlite3.Error as e:
+            log_event(
+                logger, "wake_events.rows_prune_failed",
+                error=type(e).__name__, level=logging.WARNING,
+            )
+        else:
+            if pruned:
+                log_event(logger, "wake_events.rows_pruned", count=pruned)
         logger.info(
             "wake_events: opened %s (max_audio_bytes=%d MB)",
             self._db_path, self._max_audio_bytes // (1024 * 1024),

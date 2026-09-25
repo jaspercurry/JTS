@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._log_events import event_fields
+
 from jasper import wake_events
 from jasper.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES,
@@ -976,6 +978,24 @@ async def test_open_deletes_year_old_rows_whose_audio_is_gone(tmp_path: Path):
     finally:
         s.close()
     assert kept == {"old-with-audio", "recent-no-audio"}
+
+
+def test_open_survives_a_prune_it_cannot_run(tmp_path: Path, caplog):
+    """The prune is housekeeping: another connection holding the write lock
+    skips it, and the store still opens with telemetry on."""
+    created = WakeEventStore(tmp_path)
+    created.open()
+    created.close()
+    s = WakeEventStore(tmp_path)
+    with closing(sqlite3.connect(s._db_path, isolation_level=None)) as holder:
+        holder.execute("BEGIN IMMEDIATE")
+        s.open()
+        holder.execute("ROLLBACK")
+    try:
+        assert event_fields(caplog, "wake_events.rows_prune_failed")["error"] == "OperationalError"
+        assert s._conn is not None
+    finally:
+        s.close()
 
 
 # ---------------------------------------------------------------------------
