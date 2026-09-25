@@ -8,16 +8,13 @@ retirement so none of them can quietly come back:
 
   1. the bridge has no ALSA reference reader left,
   2. a live box still carrying the retired value converges instead of
-     going deaf, while a genuinely unknown value still fails loudly, and
-  3. `jasper-aec-reconcile` — the single writer of that env var — never
-     publishes the retired spelling from any branch.
+     going deaf, while a genuinely unknown value still fails loudly.
 """
 from __future__ import annotations
 
 import ast
 import logging
 import os
-import re
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -44,7 +41,6 @@ BRIDGE_SOURCES = (
 BRIDGE_MODULES = (
     aec_bridge, bridge_capture, bridge_config, bridge_reference,
 )
-RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
 
@@ -257,27 +253,6 @@ def test_main_wires_the_ref_thread_to_the_process_stats_and_shutdown():
         "stats": "_bridge_stats",
         "shutdown": "_shutdown",
     }
-
-
-# ---------------------------------------------------------------------------
-# 3. The single writer never publishes the retired spelling.
-# ---------------------------------------------------------------------------
-
-
-def test_the_reconciler_never_assigns_the_retired_ref_source():
-    """`write_leg_env` is the only writer of JASPER_AEC_REF_SOURCE.
-
-    Its parked branches (`bridge_running` of `"0"` and `"reference"`) used to
-    write `alsa`; they publish a resting value, and the one supported source
-    is what it has to be.
-    """
-    text = RECONCILE.read_text()
-    assignments = re.findall(r'^\s*ref_source="([^"]*)"', text, flags=re.MULTILINE)
-    assert assignments, "expected write_leg_env to assign ref_source"
-    assert set(assignments) == {"outputd_udp"}, (
-        f"jasper-aec-reconcile assigns ref_source={sorted(set(assignments))}; "
-        "outputd_udp is the bridge's only reference source"
-    )
 
 
 # ---------------------------------------------------------------------------

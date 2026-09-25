@@ -203,13 +203,6 @@ def _start_aec_commission() -> bool:
     )
 
 
-# Default leg policy, from the shared audio_profile_state.WAKE_LEG_DEFAULTS
-# table (also consumed by jasper.cli.audio_input_profile and mirrored in
-# bash by deploy/bin/jasper-aec-reconcile's ensure_mode_file). Raw is on for
-# software-AEC defaults, DTLN is off, and chip-AEC's extra beam detectors
-# are off. The chip-AEC profile itself may still be selected by `auto`;
-# these defaults only decide whether voice opens extra detector instances
-# beyond the primary/session leg.
 _PROFILE_DEFAULT = "custom"
 
 # Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The

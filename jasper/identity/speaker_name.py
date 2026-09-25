@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from ..atomic_io import atomic_write_text
 from ..env_load import SPEAKER_NAME_ENV_PATH
+from ..env_file import quote_env_value as quote_env_value
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -230,18 +231,6 @@ def runtime_room(
     if env.get(ENV_VAR_ROOM, "").strip():
         return validate_room(env[ENV_VAR_ROOM])
     return read_state(path).room
-
-
-def quote_env_value(value: str) -> str:
-    """Quote a value for both systemd EnvironmentFile and shell source."""
-    escaped = (
-        value
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("`", "\\`")
-    )
-    return f'"{escaped}"'
 
 
 # Sentinel so callers can pass room=None to mean "preserve whatever is on

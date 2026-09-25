@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import subprocess
 import sys
@@ -21,19 +20,11 @@ from jasper.aec_sweep import (
     NS_LEVEL_ENV,
 )
 from jasper.audio_profile_state import AEC_MODE_ENV, AEC_MODE_FILE_ENV
-from jasper.aec.bridge_config import (
-    OUTPUTD_REF_UDP_HOST_ENV,
-    OUTPUTD_REF_UDP_PORT_ENV,
-    REF_SOURCE_ENV,
-)
 from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
-    DTLN_ENABLED_ENV,
 )
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.mics import xvf3800
-
-RECONCILER = Path(__file__).resolve().parents[1] / "deploy" / "bin" / "jasper-aec-reconcile"
 
 
 def _write_card(root: Path, card: str, channels: int) -> None:
@@ -255,36 +246,7 @@ def absent_mic_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
 def test_registry_constant_reaches_bash_even_with_no_mic(
     absent_mic_env: dict[str, str], key: str, value: str
 ) -> None:
-    # The reconciler keeps no copy of these (ADR-0235), so they have to be on
-    # the emitter's output on every path, including the absent one — that is
-    # the pass where it still has to name candidates and a fallback mic.
     assert absent_mic_env[key] == value
-
-
-def _reconciler_written_aec_keys() -> frozenset[str]:
-    return frozenset(
-        re.findall(
-            r'^\s*set_env_var "\$ENV_FILE" (JASPER_AEC_[A-Z0-9_]+)',
-            RECONCILER.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-    )
-
-
-@pytest.mark.parametrize(
-    "constant",
-    [
-        xvf3800.AEC_MIC_DEVICE_ENV,
-        xvf3800.CHIP_AEC_ENABLED_ENV,
-        DTLN_ENABLED_ENV,
-        REF_SOURCE_ENV,
-        OUTPUTD_REF_UDP_HOST_ENV,
-        OUTPUTD_REF_UDP_PORT_ENV,
-    ],
-)
-def test_env_key_constant_is_a_key_the_reconciler_writes(constant: str) -> None:
-    # A rename on either side of the bash/Python edge fails here.
-    assert constant in _reconciler_written_aec_keys()
 
 
 @pytest.mark.parametrize(
@@ -306,12 +268,7 @@ def test_env_key_constant_is_a_key_the_reconciler_writes(constant: str) -> None:
 def test_env_key_constant_not_written_by_reconciler_keeps_its_name(
     constant: str, literal: str,
 ) -> None:
-    # These keys are set by callers other than the reconciler (wake_corpus,
-    # the /aec wizard, engine tuning). Not in _reconciler_written_aec_keys(),
-    # so pinned directly: a rename here is still observable behavior for
-    # every reader of /etc/jasper/jasper.env or /var/lib/jasper/aec_mode.env.
     assert constant == literal
-    assert constant not in _reconciler_written_aec_keys()
 
 
 @pytest.mark.parametrize(

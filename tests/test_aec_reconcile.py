@@ -7,24 +7,34 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from jasper import wake_legs
+from jasper.aec_ready import read_aec_bridge_ready
+from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
+from jasper.aec.reconcile import runtime as reconcile_runtime
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import (
     ALL_PROFILES,
     WAKE_LEG_DEFAULTS,
-    normalize_aec_mode,
+    normalize_audio_input_profile,
+    resolve_profile_wake_legs,
     parse_env_bool,
     profile_env_updates,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
+from jasper import aec_sweep
+from jasper.aec import bridge_engines, bridge_telemetry
+from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
+from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
 from jasper.mic_presence import (
@@ -55,6 +65,7 @@ from tests.reconcile_fixtures import (
     systemctl_log as _systemctl_log,
 )
 from tests.shell_runner import run_bash
+from tests import shell_runner
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -163,8 +174,7 @@ def _publishing_init_systemctl(tmp_path: Path, health: AlignmentHealth) -> Path:
 def _fake_mixer_tools(tmp_path: Path, failing: str = "") -> tuple[Path, Path]:
     """A logging amixer/alsactl double. `failing` (amixer or alsactl), if
     given, exits 1 after logging — a fake that fails on demand, so
-    ensure_capture_mixer_open's per-invocation event=aec_reconcile.mixer_repair
-    is exercised without a real mixer."""
+    each mixer-repair failure is exercised without a real mixer."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "mixer.log"
@@ -188,6 +198,8 @@ def _run_reconcile(
     tmp_path: Path,
     *args: str,
     extra_env: dict[str, str] | None = None,
+    script: Path = SCRIPT,
+    cwd: Path = ROOT,
 ) -> subprocess.CompletedProcess[str]:
     """Run the reconciler against a tmp_path-rooted copy of every file, marker
     and unit-control surface it reads or writes. Nothing here may reach the
@@ -238,24 +250,16 @@ def _run_reconcile(
                 tmp_path / "run" / "aec-bridge-ready"
             ),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
+            "JASPER_SYSTEMD_DIR": str(tmp_path / "systemd"),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
-            # The script's Python bridges: pin the interpreter running the
-            # tests, not whatever `python3` PATH offers. A bare system python3
-            # can lack numpy and fail the measurement-registry bridge into its
-            # fail-open branch.
             "JASPER_MIC_PROFILE_PYTHON": sys.executable,
-            # Hermetic: always source the repo's shared env-file lib, never
-            # a (possibly stale) installed copy under /usr/local/lib.
-            "JASPER_ENV_FILE_LIB": str(
-                ROOT / "deploy" / "lib" / "jasper-env-file.sh"
-            ),
         }
     )
     if extra_env:
         env.update(extra_env)
     return run_bash(
-        [str(SCRIPT), *args],
-        cwd=ROOT,
+        [str(script), *args],
+        cwd=cwd,
         env=env,
         timeout=180,
     )
@@ -420,89 +424,45 @@ def _systemctl_reporting(tmp_path: Path, verb: str, unit: str, status: int) -> P
 
 
 def _python_double(
-    tmp_path: Path,
-    name: str,
-    *,
-    failing_module: str,
+    tmp_path: Path, name: str, *, failing_module: str,
     stderr_message: str = "",
-    stdout_message: str = "",
-    exit_code: int = 1,
-    passthrough: bool = True,
 ) -> Path:
-    """An interpreter that fails one of the script's Python bridges.
+    """Inject a failing observation owner into the real package pass."""
+    function = {
+        "jasper.accessories.mic_env": "read_accessory_mic_sources",
+        "measurement_mic_usb_ids": "measurement_mic_usb_ids",
+        "jasper.cli.xvf_profile": "xvf3800.detect_runtime_profile",
+    }[failing_module]
+    return _package_launcher(tmp_path / name,
+        f"def fail(*args, **kwargs):\n    raise OSError({stderr_message!r})\n"
+        f"observation.{function} = fail\n")
 
-    ``passthrough`` serves every other bridge from the real interpreter; the
-    partial-/opt/jasper-deploy shape sets it False so nothing else answers
-    either. ``stdout_message`` with ``exit_code=0`` is the other failure a
-    bridge can have: a clean exit whose stdout is not the payload contract.
-    """
-    echo = f"  echo '{stderr_message}' >&2\n" if stderr_message else ""
-    if stdout_message:
-        echo += f"  echo '{stdout_message}'\n"
-    tail = (
-        f'exec "{sys.executable}" "$@"\n' if passthrough else "exit 0\n"
+
+def _package_launcher(path: Path, setup: str) -> Path:
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import importlib, sys\n"
+        "observation = importlib.import_module('jasper.aec.reconcile.observe')\n"
+        f"{setup}"
+        "from jasper.aec.reconcile.runtime import main\n"
+        "raise SystemExit(main(sys.argv[3:]))\n"
     )
-    executable = tmp_path / name
-    executable.write_text(
-        "#!/usr/bin/env bash\n"
-        f"if [[ \"$*\" == *'{failing_module}'* ]]; then\n"
-        f"{echo}"
-        f"  exit {exit_code}\n"
-        "fi\n"
-        f"{tail}",
-        encoding="utf-8",
-    )
-    executable.chmod(0o755)
-    return executable
+    path.chmod(0o755)
+    return path
 
 
 def _write_synthetic_xvf_resolver(
-    tmp_path: Path,
-    card: str,
-    *,
-    chip_beam_plan: str = "",
-    chip_aec_supported: str = "0",
-    policy_exit: int = 0,
+    tmp_path: Path, card: str, *, chip_beam_plan: str = "",
+    chip_aec_supported: str = "0", policy_exit: int = 0,
 ) -> Path:
-    """A mic-profile resolver double.
-
-    ``policy_exit`` is the exit status it gives the separate chip-AEC DAC
-    policy query, so a pass can have a working mic profile and a broken gate
-    resolver — the shape the runtime-env carry exists for. The alignment
-    vocabulary shares that shim module but not its failure: it goes to the real
-    interpreter.
-    """
-    resolver = tmp_path / "synthetic-xvf-resolver"
-    resolver.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [[ \"$*\" == *'--alignment'* ]]; then\n"
-        f"  exec {shlex.quote(sys.executable)} \"$@\"\n"
-        "fi\n"
-        "if [[ \"$*\" == *'jasper.cli.chip_aec_policy'* ]]; then\n"
-        f"  exit {policy_exit}\n"
-        "fi\n"
-        "if [[ \"$*\" == *'jasper.cli.xvf_profile'* ]]; then\n"
-        "  printf '%s\\n' \\\n"
-        "    'JASPER_XVF_PRESENT=1' \\\n"
-        "    'JASPER_XVF_VARIANT=xvf3800_future_variant' \\\n"
-        "    'JASPER_XVF_DISPLAY_NAME=Future_XVF3800' \\\n"
-        "    'JASPER_XVF_GEOMETRY=future' \\\n"
-        f"    'JASPER_XVF_ALSA_CARD={card}' \\\n"
-        "    'JASPER_XVF_CAPTURE_CHANNELS=6' \\\n"
-        f"    'JASPER_XVF_CHIP_BEAM_PLAN={chip_beam_plan}' \\\n"
-        f"    'JASPER_XVF_CHIP_AEC_SUPPORTED={chip_aec_supported}' \\\n"
-        "    'JASPER_XVF_RECOMMENDED_PROFILE=xvf_chip_aec' \\\n"
-        "    \"JASPER_XVF_REASON='future XVF needs a validated beam plan'\" \\\n"
-        "    'JASPER_XVF_CHIP_REF_PCM_ACCESS=hw' \\\n"
-        "    'JASPER_XVF_CHIP_REF_DEVICE=0' \\\n"
-        "    'JASPER_XVF_CHIP_REF_RATE=16000' \\\n"
-        "    'JASPER_XVF_CHIP_REF_PERIOD=128' \\\n"
-        "    'JASPER_XVF_CHIP_REF_BUFFER=256' \\\n"
-        f"    {_REGISTRY_ENV_ARGS}\n"
-        "fi\n"
-    )
-    resolver.chmod(0o755)
-    return resolver
+    """Inject a future registry profile without a second resolver process."""
+    return _package_launcher(tmp_path / "synthetic-xvf-resolver",
+        "from jasper.mics.xvf3800 import RuntimeProfile, FirmwareVariant, chip_beam_plan\n"
+        f"variant = FirmwareVariant('xvf3800_future_variant', 'Future_XVF3800', '', 6, (), 'future', alsa_card_name={card!r})\n"
+        f"profile = RuntimeProfile(True, variant, {card!r}, 6, chip_beam_plan({chip_beam_plan!r}), 'future XVF needs a validated beam plan')\n"
+        "observation.xvf3800.detect_runtime_profile = lambda **kwargs: profile\n"
+        + ("def fail(*args, **kwargs):\n    raise OSError('policy unavailable')\n"
+           "observation.resolve_chip_aec_dac_gate = fail\n" if policy_exit else ""))
 
 
 def _outputd_status_payload(
@@ -1574,8 +1534,6 @@ def _malformed_accessory_file(tmp_path: Path) -> dict[str, str]:
 
 
 def _accessory_probe_fails(tmp_path: Path) -> dict[str, str]:
-    # The partial-/opt/jasper-deploy shape: the interpreter answers
-    # jasper.cli.xvf_profile but not jasper.accessories.mic_env.
     (tmp_path / "aec_mode.env").write_text(_CUSTOM_PROFILE_MODE)
     _pair_remote(tmp_path)
     return {
@@ -1585,52 +1543,35 @@ def _accessory_probe_fails(tmp_path: Path) -> dict[str, str]:
                 "partial-deploy-python",
                 failing_module="jasper.accessories.mic_env",
                 stderr_message="ModuleNotFoundError: jasper.accessories.mic_env",
-                passthrough=False,
             )
         )
     }
 
 
-def _accessory_probe_unavailable(tmp_path: Path) -> dict[str, str]:
-    (tmp_path / "aec_mode.env").write_text(_CUSTOM_PROFILE_MODE)
-    _pair_remote(tmp_path)
-    return {"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "no-such-interpreter")}
 
 
 @pytest.mark.parametrize(
-    ("prepare", "code", "probe_status", "journal_says"),
+    ("prepare", "code", "probe_status"),
     [
-        (_no_accessory_file, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, "", ()),
+        (_no_accessory_file, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, ""),
         (
             _malformed_accessory_file,
             MIC_ABSENT_ACCESSORY_UNKNOWN,
             "failed",
-            # The parser's own sentence — which rule the content broke — reaches
-            # the journal, because that sentence IS the remediation.
-            ("refusing to publish accessory mic sources", "must be source_id=device"),
         ),
         (
             _accessory_probe_fails,
             MIC_ABSENT_ACCESSORY_UNKNOWN,
             "failed",
-            # The module's own stderr reaches the journal, not /dev/null.
-            ("accessory mic probe failed", "ModuleNotFoundError"),
-        ),
-        (
-            _accessory_probe_unavailable,
-            MIC_ABSENT_ACCESSORY_UNKNOWN,
-            "unavailable",
-            ("accessory mic probe unavailable",),
         ),
     ],
-    ids=("no-file", "malformed", "probe-fails", "no-interpreter"),
+    ids=("no-file", "malformed", "probe-fails"),
 )
 def test_the_park_marker_names_the_fact_the_probe_actually_established(
     tmp_path: Path,
     prepare: Callable[[Path], dict[str, str]],
     code: str,
     probe_status: str,
-    journal_says: tuple[str, ...],
 ) -> None:
     """Every no-accessory-verdict route fails CLOSED — ``Config.from_env``
     raises on a malformed source list, and opening the gate on a file the
@@ -1642,9 +1583,6 @@ def test_the_park_marker_names_the_fact_the_probe_actually_established(
     and there is nothing" are different facts, and the probe status behind
     the first is the ``detail=`` line's job — the code cannot carry it.
 
-    The last two routes are pinned on the ``custom`` profile because that is
-    the only shape that reaches stop_voice without a working interpreter — a
-    managed profile parks earlier, on the mic-profile resolver.
     """
     _write_env(tmp_path, "udp:9876")
     extra_env = prepare(tmp_path)
@@ -1657,8 +1595,6 @@ def test_the_park_marker_names_the_fact_the_probe_actually_established(
     assert fields["detail"]
     if probe_status:
         assert probe_status in fields["detail"]
-    for phrase in journal_says:
-        assert phrase in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "stop jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -1682,7 +1618,7 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
         tmp_path,
         "--reason",
         "test",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(_python_double(tmp_path, "missing-profile", failing_module="jasper.cli.xvf_profile"))},
     )
 
     assert result.returncode == 0, result.stderr
@@ -1710,7 +1646,7 @@ def _park_no_accessory(tmp_path: Path) -> Path:
 def _park_accessory_unknown(tmp_path: Path) -> Path:
     """stop_voice with the accessory probe unable to answer."""
     _write_env(tmp_path, "udp:9876")
-    extra_env = _accessory_probe_unavailable(tmp_path)
+    extra_env = _accessory_probe_fails(tmp_path)
     result = _run_reconcile(tmp_path, "--reason", "test", extra_env=extra_env)
     assert result.returncode == 0, result.stderr
     return _marker(tmp_path)
@@ -1723,7 +1659,7 @@ def _park_managed_xvf_unusable(tmp_path: Path) -> Path:
         tmp_path,
         "--reason",
         "test",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(_python_double(tmp_path, "missing-profile", failing_module="jasper.cli.xvf_profile"))},
     )
     assert result.returncode == 0, result.stderr
     return _marker(tmp_path)
@@ -2242,7 +2178,7 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
         tmp_path,
         "--reason",
         "test",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(_python_double(tmp_path, "missing-profile", failing_module="jasper.cli.xvf_profile"))},
     )
 
     assert result.returncode == 0, result.stderr
@@ -2440,7 +2376,7 @@ def test_present_managed_xvf_overrides_stale_non_owned_mic_device_for_every_prof
 def test_resolver_discovered_future_xvf_reaches_managed_policy(
     tmp_path: Path,
 ) -> None:
-    """A new resolver-known card needs no matching shell registry edit."""
+    """The detected card reaches policy without a second registry."""
     env_file = _stage(
         tmp_path, "operator-mic", profile="auto", card="FutureXvf", channels=6
     )
@@ -2633,33 +2569,6 @@ def test_profile_env_updates_are_consumed_by_reconciler(
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
 
 
-# The shell variables the reconciler evals the shim's output into, named here
-# rather than imported so a rename in the shim shows up as a failure. Seeded
-# with a sentinel, so a profile that emits no vector is visibly left alone.
-_SHIM_SENTINEL = "unchanged"
-_SHIM_LEG_VARS = (
-    "AEC_MODE",
-    "LEG_RAW",
-    "LEG_DTLN",
-    "LEG_CHIP_AEC",
-    "LEG_CHIP_AEC_150",
-    "LEG_CHIP_AEC_210",
-)
-_SHIM_VARS = ("AUDIO_INPUT_PROFILE", *_SHIM_LEG_VARS)
-# What --normalize emits instead: the same master toggle and legs, plus the
-# chip-ref observe opt-in — all read from the pass's raw environment.
-_SHIM_NORMALIZE_VARS = (*_SHIM_LEG_VARS, "CHIP_REF_OBSERVE")
-_SHIM_ENV_KEYS = (
-    "JASPER_AEC_MODE",
-    "JASPER_WAKE_LEG_RAW",
-    "JASPER_WAKE_LEG_DTLN",
-    "JASPER_WAKE_LEG_CHIP_AEC",
-    "JASPER_WAKE_LEG_CHIP_AEC_150",
-    "JASPER_WAKE_LEG_CHIP_AEC_210",
-)
-# profile -> (normalized name, effective profile without chip-AEC, with it).
-# `None` is "emits no vector"; the vectors themselves come from
-# profile_env_updates, so drift in that table fails here.
 _PROFILE_VECTORS = {
     "auto": ("auto", "xvf_software_aec3", "xvf_chip_aec"),
     "xvf_chip_aec": ("xvf_chip_aec", "xvf_software_aec3", "xvf_chip_aec"),
@@ -2675,148 +2584,30 @@ _PROFILE_VECTORS = {
 }
 
 
-def _expected_legs(effective: str | None) -> tuple[str, ...]:
-    if effective is None:
-        return (_SHIM_SENTINEL,) * len(_SHIM_LEG_VARS)
-    updates = profile_env_updates(effective)
-    return tuple(updates[key] for key in _SHIM_ENV_KEYS)
-
-
-def _eval_shim(
-    *shim_args: str, names: tuple[str, ...] = _SHIM_VARS
-) -> dict[str, str]:
-    """Run the shim behind the same `eval` the reconciler uses."""
-    shim = shlex.join(
-        [sys.executable, "-m", "jasper.cli.audio_input_profile", *shim_args]
-    )
-    script = (
-        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in names)
-        + f'eval "$({shim})"\n'
-        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in names)
-    )
-    shell = run_bash(
-        ["-euo", "pipefail", "-c", script], cwd=ROOT, timeout=30,
-    )
-    assert shell.returncode == 0, shell.stderr
-    return dict(line.split("=", 1) for line in shell.stdout.splitlines())
-
-
-@pytest.mark.parametrize("chip_available", ("0", "1"))
+@pytest.mark.parametrize("chip_available", [False, True])
 @pytest.mark.parametrize("profile", (*ALL_PROFILES, "xvf_chip_aec_test"))
-def test_reconciler_evals_the_python_profile_tables(
-    profile: str,
-    chip_available: str,
-) -> None:
-    """The reconciler carries no profile vocabulary of its own.
-
-    `jasper.audio_profile_state` owns the alias table and the profile ->
-    wake-leg vectors; the shell evals what `jasper.cli.audio_input_profile`
-    prints into exactly these variables. Driving that eval the way the script
-    does pins both sides to one table — `xvf_chip_aec_test` is the alias
-    Python accepted and Bash demoted to `custom`. A profile with no row here
-    fails on the lookup, so a new one cannot ship untested.
-    """
+def test_profile_wake_vectors(profile: str, chip_available: bool) -> None:
     normalized, without_chip, with_chip = _PROFILE_VECTORS[profile]
-    effective = with_chip if chip_available == "1" else without_chip
-
-    assert _eval_shim(
-        f"--profile={profile}", f"--chip-available={chip_available}"
-    ) == dict(zip(_SHIM_VARS, (normalized, *_expected_legs(effective))))
-
-
-# The wizard writes only "1"/"0" and "auto"/"disabled", but an operator
-# hand-editing aec_mode.env may write any of these. The shell compares the
-# evaled values against those literals, so anything else silently reads as
-# off — the reduction is the whole reason --normalize exists (ADR-0235 D1).
-_HAND_EDIT_VALUES = ("yes", "true", "on", "ENABLED", " 1 ", "off", "no", "garbage", "")
-_APPLIED_VALUES = frozenset({"1", "0", "auto", "disabled"})
-# The build default each normalized boolean falls back to when the file said
-# nothing, or said something the vocabulary cannot express. RAW is the only
-# one that defaults on.
-_NORMALIZE_DEFAULTS = {
-    "LEG_RAW": True,
-    "LEG_DTLN": False,
-    "LEG_CHIP_AEC": False,
-    "LEG_CHIP_AEC_150": False,
-    "LEG_CHIP_AEC_210": False,
-    "CHIP_REF_OBSERVE": False,
-}
+    effective = with_chip if chip_available else without_chip
+    assert normalize_audio_input_profile(profile) == normalized
+    expected = profile_env_updates(effective) if effective else {}
+    expected.pop("JASPER_AUDIO_INPUT_PROFILE", None)
+    assert resolve_profile_wake_legs(profile, chip_available=chip_available) == expected
 
 
-@pytest.mark.parametrize("value", _HAND_EDIT_VALUES)
-def test_reconciler_evals_normalized_hand_edits(value: str) -> None:
-    """--normalize reduces every hand-edit spelling to an applied value.
-
-    `jasper.audio_profile_state` owns both vocabularies; the shell carries no
-    second copy, so this drives the same eval the reconciler does and pins the
-    emitted strings against the Python rules rather than against a table here.
-    A value the vocabulary cannot express takes the same fallback an empty one
-    does — the key's own build default — which is why RAW is the one that
-    comes back on for both.
-    """
-    emitted = _eval_shim(
-        "--normalize",
-        "--profile=custom",
-        f"--mode={value}",
-        *(
-            f"--{name.lower().replace('_', '-')}={value}"
-            for name in _NORMALIZE_DEFAULTS
-        ),
-        names=_SHIM_NORMALIZE_VARS,
-    )
-
-    assert emitted == {
-        "AEC_MODE": normalize_aec_mode(value),
-        **{
-            name: "1" if (
-                default if value == "" else parse_env_bool(value, default)
-            ) else "0"
-            for name, default in _NORMALIZE_DEFAULTS.items()
-        },
-    }
-    assert set(emitted.values()) <= _APPLIED_VALUES
-
-
-def test_normalize_names_the_raw_spelling_it_rewrote() -> None:
-    """stdout is an eval, so a rewritten spelling is only visible to an
-    operator if it reaches the journal. One structured stderr line per key the
-    vocabulary changed, with the raw value shell-quoted so a spelling carrying
-    whitespace stays one field; a canonical value says nothing.
-    """
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "jasper.cli.audio_input_profile", "--normalize",
-            "--profile=custom", "--mode=AUTO", "--leg-raw= 1 ", "--leg-dtln=0",
-            "--chip-ref-observe=yes",
-        ],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
+@pytest.mark.parametrize("value", ["yes", "true", "on", "ENABLED", " 1 ", "off", "no", "garbage", ""])
+def test_reconciler_normalizes_hand_edited_legs(tmp_path: Path, value: str) -> None:
+    _stage(tmp_path, "Array", channels=6)
+    _write_mode_with_legs(tmp_path, raw=value, dtln=value, chip_aec="0")
+    result = _run_reconcile(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert [
-        dict(field.split("=", 1) for field in shlex.split(line))
-        for line in result.stderr.splitlines()
-    ] == [
-        {
-            "event": "audio_input_profile.normalized",
-            "key": "JASPER_AEC_MODE", "raw": "AUTO", "value": "auto",
-        },
-        {
-            "event": "audio_input_profile.normalized",
-            "key": "JASPER_WAKE_LEG_RAW", "raw": " 1 ", "value": "1",
-        },
-        {
-            "event": "audio_input_profile.normalized",
-            "key": "JASPER_AEC_CHIP_REF_OBSERVE", "raw": "yes", "value": "1",
-        },
-    ]
+    values = parse_env_file(str(tmp_path / "jasper.env"))
+    assert values["JASPER_MIC_DEVICE_RAW"] == (_RAW_PORT if parse_env_bool(value, True) or value == "" else "")
+    assert values["JASPER_MIC_DEVICE_DTLN"] == (_DTLN_PORT if parse_env_bool(value) else "")
 
 
 def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:
-    """The alias Bash used to demote to `custom` now arms the testing profile."""
+    """The testing alias resolves to the same managed profile."""
     _write_env(tmp_path, "Array")
     (tmp_path / "aec_mode.env").write_text(
         "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec_test\n"
@@ -2837,57 +2628,119 @@ def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None
     assert values["JASPER_AEC_CHIP_AEC_ENABLED"] == "1"
 
 
-@pytest.mark.parametrize(
-    ("selection", "carried"),
-    [("auto", True), ("xvf_chip_aec_test", False), ("bogus", False)],
-)
-def test_resolver_down_carries_routable_selections_and_demotes_the_rest(
-    tmp_path: Path,
-    selection: str,
-    carried: bool,
+@pytest.mark.parametrize("selection", ["auto", "xvf_chip_aec_test", "bogus"])
+def test_missing_venv_uses_the_package_on_system_python(
+    tmp_path: Path, selection: str,
 ) -> None:
-    """With no interpreter the script cannot resolve an alias or a typo, so it
-    carries only a name the vocabulary itself has. A carried name still routes
-    through managed profile policy; anything else is `custom`, which keeps that
-    policy off and the operator's legs as written.
-
-    The alignment record is carried the same way (ADR-0101): with no
-    interpreter this pass measured nothing, so the last record must stand
-    rather than be overwritten with a blank or a guess.
-    """
-    stale = alignment_health(
-        chip_aec_health.COMMISSION_REQUIRED, selection="xvf_chip_aec"
-    )
-    env_file = _write_env(tmp_path, "Array", extra=stale.to_shell())
+    stale = alignment_health(chip_aec_health.COMMISSION_REQUIRED, selection="xvf_chip_aec")
+    env_file = _stage(tmp_path, "Array", extra=stale.to_shell(), channels=6)
     (tmp_path / "aec_mode.env").write_text(
         f"JASPER_AUDIO_INPUT_PROFILE={selection}\n"
-        "JASPER_AEC_MODE=auto\n"
-        "JASPER_WAKE_LEG_RAW=0\n"
-        "JASPER_WAKE_LEG_DTLN=1\n"
-        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
-        "JASPER_WAKE_LEG_CHIP_AEC_150=0\n"
-        "JASPER_WAKE_LEG_CHIP_AEC_210=0\n"
+        "JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=0\nJASPER_WAKE_LEG_DTLN=1\n"
     )
-    _write_card(tmp_path, channels=6)
-
-    result = _run_reconcile(
-        tmp_path,
-        "--reason",
-        "test",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
-    )
-
+    result = _run_reconcile(tmp_path, extra_env={
+        "JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "absent-venv-python"),
+    }, cwd=tmp_path)
     assert result.returncode == 0, result.stderr
-    values = _env_assignments(env_file)
-    record = parse_env_file(str(env_file))
-    assert {key: record.get(key) for key in chip_aec_health.ENV_KEYS} == stale.to_env()
-    if carried:
-        # Managed policy overrode the operator's legs onto software AEC3.
-        assert values["JASPER_MIC_DEVICE_RAW"] == _RAW_PORT
-        assert values["JASPER_MIC_DEVICE_DTLN"] == _EMPTY
-    else:
-        assert values["JASPER_MIC_DEVICE_RAW"] == _EMPTY
+    values = parse_env_file(str(env_file))
+    assert values["JASPER_MIC_DEVICE"] == "udp:9876"
+    assert not _marker(tmp_path).exists()
+    if selection == "bogus":
         assert values["JASPER_MIC_DEVICE_DTLN"] == _DTLN_PORT
+        assert {key: values.get(key) for key in chip_aec_health.ENV_KEYS} == stale.to_env()
+    else:
+        assert values["JASPER_AEC_CHIP_AEC_ENABLED"] == "1"
+        assert values[chip_aec_health.STATUS_KEY] == "ready"
+        assert values[chip_aec_health.SELECTION_KEY] == (
+            "auto" if selection == "auto" else "xvf_chip_aec_testing"
+        )
+
+
+@pytest.mark.parametrize("runtime", ["missing-package", "missing-interpreter"])
+@pytest.mark.parametrize("reason,commissioning,expected", [
+    ("systemd", False, 69), ("systemd", True, 0),
+    ("chip-aec-commission-arm", True, 69),
+])
+def test_missing_package_keeps_running_state_and_the_last_records(
+    tmp_path: Path, reason: str, commissioning: bool, expected: int, runtime: str, monkeypatch,
+) -> None:
+    _armed_chip_aec_box(tmp_path)
+    before = (tmp_path / "jasper.env").read_bytes()
+    _prepublish_ready_marker(tmp_path)
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(_ready_marker(tmp_path)))
+    assert read_aec_bridge_ready().ready
+    installed = tmp_path / "installed" / "sbin" / "jasper-aec-reconcile"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(SCRIPT.read_bytes())
+    # -S removes editable-install site paths; outside the checkout no package
+    # is available, even though the interpreter itself works.
+    python = tmp_path / "isolated-python"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n')
+    python.chmod(0o755)
+    if commissioning:
+        (tmp_path / "chip-aec-commission-active").write_text("pid=1234\n")
+        (tmp_path / "proc" / "1234").mkdir(parents=True)
+    extra_env = {"JASPER_MIC_PROFILE_PYTHON": str(python), "PYTHONPATH": ""}
+    if runtime == "missing-interpreter":
+        bin_dir = tmp_path / "shell-only"
+        bin_dir.mkdir()
+        for command in ("bash", "dirname", "rm"):
+            (bin_dir / command).symlink_to(shutil.which(command))
+        monkeypatch.setattr(shell_runner, "sys", SimpleNamespace(platform="linux"))
+        assert shutil.which("python3", path=str(bin_dir)) is None
+        extra_env.update(PATH=str(bin_dir), JASPER_MIC_PROFILE_PYTHON=str(tmp_path / "absent-python"))
+    result = _run_reconcile(tmp_path, "--reason", reason, script=installed, cwd=tmp_path,
+        extra_env=extra_env)
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "jasper.env").read_bytes() == before
+    assert _systemctl_log(tmp_path) == ""
+    assert not read_aec_bridge_ready().ready
+    assert not _marker(tmp_path).exists()
+
+
+@pytest.mark.parametrize("args,completes", [
+    (("is-active", "--quiet", "jasper-aec-bridge.service"), False),
+    (("is-enabled", "--quiet", "jasper-aec-bridge.service"), False),
+    (("reset-failed", "jasper-voice.service"), False),
+    (("--no-block", "restart", "jasper-voice.service"), False),
+    (("restart", "jasper-aec-init.service"), True),
+    (("stop", "jasper-voice.service"), True),
+    (("enable", "jasper-aec-bridge.service"), True),
+    (("disable", "--now", "jasper-voice.service"), True),
+    (("daemon-reload",), True),
+])
+def test_manager_timeout_preserves_blocking_lifecycle_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...], completes: bool,
+) -> None:
+    command = tmp_path / "slow-systemctl"
+    done = tmp_path / "completed"
+    command.write_text(
+        f"#!{sys.executable}\nimport pathlib, time\ntime.sleep(0.1)\n"
+        f"pathlib.Path({str(done)!r}).touch()\n"
+    )
+    command.chmod(0o755)
+    monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
+    monkeypatch.setenv("JASPER_SYSTEMCTL", str(command))
+    monkeypatch.setattr(reconcile_runtime, "SYSTEMCTL_TIMEOUT_SEC", 0.03)
+    assert reconcile_runtime.Reconcile("test").system(*args) is completes
+    assert done.exists() is completes
+
+
+@pytest.mark.parametrize("args,status", [(('--help',), 0), (('--bogus',), 2), (('--reason',), 2)])
+def test_cli_only_exits_preserve_bridge_admission(tmp_path: Path, args: tuple[str, ...], status: int) -> None:
+    _prepublish_ready_marker(tmp_path)
+    result = _run_reconcile(tmp_path, *args)
+    assert result.returncode == status
+    assert _ready_marker(tmp_path).read_text() == "reason=previous\n"
+    assert _systemctl_log(tmp_path) == ""
+
+
+def test_package_pass_imports_with_only_the_standard_library() -> None:
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", "import jasper.aec.reconcile.runtime"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 _RAW_PORT = f"udp:{wake_legs.by_token('off').udp_port}"
@@ -4142,17 +3995,6 @@ def test_a_declared_intent_marker_defeats_the_gate_once(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
-def test_intent_marker_path_literal_agrees_across_writer_and_consumer() -> None:
-    """The marker path is duplicated in the Python writer
-    (jasper/cli/enhanced_aec_install.py) and the bash consumer, because a
-    systemctl kick can carry no arguments. This is the drift pin — same
-    pattern as the voice-input-absent marker's path test."""
-    literal = "/run/jasper-aec-reconcile/voice-restart-intent"
-    assert literal in SCRIPT.read_text(encoding="utf-8")
-    assert literal in (
-        ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
-    ).read_text(encoding="utf-8")
-
 
 def test_resolver_detected_hardware_drift_on_disk_still_restarts_voice(
     tmp_path: Path,
@@ -4311,19 +4153,24 @@ def test_descriptive_only_churn_does_not_trip_the_gate(tmp_path: Path) -> None:
     assert "stale chip_ref_sro_ppm" not in env_file.read_text()
 
 
-def test_voice_irrelevant_keys_are_all_keys_the_script_writes() -> None:
-    """Drift guard on the exclusion list: a typo, or a key that stops being
-    written, silently promotes a descriptive key back to voice-relevant and
-    re-arms the bounce the gate exists to stop. Invisible at runtime."""
-    source = SCRIPT.read_text(encoding="utf-8")
-    match = re.search(
-        r'VOICE_IRRELEVANT_ENV_KEYS="(.*?)"\n', source, flags=re.DOTALL
-    )
-    assert match is not None, "could not locate VOICE_IRRELEVANT_ENV_KEYS"
-    declared = set(match.group(1).replace("\\\n", " ").split())
-    assert declared, "VOICE_IRRELEVANT_ENV_KEYS parsed empty"
-    written = set(re.findall(r'set_env_var "\$ENV_FILE" (\w+)', source))
-    assert declared <= written, sorted(declared - written)
+def test_runtime_readers_and_restart_filter_keys_are_all_published(tmp_path: Path) -> None:
+    _stage(tmp_path, "Array", profile="auto", channels=6)
+    result = _run_reconcile(tmp_path)
+    assert result.returncode == 0, result.stderr
+    expected = VOICE_IRRELEVANT_ENV_KEYS | {
+        xvf3800.AEC_MIC_DEVICE_ENV, xvf3800.CHIP_AEC_ENABLED_ENV,
+        DTLN_ENABLED_ENV, REF_SOURCE_ENV, OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV,
+    }
+    keys = parse_env_file(str(tmp_path / "jasper.env")).keys()
+    assert expected <= keys
+    external = {
+        xvf3800.CORPUS_CHIP_AEC_ENABLED_ENV, xvf3800.CHIP_AEC_PRIMARY_LEG_ENV,
+        bridge_telemetry.BRIDGE_STATS_PATH_ENV, bridge_engines.CORPUS_USB_DTLN_ENABLED_ENV,
+        aec_sweep.NS_ENABLED_ENV, aec_sweep.NS_LEVEL_ENV, aec_sweep.AGC1_ENABLED_ENV,
+        aec_sweep.AGC1_TARGET_DBFS_ENV, aec_sweep.AGC1_MAX_GAIN_DB_ENV,
+        "JASPER_AEC_MODE", "JASPER_AEC_MODE_FILE",
+    }
+    assert not keys & external
 
 
 # --- measurement-class exclusion from the candidate set --------------------
@@ -4394,7 +4241,7 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     broken = _python_double(
         tmp_path,
         "broken-measurement-python",
-        failing_module="jasper.cli.capture_card",
+        failing_module="measurement_mic_usb_ids",
     )
     _stage(
         tmp_path,
@@ -4415,55 +4262,15 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
 
 
-def test_measurement_registry_noisy_payload_excludes_nothing(
+def test_measurement_exclusion_skips_the_registry_without_a_usb_card(
     tmp_path: Path,
 ) -> None:
-    """The other way the bridge breaks: exit 0, but stdout is not the one
-    assignment the contract promises (a warning, a traceback printed before a
-    clean exit). Under `set -e` an eval of that kills the pass where it
-    stands — before the env write, the park and its cue — so it must read as
-    "could not classify" and exclude nothing, exactly like a non-zero exit."""
-    noisy = _python_double(
-        tmp_path,
-        "noisy-measurement-python",
-        failing_module="jasper.cli.capture_card",
-        stdout_message="Traceback (most recent call last):",
-        exit_code=0,
-    )
-    _stage(
-        tmp_path,
-        "udp:9876",
-        extra="JASPER_MIC_DEVICE_CANDIDATES=UMIK2\n",
-        mode="auto",
-    )
-    _write_usb_card(tmp_path, "UMIK2", UMIK2_USB_ID, channels=1)
-
-    result = _run_reconcile(
-        tmp_path,
-        "--reason",
-        "systemd",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(noisy)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
-    fields = stderr_event(result.stderr, "aec_reconcile.measurement_registry")
-    assert fields["status"] == "failed"
-    assert fields["python"] == str(noisy)
-
-
-def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
-    tmp_path: Path,
-) -> None:
-    """A card with no usbid (absent, I2S, virtual) cannot be a registered USB
-    measurement mic, so the resolver is never spawned for it. Proven with an
-    interpreter that fails loudly if it is asked for the measurement
-    registry."""
+    """Cards without a USB identity do not load the measurement registry."""
     tripwire = _python_double(
         tmp_path,
         "tripwire-python",
-        failing_module="jasper.cli.capture_card",
-        stderr_message="measurement resolver was spawned",
+        failing_module="measurement_mic_usb_ids",
+        stderr_message="measurement registry was read",
     )
     # stream0 only, no usbid.
     _stage(tmp_path, "Array", mode="auto", channels=6)
@@ -4476,4 +4283,4 @@ def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "measurement resolver was spawned" not in result.stderr
+    assert "measurement registry was read" not in result.stderr

@@ -66,6 +66,18 @@ def _unquoted(value: str) -> str:
     return value
 
 
+def quote_env_value(value: str) -> str:
+    """Quote a value for both systemd EnvironmentFile and shell source."""
+    escaped = (
+        value
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
+
+
 def _render(lines: list[ParsedLine]) -> str:
     return "\n".join(k if v is None else f"{k}={v}" for k, v in lines)
 
