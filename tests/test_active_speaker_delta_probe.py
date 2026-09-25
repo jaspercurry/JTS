@@ -56,7 +56,6 @@ from jasper.active_speaker.delta_probe import (
     interquartile_band_hz,
     louder_than_commanded,
     advice_deferral,
-    widest_exceedance_octaves,
 )
 
 _GRID_HZ = np.logspace(math.log10(100.0), math.log10(20_000.0), 400)
@@ -478,29 +477,6 @@ def test_a_mismatched_grid_is_unavailable_not_a_crash():
     )
     assert probe.verdict == VERDICT_UNAVAILABLE
     assert probe.reason == "grid_mismatch"
-
-
-# --------------------------------------------------------------------------- #
-# exceedance width
-# --------------------------------------------------------------------------- #
-
-
-def test_widest_exceedance_measures_index_contiguous_runs_only():
-    """Two exceeding bins either side of a compliant one are two runs — which
-    is the entire point of a width rule."""
-    freqs = np.array([100.0, 200.0, 400.0, 800.0, 1600.0])
-    split = np.array([True, True, False, True, True])
-    width, lo_hz = widest_exceedance_octaves(freqs, split)
-    assert width == pytest.approx(1.0)
-    assert lo_hz in (100.0, 800.0)
-    joined = np.array([True, True, True, True, True])
-    assert widest_exceedance_octaves(freqs, joined)[0] == pytest.approx(4.0)
-
-
-def test_widest_exceedance_of_nothing_is_zero():
-    assert widest_exceedance_octaves(
-        _GRID_HZ, np.zeros_like(_GRID_HZ, dtype=bool)
-    ) == (0.0, 0.0)
 
 
 # --------------------------------------------------------------------------- #

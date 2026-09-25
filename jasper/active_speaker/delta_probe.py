@@ -20,6 +20,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement.frame_fit import FRAME_UNFITTED, FrameFit, fit_frame
+from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # --------------------------------------------------------------------------- #
 # verdict vocabulary
@@ -428,35 +429,6 @@ def graded_command_floor_db(freqs_hz: np.ndarray) -> np.ndarray:
     )
 
 
-def widest_exceedance_octaves(
-    freqs_hz: np.ndarray, exceeds: np.ndarray,
-) -> tuple[float, float]:
-    """``(widest contiguous run in octaves, that run's low edge in Hz)``.
-
-    A run is contiguous in GRID INDEX, not the exceeding set — two exceeding
-    bins either side of a compliant one are two runs. Width is log2
-    frequency (comparable at any center frequency). ``(0.0, 0.0)`` if none.
-    """
-    widest = 0.0
-    widest_lo_hz = 0.0
-    idx = np.flatnonzero(exceeds)
-    if idx.size == 0:
-        return 0.0, 0.0
-    breaks = np.flatnonzero(np.diff(idx) != 1)
-    starts = np.concatenate(([0], breaks + 1))
-    ends = np.concatenate((breaks, [idx.size - 1]))
-    for s, e in zip(starts, ends):
-        lo_hz = float(freqs_hz[idx[s]])
-        hi_hz = float(freqs_hz[idx[e]])
-        if lo_hz <= 0.0 or hi_hz <= 0.0:
-            continue
-        span = math.log2(hi_hz / lo_hz) if hi_hz > lo_hz else 0.0
-        if span > widest:
-            widest = span
-            widest_lo_hz = lo_hz
-    return widest, widest_lo_hz
-
-
 def _structured_exceedance(
     freqs_hz: np.ndarray,
     error_db: np.ndarray,
@@ -470,7 +442,10 @@ def _structured_exceedance(
     one "wide" run at every mask hole.
     """
     exceeds = probe_mask & (np.abs(error_db) > tolerance_db)
-    widest, _ = widest_exceedance_octaves(freqs_hz, exceeds)
+    widest = max(
+        (_octave_span(run) for run in merged_true_intervals(freqs_hz, exceeds)),
+        default=0.0,
+    )
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, widest
 
 
@@ -891,5 +866,4 @@ __all__ = [
     "interquartile_band_hz",
     "louder_than_commanded",
     "advice_deferral",
-    "widest_exceedance_octaves",
 ]
