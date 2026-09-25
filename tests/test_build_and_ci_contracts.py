@@ -13,7 +13,6 @@ import pytest
 import yaml
 
 from tests.lane_fixtures import (
-    fast_lane_selected_tests,
     lane_env,
     scratch_lane_repo,
     write_recording_pytest,
@@ -387,29 +386,6 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
         for line in pytest_calls.read_text(encoding="utf-8").splitlines()
     ]
     assert any("tests/test_new_feature.py" in call for call in calls), calls
-
-
-def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> None:
-    """An edit inside experiments/<kit>/ selects that kit's guard, only.
-
-    Experiment kits keep their guards under tests/, so without this routing
-    an edit to a kit selects nothing in the fast lane and its layout/path
-    pins first run in the merge lane. The second assertion is what makes
-    the arm worth having in this shape: it derives the guard from the
-    directory name, so editing one kit does not drag in every other kit's
-    tests.
-    """
-
-    selected = fast_lane_selected_tests(
-        tmp_path,
-        changed_path="experiments/e0-capture/README.md",
-        routed_tests=(
-            "tests/test_e0_capture_experiment.py",
-            "tests/test_turntable.py",
-        ),
-    )
-    assert "tests/test_e0_capture_experiment.py" in selected
-    assert "tests/test_turntable.py" not in selected
 
 
 def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:

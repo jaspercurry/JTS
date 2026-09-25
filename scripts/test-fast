@@ -237,7 +237,7 @@ while IFS= read -r changed; do
       # wake_training/ lives outside jasper/ (laptop-side training tooling,
       # not shipped) so the jasper/*/*.py arm below never sees it — without
       # this arm an edit here selects zero tests, same failure mode the
-      # rust/ and experiments/*/* arms exist to close.
+      # rust/ arm exists to close.
       add_test_if_present "tests/test_build_wake_feature_bank.py"
       add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
       add_test_if_present "tests/test_wake_training_feature_bank.py"
@@ -377,11 +377,6 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_rust_runtime_panic_freedom.py"
       add_test_if_present "tests/test_outputd_wiring.py"
       add_test_if_present "tests/test_usbsink_impulse_tap_contract.py"
-      ;;
-    experiments/*/*)
-      experiment="${changed#experiments/}"
-      experiment="${experiment%%/*}"
-      add_test_if_present "tests/test_${experiment//-/_}_experiment.py"
       ;;
   esac
 done < "${changed_file_tmp}"
