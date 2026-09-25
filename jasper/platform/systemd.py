@@ -62,6 +62,7 @@ import logging
 import os
 import select
 import socket
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -141,18 +142,43 @@ def adopt_systemd_sockets() -> list[socket.socket]:
     return sockets
 
 
+_REQUEST_FAILED = (
+    b"HTTP/1.0 500 Internal Server Error\r\n"
+    b"Content-Length: 0\r\n"
+    b"Connection: close\r\n\r\n"
+)
+
+
+class _WizardHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        """A request that raised past its page answers 500 and logs one event,
+        where socketserver would print to stderr and drop the connection. A
+        hung-up client is no event."""
+        exc = sys.exc_info()[1]
+        if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            log_event(
+                logging.getLogger("jasper.platform.systemd"),
+                "web.request_failed",
+                level=logging.ERROR,
+                exc_info=True,
+                error=type(exc).__name__,
+            )
+        with contextlib.suppress(OSError):
+            request.sendall(_REQUEST_FAILED)
+
+
 def make_http_server(target, handler_cls) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer for either an int port (legacy
     direct bind) or a pre-bound socket.socket (systemd handoff)."""
     if isinstance(target, socket.socket):
-        srv = ThreadingHTTPServer(("", 0), handler_cls, bind_and_activate=False)
+        srv = _WizardHTTPServer(("", 0), handler_cls, bind_and_activate=False)
         srv.socket = target
         srv.server_address = target.getsockname()
         return srv
     if isinstance(target, tuple) and len(target) == 2:
-        return ThreadingHTTPServer(target, handler_cls)
+        return _WizardHTTPServer(target, handler_cls)
     if isinstance(target, int):
-        return ThreadingHTTPServer(("127.0.0.1", target), handler_cls)
+        return _WizardHTTPServer(("127.0.0.1", target), handler_cls)
     raise TypeError(
         f"make_http_server: target must be socket, (host, port) tuple, "
         f"or int port; got {type(target).__name__}"

@@ -15,6 +15,8 @@ import select
 import socket
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 import pytest
@@ -126,6 +128,34 @@ def test_make_http_server_from_socket() -> None:
         assert srv.socket.getsockname()[1] == port
     finally:
         srv.server_close()
+
+
+@pytest.mark.parametrize("exc, logged", [
+    (RuntimeError, True),
+    (ConnectionResetError, False),
+])
+def test_a_request_that_raises_answers_500(
+    caplog: pytest.LogCaptureFixture, exc: type[Exception], logged: bool,
+) -> None:
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            raise exc("boom")
+
+        def log_message(self, *a, **kw) -> None:
+            pass
+
+    srv = _systemd.make_http_server(("127.0.0.1", 0), _H)
+    worker = threading.Thread(target=srv.handle_request)
+    worker.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as answered:
+            urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/", timeout=5)
+        answered.value.close()
+    finally:
+        worker.join(timeout=5)
+        srv.server_close()
+    assert answered.value.code == 500
+    assert bool(event_records(caplog, "web.request_failed")) is logged
 
 
 def test_make_http_server_rejects_unknown_target() -> None:
