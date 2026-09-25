@@ -88,9 +88,8 @@ class Reconcile:
         print(f"jasper-aec-reconcile[{self.reason}]: {text}", file=sys.stderr)
 
     def system(self, *args: str) -> bool:
-        # Init can take ~55s and voice stop plays its mic-loss cue. Lifecycle
-        # waits retain reconcile.service/commission caller deadlines; manual
-        # calls intentionally have no Python deadline.
+        # Init can take ~55s. Lifecycle waits retain reconcile.service/commission
+        # caller deadlines; manual calls intentionally have no Python deadline.
         timeout = SYSTEMCTL_TIMEOUT_SEC if args[0] in {"is-active", "is-enabled", "reset-failed", "--no-block"} else None
         try:
             return run_systemctl(args, executable=self.systemctl, capture_output=False, timeout=timeout).returncode == 0
