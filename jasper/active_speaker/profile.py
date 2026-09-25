@@ -26,6 +26,7 @@ from jasper.speaker_layout import (
     SUPPORTED_OUTPUT_VARIANTS,
     WAY_COUNT_BY_MAIN_MODE,
 )
+from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.json_fields import CodedFieldError, JsonFields
 
 SCHEMA_VERSION = 1
@@ -537,6 +538,11 @@ SPL_RAISE_MARGIN_DB = 3.0
 def spl_raise_bound_db_spl(stop_db_spl: float, *, measured_stop_db_spl: float | None = None,
                          margin_db: float = SPL_RAISE_MARGIN_DB) -> float:
     return min(stop_db_spl, measured_stop_db_spl if measured_stop_db_spl is not None else stop_db_spl) - margin_db
+
+
+def ramp_bound_db_spl(stop_db_spl: float) -> float:
+    """Where a rising ramp stops under ``stop_db_spl`` (ADR-0365)."""
+    return spl_raise_bound_db_spl(stop_db_spl, margin_db=RAMP_MARGIN_DB)
 
 
 @dataclass(frozen=True)

@@ -17,9 +17,9 @@ from .movers import MOVER_ARM
 CHOOSE_PROGRAM = "Start a measurement round when you are ready."
 RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
 PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
-#: What a take at one driver's pose is doing: its quiet opener, or a take at the level it found (ADR-0361).
+#: What a play at one driver's pose is doing: its level probe, or a take at the level it found (ADR-0365).
 LEVEL_STEP_LINES = {
-    "opener": "Level check: a quiet first pass finds this pose's level. The room hears almost nothing.",
+    "probe": "Level check: short chirps rise until this pose's level is found, then stop.",
     "levelled": "Take: playing at the level set for this pose.",
 }
 

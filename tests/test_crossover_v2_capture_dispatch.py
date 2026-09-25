@@ -22,7 +22,7 @@ from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import RoleBand, build_measure_program
+from jasper.audio_measurement.program import RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
@@ -579,8 +579,8 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     program = build_measure_program({"woofer": -40.0}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
                                     repeat_count=1, sweep_durations={"woofer": 0.2})
     # sens_factor_db -12 reads dBFS + 106 as dB SPL; the floor sits 30 dB under.
-    level = None if reading is None else LevelReading(reading - 106.0, reading - 136.0)
-    analysis = _analysis(stimulus_level=level, **({} if heard else {"locations": (_loc("sweep_w", confidence=0.05),)}))
+    levels = () if reading is None else (LevelReading(-40.0, reading - 106.0, reading - 136.0),)
+    analysis = _analysis(stimulus_levels=levels, **({} if heard else {"locations": (_loc("sweep_w", confidence=0.05),)}))
     verdict = cd.assess(analysis, phase="measure", prior_verdict=prior, program=program,
                         spl={"sens_factor_db": -12.0, "ceiling_db_spl": stop},
                         near_field=True, level_asked_dbfs=asked)
@@ -590,6 +590,31 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
         assert verdict.evidence["level_db_spl"] == pytest.approx(reading)
     if heard and prior is None and next_ != "accept":
         assert (verdict.ok, verdict.fault, verdict.charge) == (False, "level_off_target", "speaker")
+
+
+@pytest.mark.parametrize("gains,heard,floor,stopped_at,next_,gain,shortfall", [
+    # The burst playing when the stop fired may be cut: the loudest one before it solves.
+    ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 74.0), 40.0, 76.0, "retake_louder", -31.0, None),
+    # A stop in the first burst leaves only it to solve from.
+    ((-52.0,), (81.0,), 40.0, 76.0, "retake_quieter", -54.0, None),
+    # A room within 10 dB of the loudest burst is never solved from.
+    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
+    # A probe that read no burst it holds is never kept.
+    ((-52.0, -46.0), (), 40.0, 76.0, "fix_and_retake", None, None),
+    # A ceiling under the solved gain is said before any take.
+    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 40.0, None, "retake_louder", -31.0, 9.0),
+])
+def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, floor, stopped_at, next_, gain,
+                                                                shortfall):
+    """A probe is solved once, from its loudest burst but the one its stop may have
+    cut, when that burst stands trusted over the room (ADR-0365)."""
+    program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
+                                        sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
+    levels = tuple(LevelReading(g, spl - 106.0, floor - 106.0) for g, spl in zip(gains, heard))
+    spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, **({"stopped_at_db_spl": stopped_at} if stopped_at else {})}
+    verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, near_field=True)
+    assert (verdict.next, verdict.next_gain_db) == (next_, gain)
+    assert verdict.evidence.get("level_shortfall_db") == shortfall
 
 
 def test_run_host_passes_the_excitation_caps_and_preset_spl_stop_unchanged(monkeypatch):

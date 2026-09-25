@@ -59,12 +59,12 @@ from jasper.active_speaker.crossover_v2.programs import (
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
     NoProgramForPhaseError,
-    NEAR_FIELD_OPENER_BACKOFF_DB,
     SessionExcitation,
     back_off_gain,
     compose_target_program,
     courtesy_prelude_for_phase,
     program_for_phase,
+    program_for_spec,
 )
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -76,7 +76,9 @@ from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
     RoleBand,
+    is_level_probe,
 )
+from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_audition import ACTIVE_PCM
@@ -712,25 +714,43 @@ def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
     assert solo_target(make()) == ids[0]
 
 
-@pytest.mark.parametrize("asked_db,played_db", [
-    (None, -NEAR_FIELD_OPENER_BACKOFF_DB), (-14.0, -14.0), (6.0, 0.0),
-])
-def test_a_near_field_take_opens_under_the_seat_level_and_retakes_at_the_peak_it_asks(asked_db, played_db):
-    """A near-field take's first attempt plays well under the level a far-field
-    take plays at; a retake plays the peak it asks for, never above it
-    (ADR-0361). Levels are relative to that seat-equivalent peak."""
+def _near_field_rear(cap_dbfs: float) -> tuple[SessionExcitation, MeasureSpec]:
     band = FrequencyBand(20.0, 4000.0)
-    excitation = SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": 0.0}, -20.0, None,
-                                   {"woofer:rear": 8.0}, target_bands={"woofer:rear": band})
-    spec = MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime="near_field")
+    return (SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": cap_dbfs}, -20.0, None,
+                              {"woofer:rear": 8.0}, target_bands={"woofer:rear": band}),
+            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime="near_field"))
 
-    def sweep_peak(spec, stimulus_dbfs=None):
-        return {s.gain_db for s in compose_target_program(excitation, spec, stimulus_dbfs).segments
-                if s.kind == KIND_SWEEP}
 
-    seat, = sweep_peak(spec, 100.0)
-    played, = sweep_peak(spec, None if asked_db is None else seat + asked_db)
+def _sweeps(program):
+    return [segment for segment in program.segments if segment.kind == KIND_SWEEP]
+
+
+@pytest.mark.parametrize("asked_db,played_db", [(-14.0, -14.0), (6.0, 0.0)])
+def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(asked_db, played_db):
+    """Levels are relative to the seat-equivalent peak a far-field take plays at (ADR-0361)."""
+    excitation, spec = _near_field_rear(0.0)
+    seat, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, 100.0))}
+    played, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, seat + asked_db))}
     assert played == pytest.approx(seat + played_db)
+
+
+@pytest.mark.parametrize("cap_dbfs,scope_gains_db", [(0.0, None), (-40.0, None), (0.0, {"woofer:rear": 0.09})])
+def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db):
+    """With no level asked, a driver pose plays its level probe: its take's band,
+    bursts rising at most MAX_STEP_DB from well under the seat level to its take's
+    own ceiling, no two of one length (ADR-0365)."""
+    excitation, spec = _near_field_rear(cap_dbfs)
+    spec = replace(spec, scope_gains_db=scope_gains_db)
+    probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
+    take = compose_target_program(excitation, spec, 100.0)
+    ceiling, = {s.gain_db for s in _sweeps(take)}
+    gains = [s.gain_db for s in _sweeps(probe)]
+
+    assert is_level_probe(probe) and not is_level_probe(take)
+    assert gains[-1] == pytest.approx(ceiling)
+    assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
+    assert len({s.n_samples for s in _sweeps(probe)}) == len(gains)
+    assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)}
 
 
 @pytest.mark.parametrize("rear,target", [

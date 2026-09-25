@@ -68,6 +68,7 @@ from jasper.audio_measurement.program import (
     _stimulus,
     _sweep_meta,
     build_check_program,
+    build_level_probe_program,
     build_measure_program,
     build_verify_program,
     mesm_gap_samples,
@@ -95,6 +96,7 @@ from jasper.audio_measurement.program_analysis import (
     GCC_SNAP_RADIUS_PERIODS,
     IR_POST_MS,
     IR_PRE_MS,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
     ConfiguredPathConditioningError,
     ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
     GAIN_BOUND_CAPTURE_FLOOR,
@@ -7492,8 +7494,39 @@ def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them(
     loud = quiet.copy()
     loud[:SR // 2] += np.random.default_rng(1).normal(0.0, 0.3, SR // 2)
 
-    levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_level
+    levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_levels[0]
               for capture in (quiet, loud)]
 
     assert levels[0].level_db - levels[0].floor_db > 40.0
     assert (levels[1].level_db, levels[1].floor_db) == pytest.approx((levels[0].level_db, levels[0].floor_db), abs=0.01)
+
+
+@pytest.mark.parametrize("band_hz", [(20.0, 2000.0), (300.0, 2000.0), (1000.0, 2000.0)])
+@pytest.mark.parametrize("start_s", [0.3, 1.2, 2.5])
+def test_a_level_probe_reads_each_burst_it_played_at_its_own_gain(band_hz, start_s):
+    """However long its play took to start, with its first bursts lost to an
+    amplifier waking late, the next under the room and its play cut short, a
+    probe reads every burst it played at its own gain, and none it never played,
+    even where the room thumped (ADR-0365)."""
+    gains = (-66.0, -60.0, -54.0, -48.0, -42.0, -36.0, -30.0)
+    program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(*band_hz)), gains,
+                                        sweep_band_hz=band_hz, gap_s=0.5, downstream_gain_db=0.0, channels=1)
+    offset = round(start_s * SR)
+    capture = _synthesize(program, woofer_ir=_band_impulse(40, *band_hz, 1.0), tweeter_ir=np.zeros(1),
+                          global_offset=offset, noise=0.0)
+    capture[:offset + program.segment("level_probe_2").start_sample] = 0.0
+    cut = program.segment("level_probe_5")
+    capture[offset + cut.start_sample + cut.n_samples // 2:] = 0.0
+    thump = offset + program.segment("level_probe_6").start_sample
+    capture[thump:thump + SR // 20] += 0.3 * np.sin(2 * np.pi * np.sqrt(band_hz[0] * band_hz[1]) * np.arange(SR // 20) / SR)
+    capture += np.random.default_rng(3).normal(0.0, 10 ** (-55 / 20), capture.size)
+
+    analysis = program_analysis.analyze_program_capture(program, capture, SR)
+
+    readings = {reading.gain_db: reading for reading in analysis.stimulus_levels}
+    assert -30.0 not in readings
+    heard = [readings[gain] for gain in (-48.0, -42.0)]
+    assert all(reading.trusted for reading in heard)
+    assert abs((heard[0].level_db - heard[0].gain_db) - (heard[1].level_db - heard[1].gain_db)) < 1.0
+    assert all(abs(loc.located_start - loc.scheduled_start) < SR // 100 for loc in analysis.locations
+               if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR)
