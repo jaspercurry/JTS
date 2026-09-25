@@ -20,7 +20,7 @@ def _tone(freq_hz: float, rms_db: float, seconds: float = 1.0) -> np.ndarray:
 
 
 def test_a_stimulus_reads_its_own_band_and_the_median_of_its_repeats():
-    """Sound outside the band never counts, and a burst in one repeat moves nothing (ADR-0363)."""
+    """Sound outside the band never counts, and a burst in one repeat moves nothing (ADR-0364)."""
     clean = _tone(F, -30.0)
     out_of_band = clean + _tone(5000.0, -10.0)
     burst = clean.copy()

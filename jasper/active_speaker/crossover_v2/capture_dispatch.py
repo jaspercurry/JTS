@@ -45,7 +45,7 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 #: here, never above the admission bound under its own stop (ADR-0361).
 NEAR_FIELD_TARGET_DB_SPL = 80.0
 NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
-#: A level retake aims this far under the target, inside its band (ADR-0363).
+#: A level retake aims this far under the target, inside its band (ADR-0364).
 LEVEL_AIM_UNDER_TARGET_DB = 1.0
 #: The most one level retake raises a take (ADR-0361).
 LEVEL_SOLVE_MAX_RAISE_DB = 15.0
@@ -86,7 +86,7 @@ class _LevelTarget(NamedTuple):
 
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None) -> _LevelTarget | None:
-    """The take's located sweeps in dB SPL (ADR-0363), held to a target never
+    """The take's located sweeps in dB SPL (ADR-0364), held to a target never
     above the admission bound under its own stop (ADR-0361)."""
     heard = analysis.stimulus_level
     sens_factor_db = finite_float((spl or {}).get("sens_factor_db"))

@@ -823,7 +823,7 @@ class _RedoOnPlacementGate(AnsweredGate):
 
 
 def _heard_analysis(record, _record_id):
-    """The take's located sweeps read what the microphone heard (ADR-0363)."""
+    """The take's located sweeps read what the microphone heard (ADR-0364)."""
     heard = _MIC.dbfs_from_db_spl(record["capture_integrity"]["spl"]["max_window_db_spl"])
     return replace(_measure_analysis(ExcitationProgram.from_dict(record["program"])),
                    stimulus_level=LevelReading(heard))
