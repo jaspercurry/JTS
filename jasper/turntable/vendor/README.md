@@ -2,7 +2,7 @@
 
 This directory carries the reusable controller from
 [`jaspercurry/USB-Turntable`](https://github.com/jaspercurry/USB-Turntable) so
-the manual JTS3 experiment works offline. JTS does not maintain a separate copy
+the JTS3 turntable adapter works offline. JTS does not maintain a separate copy
 of the device protocol.
 
 [`UPSTREAM.json`](UPSTREAM.json) records the reviewed upstream commit, package

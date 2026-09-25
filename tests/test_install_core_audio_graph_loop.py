@@ -1112,7 +1112,6 @@ def test_turntable_migration_preserves_the_stop_target_until_unit_commit(
         rule.parent.mkdir(parents=True)
         rule.write_text("inherited rule\n")
     shims = f'''
-INSTALL_DIR="{install_dir}"
 install_usb_network_files() {{ :; }}
 validate_installed_systemd_units() {{ return 0; }}
 reload_audio_recovery_udev_rules_for_install() {{ :; }}
@@ -1191,7 +1190,6 @@ def test_staging_faults_preserve_files_and_live_activation(tmp_path, profile, fa
     late = (systemd / "jts-mic.slice" if profile == "full" else
             tmp_path / "etc/udev/rules.d/99-jasper-bluetooth-adapter.rules")
     shims = f'''
-INSTALL_DIR="{tmp_path}/opt/jasper"
 record_activation() {{
     local phase=staging
     [[ -d "{tmp_path}/txn" ]] || phase=committed

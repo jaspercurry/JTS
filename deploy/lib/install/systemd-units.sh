@@ -1425,7 +1425,7 @@ _stage_full_unit_files() {
     install_grouping_unit_files
 
     install_audio_output_recovery_unit_files
-    # Experimental microphone-rig guard: a CH340 tty hot-plug starts one
+    # Microphone-rig guard: a CH340 tty hot-plug starts one
     # bounded identity-check-and-stop attempt. It is never enabled or polled.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-turntable-autostop@.service" \

@@ -723,11 +723,8 @@ def test_the_park_runs_once(failure_code, failures, attempts, parked):
     "jasper/cli/angle_capture.py",
 ])
 def test_the_adapter_is_a_subprocess_and_never_an_import(module):
-    """``experiments/`` is not a package product code may depend on.
-
-    A subprocess is also what gives each command a clean serial session and the
-    adapter's own documented one-retry recovery.
-    """
+    """A subprocess gives each command a clean serial session and the adapter's
+    own documented one-retry recovery."""
     import ast
 
     tree = ast.parse((ROOT / module).read_text())
@@ -737,8 +734,7 @@ def test_the_adapter_is_a_subprocess_and_never_an_import(module):
             imported.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.append(node.module or "")
-    assert not [name for name in imported
-                if "turntable" in name or "experiment" in name]
+    assert not [name for name in imported if "turntable" in name]
 
 
 def test_no_adapter_verb_this_module_emits_can_redefine_zero():

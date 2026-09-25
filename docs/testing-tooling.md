@@ -742,7 +742,7 @@ tuning CLI.
   [`arm_walk.py`](../jasper/active_speaker/arm_walk.py) owns its loop and
   safety checks.
 
-The adapter still runs as a subprocess at
+The adapter runs as a subprocess at
 `/opt/jasper/jasper/turntable/jts_turntable.py`. Root must be able to
 detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
 and sends `position-ready`. The adapter's confirmation flags come from the

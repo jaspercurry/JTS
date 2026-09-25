@@ -272,6 +272,10 @@ while IFS= read -r changed; do
         *.sh) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
       esac
       ;;
+    jasper/turntable/*)
+      add_test_if_present "tests/test_turntable.py"
+      add_test_if_present "tests/test_arm_walk.py"
+      ;;
     jasper/*/*.py)
       # issue #3142: a module nested one directory deeper than the top-level
       # package only has `package` (e.g. "cli") and `module` to route with,

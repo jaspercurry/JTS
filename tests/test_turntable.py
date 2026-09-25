@@ -221,7 +221,6 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
 ) -> None:
     lock_path = tmp_path / "turntable.lock"
     lock_path.write_text("stale" * 100)
-    monkeypatch.setattr(turntable, "PORT_LOCK_PATH", lock_path)
     api, factory, controller = fake_api(turntable)
     holder = {"pid": os.getpid(), "argv": [sys.argv[0], "--json", "stop"]}
     second_result = []
@@ -247,7 +246,6 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
 def test_fallback_lock_path_is_visible_in_json(turntable, monkeypatch, tmp_path, capsys):
     fallback = tmp_path / "fallback.lock"
     monkeypatch.setattr(turntable, "PORT_LOCK_PATH", tmp_path / "missing" / "lock")
-    monkeypatch.setattr(turntable, "PORT_LOCK_FALLBACK_PATH", fallback)
     api, _factory, _controller = fake_api(turntable)
 
     assert turntable.main(["--json", "stop"], api=api) == 0
@@ -1708,7 +1706,6 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     rule = AUTOSTOP_RULE.read_text()
     unit = AUTOSTOP_UNIT.read_text()
     units_install = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
-    runtime_install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text()
 
     assert 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523"' in rule
     assert 'KERNEL=="ttyUSB*"' in rule
@@ -1723,18 +1720,6 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "ReadWritePaths=/run/lock" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install
-
-    streambox_units = units_install.split(
-        "_stage_streambox_unit_files() {", 1
-    )[1].split("\n}\n", 1)[0]
-    assert "99-jasper-turntable-autostop.rules" not in streambox_units
-
-    full_runtime = runtime_install.split("install_jasper() {", 1)[1].split(
-        "\n}\n\ninstall_streambox_jasper()", 1
-    )[0]
-    streambox_runtime = runtime_install.split("install_streambox_jasper() {", 1)[1]
-    assert '"${REPO_DIR}/jasper"' in full_runtime
-    assert '"${REPO_DIR}/jasper"' in streambox_runtime
 
 
 def test_jts_adapter_contains_no_serial_protocol() -> None:

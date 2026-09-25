@@ -94,8 +94,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: absorbed; a wrong ``--hostname``, a 403, or a stopped wizard never clears.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
-#: Where ``install.sh`` puts the turntable adapter on a speaker.
-DEFAULT_TOOL_PATH = Path("/opt/jasper/jasper/turntable/jts_turntable.py")
+DEFAULT_TOOL_PATH = Path(__file__).resolve().parents[1] / "turntable" / "jts_turntable.py"
 
 # Issue #2516: the vendor retries offset/probe/position itself; stop is safe to
 # repeat here because it is idempotent before the absolute position re-homes.
@@ -316,9 +315,8 @@ def parse_power(payload: Mapping[str, Any]) -> PowerVerdict:
 
 @dataclass
 class TurntableMover:
-    """The installed ``jts_turntable.py`` adapter, driven as a subprocess. Never an import:
-    ``experiments/`` is not a dependency, and each command gets a clean serial session
-    and its documented one-retry recovery.
+    """The ``jts_turntable.py`` adapter, driven as a subprocess and never imported, so
+    each command gets a clean serial session and its documented one-retry recovery.
     """
 
     tool_path: Path = DEFAULT_TOOL_PATH

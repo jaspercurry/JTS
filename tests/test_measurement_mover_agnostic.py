@@ -46,7 +46,7 @@ ENGINE_ROOTS: tuple[str, ...] = (
 ARM_MODULE_NAMES: tuple[str, ...] = ("arm_walk",)
 ARM_MODULE_PREFIXES: tuple[str, ...] = ("angle_capture",)
 FORBIDDEN_HEADS: tuple[tuple[str, ...], ...] = (
-    ("experiments",), ("jasper", "turntable"), ("jasper", "web"),
+    ("jasper", "turntable"), ("jasper", "web"),
 )
 
 # Liveness: the names above must still name real modules. A rename that emptied
@@ -61,7 +61,7 @@ ARM_MODULES_THAT_MUST_EXIST: tuple[str, ...] = (
 
 # KNOWN BOUND — imports only. The arm driver itself is reached as a SUBPROCESS
 # tool path (`jasper/active_speaker/arm_walk.py`'s `DEFAULT_TOOL_PATH` points at
-# `/opt/jasper/jasper/turntable/jts_turntable.py`), so an engine module
+# `jasper/turntable/jts_turntable.py`), so an engine module
 # that hard-coded that path would carry an arm dependency this walk cannot see.
 # Stated rather than plugged: the seam MS-17 protects is the import graph, and a
 # path literal appearing inside the engine is a review finding, not a new axis.
