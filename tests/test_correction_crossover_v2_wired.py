@@ -377,7 +377,8 @@ async def test_the_capture_half_records_across_the_play_and_places_the_bytes(tmp
     if watched:
         spl = half.take_answer().capture_integrity['spl']
         assert spl == {'weighting': 'Z', 'max_window_db_spl': pytest.approx(75.9, abs=.1),
-                       'loudest_half_second_db_spl': pytest.approx(69.9, abs=.1), 'ceiling_db_spl': 85}
+                       'loudest_half_second_db_spl': pytest.approx(69.9, abs=.1), 'ceiling_db_spl': 85,
+                       'sens_factor_db': -6.0}
 
 
 async def test_a_recorder_that_will_not_roll_refuses_before_any_excitation(
