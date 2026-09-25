@@ -32,7 +32,10 @@ from jasper.active_speaker import (
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.camilla_names import driver_linearization_shelf_name, driver_linearization_taper_name
-from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
+from jasper.active_speaker.environment import (
+    CAMILLA_CLASS_ACTIVE_PARKED,
+    read_camilla_statefile_config_path,
+)
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
@@ -62,7 +65,6 @@ from jasper.active_speaker.runtime_contract import (
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
     PARKED_MUTED_STATUS,
     _normalized_graph_fingerprint,
-    _statefile_config_path,
     active_graph_is_parked,
     build_parked_muted_graph,
     classify_camilla_graph as _classify_camilla_graph,
@@ -4302,7 +4304,7 @@ def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
     apply_safe_graph_decision_to_statefile(
         parked_decision, statefile_path=statefile, topology=topology
     )
-    assert _statefile_config_path(statefile) == str(parked_path)
+    assert read_camilla_statefile_config_path(statefile) == str(parked_path)
 
     staged_path = tmp_path / "active_speaker_staged_startup.yml"
     staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
@@ -4320,7 +4322,7 @@ def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
     assert apply_safe_graph_decision_to_statefile(
         recovered, statefile_path=statefile, topology=topology
     ) is True
-    assert _statefile_config_path(statefile) == str(staged_path)
+    assert read_camilla_statefile_config_path(statefile) == str(staged_path)
 
 
 def test_passive_topology_still_takes_the_flat_cutover_not_parked(
@@ -4874,7 +4876,7 @@ def test_blocker_bearing_box_actually_writes_the_parked_statefile(
         )
 
     assert parked_path.exists()
-    assert _statefile_config_path(statefile) == str(parked_path)
+    assert read_camilla_statefile_config_path(statefile) == str(parked_path)
     # The stable observability line still fires for the newly-reachable state.
     # Asserted as a LITERAL, not f-string-composed from the constant: the point
     # of a stable `event=` line is that operators and journal greps depend on

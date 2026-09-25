@@ -371,10 +371,6 @@ def flat_program_graph_blocked_reason(
     return block[1] if block is not None else None
 
 
-def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
-    return read_camilla_statefile_config_path(statefile_path)
-
-
 def _path_matches(left: str | Path | None, right: str | Path | None) -> bool:
     if not left or not right:
         return False
@@ -2248,7 +2244,7 @@ def apply_safe_graph_decision_to_statefile(
     # OLD statefile was proved against the NEW topology — the exact pair the
     # boot gate reads as "no mismatch", which is the one answer that must not
     # come out of a write that did not happen.
-    current = _statefile_config_path(statefile_path)
+    current = read_camilla_statefile_config_path(statefile_path)
     if _path_matches(current, decision.selected_config_path):
         stamp_statefile_topology(statefile_path, topology)
         return False
