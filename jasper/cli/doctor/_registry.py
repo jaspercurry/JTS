@@ -102,16 +102,14 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     # rather than the whole module. Its row also folds in the applied-grade
     # finding, which is equally inapplicable here.
     "check_crossover_v2_cloud_pipeline",
-    # Unlike their voice module neighbours, these two need Config fields
-    # (voice_provider, API keys, daily_spend_cap_*) the streambox doctor cfg
-    # (_cli._local_audio_config_from_env) does not carry, so reading them
-    # would be a false verdict rather than a skip. Remove once that cfg
-    # surface carries the voice Config fields, and gate on live accessory
-    # presence like check_provider_importable instead.
+    # Unlike their voice module neighbours, these need Config fields
+    # (voice_provider, API keys, daily_spend_cap_*, integration settings) the
+    # streambox doctor cfg (_cli._local_audio_config_from_env) does not
+    # carry, so reading them would be a false verdict rather than a skip.
+    # Remove once that cfg surface carries the voice Config fields, and gate
+    # on live accessory presence like check_provider_importable instead.
     "check_provider_key",
     "check_spend_cap",
-    # Cloud-integration rows (Google, Home Assistant, Citi Bike): a
-    # streambox has no assistant, so these tools are never registered.
     "check_google_tokens",
     "check_google_routes",
     "check_home_assistant",
