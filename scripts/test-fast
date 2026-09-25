@@ -237,7 +237,7 @@ while IFS= read -r changed; do
       # wake_training/ lives outside jasper/ (laptop-side training tooling,
       # not shipped) so the jasper/*/*.py arm below never sees it — without
       # this arm an edit here selects zero tests, same failure mode the
-      # rust/ and experiments/*/* arms exist to close.
+      # rust/ arm exists to close.
       add_test_if_present "tests/test_build_wake_feature_bank.py"
       add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
       add_test_if_present "tests/test_wake_training_feature_bank.py"
@@ -271,6 +271,10 @@ while IFS= read -r changed; do
       case "${changed}" in
         *.sh) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
       esac
+      ;;
+    jasper/turntable/*)
+      add_test_if_present "tests/test_turntable.py"
+      add_test_if_present "tests/test_arm_walk.py"
       ;;
     jasper/*/*.py)
       # issue #3142: a module nested one directory deeper than the top-level
@@ -377,17 +381,6 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_rust_runtime_panic_freedom.py"
       add_test_if_present "tests/test_outputd_wiring.py"
       add_test_if_present "tests/test_usbsink_impulse_tap_contract.py"
-      ;;
-    experiments/*/*)
-      # Same reasoning as the rust arm above: an experiment kit's guards are
-      # Python tests under tests/, so without this an edit to a kit selects
-      # nothing and its layout/path pins first run in the merge lane. The
-      # directory name is the test name (experiments/usb-turntable ->
-      # tests/test_usb_turntable_experiment.py), so this stays one arm
-      # however many kits land.
-      experiment="${changed#experiments/}"
-      experiment="${experiment%%/*}"
-      add_test_if_present "tests/test_${experiment//-/_}_experiment.py"
       ;;
   esac
 done < "${changed_file_tmp}"

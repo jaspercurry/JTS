@@ -353,8 +353,8 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     name bound anywhere in the module. See ``_installs_its_own_handler`` for
     what is still out of scope.
 
-    Scans every Python tree that ships to the Pi — ``jasper/``, ``scripts/``,
-    ``experiments/`` and ``deploy/`` — not just the product package.
+    Scans every Python tree that ships to the Pi — ``jasper/``, ``scripts/``
+    and ``deploy/`` — not just the product package.
 
     Remove this ratchet when
     ``logging.basicConfig`` stops being how the tree installs its journal
@@ -363,7 +363,7 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     """
     offenders = {
         path.relative_to(_REPO).as_posix()
-        for directory in ("jasper", "scripts", "experiments", "deploy")
+        for directory in ("jasper", "scripts", "deploy")
         for path in sorted((_REPO / directory).rglob("*.py"))
         if path.name != "logging_setup.py"
         and _installs_its_own_handler(ast.parse(path.read_text()))

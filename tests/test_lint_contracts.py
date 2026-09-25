@@ -44,12 +44,15 @@ _BROAD_EXCEPT = re.compile(
 
 
 def _python_files() -> list[Path]:
+    ruff = tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["ruff"]
+    excluded = tuple(REPO / path for path in ruff["extend-exclude"])
     files: list[Path] = []
     for root in SCAN_ROOTS:
         base = REPO / root
         if not base.exists():
             continue
-        files.extend(sorted(base.rglob("*.py")))
+        files.extend(path for path in sorted(base.rglob("*.py"))
+                     if not any(path.is_relative_to(root) for root in excluded))
     return files
 
 

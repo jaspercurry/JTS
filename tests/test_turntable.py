@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free coverage for the manual USB-turntable experiment."""
+"""Hardware-free coverage for the USB-turntable adapter."""
 
 import argparse
 import ast
@@ -20,9 +20,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPERIMENT = ROOT / "experiments" / "usb-turntable"
-SCRIPT = EXPERIMENT / "jts_turntable.py"
-VENDOR = EXPERIMENT / "vendor"
+PACKAGE = ROOT / "jasper" / "turntable"
+SCRIPT = PACKAGE / "jts_turntable.py"
+VENDOR = PACKAGE / "vendor"
 AUTOSTOP_RULE = ROOT / "deploy" / "udev" / "99-jasper-turntable-autostop.rules"
 AUTOSTOP_UNIT = (
     ROOT / "deploy" / "systemd" / "jasper-turntable-autostop@.service"
@@ -30,7 +30,7 @@ AUTOSTOP_UNIT = (
 
 
 def load_script():
-    spec = importlib.util.spec_from_file_location("jts_turntable_experiment", SCRIPT)
+    spec = importlib.util.spec_from_file_location("jts_turntable_adapter", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -39,8 +39,11 @@ def load_script():
 
 
 @pytest.fixture
-def turntable():
-    return load_script()
+def turntable(tmp_path, monkeypatch):
+    module = load_script()
+    monkeypatch.setattr(module, "PORT_LOCK_PATH", tmp_path / "turntable.lock")
+    monkeypatch.setattr(module, "PORT_LOCK_FALLBACK_PATH", tmp_path / "fallback.lock")
+    return module
 
 
 def test_help_lists_internal_hotplug_stop_without_argparse_placeholder(turntable):
@@ -218,7 +221,6 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
 ) -> None:
     lock_path = tmp_path / "turntable.lock"
     lock_path.write_text("stale" * 100)
-    monkeypatch.setattr(turntable, "PORT_LOCK_PATH", lock_path)
     api, factory, controller = fake_api(turntable)
     holder = {"pid": os.getpid(), "argv": [sys.argv[0], "--json", "stop"]}
     second_result = []
@@ -244,7 +246,6 @@ def test_a_second_invocation_fails_fast_while_the_first_holds_the_port(
 def test_fallback_lock_path_is_visible_in_json(turntable, monkeypatch, tmp_path, capsys):
     fallback = tmp_path / "fallback.lock"
     monkeypatch.setattr(turntable, "PORT_LOCK_PATH", tmp_path / "missing" / "lock")
-    monkeypatch.setattr(turntable, "PORT_LOCK_FALLBACK_PATH", fallback)
     api, _factory, _controller = fake_api(turntable)
 
     assert turntable.main(["--json", "stop"], api=api) == 0
@@ -1705,14 +1706,13 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     rule = AUTOSTOP_RULE.read_text()
     unit = AUTOSTOP_UNIT.read_text()
     units_install = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
-    runtime_install = (ROOT / "deploy/lib/install/python-runtime.sh").read_text()
 
     assert 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523"' in rule
     assert 'KERNEL=="ttyUSB*"' in rule
     assert 'SYSTEMD_WANTS}+="jasper-turntable-autostop@%k.service"' in rule
     assert "BindsTo=dev-%i.device" in unit
     assert "ConditionPathExists=/dev/%I" in unit
-    assert "ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/" in unit
+    assert "ExecStart=/usr/bin/python3 /opt/jasper/jasper/turntable/" in unit
     assert "--port /dev/%I --json hotplug-stop" in unit
     assert "/bin/sh" not in unit
     assert "TimeoutStartSec=90s" in unit
@@ -1720,19 +1720,6 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "ReadWritePaths=/run/lock" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install
-    assert '"${REPO_DIR}/experiments/usb-turntable"' in runtime_install
-
-    streambox_units = units_install.split(
-        "_stage_streambox_unit_files() {", 1
-    )[1].split("\n}\n", 1)[0]
-    assert "turntable-autostop" not in streambox_units
-
-    full_runtime = runtime_install.split("install_jasper() {", 1)[1].split(
-        "\n}\n\ninstall_streambox_jasper()", 1
-    )[0]
-    streambox_runtime = runtime_install.split("install_streambox_jasper() {", 1)[1]
-    assert "experiments/usb-turntable" in full_runtime
-    assert "experiments/usb-turntable" not in streambox_runtime
 
 
 def test_jts_adapter_contains_no_serial_protocol() -> None:

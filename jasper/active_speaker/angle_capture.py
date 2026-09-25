@@ -162,9 +162,9 @@ REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 MAX_ANGLE_DEG = 80
 
 #: How far the lab positioner can actually travel; the turntable adapter
-#: (``experiments/usb-turntable/jts_turntable.py``) refuses a ``position`` outside +/-45
-#: deg. Restated, not imported (``experiments/`` is not a dependency), pinned together
-#: by ``tests/test_arm_walk.py``.
+#: (``jasper/turntable/jts_turntable.py``) refuses a ``position`` outside +/-45
+#: deg. The adapter runs under system Python; ``tests/test_arm_walk.py`` pins
+#: this bound to its subprocess contract.
 ARM_ENVELOPE_DEG = 45
 
 #: How far ABOVE or BELOW mark height a person may be asked to hold the microphone.

@@ -245,6 +245,7 @@ include = ["jasper", "jasper.*"]
 [tool.setuptools.package-data]
 "jasper" = ["py.typed"]
 "jasper.data" = ["*.csv"]
+"jasper.turntable" = ["README.md", "vendor/*.md", "vendor/*.json", "vendor/LICENSE"]
 "jasper.active_speaker" = ["measurement_plans.json", "presets/*.json"]
 
 [tool.pytest.ini_options]
@@ -269,9 +270,7 @@ timeout_method = "signal"
 
 [tool.ruff]
 target-version = "py313"
-# Exclude vendored turntable code; the wrapper is production despite its
-# experiments/ path.
-extend-exclude = ["experiments/usb-turntable/vendor"]
+extend-exclude = ["jasper/turntable/vendor"]
 
 [tool.ruff.lint]
 # Pyflakes `F`, Ruff's default pycodestyle subset (`E4`, `E7`, `E9`),
@@ -297,7 +296,8 @@ ignore = ["E701", "E731", "E402"]
 
 [tool.mypy]
 python_version = "3.13"
-files = ["jasper", "experiments/usb-turntable/jts_turntable.py"]
+files = ["jasper"]
+exclude = ["^jasper/turntable/vendor/"]
 ignore_missing_imports = true
 show_error_codes = true
 warn_unused_configs = true
@@ -432,7 +432,7 @@ type = "layers"
 containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
-  "cli : web",
+  "cli : turntable : web",
   "usage_writer",
   "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_models : weather",
   "audio_runtime_settings",
