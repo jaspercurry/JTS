@@ -49,7 +49,6 @@ from jasper.aec.bridge_config import OUT_HOST, leg_default_port
 from jasper.aec.bridge_engines import FRAME_SAMPLES
 from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, BridgeStats
 from jasper.cues.registry import (
-    NO_ROOM_MIC_CUE_SLUG,
     VOICE_ASSETS_MISSING_CUE_SLUG,
 )
 from tests._log_events import event_fields
@@ -283,12 +282,6 @@ def _arm_main(monkeypatch, tmp_path, *, mic_ok=True, usb_ok=True):
 
 
 def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
-    """Spy on the park cue through the seam both parks speak from.
-
-    `jasper.cues.park` is the shared player: the same fake TtsPlayout and cue
-    manager the voice daemon's boot-park pins use, so a bridge park that
-    stopped playing cannot pass here on a stub of its own.
-    """
     from jasper.cues import park as cue_park
 
     spy = _ParkCues(cue_result)
@@ -353,7 +346,7 @@ def _shape_corpus_usb_absent(monkeypatch, tmp_path):
             _shape_mic_absent,
             os.EX_NOINPUT,
             "mic_device_unavailable",
-            NO_ROOM_MIC_CUE_SLUG,
+            None,
         ),
         (
             _shape_corpus_usb_absent,
@@ -368,21 +361,6 @@ def test_permanent_faults_park_on_a_code_the_unit_holds(
     shape, expected_code, expected_reason, expected_slug,
     monkeypatch, tmp_path, caplog,
 ):
-    """Each permanent fault exits 78 (config) or 66 (the wake mic won't open),
-    and says so out loud first.
-
-    A park holds the unit down, so every one of these leaves jasper-voice's
-    wake legs with no mic feed until someone acts — non-negotiable 6 owes a
-    cue, and this process is the only thing that knows. The
-    jasper-aec-reconcile hand-off (ADR-0239) answers the narrower case where a
-    card was physically removed: a stale device name or a config fault fires
-    no udev event at all. 66 speaks the mic-loss cue it shares with
-    jasper-voice's own 66 park; the config faults — the corpus USB leg is an
-    opt-in capture flag, not the wake mic — speak the 78 one. None of them is
-    a missing voice provider, so the 78 cue is the diagnostics one: the
-    /voice wizard cannot fix a reference source, a beam plan or absent
-    hardware, and it is the only sentence the household gets.
-    """
     spy = _arm_park_cue(monkeypatch)
     shape(monkeypatch, tmp_path)
 
@@ -392,8 +370,9 @@ def test_permanent_faults_park_on_a_code_the_unit_holds(
     fields = event_fields(caplog, "aec_bridge.park")
     assert fields["reason"] == expected_reason
     assert fields["exit_code"] == str(expected_code)
-    assert spy.played == [expected_slug]
-    assert event_fields(caplog, "aec_bridge.park_cue")["result"] == "ok"
+    assert spy.played == ([expected_slug] if expected_slug else [])
+    if expected_slug:
+        assert event_fields(caplog, "aec_bridge.park_cue")["result"] == "ok"
 
 
 def test_a_park_cue_that_cannot_play_still_parks_on_the_same_code(
@@ -403,10 +382,10 @@ def test_a_park_cue_that_cannot_play_still_parks_on_the_same_code(
     with only `After=`/`Wants=` on fan-in, so the socket the cue writes to can
     legitimately be missing; the failure is named on the wire instead."""
     _arm_park_cue(monkeypatch, cue_result=OSError("no output path"))
-    _shape_mic_absent(monkeypatch, tmp_path)
+    _shape_bad_ref_source(monkeypatch, tmp_path)
 
     with caplog.at_level(logging.INFO, logger="jasper.aec_bridge"):
-        assert aec_bridge.main() == os.EX_NOINPUT
+        assert aec_bridge.main() == os.EX_CONFIG
 
     assert event_fields(caplog, "aec_bridge.park_cue")["result"] == "play_error"
 

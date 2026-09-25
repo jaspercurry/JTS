@@ -46,7 +46,6 @@ from ..cues import (
 )
 from ..cues.park import play_park_cue
 from ..cues.registry import (
-    NO_ROOM_MIC_CUE_SLUG,
     VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
@@ -57,7 +56,6 @@ from ..install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
-from ..mic_presence import voice_park_is_transient
 from ..renderer import RendererClient
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
@@ -82,7 +80,6 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
-from ..voice.input_presence import voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
@@ -188,48 +185,8 @@ def _require_usable_input(
     )
 
 
-# Floor for jasper-voice.service TimeoutStopSec: the 4.65 s cue plus drain
-# and two 1 s-timeout duck legs is 8.7 s worst case, then the untimed
-# teardown. See ADR-0239.
-MIC_LOSS_CUE_STOP_FLOOR_SEC = 14.0
-
-
-async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
-    """Say out loud that this speaker just lost its microphone. See ADR-0239.
-
-    Returns the result code it logged — ``not_parked``, ``transient_park``,
-    ``ok`` or ``play_error``. Never raises.
-    """
-    if not voice_parked_no_mic():
-        return "not_parked"
-    if voice_park_is_transient():
-        result = "transient_park"
-    else:
-        try:
-            result = await wake_loop.play_cue(NO_ROOM_MIC_CUE_SLUG)
-        except Exception:  # noqa: BLE001
-            logger.exception("mic-loss cue play failed")
-            result = "play_error"
-    log_event(
-        logger,
-        "voice.mic_loss_cue",
-        slug=NO_ROOM_MIC_CUE_SLUG,
-        result=result,
-        level=logging.INFO if result in ("ok", "transient_park") else logging.WARNING,
-    )
-    return result
-
-
 def _announce_park_at_boot(slug: str) -> str:
-    """Say out loud why this daemon is parking, then let the caller exit.
-
-    The boot checks that raise 66/78 all run before the daemon's own cue
-    manager and TtsPlayout exist, so the largest deaf window on the box is a
-    park nobody hears (AGENTS.md non-negotiable 6). Called from `main()` after
-    `asyncio.run(run())` has returned, so no loop is running and
-    `play_park_cue` can own one. Never raises, and never changes the exit code
-    the caller is about to hand systemd.
-    """
+    """Announce a configuration fault after the daemon loop has closed."""
     result = play_park_cue(slug, logger=logger)
     log_event(
         logger,
@@ -576,15 +533,9 @@ def _release(
     fn: Callable[..., object],
     *args: Any,
 ) -> None:
-    """Register `fn(*args)` as a teardown that cannot eat the park.
+    """A teardown error must not replace the typed startup error.
 
-    `AsyncExitStack` REPLACES the body's exception with any callback's
-    exception (demoting the original to `__context__`), so one unlucky
-    teardown turns ANY park exception `main()` handles — the list is in
-    `main()`, and it grows — into a plain crash: no cue, exit 1, and a
-    systemd restart loop instead of a park (NN-6; ADR-0239). Every release
-    in `run()` goes through here or `_arelease`. `CancelledError` is a
-    `BaseException`, so cancellation still propagates.
+    CancelledError is a BaseException, so cancellation still propagates.
     """
     def _tolerant() -> None:
         try:
@@ -870,12 +821,7 @@ async def _prerender_timer(cues: AudioCueManager, timer: Timer) -> None:
 
 
 def _install_shutdown_signals(stop_event: asyncio.Event) -> None:
-    """Route SIGINT/SIGTERM to the stop event.
-
-    Deliberately never unregistered: a second SIGTERM arriving during the
-    unwind must still land here rather than terminate the process mid-cue
-    (ADR-0239). `asyncio.run()` closes the loop, and these handlers with it.
-    """
+    """Keep handlers through teardown so a second signal cannot interrupt cleanup."""
     def _request_shutdown() -> None:
         logger.info("shutdown requested")
         stop_event.set()
@@ -1133,10 +1079,6 @@ async def _serve_until_stopped(
     await _serve_while_connecting(
         connect_live_session, wake_loop.run,
     )
-    # Still inside the exit stack, so the cue manager and its TtsPlayout are
-    # open and the fan-in socket is live. Only on the clean stop: a crash is
-    # not a park.
-    await _announce_mic_loss_at_shutdown(wake_loop)
 
 
 async def run() -> None:
@@ -1158,8 +1100,7 @@ async def run() -> None:
         )
         # No release registered: the controller caches its websocket for the
         # process lifetime by design, and close() can spend
-        # CAMILLA_ATTEMPT_BUDGET_S on a wedged socket inside the 14 s stop
-        # budget that already carries the mic-loss cue (ADR-0239).
+        # CAMILLA_ATTEMPT_BUDGET_S on a wedged socket during shutdown.
         camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
         renderer = RendererClient(
             librespot_state_path=cfg.librespot_state_path,
@@ -1206,7 +1147,7 @@ async def run() -> None:
 
         startup_fire_and_forget: set[asyncio.Task] = set()
         # Scheduled HERE, above the mic open and the SpeechVAD construction
-        # below: those raise the 66/78 parks, and `_announce_park_at_boot`
+        # below: configuration failures park with an audible cue, and `_announce_park_at_boot`
         # can only play a cue that already has a baked WAV. `regenerate`
         # needs the TTS backend only, and writes each WAV atomically, so a
         # park that overtakes it reads a whole file or none.
@@ -1278,18 +1219,12 @@ async def run() -> None:
 
 @dataclass(frozen=True, slots=True)
 class _BootParkArm:
-    """One boot-time failure kind `main()` parks the unit on rather than
-    crash-looping into `StartLimitAction=reboot` (AGENTS.md non-negotiable
-    6 is why `_announce_park_at_boot` runs for every arm the same way).
-
-    Matched by `isinstance`, first entry wins: `VoiceProviderNotConfigured`
-    is a `VoiceConfigError` subclass, so its arm must precede that one's.
-    """
+    """Matched by isinstance, first entry wins; see ADR-0340 for silent input loss."""
 
     exc_type: type[Exception]
     event: str
     exit_code: int
-    cue_slug: str
+    cue_slug: str | None
     level: int
     # Structured, not prose glued onto `reason=`, so a reader/log-shipper can
     # act on it without parsing English. Nothing restarts a parked unit on
@@ -1300,7 +1235,7 @@ class _BootParkArm:
 _BOOT_PARK_ARMS: tuple[_BootParkArm, ...] = (
     _BootParkArm(
         InputDeviceUnavailable, "voice.mic_unavailable",
-        VOICE_MIC_UNAVAILABLE_EXIT, NO_ROOM_MIC_CUE_SLUG, logging.WARNING,
+        VOICE_MIC_UNAVAILABLE_EXIT, None, logging.WARNING,
     ),
     _BootParkArm(
         VoiceProviderNotConfigured, "voice.unconfigured",
@@ -1339,7 +1274,8 @@ def main() -> None:
             fields["remedy"] = arm.remedy
         log_event(logger, arm.event, level=arm.level, **fields)
         print(str(exc), file=sys.stderr)
-        _announce_park_at_boot(arm.cue_slug)
+        if arm.cue_slug is not None:
+            _announce_park_at_boot(arm.cue_slug)
         sys.exit(arm.exit_code)
     except KeyboardInterrupt:
         sys.exit(0)

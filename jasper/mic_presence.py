@@ -106,13 +106,6 @@ MIC_ABSENT_REASONS: frozenset[str] = frozenset(
     }
 )
 
-#: Whether a park is a round trip the reconciler itself ends is a property of
-#: the code, not a second field on the wire: these parks are the ones the
-#: daemon's mic-loss cue (ADR-0239) must stay silent for.
-TRANSIENT_MIC_ABSENT_REASONS: frozenset[str] = frozenset(
-    {MIC_ABSENT_CHIP_AEC_VALIDATING}
-)
-
 #: ``summary``'s fallback when a park carries no ``detail=`` prose. Never the
 #: ``reason`` code itself — that is a machine token, not a headline.
 MIC_ABSENT_GENERIC_DETAIL = "no usable microphone detected"
@@ -245,18 +238,6 @@ def _marker_fields() -> tuple[str, str]:
         code if code in MIC_ABSENT_REASONS else MIC_ABSENT_UNKNOWN,
         detail,
     )
-
-
-def voice_park_is_transient() -> bool:
-    """True when the current park is a round trip the reconciler itself ends
-    — the chip-AEC validation bounce (ADR-0239) — rather than a real absence
-    of voice input.
-
-    Meaningless unless ``voice_parked_no_mic()`` is also true, and fail-safe to
-    False (an unknown code is not transient) so a real absence can never be
-    misread as transient and lose its shutdown cue.
-    """
-    return _marker_fields()[0] in TRANSIENT_MIC_ABSENT_REASONS
 
 
 def read_mic_presence(state_path: str | None = None) -> MicPresence:

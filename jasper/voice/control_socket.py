@@ -119,10 +119,7 @@ async def serve(
     return server
 
 
-# Bounds Server.wait_closed() in the unwind: unbounded, a handler mid-command
-# at SIGTERM keeps it pending behind jasper-voice.service's
-# TimeoutStopSec=14s (MIC_LOSS_CUE_STOP_FLOOR_SEC), stalling every later
-# teardown callback.
+# Bound a handler still active at SIGTERM so later teardown can run.
 CONTROL_SOCKET_CLOSE_TIMEOUT_SEC = 2.0
 
 

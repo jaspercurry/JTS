@@ -4,9 +4,6 @@
 # registry card name, udp:PORT, or a configured candidate). Custom
 # JASPER_MIC_DEVICE values are left alone.
 #
-# Keyed to sound control nodes, not a hard-coded XVF USB id. Supported mic
-# identity lives in the mic profile registry and reaches the reconciler
-# through `jasper-xvf-profile --env` (ADR-0235); JASPER_MIC_DEVICE_CANDIDATES
-# only overrides that list. The policy stays in the reconciler.
-
-ACTION=="add|remove", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-aec-reconcile.service"
+# SYSTEMD_WANTS starts units when a device becomes active, not on removal.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-aec-reconcile.service"
+ACTION=="remove", SUBSYSTEM=="sound", KERNEL=="controlC*", RUN+="/usr/bin/systemctl --no-block start jasper-aec-reconcile.service"

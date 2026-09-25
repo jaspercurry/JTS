@@ -43,7 +43,8 @@ of RAM; respect its budget (bounded loops, no heavy analysis on-device — use
    `sudo -n -u $USER env LC_ALL=C timeout <N> aplay -q -s <F> -D $DEVICE -c 2
    -r 48000 -f S16_LE /dev/zero`; exit 0 only. N, F: renderers.py constants.
 6. **No silent deafness:** a new code path that prevents wake response must
-   play a cue (`jasper/cues/registry.py`).
+   play a cue (`jasper/cues/registry.py`). Missing or unplugged microphones
+   are silent; preserve status and logs (ADR-0340).
 7. **Paid tests:** `tests/voice_eval/` opens paid realtime-LLM sessions.
    Never loop or auto-retry them; state estimated cost before running.
 8. **`main` is protected:** CI green before merge; never merge a red `main`.

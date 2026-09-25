@@ -45,7 +45,6 @@ from jasper.mic_presence import (
     MIC_ABSENT_REASONS,
     MIC_ABSENT_XVF_CAPTURE_ABSENT,
     read_mic_presence,
-    voice_park_is_transient,
 )
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
@@ -1626,15 +1625,6 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
-# --- the marker body is a closed code vocabulary -----------------------------
-#
-# Every `mark_voice_input_absent` site writes `reason=<code>` from
-# jasper.mic_presence.MIC_ABSENT_REASONS plus the prose that code cannot carry
-# as `detail=`. The reader maps anything else to `unknown`, so a site that
-# invents a code degrades to "we do not know why" on /state.microphone and
-# loses its ADR-0239 transient class — which is exactly what these drive.
-
-
 def _park_no_accessory(tmp_path: Path) -> Path:
     """stop_voice with the accessory probe resolved and empty."""
     _write_env(tmp_path, "udp:9876")
@@ -1700,27 +1690,24 @@ def _park_validation_bounce(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("park", "code", "transient"),
+    ("park", "code"),
     [
-        (_park_no_accessory, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, False),
-        (_park_accessory_unknown, MIC_ABSENT_ACCESSORY_UNKNOWN, False),
-        (_park_managed_xvf_unusable, MIC_ABSENT_XVF_CAPTURE_ABSENT, False),
+        (_park_no_accessory, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY),
+        (_park_accessory_unknown, MIC_ABSENT_ACCESSORY_UNKNOWN),
+        (_park_managed_xvf_unusable, MIC_ABSENT_XVF_CAPTURE_ABSENT),
         (
             _park_chip_aec_bringup(chip_aec_health.REFERENCE_PRODUCER_DOWN),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
         (
             _park_chip_aec_bringup(chip_aec_health.BRIDGE_FAILED),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
         (
             _park_chip_aec_bringup(chip_aec_health.REAPPLY_FAILED),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
-        (_park_validation_bounce, MIC_ABSENT_CHIP_AEC_VALIDATING, True),
+        (_park_validation_bounce, MIC_ABSENT_CHIP_AEC_VALIDATING),
     ],
     ids=(
         "no-accessory", "accessory-unknown", "xvf-unusable",
@@ -1733,15 +1720,8 @@ def test_every_park_writes_a_code_the_reader_knows(
     monkeypatch: pytest.MonkeyPatch,
     park: Callable[[Path], Path],
     code: str,
-    transient: bool,
 ) -> None:
-    """Drive every park this harness can reach and read the marker back
-    through the real reader, so writer and vocabulary cannot drift apart.
-
-    `transient` is the ADR-0239 axis and is derived here from nothing but the
-    code — the marker carries no separate flag, so the shutdown cue's verdict
-    IS the code's class.
-    """
+    """The real marker reader recognizes every published park code."""
     body = park(tmp_path)
 
     fields = _marker_fields(body)
@@ -1758,7 +1738,6 @@ def test_every_park_writes_a_code_the_reader_knows(
     assert record.present is False
     assert record.reason == code
     assert record.detail == fields["detail"]
-    assert voice_park_is_transient() is transient
 
 
 def _aec_disabled_direct_mic_box(tmp_path: Path) -> None:
