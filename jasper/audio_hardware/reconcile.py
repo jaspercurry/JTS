@@ -51,6 +51,7 @@ from jasper.atomic_io import (
     locked_upsert_env_file,
 )
 from jasper.audio_hardware.config_txt import boot_config_path
+from jasper.audio_hardware.i2s_hat import i2s_hat_intent_path
 from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH, observe
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
@@ -205,9 +206,7 @@ class Pass:
         self.management_transport_marker = (
             self.degraded_marker.parent / "management-transport.ok"
         )
-        self.i2s_hat_intent_file = (
-            env.get("JASPER_I2S_HAT_INTENT_FILE") or "/var/lib/jasper/i2s_hat.env"
-        )
+        self.i2s_hat_intent_file = str(i2s_hat_intent_path())
         self.i2s_hat_reboot_required_path = (
             env.get("JASPER_I2S_HAT_REBOOT_REQUIRED_PATH")
             or "/run/jasper-output-hardware/i2s-hat-reboot-required"
