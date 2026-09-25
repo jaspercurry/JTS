@@ -219,6 +219,9 @@ class WiredStimulusCapture:
                 await await_restore_task_resilient(asyncio.create_task(_drain()))
         except asyncio.CancelledError as exc:
             raise PlaybackInterrupted(observation) from exc
+        if stopped and recorder.failure is not None:
+            # A period over the SPL stop reaches the soft bound before its failure is published.
+            failure, stopped = recorder.failure, False
         if failure is not None:
             raise _capture_stopped(failure, observation)
         return stopped

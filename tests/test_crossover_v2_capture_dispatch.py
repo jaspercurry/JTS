@@ -599,6 +599,8 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     ((-52.0,), (81.0,), 40.0, 76.0, "retake_quieter", -54.0, None),
     # A room within 10 dB of the loudest burst is never solved from.
     ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
+    # A probe that read no burst it holds is never kept.
+    ((-52.0, -46.0), (), 40.0, 76.0, "fix_and_retake", None, None),
     # A ceiling under the solved gain is said before any take.
     ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 40.0, None, "retake_louder", -31.0, 9.0),
 ])

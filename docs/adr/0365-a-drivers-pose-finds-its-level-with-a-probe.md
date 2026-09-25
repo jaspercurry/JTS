@@ -36,8 +36,8 @@
   one take, where it used to cost an opener take and a take. The page names the probe while it
   plays. Each probe logs `event=active_speaker.level_probe` with its loudest kept reading, that
   reading's floor, and the gain it solved. The bound is read broadband over the whole capture, so a
-  room sound that reaches it before the bursts ends the probe too; the probe then holds no burst to
-  solve from and asks for the microphone again. Not decided here: the bass level ladder, a deliberate
+  room sound that reaches it before the bursts ends the probe too; the probe then asks for the
+  microphone again, or its take lands quiet and is retaken louder. Not decided here: the bass level ladder, a deliberate
   series that feeds its headroom table rather than a level search. Rejected:
   - a probe that plays, reads and plays again (one play reads every level at once);
   - a fixed-level probe (no one level spans a 15 mm and a 100 mm pose inside one step of the stop);

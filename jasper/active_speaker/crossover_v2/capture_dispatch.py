@@ -73,7 +73,6 @@ class _LevelTarget(NamedTuple):
     reading: LevelReading
     target_db_spl: float
     peak_dbfs: float
-    probe: bool
 
     @property
     def gap_db(self) -> float:
@@ -100,14 +99,14 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
     return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
                                 floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
                         min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),
-                        peak, is_level_probe(program))
+                        peak)
 
 
-def _level_retake(level: _LevelTarget) -> TakeVerdict:
+def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
     """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
     probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
     solved = solve_gain(level.reading, target_db=level.target_db_spl)
-    shortfall = solved - level.peak_dbfs if level.probe else 0.0
+    shortfall = solved - level.peak_dbfs if probe else 0.0
     return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                        next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
                        next_gain_db=solved, evidence={"level_shortfall_db": shortfall} if shortfall > 0 else {})
@@ -131,18 +130,20 @@ def assess(
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
     program = kwargs.get("program")
+    probe = program is not None and is_level_probe(program)
     level = _level_target(analysis, kwargs.get("spl"), program) if near_field else None
     # A take the microphone heard is levelled before its recording is judged; one it did
     # not hear is judged, never levelled blind; one its ceiling held under the peak it
     # asked for is kept too quiet, since a louder retake would replay it (ADR-0361). A
-    # level probe is never kept (ADR-0365).
+    # level probe is never kept: with no reading it trusts, it asks for the microphone
+    # again (ADR-0365).
     capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
               and level.peak_dbfs < level_asked_dbfs)
-    if prior_verdict is None and level is not None and _stimulus_locate_ok(analysis):
-        if level.probe and not level.reading.trusted:
+    if prior_verdict is None and _stimulus_locate_ok(analysis):
+        if probe and (level is None or not level.reading.trusted):
             prior_verdict = TakeVerdict(False, fault=reasons.REASON_SNR_FLOOR, next="fix_and_retake", charge="operator")
-        elif level.probe or (abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB and not capped):
-            prior_verdict = _level_retake(level)
+        elif level is not None and (probe or (abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB and not capped)):
+            prior_verdict = _level_retake(level, probe=probe)
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
     # Removal condition: see the output mute guard in preflight.py.
     if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
