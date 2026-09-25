@@ -7480,8 +7480,8 @@ def test_saved_timing_verification_names_why_it_is_not_comparable(monkeypatch, s
 
 
 def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them():
-    """A loud room before the sound never reaches a take's level, and the
-    window before its pilots is the floor that level is trusted over (ADR-0363)."""
+    """A loud room before the sound never reaches a take's level or its floor,
+    which is read in the quiet window before its pilots (ADR-0363)."""
     program = build_measure_program(
         {"woofer": -20.0}, (RoleBand("woofer", 0, FrequencyBand(20.0, 2000.0)),),
         sweep_durations={"woofer": 1.0}, sweep_band_hz=(20.0, 2000.0), gap_s=0.5, guard_s=0.25,
@@ -7495,5 +7495,5 @@ def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them(
     levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_level
               for capture in (quiet, loud)]
 
-    assert levels[0].trusted
-    assert levels[1].level_db == pytest.approx(levels[0].level_db, abs=0.01)
+    assert levels[0].level_db - levels[0].floor_db > 40.0
+    assert (levels[1].level_db, levels[1].floor_db) == pytest.approx((levels[0].level_db, levels[0].floor_db), abs=0.01)

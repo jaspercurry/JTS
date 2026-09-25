@@ -38,7 +38,9 @@ from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, T
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
@@ -777,6 +779,9 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
         ("reference", driver, mm / 1000) for driver, mm in layout]
 
 
+_MIC = MicSensitivity(-12.0)
+
+
 class _LevelStore(_Store):
     """Banks each take as the web host does: the program it played, at the
     peak it asked for under its ceiling, and what the microphone read."""
@@ -793,7 +798,7 @@ class _LevelStore(_Store):
                 program=build_measure_program({"woofer": peak}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
                                               repeat_count=1, sweep_durations={"woofer": 0.2}).to_dict(),
                 capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
-                                           "ceiling_db_spl": 85.0}})
+                                           "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
         return await super().bank(record)
 
 
@@ -815,6 +820,13 @@ class _RedoOnPlacementGate(AnsweredGate):
             self.release(*held)
             self.signals.retake.set()
             raise
+
+
+def _heard_analysis(record, _record_id):
+    """The take's located sweeps read what the microphone heard (ADR-0363)."""
+    heard = _MIC.dbfs_from_db_spl(record["capture_integrity"]["spl"]["max_window_db_spl"])
+    return replace(_measure_analysis(ExcitationProgram.from_dict(record["program"])),
+                   stimulus_level=LevelReading(heard))
 
 
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
@@ -841,8 +853,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
                 session, _):
             return await plan_run.run_plan(
                 request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
-                analyze=lambda record, _id: _measure_analysis(ExcitationProgram.from_dict(record["program"])),
-                captures=captures, assessor=assessor,
+                analyze=_heard_analysis, captures=captures, assessor=assessor,
                 admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
 
     result = asyncio.run(run())
@@ -863,7 +874,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     result, fakes, selected, gate = _run_levelled(request, readings, replace_at=3)
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None, -28.0, -28.0, None, -28.0, None, -27.0, None, -28.0]
+    assert fakes.play.rungs == [None, -29.0, -29.0, None, -29.0, None, -27.0, None, -29.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
@@ -880,7 +891,7 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
 
     assert result.status == "complete"
-    assert (fakes.play.rungs, selected) == ([None, -28.0], [False, True])
+    assert (fakes.play.rungs, selected) == ([None, -29.0], [False, True])
 
 
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
@@ -911,7 +922,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
     assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
-    assert fakes.play.rungs == [None] * (redos + 1) + [-28.0, None, None]
+    assert fakes.play.rungs == [None] * (redos + 1) + [-29.0, None, None]
     assert selected == [False] * (redos + 1) + [True, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert list(steps.values()) == ["opener"] * (redos + 1) + ["levelled", "opener", "levelled"]

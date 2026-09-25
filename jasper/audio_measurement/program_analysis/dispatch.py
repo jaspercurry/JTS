@@ -33,8 +33,6 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.level import LevelReading, stimulus_level
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
-    KIND_SUMMED_SWEEP,
-    KIND_SWEEP,
     ExcitationProgram,
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
@@ -200,16 +198,15 @@ def _stimulus_level(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
     global_offset: int, locations: Sequence[SegmentLocation],
 ) -> LevelReading | None:
-    """The located sweeps' level over the pre-pilot room, when they share one band (ADR-0363)."""
-    sweeps = [seg for seg in program.segments if seg.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)]
-    bands = {segment_emitted_band_hz(seg) for seg in sweeps}
-    if len(bands) != 1:
+    """One driver's located sweeps over the room before its pilots (ADR-0363)."""
+    by_role = _sweep_occurrences_by_role(locations)
+    if len(by_role) != 1:
         return None
-    by_id = {loc.segment_id: loc for loc in locations}
-    stimuli = [capture[loc.located_start:loc.located_start + seg.n_samples]
-               for seg in sweeps if (loc := by_id.get(seg.segment_id)) is not None]
-    return stimulus_level(stimuli, _pilot_ambient_samples(program, capture, global_offset),
-                          sample_rate=sample_rate, band_hz=bands.pop())
+    (sweeps,) = by_role.values()
+    segments = [program.segment(loc.segment_id) for loc in sweeps]
+    return stimulus_level([_raw_sweep_segment(capture, seg, loc.located_start) for seg, loc in zip(segments, sweeps)],
+                          _pilot_ambient_samples(program, capture, global_offset),
+                          sample_rate=sample_rate, band_hz=segment_emitted_band_hz(segments[0]))
 
 
 def _analyze_check(

@@ -336,4 +336,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | amended by 0362 |
 | [0361](0361-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md) | A near-field take levels itself to 80 dB at the microphone, in its digital gain under the seat-equivalent level | §3 amended by 0363 |
 | [0362](0362-the-near-field-rows-take-each-woofer-at-15-and-30-mm.md) | The near-field rows take each woofer at 15 and 30 mm, with no re-seat | accepted |
-| [0363](0363-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, trusted 10 dB over its floor, and one retake is a 1:1 solve | accepted |
+| [0363](0363-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |

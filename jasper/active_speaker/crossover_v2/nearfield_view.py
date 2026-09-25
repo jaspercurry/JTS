@@ -117,11 +117,9 @@ def nearfield_view(
         # The first sweep can catch an amplifier still waking (#5684).
         raw_rows.append(None if path_db is None else
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
-        evidence = (take.get("quality") or {}).get("evidence") or {}
         row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
                "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
-               # Takes banked before ADR-0363 carry the broadband reading under its old name.
-               "level_db_spl": evidence.get("level_db_spl", evidence.get("max_window_db_spl")),
+               "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
                          if (band := _band(freqs, sweeps, edges, swept)) is not None]}
         placed.setdefault(row["driver"], {}).setdefault(row["distance_mm"], []).append(len(rows))
