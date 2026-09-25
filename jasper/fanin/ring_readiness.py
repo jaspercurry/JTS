@@ -57,6 +57,7 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_FORMAT,
     GROUPING_RING_PCM,
 )
+from jasper.paths import crossover_statefile
 
 
 # A ring readiness gate returns (ok, detail) and fails CLOSED.
@@ -826,14 +827,13 @@ def graph_at_active_ring_endpoint(
     capture_device = RING_CAPTURE_DEVICE
     if graph.devices.get("playback_type") == "File":
         from jasper.active_speaker.environment import read_camilla_statefile_config_path  # lazy: cycle through playback_route
-        from jasper.multiroom.active_leader_config import crossover_statefile_path  # lazy: cycle through runtime_contract
 
         if (
             graph.devices.get("capture_device") != RING_CAPTURE_DEVICE
             or not devices_playback_is_pipe(graph.devices, SNAPFIFO)
         ):
             return False, "the primary graph does not connect Ring A to the grouping pipe"
-        path = read_camilla_statefile_config_path(crossover_statefile_path())
+        path = read_camilla_statefile_config_path(crossover_statefile())
         if not path:
             return False, "the grouping crossover statefile has no config path"
         graph = read_loaded_camilla_graph(path)

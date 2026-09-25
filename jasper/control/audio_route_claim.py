@@ -83,7 +83,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
         parked_muted_exits,
     )
 
-    config_path = read_camilla_statefile_config_path(paths.DEFAULT_CAMILLA_STATEFILE)
+    config_path = read_camilla_statefile_config_path()
     if not active_graph_is_parked(config_path):
         return None
     try:
@@ -127,8 +127,7 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     from ..audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
 
     evidence = output_endpoint_evidence_from_statefiles(
-        paths.DEFAULT_CAMILLA_STATEFILE,
-        paths.DEFAULT_CAMILLA2_STATEFILE,
+        paths.camilla_statefile(), paths.crossover_statefile()
     )
     if evidence.devices is None or not evidence.endpoint_recognized:
         # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph

@@ -60,9 +60,9 @@ from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.paths import (
-    DEFAULT_CAMILLA2_STATEFILE,
-    DEFAULT_CAMILLA_STATEFILE,
     OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH,
+    camilla_statefile,
+    crossover_statefile,
 )
 from jasper.output_hardware import (
     ObservedOutput,
@@ -220,12 +220,8 @@ class Pass:
         )
         self._topology: Any | None = None
         self._topology_read = False
-        self.camilla_statefile = env.get("JASPER_CAMILLA_STATEFILE") or str(
-            DEFAULT_CAMILLA_STATEFILE
-        )
-        self.camilla2_statefile = env.get("JASPER_CAMILLA2_STATEFILE") or str(
-            DEFAULT_CAMILLA2_STATEFILE
-        )
+        self.camilla_statefile = str(camilla_statefile())
+        self.camilla2_statefile = str(crossover_statefile())
         self.camilla_conf_dir = env.get("JASPER_CAMILLA_CONF_DIR") or "/etc/camilladsp"
         self.ring_conf_d = env.get("JASPER_RING_CONF_D") or ""
 

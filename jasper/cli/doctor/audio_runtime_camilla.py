@@ -731,7 +731,6 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     (see `deploy/bin/jasper-camilla-topology-gate`). The next convergence that
     writes a statefile clears either.
     """
-    from ...active_speaker.environment import camilla_statefile_path
     from ...output_topology_store import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
@@ -739,7 +738,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
         topology_stamp_version,
     )
 
-    statefile = camilla_statefile_path()
+    statefile = camilla_statefile()
     proved = read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile))
     unproved = read_topology_fingerprint_stamp(
         statefile_unproved_stamp_path(statefile)

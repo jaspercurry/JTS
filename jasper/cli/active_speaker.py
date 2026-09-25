@@ -88,7 +88,7 @@ from jasper.active_speaker.safe_playback import (
 from jasper.dsp_apply import validate_camilla_config
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
-from jasper.paths import DEFAULT_CAMILLA_STATEFILE
+from jasper.paths import camilla_statefile
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -1114,7 +1114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runtime.add_argument(
         "--statefile",
-        default=str(DEFAULT_CAMILLA_STATEFILE),
+        default=str(camilla_statefile()),
         help="outputd CamillaDSP statefile to inspect/write",
     )
     runtime.add_argument(
@@ -1185,7 +1185,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reemit.add_argument(
         "--statefile",
-        default=str(DEFAULT_CAMILLA_STATEFILE),
+        default=str(camilla_statefile()),
         help="CamillaDSP statefile to point at the re-emitted artifact",
     )
     reemit.add_argument(

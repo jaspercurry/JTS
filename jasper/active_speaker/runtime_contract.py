@@ -47,7 +47,7 @@ from jasper.output_topology import (
     OutputTopologyError,
 )
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
-from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
+from jasper import paths
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
 from ._common import issue as _issue
@@ -1615,7 +1615,7 @@ def outputd_active_lane_decision(
     from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
 
-    primary_statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    primary_statefile = paths.camilla_statefile(statefile_path)
     _selected, primary_problem = _config_path_from_statefile_with_reason(
         primary_statefile,
         missing="camilla_statefile_missing",
@@ -1674,9 +1674,7 @@ def outputd_active_lane_decision(
             primary_graph=primary_graph,
         )
 
-    crossover_statefile = Path(
-        crossover_statefile_path or DEFAULT_CAMILLA2_STATEFILE
-    )
+    crossover_statefile = paths.crossover_statefile(crossover_statefile_path)
     crossover_graph = classify_bass_extension_graph(
         topology,
         evidence_source="persisted_boot",
@@ -1905,7 +1903,7 @@ def safe_graph_for_current_topology(
             config_path=parked_config_path,
             reason="no speaker layout is configured; parked with every output muted",
         )
-    statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    statefile = paths.camilla_statefile(statefile_path)
     applied_path = Path(applied_baseline_path or baseline_profile_state_path())
     staged_path_authority = Path(staged_metadata_path or default_staged_path())
 
@@ -2214,7 +2212,7 @@ def write_camilla_statefile(
 def apply_safe_graph_decision_to_statefile(
     decision: SafeGraphDecision,
     *,
-    statefile_path: str | Path = DEFAULT_CAMILLA_STATEFILE,
+    statefile_path: str | Path,
     topology: OutputTopology | None = None,
 ) -> bool:
     """Persist the selected graph if the statefile is absent or needs repair.

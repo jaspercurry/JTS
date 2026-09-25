@@ -4,10 +4,11 @@
 
 """One owner for the CamillaDSP statefile's ``config_path`` (issue #2848).
 
-``jasper.active_speaker.environment`` owns the ``JASPER_CAMILLA_STATEFILE``
-override and the ``config_path:`` parse, over the shipped default statefile
-path that ``jasper.paths`` names. Three private readers each held their own
-copy of all three facts — ``jasper.cli.doctor.correction``'s
+``jasper.paths.camilla_statefile`` owns the ``JASPER_CAMILLA_STATEFILE``
+override over the shipped default statefile path, and
+``jasper.active_speaker.environment`` the ``config_path:`` parse. Three private
+readers each held their own copy of all three facts —
+``jasper.cli.doctor.correction``'s
 ``_parse_camilla_statefile_config_path`` / ``_active_camilla_config_path``,
 ``jasper.audio_runtime_plan``'s ``_active_camilla_config_path_from_statefile``,
 and ``jasper.multiroom.leader_config``'s ``active_leader_pipe_path`` — so a box
@@ -45,6 +46,7 @@ from jasper import audio_runtime_plan as audio_plan
 from jasper.active_speaker import environment as env_mod
 from jasper.cli.doctor import correction as doctor_correction
 from jasper.multiroom import leader_config
+from jasper.paths import DEFAULT_CAMILLA_STATEFILE, camilla_statefile
 
 
 def _pipe_wired_config(tmp_path: Path) -> Path:
@@ -121,7 +123,7 @@ def test_doctor_delegates_to_the_canonical_reader(
 
     ``jasper.cli.doctor.correction`` imports both helpers at MODULE level, so
     the patch target is the name in that module's own namespace — patching
-    ``environment`` would not reach the already-bound names.
+    their owners would not reach the already-bound names.
     """
 
     calls: list[str | Path | None] = []
@@ -131,7 +133,7 @@ def test_doctor_delegates_to_the_canonical_reader(
         return "/from/canonical/reader.yml"
 
     monkeypatch.setattr(
-        doctor_correction, "camilla_statefile_path", lambda path=None: Path("/fake/sf.yml")
+        doctor_correction, "camilla_statefile", lambda path=None: Path("/fake/sf.yml")
     )
     monkeypatch.setattr(
         doctor_correction, "read_camilla_statefile_config_path", fake_reader
@@ -182,15 +184,12 @@ def test_converge_passes_the_owner_resolved_statefile(
     """``--statefile`` and the check it guards must name ONE statefile.
 
     ``converge._reemit_graph_at_ring`` never parses ``config_path``, but it does
-    have to name the statefile ``applied_profile_displacement`` reads — that
-    identity is the entire reason the flag is passed instead of left to
-    argparse's default. Both now resolve through ``camilla_statefile_path``, so
-    an operator override moves them together.
+    have to name the statefile ``applied_profile_displacement`` reads. Both
+    resolve through ``jasper.paths.camilla_statefile``, so an operator override
+    moves them together.
 
-    The empty override is here because it is the one input where the retired
-    hand-rolled lookup and the owner disagreed: it sent ``""`` while the
-    displacement check read ``"."``, so a re-emit could re-point one statefile
-    while the divergence check had inspected another.
+    An empty override is no override: it names the shipped default, as the
+    shell guards' ``${JASPER_CAMILLA_STATEFILE:=...}`` does.
     """
 
     from jasper.fanin import converge
@@ -214,9 +213,9 @@ def test_converge_passes_the_owner_resolved_statefile(
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", "")
     converge._reemit_graph_at_ring()
     assert seen == [
-        ["baseline-reemit", "--endpoint", "ring", "--statefile", "."]
+        ["baseline-reemit", "--endpoint", "ring", "--statefile", str(DEFAULT_CAMILLA_STATEFILE)]
     ]
-    assert str(env_mod.camilla_statefile_path()) == "."
+    assert camilla_statefile() == DEFAULT_CAMILLA_STATEFILE
 
 
 def test_leader_pipe_path_delegates_to_the_canonical_reader(

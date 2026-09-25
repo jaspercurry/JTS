@@ -349,8 +349,7 @@ def active_leader_pipe_path() -> str:
     pipe — never a mirror of env intent (the retired
     ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total: any read failure resolves to
     ``""`` (degraded — fail visible)."""
-    # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override
-    # and the ``config_path`` parse live in active_speaker.environment. Lazy
+    # The statefile's one reader, in active_speaker.environment. Lazy
     # like every other import in this module, and free for every daemon that
     # reaches this function: jasper-control's own audio-health sampler
     # (audio_health.py) already imports that module; jasper-web builds every

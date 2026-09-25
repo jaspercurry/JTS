@@ -100,7 +100,7 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
     tmp_path: Path, monkeypatch, caplog,
 ):
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-    from jasper.active_speaker.environment import camilla_statefile_path
+    from jasper.paths import camilla_statefile
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
 
     candidate, config_dir, camilla = _reigning_candidate_box(tmp_path, monkeypatch)
@@ -128,7 +128,7 @@ async def test_a_kept_candidate_survives_the_deploy_reconcile(
     assert camilla.loaded_path is None
     assert active_path.read_bytes() == before
     assert (tmp_path / "dsp.json").read_bytes() == dsp_state_before
-    write_camilla_statefile(camilla_statefile_path(), await camilla.get_config_file_path())
+    write_camilla_statefile(camilla_statefile(), await camilla.get_config_file_path())
     assert applied_profile_displacement(load_applied_baseline_profile_state()) == ""
     assert len(event_records(caplog, "sound.reconcile_current_dsp")) == 1
     fields = event_fields(caplog, "sound.reconcile_current_dsp")
@@ -245,7 +245,7 @@ async def test_changed_intent_still_re_emits_over_a_kept_candidate(
         load_applied_baseline_profile_state,
     )
 
-    from jasper.active_speaker.environment import camilla_statefile_path
+    from jasper.paths import camilla_statefile
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
-    write_camilla_statefile(camilla_statefile_path(), await camilla.get_config_file_path())
+    write_camilla_statefile(camilla_statefile(), await camilla.get_config_file_path())
     assert applied_profile_displacement(load_applied_baseline_profile_state()) == ""

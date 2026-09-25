@@ -31,3 +31,11 @@ def resolve_state_path(
     """
     env_value = os.environ.get(env_name) if env_name else None
     return Path(explicit or env_value or default)
+
+
+def camilla_statefile(path: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_state_path(path, "JASPER_CAMILLA_STATEFILE", DEFAULT_CAMILLA_STATEFILE)
+
+
+def crossover_statefile(path: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_state_path(path, "JASPER_CAMILLA2_STATEFILE", DEFAULT_CAMILLA2_STATEFILE)

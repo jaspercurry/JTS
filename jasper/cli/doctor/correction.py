@@ -26,10 +26,9 @@ from ._shared import (
     systemctl_unavailable_result,
 )
 from ...identity import identity_state
-from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
-    camilla_statefile_path,
     classify_camilla_config_text,
     read_camilla_statefile_config_path,
 )
@@ -439,12 +438,12 @@ def check_correction_state_dirs() -> CheckResult:
 def _active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
 
-    Both halves come from ``active_speaker.environment``, the one owner of the
-    ``JASPER_CAMILLA_STATEFILE`` override and the ``config_path`` parse. The
-    path is returned too so callers can name it when the parse fails.
+    The path comes from ``jasper.paths``' one resolver and the parse from
+    ``active_speaker.environment``. The path is returned too so callers can
+    name it when the parse fails.
     """
 
-    statefile = camilla_statefile_path()
+    statefile = camilla_statefile()
     return statefile, read_camilla_statefile_config_path(statefile)
 
 @doctor_check()

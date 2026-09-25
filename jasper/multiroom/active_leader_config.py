@@ -62,12 +62,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 from pathlib import Path
 
 from .. import atomic_io
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA2_STATEFILE
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
 from ..log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig
@@ -109,12 +108,6 @@ class ActiveLeaderError(RuntimeError):
         super().__init__(message)
         self.reason = reason
         self.issues = issues
-
-
-def crossover_statefile_path() -> str:
-    """camilla#2's statefile path (``JASPER_CAMILLA2_STATEFILE``), read at CALL
-    time so an env override / test redirect is honoured."""
-    return os.environ.get("JASPER_CAMILLA2_STATEFILE", str(DEFAULT_CAMILLA2_STATEFILE))
 
 
 # ---------- the fail-closed GATE: build + re-prove BOTH instances ----------
@@ -391,7 +384,7 @@ def seed_crossover_statefile(
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
 
     target_config = config_path or CROSSOVER_CONFIG_PATH
-    target_statefile = statefile or crossover_statefile_path()
+    target_statefile = str(crossover_statefile(statefile))
     write_camilla_statefile(target_statefile, target_config)
     log_event(
         logger,

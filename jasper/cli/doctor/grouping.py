@@ -490,7 +490,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...active_speaker.environment import camilla_statefile_path
+    from ...paths import camilla_statefile
     from ...multiroom.config import is_active_member
     from ...multiroom.grouping_env import is_active_speaker_box
     from .correction import (
@@ -522,7 +522,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     if config_path is None:
         return CheckResult(
             label, "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
+            f"could not read config_path from {camilla_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     if not Path(config_path).exists():
@@ -617,7 +617,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     budget fit (:func:`_airplay_latency_fit_finding`) — a silent pipe makes
     that timing fact moot, so it only rides an ``ok`` verdict.
     """
-    from ...active_speaker.environment import camilla_statefile_path
+    from ...paths import camilla_statefile
     from ...multiroom.config import is_active_leader
     from ...camilla_config_contract import playback_is_pipe
     from ...multiroom.snapfifo import SNAPFIFO
@@ -639,7 +639,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     if config_path is None:
         return CheckResult(
             label, "warn",
-            f"could not read config_path from {camilla_statefile_path()}",
+            f"could not read config_path from {camilla_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     if not Path(config_path).exists():
