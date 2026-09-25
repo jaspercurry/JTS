@@ -135,11 +135,18 @@ class Account:
 
 # `\-`, not a bare `-`: browsers compile an input's `pattern=` with the `v`
 # flag, where a bare `-` is a syntax error and the pattern is silently ignored.
-ACCOUNT_NAME_PATTERN = r"[a-zA-Z0-9_\-]+"
+_ACCOUNT_NAME_CHARS = r"a-zA-Z0-9_\-"
+ACCOUNT_NAME_PATTERN = f"[{_ACCOUNT_NAME_CHARS}]+"
 
 
 def valid_account_name(name: str) -> bool:
     return re.fullmatch(ACCOUNT_NAME_PATTERN, name) is not None
+
+
+def account_file_stem(name: str) -> str:
+    """``name`` with every character a valid name cannot hold turned to ``_``,
+    so no name escapes its credential directory."""
+    return re.sub(f"[^{_ACCOUNT_NAME_CHARS}]", "_", name)
 
 
 class _NamedRecord(Protocol):
@@ -283,8 +290,7 @@ class Registry(RecordRegistry[Account]):
 
 
 def default_cache_path_for(name: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
-    return os.path.join(DEFAULT_CACHE_DIR, f"{safe}.json")
+    return os.path.join(DEFAULT_CACHE_DIR, f"{account_file_stem(name)}.json")
 
 
 def maybe_migrate_legacy(
