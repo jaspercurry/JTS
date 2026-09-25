@@ -28,11 +28,14 @@ from jasper.web import (
     correction_setup,
 )
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, REASON_REGISTRY
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    CrossoverV2Refused, REASON_INTERNAL_ERROR, REASON_REGISTRY,
+)
 from jasper.web.correction_runtime import refusal_envelope
 from jasper.platform.systemd import no_hold
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
+from ._log_events import event_fields, event_records
 from ._web_test_helpers import make_csrf_session, request_with_csrf
 
 def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
@@ -192,6 +195,41 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
         ("acquire", "capture:crossover_v2:verify"),
         ("release", "capture:crossover_v2:verify"),
     ]
+
+@pytest.mark.parametrize("exc,code", [
+    (CrossoverV2Refused("hold expired", code="position_hold_expired"), "position_hold_expired"),
+    (CrossoverV2Refused("unexpected: detail", code=REASON_INTERNAL_ERROR), None),
+    (RuntimeError("link timeout"), None),
+])
+def test_a_refused_capture_logs_its_code_and_only_an_unexpected_one_a_traceback(
+    caplog, exc, code,
+):
+    def open_capture():
+        return SimpleNamespace(pi_session=object())
+
+    async def run_and_consume(_pi_session):
+        raise exc
+
+    caplog.set_level(logging.INFO)
+    correction_capture._set_capture_slot(None)
+    try:
+        correction_capture._run_capture(
+            correction_capture.CaptureKind(
+                label="crossover_v2:session",
+                open=open_capture,
+                run_and_consume=run_and_consume,
+            ),
+            idle_hold=no_hold,
+        )
+        wait_until_sync(
+            lambda: correction_capture._get_capture_slot()["status"] == "failed"
+        )
+    finally:
+        correction_capture._set_capture_slot(None)
+
+    (record,) = event_records(caplog, "correction.capture_failed")
+    assert (record.exc_info is None) is (code is not None)
+    assert event_fields(caplog, "correction.capture_failed").get("code") == code
 
 def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     monkeypatch,
