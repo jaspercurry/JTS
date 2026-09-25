@@ -147,10 +147,10 @@ def analyze_program_capture(
     priors = priors or MeasurementPriors()
 
     probe = is_level_probe(program)
-    if probe:
-        global_offset, stimuli, anchor = _staircase_offset(program, capture, sample_rate), {}, None
-    else:
+    if not probe:
         global_offset, _first, stimuli, anchor = _global_offset(program, capture, sample_rate)
+    else:
+        global_offset, stimuli, anchor = _staircase_offset(program, capture, sample_rate), {}, None
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if probe:

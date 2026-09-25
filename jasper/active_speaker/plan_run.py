@@ -577,12 +577,12 @@ async def _run(
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
                                 if is_level_probe(program):
-                                    log_event(logger, "active_speaker.level_probe", pose=item.pose_index + 1,
-                                              driver=item.stop["pose"].get("driver"),
-                                              distance_m=item.stop["pose"].get("distance_m"), fault=assessed.fault,
-                                              next_gain_db=assessed.next_gain_db,
-                                              **{key: value for key, value in assessed.evidence.items()
-                                                 if key.startswith("level_")})
+                                    log_event(logger, "active_speaker.level_probe", fields={
+                                        "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
+                                        "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
+                                        "next_gain_db": assessed.next_gain_db,
+                                        **{key: value for key, value in assessed.evidence.items()
+                                           if key.startswith("level_")}})
                         except (ValueError, KeyError, OSError) as exc:
                             manifest.detail = exception_detail(exc)
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
