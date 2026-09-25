@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""A stimulus's level in its own band (ADR-0363)."""
+"""A stimulus's level in its own band (ADR-0364)."""
 
 from __future__ import annotations
 

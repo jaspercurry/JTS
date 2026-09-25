@@ -198,7 +198,7 @@ def _stimulus_level(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
     global_offset: int, locations: Sequence[SegmentLocation],
 ) -> LevelReading | None:
-    """One driver's located sweeps over the room before its pilots (ADR-0363)."""
+    """One driver's located sweeps over the room before its pilots (ADR-0364)."""
     by_role = _sweep_occurrences_by_role(locations)
     if len(by_role) != 1:
         return None

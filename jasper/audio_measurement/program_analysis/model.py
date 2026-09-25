@@ -990,6 +990,6 @@ class ProgramAnalysis:
     # Passthrough of MeasurementPriors.mic_calibrated, set at the same site
     # as `mic_tier`. ``None`` means "not resolved either way", never a guess.
     mic_calibrated: bool | None = None
-    # dBFS, one driver's located sweeps in their band (ADR-0363). Set only by
+    # dBFS, one driver's located sweeps in their band (ADR-0364). Set only by
     # `analyze_program_capture`; ``None`` unless exactly one driver swept.
     stimulus_level: LevelReading | None = None

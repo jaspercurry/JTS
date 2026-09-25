@@ -1,4 +1,4 @@
-# ADR-0363: A take's level is read from its located sweeps, in their band
+# ADR-0364: A take's level is read from its located sweeps, in their band
 
 - **Date:** 2026-09-24
 - **Status:** Accepted. Supersedes (partial) [ADR-0361](0361-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md)

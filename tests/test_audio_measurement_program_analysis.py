@@ -7481,7 +7481,7 @@ def test_saved_timing_verification_names_why_it_is_not_comparable(monkeypatch, s
 
 def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them():
     """A loud room before the sound never reaches a take's level or its floor,
-    which is read in the quiet window before its pilots (ADR-0363)."""
+    which is read in the quiet window before its pilots (ADR-0364)."""
     program = build_measure_program(
         {"woofer": -20.0}, (RoleBand("woofer", 0, FrequencyBand(20.0, 2000.0)),),
         sweep_durations={"woofer": 1.0}, sweep_band_hz=(20.0, 2000.0), gap_s=0.5, guard_s=0.25,
