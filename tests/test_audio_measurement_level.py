@@ -43,15 +43,7 @@ def test_a_reading_is_trusted_ten_db_over_its_floor(floor_db, trusted):
     assert LevelReading(-20.0, -30.0, floor_db).trusted is trusted
 
 
-@pytest.mark.parametrize("readings,gain", [
-    # The loudest trusted reading solves, 1:1 to 1 dB under the target.
-    ([LevelReading(-40.0, 62.0, 40.0), LevelReading(-34.0, 68.0, 40.0)], -23.0),
-    # A louder reading the room holds within 10 dB is passed over.
-    ([LevelReading(-40.0, 66.0, 40.0), LevelReading(-34.0, 70.0, 64.0)], -27.0),
-    # With none trusted the loudest solves, landing at or under the target.
-    ([LevelReading(-40.0, 62.0, 55.0), LevelReading(-34.0, 66.0, 60.0)], -21.0),
-    # One solve raises at most 15 dB.
-    ([LevelReading(-40.0, 50.0, 30.0)], -25.0),
-])
-def test_one_solve_steps_from_the_loudest_trusted_reading(readings, gain):
-    assert solve_gain(readings, target_db=80.0) == pytest.approx(gain)
+@pytest.mark.parametrize("level_db,gain", [(68.0, -23.0), (50.0, -19.0), (85.0, -40.0)])
+def test_one_solve_steps_1_to_1_to_just_under_the_target(level_db, gain):
+    """1 dB under the target, raised at most 15 dB and lowered without a cap (ADR-0364)."""
+    assert solve_gain(LevelReading(-34.0, level_db, 40.0), target_db=80.0) == pytest.approx(gain)

@@ -462,8 +462,8 @@ async def test_a_loud_read_waiting_at_a_reader_exit_stops_the_take_as_the_spl_st
 async def test_a_level_probe_ends_at_its_ramp_bound_and_the_spl_stop_still_stops_it(
         monkeypatch, tmp_path, probe, failure, played):
     """A level probe's play ends, as a normal end, once its loudest period reaches
-    the ramp bound under the stop; a take plays on past it, and the stop still
-    stops a probe (ADR-0365)."""
+    the ramp bound under the stop, and its take records where; a take plays on
+    past it, and the stop still stops a probe (ADR-0365)."""
     monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
     recorder = SimpleNamespace(failure=None, start=lambda: None, finish=lambda **_: None, abort=lambda: None)
     monkeypatch.setattr(wired_stimulus, "mint_wired_answer", lambda *_, **__: WiredCaptureAnswer(wav=b"", wav_path="a.wav"))
@@ -483,12 +483,13 @@ async def test_a_level_probe_ends_at_its_ramp_bound_and_the_spl_stop_still_stops
 
     if failure is None:
         await capture.around(play, program=program)
+        assert capture.take_answer().capture_integrity["spl"].get("stopped_at_db_spl") == (
+            None if played else ramp_bound_db_spl(monitor.ceiling_db_spl))
     else:
         with pytest.raises(StimulusCaptureStopped) as caught:
             await capture.around(play, program=program)
         assert caught.value.code == SPL_CEILING_EXCEEDED
     assert bool(heard) == played
-
 
 
 async def test_a_take_banks_how_the_playback_route_counters_moved(monkeypatch, tmp_path):

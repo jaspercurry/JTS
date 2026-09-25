@@ -17,15 +17,15 @@
      matched filter, and it locates whichever bursts the room buried or the stop cut.
   2. A probe ends its play, as a normal end, once its loudest 21 ms period reaches the ramp bound
      under the stop (`profile.ramp_bound_db_spl`: the stop less one step and the 3 dB margin, 76 dB
-     under an 85 dB stop). The 85 dB stop still guards it, unchanged.
+     under an 85 dB stop). Its capture records that level (`stopped_at_db_spl` in its SPL block).
+     The 85 dB stop still guards it, unchanged.
   3. Each burst is read as ADR-0364 reads a take (`ProgramAnalysis.stimulus_levels`, one reading
-     per gain). A reading at or over the bound may have been cut short, so it is left out unless
-     every reading is. A
-     reading 10 dB over its floor is trusted: ISO 3744's K1 then puts the room's share at 0.46 dB
-     at most. With none trusted, the probe asks for the microphone again (`snr_floor`). Otherwise
-     the take's gain is solved 1:1 from the loudest trusted reading, to 1 dB under the target,
-     raised at most 15 dB. The solve is `level.solve_gain`, the one a level retake also uses. The
-     take plays at that gain, and a probe is never kept.
+     per gain). A reading at or over the level the play stopped at may have been cut short, so it
+     is left out unless every reading is. The loudest reading left must stand 10 dB over its
+     floor, where ISO 3744's K1 puts the room's share at 0.46 dB at most; if it does not, the probe
+     asks for the microphone again (`snr_floor`). Otherwise the take's gain is solved 1:1 from it,
+     to 1 dB under the target, raised at most 15 dB. The solve is `level.solve_gain`, the one a
+     level retake also uses. The take plays at that gain, and a probe is never kept.
   4. The pose's takes follow ADR-0361 §3. A take outside the band is retaken. A take its ceiling
      holds under the solved gain is kept as `level_capped`, and the probe's evidence names the gap
      (`level_shortfall_db`). A redo or a re-placement starts the pose at its probe again.

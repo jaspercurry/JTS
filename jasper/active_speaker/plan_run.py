@@ -222,12 +222,13 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
         for measurement, (pose, spec) in enumerate(batch, 1):
             if not details:
                 poses.append(dict(pose))
-            # A driver's pose opens with its level probe, then plays takes at a level (ADR-0365).
-            excitation = program_for_spec(spec, stimulus_dbfs=0.0) if pose.get("driver") else program_for_spec(spec)
+            first = program_for_spec(spec)
+            # A driver's pose plays its level probe before its first take (ADR-0365).
+            probe = first if is_level_probe(first) else None
+            excitation = first if probe is None else program_for_spec(spec, stimulus_dbfs=0.0)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
-            if measurement == 1 and pose.get("driver"):
-                probe = program_for_spec(spec)
+            if measurement == 1 and probe is not None:
                 probe_seconds += probe.total_samples / probe.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
@@ -438,7 +439,6 @@ async def _run(
     retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
-    landed: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
                               mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
@@ -495,8 +495,7 @@ async def _run(
                     if gate:
                         gate.abandon_hold()
                     if at_driver:
-                        # A new placement at a driver's pose starts quiet again (ADR-0361).
-                        landed.discard(item.pose_index)
+                        # A new placement at a driver's pose starts at its probe again (ADR-0365).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -516,7 +515,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if at_driver:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "probe"
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "probe"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -621,7 +620,6 @@ async def _run(
                 retry_was_measured = False
                 if at_driver:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
-                    landed.add(item.pose_index)
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)

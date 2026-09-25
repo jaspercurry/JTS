@@ -139,11 +139,17 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     return program
 
 
-def _seat_equivalent(spec: Any) -> tuple[str, float]:
-    """The one target a driver pose plays, and the peak a far-field take of it plays at."""
+def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, float, float, int]:
+    """A driver pose's target and band, the peak a far-field take of it plays at,
+    that peak under the target's cap, and the width of the graph that plays it."""
+    from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
+
     target = solo_target(spec)
-    return target, BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
-                                              else max(0.0, spec.scope_gains_db.get(target, 0.0)))
+    seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
+                                                 else max(0.0, spec.scope_gains_db.get(target, 0.0)))
+    return (RoleBand(target, 0, excitation.target_bands[target]), seat_equivalent,
+            back_off_gain(seat_equivalent, excitation.session_volume_db, excitation.caps_dbfs[target]),
+            program_channel_count(branch_channels_for(spec)))
 
 
 def compose_target_program(excitation: SessionExcitation, spec: Any,
@@ -158,20 +164,16 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     ``stimulus_dbfs`` is the peak a take asks for, never above the
     seat-equivalent level (ADR-0361).
     """
-    from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
-
-    target, seat_equivalent = _seat_equivalent(spec)
-    asked = seat_equivalent if stimulus_dbfs is None else stimulus_dbfs
-    gain = back_off_gain(min(seat_equivalent, asked), excitation.session_volume_db, excitation.caps_dbfs[target])
+    band, _, ceiling, channels = _solo_take(excitation, spec)
+    gain = ceiling if stimulus_dbfs is None else min(ceiling, stimulus_dbfs)
     return build_measure_program(
-        {target: gain}, (RoleBand(target, 0, excitation.target_bands[target]),),
-        sweep_durations={target: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
+        {band.role: gain}, (band,),
+        sweep_durations={band.role: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
         gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
-        sweep_duration_limits_s={target: excitation.sweep_duration_limits_s[target]},
+        sweep_duration_limits_s={band.role: excitation.sweep_duration_limits_s[band.role]},
         downstream_gain_db=excitation.session_volume_db,
-        leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=target,
-        courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
-        channels=program_channel_count(branch_channels_for(spec)),
+        leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=band.role,
+        courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase), channels=channels,
     )
 
 
@@ -179,17 +181,13 @@ def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationP
     """A driver pose's level probe: its take's target, band and ceiling, rising
     at most ``MAX_STEP_DB`` a burst from well under the seat-equivalent level to
     that ceiling (ADR-0365)."""
-    from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
-
-    target, seat_equivalent = _seat_equivalent(spec)
-    ceiling = back_off_gain(seat_equivalent, excitation.session_volume_db, excitation.caps_dbfs[target])
+    band, seat_equivalent, ceiling, channels = _solo_take(excitation, spec)
     start = min(seat_equivalent - LEVEL_PROBE_START_BACKOFF_DB, ceiling)
     steps = math.ceil((ceiling - start) / MAX_STEP_DB)
     return build_level_probe_program(
-        RoleBand(target, 0, excitation.target_bands[target]),
-        tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
+        band, tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
         sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ, gap_s=NEAR_FIELD_SILENCE_S,
-        downstream_gain_db=excitation.session_volume_db, channels=program_channel_count(branch_channels_for(spec)),
+        downstream_gain_db=excitation.session_volume_db, channels=channels,
     )
 
 
@@ -435,7 +433,7 @@ def excitation_from_context(context: Any, session_volume_db: float = 0.0) -> Ses
 
 
 def predictive_program_for_spec(context: Any) -> Callable[..., ExcitationProgram]:
-    # Gain changes preserve segment count; preview can precede the CHECK level solve.
+    # A take's gain never changes its segment count; preview can precede the CHECK level solve.
     excitation = excitation_from_context(context)
     return partial(program_for_spec, excitation=excitation,
                    gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},

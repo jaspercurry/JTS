@@ -787,16 +787,15 @@ class _LevelStore(_Store):
     """Banks each take as the web host does: the program it played, at the
     peak it asked for under its ceiling, and what the microphone read."""
 
-    def __init__(self, records, readings, opener_db, ceiling_db):
+    def __init__(self, records, readings, probe_db, ceiling_db):
         super().__init__(records)
-        self.readings, self.opener_db, self.ceiling_db = iter(readings), opener_db, ceiling_db
+        self.readings, self.probe_db, self.ceiling_db = iter(readings), probe_db, ceiling_db
 
     async def bank(self, record):
         if record.get("kind") != RUN_MANIFEST_KIND:
             band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
-            peak = min(self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
+            peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
             reading = next(self.readings)
-            # A driver pose's first play, with no level asked, is its level probe (ADR-0365).
             program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
                                                  downstream_gain_db=0.0, channels=1)
                        if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
@@ -843,7 +842,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
     ``redo_at``, take 0 being just after the first placement is confirmed."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
-    manifest = RunManifest("run", _LevelStore(fakes.records, readings, opener_db=-42.0, ceiling_db=ceiling_db))
+    manifest = RunManifest("run", _LevelStore(fakes.records, readings, probe_db=-42.0, ceiling_db=ceiling_db))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
 
@@ -1374,7 +1373,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
                _walk([0, -20, 20], ("fp-a", "fp-b", "fp-c")) if trial == 9 else _walk([0, -20, 20]))
     counts = [8] if trial == 8 else [3, 3, 3] if trial == 9 else [1, 1, 1]
     captures = plan_run.prepare_plan_captures(request)
-    program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
+    program = SimpleNamespace(phase="measure", sample_rate_hz=1, segments=(), stimulus_segments=lambda: segments)
     if trial:
         context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                                   driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
@@ -1422,17 +1421,20 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
 def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
     """A driver's pose plays its whole level probe once before its takes; a
     far-field pose plays no probe (ADR-0365)."""
-    take = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: (
-        SimpleNamespace(role="woofer", kind="sweep", n_samples=8),))
-    probe = SimpleNamespace(sample_rate_hz=1, total_samples=5)
-    driver, far = (SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral") for _ in "df")
+    band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
+    take = build_measure_program({"woofer": -20.0}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2})
+    probe = build_level_probe_program(band, (-40.0, -34.0), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                      downstream_gain_db=0.0, channels=1)
+    driver = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
+    far = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
     captures = [({"place": "at_driver", "driver": "woofer"}, driver)] * 2 + [({"place": "far"}, far)]
 
     facts = plan_run.schedule_facts(
         captures, lambda spec, stimulus_dbfs=None: probe if spec is driver and stimulus_dbfs is None else take,
         mover="arm")
 
-    assert facts["estimated_seconds"] == 8 * 3 + 5
+    take_s = sum(segment.n_samples for segment in take.stimulus_segments()) / take.sample_rate_hz
+    assert facts["estimated_seconds"] == pytest.approx(3 * take_s + probe.total_samples / probe.sample_rate_hz)
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])

@@ -64,12 +64,7 @@ def stimulus_level(
                         dbfs(math.sqrt(float(np.median(floor_squares)))) if floor_squares.size else None)
 
 
-def solve_gain(readings: Sequence[LevelReading], *, target_db: float) -> float:
-    """The gain one 1:1 step from the loudest trusted reading lands just under ``target_db``.
-
-    With none trusted the loudest reading solves; the room inflates it, so its gain lands at or
-    under the target, never over it.
-    """
-    reading = max(readings, key=lambda each: (each.trusted, each.level_db))
+def solve_gain(reading: LevelReading, *, target_db: float) -> float:
+    """The gain one 1:1 step from ``reading`` lands just under ``target_db``."""
     return reading.gain_db + capped_gap_step_db(measured_db=reading.level_db,
                                                 target_db=target_db - AIM_UNDER_TARGET_DB, cap_db=MAX_RAISE_DB)

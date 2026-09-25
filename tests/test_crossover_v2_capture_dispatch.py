@@ -592,22 +592,23 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
         assert (verdict.ok, verdict.fault, verdict.charge) == (False, "level_off_target", "speaker")
 
 
-@pytest.mark.parametrize("gains,heard,floor,next_,gain,shortfall", [
+@pytest.mark.parametrize("gains,heard,floor,stopped_at,next_,gain,shortfall", [
     # The burst that reached the 76 dB stop may be cut: the loudest one under it solves.
-    ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 77.0, 40.0), 40.0, "retake_louder", -31.0, None),
-    # A room within 10 dB of every burst is never solved from.
-    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, "fix_and_retake", None, None),
+    ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 77.0, 40.0), 40.0, 76.0, "retake_louder", -31.0, None),
+    # A room within 10 dB of the loudest burst is never solved from.
+    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
     # A ceiling under the solved gain is said before any take.
-    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 40.0, "retake_louder", -31.0, 9.0),
+    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 40.0, None, "retake_louder", -31.0, 9.0),
 ])
-def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, floor, next_, gain, shortfall):
-    """A probe is read burst by burst and solved once from its loudest trusted
-    burst under the level its play stopped at (ADR-0365)."""
+def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, floor, stopped_at, next_, gain,
+                                                                shortfall):
+    """A probe is solved once, from its loudest burst under the level its play
+    stopped at, when that burst stands trusted over the room (ADR-0365)."""
     program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
                                         sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     levels = tuple(LevelReading(g, spl - 106.0, floor - 106.0) for g, spl in zip(gains, heard))
-    verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program,
-                        spl={"sens_factor_db": -12.0, "ceiling_db_spl": 85.0}, near_field=True)
+    spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, **({"stopped_at_db_spl": stopped_at} if stopped_at else {})}
+    verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, near_field=True)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_shortfall_db") == shortfall
 

@@ -747,7 +747,6 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs):
 
     assert is_level_probe(probe) and not is_level_probe(take)
     assert gains[-1] == pytest.approx(ceiling)
-    assert gains[0] <= ceiling
     assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
     assert len({s.n_samples for s in _sweeps(probe)}) == len(gains)
     assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)}

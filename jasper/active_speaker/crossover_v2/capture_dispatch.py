@@ -23,7 +23,7 @@ from jasper.audio_measurement.program_analysis.summary import driver_alignment_s
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
-from jasper.active_speaker.profile import ramp_bound_db_spl, spl_raise_bound_db_spl
+from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.active_speaker.program_failure import read_output_volume
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
@@ -68,40 +68,49 @@ def level_drift_verdict(
 
 
 class _LevelTarget(NamedTuple):
-    """A near-field play's readings in dB SPL against its target, and the peak it played at."""
+    """A near-field play's loudest reading in dB SPL against its target, and the peak it played at."""
 
-    readings: tuple[LevelReading, ...]
+    reading: LevelReading
     target_db_spl: float
     peak_dbfs: float
-
-    @property
-    def loudest(self) -> LevelReading:
-        return max(self.readings, key=lambda reading: reading.level_db)
+    probe: bool
 
     @property
     def gap_db(self) -> float:
-        return self.target_db_spl - self.loudest.level_db
+        return self.target_db_spl - self.reading.level_db
 
 
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None) -> _LevelTarget | None:
-    """The play's located sweeps in dB SPL (ADR-0364), held to a target never
-    above the admission bound under its own stop (ADR-0361). A probe keeps the
-    bursts under the level its play stopped at: the one that reached it may
-    have been cut short (ADR-0365)."""
-    sens_factor_db = finite_float((spl or {}).get("sens_factor_db"))
-    stop = finite_float((spl or {}).get("ceiling_db_spl"))
+    """The play's loudest located sweep in dB SPL (ADR-0364), held to a target never
+    above the admission bound under its own stop (ADR-0361). A burst at the level its
+    play stopped at may have been cut short, so it reads only when nothing under it
+    does (ADR-0365)."""
+    spl = spl or {}
+    sens_factor_db = finite_float(spl.get("sens_factor_db"))
+    stop = finite_float(spl.get("ceiling_db_spl"))
     peak = stimulus_peak_dbfs(program) if program is not None else None
     if not analysis.stimulus_levels or sens_factor_db is None or stop is None or program is None or peak is None:
         return None
     to_spl = MicSensitivity(sens_factor_db).db_spl_from_dbfs
-    readings = tuple(replace(reading, level_db=to_spl(reading.level_db),
-                             floor_db=None if reading.floor_db is None else to_spl(reading.floor_db))
-                     for reading in analysis.stimulus_levels)
-    if is_level_probe(program):
-        readings = tuple(reading for reading in readings if reading.level_db < ramp_bound_db_spl(stop)) or readings
-    return _LevelTarget(readings, min(NEAR_FIELD_TARGET_DB_SPL,
-                                      spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB), peak)
+    stopped_at = finite_float(spl.get("stopped_at_db_spl"))
+    heard = max([reading for reading in analysis.stimulus_levels
+                 if stopped_at is None or to_spl(reading.level_db) < stopped_at] or analysis.stimulus_levels,
+                key=lambda reading: reading.level_db)
+    return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
+                                floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
+                        min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),
+                        peak, is_level_probe(program))
+
+
+def _level_retake(level: _LevelTarget) -> TakeVerdict:
+    """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
+    probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
+    solved = solve_gain(level.reading, target_db=level.target_db_spl)
+    shortfall = solved - level.peak_dbfs if level.probe else 0.0
+    return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
+                       next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
+                       next_gain_db=solved, evidence={"level_shortfall_db": shortfall} if shortfall > 0 else {})
 
 
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
@@ -123,23 +132,17 @@ def assess(
 ) -> TakeVerdict:
     program = kwargs.get("program")
     level = _level_target(analysis, kwargs.get("spl"), program) if near_field else None
-    # A driver pose's first play is its level probe (ADR-0365). A take the microphone
-    # heard is levelled before its recording is judged; one it did not hear is judged,
-    # never levelled blind; one its ceiling held under the peak it asked for is kept
-    # too quiet, since a louder retake would replay it (ADR-0361).
-    probe = level is not None and program is not None and is_level_probe(program)
-    capped = (level is not None and not probe and level.gap_db > 0 and level_asked_dbfs is not None
+    # A take the microphone heard is levelled before its recording is judged; one it did
+    # not hear is judged, never levelled blind; one its ceiling held under the peak it
+    # asked for is kept too quiet, since a louder retake would replay it (ADR-0361). A
+    # level probe is never kept (ADR-0365).
+    capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
               and level.peak_dbfs < level_asked_dbfs)
-    solved: float | None = None
     if prior_verdict is None and level is not None and _stimulus_locate_ok(analysis):
-        if probe and not any(reading.trusted for reading in level.readings):
-            # Never solve from a reading the room holds within 10 dB (ADR-0365).
+        if level.probe and not level.reading.trusted:
             prior_verdict = TakeVerdict(False, fault=reasons.REASON_SNR_FLOOR, next="fix_and_retake", charge="operator")
-        elif probe or (abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB and not capped):
-            solved = solve_gain(level.readings, target_db=level.target_db_spl)
-            prior_verdict = TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
-                                        next="retake_louder" if level.gap_db > 0 else "retake_quieter",
-                                        charge="speaker", next_gain_db=solved)
+        elif level.probe or (abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB and not capped):
+            prior_verdict = _level_retake(level)
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
     # Removal condition: see the output mute guard in preflight.py.
     if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
@@ -151,17 +154,12 @@ def assess(
     verdict = replace(verdict, screens=[] if verdict.fault == reasons.REASON_MEASUREMENT_OUTPUT_MUTED
                       else pilot_screens(analysis, program=program))
     if level is not None:
-        loudest = level.loudest
-        shortfall = solved - level.peak_dbfs if probe and solved is not None else 0.0
-        verdict = replace(verdict, evidence={**verdict.evidence, "level_db_spl": loudest.level_db,
-                                             **({"level_floor_db_spl": loudest.floor_db}
-                                                if loudest.floor_db is not None else {}),
-                                             "level_transfer_db": loudest.level_db - loudest.gain_db,
+        verdict = replace(verdict, evidence={**verdict.evidence, "level_db_spl": level.reading.level_db,
+                                             **({"level_floor_db_spl": level.reading.floor_db}
+                                                if level.reading.floor_db is not None else {}),
                                              "level_target_db_spl": level.target_db_spl,
-                                             **({"level_capped": True} if capped else {}),
-                                             # How far the take's ceiling sits under the gain its probe asked for.
-                                             **({"level_shortfall_db": shortfall} if shortfall > 0 else {})})
-        if verdict.next == "retake_louder" and verdict.next_gain_db is not None and not probe:
+                                             **({"level_capped": True} if capped else {})})
+        if verdict.next == "retake_louder" and verdict.next_gain_db is not None:
             # No retake raises a near-field take past its target.
             verdict = replace(verdict, next_gain_db=min(verdict.next_gain_db, level.peak_dbfs + level.gap_db))
     if level_verdict is None:
