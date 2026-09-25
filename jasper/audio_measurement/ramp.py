@@ -16,6 +16,8 @@ SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 # Bounds one step's overshoot on a non-linear chain: 75 + 6 stays below the 85 stop.
 MAX_STEP_DB = 6.0
 CEILING_MARGIN_DB = 3.0
+#: A ramp stops this far under its SPL stop, so one blind step past it stays a margin under.
+RAMP_MARGIN_DB = MAX_STEP_DB + CEILING_MARGIN_DB
 
 
 def capped_gap_step_db(

@@ -49,7 +49,10 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 from jasper.active_speaker.crossover_v2 import wired_stimulus
 from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
+from jasper.active_speaker.profile import ramp_bound_db_spl
 from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_ENCODED_FRAMES,
@@ -452,6 +455,39 @@ async def test_a_loud_read_waiting_at_a_reader_exit_stops_the_take_as_the_spl_st
         await capture.around(play, program=SimpleNamespace(sample_rate_hz=RATE, total_samples=RATE))
     assert caught.value.code == SPL_CEILING_EXCEEDED
     assert float(event_fields(caplog, "active_speaker.measurement_spl_ceiling_stop")["observed_db_spl"]) > 85
+
+
+@pytest.mark.parametrize("probe, failure, played", [
+    (True, None, False), (False, None, True), (True, WiredSplCeilingExceeded(86.0, 85.0), False)])
+async def test_a_level_probe_ends_at_its_ramp_bound_and_the_spl_stop_still_stops_it(
+        monkeypatch, tmp_path, probe, failure, played):
+    """A level probe's play ends, as a normal end, once its loudest period reaches
+    the ramp bound under the stop; a take plays on past it, and the stop still
+    stops a probe (ADR-0365)."""
+    monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    recorder = SimpleNamespace(failure=None, start=lambda: None, finish=lambda **_: None, abort=lambda: None)
+    monkeypatch.setattr(wired_stimulus, "mint_wired_answer", lambda *_, **__: WiredCaptureAnswer(wav=b"", wav_path="a.wav"))
+    monkeypatch.setattr(wired_stimulus, "place_wired_answer", lambda _dir, answer, **_: answer)
+    capture = WiredStimulusCapture(device=None, bundle_dir=tmp_path, spl_monitor=monitor,
+                                   recorder_factory=lambda *_: recorder)
+    band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
+    program = (build_level_probe_program(band, (-40.0,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                         downstream_gain_db=0.0, channels=1) if probe else
+               build_measure_program({"woofer": -40.0}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
+    heard = []
+
+    async def play():
+        monitor.max_window_db_spl, recorder.failure = ramp_bound_db_spl(monitor.ceiling_db_spl) + 3.0, failure
+        await asyncio.sleep(0.5)
+        heard.append(True)
+
+    if failure is None:
+        await capture.around(play, program=program)
+    else:
+        with pytest.raises(StimulusCaptureStopped) as caught:
+            await capture.around(play, program=program)
+        assert caught.value.code == SPL_CEILING_EXCEEDED
+    assert bool(heard) == played
 
 
 

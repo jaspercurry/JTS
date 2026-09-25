@@ -68,6 +68,7 @@ from jasper.audio_measurement.program import (
     _stimulus,
     _sweep_meta,
     build_check_program,
+    build_level_probe_program,
     build_measure_program,
     build_verify_program,
     mesm_gap_samples,
@@ -7492,8 +7493,35 @@ def test_a_takes_level_is_read_from_its_located_sweeps_not_the_room_before_them(
     loud = quiet.copy()
     loud[:SR // 2] += np.random.default_rng(1).normal(0.0, 0.3, SR // 2)
 
-    levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_level
+    levels = [program_analysis.analyze_program_capture(program, capture, SR).stimulus_levels[0]
               for capture in (quiet, loud)]
 
     assert levels[0].level_db - levels[0].floor_db > 40.0
     assert (levels[1].level_db, levels[1].floor_db) == pytest.approx((levels[0].level_db, levels[0].floor_db), abs=0.01)
+
+
+def test_a_level_probe_reads_each_heard_burst_at_its_own_gain():
+    """A probe's bursts differ in length, so its whole program locates as one
+    matched filter: with its first bursts lost to an amplifier waking late, the
+    next under the room, and its play cut short, every burst it heard is still
+    read at its own gain (ADR-0365)."""
+    gains = (-66.0, -60.0, -54.0, -48.0, -42.0, -36.0, -30.0)
+    program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20.0, 2000.0)), gains,
+                                        sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
+    capture = _synthesize(program, woofer_ir=_band_impulse(40, 20.0, 2000.0, 1.0), tweeter_ir=np.zeros(1),
+                          global_offset=SR, noise=0.0)
+    woke = program.segment("level_probe_2")
+    capture[:SR + woke.start_sample] = 0.0
+    cut = program.segment("level_probe_5")
+    capture[SR + cut.start_sample + cut.n_samples // 2:] = 0.0
+    capture += np.random.default_rng(3).normal(0.0, 10 ** (-55 / 20), capture.size)
+
+    analysis = program_analysis.analyze_program_capture(program, capture, SR)
+
+    readings = {reading.gain_db: reading for reading in analysis.stimulus_levels}
+    assert not any(readings[gain].trusted for gain in (-66.0, -60.0, -30.0))
+    heard = [readings[gain] for gain in (-48.0, -42.0)]
+    assert all(reading.trusted for reading in heard)
+    assert abs((heard[0].level_db - heard[0].gain_db) - (heard[1].level_db - heard[1].gain_db)) < 1.0
+    offsets = {loc.scheduled_start - program.segment(loc.segment_id).start_sample for loc in analysis.locations}
+    assert len(offsets) == 1 and abs(offsets.pop() - SR) < SR // 100

@@ -30,7 +30,8 @@ from jasper.active_speaker.bundles import (
     CAPTURE_KIND_SEQUENTIAL, capture_artifact_relpath, register_capture,
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
-from jasper.audio_measurement.program import ExcitationProgram
+from jasper.active_speaker.profile import ramp_bound_db_spl
+from jasper.audio_measurement.program import ExcitationProgram, is_level_probe
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
     WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
@@ -127,7 +128,10 @@ class WiredStimulusCapture:
             if self.spl_monitor is None:
                 await play()
             else:
-                await self.guarded_play(play, recorder)
+                # A level probe stops where one more rising burst could pass the ramp's bound (ADR-0365).
+                probe = isinstance(program, ExcitationProgram) and is_level_probe(program)
+                await self.guarded_play(play, recorder, stop_at_db_spl=(
+                    ramp_bound_db_spl(self.spl_monitor.ceiling_db_spl) if probe else None))
             played = True
         finally:
             if not played:
@@ -161,7 +165,9 @@ class WiredStimulusCapture:
             ) from exc
 
     @staticmethod
-    async def guarded_play(play: Callable[[], Awaitable[None]], recorder: Any) -> None:
+    async def guarded_play(play: Callable[[], Awaitable[None]], recorder: Any, *,
+                           stop_at_db_spl: float | None = None) -> None:
+        """Play under the SPL stop; a loudest period at ``stop_at_db_spl`` ends the play, not as a failure."""
         if recorder.failure is not None:
             raise _capture_stopped(recorder.failure, PlaybackObservation(emission="not_started"))
         observation = PlaybackObservation()
@@ -179,8 +185,10 @@ class WiredStimulusCapture:
             else:
                 observation = PlaybackObservation(emission="completed")
 
-        async def _watch() -> WiredCaptureError:
+        async def _watch() -> WiredCaptureError | None:
             while recorder.failure is None:
+                if stop_at_db_spl is not None and recorder.spl_monitor.max_window_db_spl >= stop_at_db_spl:
+                    return None
                 await asyncio.sleep(0.01)
             return recorder.failure
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
+from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
@@ -52,8 +52,7 @@ def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, ma
 
 
 def validate_ramp_target_spl(level_db_spl: float, *, ceiling_db_spl: float) -> None:
-    validate_commissioning_spl(level_db_spl, ceiling_db_spl=ceiling_db_spl,
-                               margin_db=MAX_STEP_DB + CEILING_MARGIN_DB)
+    validate_commissioning_spl(level_db_spl, ceiling_db_spl=ceiling_db_spl, margin_db=RAMP_MARGIN_DB)
 
 
 def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any]) -> float:

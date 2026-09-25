@@ -18,6 +18,7 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     KIND_SUMMED_SWEEP,
     ProgramSegment,
+    render_program_pcm,
     segment_stimulus,
     STIMULUS_KINDS,
 )
@@ -375,8 +376,27 @@ def _global_offset(
         raise ValueError("program has no stimulus segment to locate against")
     stim = segment_stimulus(first)
     stimuli[first.segment_id] = stim
-    band_hz = (first.f1_hz, first.f2_hz)
+    arrival = _arrival(
+        capture, stim, sample_rate, band_hz=(first.f1_hz, first.f2_hz),
+        repeat_offsets_samples=tuple(seg.start_sample - first.start_sample
+                                     for seg in sweeps[1:]) if repeated else (),
+    )
+    if repeated:
+        offset = arrival - first.start_sample
+        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, first, sweeps[1], stim)
+        return offset, first, stimuli, sweep_evidence
+    anchor, global_offset, evidence = _resolve_anchor(
+        program, capture, sample_rate, arrival, first, stimuli
+    )
+    return global_offset, anchor, stimuli, evidence
 
+
+def _arrival(
+    capture: np.ndarray, stim: np.ndarray, sample_rate: int, *,
+    band_hz: tuple[float | None, float | None], repeat_offsets_samples: tuple[int, ...] = (),
+) -> int:
+    """Where ``stim`` first arrives in ``capture``: matched at :data:`LOCATOR_RATE_HZ`,
+    then refined at the full rate inside a tiny window."""
     down = max(1, int(round(sample_rate / LOCATOR_RATE_HZ)))
     if down > 1:
         capture_lo = resample_poly(capture, 1, down)
@@ -386,8 +406,7 @@ def _global_offset(
         stim_lo = np.asarray(stim, dtype=np.float64)
     coarse = _earliest_strong_peak(
         capture_lo, stim_lo, band_hz=band_hz, sample_rate=sample_rate // down,
-        repeat_offsets_samples=tuple(round((seg.start_sample - first.start_sample) / down)
-                                     for seg in sweeps[1:]) if repeated else (),
+        repeat_offsets_samples=tuple(round(offset / down) for offset in repeat_offsets_samples),
     ) * down
 
     # Full-rate refinement in a +/-4*down window: bounded cost, full-rate precision.
@@ -395,20 +414,22 @@ def _global_offset(
     lo = max(0, coarse - margin)
     hi = min(capture.size, coarse + stim.size + margin)
     window = capture[lo:hi]
-    if window.size >= stim.size:
-        arrival = lo + _earliest_strong_peak(
-            window, stim, band_hz=band_hz, sample_rate=sample_rate
-        )
-    else:
-        arrival = coarse
-    if repeated:
-        offset = arrival - first.start_sample
-        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, first, sweeps[1], stim)
-        return offset, first, stimuli, sweep_evidence
-    anchor, global_offset, evidence = _resolve_anchor(
-        program, capture, sample_rate, arrival, first, stimuli
-    )
-    return global_offset, anchor, stimuli, evidence
+    if window.size < stim.size:
+        return coarse
+    return lo + _earliest_strong_peak(window, stim, band_hz=band_hz, sample_rate=sample_rate)
+
+
+def _staircase_offset(program: ExcitationProgram, capture: np.ndarray, sample_rate: int) -> int:
+    """A level probe's global offset, its whole program one matched filter (ADR-0365).
+
+    Its bursts differ in length, so only the true alignment lines up every burst the
+    capture holds, whichever the room buried or the stop cut short. The capture is
+    padded so a stopped probe still spans its program.
+    """
+    template = render_program_pcm(program).sum(axis=1)
+    burst = next(seg for seg in program.segments if seg.kind in STIMULUS_KINDS)
+    return _arrival(np.pad(capture, (0, template.size)), template, sample_rate,
+                    band_hz=(burst.f1_hz, burst.f2_hz))
 
 
 def _resolve_sweep_anchor(

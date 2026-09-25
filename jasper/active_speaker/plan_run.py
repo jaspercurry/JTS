@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand, KIND_PILOT, KIND_SUMMED_SWEEP
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
@@ -180,7 +180,7 @@ class RunDoor:
     ceiling_db_spl: float | None
     current: TuningSession | None = None
     opened: OpenMeasurementDoor | None = None
-    program_for_spec: Callable[[MeasureSpec], ExcitationProgram] | None = None
+    program_for_spec: Callable[..., ExcitationProgram] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -212,22 +212,23 @@ def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
 HUMAN_MOVE_ALLOWANCE_S = 30
 
 
-def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
+def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[..., ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
     poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
-    opener_seconds = 0.0
+    probe_seconds = 0.0
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
         for measurement, (pose, spec) in enumerate(batch, 1):
             if not details:
                 poses.append(dict(pose))
-            excitation = program_for_spec(spec)
+            # A driver's pose opens with its level probe, then plays takes at a level (ADR-0365).
+            excitation = program_for_spec(spec, stimulus_dbfs=0.0) if pose.get("driver") else program_for_spec(spec)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
             if measurement == 1 and pose.get("driver"):
-                # A driver's pose plays a quiet opener before its levelled take (ADR-0361).
-                opener_seconds += sum(segment.n_samples for segment in segments) / excitation.sample_rate_hz
+                probe = program_for_spec(spec)
+                probe_seconds += probe.total_samples / probe.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
@@ -246,7 +247,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
-            "estimated_seconds": sum(row["seconds"] for row in rows) + opener_seconds +
+            "estimated_seconds": sum(row["seconds"] for row in rows) + probe_seconds +
                                  (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 
@@ -515,7 +516,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if at_driver:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "opener"
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "probe"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -575,6 +576,13 @@ async def _run(
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
+                                if is_level_probe(program):
+                                    log_event(logger, "active_speaker.level_probe", pose=item.pose_index + 1,
+                                              driver=item.stop["pose"].get("driver"),
+                                              distance_m=item.stop["pose"].get("distance_m"), fault=assessed.fault,
+                                              next_gain_db=assessed.next_gain_db,
+                                              **{key: value for key, value in assessed.evidence.items()
+                                                 if key.startswith("level_")})
                         except (ValueError, KeyError, OSError) as exc:
                             manifest.detail = exception_detail(exc)
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",

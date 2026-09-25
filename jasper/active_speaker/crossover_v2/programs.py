@@ -10,6 +10,7 @@ re-admits the rendered artifact against its protected graph.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from functools import partial
 from types import MappingProxyType
@@ -24,9 +25,11 @@ from jasper.audio_measurement.program import (
     ExcitationProgram,
     RoleBand,
     build_check_program,
+    build_level_probe_program,
     build_measure_program,
     build_verify_program,
 )
+from jasper.audio_measurement.ramp import MAX_STEP_DB
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
@@ -53,9 +56,9 @@ GAIN_CAP_BACKOFF_DB = 0.01
 # Without a graph-to-anchor gain reference, blind pilots keep a conservative cut.
 CHECK_PROBE_BACKOFF_DB = 12.0
 
-#: A near-field take's first attempt at a pose plays this far under the
-#: seat-equivalent level, which reads about 96 dB at 15 mm (ADR-0361).
-NEAR_FIELD_OPENER_BACKOFF_DB = 30.0
+#: A driver pose's level probe starts this far under the seat-equivalent
+#: level, which reads about 96 dB at 15 mm (ADR-0365).
+LEVEL_PROBE_START_BACKOFF_DB = 30.0
 
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
@@ -136,6 +139,13 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     return program
 
 
+def _seat_equivalent(spec: Any) -> tuple[str, float]:
+    """The one target a driver pose plays, and the peak a far-field take of it plays at."""
+    target = solo_target(spec)
+    return target, BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
+                                              else max(0.0, spec.scope_gains_db.get(target, 0.0)))
+
+
 def compose_target_program(excitation: SessionExcitation, spec: Any,
                            stimulus_dbfs: float | None = None) -> ExcitationProgram:
     """A near-field take's program: the one target its spec names, alone, its
@@ -145,15 +155,13 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     The program is as wide as the graph that plays it
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
     channel but the target's is written silent rather than left to the ring.
-    ``stimulus_dbfs`` is the peak a retake asks for, never above the
-    seat-equivalent level; a first attempt plays under it (ADR-0361).
+    ``stimulus_dbfs`` is the peak a take asks for, never above the
+    seat-equivalent level (ADR-0361).
     """
     from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
 
-    target = solo_target(spec)
-    seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
-                                                 else max(0.0, spec.scope_gains_db.get(target, 0.0)))
-    asked = seat_equivalent - NEAR_FIELD_OPENER_BACKOFF_DB if stimulus_dbfs is None else stimulus_dbfs
+    target, seat_equivalent = _seat_equivalent(spec)
+    asked = seat_equivalent if stimulus_dbfs is None else stimulus_dbfs
     gain = back_off_gain(min(seat_equivalent, asked), excitation.session_volume_db, excitation.caps_dbfs[target])
     return build_measure_program(
         {target: gain}, (RoleBand(target, 0, excitation.target_bands[target]),),
@@ -164,6 +172,24 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
         leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=target,
         courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
         channels=program_channel_count(branch_channels_for(spec)),
+    )
+
+
+def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
+    """A driver pose's level probe: its take's target, band and ceiling, rising
+    at most ``MAX_STEP_DB`` a burst from well under the seat-equivalent level to
+    that ceiling (ADR-0365)."""
+    from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
+
+    target, seat_equivalent = _seat_equivalent(spec)
+    ceiling = back_off_gain(seat_equivalent, excitation.session_volume_db, excitation.caps_dbfs[target])
+    start = min(seat_equivalent - LEVEL_PROBE_START_BACKOFF_DB, ceiling)
+    steps = math.ceil((ceiling - start) / MAX_STEP_DB)
+    return build_level_probe_program(
+        RoleBand(target, 0, excitation.target_bands[target]),
+        tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
+        sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ, gap_s=NEAR_FIELD_SILENCE_S,
+        downstream_gain_db=excitation.session_volume_db, channels=program_channel_count(branch_channels_for(spec)),
     )
 
 
@@ -377,7 +403,9 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
                      stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
                      role_targets: Mapping[str, str]) -> ExcitationProgram:
     if solo_target(spec):
-        return compose_target_program(excitation, spec, stimulus_dbfs)
+        # A driver pose's first attempt, with no level asked yet, finds its level (ADR-0365).
+        return (compose_level_probe(excitation, spec) if stimulus_dbfs is None
+                else compose_target_program(excitation, spec, stimulus_dbfs))
     if spec.program_phase == PHASE_CHECK:
         fallback = CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None else 0.0
         program = excitation.check_program(extra_backoff_db=fallback)
@@ -406,7 +434,7 @@ def excitation_from_context(context: Any, session_volume_db: float = 0.0) -> Ses
                              context.driver_sweep_duration_limits_s, target_bands=context.driver_bands)
 
 
-def predictive_program_for_spec(context: Any) -> Callable[[Any], ExcitationProgram]:
+def predictive_program_for_spec(context: Any) -> Callable[..., ExcitationProgram]:
     # Gain changes preserve segment count; preview can precede the CHECK level solve.
     excitation = excitation_from_context(context)
     return partial(program_for_spec, excitation=excitation,

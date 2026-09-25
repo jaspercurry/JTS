@@ -37,11 +37,12 @@ from jasper.active_speaker.crossover_v2.program_transaction import ProgramForSti
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
+from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.level import LevelReading
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_measure_program
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from jasper.web import correction_run_host
@@ -792,11 +793,16 @@ class _LevelStore(_Store):
 
     async def bank(self, record):
         if record.get("kind") != RUN_MANIFEST_KIND:
+            band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
             peak = min(self.opener_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
             reading = next(self.readings)
+            # A driver pose's first play, with no level asked, is its level probe (ADR-0365).
+            program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                                 downstream_gain_db=0.0, channels=1)
+                       if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
+                       build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
             record.update(
-                program=build_measure_program({"woofer": peak}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
-                                              repeat_count=1, sweep_durations={"woofer": 0.2}).to_dict(),
+                program=program.to_dict(),
                 capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
                                            "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
         return await super().bank(record)
@@ -823,10 +829,11 @@ class _RedoOnPlacementGate(AnsweredGate):
 
 
 def _heard_analysis(record, _record_id):
-    """The take's located sweeps read what the microphone heard (ADR-0364)."""
+    """The play's located sweeps read what the microphone heard, 30 dB over the room (ADR-0364)."""
+    program = ExcitationProgram.from_dict(record["program"])
     heard = _MIC.dbfs_from_db_spl(record["capture_integrity"]["spl"]["max_window_db_spl"])
-    return replace(_measure_analysis(ExcitationProgram.from_dict(record["program"])),
-                   stimulus_level=LevelReading(heard))
+    return replace(_measure_analysis(program),
+                   stimulus_levels=(LevelReading(stimulus_peak_dbfs(program), heard, heard - 30.0),))
 
 
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
@@ -864,7 +871,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
 def test_a_near_field_take_levels_itself_before_it_is_kept():
     """Each placement's first attempt plays under the target and is retaken at
     the solved peak; the rest of that placement starts there, a re-placement
-    starts quiet again, named the opener again, and in-band re-seats are never
+    starts with its probe again, and in-band re-seats are never
     sent back as drift, though each banks its reading (ADR-0361)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
@@ -877,7 +884,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     assert fakes.play.rungs == [None, -29.0, -29.0, None, -29.0, None, -27.0, None, -29.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert [step == "opener" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+    assert [step == "probe" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
     assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
         _takes(result.to_dict()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
@@ -908,24 +915,24 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
 
 @pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
 def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
-    """Each redo asks for the microphone again and starts the pose over, quiet
-    and with its retries, so redos past the pose's budget never end the round,
-    even one with no retries; the page is told which plays are the quiet
-    opener, and a pose whose opener landed plays the rest levelled (ADR-0361)."""
+    """Each redo asks for the microphone again and starts the pose over at its
+    probe, with its retries, so redos past the pose's budget never end the
+    round, even one with no retries; the page is told which plays are the
+    probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
     request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 1), (30, 2))), purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
-    # The operator presses Redo during each of the first openers, then lets each pose land.
-    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 80.0, 80.0),
+    # The operator presses Redo during each of the first probes, then lets each pose land.
+    result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 66.0, 80.0, 80.0),
                                                   redo_at=range(1, redos + 1))
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
     assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
-    assert fakes.play.rungs == [None] * (redos + 1) + [-29.0, None, None]
-    assert selected == [False] * (redos + 1) + [True, True, True]
+    assert fakes.play.rungs == [None] * (redos + 1) + [-29.0, None, -29.0, -29.0]
+    assert selected == [False] * (redos + 1) + [True, False, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert list(steps.values()) == ["opener"] * (redos + 1) + ["levelled", "opener", "levelled"]
+    assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
 
 
 @pytest.mark.parametrize("redo_at,readings,allowed", [
@@ -1412,17 +1419,20 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
         assert all("retake_reason" not in p for p in live)
 
 
-def test_a_driver_pose_is_timed_as_its_opener_and_its_takes():
-    """A driver's pose plays a quiet opener before its levelled take, so its
-    first measurement is timed twice; a far-field pose's once (ADR-0361)."""
-    program = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: (
+def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
+    """A driver's pose plays its whole level probe once before its takes; a
+    far-field pose plays no probe (ADR-0365)."""
+    take = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: (
         SimpleNamespace(role="woofer", kind="sweep", n_samples=8),))
-    spec = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
-    captures = [({"place": "at_driver", "driver": "woofer"}, spec)] * 2 + [({"place": "far"}, spec)]
+    probe = SimpleNamespace(sample_rate_hz=1, total_samples=5)
+    driver, far = (SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral") for _ in "df")
+    captures = [({"place": "at_driver", "driver": "woofer"}, driver)] * 2 + [({"place": "far"}, far)]
 
-    facts = plan_run.schedule_facts(captures, lambda _spec: program, mover="arm")
+    facts = plan_run.schedule_facts(
+        captures, lambda spec, stimulus_dbfs=None: probe if spec is driver and stimulus_dbfs is None else take,
+        mover="arm")
 
-    assert facts["estimated_seconds"] == 8 * (3 + 1)
+    assert facts["estimated_seconds"] == 8 * 3 + 5
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
