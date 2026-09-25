@@ -54,7 +54,6 @@ from jasper.active_speaker.delta_probe import (
     classify_delta_probe,
     graded_command_floor_db,
     interquartile_band_hz,
-    louder_than_commanded,
     advice_deferral,
 )
 
@@ -1654,15 +1653,6 @@ def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
     describe a decision the round never made.
     """
     assert advice_deferral(probe) == ""
-
-
-def test_the_direction_helper_reports_not_measured_rather_than_zero():
-    """``None``, never 0.0 — ``gain_factor``'s own distinction."""
-    grid = _GRID_HZ
-    empty = np.zeros_like(grid, dtype=bool)
-    assert louder_than_commanded(
-        np.full_like(grid, 9.0), np.full_like(grid, 1.5), empty
-    ) == (False, None)
 
 
 def test_the_direction_helper_measures_the_raw_curve_not_a_frame_removed_one():

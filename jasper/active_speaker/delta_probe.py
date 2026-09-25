@@ -86,7 +86,7 @@ REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 
 
 def advice_deferral(probe: Any | None) -> str:
-    """Defer a quieter-only finding to the adoption table (ADR-0209)."""
+    """The seam deferral an advise-against verdict pointing only quieter carries (ADR-0209), else ""."""
     if probe is None:
         return ""
     if (
@@ -259,7 +259,8 @@ class DeltaProbeMap:
     #: Level move the EMITTER told us it made, dB, removed before anything
     #: below is computed (#1811).
     expected_offset_db: float = 0.0
-    #: Level CHANGE across the apply that nobody commanded, dB. ``None``
+    #: Uncommanded level offset over the quiet bins, dB — realized −
+    #: commanded there, so it includes any standing model offset. ``None``
     #: when too few quiet bins.
     residual_offset_db: float | None = None
     residual_offset_tolerance_db: float = DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
@@ -288,7 +289,7 @@ class DeltaProbeMap:
     quiet_probe_coverage: float | None = None
     #: Did the room depart from the two-branch MODEL, upward past
     #: tolerance, in any graded bin? A next-round target (#2600), never a
-    #: hazard. See :func:`louder_than_commanded`.
+    #: hazard.
     model_departure_over_tolerance: bool = False
     #: Most POSITIVE ``realized − commanded`` over graded bins, dB. ``None``
     #: when no bin was graded.
@@ -309,8 +310,7 @@ class DeltaProbeMap:
 
     @property
     def trusted_floor_hz(self) -> float | None:
-        """Graded band's lower edge, banked by the round receipt (#2609 SF5)
-        so a later round can refuse a cross-floor comparison."""
+        """The graded band's lower edge, Hz."""
         band = self.graded_band_hz or self.requested_band_hz
         return None if band is None else float(band[0])
 
@@ -447,27 +447,6 @@ def _structured_exceedance(
         default=0.0,
     )
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, widest
-
-
-def louder_than_commanded(
-    excess_db: np.ndarray,
-    tolerance_db: np.ndarray,
-    probe_mask: np.ndarray,
-) -> tuple[bool, float | None]:
-    """Did ANY bin come out LOUDER than the excess curve's reference? (#2559)
-
-    ``(over the bound anywhere, most POSITIVE excess in dB)``, read on
-    ``realized − commanded`` over the graded bins: an acoustic-MODEL target
-    that withholds ADR-0209's lenience. Deliberately unstructured, unlike
-    :func:`_structured_exceedance` — one bin is enough. ``None`` only when
-    the mask selects nothing.
-    """
-    if not bool(probe_mask.any()):
-        return False, None
-    return (
-        bool((probe_mask & (excess_db > tolerance_db)).any()),
-        float(np.max(excess_db[probe_mask])),
-    )
 
 
 def _octave_span(span_hz: tuple[float, float]) -> float:
@@ -693,18 +672,14 @@ def classify_delta_probe(
 
     # The MODEL's departure, on the RAW curve (a frame answers SHAPE; this
     # asks what reached the driver) — a next-round target (the blend region
-    # is known blind, #2600), never a hazard.
-    model_excess = realized - commanded
-    model_departure_over_tolerance, max_signed_error_db = louder_than_commanded(
-        model_excess, tolerance_full, mask,
-    )
-    # WHERE it peaks — often a different bin from ``worst_hz`` (worst
-    # ABSOLUTE vs. worst POSITIVE error).
-    max_signed_error_hz: float | None = (
-        float(freqs[mask][int(np.argmax(model_excess[mask]))])
-        if max_signed_error_db is not None
-        else None
-    )
+    # is known blind, #2600), never a hazard. Unstructured, unlike
+    # _structured_exceedance: one bin over tolerance is enough, so it
+    # withholds ADR-0209's lenience. The peak is often a different bin from
+    # ``worst_hz`` (worst POSITIVE vs. worst ABSOLUTE error).
+    peak = int(np.argmax(error))
+    model_departure_over_tolerance = bool(np.any(error > tolerance_full[mask]))
+    max_signed_error_db: float | None = float(error[peak])
+    max_signed_error_hz: float | None = float(f[peak])
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
@@ -864,6 +839,5 @@ __all__ = [
     "classify_delta_probe",
     "graded_command_floor_db",
     "interquartile_band_hz",
-    "louder_than_commanded",
     "advice_deferral",
 ]

@@ -8,8 +8,9 @@
 the persisted 511-bin transport grid of jts3's 2026-08-17 series-2 rounds,
 lifted from ``captures/xover-series2-2026-08-17/series2-state-{r1b,r2}.json``.
 The shipped probe ran 155,018 bins, so scalars reproduce to ~0.06 dB and the
-structured-run booleans do not reproduce at all; the assertions below are on
-quantities, never on the decimated width.
+structured-run booleans do not reproduce at all: the model-departure
+assertions below are on quantities, and the verdict pinned is this 511-bin
+grid's, not the shipped run's.
 """
 from __future__ import annotations
 
