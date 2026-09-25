@@ -94,8 +94,7 @@ logger = logging.getLogger(__name__)
 
 
 # Each route names its handler method and the Capability an install profile
-# must grant to be served it (None: every profile). The mic/AEC routes ride
-# WAKE_DETECTION (ADR-0217).
+# must grant to be served it (None: every profile).
 _GET_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/healthz": ("_get_healthz", None),
     "/volume": ("_get_volume", None),

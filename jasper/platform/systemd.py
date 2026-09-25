@@ -70,6 +70,8 @@ from http.server import ThreadingHTTPServer
 
 from jasper.log_event import log_event
 
+logger = logging.getLogger(__name__)
+
 # Per sd_listen_fds(3) — fds passed by systemd start at 3.
 SD_LISTEN_FDS_START = 3
 
@@ -157,7 +159,7 @@ class _WizardHTTPServer(ThreadingHTTPServer):
         exc = sys.exc_info()[1]
         if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
             log_event(
-                logging.getLogger("jasper.platform.systemd"),
+                logger,
                 "web.request_failed",
                 level=logging.ERROR,
                 exc_info=True,
@@ -221,7 +223,6 @@ def drain_unclaimed_listeners(
 
 
 def _drain_forever(sockets: list[socket.socket]) -> None:
-    log = logging.getLogger("jasper.platform.systemd")
     while True:
         try:
             ready, _, _ = select.select(sockets, [], [])
@@ -239,7 +240,7 @@ def _drain_forever(sockets: list[socket.socket]) -> None:
                 port = sock.getsockname()[1]
             except OSError:
                 continue
-            log.info(
+            logger.info(
                 "jasper-web refused a connection on unserved port %d "
                 "(no capability grants this wizard on this tier)",
                 port,
@@ -473,7 +474,6 @@ class IdleShutdownTracker:
         self._stopped = True
 
     def _run(self) -> None:
-        log = logging.getLogger("jasper.platform.systemd")
         while not self._stopped:
             time.sleep(self._watchdog_period)
             if self._stopped:
@@ -483,9 +483,9 @@ class IdleShutdownTracker:
             # Would have exited, but something is still in flight. (`active`
             # non-zero is exactly why `expired` is False here.)
             if active and idle >= self._idle_threshold:
-                self._log_deferred_exit(log, idle, active)
+                self._log_deferred_exit(logger, idle, active)
             if expired:
-                log.info(
+                logger.info(
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
                     idle, self._idle_threshold,
                 )
