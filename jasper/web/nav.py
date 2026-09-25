@@ -79,7 +79,7 @@ NAV: tuple[NavRow, ...] = (
            "wifi", "", "Network profiles"),
     NavRow("System", "Speaker name", "/speaker/", "/", "",
            "tag", "status-speaker-name", "JTS"),
-    NavRow("System", "Wake corpus", "/wake-corpus/", "/", "developer_tools",
+    NavRow("System", "Wake corpus", "/wake-corpus/", "/", "wake_detection",
            "dev", "", "Recordings", True),
 )
 

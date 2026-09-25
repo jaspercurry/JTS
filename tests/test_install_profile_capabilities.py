@@ -215,8 +215,8 @@ def test_capability_map_is_deterministic_across_calls():
 
 # ---------- (3) the baked map, pinned -------------------------------------
 
-_FULL = {"developer_tools": True, "wake_detection": True}
-_STREAMBOX = {"developer_tools": False, "wake_detection": False}
+_FULL = {"wake_detection": True}
+_STREAMBOX = {"wake_detection": False}
 
 
 @pytest.mark.parametrize(

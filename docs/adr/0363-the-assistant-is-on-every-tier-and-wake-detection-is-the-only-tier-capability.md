@@ -17,8 +17,11 @@
   `/cue/play` and `/system/restart/voice`. `WAKE_DETECTION` is the only
   capability a tier grants; the full tier has it and the streambox does not,
   because the Zero 2 W lacks the headroom for always-on wake inference
-  (ADR-0217, Context). The baked capability map carries only the keys a page
-  gates on: `wake_detection` and `developer_tools`.
+  (ADR-0217, Context). The baked capability map is the grant table, one key
+  per capability, so its only key is `wake_detection`. The Wake corpus row
+  gates on it too, since its wizard is served only where wake detection is
+  granted; the separate `developer_tools` key, which was true exactly on the
+  full tier, goes.
 - **Consequences:** A streambox still runs the voice daemon only while a
   mic-bearing remote is paired: the accessory reconciler owns it wherever wake
   detection is absent (ADR-0217 §2). A future tier that should not offer the

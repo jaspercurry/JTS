@@ -234,16 +234,13 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, bool]:
 
     install.sh bakes the result into the static landing page and hubs so
     their capability-gated sections are correct at first paint with no
-    network round-trip. Its keys are the ``data-requires`` values those
-    pages gate on (``jasper.web.nav``, deploy/index.html). Kept here
-    (stdlib-only) so the installer can compute it without importing the
-    full control stack.
+    network round-trip. One key per :class:`Capability`, which is what those
+    pages' ``data-requires`` name (``jasper.web.nav``, deploy/index.html).
+    Kept here (stdlib-only) so the installer can compute it without
+    importing the full control stack.
 
     Values are derived purely from the profile — no env, no files, no
     hardware probes. That purity is the whole contract here; see the
     module docstring for what breaks without it.
     """
-    return {
-        "wake_detection": install_profile_supports_wake_detection(profile),
-        "developer_tools": normalize_install_profile(profile) == FULL_INSTALL_PROFILE,
-    }
+    return {c.value: install_profile_has_capability(profile, c) for c in Capability}

@@ -43,8 +43,8 @@ function gatedRow(cap) {
   return row;
 }
 
-const rows = [gatedRow("developer_tools"), gatedRow("wake_detection"), gatedRow(null)];
-const [devRow, wakeRow, ungatedRow] = rows;
+const rows = [gatedRow("granted"), gatedRow("wake_detection"), gatedRow(null)];
+const [grantedRow, wakeRow, ungatedRow] = rows;
 
 const STATUS_IDS = [
   "status-speaker-name",
@@ -106,11 +106,11 @@ function check(condition, message) {
 
 async function gating_is_applied_synchronously_on_return() {
   snapshot = {};
-  const stop = start({ developer_tools: true });
+  const stop = start({ granted: true });
 
   // Asserted before the in-flight snapshot resolves: the layout owes the
   // network nothing.
-  check(devRow.hidden === false, "a granted row is revealed");
+  check(grantedRow.hidden === false, "a granted row is revealed");
   check(wakeRow.hidden === true, "an ungranted row stays hidden");
   check(ungatedRow.hidden === false, "an element with no cap name is untouched");
   check(typeof stop === "function", "the caller gets a stop()");
@@ -122,7 +122,7 @@ async function gating_fails_closed_without_a_capability_map() {
   snapshot = {};
   const stop = start(undefined);
 
-  check(devRow.hidden === true, "no caps means a gated row stays hidden");
+  check(grantedRow.hidden === true, "no caps means a gated row stays hidden");
   check(wakeRow.hidden === true, "...for every gated row");
   await settle();
   stop();
@@ -139,7 +139,7 @@ async function a_snapshot_fills_the_status_sublabels() {
     },
   };
   const stop = start(
-    { developer_tools: true }, { titleFollowsSpeakerName: true },
+    { granted: true }, { titleFollowsSpeakerName: true },
   );
   await settle();
 
@@ -153,7 +153,7 @@ async function a_snapshot_fills_the_status_sublabels() {
   check(text("status-ha") === "Home", "a connected HA shows its instance");
   check(text("status-software") === "abcdef1 · main", "short sha + branch");
   check(text("system-summary") === "20% CPU · 44 C · 13% disk", "metrics summary");
-  check(devRow.hidden === false, "the snapshot refreshes values, never layout");
+  check(grantedRow.hidden === false, "the snapshot refreshes values, never layout");
   stop();
 }
 
@@ -188,7 +188,7 @@ async function an_onsnapshot_hook_rides_the_same_poll_at_its_own_interval() {
   snapshot = { home_assistant: { configured: false } };
   const seen = [];
   const stop = start(
-    { developer_tools: true },
+    { granted: true },
     { intervalMs: 5000, onSnapshot: (snap) => seen.push(snap) },
   );
   await settle();
@@ -209,7 +209,7 @@ async function a_faster_onsnapshot_cadence_does_not_speed_up_the_render() {
   snapshot = { voice_provider: "openai" };
   const seen = [];
   const stop = start(
-    { developer_tools: true },
+    { granted: true },
     { intervalMs: 5000, onSnapshot: (snap) => seen.push(snap) },
   );
   await settle();
@@ -232,10 +232,10 @@ async function a_faster_onsnapshot_cadence_does_not_speed_up_the_render() {
 async function a_surface_with_no_live_sublabel_never_polls() {
   const live = document.querySelector;
   document.querySelector = () => null;
-  const stop = start({ developer_tools: true });
+  const stop = start({ granted: true });
   await settle();
 
-  check(devRow.hidden === false, "gating still runs");
+  check(grantedRow.hidden === false, "gating still runs");
   check(fetched.length === 0, "nothing is fetched");
   check(delays.length === 0, "and nothing is scheduled");
   check(typeof stop === "function", "the caller still gets a stop()");
