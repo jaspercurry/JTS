@@ -2138,6 +2138,7 @@ def _dump_baseline(base: str, payload: dict) -> str:
     (("filters", "as_full_range_baseline_gain", "parameters", "gain"), 1.0, "active_output_gain_positive"),
     (("filters", "as_full_range_baseline_limiter", "parameters", "clip_limit"), 1.0, "active_baseline_limiter_invalid"),
     (("filters", "active_baseline_headroom", "parameters", "gain"), 1.0, "active_baseline_headroom_invalid"),
+    (("filters", "active_baseline_headroom", "parameters", "gain"), float("nan"), "active_baseline_headroom_invalid"),
     (("filters", "as_out0_commission_mute"), {"type": "Gain", "parameters": {"gain": -1, "mute": True}}, "active_graph_commission_mute_not_hard_mute"),
     (("mixers", "split_active_1way", "channels", "out"), 0, "active_graph_output_count_mismatch"),
     (("mixers", "split_active_1way", "channels", "out"), 3, "active_graph_unmutes_unknown_outputs"),

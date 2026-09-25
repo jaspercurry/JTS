@@ -27,7 +27,7 @@ from jasper.speaker_layout import (
     measurement_target_id,
 )
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
-from .._common import issue as _issue
+from .._common import coerce_finite_float, issue as _issue
 from ..camilla_yaml import BASELINE_HEADROOM_DB, BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
@@ -1799,7 +1799,7 @@ def _active_graph_evidence(
                     "active_baseline_headroom_unwired",
                     "active baseline graph does not wire the shared headroom filter",
                 ))
-            headroom = as_float(
+            headroom = coerce_finite_float(
                 _filter_params(payload, "active_baseline_headroom").get("gain")
             )
             if headroom is None or headroom > 0.0:
@@ -2103,11 +2103,10 @@ def _active_graph_evidence(
                     ),
                 ))
             limiter_params = _filter_params(payload, limiter_name)
-            limiter_clip = as_float(limiter_params.get("clip_limit"))
+            limiter_clip = coerce_finite_float(limiter_params.get("clip_limit"))
             if (
                 _filter_type(payload, limiter_name) != "Limiter"
                 or limiter_clip is None
-                or not math.isfinite(limiter_clip)
                 or limiter_clip > 0.0
                 or not _truthy_bool(limiter_params.get("soft_clip"))
             ):
@@ -2119,8 +2118,8 @@ def _active_graph_evidence(
                         f"DAC output {index + 1} ({role})"
                     ),
                 ))
-            gain = as_float(_filter_params(payload, gain_name).get("gain"))
-            if gain is None or not math.isfinite(gain) or gain > 0.0:
+            gain = coerce_finite_float(_filter_params(payload, gain_name).get("gain"))
+            if gain is None or gain > 0.0:
                 issues.append(_issue(
                     "blocker",
                     "active_baseline_gain_positive",
