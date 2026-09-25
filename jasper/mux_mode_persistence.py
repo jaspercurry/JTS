@@ -39,6 +39,9 @@ from .music_sources import MUSIC_SOURCES, Source
 logger = logging.getLogger(__name__)
 
 
+# Persisted so a household's manual pin survives the Restart=always
+# deploy/restart cycle. RuntimeDirectory is wiped on restart, so this lives
+# under /var/lib/jasper, not /run.
 DEFAULT_PATH = "/var/lib/jasper/mux_mode.json"
 
 

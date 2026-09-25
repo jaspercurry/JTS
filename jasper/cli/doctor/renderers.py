@@ -1383,7 +1383,4 @@ def check_mux_mode_state() -> CheckResult:
     A corrupt file or a pin to a source that no longer exists is
     fail-open at runtime (mux silently runs auto), so this line is the
     only place an operator learns the household's pin was dropped."""
-    path = Path(
-        os.environ.get("JASPER_MUX_MODE_STATE_PATH", _MUX_MODE_DEFAULT_PATH),
-    )
-    return _classify_mux_mode(path)
+    return _classify_mux_mode(Path(_MUX_MODE_DEFAULT_PATH))
