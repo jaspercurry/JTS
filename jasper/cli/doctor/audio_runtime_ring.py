@@ -24,7 +24,7 @@ from ...output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, PROBE_FRAMES, run
-from .audio_runtime_camilla import camilla_statefile
+from .audio_runtime_camilla import evidence_statefile
 from .audio_runtime_fanin import _requires_roleful_graph
 from .audio_runtime_outputd import outputd_reconciled_env
 from ...service_units import FANIN_SERVICE
@@ -339,7 +339,7 @@ def check_content_transport_coherence() -> CheckResult:
     # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
-        camilla_statefile(), crossover_statefile()
+        evidence_statefile(), crossover_statefile()
     )
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (

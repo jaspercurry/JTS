@@ -201,7 +201,7 @@ def check_camilla_configs_writable() -> CheckResult:
     return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
 
 
-def camilla_statefile() -> Path:
+def evidence_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
     # Lazy: at module scope this drags `correction` into every `--core` run.
@@ -380,7 +380,7 @@ def check_camilla_volume_limit() -> CheckResult:
     if config_path is None:
         return CheckResult(
             "CamillaDSP volume_limit", "warn",
-            f"could not read config_path from {camilla_statefile()}",
+            f"could not read config_path from {evidence_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -433,7 +433,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     if config_path is None:
         return CheckResult(
             label, "warn",
-            f"could not read config_path from {camilla_statefile()}",
+            f"could not read config_path from {evidence_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -738,7 +738,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
         topology_stamp_version,
     )
 
-    statefile = camilla_statefile()
+    statefile = evidence_statefile()
     proved = read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile))
     unproved = read_topology_fingerprint_stamp(
         statefile_unproved_stamp_path(statefile)
