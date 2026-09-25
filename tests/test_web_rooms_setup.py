@@ -1469,7 +1469,7 @@ def test_the_rooms_wizard_is_registered_once_on_its_port():
 
     (spec,) = [s for s in web_main.WIZARD_SPECS if s.label == "/rooms"]
     assert (spec.env_var, spec.default_port) == ("JASPER_ROOMS_WEB_PORT", 8785)
-    assert spec.make_server is web_main._make_rooms_server
+    assert spec.make_server is rooms_setup.make_server
 
 
 def test_make_server_binds_a_tuple_target():

@@ -597,13 +597,8 @@ def make_server(
     target,
     *,
     state_path: str = TRANSIT_ENV_PATH,
-    routes_secret_path: str = GOOGLE_ROUTES_SECRET_FILE,
     weather_path: str = WEATHER_ENV_PATH,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
-    cfg = {
-        "state_path": state_path,
-        "routes_secret_path": routes_secret_path,
-        "weather_path": weather_path,
-    }
+    cfg = {"state_path": state_path, "weather_path": weather_path}
     return systemd.make_http_server(target, _make_handler(cfg))
