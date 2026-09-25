@@ -51,14 +51,7 @@ from jasper.active_speaker.audition import recover_web_audition
 from jasper.camilla import primary_controller
 
 from ..accounts import registry_path as spotify_registry_path
-from ..env_load import (
-    SPEAKER_NAME_ENV_PATH,
-    TOOL_STATE_ENV_PATH,
-    TRANSIT_ENV_PATH,
-    VOICE_PROVIDER_ENV_PATH,
-    WAKE_MODEL_ENV_PATH,
-    WEATHER_ENV_PATH,
-)
+from ..env_load import SPEAKER_NAME_ENV_PATH, VOICE_PROVIDER_ENV_PATH
 from ..google_creds import registry_path as google_registry_path
 from ..platform import systemd as _systemd
 from ..logging_setup import configure_logging
@@ -287,10 +280,6 @@ def _make_wake_server(target: object) -> ThreadingHTTPServer:
 
     return wake_setup.make_server(
         target,
-        state_path=os.environ.get(
-            "JASPER_WAKE_MODEL_FILE",
-            WAKE_MODEL_ENV_PATH,
-        ),
         control_base=os.environ.get(
             "JASPER_CONTROL_BASE",
             wake_setup.DEFAULT_CONTROL_BASE,
@@ -313,68 +302,25 @@ def _make_rooms_server(target: object) -> ThreadingHTTPServer:
 def _make_tools_server(target: object) -> ThreadingHTTPServer:
     from . import tools_setup
 
-    return tools_setup.make_server(
-        target,
-        catalog_path=os.environ.get(
-            "JASPER_TOOLS_CATALOG_FILE",
-            tools_setup.DEFAULT_CATALOG_PATH,
-        ),
-        state_path=os.environ.get("JASPER_TOOL_STATE_FILE", TOOL_STATE_ENV_PATH),
-        prompt_overrides_path=os.environ.get(
-            "JASPER_TOOL_PROMPT_OVERRIDES_FILE",
-            tools_setup.PROMPT_OVERRIDES_FILE,
-        ),
-    )
-
-
-def _transit_state_path() -> str:
-    return os.environ.get("JASPER_TRANSIT_FILE", TRANSIT_ENV_PATH)
-
-
-def _routes_secret_path() -> str:
-    from . import transit_setup
-
-    return os.environ.get(
-        "JASPER_GOOGLE_ROUTES_FILE",
-        transit_setup.GOOGLE_ROUTES_SECRET_FILE,
-    )
-
-
-def _weather_state_path() -> str:
-    return os.environ.get("JASPER_WEATHER_FILE", WEATHER_ENV_PATH)
+    return tools_setup.make_server(target)
 
 
 def _make_transit_server(target: object) -> ThreadingHTTPServer:
     from . import transit_setup
 
-    return transit_setup.make_server(
-        target,
-        state_path=_transit_state_path(),
-        routes_secret_path=_routes_secret_path(),
-        weather_path=_weather_state_path(),
-    )
+    return transit_setup.make_server(target)
 
 
 def _make_ha_server(target: object) -> ThreadingHTTPServer:
     from . import home_assistant_setup
 
-    return home_assistant_setup.make_server(
-        target,
-        state_path=os.environ.get(
-            "JASPER_HA_FILE",
-            home_assistant_setup.HA_ENV_FILE,
-        ),
-    )
+    return home_assistant_setup.make_server(target)
 
 
 def _make_weather_server(target: object) -> ThreadingHTTPServer:
     from . import weather_setup
 
-    return weather_setup.make_server(
-        target,
-        state_path=_weather_state_path(),
-        transit_path=_transit_state_path(),
-    )
+    return weather_setup.make_server(target)
 
 
 def _make_sound_server(
