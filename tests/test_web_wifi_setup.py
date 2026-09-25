@@ -597,15 +597,14 @@ def test_post_connect_emits_one_redacted_action_event(
 
 
 @pytest.mark.parametrize(
-    "bad_password", ["line\nbreak", "carriage\rreturn", "both\r\ncombined"],
+    "bad_password", ["line\nbreak", "carriage\rreturn", "both\r\ncombined", "nul\0byte"],
 )
 def test_post_connect_rejects_newline_password_before_connect_new(
     monkeypatch, bad_password,
 ):
-    """A PSK holding `\\r`/`\\n` would silently truncate at nmcli's stdin
-    (`--ask` reads one line); argv rejected it outright. Reject it here,
-    before connect_new ever runs, with the 400 JSON shape /connect's other
-    validation failures already use."""
+    """A PSK holding a line break or NUL would silently truncate at nmcli's
+    stdin (`--ask` reads one line). Reject it before connect_new ever runs,
+    with the 400 JSON shape /connect's other validation failures use."""
     calls = []
 
     def fake_connect_new(*args, **kwargs):

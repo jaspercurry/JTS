@@ -1334,12 +1334,11 @@ def _post_connect(handler: _Handler, body: dict[str, Any]) -> None:
     password = body.get("password")
     hidden = bool(body.get("hidden"))
     if ssid:
-        # A newline would silently truncate at nmcli's stdin (`--ask` reads
-        # one line); argv rejected it outright, so this must too rather
-        # than let a truncated PSK connect fail confusingly.
-        if isinstance(password, str) and ("\r" in password or "\n" in password):
+        # nmcli's `--ask` prompt reads one line, so a line break or NUL would
+        # truncate the PSK instead of failing NetworkManager's PSK validation.
+        if isinstance(password, str) and any(c in password for c in "\r\n\0"):
             handler._send_json(
-                {"ok": False, "message": "password must not contain newlines"},
+                {"ok": False, "message": "password must not contain line breaks or NUL"},
                 status=400,
             )
             return
