@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
 from jasper.atomic_io import atomic_write_text, locked_update_env_file
-from jasper.env_load import WAKE_MODEL_ENV_PATH
+from jasper.env_load import WAKE_MODEL_ENV_PATH, env_file_path, merged_env_files
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -416,14 +416,32 @@ class WakeSelection:
     threshold: str
 
 
+def read_wake_threshold() -> float:
+    value = merged_env_files((env_file_path(), WAKE_MODEL_FILE)).get("JASPER_WAKE_THRESHOLD", "")
+    try:
+        return float(value) if value else 0.3
+    except ValueError:
+        return 0.3
+
+
+def _threshold_update(value: float) -> dict[str, str]:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"threshold out of range: {value}")
+    return {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"}
+
+
+def select_wake_threshold(value: float, *, via: str, client: str | None = None) -> None:
+    locked_update_env_file(WAKE_MODEL_FILE, _threshold_update(value), mode=0o644, owner=WAKE_MODEL_ENV_OWNER)
+    log_event(logger, "wake.threshold", value=f"{value:.2f}", via=via, client=client)
+
+
 def select_wake_model(
-    key: str, *, via: str, client: str | None = None, path: str | None = None,
+    key: str, *, via: str, client: str | None = None, path: str | None = None, threshold: float | None = None,
 ) -> WakeSelection:
     """Select the registry entry ``key`` names for every front end.
 
     Refuses (:class:`WakeModelRefused`) a key outside the registry and a model
-    not on this speaker. Only ``JASPER_WAKE_MODEL`` is written, under the lock
-    the sensitivity slider's writer shares, so its threshold survives. ``via``
+    not on this speaker. The threshold is preserved unless supplied. ``via``
     names the front end on the ``event=wake.model`` line. Raises OSError when
     the file cannot be written.
     """
@@ -442,10 +460,12 @@ def select_wake_model(
         )
     state = locked_update_env_file(
         path or WAKE_MODEL_FILE,
-        {"JASPER_WAKE_MODEL": entry.model},
+        {"JASPER_WAKE_MODEL": entry.model, **(_threshold_update(threshold) if threshold is not None else {})},
         mode=0o644,
         owner=WAKE_MODEL_ENV_OWNER,
     )
+    if threshold is not None:
+        log_event(logger, "wake.threshold", value=f"{threshold:.2f}", via=via, client=client)
     log_event(logger, "wake.model", model=entry.model, via=via, client=client)
     return WakeSelection(entry, state.get("JASPER_WAKE_THRESHOLD", ""))
 
