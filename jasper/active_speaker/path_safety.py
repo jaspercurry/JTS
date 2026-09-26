@@ -986,57 +986,44 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
     }
 
 
-def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
-    """The path-safety evidence at ``path`` evaluated, or the blocker saying why it cannot be."""
+# status -> (load_gate, issue code). Each refuses the load under its own code (#5708).
+_EVIDENCE_BLOCKERS = {
+    "missing": ("evidence_missing", "path_safety_evidence_missing"),
+    "unreadable": ("evidence_unreadable", "path_safety_evidence_unreadable"),
+    "invalid": ("evidence_invalid", "path_safety_evidence_invalid"),
+}
+
+
+def read_path_safety_evidence(
+    path: str | Path | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The evidence at ``path`` evaluated and the document it came from, or a
+    blocker and ``None``: missing (no path), unreadable (the read raised
+    ``OSError``) or invalid (not UTF-8 JSON the evaluator accepts)."""
     if path is None:
-        return {
-            "provided": False,
-            "status": "missing",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_missing",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_missing",
-                    "active-speaker path-safety evidence was not provided",
-                )
-            ],
-        }
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-    except OSError as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "unreadable",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_unreadable",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_unreadable",
-                    f"could not read active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    try:
-        payload = json.loads(raw)
-        report = evaluate_path_safety_evidence(payload)
-    except (json.JSONDecodeError, ActiveSpeakerConfigError) as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "invalid",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_invalid",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_invalid",
-                    f"invalid active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    report["provided"] = True
-    report["path"] = str(path)
-    return report
+        status, detail = "missing", "active-speaker path-safety evidence was not provided"
+    else:
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            report = evaluate_path_safety_evidence(raw)
+        except OSError as exc:
+            status, detail = "unreadable", f"could not read active-speaker path-safety evidence: {exc}"
+        except ValueError as exc:
+            status, detail = "invalid", f"invalid active-speaker path-safety evidence: {exc}"
+        else:
+            return {**report, "provided": True, "path": str(path)}, raw
+    load_gate, code = _EVIDENCE_BLOCKERS[status]
+    blocker = {
+        "provided": path is not None,
+        **({} if path is None else {"path": str(path)}),
+        "status": status,
+        "ok_to_load_active_config": False,
+        "load_gate": load_gate,
+        "issues": [_issue("blocker", code, detail)],
+    }
+    return blocker, None
+
+
+def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
+    """:func:`read_path_safety_evidence`'s report alone."""
+    return read_path_safety_evidence(path)[0]
