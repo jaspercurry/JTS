@@ -144,13 +144,17 @@ def _write_active_session_marker(backend: RecordingBackend) -> None:
     atomic_write_json(path, data)
 
 
-def _clear_active_session_marker(backend: RecordingBackend) -> None:
+def _clear_marker(path: Path, name: str) -> None:
     try:
-        _active_session_marker_path(backend).unlink()
+        path.unlink()
     except FileNotFoundError:
         return
     except OSError as e:
-        logger.warning("failed to clear active session marker: %s", e)
+        logger.warning("failed to clear %s marker: %s", name, e)
+
+
+def _clear_active_session_marker(backend: RecordingBackend) -> None:
+    _clear_marker(_active_session_marker_path(backend), "active session")
 
 
 def _test_mode_marker_path(backend: RecordingBackend) -> Path:
@@ -179,12 +183,7 @@ def note_test_mode_entered(backend: RecordingBackend) -> None:
 
 
 def note_test_mode_exited(backend: RecordingBackend) -> None:
-    try:
-        _test_mode_marker_path(backend).unlink()
-    except FileNotFoundError:
-        return
-    except OSError as e:
-        logger.warning("failed to clear test-mode marker: %s", e)
+    _clear_marker(_test_mode_marker_path(backend), "test-mode")
 
 
 def _clear_session_state_locked(backend: RecordingBackend) -> None:
@@ -356,38 +355,40 @@ def maybe_recover_stale_test_mode(
 def begin_session(
     backend: RecordingBackend,
     member: str,
-    corpus_profile: str = PROFILE_STANDARD,
-    include_raw_mic_0: bool = False,
-    include_dtln: bool = True,
-    include_usb_mic: bool = False,
-    include_usb_dtln: bool = False,
-    include_xvf_raw0_dtln: bool = False,
-    include_aec3_sweep: bool = False,
-    aec3_sweep_source: str | None = None,
-    capture_plan: dict[str, Any] | None = None,
+    *,
+    corpus_profile: str,
+    include_raw_mic_0: bool,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool,
+    include_aec3_sweep: bool,
+    aec3_sweep_source: str | None,
+    capture_plan: dict[str, Any] | None,
 ) -> str:
     """Open a fresh recording session. Resets the in-memory clip
-    list (existing on-disk WAVs are untouched).
+    list (existing on-disk WAVs are untouched). The defaults live on
+    ``RecordingBackend.begin_session``.
 
-    `include_raw_mic_0` (default False) — when True, clips in this
+    `include_raw_mic_0` — when True, clips in this
     session also capture the truly-raw mic 0 leg (chip channel 2)
     into `aec_raw0_<condition>/`. Per-session, not per-clip, so
     downstream tools can rely on session-wide consistency.
 
-    `include_dtln` (default True) — when True and the recorder has
+    `include_dtln` — when True and the recorder has
     a DTLN port configured, clips capture the XVF raw-through-DTLN
     comparison leg.
 
-    `include_usb_mic` (default False) — when True, clips also
+    `include_usb_mic` — when True, clips also
     capture the corpus-only reference + cheap USB mic legs. These
     require matching bridge env flags to be enabled, otherwise the
     UDP captures will simply have no audio to write.
 
-    `include_usb_dtln` (default False) — when True, clips capture
+    `include_usb_dtln` — when True, clips capture
     the cheap USB raw-through-DTLN leg. The bridge must be started
     with JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 for packets to arrive.
 
-    `include_aec3_sweep` (default False) — when True, clips also
+    `include_aec3_sweep` — when True, clips also
     capture the bounded same-utterance AEC3 tuning variants emitted
     by jasper-aec-bridge. These are pilot/tuning legs, not
     production wake inputs.
@@ -397,7 +398,7 @@ def begin_session(
     USB baseline + three USB AEC3 variants while retaining the XVF
     baseline leg for comparison.
 
-    Returns the new session_id (UTC timestamp).
+    Returns the new session_id.
     """
     backend._refuse_if_muted("begin_session")
     safe_member = "".join(c for c in member.lower() if c.isalnum() or c == "_")
@@ -583,9 +584,9 @@ def status_snapshot(backend: RecordingBackend) -> dict[str, Any]:
             ),
             "clip_count": backend._clips.live_count_locked(),
         }
-    # Stateless fallbacks + the conformance re-check are pure functions
-    # of the values snapshotted above, so they run outside the lock
-    # without re-reading any backend field.
+    # The fallbacks read the sweep config file and the conformance re-check
+    # reads bridge and runtime state, so they run outside the lock, on the
+    # values snapshotted above.
     snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
         input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     )
