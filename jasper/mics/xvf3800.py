@@ -7,10 +7,7 @@
 Chip control library: jasper/xvf/xvf_host.py (JTS-owned USB
 vendor-control helper used for chip-side parameter reads/writes).
 
-This module holds the mic-family-specific knowledge consulted by
-doctor checks, the AEC bridge, and operator tooling. The bash
-reconciler consumes these facts through `python -m jasper.cli.xvf_profile`
-so geometry/channel truth stays in this module.
+The reconciler reads these facts through `python -m jasper.cli.xvf_profile`.
 """
 from __future__ import annotations
 
@@ -158,10 +155,8 @@ class RuntimeProfile:
 
     @property
     def recommended_profile(self) -> str:
-        # Requested intent; the reconciler owns active capture and fallback.
-        if self.present:
-            return "xvf_chip_aec"
-        return "direct_mic"
+        from jasper.audio_profile_state import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC  # lazy: audio_profile_state imports this module
+        return PROFILE_XVF_CHIP_AEC if self.present else PROFILE_DIRECT_MIC
 
     def as_dict(self) -> dict[str, Any]:
         return {

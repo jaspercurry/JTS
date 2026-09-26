@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Live audio readiness checks, evidence builders, and snapshot CLI."""
+"""Live audio readiness and evidence."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from typing import Any, Mapping
 from . import audio_validation_artifacts as artifacts
 from .audio_profile_state import (
     AEC_MODE_ENV,
+    PROFILE_XVF_CHIP_AEC as CHIP_AEC_PROFILE,
     AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
     MicProbe,
@@ -57,7 +58,6 @@ from .platform.status_socket import (
 from .logging_setup import configure_logging
 
 
-CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
