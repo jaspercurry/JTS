@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -41,19 +40,19 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import (
-    ENV_FILE_LOCK_TIMEOUT_SECONDS,
-    EnvKeyAction as EnvAction,
-    advisory_file_lock,
-    env_key_action,
-    env_lock_path,
-    locked_upsert_env_file,
-)
+from jasper.atomic_io import EnvKeyAction as EnvAction, locked_upsert_env_file
+from jasper.audio_hardware import reconcile_env_files as env_files
 from jasper.audio_hardware import reconcile_units as units
 from jasper.audio_hardware.config_txt import boot_config_path
 from jasper.audio_hardware.i2s_hat import i2s_hat_intent_path
 from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH, observe
-from jasper.audio_hardware.reconcile_common import _Abort, _log_token
+from jasper.audio_hardware.reconcile_common import (
+    ENV_DIR_MODE,
+    ENV_FILE_MODE,
+    _Abort,
+    _ensure_dir,
+    _log_token,
+)
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
@@ -85,22 +84,8 @@ EVENT = "audio_hardware_reconcile"
 # pinned equal by tests/test_ring_active_endpoint.py.
 RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
-ENV_FILE_MODE = 0o640
-ENV_DIR_MODE = 0o750
-
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
-
-
-def _ensure_dir(path: Path, mode: int) -> None:
-    """Create an absent directory at ``mode``; never re-mode an existing one.
-
-    The installer owns each env directory's mode/group, and a blanket re-mode
-    on every boot/udev reconcile re-strips them (#827).
-    """
-    if not path.is_dir():
-        os.makedirs(path, exist_ok=True)
-        os.chmod(path, mode)
 
 
 def _resolve_asound_render_lib() -> str:
@@ -151,7 +136,7 @@ class Pass:
         # consumes it. Recorded so main()'s cleanup sweeps one a signal left.
         self.asound_template_temp: str | None = None
         self.outputd_env_stage_rejected = False
-        self._stage_hold = ExitStack()
+        self.outputd_env_stage_hold = ExitStack()
         self.fanin_env_file = env.get("JASPER_FANIN_ENV_FILE") or FANIN_ENV_PATH
         self.asound_source_template = (
             env.get("JASPER_ASOUND_SOURCE_TEMPLATE")
@@ -279,18 +264,11 @@ class Pass:
             )
             return None
 
-    def repair_generated_env_permissions(self) -> None:
-        for path in (self.outputd_env_file, self.fanin_env_file):
-            target = Path(path)
-            if not target.is_file():
-                continue
-            # A content-current but root:root file is unreadable to the
-            # non-root status daemons, and /state then drifts from root doctor.
-            try:
-                os.chown(path, -1, target.parent.stat().st_gid)
-            except OSError:
-                pass
-            os.chmod(path, ENV_FILE_MODE)
+    @property
+    def outputd_env_target(self) -> str:
+        """Where this pass's outputd.env writes LAND: the staged candidate
+        while one is open, the live file otherwise."""
+        return self.outputd_env_stage or self.outputd_env_file
 
     # -- the observed record ------------------------------------------------
 
@@ -433,138 +411,6 @@ class Pass:
         _ensure_dir(marker.parent, 0o755)
         marker.write_text("", encoding="utf-8")
         os.chmod(marker, 0o644)
-
-    # -- outputd.env staging ------------------------------------------------
-
-    @property
-    def outputd_env_target(self) -> str:
-        """Where this pass's outputd.env writes LAND: the staged candidate
-        while one is open, the live file otherwise."""
-        return self.outputd_env_stage or self.outputd_env_file
-
-    def stage_outputd_env(self) -> None:
-        directory = Path(self.outputd_env_file).parent
-        _ensure_dir(directory, ENV_DIR_MODE)
-        # See ADR-0235 G8. The hold spans snapshot -> rename, so a second
-        # whole-file publisher cannot discard this candidate's base.
-        held = True
-        try:
-            self._stage_hold.enter_context(
-                advisory_file_lock(
-                    env_lock_path(self.outputd_env_file),
-                    timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS,
-                )
-            )
-        except (OSError, TimeoutError):
-            held = False
-            self.log(
-                "outputd_env_stage_unlocked",
-                outputd_env=self.outputd_env_file,
-                reason="stage_lock_unheld",
-            )
-        if held:
-            # Debris an earlier pass could not clean (a SIGKILL mid-stage).
-            # Gated on the hold: a refused hold means a live holder mid-stage,
-            # whose in-flight candidate this must not delete.
-            for stale in directory.glob(".outputd.env.candidate.*"):
-                stale.unlink(missing_ok=True)
-                Path(env_lock_path(str(stale))).unlink(missing_ok=True)
-        handle, stage = tempfile.mkstemp(
-            prefix=".outputd.env.candidate.", dir=directory
-        )
-        os.close(handle)
-        self.outputd_env_stage = stage
-        if Path(self.outputd_env_file).is_file():
-            shutil.copy2(self.outputd_env_file, stage)
-        else:
-            try:
-                os.chown(stage, -1, directory.stat().st_gid)
-            except OSError:
-                pass
-            os.chmod(stage, ENV_FILE_MODE)
-
-    def cleanup_outputd_env_stage(self) -> None:
-        """End the stage: drop the candidate, its own lock, and the live hold."""
-        stage = self.outputd_env_stage
-        if stage:
-            Path(stage).unlink(missing_ok=True)
-            Path(env_lock_path(stage)).unlink(missing_ok=True)
-        self._stage_hold.close()
-
-    def finish_outputd_env_stage(self) -> None:
-        self.cleanup_outputd_env_stage()
-        self.outputd_env_stage = None
-
-    def validate_outputd_env_stage(self) -> bool:
-        # lazy: patch target — the tests replace it on the source module,
-        # which only a per-call import sees.
-        from jasper.audio_runtime_plan import validate_outputd_env
-
-        stage = self.outputd_env_stage
-        if stage is None:
-            return True
-        try:
-            ok, lines = validate_outputd_env(
-                base_env=self.env_file,
-                outputd_env=stage,
-                outputd_label=self.outputd_env_file,
-                camilla_statefile=self.camilla_statefile,
-                camilla2_statefile=self.camilla2_statefile,
-                output_topology=self.output_topology_path,
-                topology=self.saved_topology(),
-            )
-        # noqa reason: a validator that cannot answer must REJECT the candidate,
-        # never abort the pass — the refusal is what preserves the running env.
-        except Exception as exc:  # noqa: BLE001
-            self.mark_degraded()
-            ok, lines = False, (f"{type(exc).__name__}: {exc}",)
-        detail = "; ".join(lines)
-        if ok:
-            # The validator accepted the candidate, and MAY have reported a
-            # coherent-but-transient state (`ok note=...` — today the
-            # ACTIVE-ring arm waypoint). Log it so the journal carries the
-            # whole reason a mid-ladder box goes silent at its next Camilla
-            # load; the reconcile proceeds either way.
-            note = next((line for line in lines if line.startswith("ok note=")), "")
-            if note:
-                self.log(
-                    "outputd_env_note",
-                    outputd_env=self.outputd_env_file,
-                    detail=_log_token(note[len("ok note=") :]),
-                )
-            return True
-        self.log(
-            "outputd_env_invalid",
-            outputd_env=self.outputd_env_file,
-            preserved=1,
-            detail=_log_token(detail),
-        )
-        return False
-
-    def commit_outputd_env_stage(self) -> bool:
-        stage = self.outputd_env_stage
-        if stage is None:
-            return False
-        if not self.validate_outputd_env_stage():
-            self.outputd_env_stage_rejected = True
-            self.finish_outputd_env_stage()
-            return False
-        live = Path(self.outputd_env_file)
-        if live.is_file() and live.read_bytes() == Path(stage).read_bytes():
-            self.finish_outputd_env_stage()
-            return False
-        try:
-            if live.exists():
-                info = live.stat()
-                os.chown(stage, info.st_uid, info.st_gid)
-            else:
-                os.chown(stage, -1, live.parent.stat().st_gid)
-        except OSError:
-            pass
-        os.chmod(stage, ENV_FILE_MODE)
-        os.replace(stage, live)
-        self.finish_outputd_env_stage()
-        return True
 
     # -- registry and graph probes ------------------------------------------
 
@@ -719,94 +565,6 @@ class Pass:
             ("JASPER_OUTPUTD_DAC_FORMAT", dac_format),
             ("JASPER_OUTPUTD_SINK", dac_sink),
         ], dac_format
-
-    # -- route and latency-floor env ----------------------------------------
-
-    def apply_route_env(self) -> bool:
-        """Apply the route-owned fan-in env actions. Returns whether it moved."""
-        # lazy: import cost — the route plan is a policy layer the --print-env
-        # path never reaches (ADR-0226).
-        from jasper.audio_runtime_plan import (
-            resolve_audio_route_profile,
-            route_owned_env_actions,
-        )
-        from jasper.env_load import read_env_file_state  # lazy: with the plan
-
-        self.route_fanin_changed = False
-        try:
-            base = read_env_file_state(self.env_file)
-            actions = route_owned_env_actions(
-                resolve_audio_route_profile(base.values)
-            )
-        # noqa reason: a route plan that cannot be built leaves fanin.env alone;
-        # the pass still reconciles the DAC.
-        except Exception:  # noqa: BLE001
-            self.mark_degraded()
-            self.log("route_env_skip", reason="audio_config_unavailable")
-            return False
-        changed = self.set_env_file_var(
-            self.fanin_env_file, [env_key_action(action) for action in actions]
-        )
-        self.route_fanin_changed = changed
-        self.log(
-            "route_env",
-            fanin_env=self.fanin_env_file,
-            changed=int(changed),
-            fanin_changed=int(self.route_fanin_changed),
-        )
-        return changed
-
-    def apply_latency_floor_env(self, dac_id: str) -> None:
-        """Apply the active DAC's codified latency floor into outputd.env.
-
-        The decisions come from jasper.audio_runtime_plan (operator env >
-        profile floor > packaged default, in one policy layer); this only
-        performs the requested mutations and reports whether the file moved.
-
-        A probe that cannot answer leaves the four keys ALONE, the same way
-        the DAC-format and content-format probes do: clearing them would
-        silently drop a tuned box to packaged defaults with no error anywhere,
-        while a stale floor is the loud option.
-        """
-        # lazy: import cost — --print-env never reaches the floor policy (ADR-0226).
-        from jasper.audio_runtime_plan import outputd_floor_plan
-
-        try:
-            summary, actions = outputd_floor_plan(
-                profile_id=dac_id,
-                base_env=self.env_file,
-                outputd_env=self.outputd_env_target,
-            )
-        # noqa reason: any failure preserves the previous floor keys; the pass
-        # is marked degraded so the shim leaves no stamp to skip against.
-        except Exception:  # noqa: BLE001
-            self.mark_degraded()
-            self.latency_floor_changed = False
-            self.log(
-                "latency_floor_skip",
-                reason="probe_unavailable",
-                output_dac_id=dac_id,
-                outputd_env=self.outputd_env_file,
-            )
-            return
-        self.latency_floor_changed = self.set_env_file_var(
-            self.outputd_env_target, [env_key_action(action) for action in actions]
-        )
-        self.log(
-            "latency_floor",
-            output_dac_id=dac_id,
-            camilla_chunksize=summary.get("JASPER_CAMILLA_CHUNKSIZE") or "default",
-            camilla_target_level=(
-                summary.get("JASPER_CAMILLA_TARGET_LEVEL") or "default"
-            ),
-            outputd_period_frames=(
-                summary.get("JASPER_OUTPUTD_PERIOD_FRAMES") or "default"
-            ),
-            outputd_dac_buffer_frames=(
-                summary.get("JASPER_OUTPUTD_DAC_BUFFER_FRAMES") or "default"
-            ),
-            changed=int(self.latency_floor_changed),
-        )
 
     # -- role policy --------------------------------------------------------
 
@@ -1411,7 +1169,7 @@ class Pass:
         # outputd_env_changed, which is set pre-commit and can be cleared when
         # validation rejects the stage.
         outputd_committed = 0
-        self.stage_outputd_env()
+        env_files.stage_outputd_env(self)
         if self.set_env_file_var(
             self.env_file,
             [
@@ -1424,22 +1182,22 @@ class Pass:
             outputd_env_changed = 1
         # A route change also counts toward env_changed so the outputd/audio
         # restart still fires when appropriate.
-        if self.apply_route_env():
+        if env_files.apply_route_env(self):
             env_changed = 1
         # For a recognized DAC this is its profile floor (or cleared when the
         # profile declares none); for a parked one an empty id clears any stale
         # floor (#27).
-        self.apply_latency_floor_env(
-            self.output_dac_id if self.output_dac_recognized else ""
+        env_files.apply_latency_floor_env(
+            self, self.output_dac_id if self.output_dac_recognized else ""
         )
         if self.latency_floor_changed:
             outputd_env_changed = 1
         if outputd_env_changed:
-            if self.commit_outputd_env_stage():
+            if env_files.commit_outputd_env_stage(self):
                 env_changed = 1
                 outputd_committed = 1
         else:
-            self.finish_outputd_env_stage()
+            env_files.finish_outputd_env_stage(self)
         if self.outputd_env_stage_rejected:
             # Stopping anything here would convert a healthy box into a silent
             # one on behalf of a change that never landed (jts3 2026-08-11 lost
@@ -1451,7 +1209,7 @@ class Pass:
                 output_dac_id=self.output_dac_id,
                 output_dac_card=self.output_dac_card,
             )
-        self.repair_generated_env_permissions()
+        env_files.repair_generated_env_permissions(self)
 
         render_changed = 1 if self.render_asound_if_needed() else 0
         self.render_ring_conf_if_needed()
@@ -1471,9 +1229,9 @@ class Pass:
             # against a different topology (#4416 R8).
             runtime_converge_failed = 1
         else:
-            self.stage_outputd_env()
+            env_files.stage_outputd_env(self)
             self.apply_audio_runtime_env()
-            if self.commit_outputd_env_stage():
+            if env_files.commit_outputd_env_stage(self):
                 env_changed = 1
                 outputd_committed = 1
             if self.outputd_env_stage_rejected:
@@ -1589,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         status = exc.code if isinstance(exc.code, int) else 1
     finally:
-        run.cleanup_outputd_env_stage()
+        env_files.cleanup_outputd_env_stage(run)
         if run.asound_template_temp:
             Path(run.asound_template_temp).unlink(missing_ok=True)
         run.log("exit", signal=run.signalled or "none", status=status)
