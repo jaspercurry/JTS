@@ -15,7 +15,9 @@ import json
 import os
 import resource
 import subprocess
+import wave
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -23,11 +25,12 @@ import pytest
 import yaml
 
 from jasper.active_speaker.bench import bass_replay, render
-from jasper.active_speaker.bench.replay import replay_levels
+from jasper.active_speaker.bench.replay import replay_graph, replay_levels
 from jasper.json_fields import sha256_file
 from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
 from jasper.cli.round_views import dsp_replay
 from tests.test_bass_extension_dynamic import _base_graph, _descriptor
+from tests.test_active_speaker_emit_bench_derivation import _emit
 from tests.test_rear_output_foundation import _cardioid_baseline
 
 
@@ -58,6 +61,38 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path, ban
     raw.write_bytes(b'changed')
     with pytest.raises(ValueError):
         replay_levels(manifest, raw, (1, 2))
+
+
+@pytest.mark.parametrize("taper,reference", [(False, None), (True, -16.0), (True, None)])
+def test_only_a_graph_that_reads_aux1_takes_a_bass_reference(tmp_path, monkeypatch, taper, reference):
+    """A graph from before ADR-0359 reads Aux1 through its Loudness taper: it replays at its bass
+    reference and is refused without one. Any other graph replays at Main alone."""
+    source = yaml.safe_load(_emit())
+    if taper:
+        source["filters"]["bass_ext_dynamic_loudness"] = {"type": "Loudness", "parameters": {"fader": "Aux1"}}
+    graph, stimulus = tmp_path / "graph.yml", tmp_path / "tone.wav"
+    graph.write_text(yaml.safe_dump(source))
+    with wave.open(str(stimulus), "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(bytes(4 * 480))
+    rendered = []
+
+    def render_config(binary, config, *, fader_db, loudness_fader_db, **_):
+        rendered.append((fader_db, loudness_fader_db))
+        return render.RenderInvocation((), 0, 0.0, "", "", "", 0)
+
+    monkeypatch.setattr("jasper.active_speaker.bench.replay.render_config", render_config)
+    monkeypatch.setattr("jasper.active_speaker.bench.replay.resolve_render_binary",
+                        lambda: SimpleNamespace(path="camilladsp", identity_artifact=dict))
+    if taper and reference is None:
+        with pytest.raises(ValueError, match="^dsp_replay_fader_invalid$"):
+            replay_graph(graph, stimulus, tmp_path / "out", main_db=-16.0)
+        assert rendered == []
+    else:
+        manifest = replay_graph(graph, stimulus, tmp_path / "out", main_db=-16.0, bass_reference_db=reference)
+        assert (rendered, manifest["bass_reference_db"]) == ([(-16.0, reference)], reference)
 
 
 @pytest.mark.parametrize("cardioid", [False, True])
