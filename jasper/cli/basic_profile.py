@@ -2,10 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Review and apply the commissioning profile through the wizard API.
+"""Review, through the wizard API, what the /sound/ page's Save to speaker applies.
 
 The composer retains the banked tune or starts from the declared crossover.
-Apply runs under the DSP writer lock.
 See ADR-0312.
 """
 
@@ -18,12 +17,8 @@ from typing import Any
 
 from jasper.active_speaker.wizard_client import WizardClient
 from jasper.json_fields import as_float
-from jasper.active_speaker.baseline_profile import (
-    baseline_profile_state_path,
-    load_applied_baseline_profile_state,
-)
 
-from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_UNREADABLE, answered, failed
 
 #: The basic-profile door at its EXTERNAL path. nginx's ``location
 #: /sound/speaker/`` proxies to jasper-web on ``127.0.0.1:8784/`` with the
@@ -32,60 +27,14 @@ from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answere
 #: it. The ``/sound/speaker/crossover/`` pages next door are a LONGER nginx
 #: prefix and a DIFFERENT daemon (jasper-correction-web, :8770).
 REVIEW_PATH = "/sound/speaker/active-speaker/baseline-profile"
-SAVE_AND_APPLY_PATH = REVIEW_PATH + "/save-and-apply"
-
-#: Mint the double-submit pair from a page this door's OWN daemon serves. The
-#: token is stateless (jasper/web/_common.py compares the request header to the
-#: ``Path=/`` cookie, with no per-process secret), so the correction daemon's
-#: page happens to validate here too -- but only while both daemons keep one
-#: scheme, which nothing enforces.
-CSRF_PAGE_PATH = "/sound/speaker/"
-
-#: The door refused and named neither a blocker nor a status of its own.
-DOOR_REFUSED = "door_refused"
 
 #: No answer to read. The same slug ``jasper-round`` publishes for the same
 #: condition, so one round trip lost is one word whichever tool made it.
 ANSWER_LOST = "answer_lost"
 
-#: Said whenever an apply's answer is lost, because "it failed" is a claim this
-#: tool cannot make there and the applied record is what can settle it.
-LOST_ANSWER_ADVICE = (
-    "the apply may or may not have taken effect -- run "
-    "`jasper-basic-profile review` and read the applied state before "
-    "deciding what the speaker is playing"
-)
-
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "mutating-with-gates"
-
-
-class _DoorUnreachable(Exception):
-    """The door's answer was lost. ``path`` is which round trip lost it."""
-
-    def __init__(self, path: str, detail: str) -> None:
-        super().__init__(f"{path}: {detail}")
-        self.path = path
-        self.detail = detail
-
-
-def _door(
-    wizard: WizardClient, path: str, body: Mapping[str, Any] | None = None
-) -> dict[str, Any]:
-    """One round trip. A ``body`` means POST -- and a POST here means a WRITE,
-    so nothing here POSTs except the apply itself.
-    """
-    status, payload = (
-        wizard.post_json(path, body) if body is not None else wizard.get_json(path)
-    )
-    if status != 200 or not isinstance(payload, dict):
-        raise _DoorUnreachable(
-            path,
-            f"{f'HTTP {status}' if status else 'no response'}: "
-            f"{str(payload).strip()[:200]}",
-        )
-    return payload
+AUTHORITY_TIER = "advisory (`review` reads)"
 
 
 def _trims(corrections: Any) -> dict[str, dict[str, Any]]:
@@ -181,87 +130,19 @@ def _print_facts(summary: Mapping[str, Any]) -> None:
 
 
 def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
-    profile = _door(wizard, REVIEW_PATH)
+    # One GET: the route's POST arm compiles and applies, so nothing here sends one.
+    status, profile = wizard.get_json(REVIEW_PATH)
+    if status != 200 or not isinstance(profile, dict):
+        lost = f"{f'HTTP {status}' if status else 'no response'}: {str(profile).strip()[:200]}"
+        return failed(EXIT_UNREADABLE, ANSWER_LOST, {"path": REVIEW_PATH, "detail": lost})
     summary = _summary(profile)
     issues = _issues(profile)
-    apply_line = "jasper-basic-profile apply"
     _say("basic profile candidate")
     _print_facts(summary)
     for issue in issues:
         _say(_issue_line(issue))
-    _say(
-        "\nNothing was applied. To apply the saved setup:\n"
-        f"  {apply_line}"
-    )
-    return answered({**summary, "issues": issues, "next": apply_line})
-
-
-def _door_refusal_reason(payload: Mapping[str, Any]) -> str:
-    for issue in _issues(payload):
-        if issue["severity"] == "blocker" and issue["code"]:
-            return issue["code"]
-    return str(payload.get("status") or "") or DOOR_REFUSED
-
-
-def _proof() -> dict[str, Any] | None:
-    """What the speaker's own applied record says, read back after the apply."""
-    applied = load_applied_baseline_profile_state()
-    if applied is None:
-        return None
-    summary = _summary(applied)
-    return {
-        "candidate_fingerprint": summary["candidate_fingerprint"],
-        "applied_at": str(applied.get("applied_at") or ""),
-        "tuning_owner": summary["tuning_owner"],
-        "linearization_roles": summary["linearization_roles"],
-        "blend_correction_count": summary["blend_correction_count"],
-        "structure_and_trim_only": summary["structure_and_trim_only"],
-    }
-
-
-def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
-    applied = _door(wizard, SAVE_AND_APPLY_PATH, {})
-    if str(applied.get("status") or "") != "applied":
-        return failed(EXIT_REFUSED, _door_refusal_reason(applied), applied)
-
-    proof = _proof()
-    fingerprint = proof["candidate_fingerprint"] if proof is not None else ""
-    state_path = baseline_profile_state_path()
-    # The trim this compiled is measured where a measurement backs it and
-    # derived from the sensitivity gap where none does; the door says which as
-    # an issue, and the runbook tells the operator to read that before deciding
-    # this is what they wanted.
-    issues = _issues(applied)
-    _say("applied.")
-    for issue in issues:
-        _say(_issue_line(issue))
-    _say(f"  {'fingerprint':<22}{fingerprint or '(unknown)'}")
-    if proof is None:
-        _say(f"  the applied record at {state_path} could not be read")
-    else:
-        _say(f"  proof, from {state_path}")
-        for key in (
-            "candidate_fingerprint",
-            "applied_at",
-            "tuning_owner",
-            "structure_and_trim_only",
-        ):
-            _say(f"    {key:<24}{proof[key]}")
-        roles = proof["linearization_roles"]
-        _say(
-            f"    {'linearization':<24}"
-            + ("none" if not roles else f"{len(roles)}: {', '.join(roles)}")
-        )
-        blend = proof["blend_correction_count"]
-        _say(f"    {'blend correction':<24}" + ("none" if not blend else str(blend)))
-    return answered(
-        {
-            "result": "applied",
-            "candidate_fingerprint": fingerprint,
-            "proof": proof,
-            "issues": issues,
-        }
-    )
+    _say("\nNothing was applied; Save to speaker on the /sound/ page applies this setup.")
+    return answered({**summary, "issues": issues})
 
 
 def _add_connection_args(parser: argparse.ArgumentParser) -> None:
@@ -281,43 +162,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-basic-profile",
         description=(
-            "Review and reapply the current candidate, including its tuning layers. "
-            "Without an applied candidate, use the saved profile or the declared "
-            "crossover. No evidence is deleted."
+            "Review what Save to speaker applies: the current candidate with its tuning layers, "
+            "or without an applied candidate the saved profile or the declared crossover. "
+            "Nothing is applied."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "EXAMPLE\n"
             "  ssh pi@jts3.local\n"
-            "  sudo /opt/jasper/.venv/bin/jasper-basic-profile review\n"
-            "  sudo /opt/jasper/.venv/bin/jasper-basic-profile apply\n"
-            "\n"
-            "  `apply` prints a proof read back from the speaker's own\n"
-            "  applied record. It reports the layers actually applied;\n"
-            "  linearization and blend correction can remain in the tune.\n"
-            "  `sudo` is for that read: the record is group-readable only,\n"
-            "  and without it the apply still succeeds but prints no proof.\n"
+            "  /opt/jasper/.venv/bin/jasper-basic-profile review\n"
             "\n"
             "WHEN NOT TO USE\n"
-            "  - you want the banked evidence cleared -- this replaces the\n"
-            "    GRAPH and touches no round, candidate or journey state;\n"
-            "    starting the measurement journey over is\n"
-            "    `POST /crossover/reset` on the correction wizard\n"
-            "  - you want a different banked candidate applied -- use\n"
+            "  - you want an applied speaker back on its saved tune -- use\n"
+            "    `jasper-round reset`\n"
+            "  - you want a banked candidate applied -- use\n"
             "    `jasper-round apply <fp>`\n"
             "\n"
             "EXIT CODES\n"
-            "  0  the door answered; `review` printed the candidate, or\n"
-            "     `apply` put it on the speaker\n"
-            "  1  EXIT_REFUSED -- {status, reason, detail} on stdout: the\n"
-            "     reason is the door's own blocker code\n"
-            "     and the detail carries the payload. Nothing was applied\n"
+            "  0  the door answered and `review` printed the candidate\n"
             "  2  EXIT_UNREADABLE -- reason `answer_lost`: there was no\n"
             "     answer to read (wrong --hostname, the daemon is down, a\n"
-            "     dropped connection), and the detail names which round\n"
-            "     trip. `review` only reads, so nothing changed there -- but\n"
-            "     a lost answer to the apply POST does NOT mean the apply\n"
-            "     failed. Run `review` and read the applied state"
+            "     dropped connection), and the detail names the path.\n"
+            "     `review` only reads, so nothing changed"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -328,37 +194,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_connection_args(review)
     review.set_defaults(func=_cmd_review)
-
-    apply_ = sub.add_parser(
-        "apply",
-        help="make the saved setup the speaker's live graph",
-    )
-    _add_connection_args(apply_)
-    apply_.set_defaults(func=_cmd_apply)
     return parser
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     """``opener`` is :class:`WizardClient`'s own transport seam, for tests."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
-    wizard = WizardClient(
-        host_header=args.hostname,
-        base_url=args.base_url,
-        csrf_page_path=CSRF_PAGE_PATH,
-        opener=opener,
-    )
-    try:
-        return int(args.func(wizard, args))
-    except _DoorUnreachable as exc:
-        # UNREADABLE and not a refusal: there was no answer to read. On the
-        # apply POST the outcome is genuinely unknown -- the route has no
-        # try/except around its own answer, so a connection dropped after the
-        # graph was loaded looks exactly like one dropped before it, which is
-        # the one case that has to carry the advice.
-        detail: dict[str, Any] = {"path": exc.path, "detail": exc.detail}
-        if exc.path == SAVE_AND_APPLY_PATH:
-            detail["advice"] = LOST_ANSWER_ADVICE
-        return failed(EXIT_UNREADABLE, ANSWER_LOST, detail)
+    wizard = WizardClient(host_header=args.hostname, base_url=args.base_url, opener=opener)
+    return int(args.func(wizard, args))
 
 
 if __name__ == "__main__":  # pragma: no cover - console-script entry point
