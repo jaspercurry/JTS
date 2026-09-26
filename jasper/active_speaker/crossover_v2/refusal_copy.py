@@ -55,6 +55,8 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # `capture_dispatch.assess`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
+# The test tones cleared the room but the sweep after them did not (#5672).
+REASON_SWEEP_MISSING = "sweep_missing"
 REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
@@ -601,6 +603,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy(
             "The capture glitched.",
+            "measuring again.",
+            joiner=" — ",
+            strip_before_join=".",
+        ),
+        auto_retry=True,
+        capture_quality=True,
+    ),
+    REASON_SWEEP_MISSING: _retriable_reason(
+        REASON_SWEEP_MISSING, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy(
+            "JTS heard the test tones, but not the sweep after them.",
             "measuring again.",
             joiner=" — ",
             strip_before_join=".",

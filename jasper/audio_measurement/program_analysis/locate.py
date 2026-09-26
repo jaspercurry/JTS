@@ -34,7 +34,7 @@ from .model import (
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     WITNESS_BAND_FLOOR_HZ,
 )
-from .signals import _has_clipped_run, _locate, _peak_dbfs
+from .signals import _above_modal_tails_hz, _has_clipped_run, _locate, _peak_dbfs
 
 
 def _earliest_strong_peak(
@@ -522,12 +522,11 @@ def _locate_sweep(
     tails (:data:`WITNESS_BAND_FLOOR_HZ`) when only that view clears the locate floor."""
     located = _locate_in_window(capture, stim, scheduled, sweep.n_samples,
                                 sample_rate=sample_rate, search_samples=search_samples)
-    assert sweep.f1_hz is not None and sweep.f2_hz is not None
-    band_start = max(WITNESS_BAND_FLOOR_HZ, sweep.f1_hz)
-    if located[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR or band_start >= sweep.f2_hz:
+    band = _above_modal_tails_hz(sweep)
+    if located[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR or band is None:
         return located
     banded = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate,
-                               band_hz=(band_start, sweep.f2_hz), search_samples=search_samples)
+                               band_hz=band, search_samples=search_samples)
     return banded if banded[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR else located
 
 
