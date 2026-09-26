@@ -807,16 +807,19 @@ _COMPOSED_GRID_POINTS = 2048
 
 
 def _composed_grid(
-    role_filters: Sequence[Mapping[str, Any]], band: tuple[float, float] | None
+    role_filters: Sequence[Mapping[str, Any]], lo: float, hi: float
 ) -> np.ndarray:
     """Full-spectrum grid for comparing a replacement with its incumbent.
 
     Mixed-sign cascades can peak outside their declared band. The dense
-    per-band sweep, where the role declares a band, also resolves narrow
-    differences between two cascades.
+    per-band sweep also resolves narrow differences between two cascades.
     """
-    dense = [] if band is None else [np.geomspace(band[0], band[1], _COMPOSED_GRID_POINTS)]
-    return _evaluation_grid(role_filters, np.concatenate([CHAIN_GRID_HZ, *dense]))
+    return _evaluation_grid(
+        role_filters,
+        np.concatenate([
+            CHAIN_GRID_HZ, np.geomspace(lo, hi, _COMPOSED_GRID_POINTS),
+        ]),
+    )
 
 
 def _check_composed(
@@ -883,9 +886,10 @@ def _check_displaced(
             for entry in filters
             if entry["role"] == role
         ]
+        lo, hi = passbands.get(role, (_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ))
         # One grid over BOTH cascades, so neither extremum falls between the
         # other's sample points.
-        grid = _composed_grid(role_filters + previous, passbands.get(role))
+        grid = _composed_grid(role_filters + previous, lo, hi)
         delta = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
             / np.maximum(np.abs(np.asarray(chain_response(previous, grid))), 1e-12)
@@ -1102,8 +1106,10 @@ def read_driver_prescription(
 
     passbands = dict(passbands_hz or {})
     prescription_class = _check_bounds(filters, passbands, branch_context)
+    # A pin beside filters names one of their roles (_parse_pinned_trim), and
+    # _check_bounds has judged those.
     for role, _ in pinned_trim_db:
-        if role not in passbands and not ((not filters or not passbands) and role in branch_context):
+        if not filters and role not in passbands and role not in branch_context:
             _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
                     speaker_roles=sorted(set(passbands) | set(branch_context)))
     context = {**{role: ((), 0.0) for role in passbands}, **branch_context}

@@ -2374,7 +2374,7 @@ def test_the_span_clause_is_what_makes_the_bound_sound():
         {"type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 3.0},
         {"type": "Peaking", "freq": 48.0, "q": 2.0, "gain": -12.0},
     ]
-    grid = dp._composed_grid(role_filters, (40.0, 3000.0))
+    grid = dp._composed_grid(role_filters, 40.0, 3000.0)
 
     # The charge's whole span is inside the gate's grid — every point of it.
     charge_span = _evaluation_grid(role_filters, CHAIN_GRID_HZ)
