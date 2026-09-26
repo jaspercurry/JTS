@@ -425,6 +425,47 @@ def test_compute_min_free_kbytes_clamps_two_percent_between_16mb_and_256mb(
     assert _compute_min_free_kbytes(memtotal_kb) == expected
 
 
+@pytest.mark.parametrize(
+    ("hints", "expected"),
+    [
+        pytest.param(
+            "sysdefault:CARD=Apple\n"
+            "    USB-C to 3.5mm Headphone Jack Adapter, USB Audio\n"
+            "hw:CARD=Array,DEV=0\n"
+            "    reSpeaker XVF3800 4-Mic Array, USB Audio\n"
+            "    Direct hardware device without any conversions\n"
+            "hw:CARD=Flex,DEV=0\n"
+            "    ReSpeaker XVF3800 Flex, USB Audio\n",
+            "Array",
+            id="first_matching_description",
+        ),
+        pytest.param(
+            "hw:CARD=Apple,DEV=0\n    USB Audio Device\n",
+            "Fallback",
+            id="no_match",
+        ),
+    ],
+)
+def test_detect_card_names_the_first_matching_hint_or_the_fallback(
+    tmp_path, hints, expected
+):
+    arecord = tmp_path / "arecord"
+    arecord.write_text(
+        f"#!/bin/sh\n[ \"$1\" = -L ] || exit 1\ncat <<'EOF'\n{hints}EOF\n",
+        encoding="utf-8",
+    )
+    arecord.chmod(0o755)
+    result = run_bash(
+        ["-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"detect_card {shlex.quote(str(arecord))} "
+         "'xvf3800|respeaker.*(array|flex)|L16K6Ch' Fallback"],
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{expected}\n"
+
+
 # --- optional enhanced-AEC: canonical C++ build parallelism -----------
 # Regression: the unbounded `meson compile` fanned out to nproc (4 on a
 # Pi 5) -O3 cc1plus jobs and the OOM killer aborted the deploy on a 1 GB

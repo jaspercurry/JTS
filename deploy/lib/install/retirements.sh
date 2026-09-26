@@ -102,10 +102,13 @@ JASPER_RETIRED_LEFTOVERS=(
     # fan-in became the only supported renderer path. A stale installed copy is
     # what lets an operator reintroduce split-brain audio state by hand; the
     # switcher's config is a tree, so it needs the `dir` kind.
-    # REMOVAL CONDITION: all three rows drop once every box has taken one
+    # REMOVAL CONDITION: both rows drop once every box has taken one
     # install after this lands.
     "file|${LOCAL_SBIN_DIR}/jasper-audio-topology ${LOCAL_SBIN_DIR}/jasper-derive-device-name|the retired topology switcher and device-name deriver"
     "dir|/etc/jasper/audio-topology|the retired topology switcher's config tree"
+    # The installer parses ALSA hints itself (#5648).
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "file|/usr/local/lib/jasper/jasper-alsa-card.sh|the reader-less ALSA hint parser copy"
     # The deleted tone lane's scratch tree: short bounded tone WAVs, never
     # user data. REMOVAL CONDITION: every box has taken one install after
     # this lands.
