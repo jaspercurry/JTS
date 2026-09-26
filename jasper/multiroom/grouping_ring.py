@@ -2,80 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The grouping ingress transport's identity — one name, one wire, one owner.
-
-A bonded JTS endpoint takes the leader's snapcast stream in through one
-transport: snapclient writes it, the endpoint's CamillaDSP captures it. This
-module owns what that transport IS — its ALSA PCM name, its ring file, the
-conf.d block that declares it, and the wire both ends have to agree on.
-
-**Three consumers, one name.** ``jasper.multiroom.reconcile`` gives
-snapclient's ``--soundcard`` the WRITE end; ``precheck_active_follower`` and
-``precheck_active_leader`` give their CamillaDSP's ``capture_device`` the READ
-end. A ring PCM is one device opened in two directions — the ioplug branches its
-``hw_params`` on ``io->stream`` (``c/jts-ring-ioplug/pcm_jts_ring.c``) — so all
-three name the same string, and the playback/capture pair an snd-aloop round
-trip needed collapses into one constant. That is what makes "the writer and the
-reader agree" structural instead of a claim someone has to check.
-
-**Here rather than in** :mod:`jasper.multiroom.reconcile`, which is a large
-module whose transport constants are already imported piecemeal by
-production and test modules that want nothing else from it — for example,
-``jasper.cli.doctor.grouping``'s ``check_grouping_leader_pipe`` imports only
-``SNAPFIFO`` from its own leaf, :mod:`jasper.multiroom.snapfifo`.
-
-**Deliberately NOT a member of the ring platform's registries.**
-:data:`jasper.fanin_coupling.RING_PCM_DEVICES` is what
-``jasper.active_speaker.camilla_yaml.active_emit_devices`` tests to decide a
-graph is a ring graph and to hand it the ring chunk/target/queuelimit profile;
-:data:`jasper.ring_conf.RING_CONF_PCMS` is what
-``jasper.ring_conf.render_ring_conf_wire`` walks, and it raises for any member
-without a ``per_block`` width entry. The grouping ring is neither the coupling's
-wire nor a renderer lane — it is a third axis with its own conf.d file, exactly
-as the renderer lanes got theirs. Adding it to either registry would route it
-through machinery that is not about it.
-"""
-
-from __future__ import annotations
+"""Snapclient ingress read by the bonded endpoint's CamillaDSP (ADR-0261)."""
 
 from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
+from jasper.multiroom.aux_ring import AuxRing
 from jasper.ring_assets import RING_SHM_DIR
 
-#: The ALSA PCM name ``deploy/alsa/conf.d/62-jts-ring-grouping.conf`` defines —
-#: one string for snapclient's ``--soundcard`` and for CamillaDSP's capture
-#: device.
-GROUPING_RING_PCM = "jts_ring_grouping"
-
-#: The SHM ring file that PCM's ``path`` names, under the shared
-#: ``RING_SHM_DIR`` directory the ring platform's tmpfiles entry creates.
-#: ONE name for both roles: a box is a leader or a follower, never both, so the
-#: role-dependent naming the coupling's content hop uses buys nothing here.
-GROUPING_RING_FILE = f"{RING_SHM_DIR}/grouping.ring"
-
-#: Where the installer places that conf.d block
-#: (``deploy/lib/install/ring-platform.sh``'s ``install_jts_ring_conf_assets``).
-#: Sibling of :data:`jasper.ring_assets.RING_CONF_D`.
-GROUPING_RING_CONF_D = "/etc/alsa/conf.d/62-jts-ring-grouping.conf"
-
-#: The wire, spelled in the conf.d block rather than inherited from the ioplug's
-#: compiled defaults: snapclient decodes to the snapserver-pinned
-#: ``sampleformat=48000:16:2``
-#: (:func:`jasper.multiroom.reconcile_plan.snapserver_argv`), so this ring carries
-#: 16-bit stereo. ``tests/test_grouping_ring_platform.py`` pins both ends of that
-#: binding — a widening of either side that left the other alone would be a
-#: negotiation failure at open, not a quiet conversion, because this block is
-#: opened directly and nothing wraps it: the ioplug's hw_params is single-valued
-#: in every dimension but access, and unlike the renderer lanes there is no
-#: ``plug`` PCM in front of it to absorb a mismatch.
-GROUPING_RING_FORMAT = "S16_LE"
-GROUPING_RING_CHANNELS = 2
-
-#: Slot geometry. The slot equals the ring path's CamillaDSP chunk
-#: (:data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE`), so one slot is one
-#: chunk. The depth sits at the ioplug's slot CEILING
-#: (``JTS_RING_MAX_SLOTS``), which is a constraint the design took knowingly:
-#: depth is not tunable upward from a conf.d edit, and the only other depth axis
-#: is the period, which is also what bounds how coarse the writer's delay signal
-#: can get. See ADR-0261.
-GROUPING_RING_PERIOD_FRAMES = RING_CAMILLA_CHUNKSIZE
-GROUPING_RING_SLOTS = 16
+GROUPING_RING = AuxRing(
+    pcm="jts_ring_grouping",
+    file=f"{RING_SHM_DIR}/grouping.ring",
+    conf_d="/etc/alsa/conf.d/62-jts-ring-grouping.conf",
+    period_frames=RING_CAMILLA_CHUNKSIZE,
+)
+GROUPING_RING_PCM = GROUPING_RING.pcm
+GROUPING_RING_FILE = GROUPING_RING.file
+GROUPING_RING_CONF_D = GROUPING_RING.conf_d
+GROUPING_RING_FORMAT = GROUPING_RING.format
+GROUPING_RING_CHANNELS = GROUPING_RING.channels
+GROUPING_RING_PERIOD_FRAMES = GROUPING_RING.period_frames
+GROUPING_RING_SLOTS = GROUPING_RING.slots
