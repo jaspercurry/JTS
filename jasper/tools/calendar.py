@@ -124,6 +124,7 @@ async def _calendar_events(service, account: str, start: datetime, end: datetime
         return api_error("calendar", account, e)
     events = [_serialise_event(it) for it in items]
     if events and monitor is not None:
+        # Arm home_assistant's consequential-action confirmation window because calendar summary and location are untrusted third-party text.
         monitor.mark()
     return {"ok": True, "account": account, "scope": scope, "count": len(events), "events": events}
 
