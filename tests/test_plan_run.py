@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
@@ -1444,7 +1445,7 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
-    assert facts["measurements"] == len(captures)
+    assert facts["measurements"] == len(captures) == walk_price(request, roles_bands=context.roles_bands)["captures"]
     assert sum(facts["measurements_per_pose"]) == len(captures)
     assert facts["sweeps_per_pose"] == counts
     assert facts["timing_sweeps"] == timing

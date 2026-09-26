@@ -689,6 +689,8 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     assert payload["packet_error"] is None
     assert payload["applied"]["layers"] == {"driver": "speaker" in layers, "rear": "rear" in layers,
                                             "bass": "bass" in layers, "room": "room" in layers}
+    names = ["driver" if name == "speaker" else name for name in ("speaker", "room", "bass", "rear") if name in layers]
+    assert payload["applied"]["summary"] == "applied layers: " + (", ".join(names) or "none")
     assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
     assert payload["applied"]["reference_volume_db"] == payload["seat_level_reference_volume_db"] == -9.0
     assert payload["applied"]["leveled_db_spl"] == 77.4

@@ -87,6 +87,10 @@ def test_manifest_refusals_keep_registry_codes(two_sets, capsys, case, reason):
     root, manifest = two_sets
     directory, _ = round_artifact_dir(round_inputs(root).session_dir)
     path = directory / RUN_MANIFEST_FILENAME
+    if case == "ambiguous":
+        for group, role in zip(manifest["sets"], ("woofer", "tweeter")):
+            group["capture_basis"]["role"] = role
+        path.write_text(json.dumps(manifest))
     if case == "missing":
         path.unlink()
     elif case == "unfinished":
@@ -98,6 +102,12 @@ def test_manifest_refusals_keep_registry_codes(two_sets, capsys, case, reason):
     assert (answer["status"], answer["reason"]) == ("refused", reason)
     assert reason in REASON_REGISTRY
     assert not list(root.glob("room*.json"))
+    if case == "ambiguous":
+        assert answer["detail"]["sets"] == [
+            {"set_id": group["set_id"], "candidate_id": group["capture_basis"].get("candidate_id"),
+             "role": group["capture_basis"]["role"], "take_count": sum(take["selected"] for take in group["takes"])}
+            for group in manifest["sets"]
+        ]
 
 
 @pytest.mark.parametrize("status", ["complete", "partial", "cancelled"])

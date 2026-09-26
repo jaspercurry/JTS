@@ -230,7 +230,7 @@ def packet_index(
                 mark = f" (below trusted floor {series.get('trusted_floor_hz')} Hz)" if row.get("below_trusted_floor") else ""
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
         lines.append(f"series {series['role']}: pose {_pose_token(series['pose'])}; " + "; ".join(stats)
-                     + f"; set {series['set_id']}; take {series['take_id']}"
+                     + f"; candidate {series.get('candidate_id')}; set {series['set_id']}; take {series['take_id']}"
                      + (f"; window {series['window']}" if series.get("window") else ""))
     lines += [f"crossover_band_spread=null; reason={reason}" for reason in dict.fromkeys(
         fit.get("crossover_band_spread_reason") for fit in packet["fits"]
