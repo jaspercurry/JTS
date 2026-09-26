@@ -1325,8 +1325,55 @@ _start_core_graph_units() {
     release_fanin_coupling_fence
 }
 
+# The rest of the runtime tail, once the core graph is back. "$1" is the
+# install profile; only `full` reconciles AEC.
+_converge_runtime_units() {
+    local profile="$1" unit
+    # Mux is core arbitration infrastructure, not a selectable source: start it
+    # on every install. Its role ExecCondition skips a bonded follower.
+    systemctl enable --now jasper-mux.service
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
+        2>/dev/null || true
+    reapply_source_intent
+    # A running wizard is on the old code; its .socket starts the new one.
+    for unit in "${WIZARD_UNITS[@]}"; do
+        systemctl stop "${unit}.service" 2>/dev/null || true
+    done
+    # Before the grouping and coupling passes, which call jasper-control's
+    # restart broker (jasper-fanin-coupling-auto.service is After= it); the
+    # low-memory build park may have stopped it.
+    restart_jasper_control_and_input
+    # Before the AEC reconcile, which takes over its accessory half on full, and
+    # before the park-record forget: where wake detection does not run, this
+    # reconciler owns jasper-voice (ADR-0217).
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+    if [[ "${profile}" == full ]]; then
+        # An absent Array parks voice instead of leaving it on an unfed UDP socket.
+        reconcile_aec_state
+    fi
+    reconcile_grouping_state
+    # After grouping, so the pass sees the settled active-leader state.
+    resolve_fanin_coupling_default
+    # Last step that can leave a core-graph unit deliberately stopped.
+    forget_core_graph_park_record
+    # Gated on the wizard's stash file, which main()'s migrate_wifi_guardian
+    # seeds after this function returns.
+    systemctl enable jasper-wifi-guardian.service
+    systemctl enable --now jasper-wifi-recover.timer
+    # Disarms StartLimitAction=reboot through runtime drop-ins only while boots loop.
+    systemctl enable jasper-bootloop-guard.service
+    enable_usb_hcd_recover
+    # A bare enable leaves the timer inactive until the next boot; the start
+    # refreshes identity before its first tick.
+    systemctl enable --now jasper-identity-reconcile.timer
+    systemctl start jasper-identity-reconcile.service || \
+        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl enable --now jasper-journal-review.timer || \
+        echo "  (journal-review timer not enabled — non-fatal)"
+}
+
 start_streambox_runtime_units() {
-    local unit
     _start_core_graph_units jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service jasper-source-intent-reconcile.service \
@@ -1336,37 +1383,8 @@ start_streambox_runtime_units() {
     # device-activated DHCP). Skips cleanly when the resolved role cannot
     # provide management transport or no UDC exists yet.
     enable_usbgadget
-    # Mux is core arbitration infrastructure, not a user-selectable source.
-    # Keep it available (role guard still parks followers); its ~1 Hz idle loop
-    # is cheaper and safer than coupling output policy to aggregate source state.
-    systemctl enable --now jasper-mux.service
     systemctl enable jasper-fanin-coupling-auto.service
-    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
-        2>/dev/null || true
-    reapply_source_intent
-    for unit in "${WIZARD_UNITS[@]}"; do
-        systemctl stop "${unit}.service" 2>/dev/null || true
-    done
-    reconcile_grouping_state
-    resolve_fanin_coupling_default
-    # Last step that can leave a core-graph unit deliberately stopped.
-    forget_core_graph_park_record
-    systemctl enable jasper-wifi-guardian.service
-    systemctl enable --now jasper-wifi-recover.timer
-    systemctl enable jasper-bootloop-guard.service
-    enable_usb_hcd_recover
-    systemctl enable --now jasper-identity-reconcile.timer
-    systemctl start jasper-identity-reconcile.service || \
-        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl enable --now jasper-journal-review.timer || \
-        echo "  (journal-review timer not enabled — non-fatal)"
-    # Enabling only arms these for the NEXT boot; deploy health checks this
-    # boot. Mirrors the full path: restart the bridge so an already-paired
-    # remote picks up new code, then let the reconciler publish the mic source
-    # a paired remote needs.
-    restart_jasper_control_and_input
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
-        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+    _converge_runtime_units streambox
 }
 
 mask_distro_background_units() {
@@ -1565,76 +1583,7 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
-
-    # Mux is core arbitration infrastructure, not a selectable source. Start it
-    # on a fresh install as well as enabling boot; its role ExecCondition skips
-    # a bonded follower safely.
-    systemctl enable --now jasper-mux.service
-    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
-        2>/dev/null || true
-    reapply_source_intent
-    # The wizard services are socket-activated now. Any currently-
-    # running instance is on the old code; stop it so the next incoming
-    # request brings up the new code via the .socket. Idempotent: if the
-    # service is already inactive (post-idle-exit or never started), the
-    # stop is a no-op.
-    for unit in "${WIZARD_UNITS[@]}"; do
-        systemctl stop "${unit}.service" 2>/dev/null || true
-    done
-    # jasper-input is always-on (HID accessory bridge) — restart so any
-    # already-plugged-in knob picks up new code without waiting for boot.
-    restart_jasper_control_and_input
-    # Optional adapter-backed mic sources are profile-gated. Reconcile after
-    # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
-    # without one never load the BLE decoder at all.
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
-        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
-
-    # Reconcile software AEC against whatever mic hardware is actually
-    # present right now. This replaces the old one-way "enable if
-    # Array is 6-ch" install step: if a previous install left voice on
-    # udp:9876 but the Array is currently absent, reconcile actively
-    # clears that stale state and parks voice instead of letting it
-    # watchdog-loop on an unfed UDP socket.
-    reconcile_aec_state
-    reconcile_grouping_state
-    # Converge the fan-in ring coupling (the only central transport) and resolve
-    # the USB combo (on a gadget box). Runs AFTER grouping reconcile so the pass
-    # sees the settled active-leader state. A no-op on an already-converged box
-    # (confirm path, no daemon bounce).
-    resolve_fanin_coupling_default
-    # Last step that can leave a core-graph unit deliberately stopped.
-    forget_core_graph_park_record
-    # WiFi profile guardian: oneshot at boot, gated by
-    # ConditionPathExists= on the wizard's stash file. Enabling is safe
-    # on fresh installs because the unit silently no-ops until the
-    # wizard saves once. main()'s migrate_wifi_guardian step, which runs
-    # after this function returns, seeds that stash for SSH-driven setup.
-    systemctl enable jasper-wifi-guardian.service
-    # WiFi recover timer: no resident RAM. Every few minutes it runs a tiny
-    # oneshot that exits after one NM active-connection read when WiFi is
-    # healthy; when WiFi is down it can run the Pi 5 scan-suppression
-    # repair and then delegate profile activation/recreation to the
-    # guardian. `--now` makes the first-deploy recovery loop live.
-    systemctl enable --now jasper-wifi-recover.timer
-    # Boot-loop guard: oneshot at boot; records the boot timestamp and
-    # disarms StartLimitAction=reboot via runtime drop-ins only when
-    # boots are looping. Safe on fresh installs (first boots never trip).
-    systemctl enable jasper-bootloop-guard.service
-    enable_usb_hcd_recover
-    # Identity reconciler: boot + 5-min timer; pure observer (writes
-    # only /var/lib/jasper/identity.env). `enable --now`, NOT bare
-    # `enable`: enable alone arms the timer for the NEXT boot but
-    # leaves it inactive until then — the same enable-vs-start trap as
-    # the wizard-socket lesson above. Caught on hardware 2026-06-11
-    # (timer inactive after first deploy; doctor's snapshot-staleness
-    # warn was the backstop). --now is idempotent on redeploys. The
-    # one-shot service `start` keeps identity fresh immediately so the
-    # allowlist/doctor don't wait for the first timer tick.
-    systemctl enable --now jasper-identity-reconcile.timer
-    systemctl start jasper-identity-reconcile.service || \
-        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl enable --now jasper-journal-review.timer
+    _converge_runtime_units full
     echo
     echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }
