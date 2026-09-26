@@ -29,13 +29,17 @@
      `compose` take no such input, so a candidate never binds a what-if.
   4. A banked round's contracts read the room documents its bank stored in `packet.json` (`room`), not
      the `room` view's file. A re-run `room` view is a view: it changes neither the contract that is
-     served and judged nor the fingerprint. A room the bank could not compute stays missing.
+     served and judged nor the fingerprint. A banked round that holds no room view by the name asked
+     says so: its room contract's `evidence_status` and `judge`'s refusal are `room_not_banked`, and the
+     next action is to measure a new room round. Nothing re-banks a round: `bank_round` returns an
+     existing bank as it is. The owner accepted this on #5814.
 - **Consequences:**
   - The bank pays for the packet once, and a reader reads a file.
   - A later round banked beside it, or a re-run `room` view, cannot move a banked round's
     fingerprint, and `status`, `contract` and `judge` read the same room evidence.
   - A stored packet records the contracts as the bank computed them. `contract` and `judge` serve
-    the contract code's current shape, so after a contract change the two can differ.
+    the contract code's current shape, so after a contract change the two can differ. The owner
+    accepted this on #5814, on condition that the difference is observable.
   - A round read without a stored packet fingerprints what it reads, as before.
   - A candidate composed while a rebuild had drifted from the stored value named a fingerprint no
     file kept. It matches nothing now, and it matched nothing after the next bank before.

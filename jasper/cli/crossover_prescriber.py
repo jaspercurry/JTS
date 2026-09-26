@@ -75,6 +75,8 @@ def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
         document = json.loads(read_source_bytes(str(source))) if isinstance(source, Path) else source
         median = document.get("median", document) if isinstance(document, Mapping) else document
         return read_room_median(median), room_median_sha256(median)
+    except RoomPrescriptionRefused:
+        raise
     except (OSError, ValueError, RecursionError) as exc:
         raise RoomPrescriptionRefused(ROOM_MEDIAN_UNAVAILABLE, str(exc)) from exc
 

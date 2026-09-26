@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_median,
     room_median_sha256,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import ROOM_NOT_BANKED, round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -335,6 +335,24 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
     assert (answer["code"], answer["detail"]["section"]) == ("set_required", "room")
     assert answer["detail"]["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}",
                                                     "role": "summed", "take_count": 0} for i in range(2)]
+
+
+def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys):
+    """A room view run after the bank is not the round's evidence (ADR-0371)."""
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    round_dir = bank_seat_round(tmp_path)
+    (round_dir / "packet.json").write_text(json.dumps({"room": []}))
+    (round_dir / "room.json").write_text(json.dumps({"median": _room_median()}))
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                "rationale": "room", "sections": {"room": _document()}}))
+    assert cli.main(["contract", "--round", str(round_dir), "--section", "room"]) == 0
+    assert json.loads(capsys.readouterr().out)["evidence_status"] == ROOM_NOT_BANKED
+    assert cli.main(["judge", str(path), "--round", str(round_dir), "--root", str(root)]) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["code"], answer["detail"]["section"], answer["next_action"]["id"]) == (
+        ROOM_NOT_BANKED, "room", "measure_room")
 
 
 @pytest.mark.parametrize("filters,code", [

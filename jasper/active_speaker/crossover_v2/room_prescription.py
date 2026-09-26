@@ -73,6 +73,7 @@ from .blend_prescription import (
     _FILTER_FIELDS,
 )
 from .room_analysis import RoomMedian, room_composition
+from .round_inputs import ROOM_NOT_BANKED
 
 __all__ = [
     "BOOST_NOT_ADMITTED",
@@ -143,6 +144,7 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     ROOM_MEDIAN_UNAVAILABLE,
+    ROOM_NOT_BANKED,
     LAYOUT_UNAVAILABLE,
     BOOST_NOT_ADMITTED,
     TAPER_VIOLATED,
@@ -201,10 +203,13 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
     deviation row per declared position — because a median read loosely would
     make the limits a property of the artifact's mistakes. Every fault is
     ``room_median_unavailable``: a median that cannot be read is evidence this
-    door does not have, whatever the reason.
+    door does not have, whatever the reason. A banked round that holds no room
+    view is ``room_not_banked``.
     """
     if not isinstance(raw, Mapping):
         _unavailable(f"a room median must be a mapping, got {type(raw).__name__}")
+    if raw.get("code") == ROOM_NOT_BANKED:
+        _refuse(ROOM_NOT_BANKED, "this round's bank holds no room view; one run after the bank is not its evidence")
     freqs = _median_array(raw.get("freqs_hz"), "freqs_hz")
     if freqs.size < 2 or not np.all(np.diff(freqs) > 0.0) or freqs[0] <= 0.0:
         _unavailable("freqs_hz must be a strictly increasing positive grid")

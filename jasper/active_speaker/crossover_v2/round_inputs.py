@@ -53,7 +53,7 @@ __all__ = [
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
     'round_inputs', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
-    'default_out', 'view_path',
+    'ROOM_NOT_BANKED', 'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
@@ -346,6 +346,10 @@ def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
 
 
+#: A banked round holds no room view by the name asked: one run after its bank is not its evidence (ADR-0371).
+ROOM_NOT_BANKED = "room_not_banked"
+
+
 def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:
     """The bank's copy of the room view it wrote as ``name``, or ``{}``."""
     return next((row for row in rows if isinstance(row, dict) and Path(str(row.get("out"))).name == name), {})
@@ -360,6 +364,8 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     banked_rooms = banked_packet(inputs).get("room")
     room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
             else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
+    if not room and inputs.banked:
+        room = {"median": {"code": ROOM_NOT_BANKED}}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})
