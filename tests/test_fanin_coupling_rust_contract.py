@@ -246,17 +246,7 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
 
 
 def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
-    # SF-1: the JASPER_FANIN_RING_SLOTS normalizer is a declared must-agree axis.
-    # BOTH sides fail loud on a present out-of-range value — no silent clamp,
-    # per repo doctrine. Otherwise a future arm script that resolved slots via the
-    # Python resolver could write an N-slot ioplug conf.d geometry while the
-    # daemon refuses to start on the same env (split-brain, fail-closed but
-    # maximally confusing on-Pi). This pins the exact agreed behavior:
-    #   unset      -> the same default (2) on both sides
-    #   2 and 16   -> accepted on both sides
-    #   17 (and other out-of-range) -> rejected on both sides
 
-    # Python side (runs live).
     assert resolve_ring_slots(None) == DEFAULT_FANIN_RING_SLOTS
     assert resolve_ring_slots(str(RING_SLOTS_MIN)) == RING_SLOTS_MIN
     assert resolve_ring_slots(str(RING_SLOTS_MAX)) == RING_SLOTS_MAX
@@ -264,12 +254,6 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
         with pytest.raises(ValueError):
             resolve_ring_slots(str(bad))
 
-    # Rust side (source pin — the crate does not build on macOS). The daemon
-    # bails on the same range with the same bound constants, and its from_env
-    # fail-loud is exercised by the Rust unit test in the CI rust job.
-    # jasper-fanin re-exports the ring crate's own bounds rather than
-    # restating them, so the values are pinned at their real source
-    # (jasper-ring) and fanin's re-export is pinned separately.
     text = _config_rs_text()
     assert ring_abi()["min_n_slots"] == RING_SLOTS_MIN, (
         "jasper_ring::MIN_N_SLOTS must match the Python RING_SLOTS_MIN bound"
@@ -277,28 +261,18 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     assert ring_abi()["max_n_slots"] == RING_SLOTS_MAX, (
         "jasper_ring::MAX_N_SLOTS must match the Python RING_SLOTS_MAX bound"
     )
-    # The out-of-range guard returns an Err, it does NOT clamp.
     opener = "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {"
     assert opener in text, (
         "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
     )
-    # Slice to the block's own closing brace, NOT to the first `}` in the body:
-    # the guard's message is a format string, so `{}` placeholders sit inside it
-    # and a first-`}` split truncates the block mid-literal (it silently read
-    # only 2 lines once the guard grew past its placeholders).
+    # Format placeholders contain braces; match the guard's closing line.
     body = text.split(opener, 1)[1]
-    guard, sep, _ = body.partition("\n        }\n")
+    guard, sep, _ = body.partition("\n    }\n")
     assert sep, "could not find the ring-slots guard's closing brace"
-    # Containment: the slice must stop at THIS guard and not run on into the
-    # next one. Without this, an over-capturing slice would satisfy every
-    # assertion below using text that belongs to the adjacent slot-shear guard,
-    # and the ring-slots guard could be gutted while the test stayed green.
     assert "must be a whole multiple" not in guard, (
         "the ring-slots guard slice over-captured into the adjacent "
         "slot-shear guard — the assertions below would pass on the wrong block"
     )
-    # Fail-loud is the promise; the spelling is not. `anyhow::bail!` and
-    # `return Err(anyhow::anyhow!(...))` both satisfy it.
     assert "anyhow::bail!" in guard or "return Err(anyhow::anyhow!(" in guard, (
         "Rust out-of-range ring slots must FAIL LOUD (bail!/return Err), not clamp"
     )
