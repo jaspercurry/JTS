@@ -115,7 +115,8 @@ async def level_to(
         budget = 1
         in_band: float | None = None
         remeasured = ever_unsettled = last_buried = False
-        while len(result.readings) < budget:
+        # An in-band reading always gets the read that confirms it.
+        while len(result.readings) < budget or in_band is not None:
             observed = reading(await read_level())
             assert gain is not None
             result.readings.append((gain, observed))
@@ -151,10 +152,14 @@ async def level_to(
                     magnitude = min(MAX_STEP_DB, max(1.0, DAMPING * abs(gap)))
                     await write(gain + (magnitude if gap >= 0 else -magnitude))
                 else:
-                    # Half the band under the target, so a 1:1 step lands inside it rather than on its edge.
+                    # A climb aims at the target: on a chain that rises at most 1 dB per fader dB it
+                    # lands at or under it. A fall aims inside the band.
                     await write(solve_gain(LevelReading(gain, observed), target_db=target_db_spl,
-                                           aim_under_db=tolerance_db / 2, max_raise_db=MAX_STEP_DB))
-        raise _Refused(REFUSE_LEVEL_UNSETTLED if ever_unsettled and not last_buried else _cap_reason())
+                                           tolerance_db=0.0 if gap > 0 else tolerance_db, max_raise_db=MAX_STEP_DB))
+        assert gain is not None
+        held = gain >= cap - 1e-9 and not (ever_unsettled and not last_buried)
+        raise _Refused(_cap_reason() if held or mic_is_not_observing(max_rise_db=max_rise, min_rise_db=min_rise)
+                       else REFUSE_LEVEL_UNSETTLED)
     except WiredSplCeilingExceeded as exc:
         result.reason = SPL_CEILING_EXCEEDED
         if gain is not None:

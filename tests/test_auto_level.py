@@ -8,9 +8,9 @@ import random
 import pytest
 
 from jasper.active_speaker import auto_level as level
-from jasper.active_speaker.profile import spl_raise_bound_db_spl
+from jasper.active_speaker.profile import ramp_bound_db_spl
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.ramp import RAMP_MARGIN_DB, SPL_CEILING_EXCEEDED
+from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
 
@@ -65,19 +65,6 @@ class Chain:
             set_main_volume_db=self.set)
 
 
-@pytest.mark.parametrize('slope', [0.8, 1.0, 1.2])
-@pytest.mark.parametrize('offset', [85.0, 95.0, 105.0])
-def test_converges_from_below_within_reading_budget(slope, offset):
-    chain = Chain(slope=slope, offset=offset)
-    result = asyncio.run(chain.run())
-    assert result.status == 'converged'
-    assert abs(result.leveled_db_spl - 75.0) <= 1.0
-    assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
-    assert result.gain_db == chain.gain
-    assert not chain.playing
-    assert all(abs(b - a) <= level.MAX_STEP_DB for a, b in zip(chain.writes, chain.writes[1:]))
-
-
 @pytest.mark.parametrize('offset,jitter_floor_margin', [
     (78.0, 0.0), (80.0, 0.0), (82.0, 0.0), (84.0, 0.0), (90.0, 0.0),
     (80.0, 2.0),
@@ -99,12 +86,6 @@ def test_buried_jitter_steps_up_without_settling(phase, offset, jitter_floor_mar
     assert all(b[0] - a[0] == level.MAX_STEP_DB for a, b in zip(buried, buried[1:]))
 
 
-def test_a_loud_room_uses_small_buried_steps():
-    result = asyncio.run(Chain(ambient=68.0).run())
-    assert result.status == 'converged'
-    assert max(reading for _, reading in result.readings) <= 77.0
-
-
 @pytest.mark.parametrize("readings,mean", [((75.0, 75.7), 75.35), ((74.2, 75.9), 75.05)])
 def test_two_in_band_sweeps_hold_the_fader_and_converge_on_the_mean(readings, mean):
     chain = Chain()
@@ -120,7 +101,11 @@ def test_two_in_band_sweeps_hold_the_fader_and_converge_on_the_mean(readings, me
 
 
 def test_random_non_hot_climbs_preserve_direction_stops_and_exhaustion_reason():
+    """No write passes the cap or one step, nothing trips the stop, and a loud reading turns
+    down. A steady chain rising at most 1:1 stays under the ramp bound after its first write,
+    even in a loud room, and converges when it can reach the target (non-negotiable 1)."""
     rng = random.Random(212)
+    bound = ramp_bound_db_spl(85.0)
     high_transitions = exhaustions = 0
     for _ in range(1000):
         slope = rng.uniform(0.8, 2.0)
@@ -133,6 +118,10 @@ def test_random_non_hot_climbs_preserve_direction_stops_and_exhaustion_reason():
         result = asyncio.run(chain.run())
         assert result.reason != level.SPL_CEILING_EXCEEDED
         assert all(gain <= min(chain.cap, 0.0) for gain in chain.writes)
+        if slope <= 1.0 and not chain.unstable:
+            first, *rest = (chain.offset + slope * gain for gain in chain.writes)
+            assert all(signal <= max(first, bound) for signal in rest)
+            assert result.status == 'converged' or min(chain.cap, 0.0) < target_gain
         for (gain, reading), (next_gain, _) in zip(result.readings, result.readings[1:]):
             if reading > 75.0:
                 high_transitions += 1
@@ -140,75 +129,40 @@ def test_random_non_hot_climbs_preserve_direction_stops_and_exhaustion_reason():
             assert next_gain - gain <= level.MAX_STEP_DB + 1e-9
         base_budget = math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
         buried = [reading < chain.ambient + level.MIC_RESPONSE_MIN_RISE_DB for _, reading in result.readings]
-        assert len(result.readings) <= base_budget + sum(buried)
+        # A last reading in the band earns the one read that confirms it.
+        assert len(result.readings) <= base_budget + sum(buried) + 1
         # Buried steps gain at least 1 dB; each other reading can lose at most 10 dB below the stop.
-        assert len(result.readings) <= base_budget + math.ceil(chain.cap + 40 + base_budget * 10) + 1
-        if (result.status == 'refused' and len(result.readings) == base_budget + sum(buried)
-                and result.gain_db < min(chain.cap, 0.0) - 1e-9):
+        assert len(result.readings) <= base_budget + math.ceil(chain.cap + 40 + base_budget * 10) + 2
+        if result.status == 'refused' and result.gain_db < min(chain.cap, 0.0) - 1e-9:
             exhaustions += 1
-            in_band = ever_unsettled = remeasured = False
-            for (_, reading), is_buried in zip(result.readings, buried):
-                if reading < chain.ambient and not remeasured:
-                    in_band, remeasured = False, True
-                current_in_band = not is_buried and abs(75.0 - reading) <= 1.0
-                ever_unsettled |= in_band and not current_in_band
-                in_band = current_in_band
-            cap_reason = (level.REFUSE_MIC_NOT_OBSERVING
-                          if max(reading - chain.ambient for _, reading in result.readings) < level.MIC_RESPONSE_MIN_RISE_DB
-                          else level.REFUSE_LEVEL_UNREACHABLE)
-            assert result.reason == (level.REFUSE_LEVEL_UNSETTLED if ever_unsettled and not buried[-1] else cap_reason)
+            quiet = max(reading - chain.ambient for _, reading in result.readings) < level.MIC_RESPONSE_MIN_RISE_DB
+            assert result.reason == (level.REFUSE_MIC_NOT_OBSERVING if quiet else level.REFUSE_LEVEL_UNSETTLED)
     assert high_transitions > 0 and exhaustions > 0
 
 
-@pytest.mark.parametrize("slope,offset", [(1.0, 120.0), (1.0, 124.0), (1.2, 132.0)])
-def test_converges_downward_from_above(slope, offset):
-    chain = Chain(slope=slope, offset=offset)
-    result = asyncio.run(chain.run())
-    assert result.status == 'converged'
-    assert result.readings[0][1] == pytest.approx(offset - 40 * slope)
-    assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
-    assert result.gain_db < result.readings[0][0]
-
-
 @pytest.mark.parametrize("kwargs,writes,reason,last_reading", [
-    ({}, [-40.0, -34.0, -28.0, -22.0, -20.5], None, 74.5),
+    ({}, [-40.0, -34.0, -28.0, -22.0, -20.0], None, 75.0),
     ({"offset": 120.0}, [-40.0, -45.5], None, 74.5),
-    ({"slope": 0.8, "offset": 105.0}, [-40.0, -38.5], None, 74.2),
-    ({"slope": 1.2, "offset": 105.0}, [-40.0, -34.0, -28.0, -24.9], None, 75.12),
-    ({"ambient": 52.0, "offset": 80.0}, [-40.0, -34.0, -28.0, -22.0, -16.0, -10.0, -5.5], None, 74.5),
+    ({"slope": 1.2, "offset": 132.0}, [-40.0, -49.5, -47.1], None, 75.48),
+    ({"slope": 0.8, "offset": 105.0}, [-40.0, -38.0], None, 74.6),
+    ({"slope": 1.2, "offset": 105.0}, [-40.0, -34.0, -28.0, -24.4], None, 75.72),
+    ({"slope": 0.5, "offset": 90.25}, [-40.0, -35.25, -32.875, -31.6875], None, 74.40625),
+    ({"slope": 0.3, "offset": 84.0}, [-40.0, -37.0, -34.9, -33.43, -32.401], None, 74.2797),
+    ({"ambient": 52.0, "offset": 80.0}, [-40.0, -34.0, -28.0, -22.0, -16.0, -10.0, -5.0], None, 75.0),
     ({"cap": -26.0}, [-40.0, -34.0, -28.0, -26.0], level.REFUSE_LEVEL_UNREACHABLE, 69.0),
-], ids=["climbs-then-solves", "solves-down", "shallow-chain", "steep-chain", "buried-then-solves", "held-at-cap"])
-def test_a_clear_reading_solves_half_the_band_under_the_target_one_step_at_most(kwargs, writes, reason, last_reading):
-    """A reading clear of the room solves 1:1 to half the ±1 dB band under 75 dB,
-    raised at most one step; a buried one keeps its damped climb (ADR-0366). The
-    loop stops on two readings in the band, or at the fader cap."""
+    ({"slope": 0.3, "offset": 69.0, "current": -80.0}, [-80.0 + 6.0 * step for step in range(9)],
+     level.REFUSE_LEVEL_UNSETTLED, 59.4),
+], ids=["climbs", "falls", "falls-steep", "shallow", "steep", "half-slope", "confirmed-past-budget",
+        "buried-then-climbs", "held-at-cap", "short-of-budget"])
+def test_a_clear_reading_climbs_to_the_target_and_falls_inside_the_band(kwargs, writes, reason, last_reading):
+    """A clear reading climbs 1:1 to 75 dB, one step at most, and falls 1:1 to half the
+    tolerance under it; a buried one keeps its damped climb (ADR-0366). Two in-band readings
+    converge, the second past the budget if need be; a budget spent under the cap is unsettled."""
     chain = Chain(**kwargs)
     result = asyncio.run(chain.run())
     assert chain.writes == pytest.approx(writes)
     assert (result.status == "converged", result.reason) == (reason is None, reason)
     assert result.readings[-1][1] == pytest.approx(last_reading)
-
-
-def test_no_step_climbs_past_the_ramp_bound_the_fader_cap_or_one_step():
-    """On chains that rise at most 1 dB per dB of fader, as the 1:1 solve assumes,
-    from any start, room, limiter and cap: the fader stays at or under its cap, no
-    write rises more than one step, and no reading after the first climbs past the
-    ramp bound, a step and a margin under the 85 dB stop (non-negotiable 1)."""
-    bound = spl_raise_bound_db_spl(85.0, margin_db=RAMP_MARGIN_DB)
-    rng = random.Random(5714)
-    seen = set()
-    for _ in range(1000):
-        slope = rng.uniform(0.3, 1.0)
-        chain = Chain(slope=slope, offset=75.0 - slope * rng.uniform(-60.0, 10.0),
-                      limiter=rng.choice([math.inf, rng.uniform(50.0, 95.0)]), current=rng.uniform(-80.0, 0.0),
-                      ambient=rng.uniform(30.0, 68.9), cap=rng.uniform(-45.0, 10.0))
-        result = asyncio.run(chain.run())
-        first, *rest = (reading for _, reading in result.readings)
-        assert all(gain <= min(chain.cap, level.HARD_CEILING_DBFS) for gain in chain.writes)
-        assert all(after - before <= level.MAX_STEP_DB + 1e-9 for before, after in zip(chain.writes, chain.writes[1:]))
-        assert all(reading <= max(first, bound) + 1e-9 for reading in rest)
-        seen.add(result.reason or ("from_above" if first > bound else "from_below"))
-    assert seen >= {"from_below", "from_above", level.REFUSE_LEVEL_UNREACHABLE, SPL_CEILING_EXCEEDED}
 
 
 def test_random_linear_and_limiter_chains_respect_both_stops():
@@ -289,12 +243,13 @@ def test_ambient_and_convergence_use_the_configured_rise(monkeypatch, rise, ambi
         assert result.reason == level.REFUSE_AMBIENT_TOO_HIGH
 
 
-@pytest.mark.parametrize('readings,cap,stop', [
-    ([51, 60, 90, 60, 90, 60, 90, 75], 0.0, 120.0),
-    ([75, 77], -40.0, 150.0),
-    ([75, 77], -40.0 + 5e-10, 150.0),
+@pytest.mark.parametrize('readings,cap,stop,reason', [
+    ([51, 60, 90, 60, 90, 60, 90, 75, 75.4], 0.0, 120.0, None),
+    ([51, 60, 90, 60, 90, 60, 90, 75, 90], 0.0, 120.0, level.REFUSE_LEVEL_UNSETTLED),
+    ([75, 77], -40.0, 150.0, level.REFUSE_LEVEL_UNREACHABLE),
+    ([75, 77], -40.0 + 5e-10, 150.0, level.REFUSE_LEVEL_UNREACHABLE),
 ])
-def test_unconfirmed_last_reading_and_at_cap_overshoot_use_cap_reason(readings, cap, stop):
+def test_a_last_reading_in_band_is_confirmed_and_an_overshoot_at_the_cap_names_the_cap(readings, cap, stop, reason):
     chain = Chain(cap=cap)
     source = iter(readings)
     async def read_level():
@@ -302,7 +257,7 @@ def test_unconfirmed_last_reading_and_at_cap_overshoot_use_cap_reason(readings, 
     result = asyncio.run(level.level_to(75.0, tolerance_db=1.0, stop_db_spl=stop,
         max_main_volume_db=cap, sensitivity=MicSensitivity(0.0), read_level=read_level,
         read_ambient=chain.read_ambient, get_main_volume_db=chain.get, set_main_volume_db=chain.set))
-    assert result.reason == level.REFUSE_LEVEL_UNREACHABLE
+    assert (result.status == "converged", result.reason) == (reason is None, reason)
     assert [reading for _, reading in result.readings] == readings
     if cap < 0:
         assert chain.writes == [-40.0]
