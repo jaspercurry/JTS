@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""A stimulus's level in its own band, and the one gain solve (ADR-0364, ADR-0365)."""
+"""A stimulus's level in its own band, the one gain solve (ADR-0364, ADR-0365),
+and the two distance models that move a level between places (ADR-0366 §4)."""
 
 from __future__ import annotations
 
@@ -37,6 +38,14 @@ class LevelReading:
 def level_at_1m_db(level_db: float, distance_m: float) -> float:
     """A far-field reading at ``distance_m`` stated at 1 m by the 1/r law (ADR-0366 §4)."""
     return level_db + 20.0 * math.log10(distance_m)
+
+
+def piston_step_db(near_m: float, far_m: float, radius_m: float) -> float:
+    """How far a rigid piston's on-axis level falls from ``near_m`` to ``far_m``,
+    in its low-frequency limit, dB (negative moving away; ADR-0366 §4)."""
+    def reach(distance_m: float) -> float:
+        return math.hypot(distance_m, radius_m) - distance_m
+    return 20.0 * math.log10(reach(far_m) / reach(near_m))
 
 
 def _period_mean_squares(samples: np.ndarray, sample_rate: int, band_hz: tuple[float, float]) -> np.ndarray:
