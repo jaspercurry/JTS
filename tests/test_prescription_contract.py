@@ -52,10 +52,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "1509bdeaee4db5f2f58133f7f0a270db8d8baa0766817076b5e55c7625e2b2f7"),
-    ("mono", True, "28c5140f60db5adc1be7da7804fe6fa477de4590bc13ca4fa6cea556efcdf6a8"),
-    ("stereo", False, "1fa6433582327fb8a40f1dcdfbc2b6f884f7c16ad6eed389a02a4a6a967e64a1"),
-    ("stereo", True, "97490320e9eb2ddb4363a6d904fddf442c11f078f4fa260558fe61bec44c6899"),
+    ("mono", False, "f9eb9995a76e6c7ec130260a125a5ae32c14e760887b49e1f41726533cdfefe9"),
+    ("mono", True, "c54d1cc692946a6f561432f4ae7677fabc4ca14ce172ba1f70cf11e32ba2d286"),
+    ("stereo", False, "fb6c75acb3efa8ded17ccb957184b4bd554793870b84615108e42b67f0bc19dc"),
+    ("stereo", True, "402cbeb5f1b081d53ec26388cf5e836b6d6b199ea05e6960656ab4f5672309ee"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -154,7 +154,7 @@ def _contracts(bank: Path, session: Path):
     ("speaker", "alignment", alignment.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
     ("speaker", "topology", topology.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS),
     ("room", None, room.ROOM_PRESCRIPTION_REFUSAL_REASONS),
-    ("bass", None, bass.BASS_PRESCRIPTION_REFUSAL_REASONS),
+    ("bass", None, dynamic.DYNAMIC_BASS_REFUSAL_REASONS),
 ])
 def test_each_door_serves_an_authoring_schema_and_the_judges_codes(round_bank, section, door, codes):
     contracts = _contracts(*round_bank)
@@ -282,7 +282,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
-        "bass_evidence_unavailable", "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
+        "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
         "bass_delta_highpass_hz_invalid", "bass_detector_lowpass_hz_invalid", "bass_compressor_threshold_dbfs_invalid",
         "bass_compressor_factor_invalid", "bass_compressor_attack_s_invalid", "bass_compressor_release_s_invalid",
         "bass_low_boost_db_invalid", "bass_reference_level_db_invalid",
@@ -304,7 +304,7 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)
     assert contract["evidence_status"] == "evaluated"
-    assert set(contract["refusal_codes"]) == bass.BASS_PRESCRIPTION_REFUSAL_REASONS
+    assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
     levels = contract["evidence_status_detail"]["levels"]
     assert levels == bass_table_rows(bass_packet["bass_table"])
     for level in levels:
