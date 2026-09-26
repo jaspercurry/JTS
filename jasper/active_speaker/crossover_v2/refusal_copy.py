@@ -167,6 +167,7 @@ REASON_APPLY_FAILED = "apply_failed"
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
 REASON_ARM_HOST_STUCK = "arm_host_stuck"
+REASON_RETRIES_SPENT = "retries_spent"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -969,8 +970,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Something went wrong on the speaker during that measurement. "
         "Try again.",
     ),
-    "retries_spent": ReasonSpec(
-        "retries_spent", TEMPLATE_SESSION_RESTART, 0, "",
+    REASON_RETRIES_SPENT: ReasonSpec(
+        REASON_RETRIES_SPENT, TEMPLATE_SESSION_RESTART, 0, "",
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
