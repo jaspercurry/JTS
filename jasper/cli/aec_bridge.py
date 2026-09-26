@@ -71,14 +71,13 @@ import time
 import wave
 from queue import Queue, Empty
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
-    AEC3_SWEEP_SOURCE_XVF,
 )
 from jasper.watchdog import Heartbeat
 from jasper.log_event import log_event
@@ -258,28 +257,6 @@ class _MicStarvationWatchdog:
         self._frames = 0
         self._window_start = now
         return self._starved_windows >= self._max_starved
-
-
-def _process_optional_engine(
-    engine: Any,
-    input_bytes: bytes,
-    ref_bytes: bytes,
-    *,
-    failure_message: str | None,
-) -> tuple[Any | None, bytes, Exception | None]:
-    """Process one optional leg and disable it after its first failure.
-
-    The primary AEC engine deliberately does not use this helper: a primary
-    failure must still escape and trigger the bridge's systemd recovery path.
-    """
-    try:
-        return engine, engine.process(input_bytes, ref_bytes), None
-    except Exception as exc:  # noqa: BLE001
-        if failure_message is not None:
-            # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key
-            # is the record's file:line, so the caller's must survive.
-            logger.exception(failure_message, exc, stacklevel=2)
-        return None, b"", exc
 
 
 def _open_production_legs(
@@ -515,6 +492,25 @@ def _next_reference(ref_q: Queue, last_ref_bytes: bytes, window: _RmsWindow) -> 
         window.ref_starved_frames += 1
         _bridge_stats.inc("ref_starved_frames")
         return last_ref_bytes
+
+
+def _drain_raw0(raw0_q: Optional[Queue], raw0_emitter: LegEmitter) -> bytes:
+    """Take at most one truly-raw mic 0 frame (chip channel 2, no chip DSP).
+
+    Drained independently of mic_q so a backlog on one cannot stall the
+    other. The same PortAudio callback feeds both queues, so there is
+    nominally one new raw0 frame per iteration; a gap is simply skipped —
+    nothing time-aligns this stream to the AEC engine.
+    """
+    raw0_bytes = b""
+    if raw0_q is not None:
+        try:
+            raw0_bytes = raw0_q.get_nowait()
+        except Empty:
+            pass
+        if raw0_bytes:
+            raw0_emitter.emit(raw0_bytes)
+    return raw0_bytes
 
 
 def _drain_chip_beams(
@@ -817,20 +813,6 @@ def _aec_loop(
         production_chip_aec_enabled=production_chip_aec_enabled,
         usb_raw_q=usb_raw_q,
     )
-    xvf_raw0_engine = lanes.xvf_raw0_engine
-    xvf_raw0_webrtc_emitter = lanes.xvf_raw0_webrtc_emitter
-    xvf_raw0_dtln_engine = lanes.xvf_raw0_dtln_engine
-    xvf_raw0_dtln_emitter = lanes.xvf_raw0_dtln_emitter
-    ref_emitter = lanes.ref_emitter
-    usb_raw_emitter = lanes.usb_raw_emitter
-    usb_webrtc_emitter = lanes.usb_webrtc_emitter
-    usb_engine = lanes.usb_engine
-    usb_dtln_engine = lanes.usb_dtln_engine
-    usb_dtln_emitter = lanes.usb_dtln_emitter
-    aec3_sweep_paths = lanes.aec3_sweep_paths
-    emit_aec3_sweep = lanes.emit_aec3_sweep
-    dtln_engine = lanes.dtln_engine
-    dtln_emitter = lanes.dtln_emitter
     _publish_capture_plan(
         config, emitters, lanes, usb_mic_source=usb_mic_source,
         chip_beam_plan=chip_beam_plan, chip_aec_emitters=chip_aec_emitters,
@@ -876,8 +858,7 @@ def _aec_loop(
                 continue
 
             ref_bytes = last_ref_bytes = _next_reference(ref_q, last_ref_bytes, window)
-            if emit_ref:
-                ref_emitter.emit(ref_bytes)
+            lanes.emit_reference(ref_bytes)
 
             # Emit the chip-direct mic BEFORE running the AEC engine, so the
             # "AEC OFF" leg carries the same bytes AEC3 is about to receive
@@ -885,53 +866,9 @@ def _aec_loop(
             if not production_chip_aec_enabled:
                 raw_emitter.emit(mic_bytes)
 
-            # Truly-raw mic 0 (chip channel 2, no chip DSP), drained
-            # independently of mic_q so a backlog on one cannot stall the
-            # other. The same PortAudio callback feeds both queues, so there
-            # is nominally one new raw0 frame per iteration; at most one is
-            # drained and a gap is simply skipped — nothing time-aligns this
-            # stream to the AEC engine.
-            raw0_bytes = b""
-            if raw0_q is not None:
-                try:
-                    raw0_bytes = raw0_q.get_nowait()
-                except Empty:
-                    pass
-                if raw0_bytes:
-                    raw0_emitter.emit(raw0_bytes)
-                    if xvf_raw0_engine is not None:
-                        (
-                            xvf_raw0_engine,
-                            xvf_raw0_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            xvf_raw0_engine,
-                            raw0_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "XVF raw0 WebRTC process() crashed; disabling "
-                                "xvf_raw0_webrtc_aec3 path: %s"
-                            ),
-                        )
-                        if xvf_raw0_clean:
-                            xvf_raw0_webrtc_emitter.emit(xvf_raw0_clean)
-                    if xvf_raw0_dtln_engine is not None:
-                        (
-                            xvf_raw0_dtln_engine,
-                            xvf_raw0_dtln_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            xvf_raw0_dtln_engine,
-                            raw0_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "XVF raw0 DTLN process() crashed; disabling "
-                                "xvf_raw0_dtln path: %s"
-                            ),
-                        )
-                        if xvf_raw0_dtln_clean:
-                            xvf_raw0_dtln_emitter.emit(xvf_raw0_dtln_clean)
-
+            raw0_bytes = _drain_raw0(raw0_q, raw0_emitter)
+            if raw0_bytes:
+                lanes.process_raw0(raw0_bytes, ref_bytes)
             chip_frames = _drain_chip_beams(chip_aec_qs, chip_aec_emitters)
             if production_chip_aec_enabled:
                 clean_aec_only = _chip_primary_frame(
@@ -944,93 +881,11 @@ def _aec_loop(
                 clean_aec_only = engine.process(mic_bytes, ref_bytes)
             usb_host_mic.select(raw0_bytes, chip_frames)
 
-            # Optional DTLN-aec leg, run AFTER engine.process so the wake
-            # loop's primary mic stream keeps its normal critical path: the
-            # extra ~1.5 ms of DTLN inference per frame spends the slack in
-            # the 20 ms frame budget.
-            if dtln_engine is not None:
-                failed_dtln_engine = dtln_engine
-                dtln_engine, dtln_clean, dtln_error = _process_optional_engine(
-                    dtln_engine,
-                    mic_bytes,
-                    ref_bytes,
-                    failure_message=None,
-                )
-                if dtln_error is not None:
-                    # DTLN is observational: preserve the primary AEC3 path
-                    # and make this transition authoritative for the stats
-                    # writer and doctor. Nulling the engine keeps it to one
-                    # event rather than one warning per audio frame.
-                    with suppress(Exception):
-                        failed_dtln_engine.close()
-                    failed_dtln_emitter = emitters.pop("dtln", None)
-                    if failed_dtln_emitter is not None:
-                        with suppress(Exception):
-                            failed_dtln_emitter.close()
-                    dtln_emitter = None
-                    _bridge_stats.mark_leg_unavailable(
-                        "dtln", error=str(dtln_error)
-                    )
-                    log_event(
-                        logger,
-                        "aec_bridge.leg_degraded",
-                        leg="dtln",
-                        phase="process",
-                        action="disable",
-                        error_type=type(dtln_error).__name__,
-                        error=str(dtln_error),
-                        level=logging.WARNING,
-                        exc_info=(
-                            type(dtln_error),
-                            dtln_error,
-                            dtln_error.__traceback__,
-                        ),
-                    )
-                if dtln_clean:
-                    dtln_emitter.emit(dtln_clean)
-
-            if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_XVF:
-                emit_aec3_sweep(mic_bytes, ref_bytes)
-
-            if usb_raw_q is not None:
-                try:
-                    usb_bytes = usb_raw_q.get_nowait()
-                except Empty:
-                    usb_bytes = b""
-                if usb_bytes:
-                    usb_raw_emitter.emit(usb_bytes)
-
-                    if usb_engine is not None:
-                        usb_engine, usb_clean, _error = _process_optional_engine(
-                            usb_engine,
-                            usb_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "USB WebRTC process() crashed; disabling "
-                                "usb_webrtc path: %s"
-                            ),
-                        )
-                        if usb_clean:
-                            usb_webrtc_emitter.emit(usb_clean)
-
-                    if usb_dtln_engine is not None:
-                        (
-                            usb_dtln_engine,
-                            usb_dtln_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            usb_dtln_engine,
-                            usb_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "USB DTLN process() crashed; disabling "
-                                "usb_dtln path: %s"
-                            ),
-                        )
-                        if usb_dtln_clean:
-                            usb_dtln_emitter.emit(usb_dtln_clean)
-                    if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB:
-                        emit_aec3_sweep(usb_bytes, ref_bytes)
+            lanes.process_frame(
+                mic_bytes, ref_bytes, usb_raw_q,
+                sweep_source=config.aec3_sweep_input_source,
+                emitters=emitters, stats=_bridge_stats,
+            )
 
             # Written here, sample-aligned, so the WAVs hold exactly what the
             # bridge measured for its "attenuation" log and what the AEC
@@ -1056,17 +911,7 @@ def _aec_loop(
     finally:
         for emitter in emitters.values():
             emitter.close()
-        if xvf_raw0_engine is not None:
-            xvf_raw0_engine.close()
-        if xvf_raw0_dtln_engine is not None:
-            xvf_raw0_dtln_engine.close()
-        if usb_engine is not None:
-            usb_engine.close()
-        if usb_dtln_engine is not None:
-            usb_dtln_engine.close()
-        for path in aec3_sweep_paths:
-            with suppress(Exception):
-                path.engine.close()
+        lanes.close_engines()
         for wav in debug_wavs or ():
             with suppress(OSError):
                 wav.close()
