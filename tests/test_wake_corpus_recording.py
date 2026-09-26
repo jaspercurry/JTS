@@ -23,6 +23,7 @@ from jasper.cli import wake_enroll
 from jasper.wake_corpus import (
     bridge_session,
     clip_capture,
+    clip_store,
     recording_backend,
     runtime_probe,
     session_store,
@@ -1747,7 +1748,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
 
     entered = threading.Event()
     release = threading.Event()
-    original_write_wav = recording_backend.write_wav
+    original_write_wav = clip_store.write_wav
 
     def blocking_write_wav(path: Path, pcm: bytes) -> None:
         entered.set()
@@ -1755,7 +1756,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
             raise TimeoutError("test did not release clip WAV save")
         original_write_wav(path, pcm)
 
-    monkeypatch.setattr(recording_backend, "write_wav", blocking_write_wav)
+    monkeypatch.setattr(clip_store, "write_wav", blocking_write_wav)
     stopped: list[session_store.ClipMetadata] = []
     errors: list[BaseException] = []
 
