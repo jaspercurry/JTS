@@ -29,7 +29,7 @@ def bass_evidence_status(evidence: Mapping[str, Any]) -> dict[str, Any]:
     bound = _bound(evidence)
     table = bound.get("bass_table") or {}
     levels = bass_table_rows(table)
-    code = table["code"] if "code" in table else evidence.get("code")
+    code = table.get("code", evidence.get("code"))
     return {
         "evidence_status": "evaluated" if bound.get("bass") or levels else BASS_EVIDENCE_UNAVAILABLE,
         "evidence_status_detail": {"levels": levels, **({"code": code} if code is not None else {})},

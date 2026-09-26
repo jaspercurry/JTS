@@ -253,7 +253,8 @@ only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail. A bass section written
 before any bass round is admitted, and its `unqualified_boost_bands_hz` lists
-every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`.
+every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`
+(the 20–30 Hz band when none does).
 A tune stored before ADR-0359 (`low_boost_db`, `reference_level_db`) still
 loads and plays its full boost at every volume; a new document uses the form
 above.
