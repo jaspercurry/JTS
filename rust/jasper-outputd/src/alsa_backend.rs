@@ -1249,7 +1249,7 @@ pub fn open_playback_pcm(
         // 16 kHz/2ch/S16_LE and `validate_chip_ref_geometry` enforces it.
         format: SampleFormat::S16Le,
         buffer_frames,
-        manual_start: true,
+        manual_start: false,
     })
     .with_context(|| format!("configuring outputd {role} playback PCM {pcm_name}"))?;
     Ok((pcm, negotiated))
@@ -1272,7 +1272,20 @@ struct PcmConfig<'a> {
     /// contract (16 kHz/2ch/S16, `validate_chip_ref_geometry` exact).
     format: SampleFormat,
     buffer_frames: u32,
+    /// See [`start_threshold_frames`].
     manual_start: bool,
+}
+
+/// Where ALSA starts a stream by itself. A manual-start role (every DAC role)
+/// primes below a full buffer and calls `snd_pcm_start`. The chip reference
+/// starts once one period is queued: every frame queued ahead of it is lead the
+/// reference gives up against the speaker (#5729).
+fn start_threshold_frames(manual_start: bool, negotiated: NegotiatedPcm) -> u32 {
+    if manual_start {
+        negotiated.buffer_frames
+    } else {
+        negotiated.period_frames
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1414,15 +1427,13 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             },
         )?;
     }
-    if manual_start {
-        let swp = pcm
-            .sw_params_current()
-            .with_context(|| format!("reading outputd {role} SwParams"))?;
-        swp.set_start_threshold(negotiated.buffer_frames as i64)
-            .with_context(|| format!("setting outputd {role} start_threshold"))?;
-        pcm.sw_params(&swp)
-            .with_context(|| format!("installing outputd {role} SwParams"))?;
-    }
+    let swp = pcm
+        .sw_params_current()
+        .with_context(|| format!("reading outputd {role} SwParams"))?;
+    swp.set_start_threshold(start_threshold_frames(manual_start, negotiated) as i64)
+        .with_context(|| format!("setting outputd {role} start_threshold"))?;
+    pcm.sw_params(&swp)
+        .with_context(|| format!("installing outputd {role} SwParams"))?;
     validate_negotiated(role, pcm_name, negotiated, sample_rate, period_frames)?;
     Ok(negotiated)
 }
@@ -2528,6 +2539,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn only_the_chip_reference_starts_before_its_buffer_fills() {
+        // #5729: the DAC roles' prime depends on the full-buffer threshold; the
+        // chip reference starts at one period so its queue stays one period.
+        let negotiated = NegotiatedPcm {
+            sample_rate: 16_000,
+            channels: 2,
+            period_frames: 128,
+            buffer_frames: 256,
+        };
+        assert_eq!(start_threshold_frames(true, negotiated), 256);
+        assert_eq!(start_threshold_frames(false, negotiated), 128);
     }
 
     #[test]

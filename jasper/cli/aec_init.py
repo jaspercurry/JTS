@@ -181,9 +181,7 @@ class ReferenceWrite:
 
     delay: int
     # Cumulative frames_written AFTER this write, so it is strictly increasing
-    # across the ring and is the entry's identity.  The writer's priming write
-    # at PCM open carries no reference sequence, which is why the sequence is
-    # not the key.
+    # across the ring and is the entry's identity.
     frames: int
     sequence: int | None
     age_ms: int
