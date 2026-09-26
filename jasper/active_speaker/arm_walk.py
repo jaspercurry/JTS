@@ -903,8 +903,7 @@ class ArmWalk:
                 moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)
             offset = self._mover.offset_deg()
-        except (ArmWalkRefused, OSError, RuntimeError, ValueError,
-                subprocess.SubprocessError) as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             # Reported, not raised: this runs in the walk's own `finally`, and
             # raising would replace the walk's verdict with the park's.
             self._trail.emit("parked", level=logging.ERROR, ok=False,
