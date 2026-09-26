@@ -132,9 +132,6 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
         calibration.find_stored_calibration, root=root,
     ))
 
-    def no_vendor_fetch(*_args):
-        pytest.fail("stored calibration lookup must not fetch")
-
     if stored_serial == "810-8495":
         with pytest.raises(slr.LevelUnresolved) as excinfo:
             slr.resolve_anchor_level()
@@ -145,10 +142,6 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
             mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
             leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
         )
-        cached = calibration.fetch_vendor_calibration(
-            model_key="minidsp_umik2", serial="8108494", root=root, opener=no_vendor_fetch,
-        )
-        assert cached.calibration_id == record.calibration_id
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
 
 

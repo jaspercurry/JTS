@@ -17,6 +17,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.mic_identity import MIC_TIERS
+from jasper.cli import _vendor_calibration as vendor
 from tests._log_events import event_fields
 
 
@@ -170,7 +171,7 @@ def test_dayton_fetch_posts_form_and_follows_calibration_link():
         assert req == "https://support.daytonaudio.com/files/umm6_abc123.txt"
         return b"20 -1\n100 0\n1000 1\n"
 
-    text, source = calibration.fetch_dayton_calibration_text(
+    text, source = vendor.fetch_dayton_calibration_text(
         vendor_model="UMM-6",
         serial="ABC123",
         opener=fake_open,
@@ -210,7 +211,7 @@ def test_dayton_fetch_follows_query_param_download_link():
         assert "CalibrationFileName=cmm31555.txt" in req
         return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
 
-    text, source = calibration.fetch_dayton_calibration_text(
+    text, source = vendor.fetch_dayton_calibration_text(
         vendor_model="iMM-6",
         serial="cmm31555",
         opener=fake_open,
@@ -223,8 +224,7 @@ def test_dayton_fetch_follows_query_param_download_link():
 def test_dayton_fetch_never_follows_non_http_links():
     """SSRF/LFI guard: a non-http(s) link in the (external) vendor response
     must never be fetched. urljoin lets an absolute href override the scheme,
-    so without the guard a file:// link would be opened by the Pi's web
-    process.
+    so without the guard a file:// link would be opened by the fetch.
     """
     followed: list[str] = []
 
@@ -235,8 +235,8 @@ def test_dayton_fetch_never_follows_non_http_links():
         followed.append(req)
         return b"20 -1\n100 0\n1000 1\n"
 
-    with pytest.raises(calibration.CalibrationUpstreamError):
-        calibration.fetch_dayton_calibration_text(
+    with pytest.raises(vendor.CalibrationUpstreamError):
+        vendor.fetch_dayton_calibration_text(
             vendor_model="iMM-6",
             serial="cmm31555",
             opener=fake_open,
@@ -254,7 +254,7 @@ def test_minidsp_fetch_uses_serial_url_candidates():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    text, source = calibration.fetch_minidsp_calibration_text(
+    text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         opener=fake_open,
@@ -274,7 +274,7 @@ def test_minidsp_fetch_prefers_90deg_file_when_requested():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    _text, source = calibration.fetch_minidsp_calibration_text(
+    _text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         orientation="90deg",
@@ -300,7 +300,7 @@ def test_minidsp_requests_carry_a_non_default_user_agent():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    calibration.fetch_minidsp_calibration_text(
+    vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         opener=fake_open,
@@ -319,7 +319,7 @@ def test_minidsp_umik2_candidates_try_scripts_endpoints_first():
     Scripts endpoints must be probed first, with one legacy /images/ dir kept
     only as a trailing fallback.
     """
-    urls = calibration._minidsp_candidate_urls(
+    urls = vendor._minidsp_candidate_urls(
         "umik-2", "810-1234", orientation="unknown",
     )
     assert urls == [
@@ -331,7 +331,7 @@ def test_minidsp_umik2_candidates_try_scripts_endpoints_first():
 
 
 def test_minidsp_umik2_candidates_respect_orientation_priority():
-    urls = calibration._minidsp_candidate_urls(
+    urls = vendor._minidsp_candidate_urls(
         "umik-2", "810-1234", orientation="90deg",
     )
     assert urls[0] == (
@@ -349,7 +349,7 @@ def test_minidsp_umik2_fetch_uses_scripts_endpoint():
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    text, source = calibration.fetch_minidsp_calibration_text(
+    text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-2",
         serial="810-1234",
         opener=fake_open,
@@ -378,8 +378,8 @@ def test_minidsp_umik2_fetch_rejects_http_200_error_page():
             return error_page
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    with pytest.raises(calibration.CalibrationNotFoundError):
-        calibration.fetch_minidsp_calibration_text(
+    with pytest.raises(vendor.CalibrationNotFoundError):
+        vendor.fetch_minidsp_calibration_text(
             vendor_model="umik-2",
             serial="810-1234",
             opener=fake_open,
@@ -392,7 +392,7 @@ def test_fetch_vendor_calibration_stores_known_mic_record(tmp_path: Path):
     def fake_open(req, timeout):
         return b"20 -1\n100 0\n1000 1\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1",
         serial="700-1234",
         root=tmp_path,
@@ -421,7 +421,7 @@ def test_fetch_vendor_calibration_stamps_0deg_from_the_winning_url(tmp_path: Pat
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert record.source.endswith("/7001234.txt")
@@ -437,7 +437,7 @@ def test_fetch_vendor_calibration_stamps_90deg_from_the_winning_url(tmp_path: Pa
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert record.source.endswith("_90deg.txt")
@@ -457,7 +457,7 @@ def test_fetch_vendor_calibration_stamps_real_orientation_regardless_of_hint(
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1",
         serial="700-1234",
         orientation="unknown",  # the phone flow's literal default
@@ -475,7 +475,7 @@ def test_fetch_vendor_calibration_dayton_orientation_unaffected(tmp_path: Path):
     def fake_open(req, timeout):
         return b"20 -1\n100 0\n1000 1\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="ABC123", root=tmp_path, opener=fake_open,
     )
     assert record.provider == "dayton_audio"
@@ -582,12 +582,12 @@ def test_fetch_vendor_calibration_reuses_stored_record(tmp_path: Path):
             )
         return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
 
-    r1 = calibration.fetch_vendor_calibration(
+    r1 = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
     )
     after_first = calls["n"]
     assert after_first > 0  # first lookup hit the vendor
-    r2 = calibration.fetch_vendor_calibration(
+    r2 = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
     )
     assert calls["n"] == after_first  # repeat lookup did NOT hit the vendor
@@ -661,7 +661,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    first = calibration.fetch_vendor_calibration(
+    first = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert first.orientation == "90deg"
@@ -671,7 +671,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
     def boom(req, timeout):
         raise AssertionError("must not re-fetch from the vendor on a cache hit")
 
-    second = calibration.fetch_vendor_calibration(
+    second = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=boom,
     )
     assert second.orientation == "90deg"
@@ -767,7 +767,7 @@ def test_vendor_fetched_umik_is_stored_as_the_negated_response(tmp_path: Path):
     def fake_open(req, timeout):
         return UMIK_0DEG_CAL.encode("utf-8")
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik2", serial="810-8494", root=tmp_path,
         opener=fake_open,
     )
@@ -797,7 +797,7 @@ def test_vendor_fetched_dayton_is_also_stored_as_a_response_curve(tmp_path: Path
     def fake_open(req, timeout):
         return b"20 -1\n1000 0\n20000 2\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="ABC123", root=tmp_path,
         opener=fake_open,
     )
