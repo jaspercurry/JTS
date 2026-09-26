@@ -63,6 +63,7 @@ StopGeneration = tuple[str, RecordingTask]
 def start_recording(
     backend: RecordingBackend, condition: str, distance: str,
 ) -> dict[str, str]:
+    """Start one clip's capture; the caller holds the lifecycle transaction."""
     if condition not in CONDITIONS:
         raise ValueError(
             f"unknown condition {condition!r}; expected {CONDITIONS}",
@@ -84,8 +85,6 @@ def start_recording(
         if backend._current is not None or backend._starting_clip_id is not None:
             raise StateError("recording already in progress")
         capture_plan = dict(backend._capture_plan or {})
-        # Reserve the slot — concurrent calls now see this and
-        # refuse cleanly.
         backend._starting_clip_id = clip_id
         # Per-session leg selection. Built under the lock so the
         # session's clips all share one leg set.
@@ -205,8 +204,8 @@ def _mute_poll(backend: RecordingBackend, generation: StopGeneration) -> None:
 def _auto_stop_threadsafe(
     backend: RecordingBackend, generation: StopGeneration,
 ) -> None:
-    """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
-    elapses. Triggers stop_recording on a worker thread so the
+    """Fires on the backend loop when the clip reaches the backend's
+    max duration. Triggers stop_recording on a worker thread so the
     loop thread doesn't block on its own sync method."""
     _spawn_safety_worker(
         backend, generation, auto=True, mute_stopped=False,
@@ -470,6 +469,8 @@ def _stop_with_recovery(
         return True
     _quiesce_current_capture(backend, generation)
     try:
+        # Through the backend, not this module's stop_recording: the
+        # retry depends on the lifecycle transaction refusing while busy.
         backend.stop_recording(
             auto=auto,
             mute_stopped=mute_stopped,
@@ -552,8 +553,9 @@ def _stop_recording(
         if backend._mute_poll_handle is not None:
             backend._mute_poll_handle.cancel()
         backend._mute_poll_handle = None
-        # Clear state up-front so a second Stop click during the
-        # save isn't a confusing no-op.
+        # Clear state up-front: while the clip saves, is_recording(),
+        # /api/status and the safety stops' generation checks already
+        # treat it as stopped.
         backend._current = None
         backend._current_clip_id = None
         backend._current_meta = None

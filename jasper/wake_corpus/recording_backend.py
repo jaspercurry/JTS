@@ -132,9 +132,9 @@ class RecordingBackend:
         self._current_plan_conformance: dict[str, Any] | None = None
         # Sentinel: set inside _lock when a start_recording call has
         # passed validation but the (slow) RecordingTask.start() hasn't
-        # finished yet. Concurrent start attempts see this and refuse
-        # with the correct "already in progress" error rather than
-        # racing into a UDP-bind-failed error.
+        # finished yet, so is_recording() counts the clip while its UDP
+        # ports bind. A concurrent Start is refused by _lifecycle_lock
+        # before it reaches this.
         self._starting_clip_id: str | None = None
         self._auto_stop_handle: Any | None = None  # asyncio.TimerHandle
         self._mute_poll_handle: Any | None = None  # asyncio.TimerHandle

@@ -26,11 +26,11 @@ from jasper.wake_corpus import (
     clip_capture,
     clip_recording,
     clip_store,
-    errors,
     recording_backend,
     runtime_probe,
     session_store,
 )
+from jasper.wake_corpus.errors import NoRecordingError
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
@@ -242,7 +242,7 @@ def test_start_recording_rejects_double_start(backend) -> None:
 
 def test_stop_recording_without_start_raises(backend) -> None:
     backend.begin_session("jasper")
-    with pytest.raises(errors.NoRecordingError):
+    with pytest.raises(NoRecordingError):
         backend.stop_recording()
 
 
