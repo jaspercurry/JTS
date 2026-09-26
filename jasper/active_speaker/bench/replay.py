@@ -19,6 +19,7 @@ from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
 from jasper.json_fields import sha256_file
 
+from ..graph_safety import view_from_yaml_dict
 from .derivation import ArtifactHeader, derive_offline_render_config
 from .render import DEPLOYED_PROCESSING_PRECISION, RenderBounds, render_config, resolve_render_binary
 
@@ -40,8 +41,8 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float,
     derived = derive_offline_render_config(graph.read_text(), roles=None,
         capture_filename=str(stimulus.resolve()), capture_header=header,
         playback_filename=str(raw), processing_precision=DEPLOYED_PROCESSING_PRECISION)
-    if bass_reference_db is None and any(item.get("parameters", {}).get("fader") == "Aux1"
-                                         for item in yaml.safe_load(derived.yaml_text)["filters"].values()):
+    if bass_reference_db is None and any(filter_.params.get("fader") == "Aux1" for filter_ in
+                                         view_from_yaml_dict(yaml.safe_load(derived.yaml_text)).filters.values()):
         raise ValueError("dsp_replay_fader_invalid")
     out.mkdir(parents=True, exist_ok=True)
     config.write_text(derived.yaml_text)

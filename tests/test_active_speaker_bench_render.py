@@ -70,6 +70,7 @@ def test_only_a_graph_that_reads_aux1_takes_a_bass_reference(tmp_path, monkeypat
     source = yaml.safe_load(_emit())
     if taper:
         source["filters"]["bass_ext_dynamic_loudness"] = {"type": "Loudness", "parameters": {"fader": "Aux1"}}
+        source["pipeline"].append({"type": "Filter", "channels": [0], "names": ["bass_ext_dynamic_loudness"]})
     graph, stimulus = tmp_path / "graph.yml", tmp_path / "tone.wav"
     graph.write_text(yaml.safe_dump(source))
     with wave.open(str(stimulus), "wb") as wav:
