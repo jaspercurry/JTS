@@ -30,6 +30,10 @@ from .chip_aec.policy import (
 from .aec.bridge_engines import DTLN_ENABLED_ENV
 from .env_load import parse_bool_value
 from .mics import xvf3800
+from .mics.profile_ids import (
+    PROFILE_AUTO, PROFILE_CUSTOM, PROFILE_DIRECT_MIC,
+    PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING, PROFILE_XVF_SOFTWARE_AEC3,
+)
 from .mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CHIP_AEC_ENABLED_ENV,
@@ -57,13 +61,6 @@ WAKE_LEG_DEFAULTS: tuple[tuple[str, str, bool], ...] = (
     ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", False),
     ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", False),
 )
-
-PROFILE_AUTO = "auto"
-PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
-PROFILE_XVF_CHIP_AEC_TESTING = "xvf_chip_aec_testing"
-PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
-PROFILE_DIRECT_MIC = "direct_mic"
-PROFILE_CUSTOM = "custom"
 
 SELECTABLE_PROFILES = (
     PROFILE_AUTO,
