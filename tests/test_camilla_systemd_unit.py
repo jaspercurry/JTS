@@ -35,8 +35,9 @@ RECOVER_UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla-recover.service"
 )
-INSTALL_SH = (
-    Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
+WEB_SERVICES_SH = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "lib" / "install" / "web-services.sh"
 )
 
 
@@ -169,7 +170,7 @@ def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons(
     flows. Repair all generated YAMLs, not just active-speaker baselines.
     """
 
-    body = INSTALL_SH.read_text()
+    body = WEB_SERVICES_SH.read_text()
     assert "-name '*.yml'" in body
     assert "-exec chgrp jasper {} +" in body
     assert "-exec chmod 0640 {} +" in body

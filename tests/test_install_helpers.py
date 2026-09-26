@@ -2140,7 +2140,7 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     """The success marker must be written tempfile-then-rename so a torn
     write (power loss mid-`cat`) can't leave a half-line the direction
     guard misreads. Mirrors persist_install_profile."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = (_INSTALL_LIB_DIR / "build-manifest.sh").read_text(encoding="utf-8")
     assert "build.txt.tmp.$$" in text
     assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
 
@@ -2297,7 +2297,7 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
     resolve the SHA directly (deploy env → git → prior manifest), not read
     the not-yet-updated manifest — or a deploy would ship the prior SHA's
     cache key and browsers wouldn't bust the /assets cache."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = (_INSTALL_LIB_DIR / "web-services.sh").read_text(encoding="utf-8")
     start = text.index("install_management_static_assets() {")
     fn = text[start: text.index("\ninstall_nginx_site() {", start)]
     assert 'app_css_ver="$(resolve_build_sha_short)"' in fn
