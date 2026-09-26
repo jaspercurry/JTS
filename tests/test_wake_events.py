@@ -35,7 +35,7 @@ import pytest
 
 from tests._log_events import event_fields
 
-from jasper import wake_events
+from jasper import atomic_io, wake_events
 from jasper.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES,
     ROLLED_OFF_SENTINEL,
@@ -508,8 +508,6 @@ async def test_attach_audio_is_atomic_no_partial_wav_visible(
     renames: list[tuple[str, bool]] = []
 
     class _ObservingOs:
-        """`os` as the module sees it, recording every rename."""
-
         def __getattr__(self, name: str):
             return getattr(os, name)
 
@@ -517,7 +515,7 @@ async def test_attach_audio_is_atomic_no_partial_wav_visible(
             renames.append((Path(dst).name, Path(dst).exists()))
             os.replace(src, dst)
 
-    monkeypatch.setattr(wake_events, "os", _ObservingOs())
+    monkeypatch.setattr(atomic_io, "os", _ObservingOs())
 
     s = WakeEventStore(tmp_path)
     s.open()

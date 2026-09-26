@@ -23,20 +23,21 @@ from jasper.log_event import json_mode_enabled
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    ("value", "expected", "log_expected"),
     [
-        *((v, True) for v in ("1", "true", "yes", "on", "enabled", " TrUe ", "ENABLED\n")),
-        *((v, False) for v in ("0", "false", "no", "off", "disabled", " Off ")),
-        *((v, None) for v in (None, "", "  ", "unknown", "y", "2")),
+        *((v, True, True) for v in ("1", "true", "yes", "on", "enabled", " TrUe ", "ENABLED\n")),
+        *((v, False, False) for v in ("0", "false", "no", "off", "disabled", " Off ", "n", "disable")),
+        *((v, None, False) for v in (None, "", "  ", "unknown", "2")),
+        *((v, True, False) for v in ("y", "enable", "\"yes\"", "'1'")),
     ],
 )
 def test_parse_bool_value_reads_the_shared_vocabulary(
-    value: str | None, expected: bool | None,
+    value: str | None, expected: bool | None, log_expected: bool,
 ) -> None:
     assert parse_bool_value(value) is expected
     # log_event keeps a stdlib-only copy of the truthy half.
     env = {} if value is None else {"JASPER_LOG_JSON": value}
-    assert json_mode_enabled(env) is (expected is True)
+    assert json_mode_enabled(env) is log_expected
 
 
 @pytest.mark.parametrize(
@@ -183,3 +184,16 @@ def test_outputd_env_readability_preserves_layering_and_optional_files(
     assert env_load.outputd_reconciled_env() == expected
     with pytest.raises(OSError):
         env_load.outputd_reconciled_env(require_readable=True)
+
+
+@pytest.mark.parametrize(
+    ("raw", "default", "expected"),
+    [
+        *((raw, False, True) for raw in ("1", "on", "true", "yes", "y", "enabled", "ON", "'1'", '"yes"')),
+        *((raw, True, False) for raw in ("0", "off", "false", "no", "n", "disabled", "", "  ", " 0 ")),
+        ("garbage", True, True),
+        ("garbage", False, False),
+    ],
+)
+def test_parse_bool_value_preserves_explicit_env_defaults(raw, default, expected):
+    assert parse_bool_value(raw, default) is expected

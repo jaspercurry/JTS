@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Apply one observed mic/AEC state, preserving service handover ordering."""
+"""Apply mic/AEC state in service handover order."""
 from __future__ import annotations
 
 import argparse
@@ -21,11 +21,12 @@ from jasper.aec_ready import aec_bridge_ready_marker_path
 from jasper.atomic_io import atomic_write_json, locked_upsert_env_file
 from jasper.audio_profile_state import (
     WAKE_LEG_DEFAULTS, infer_audio_input_profile, intent_from_env,
-    normalize_aec_mode, normalize_audio_input_profile, parse_env_bool,
+    normalize_aec_mode, normalize_audio_input_profile,
     resolve_profile_wake_legs,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.env_file import parse_env_mapping, quote_env_value, read_env_file, read_env_file_text
+from jasper.env_load import parse_bool_value
 from jasper.mics import xvf3800
 from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.voice.input_presence import voice_input_absent_marker_path
@@ -437,8 +438,8 @@ class Reconcile:
         self.profile = normalize_audio_input_profile(raw_profile)
         self.values["JASPER_AUDIO_INPUT_PROFILE"] = self.profile
         self.mode = normalize_aec_mode(self.values.get("JASPER_AEC_MODE", "auto"))
-        self.observe_ref = parse_env_bool(self.values.get("JASPER_AEC_CHIP_REF_OBSERVE", "0"))
-        self.legs = [parse_env_bool(self.values.get(key) or str(int(default)), default) for _, key, default in WAKE_LEG_DEFAULTS]
+        self.observe_ref = parse_bool_value(self.values.get("JASPER_AEC_CHIP_REF_OBSERVE", "0"), False)
+        self.legs = [parse_bool_value(self.values.get(key) or str(int(default)), default) for _, key, default in WAKE_LEG_DEFAULTS]
         normalized = {"JASPER_AEC_MODE": self.mode,
                       "JASPER_AEC_CHIP_REF_OBSERVE": str(int(self.observe_ref))}
         normalized.update({key: str(int(leg)) for (_, key, _), leg in zip(WAKE_LEG_DEFAULTS, self.legs)})
