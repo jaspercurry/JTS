@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import program as program_mod
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.program import (
     preceding_silence_s, segment_sweep_meta,

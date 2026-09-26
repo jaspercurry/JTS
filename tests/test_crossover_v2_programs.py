@@ -70,7 +70,7 @@ from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, solo_target
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
     KIND_SUMMED_SWEEP,

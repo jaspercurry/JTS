@@ -34,7 +34,7 @@ from jasper.active_speaker.program_admission import (
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     DEFAULT_TWEETER_SWEEP_S,
     DEFAULT_WOOFER_SWEEP_S,

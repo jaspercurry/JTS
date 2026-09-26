@@ -15,7 +15,7 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_COURTESY_TONE,

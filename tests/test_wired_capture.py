@@ -51,7 +51,7 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus
 from jasper.active_speaker.crossover_v2.wired_stimulus import WiredStimulusCapture
 from jasper.active_speaker.profile import ramp_bound_db_spl
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import (

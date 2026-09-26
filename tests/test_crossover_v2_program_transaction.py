@@ -58,7 +58,7 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.active_speaker.program_playback import ProgramPlaybackError
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-from jasper.audio_measurement.playback import (
+from jasper.audio_measurement.admission.playback import (
     PlaybackError, PlaybackFailureCode, PlaybackCleanupState, PlaybackObservation,
     WavPlaybackCancelled, WavPlaybackCancelledBeforeSpawn,
 )

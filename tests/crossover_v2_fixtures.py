@@ -54,7 +54,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav

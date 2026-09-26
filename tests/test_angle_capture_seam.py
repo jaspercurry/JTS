@@ -63,7 +63,7 @@ from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferr
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import (
     cloud_position_record,
