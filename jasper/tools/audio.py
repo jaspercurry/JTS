@@ -58,53 +58,37 @@ def _pair_follower_active() -> bool:
     return effective_follower_leader_addr(load_config()) is not None
 
 
-def make_audio_tools(coordinator: "VolumeCoordinator"):
-    """Build volume-control tools backed by the source-aware coordinator.
+async def _pair_volume(path: str, body: dict | None = None) -> dict | None:
+    """None → not a bonded follower (use the local coordinator).
+    A dict → the pair-volume result to return, or an `error` the LLM
+    speaks — never fall back to the local coordinator on failure,
+    whose writes are inaudible while bonded (a lie to the user)."""
+    if not _pair_follower_active():
+        return None
+    client = _get_control_client()
+    try:
+        if body is None:
+            resp = await client.get(path)
+        else:
+            resp = await client.post(path, body)
+    except ControlError as e:
+        log_event(
+            logger, "volume.pair_tool_forward_failed", path=path, error=e,
+            level=logging.WARNING,
+        )
+        return {"error": "Couldn't reach the pair leader to change the "
+                         "volume. The other speaker may be offline."}
+    payload = resp.json()
+    payload = payload if isinstance(payload, dict) else {}
+    if not resp.ok:
+        # jasper-control relays the leader's own error verdicts
+        # (status + body) — pass the specific reason to the LLM.
+        return {"error": str(payload.get("error")) if payload.get("error")
+                else "The pair leader rejected the volume change."}
+    return payload
 
-    The coordinator's `set_listening_level` / `adjust_listening_level`
-    methods push to the active source's own attenuator (or CamillaDSP
-    when idle) and persist the canonical level. Mute state is
-    coordinator-internal so a daemon restart doesn't lose the pre-mute
-    level.
-    """
 
-    async def _pair_volume(path: str, body: dict | None = None) -> dict | None:
-        """None → not a bonded follower (use the local coordinator).
-        A dict → the pair-volume result to return, or an `error` the LLM
-        speaks — never fall back to the local coordinator on failure,
-        whose writes are inaudible while bonded (a lie to the user)."""
-        if not _pair_follower_active():
-            return None
-        client = _get_control_client()
-        try:
-            if body is None:
-                resp = await client.get(path)
-            else:
-                resp = await client.post(path, body)
-        except ControlError as e:
-            log_event(
-                logger,
-                "volume.pair_tool_forward_failed",
-                path=path,
-                error=e,
-                level=logging.WARNING,
-            )
-            return {
-                "error": "Couldn't reach the pair leader to change the "
-                         "volume. The other speaker may be offline.",
-            }
-        payload = resp.json()
-        payload = payload if isinstance(payload, dict) else {}
-        if not resp.ok:
-            # jasper-control relays the leader's own error verdicts
-            # (status + body) — pass the specific reason to the LLM.
-            return {
-                "error": str(payload.get("error"))
-                if payload.get("error")
-                else "The pair leader rejected the volume change.",
-            }
-        return payload
-
+def _get_volume_tool(coordinator: "VolumeCoordinator"):
     @tool(labels=("music", "volume"))
     async def get_volume() -> dict:
         """Return the current speaker volume as a percentage 0-100.
@@ -126,6 +110,10 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         state = coordinator.get_volume_state()
         return {"percent": state.effective_percent}
 
+    return get_volume
+
+
+def _set_volume_tool(coordinator: "VolumeCoordinator"):
     @tool(labels=("music", "volume"))
     async def set_volume(percent: int) -> dict:
         """Set speaker volume to an absolute percentage 0-100.
@@ -144,6 +132,10 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         applied = await coordinator.set_listening_level(percent)
         return {"ok": True, "percent": applied}
 
+    return set_volume
+
+
+def _adjust_volume_tool(coordinator: "VolumeCoordinator"):
     @tool(labels=("music", "volume"))
     async def adjust_volume(delta_percent: int) -> dict:
         """Adjust speaker volume by a relative delta in percent
@@ -166,6 +158,10 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         applied = await coordinator.adjust_listening_level(int(delta_percent))
         return {"ok": True, "percent": applied}
 
+    return adjust_volume
+
+
+def _mute_tool(coordinator: "VolumeCoordinator"):
     @tool(labels=("music", "volume", "mute"))
     async def mute() -> dict:
         """Mute the speaker. Unmute restores the prior level.
@@ -180,6 +176,10 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         await coordinator.mute()
         return {"ok": True, "muted": True}
 
+    return mute
+
+
+def _unmute_tool(coordinator: "VolumeCoordinator"):
     @tool(labels=("music", "volume", "mute"))
     async def unmute() -> dict:
         """Restore speaker to its pre-mute level (50% if nothing
@@ -195,4 +195,22 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         applied = await coordinator.unmute(fallback_level=50)
         return {"ok": True, "percent": applied}
 
-    return [get_volume, set_volume, adjust_volume, mute, unmute]
+    return unmute
+
+
+def make_audio_tools(coordinator: "VolumeCoordinator"):
+    """Build volume-control tools backed by the source-aware coordinator.
+
+    The coordinator's `set_listening_level` / `adjust_listening_level`
+    methods push to the active source's own attenuator (or CamillaDSP
+    when idle) and persist the canonical level. Mute state is
+    coordinator-internal so a daemon restart doesn't lose the pre-mute
+    level.
+    """
+    return [
+        _get_volume_tool(coordinator),
+        _set_volume_tool(coordinator),
+        _adjust_volume_tool(coordinator),
+        _mute_tool(coordinator),
+        _unmute_tool(coordinator),
+    ]
