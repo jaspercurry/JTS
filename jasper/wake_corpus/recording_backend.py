@@ -151,6 +151,14 @@ _SESSION_SUMMARY_KEYS = (
     "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
     "include_aec3_sweep", "corpus_profile", "aec3_sweep_source",
 )
+# Subset of _SESSION_STATE_KEYS that build_session_audio_context() takes
+# as keywords.
+_AUDIO_CONTEXT_KEYS = (
+    "corpus_profile", "enabled_legs", "include_raw_mic_0", "include_dtln",
+    "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
+    "include_aec3_sweep", "aec3_sweep_source", "chip_aec_config",
+    "capture_plan",
+)
 
 
 _StopGeneration = tuple[str, RecordingTask]
@@ -566,6 +574,13 @@ class RecordingBackend:
         self._audio_context = None
         self._current_plan_conformance = None
 
+    def _install_session_locked(
+        self, state: dict[str, Any], clips: list[ClipMetadata],
+    ) -> None:
+        for key in _SESSION_STATE_KEYS:
+            setattr(self, f"_{key}", state[key])
+        self._clips = clips
+
     def _load_session_data(self, data: dict[str, Any]) -> dict[str, Any]:
         try:
             parsed = session_store.parse_session_data(data, self._ports)
@@ -573,9 +588,7 @@ class RecordingBackend:
         except (KeyError, TypeError) as e:
             raise ValueError(f"session schema mismatch: {e}") from e
         with self._lock:
-            for key in _SESSION_STATE_KEYS:
-                setattr(self, f"_{key}", parsed[key])
-            self._clips = clips
+            self._install_session_locked(parsed, clips)
         return {
             **{key: parsed[key] for key in _SESSION_SUMMARY_KEYS},
             "clip_count": sum(1 for c in clips if not c.deleted),
@@ -719,38 +732,8 @@ class RecordingBackend:
         aec3_sweep_source: str | None = None,
         capture_plan: dict[str, Any] | None = None,
     ) -> str:
-        """Open one session transaction, refusing concurrent initializers."""
-        with self._lifecycle_transaction(
-            "can't begin session: initialization in progress",
-        ):
-            return self._begin_session(
-                member,
-                corpus_profile=corpus_profile,
-                include_raw_mic_0=include_raw_mic_0,
-                include_dtln=include_dtln,
-                include_usb_mic=include_usb_mic,
-                include_usb_dtln=include_usb_dtln,
-                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                include_aec3_sweep=include_aec3_sweep,
-                aec3_sweep_source=aec3_sweep_source,
-                capture_plan=capture_plan,
-            )
-
-    def _begin_session(
-        self,
-        member: str,
-        corpus_profile: str = PROFILE_STANDARD,
-        include_raw_mic_0: bool = False,
-        include_dtln: bool = True,
-        include_usb_mic: bool = False,
-        include_usb_dtln: bool = False,
-        include_xvf_raw0_dtln: bool = False,
-        include_aec3_sweep: bool = False,
-        aec3_sweep_source: str | None = None,
-        capture_plan: dict[str, Any] | None = None,
-    ) -> str:
-        """Open a fresh recording session. Resets the in-memory clip
-        list (existing on-disk WAVs are untouched).
+        """Open a fresh recording session, refusing concurrent initializers.
+        Resets the in-memory clip list (existing on-disk WAVs are untouched).
 
         `include_raw_mic_0` (default False) — when True, clips in this
         session also capture the truly-raw mic 0 leg (chip channel 2)
@@ -782,6 +765,35 @@ class RecordingBackend:
 
         Returns the new session_id (UTC timestamp).
         """
+        with self._lifecycle_transaction(
+            "can't begin session: initialization in progress",
+        ):
+            return self._begin_session(
+                member,
+                corpus_profile=corpus_profile,
+                include_raw_mic_0=include_raw_mic_0,
+                include_dtln=include_dtln,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
+                capture_plan=capture_plan,
+            )
+
+    def _begin_session(
+        self,
+        member: str,
+        corpus_profile: str = PROFILE_STANDARD,
+        include_raw_mic_0: bool = False,
+        include_dtln: bool = True,
+        include_usb_mic: bool = False,
+        include_usb_dtln: bool = False,
+        include_xvf_raw0_dtln: bool = False,
+        include_aec3_sweep: bool = False,
+        aec3_sweep_source: str | None = None,
+        capture_plan: dict[str, Any] | None = None,
+    ) -> str:
         self._refuse_if_muted("begin_session")
         safe_member = "".join(c for c in member.lower() if c.isalnum() or c == "_")
         if not safe_member:
@@ -797,83 +809,31 @@ class RecordingBackend:
                 session_aec3_sweep_source(aec3_sweep_source)
                 if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
             )
-        effective_include_usb_mic = include_usb_mic or (
-            include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
-        )
+        selection = {
+            "corpus_profile": corpus_profile,
+            "include_raw_mic_0": include_raw_mic_0,
+            "include_dtln": include_dtln,
+            "include_usb_mic": include_usb_mic or (
+                include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+            ),
+            "include_usb_dtln": include_usb_dtln,
+            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
+            "include_aec3_sweep": include_aec3_sweep,
+            "aec3_sweep_source": sweep_source,
+        }
         with self._lock:
             if self._current is not None:
                 raise StateError(
                     "can't begin session: recording in progress",
                 )
-            # session_id = UTC second-resolution timestamp + a 4-hex
-            # suffix. The suffix avoids a collision when an operator
-            # (or a test) calls begin_session() twice within the same
-            # second — without it, two sessions would share both the
-            # in-memory id AND the on-disk metadata filename, and the
-            # second would silently overwrite the first.
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            if capture_plan is None:
-                capture_plan = build_capture_plan(
-                    self._ports,
-                    corpus_profile=corpus_profile,
-                    include_raw_mic_0=include_raw_mic_0,
-                    include_dtln=include_dtln,
-                    include_usb_mic=effective_include_usb_mic,
-                    include_usb_dtln=include_usb_dtln,
-                    include_xvf_raw0_dtln=include_xvf_raw0_dtln,
-                    include_aec3_sweep=include_aec3_sweep,
-                    aec3_sweep_source=sweep_source,
-                    include_bridge_readiness=True,
-                    include_runtime_profile=True,
-                    plan_state=CAPTURE_PLAN_STATE_SESSION,
-                )
-            enabled_legs = tuple(
-                str(leg) for leg in capture_plan.get("selected_legs", [])
-                if str(leg) in self._ports
+            state = self._new_session_state_locked(
+                safe_member, selection, capture_plan,
             )
-            sweep_variants = (
-                variant_metadata(input_source=sweep_source)
-                if include_aec3_sweep else []
-            )
-            sweep_config = (
-                config_metadata(input_source=sweep_source)
-                if include_aec3_sweep else None
-            )
-            session_id = f"{ts}-{secrets.token_hex(2)}"
-            chip_config = (
-                chip_aec_config_metadata()
-                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
-            )
-            self._session_id = session_id
-            self._member = safe_member
-            self._clips = []
-            self._include_raw_mic_0 = RAW0_LEG in enabled_legs
-            self._include_dtln = DTLN_LEG in enabled_legs
-            self._include_usb_mic = effective_include_usb_mic
-            self._include_usb_dtln = USB_DTLN_LEG in enabled_legs
-            self._include_xvf_raw0_dtln = XVF_RAW0_DTLN_LEG in enabled_legs
-            self._include_aec3_sweep = include_aec3_sweep
-            self._corpus_profile = corpus_profile
-            self._chip_aec_config = chip_config
-            self._aec3_sweep_source = sweep_source
-            self._aec3_sweep_variants = sweep_variants
-            self._aec3_sweep_config = sweep_config
-            self._enabled_legs = enabled_legs
-            self._capture_plan = capture_plan
-            self._audio_context = None
+            self._install_session_locked(state, [])
+        session_id = state["session_id"]
         audio_context = build_session_audio_context(
-            corpus_profile=corpus_profile,
-            enabled_legs=enabled_legs,
             ports=self._ports,
-            include_raw_mic_0=RAW0_LEG in enabled_legs,
-            include_dtln=DTLN_LEG in enabled_legs,
-            include_usb_mic=effective_include_usb_mic,
-            include_usb_dtln=USB_DTLN_LEG in enabled_legs,
-            include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
-            include_aec3_sweep=include_aec3_sweep,
-            aec3_sweep_source=sweep_source,
-            chip_aec_config=chip_config,
-            capture_plan=capture_plan,
+            **{key: state[key] for key in _AUDIO_CONTEXT_KEYS},
         )
         with self._lock:
             if self._session_id == session_id:
@@ -882,6 +842,64 @@ class RecordingBackend:
         self._save_metadata()  # write the per-session flag before clips arrive
         self._write_active_session_marker()
         return session_id
+
+    def _new_session_state_locked(
+        self,
+        member: str,
+        selection: dict[str, Any],
+        capture_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """The `_SESSION_STATE_KEYS` values a new session opens with."""
+        # session_id = UTC second-resolution timestamp + a 4-hex
+        # suffix. The suffix avoids a collision when an operator
+        # (or a test) calls begin_session() twice within the same
+        # second — without it, two sessions would share both the
+        # in-memory id AND the on-disk metadata filename, and the
+        # second would silently overwrite the first.
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if capture_plan is None:
+            capture_plan = build_capture_plan(
+                self._ports,
+                **selection,
+                include_bridge_readiness=True,
+                include_runtime_profile=True,
+                plan_state=CAPTURE_PLAN_STATE_SESSION,
+            )
+        enabled_legs = tuple(
+            str(leg) for leg in capture_plan.get("selected_legs", [])
+            if str(leg) in self._ports
+        )
+        include_aec3_sweep = selection["include_aec3_sweep"]
+        sweep_source = selection["aec3_sweep_source"]
+        sweep_variants = (
+            variant_metadata(input_source=sweep_source)
+            if include_aec3_sweep else []
+        )
+        sweep_config = (
+            config_metadata(input_source=sweep_source)
+            if include_aec3_sweep else None
+        )
+        session_id = f"{ts}-{secrets.token_hex(2)}"
+        chip_config = (
+            chip_aec_config_metadata()
+            if selection["corpus_profile"] == PROFILE_CHIP_AEC_COMPARISON
+            else None
+        )
+        return {
+            **selection,
+            "session_id": session_id,
+            "member": member,
+            "enabled_legs": enabled_legs,
+            "include_raw_mic_0": RAW0_LEG in enabled_legs,
+            "include_dtln": DTLN_LEG in enabled_legs,
+            "include_usb_dtln": USB_DTLN_LEG in enabled_legs,
+            "include_xvf_raw0_dtln": XVF_RAW0_DTLN_LEG in enabled_legs,
+            "chip_aec_config": chip_config,
+            "aec3_sweep_variants": sweep_variants,
+            "aec3_sweep_config": sweep_config,
+            "capture_plan": capture_plan,
+            "audio_context": None,
+        }
 
     def include_raw_mic_0(self) -> bool:
         """Whether the active session captures the raw-mic-0 leg."""
