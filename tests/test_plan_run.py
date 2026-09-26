@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE,
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
-    REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -836,9 +836,10 @@ def _heard_analysis(record, _record_id):
                    stimulus_levels=(LevelReading(stimulus_peak_dbfs(program), heard, heard - 30.0),))
 
 
-def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
-    and judged on the level each take read; the microphone is re-placed at take
+    (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
+    judged on the level each take read; the microphone is re-placed at take
     ``replace_at``, and the operator presses Redo during each take in
     ``redo_at``, take 0 being just after the first placement is confirmed."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
@@ -859,9 +860,9 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
-                request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
-                analyze=_heard_analysis, captures=captures, assessor=assessor,
-                admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
+                request, session=session, manifest=manifest, gate=gate if web else None, aborts=_ABORTS,
+                signals=signals, analyze=_heard_analysis, captures=captures, assessor=assessor,
+                admit=(lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger)) if web else None)
 
     result = asyncio.run(run())
     selected = [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
@@ -913,6 +914,19 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     assert not any("level_step" in progress for progress in gate.progress)
 
 
+@pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])
+@pytest.mark.parametrize("retries", [0, 2])
+def test_a_repeat_that_keeps_drifting_is_retaken_only_for_its_retries(web, retries):
+    """A level-drift retake spends one of the pose's retries in a web run and in
+    the bass ladder alike, so a repeat that keeps drifting is left unmeasured
+    once they are spent, never retaken without end (#5722)."""
+    result, _, selected, _ = _run_levelled(replace(_walk([0]), repeats=2, retries_per_pose=retries),
+                                           (70.0,) + (73.0,) * (retries + 1), web=web)
+
+    assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_DRIFT_AT_SESSION_GAIN]
+    assert selected == [True] + [False] * (retries + 1)
+
+
 @pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
 def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
     """Each redo asks for the microphone again and starts the pose over at its
@@ -935,30 +949,36 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
 
 
-@pytest.mark.parametrize("driver,repeats,retries,redo_first,left,reason", [
-    (True, 2, 0, True, 0, ""), (True, 2, 0, False, 0, ""), (True, 6, 3, False, 3, ""),
-    (False, 2, 1, False, 0, ""), (False, 6, 3, False, 2, ""), (False, 2, 0, False, 0, "retries_spent"),
+@pytest.mark.parametrize("driver,repeats,retries,redo_first,left,retakes,reason", [
+    (True, 2, 0, True, 0, 1, ""), (True, 2, 0, False, 0, 2, ""), (True, 6, 3, False, 3, 2, ""),
+    (False, 2, 0, True, 0, 0, ""), (False, 2, 1, False, 0, 1, ""), (False, 6, 3, False, 2, 1, ""),
+    (False, 2, 0, False, 0, 0, REASON_RETRIES_SPENT),
 ])
-def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, driver, repeats, retries, redo_first, left, reason):
+def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
+        monkeypatch, driver, repeats, retries, redo_first, left, retakes, reason):
     """A redo during a pose's last take plays the pose again from its start, and
-    each take it plays again is free (#5722), so the round goes on: a far-field
-    redo costs its own retry, and a driver's pose gets its retries back (ADR-0361).
-    A redo before any take played only asks for the placement again; one the pose
-    cannot pay for ends the round with its retries spent."""
+    each take it plays again is free (#5722): a far-field redo costs its own retry,
+    and a driver's pose starts over with its retries (ADR-0361). The earlier takes
+    stay banked, but neither kept nor the level the new placement is held to, so
+    a placement that moved the level is not refused as drift. A redo before any
+    take played only asks for the placement again; one the pose cannot pay for
+    ends the round with its retries spent."""
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     request = (ac.request_for_program(MeasurementProgram("nearfield", "custom", (
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
         purpose="reference", regime="near_field"), retries_per_pose=retries) if driver else
         replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
-    placement = (66.0, *(80.0,) * repeats) if driver else (70.0,) * repeats
+    placements = [(66.0, *(80.0,) * repeats)] * 2 if driver else [(70.0,) * repeats, (75.0,) * repeats]
 
-    result, fakes, selected, gate = _run_levelled(request, placement * 2,
-                                                  redo_at=(0,) if redo_first else (repeats + driver,))
+    result, _, selected, gate = _run_levelled(request, placements[0] + placements[1],
+                                              redo_at=(0,) if redo_first else (repeats + driver,))
 
     assert (result.status, result.reason) == ("partial" if reason else "complete", reason)
     assert [index for index, _ in gate.grants] == [1] * (1 if reason else 2)
-    assert selected[-repeats:] == [True] * repeats
-    assert gate.progress[-1]["budget"]["left"] == left
+    kept = 0 if reason else repeats
+    assert selected == [False] * (len(selected) - kept) + [True] * kept
+    final = gate.progress[-1]
+    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (retries, left, retakes)
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [

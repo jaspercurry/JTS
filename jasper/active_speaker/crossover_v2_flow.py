@@ -24,8 +24,6 @@ from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.admission import (
-    ATTEMPT_INITIATOR_SPEAKER,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
     SlotAttempts,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -73,6 +71,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REASON_RETRIES_SPENT,
     PhaseVerdict,
     TakeVerdict,
     reason_diagnosis,
@@ -647,10 +646,10 @@ class CrossoverV2Session:
         )
 
         decision = _admission.assess_begin(
-            ledger=None if executor_ledger is not None and attempt == 1 else ledger,
+            ledger=ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
-            default_code="retries_spent",
+            default_code=REASON_RETRIES_SPENT,
             retry_charge=executor_ledger.charge
             if executor_ledger is not None
             else "operator",
@@ -711,18 +710,10 @@ class CrossoverV2Session:
             if executor_ledger is not None
             else self._slot_attempts.setdefault(slot, SlotAttempts())
         )
-        if decision.spends_extra and executor_ledger is None:
-            try:
-                ledger.spend(
-                    "speaker"
-                    if decision.initiator == ATTEMPT_INITIATOR_SPEAKER
-                    else "operator"
-                )
-            except _admission.AttemptOverspendError as exc:
-                raise CrossoverV2FlowError(str(exc)) from exc
-        if executor_ledger is not None and attempt > 1:
-            ledger.spend(executor_ledger.charge)
-        ledger.admitted += 1
+        try:
+            ledger.admit()
+        except _admission.AttemptOverspendError as exc:
+            raise CrossoverV2FlowError(str(exc)) from exc
         self._armed_capture = (index, attempt)
         log_event(
             logger,
@@ -731,8 +722,9 @@ class CrossoverV2Session:
             phase=phase,
             index=index,
             attempt=attempt,
+            charge=ledger.charge,
             extra_used=ledger.extras_used,
-            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            extra_allowed=ledger.retries_per_pose,
             extra_by_speaker=ledger.by_speaker,
         )
 
