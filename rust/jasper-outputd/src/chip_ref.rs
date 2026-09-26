@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use alsa::pcm::{State, PCM};
+use alsa::pcm::PCM;
 use anyhow::{Context, Result};
 
 use crate::alsa_backend::open_playback_pcm;
@@ -255,7 +255,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
     mut open_pcm: Open,
     mut write_period: WritePeriod,
 ) where
-    Open: FnMut(&ChipRefWriterConfig<'_>, &OutputdState) -> Result<P>,
+    Open: FnMut(&ChipRefWriterConfig<'_>) -> Result<P>,
     WritePeriod: FnMut(&P, &str, &[i16], &mut PlaybackWriteReport) -> Result<()>,
 {
     let mut tee = open_chip_ref_tee(config.tee_path);
@@ -270,8 +270,9 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
             if degraded_logged {
                 state.mark_chip_ref_retry();
             }
-            match open_pcm(&config, state) {
+            match open_pcm(&config) {
                 Ok(opened) => {
+                    drop_stale_packets(rx, state);
                     state.mark_chip_ref_writer_active(true);
                     if !degraded_logged {
                         // First open of a healthy episode (startup, or a clean
@@ -371,7 +372,17 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
     state.mark_chip_ref_writer_active(false);
 }
 
-fn open_chip_ref_pcm(config: &ChipRefWriterConfig<'_>, state: &OutputdState) -> Result<PCM> {
+/// Drop what queued while the PCM was opening. The stream starts itself once
+/// one period is queued, so a backlog written first would stay queued ahead of
+/// every later packet and sit the reference that far behind the speaker (#5729).
+fn drop_stale_packets(rx: &Receiver<ChipRefPacket>, state: &OutputdState) {
+    while let Ok(packet) = rx.try_recv() {
+        state.mark_chip_ref_dequeued((packet.samples.len() / (CHANNELS as usize)) as u64);
+        state.mark_chip_ref_dropped_unavailable();
+    }
+}
+
+fn open_chip_ref_pcm(config: &ChipRefWriterConfig<'_>) -> Result<PCM> {
     let (pcm, negotiated) = open_playback_pcm(
         "chip_ref",
         config.pcm_name,
@@ -387,22 +398,6 @@ fn open_chip_ref_pcm(config: &ChipRefWriterConfig<'_>, state: &OutputdState) -> 
         negotiated.period_frames,
         negotiated.buffer_frames
     );
-    let zero = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
-    let mut report = PlaybackWriteReport::default();
-    let result = write_playback_period(&pcm, config.pcm_name, &zero, &mut report);
-    state.mark_chip_ref_write(ChipRefWrite {
-        frames_written: report.frames_written,
-        delay_frames: report.delay_frames,
-        underruns: report.underruns,
-        xruns: report.xruns,
-        recoveries: report.recoveries,
-        write_failed: result.is_err(),
-        ..ChipRefWrite::default()
-    });
-    result?;
-    if pcm.state() != State::Running {
-        pcm.start().context("starting outputd chip-ref PCM")?;
-    }
     Ok(pcm)
 }
 
@@ -505,6 +500,7 @@ mod tests {
     use crate::config::Config;
     use crate::state::tests::test_config;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Mutex;
 
     #[test]
     fn chip_ref_downsampler_downmixes_and_decimates_exact_ratio() {
@@ -634,13 +630,51 @@ mod tests {
         );
     }
 
+    const TEST_WRITER: ChipRefWriterConfig<'static> = ChipRefWriterConfig {
+        pcm_name: "test-chip-ref",
+        sample_rate: 16_000,
+        period_frames: 320,
+        buffer_frames: 1280,
+        tee_path: None,
+    };
+
+    const TEST_TIMING: ChipRefWorkerTiming = ChipRefWorkerTiming {
+        retry_initial: Duration::from_millis(5),
+        retry_max: Duration::from_millis(10),
+        poll: Duration::from_millis(1),
+        degraded_log_interval: Duration::from_millis(50),
+    };
+
+    /// Dual mono whose every sample is `sequence`, so a write shows its packet.
+    fn packet(sequence: u64) -> ChipRefPacket {
+        ChipRefPacket {
+            samples: vec![sequence as i16; 640],
+            reference_sequence: sequence,
+        }
+    }
+
+    fn wait_for(done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !done() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        done()
+    }
+
+    fn writer_active(state: &OutputdState) -> bool {
+        state.snapshot_json().contains(r#""status":"active""#)
+    }
+
+    fn chip_ref_state() -> Arc<OutputdState> {
+        Arc::new(OutputdState::new(&Config {
+            chip_ref_pcm: Some(TEST_WRITER.pcm_name.to_string()),
+            ..test_config()
+        }))
+    }
+
     #[test]
     fn chip_ref_worker_degrades_then_recovers_without_exiting() {
-        let config = Config {
-            chip_ref_pcm: Some("test-unavailable-chip-ref".to_string()),
-            ..test_config()
-        };
-        let state = Arc::new(OutputdState::new(&config));
+        let state = chip_ref_state();
         let shutdown = Arc::new(AtomicBool::new(false));
         let attempts = Arc::new(AtomicUsize::new(0));
         let writes = Arc::new(AtomicUsize::new(0));
@@ -652,23 +686,12 @@ mod tests {
         let worker_writes = Arc::clone(&writes);
         let handle = thread::spawn(move || {
             run_chip_ref_writer_with(
-                ChipRefWriterConfig {
-                    pcm_name: "test-unavailable-chip-ref",
-                    sample_rate: 16_000,
-                    period_frames: 320,
-                    buffer_frames: 1280,
-                    tee_path: None,
-                },
+                TEST_WRITER,
                 &rx,
                 &worker_shutdown,
                 &worker_state,
-                ChipRefWorkerTiming {
-                    retry_initial: Duration::from_millis(5),
-                    retry_max: Duration::from_millis(10),
-                    poll: Duration::from_millis(1),
-                    degraded_log_interval: Duration::from_millis(50),
-                },
-                move |_, _| {
+                TEST_TIMING,
+                move |_| {
                     if worker_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
                         anyhow::bail!("synthetic missing chip-reference device");
                     }
@@ -682,33 +705,68 @@ mod tests {
             );
         });
 
-        tx.send(ChipRefPacket {
-            samples: vec![0; 640],
-            reference_sequence: 1,
-        })
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while attempts.load(Ordering::Relaxed) < 2 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(1));
-        }
+        tx.send(packet(1)).unwrap();
+        // Active is marked after the reopen drops its backlog, so the next
+        // packet is written rather than dropped.
+        assert!(wait_for(|| writer_active(&state)));
         assert!(attempts.load(Ordering::Relaxed) >= 2);
 
-        tx.send(ChipRefPacket {
-            samples: vec![0; 640],
-            reference_sequence: 2,
-        })
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while writes.load(Ordering::Relaxed) < 1 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert!(writes.load(Ordering::Relaxed) >= 1);
+        tx.send(packet(2)).unwrap();
+        assert!(wait_for(|| writes.load(Ordering::Relaxed) >= 1));
 
         let snapshot = state.snapshot_json();
         assert!(snapshot.contains(r#""status":"active""#), "{snapshot}");
         assert!(snapshot.contains(r#""retry_count":1"#), "{snapshot}");
         assert!(
             snapshot.contains(r#""dropped_periods_while_unavailable":1"#),
+            "{snapshot}"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        drop(tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn chip_ref_open_drops_what_queued_while_it_opened() {
+        // #5729: a packet written ahead of the stream start stays queued ahead
+        // of every later one, so the first write after an open is the freshest.
+        let state = chip_ref_state();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::sync_channel(4);
+        let (finish_open, open_finished) = mpsc::channel::<()>();
+
+        let worker_state = Arc::clone(&state);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_written = Arc::clone(&written);
+        let handle = thread::spawn(move || {
+            run_chip_ref_writer_with(
+                TEST_WRITER,
+                &rx,
+                &worker_shutdown,
+                &worker_state,
+                TEST_TIMING,
+                move |_| open_finished.recv().context("open never finished"),
+                move |_, _, samples, _| {
+                    worker_written.lock().unwrap().push(samples[0]);
+                    Ok(())
+                },
+            );
+        });
+
+        for sequence in 1..=3 {
+            tx.send(packet(sequence)).unwrap();
+        }
+        finish_open.send(()).unwrap();
+        assert!(wait_for(|| writer_active(&state)));
+        tx.send(packet(4)).unwrap();
+        assert!(wait_for(|| !written.lock().unwrap().is_empty()));
+
+        assert_eq!(*written.lock().unwrap(), vec![4]);
+        let snapshot = state.snapshot_json();
+        assert!(
+            snapshot.contains(r#""dropped_periods_while_unavailable":3"#),
             "{snapshot}"
         );
 

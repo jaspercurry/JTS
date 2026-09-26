@@ -91,12 +91,10 @@ struct ChipRefObservation {
     /// `snd_pcm_delay` read when this write returned.
     delay_frames: u64,
     /// Cumulative `frames_written` AFTER this write. Strictly increasing across
-    /// entries, so it is the writer's own identity for an observation — the
-    /// priming write at PCM open carries no reference sequence, so this is the
-    /// key that is always present.
+    /// entries, so it is the writer's own identity for an observation.
     frames_written: u64,
-    /// The mix period this write carried, or `OPTIONAL_U64_NONE` for the
-    /// priming write.
+    /// The mix period this write carried, or `OPTIONAL_U64_NONE` for a write
+    /// that carried none.
     reference_sequence: u64,
 }
 
@@ -2278,8 +2276,8 @@ pub(crate) mod tests {
         };
         let state = OutputdState::new(&cfg);
         state.mark_chip_ref_writer_active(true);
-        // The priming write at PCM open carries no reference sequence, which is
-        // why `frames_written` and not the sequence is the entry's identity.
+        // A write without a reference sequence is still an entry: `frames_written`,
+        // not the sequence, is the entry's identity.
         state.mark_chip_ref_write(ChipRefWrite {
             frames_written: 128,
             delay_frames: Some(400),
