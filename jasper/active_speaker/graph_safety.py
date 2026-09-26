@@ -11,14 +11,17 @@ fail-closed predicates then run on the view, so the logic is shared while each
 source keeps its parsing semantics. Everything is pure: an unparseable graph, a
 missing filter or a mismatched wiring yields ``parsed_ok=False``/``False``, so a
 caller can never read "safe" out of a graph it could not prove safe. A leaf
-(stdlib only — callers own the ``yaml.safe_load`` and pass in filter names), and
-the single home of the shared scalar matchers no verifier may re-implement.
+(stdlib and ``jasper.json_fields`` only — callers own the ``yaml.safe_load`` and
+pass in filter names), and the single home of the shared scalar matchers no
+verifier may re-implement.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
+
+from jasper.json_fields import as_float
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -81,21 +84,8 @@ def _top_level_sections(text: str) -> dict[str, list[str]]:
 
 def float_matches(value: Any, expected: float) -> bool:
     """True iff ``value`` parses to within 1e-4 of ``expected`` (fail-closed)."""
-    try:
-        return abs(float(value) - expected) < 0.0001
-    except (OverflowError, TypeError, ValueError):
-        return False
-
-
-def float_value(value: Any) -> float | None:
-    """``value`` as a float, or ``None`` if it does not parse.
-
-    For threshold predicates (``freq > 0``, ``clip <= ceiling``) where a missing
-    or unparseable value must fail the check rather than raise."""
-    try:
-        return float(value)
-    except (OverflowError, TypeError, ValueError):
-        return None
+    number = as_float(value)
+    return number is not None and abs(number - expected) < 0.0001
 
 
 def truthy_bool(value: Any) -> bool:
@@ -412,8 +402,8 @@ def protection_requirement_present(
                 continue
             if definition.params.get("type") != expected_type:
                 continue
-            actual_cutoff = float_value(definition.params.get("freq"))
-            actual_order = float_value(definition.params.get("order"))
+            actual_cutoff = as_float(definition.params.get("freq"))
+            actual_order = as_float(definition.params.get("order"))
             if actual_cutoff is None or actual_order is None:
                 continue
             cutoff_ok = (
@@ -473,7 +463,7 @@ def output_highpass_protected(
                 continue
             if str(fdef.params.get("type") or "") != "LinkwitzRileyHighpass":
                 continue
-            freq = float_value(fdef.params.get("freq"))
+            freq = as_float(fdef.params.get("freq"))
             if freq is not None and freq >= min_corner_hz:
                 return True
     return False
@@ -674,9 +664,9 @@ def tweeter_guard_present(
     limiter = view.filters.get(limiter_name)
     hp_params = hp.params if hp else {}
     limiter_params = limiter.params if limiter else {}
-    hp_freq = float_value(hp_params.get("freq"))
-    hp_order = float_value(hp_params.get("order"))
-    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    hp_freq = as_float(hp_params.get("freq"))
+    hp_order = as_float(hp_params.get("order"))
+    limiter_clip = as_float(limiter_params.get("clip_limit"))
     hp_ok = (
         (hp.type if hp else None) == "BiquadCombo"
         and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
@@ -719,10 +709,10 @@ def sub_guard_present(
     lp_params = lowpass.params if lowpass else {}
     gain_params = gain.params if gain else {}
     limiter_params = limiter.params if limiter else {}
-    lp_freq = float_value(lp_params.get("freq"))
-    lp_order = float_value(lp_params.get("order"))
-    gain_db = float_value(gain_params.get("gain"))
-    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    lp_freq = as_float(lp_params.get("freq"))
+    lp_order = as_float(lp_params.get("order"))
+    gain_db = as_float(gain_params.get("gain"))
+    limiter_clip = as_float(limiter_params.get("clip_limit"))
     lp_ok = (
         (lowpass.type if lowpass else None) == "BiquadCombo"
         and str(lp_params.get("type") or "") == "LinkwitzRileyLowpass"
@@ -774,9 +764,9 @@ def sub_audible_guard_present(
     limiter = view.filters.get(limiter_name)
     lp_params = lowpass.params if lowpass else {}
     limiter_params = limiter.params if limiter else {}
-    lp_freq = float_value(lp_params.get("freq"))
-    lp_order = float_value(lp_params.get("order"))
-    limiter_clip = float_value(limiter_params.get("clip_limit"))
+    lp_freq = as_float(lp_params.get("freq"))
+    lp_order = as_float(lp_params.get("order"))
+    limiter_clip = as_float(limiter_params.get("clip_limit"))
     lp_ok = (
         (lowpass.type if lowpass else None) == "BiquadCombo"
         and str(lp_params.get("type") or "") == "LinkwitzRileyLowpass"
@@ -812,8 +802,8 @@ def mains_highpass_present(
     corner Fc is the separate :func:`bass_management_corner_matched` proof."""
     hp = view.filters.get(highpass_name)
     hp_params = hp.params if hp else {}
-    hp_freq = float_value(hp_params.get("freq"))
-    hp_order = float_value(hp_params.get("order"))
+    hp_freq = as_float(hp_params.get("freq"))
+    hp_order = as_float(hp_params.get("order"))
     hp_ok = (
         (hp.type if hp else None) == "BiquadCombo"
         and str(hp_params.get("type") or "") == "LinkwitzRileyHighpass"
@@ -843,8 +833,8 @@ def bass_management_corner_matched(
     within the shared float tolerance."""
     lp = view.filters.get(lowpass_name)
     hp = view.filters.get(highpass_name)
-    lp_freq = float_value(lp.params.get("freq")) if lp else None
-    hp_freq = float_value(hp.params.get("freq")) if hp else None
+    lp_freq = as_float(lp.params.get("freq")) if lp else None
+    hp_freq = as_float(hp.params.get("freq")) if hp else None
     if lp_freq is None or hp_freq is None or lp_freq <= 0.0 or hp_freq <= 0.0:
         return False
     return float_matches(lp_freq, hp_freq)

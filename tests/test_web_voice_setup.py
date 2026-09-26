@@ -22,7 +22,7 @@ from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 def _render(state: dict | None = None, flash: str = "") -> str:
-    return voice_setup._index_html(
+    return voice_setup.index_html(
         state or {},
         "tok-abcdefghijklmnopqrstuvwx",
         status_msg=flash,

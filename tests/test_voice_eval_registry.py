@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -21,7 +20,7 @@ from jasper.voice.session import AudioOutChunk, TurnCapture, TurnUsage
 from tests._live_turn_fake import FakeLiveTurn
 from tests.voice_eval import harness as harness_mod
 from tests.voice_eval import tts
-from tests.voice_eval.harness import _build_test_registry
+from tests.voice_eval.harness import _build_test_registry, _release_test_registry
 from tests.voice_eval.trace_registry import traced_registry
 from tests.voice_eval.turn_trace import TurnTrace, reset_active, set_active
 
@@ -56,18 +55,7 @@ _BACKEND_ENV_KEYS = (
 )
 
 
-def _cleanup(test_state: dict) -> None:
-    """Remove tmp artifacts the builder creates so the guard doesn't
-    litter /tmp on every CI run."""
-    db = test_state.get("timer_db_path")
-    if isinstance(db, str) and os.path.exists(db):
-        os.unlink(db)
-    wake_dir = test_state.get("wake_events_dir")
-    if isinstance(wake_dir, str):
-        shutil.rmtree(wake_dir, ignore_errors=True)
-
-
-def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
+async def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
     """The builder must construct cleanly with transit + HA enabled.
 
     Regression guard for the shipped defect where `_build_test_registry`
@@ -96,10 +84,10 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
         assert "volume_coordinator" in test_state
         assert "google_clients" in test_state
     finally:
-        _cleanup(test_state)
+        await _release_test_registry(test_state)
 
 
-def test_harness_populates_test_state_eagerly_at_construction(monkeypatch):
+async def test_harness_populates_test_state_eagerly_at_construction(monkeypatch):
     """Side-channel handles must exist BEFORE the first paid call.
 
     The volume scenarios read `test_state["volume_coordinator"]` at
@@ -124,10 +112,10 @@ def test_harness_populates_test_state_eagerly_at_construction(monkeypatch):
         assert "timer_scheduler" in h.test_state
         assert h._connection is None, "construction must not open a session"
     finally:
-        _cleanup(h.test_state)
+        await h.aclose()
 
 
-def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
+async def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
     """The builder must also construct with transit/HA unconfigured —
     the common laptop case — registering only the always-on tools and
     none of the gated ones."""
@@ -148,7 +136,7 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
         assert "get_bus_arrivals" not in names
         assert "home_assistant" not in names
     finally:
-        _cleanup(test_state)
+        await _release_test_registry(test_state)
 
 
 def test_tts_cache_write_publishes_with_replace(monkeypatch, tmp_path):

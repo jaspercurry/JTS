@@ -107,7 +107,7 @@ def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
         "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )
 
-    env = audio_runtime_outputd._outputd_reconciled_env()
+    env = audio_runtime_outputd.outputd_reconciled_env()
 
     assert env[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] == "direct"
 
@@ -766,7 +766,7 @@ def test_outputd_dac_render_reads_the_rendered_alsa_config(
     asound = tmp_path / "asound.conf"
     if conf is not None:
         asound.write_text(conf, encoding="utf-8")
-    monkeypatch.setattr(audio_runtime_outputd, "_ASOUND_CONF_PATH", asound)
+    monkeypatch.setattr(audio_runtime_outputd, "ASOUND_CONF_PATH", asound)
 
     r = audio_runtime_outputd.check_outputd_dac_render()
 

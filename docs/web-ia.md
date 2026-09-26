@@ -25,7 +25,7 @@ never the daemon or the module. No "— JTS speaker" suffix.
 
 `canonical_page()` + `canonical_header()` from `jasper/web/chrome.py` own the
 shell; a client-rendered page renders the same `.app-header`. A deep-linked
-page passes `?return_to=`, which the target resolves via `safe_back_href()`
+page passes `?return_to=`, which the target resolves via `return_to_href()`
 (same module).
 
 ## 3. Reuse before you write

@@ -13,7 +13,6 @@ from __future__ import annotations
 from jasper.source_state import (
     USBSINK_PLAYING_RMS_DBFS,
     usbsink_direct_audible,
-    usbsink_direct_playing,
     usbsink_direct_rms_dbfs,
 )
 
@@ -32,39 +31,6 @@ def _fanin_status(
             lane,
         ],
     }
-
-
-def test_direct_playing_requires_capturing_health_and_audible_level():
-    assert (
-        usbsink_direct_playing(
-            _fanin_status(
-                "direct",
-                rms_dbfs=-12.0,
-                direct={"health": "capturing"},
-            ),
-        )
-        is True
-    )
-    assert (
-        usbsink_direct_playing(
-            _fanin_status(
-                "direct",
-                rms_dbfs=-90.0,
-                direct={"health": "capturing"},
-            ),
-        )
-        is False
-    )
-    assert (
-        usbsink_direct_playing(
-            _fanin_status(
-                "direct",
-                rms_dbfs=-12.0,
-                direct={"health": "waiting"},
-            ),
-        )
-        is False
-    )
 
 
 # ---- Per-lane level readers -------------------------------------------------

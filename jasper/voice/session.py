@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Callable,
@@ -19,6 +20,9 @@ from typing import (
 
 from ..log_event import log_event
 from ..tools import ToolRegistry
+
+if TYPE_CHECKING:
+    from ..usage import BillableActivityMeter
 
 
 class ConnectionState(Enum):
@@ -383,6 +387,11 @@ class LiveConnection(Protocol):
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
         """Wire the cue player for a terminal connection failure. The
         daemon calls this once the ``WakeLoop`` exists."""
+        ...
+
+    def set_billable_activity_meter(self, meter: BillableActivityMeter) -> None:
+        """Wire the meter of a provider billed by active time. The daemon
+        calls this before ``start()``, and only for such a provider."""
         ...
 
 

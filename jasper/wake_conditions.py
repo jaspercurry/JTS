@@ -30,9 +30,7 @@ corrupt already-collected data:
     alias for ``quiet`` via :data:`CORPUS_DIR_BY_CONDITION`. Historical
     rows/files keep their label even if this set changes.
   * Consumers MUST tolerate a value outside the current set (older data or a
-    forward-compat label). Use :func:`normalize_condition` when *consuming* a
-    stored/inferred label; an unknown condition resolves to the default rather
-    than failing.
+    forward-compat label).
   * **ADD** a condition freely — old data keeps its label and new data gets
     the new one. **RENAMING**
     a condition orphans historical data labelled with the old name; treat it
@@ -64,19 +62,3 @@ CORPUS_DIR_CONDITIONS: tuple[str, ...] = tuple(
 # Corpus capture distance (operator-labelled). Corpus/training only — the
 # Runtime wake detection does not consume it.
 DISTANCES: tuple[str, ...] = ("near", "mid", "far")
-
-# Safe fallback for an unclassifiable or unknown-to-this-build condition.
-DEFAULT_CONDITION: str = "quiet"
-
-
-def normalize_condition(value: str | None) -> str:
-    """Resolve a stored/inferred label to a known condition.
-
-    Tolerant by design: a label from older data, or a future taxonomy this
-    build doesn't recognise, resolves to :data:`DEFAULT_CONDITION` instead of
-    raising — consuming code must never crash on an
-    unknown condition. Use this when *consuming* a label; validate operator
-    input against :data:`CONDITIONS` directly (the corpus wizard should reject
-    typos, not silently coerce them).
-    """
-    return value if value in CONDITIONS else DEFAULT_CONDITION

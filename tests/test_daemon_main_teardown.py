@@ -11,10 +11,7 @@ dependency order — the coordinator outlives its observer, the playout
 outlives everything that speaks through it — which is why the reversal
 itself is the thing worth pinning rather than a hand-written order.
 
-Also pins ADR-0239 and NN-6: the shutdown mic-loss cue is spoken through
-the daemon's own playout BEFORE the stack unwinds it, and a release that
-raises neither aborts the unwind nor replaces the park exception the body
-raised — `main()` has to see that exception to park the unit.
+A release failure must not replace the original park exception.
 """
 from __future__ import annotations
 
@@ -331,11 +328,6 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
 
     patch("_serve_while_connecting", _serve_while_connecting)
 
-    async def _announce_mic_loss_at_shutdown(_wake_loop) -> str:
-        trace.append(("shutdown_cue", "run"))
-        return ""
-
-    patch("_announce_mic_loss_at_shutdown", _announce_mic_loss_at_shutdown)
     return trace
 
 
@@ -371,18 +363,6 @@ async def test_every_resource_exits_in_reverse_of_entry(teardown_trace) -> None:
     exited = teardown_trace.exited()
     assert entered, "the harness recorded no resources at all"
     assert exited == list(reversed(entered))
-
-
-async def test_shutdown_cue_runs_before_the_playout_and_mics_close(
-    teardown_trace,
-) -> None:
-    """ADR-0239: the mic-loss cue is spoken through the daemon's own
-    playout, so it must land before the stack unwinds tts and the mics."""
-    await _run_daemon_once(teardown_trace)
-
-    cue_at = teardown_trace.index_of("shutdown_cue", "run")
-    assert cue_at < teardown_trace.index_of("tts", "exit")
-    assert cue_at < teardown_trace.index_of("mic", "exit")
 
 
 async def test_control_socket_closes_before_the_wake_loop_it_dispatches_into(

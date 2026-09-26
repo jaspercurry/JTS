@@ -165,7 +165,7 @@ def sync_env(loop_thread, monkeypatch):
     )
     monkeypatch.setattr(
         rooms,
-        "_get_member_grouping",
+        "get_member_grouping",
         lambda _addr, _known=None: dict(PEER_G),
     )
     monkeypatch.setattr(active_speaker_flow, "active_phase", lambda: None)
@@ -260,7 +260,7 @@ def test_start_rejects_unbonded_follower_ambiguous_and_bad_channels(
             {"address": "192.168.1.93", "name": "jts4"},
         ],
     )
-    monkeypatch.setattr(rooms, "_map_peers", lambda fn, addrs: [fn(a) for a in addrs])
+    monkeypatch.setattr(rooms, "map_peers", lambda fn, addrs: [fn(a) for a in addrs])
     payload, status = sync_flow.handle_start("jts.local", sync_env["schedule"])
     assert status == HTTPStatus.CONFLICT
     assert "found 2" in payload["error"]
@@ -268,7 +268,7 @@ def test_start_rejects_unbonded_follower_ambiguous_and_bad_channels(
     monkeypatch.setattr(mstate, "read_grouping_state", lambda: dict(LEADER_G))
     monkeypatch.setattr(
         rooms,
-        "_get_member_grouping",
+        "get_member_grouping",
         lambda _addr, _known=None: {**PEER_G, "channel": "left"},
     )
     payload, status = sync_flow.handle_start("jts.local", sync_env["schedule"])

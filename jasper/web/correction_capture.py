@@ -29,7 +29,9 @@ from typing import Any
 
 from ..active_speaker.capture_status import CAPTURE_COMPLETE, CAPTURE_STOPPED, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from ..audio_measurement import household_mic
-from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_USER_STOPPED
+from ..active_speaker.crossover_v2.refusal_copy import (
+    CrossoverV2Refused, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED,
+)
 from ..log_event import log_event
 
 from . import correction_runtime
@@ -418,13 +420,16 @@ def _run_capture(
                     kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
+                code = getattr(exc, "code", None)
+                refused = code in REASON_REGISTRY and code != REASON_INTERNAL_ERROR
                 log_event(
                     logger,
                     "correction.capture_failed",
                     level=logging.WARNING,
-                    exc_info=True,
+                    exc_info=not refused,
                     kind=kind.label,
                     reason=type(exc).__name__,
+                    **({"code": code} if refused else {}),
                 )
                 _set_capture_slot({
                     "status": CAPTURE_FAILED,

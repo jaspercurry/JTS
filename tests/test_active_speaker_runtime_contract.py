@@ -26,19 +26,20 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.camilla_names import driver_linearization_shelf_name, driver_linearization_taper_name
-from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
+from jasper.active_speaker.environment import (
+    CAMILLA_CLASS_ACTIVE_PARKED,
+    read_camilla_statefile_config_path,
+)
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.output_contract import (
-    ACTIVE_DRIVER_DOMAIN_SOURCE,
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
     CONTRACT_ACTIVE_STEREO_2WAY,
@@ -62,7 +63,6 @@ from jasper.active_speaker.runtime_contract import (
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
     PARKED_MUTED_STATUS,
     _normalized_graph_fingerprint,
-    _statefile_config_path,
     active_graph_is_parked,
     build_parked_muted_graph,
     classify_camilla_graph as _classify_camilla_graph,
@@ -82,7 +82,7 @@ from tests._camilla_readback_double import (
     camilla_default_filled,
 )
 from tests._log_events import event_fields, event_records
-from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
+from tests.active_speaker_fixtures import driver_domain_graph, mono_output_topology, passive_stereo_output_topology
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.output_topology_store import (
     read_topology_fingerprint_stamp,
@@ -296,7 +296,7 @@ def _driver_domain_yaml(
     bass_extension=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
-    return emit_active_speaker_driver_domain_config(
+    return driver_domain_graph(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
         program_channel=channel,
@@ -2138,6 +2138,7 @@ def _dump_baseline(base: str, payload: dict) -> str:
     (("filters", "as_full_range_baseline_gain", "parameters", "gain"), 1.0, "active_output_gain_positive"),
     (("filters", "as_full_range_baseline_limiter", "parameters", "clip_limit"), 1.0, "active_baseline_limiter_invalid"),
     (("filters", "active_baseline_headroom", "parameters", "gain"), 1.0, "active_baseline_headroom_invalid"),
+    (("filters", "active_baseline_headroom", "parameters", "gain"), float("nan"), "active_baseline_headroom_invalid"),
     (("filters", "as_out0_commission_mute"), {"type": "Gain", "parameters": {"gain": -1, "mute": True}}, "active_graph_commission_mute_not_hard_mute"),
     (("mixers", "split_active_1way", "channels", "out"), 0, "active_graph_output_count_mismatch"),
     (("mixers", "split_active_1way", "channels", "out"), 3, "active_graph_unmutes_unknown_outputs"),
@@ -3636,18 +3637,6 @@ def test_driver_domain_baseline_allowed(layout: str, way: int, channel: str) -> 
     assert graph.details["driver_domain_candidate"] is True
 
 
-def test_driver_domain_source_marker_matches_verifier() -> None:
-    # The cross-module routing contract: the emitter's `# Source:` header must be
-    # the exact string the verifier independently names, or the driver-domain arm
-    # never fires (the round-trip above IS the live pin; this asserts it directly
-    # so a rename fails loudly here too).
-    text = _driver_domain_yaml("mono", 2)
-    source_line = next(
-        line for line in text.splitlines() if line.startswith("# Source:")
-    )
-    assert source_line.split("# Source:")[1].strip() == ACTIVE_DRIVER_DOMAIN_SOURCE
-
-
 def test_driver_domain_pair_trim_is_allowed_and_non_positive() -> None:
     text = _driver_domain_yaml("mono", 2, pair_trim_db=3.5)
     graph = classify_camilla_graph(
@@ -4301,7 +4290,7 @@ def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
     apply_safe_graph_decision_to_statefile(
         parked_decision, statefile_path=statefile, topology=topology
     )
-    assert _statefile_config_path(statefile) == str(parked_path)
+    assert read_camilla_statefile_config_path(statefile) == str(parked_path)
 
     staged_path = tmp_path / "active_speaker_staged_startup.yml"
     staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
@@ -4319,7 +4308,7 @@ def test_staged_startup_graph_supersedes_parked_with_no_operator_action(
     assert apply_safe_graph_decision_to_statefile(
         recovered, statefile_path=statefile, topology=topology
     ) is True
-    assert _statefile_config_path(statefile) == str(staged_path)
+    assert read_camilla_statefile_config_path(statefile) == str(staged_path)
 
 
 def test_passive_topology_still_takes_the_flat_cutover_not_parked(
@@ -4873,7 +4862,7 @@ def test_blocker_bearing_box_actually_writes_the_parked_statefile(
         )
 
     assert parked_path.exists()
-    assert _statefile_config_path(statefile) == str(parked_path)
+    assert read_camilla_statefile_config_path(statefile) == str(parked_path)
     # The stable observability line still fires for the newly-reachable state.
     # Asserted as a LITERAL, not f-string-composed from the constant: the point
     # of a stable `event=` line is that operators and journal greps depend on

@@ -94,6 +94,14 @@ async def wait_until(
     raise AssertionError("condition not met before timeout")
 
 
+async def settle(turns: int) -> None:
+    """Yield `turns` event-loop turns without advancing wall time, so ready
+    callbacks run and a would-be poller or immediate retry shows itself."""
+
+    for _ in range(turns):
+        await asyncio.sleep(0)
+
+
 def wait_until_sync(
     predicate: Callable[[], bool],
     *,

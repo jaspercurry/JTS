@@ -22,7 +22,7 @@ from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_cons
 async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, restore):
     state = {"session_id": "run", "execution": {"volume_restore": "stale"}}
     saved = []
-    door = SimpleNamespace(opened=None)
+    door = SimpleNamespace(isolation=None)
     monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
     monkeypatch.setattr(v2state, "save_v2_state", lambda value, **kw: saved.append(value["execution"].copy()))
     monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **kw: None)
@@ -32,7 +32,7 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
     monkeypatch.setattr(v2state, "persist_conductor_state", persist)
 
     async def execute(*args, **kwargs):
-        door.opened = SimpleNamespace(restore_result=restore)
+        door.isolation = SimpleNamespace(restore_result=restore)
         if failure is not None and failure is not OSError:
             raise failure()
         return SimpleNamespace(reason="", cancelled=False)
@@ -47,4 +47,4 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
             await runner(SimpleNamespace(session_id="run"))
     else:
         await runner(SimpleNamespace(session_id="run"))
-    assert saved == [{"volume_restore": restore.value if restore else "failed"}]
+    assert saved == [{"volume_restore": restore.value if restore else "not_opened"}]

@@ -8,8 +8,7 @@
 `/assistant/` hub pages (`render_hub`, rows whose `parent` is the hub path).
 Stdlib only, like `chrome`'s page shell it calls:
 this runs under the system interpreter at install time.
-`requires` lists a row's gates outermost first; a group whose rows share the
-outermost one carries it on the `<section>` and the rest gate the row.
+`requires` names the capability a row needs ("" for none).
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ class NavRow(NamedTuple):
     label: str
     path: str
     parent: str
-    requires: tuple[str, ...]
+    requires: str
     icon: str
     status_id: str
     status_text: str
@@ -32,57 +31,55 @@ class NavRow(NamedTuple):
 
 
 NAV: tuple[NavRow, ...] = (
-    NavRow("Sources", "Playback sources", "/sources/", "/", ("local_sources",),
+    NavRow("Sources", "Playback sources", "/sources/", "/", "",
            "source", "status-playback-source", "Auto"),
-    NavRow("Sources", "Spotify accounts", "/spotify/", "/", ("local_sources",),
+    NavRow("Sources", "Spotify accounts", "/spotify/", "/", "",
            "music", "", "Household routing"),
-    NavRow("Sources", "Bluetooth devices", "/bluetooth/", "/", ("local_sources",),
+    NavRow("Sources", "Bluetooth devices", "/bluetooth/", "/", "",
            "bluetooth", "", "Pairing"),
-    NavRow("Sound", "Sound", "/sound/", "/", ("content_dsp",),
+    NavRow("Sound", "Sound", "/sound/", "/", "",
            "sliders", "", "EQ · Speakers · Pair · Bass"),
-    NavRow("Sound", "EQ", "/sound/eq/", "/sound/", ("content_dsp",),
+    NavRow("Sound", "EQ", "/sound/eq/", "/sound/", "",
            "sound", "", "Profiles · Simple EQ · PEQ"),
-    NavRow("Sound", "Speaker setup", "/sound/speaker/", "/sound/", ("content_dsp",),
+    NavRow("Sound", "Speaker setup", "/sound/speaker/", "/sound/", "",
            "sound", "", "Layout · Drivers · Commissioning"),
     NavRow("Sound", "Active speaker", "/sound/speaker/crossover/", "/sound/speaker/",
-           ("content_dsp",), "wave", "", "Crossover measurement"),
-    NavRow("Sound", "Output", "/sound/output/", "/sound/", ("content_dsp",),
+           "", "wave", "", "Crossover measurement"),
+    NavRow("Sound", "Output", "/sound/output/", "/sound/", "",
            "sliders", "", "Audio HAT · Volume shaping"),
-    NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/",
-           ("content_dsp", "pair_management"), "peers", "",
-           "Group speakers · Wake response"),
+    NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/", "",
+           "peers", "", "Group speakers · Wake response"),
     NavRow("Sound", "Speaker timing", "/sound/pair/sync/", "/sound/pair/",
-           ("content_dsp", "pair_management"), "wave", "",
-           "Timing between the two speakers"),
-    NavRow("Sound", "Bass", "/sound/bass/", "/sound/", ("content_dsp",),
+           "", "wave", "", "Timing between the two speakers"),
+    NavRow("Sound", "Bass", "/sound/bass/", "/sound/", "",
            "sound", "", "Bass-management status"),
     NavRow("Sound", "Measurements", "/sound/measurements/", "/sound/",
-           ("content_dsp",), "wave", "", "Saved sweeps"),
-    NavRow("Assistant", "Assistant", "/assistant/", "/", ("voice_brain",),
+           "", "wave", "", "Saved sweeps"),
+    NavRow("Assistant", "Assistant", "/assistant/", "/", "",
            "voice", "", "Voice · Wake word · Services"),
-    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", ("voice_brain",),
+    NavRow("Assistant", "Voice", "/assistant/voice/", "/assistant/", "",
            "voice", "status-voice", "Provider"),
     NavRow("Assistant", "Wake word", "/assistant/wake/", "/assistant/",
-           ("voice_brain", "wake_detection"), "wake", "", "Model · Sensitivity · Mic"),
-    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", ("voice_brain",),
+           "wake_detection", "wake", "", "Model · Sensitivity · Mic"),
+    NavRow("Assistant", "Tools", "/assistant/tools/", "/assistant/", "",
            "tools", "", "Voice tools on/off"),
-    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", ("voice_brain",),
+    NavRow("Assistant", "Chat history", "/assistant/chat/", "/assistant/", "",
            "chat", "", "Recent voice turns"),
-    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Weather", "/assistant/weather/", "/assistant/", "",
            "weather", "", "Location and units"),
-    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Transit", "/assistant/transit/", "/assistant/", "",
            "transit", "", "Routes and stops"),
-    NavRow("Services", "Google", "/assistant/google/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Google", "/assistant/google/", "/assistant/", "",
            "calendar", "", "Calendar · Gmail"),
-    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", ("voice_brain",),
+    NavRow("Services", "Home Assistant", "/assistant/ha/", "/assistant/", "",
            "home", "status-ha", "Not connected"),
-    NavRow("System", "Status", "/system/", "/", (),
+    NavRow("System", "Status", "/system/", "/", "",
            "system", "status-software", "Build"),
-    NavRow("System", "Wi-Fi", "/wifi/", "/", ("network_settings",),
+    NavRow("System", "Wi-Fi", "/wifi/", "/", "",
            "wifi", "", "Network profiles"),
-    NavRow("System", "Speaker name", "/speaker/", "/", ("speaker_settings",),
+    NavRow("System", "Speaker name", "/speaker/", "/", "",
            "tag", "status-speaker-name", "JTS"),
-    NavRow("System", "Wake corpus", "/wake-corpus/", "/", ("developer_tools",),
+    NavRow("System", "Wake corpus", "/wake-corpus/", "/", "wake_detection",
            "dev", "", "Recordings", True),
 )
 
@@ -110,17 +107,12 @@ def hub_paths() -> tuple[str, ...]:
     return tuple(r.path for r in NAV if r.parent == "/" and r.path in parents)
 
 
-def _gate_attr(gates: tuple[str, ...]) -> str:
-    if len(gates) > 1:
-        raise ValueError(f"one data-requires per element, got {gates}")
-    return f' data-requires="{gates[0]}" hidden' if gates else ""
-
-
-def _row_html(row: NavRow, gates: tuple[str, ...]) -> str:
+def _row_html(row: NavRow) -> str:
     status_id = f' id="{row.status_id}"' if row.status_id else ""
+    gate = f' data-requires="{row.requires}" hidden' if row.requires else ""
     return f"""\
           <a class="setting-row{' operator' if row.operator else ''}" \
-href="{row.path}"{_gate_attr(gates)}>
+href="{row.path}"{gate}>
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-{row.icon}"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">{row.label}</span>
@@ -131,10 +123,8 @@ href="{row.path}"{_gate_attr(gates)}>
 
 
 def _section_html(group: str, rows: Sequence[NavRow], *, heading: bool) -> str:
-    first = rows[0].requires[:1]
-    shared = first if all(row.requires[:1] == first for row in rows) else ()
     slug = group.lower()
-    body = "\n".join(_row_html(row, row.requires[len(shared):]) for row in rows)
+    body = "\n".join(_row_html(row) for row in rows)
     # A section named after the page it is on would repeat the title, so it is
     # labelled instead of headed.
     label = f'aria-labelledby="{slug}-heading"' if heading else f'aria-label="{group}"'
@@ -143,7 +133,7 @@ def _section_html(group: str, rows: Sequence[NavRow], *, heading: bool) -> str:
         if heading else ""
     )
     return f"""\
-      <section class="settings-section" {label}{_gate_attr(shared)}>{title}
+      <section class="settings-section" {label}>{title}
         <div class="settings-list">
 {body}
         </div>
@@ -164,7 +154,7 @@ def landing_groups_html(rows: Sequence[NavRow], *, page_title: str = "") -> str:
     )
 
 
-def render_hub(path: str, *, caps: dict[str, object], app_css_version: str) -> str:
+def render_hub(path: str, *, caps: dict[str, bool], app_css_version: str) -> str:
     """The static hub page for `path`: its child rows as settings groups.
 
     Rendered at install time (`jasper.web.landing`) and served from disk, so

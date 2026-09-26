@@ -32,6 +32,7 @@ from tests._gemini_fakes import Transcription as _Transcription
 from tests._log_events import event_fields, event_records, leaked_lines
 from tests._provider_fakes import complete_gemini_turn as _complete_turn
 from tests._provider_fakes import GeminiConnect as _FakeConnect
+from tests._provider_fakes import never_elapses, no_wait
 
 
 # ---------------------------------------------------------------------------
@@ -41,17 +42,16 @@ from tests._provider_fakes import GeminiConnect as _FakeConnect
 
 def _make_conn(
     *,
-    backoff_schedule=(0.0, 0.0),
     context_reset_sec: float = 9999.0,
     rotate_after_sec: float = 0.0,
 ) -> tuple[GeminiLiveConnection, _FakeConnect]:
     """Build a connection wired to a _FakeConnect.
 
-    Tests pass `backoff_schedule=(0.0, 0.0)` to make reconnect immediate
-    (no real waiting in unit tests). `context_reset_sec` defaults to a
-    huge value so the idle reset doesn't fire unless a test explicitly
-    overrides it. `rotate_after_sec=0` disables the planned rotation so
-    only the tests that exercise it spawn that timer."""
+    Reconnects run without waiting out their backoff. `context_reset_sec`
+    defaults to a huge value so the idle reset doesn't fire unless a
+    test explicitly overrides it. `rotate_after_sec=0` disables the
+    planned rotation so only the tests that exercise it spawn that
+    timer."""
     factory = _FakeConnect()
     conn = GeminiLiveConnection(
         api_key="fake",
@@ -59,8 +59,8 @@ def _make_conn(
         voice="Aoede",
         context_reset_sec=context_reset_sec,
         rotate_after_sec=rotate_after_sec,
-        backoff_schedule=backoff_schedule,
         connect_factory=factory,
+        sleep=no_wait,
     )
     return conn, factory
 
@@ -454,7 +454,7 @@ def _make_websockets_409() -> Exception:
 
 async def test_reconnect_409_drops_resumption_handle_and_retries_fresh(caplog):
     """A 409 rejection drops the stale handle before the next attempt."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
@@ -491,7 +491,7 @@ async def test_reconnect_409_with_no_cached_handle_just_retries():
     backoff still gives the server room to release). Pre-fix this
     case wasn't even special-cased — proves the new code doesn't
     regress it."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
@@ -543,7 +543,7 @@ def _make_ws_close_1008_session_expired() -> Exception:
 
 async def test_reconnect_1008_session_expired_drops_resumption_handle():
     """A 1008 rejection drops the stale handle before the next attempt."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
@@ -579,7 +579,7 @@ async def test_reconnect_generic_exception_drops_resumption_handle():
 
     Uses a bare ``RuntimeError`` (no .code, no .rcvd, no 409 substring)
     to prove the drop is not gated on any specific exception shape."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
@@ -603,12 +603,13 @@ async def test_reconnect_generic_exception_drops_resumption_handle():
         await conn.stop()
 
 
-async def test_context_reset_that_cannot_reconnect_raises_for_the_cue():
+async def test_context_reset_that_cannot_reconnect_raises_for_the_cue(monkeypatch):
     """A reset whose reopen never lands raises instead of hanging.
 
     The wake path answers that raise with a failure cue, so a press
     during a dead connection is never silent (non-negotiable 6)."""
-    conn, factory = _make_conn(context_reset_sec=0.01)
+    monkeypatch.setattr("jasper.voice._supervisor.AWAIT_CONNECTED_TIMEOUT_SEC", 0.05)
+    conn, _factory = _make_conn(context_reset_sec=0.01)
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
@@ -616,11 +617,9 @@ async def test_context_reset_that_cannot_reconnect_raises_for_the_cue():
         await turn1.release()
         await asyncio.sleep(0.05)
 
-        # More failures than the supervisor's bounded test schedule.
-        factory.next_exceptions = [_make_websockets_409() for _ in range(20)]
-
+        conn._sleep = never_elapses
         with pytest.raises(RuntimeError):
-            await asyncio.wait_for(conn.acquire_turn(), timeout=20.0)
+            await asyncio.wait_for(conn.acquire_turn(), timeout=3.0)
         assert conn.is_paused()
         assert conn.wake_cue()
     finally:
@@ -753,7 +752,6 @@ async def test_planned_rotation_rolls_the_session_without_backoff():
     conn = GeminiLiveConnection(
         api_key="fake",
         model="fake-model",
-        backoff_schedule=None,
         connect_factory=factory,
         rotate_after_sec=0.05,
         sleep=_sleep,

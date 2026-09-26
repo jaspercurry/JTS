@@ -1563,7 +1563,6 @@ def test_the_emitters_default_to_todays_literals_byte_for_byte():
         active_camilla_yaml.emit_active_speaker_commissioning_config,
         active_camilla_yaml.emit_active_speaker_program_config,
         active_camilla_yaml.emit_active_speaker_baseline_config,
-        active_camilla_yaml.emit_active_speaker_driver_domain_config,
     )
     for emit in emitters:
         kwargs = _emitter_required_kwargs(emit)
@@ -1650,23 +1649,7 @@ def test_an_active_ring_emit_refuses_a_width_the_ring_cannot_carry(monkeypatch):
 
 
 def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
-    """...and it is WIRED IN, not merely correct in isolation.
-
-    The assertion above exercises the helper directly, which proves the rule and
-    nothing about whether any emitter calls it — neutering the helper's body
-    left the whole suite green. This drives a REAL emit through
-    ``emit_active_speaker_startup_config`` (one of the five call sites) and
-    requires the emitter to refuse.
-
-    The emitter derives ``output_count`` from the preset, and no legal preset
-    lands outside 2..8, so the ring's own upper bound is narrowed for the
-    duration instead. Everything on the emit path stays real — real preset, real
-    derived width, real guard — and only the accept-set boundary moves, which is
-    the one value a fixture cannot otherwise reach.
-
-    The other four call sites are held by the source walk below: one live emit
-    proves the wiring exists, the walk proves none of the five lost it.
-    """
+    """Exercise the ring width guard and pin every remaining emit call site."""
     import re as _re
 
     from jasper.active_speaker.camilla_yaml import ActiveSpeakerConfigError
@@ -1694,15 +1677,15 @@ def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
 
-    # All five emitters still call it. A count, because the number is the claim:
+    # Every remaining active emitter must check the ring width:
     # every active emitter that can name a ring must ask.
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(Path(active_camilla_yaml.__file__).parent.rglob("*.py"))
     )
     call_sites = _re.findall(r"^\s+_assert_ring_playback_width\(", source, _re.M)
-    assert len(call_sites) == 5, (
-        f"expected 5 emitter call sites of _assert_ring_playback_width, found "
+    assert len(call_sites) == 4, (
+        f"expected 4 emitter call sites of _assert_ring_playback_width, found "
         f"{len(call_sites)} — a new active emitter must ask, or an existing one "
         "stopped asking"
     )

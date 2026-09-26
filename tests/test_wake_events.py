@@ -28,10 +28,12 @@ from contextlib import closing
 import os
 import sqlite3
 import wave
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+from tests._log_events import event_fields
 
 from jasper import wake_events
 from jasper.wake_events import (
@@ -779,7 +781,8 @@ def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
     legacy_conn = sqlite3.connect(str(db_path))
     # Includes label/label_notes because _SCHEMA_SQL creates an index on
     # `label` at open() — a legacy table missing it would fail the index
-    # build before the column migration even runs.
+    # build before the column migration even runs. The v1 audio paths are
+    # there because open() prunes on them.
     legacy_conn.execute("""
         CREATE TABLE wake_events (
           event_id     TEXT PRIMARY KEY,
@@ -788,6 +791,8 @@ def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
           threshold    REAL NOT NULL,
           outcome      TEXT NOT NULL,
           wake_model   TEXT NOT NULL,
+          audio_on_path TEXT,
+          audio_off_path TEXT,
           label        TEXT,
           label_notes  TEXT
         )
@@ -936,6 +941,59 @@ async def test_retention_marks_chip_aec_paths_as_rolled_off(tmp_path: Path):
         assert row2["audio_chip_aec_150_path"] == (
             "evt-chip-2.aec-chip-aec-150.wav"
         )
+    finally:
+        s.close()
+
+
+async def test_open_deletes_year_old_rows_whose_audio_is_gone(tmp_path: Path):
+    """A row past the age cap that names no WAV (never captured, or rolled
+    off) is deleted when the store opens; one with audio, or a recent one,
+    stays."""
+    old = (
+        datetime.now(timezone.utc)
+        - timedelta(days=wake_events.AUDIOLESS_ROW_RETENTION_DAYS + 1)
+    ).isoformat(timespec="milliseconds")
+    rows = {
+        "old-never-captured": (old, None),
+        "old-rolled-off": (old, ROLLED_OFF_SENTINEL),
+        "old-with-audio": (old, "old-with-audio.aec-on.wav"),
+        "recent-no-audio": (None, None),
+    }
+    s = WakeEventStore(tmp_path)
+    s.open()
+    for event_id in rows:
+        await _seed_event(s, event_id)
+    s.close()
+    with closing(sqlite3.connect(s._db_path, isolation_level=None)) as conn:
+        conn.executemany(
+            "UPDATE wake_events SET ts_utc = COALESCE(?, ts_utc), audio_on_path = ?"
+            " WHERE event_id = ?",
+            [(ts_utc, path, event_id) for event_id, (ts_utc, path) in rows.items()],
+        )
+
+    s = WakeEventStore(tmp_path)
+    s.open()
+    try:
+        kept = {event_id for event_id in rows if await s.get_event(event_id)}
+    finally:
+        s.close()
+    assert kept == {"old-with-audio", "recent-no-audio"}
+
+
+def test_open_survives_a_prune_it_cannot_run(tmp_path: Path, caplog):
+    """The prune is housekeeping: another connection holding the write lock
+    skips it, and the store still opens with telemetry on."""
+    created = WakeEventStore(tmp_path)
+    created.open()
+    created.close()
+    s = WakeEventStore(tmp_path)
+    with closing(sqlite3.connect(s._db_path, isolation_level=None)) as holder:
+        holder.execute("BEGIN IMMEDIATE")
+        s.open()
+        holder.execute("ROLLBACK")
+    try:
+        assert event_fields(caplog, "wake_events.rows_prune_failed")["error"] == "OperationalError"
+        assert s._conn is not None
     finally:
         s.close()
 

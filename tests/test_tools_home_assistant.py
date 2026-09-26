@@ -367,7 +367,6 @@ async def test_clean_session_runs_consequential_without_confirmation(caplog):
     assert fake.calls == ["unlock the front door"]           # executed directly
     assert out["success"] is True
     # DEBUG-only forensics line for "why did this run without a confirm?"
-    # (ha.consequential_direct, jasper/tools/home_assistant.py ~314).
     assert event_fields(caplog, "ha.consequential_direct")["action"] == (
         "unlock the door"
     )

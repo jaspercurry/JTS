@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import logging
 
-from jasper.active_speaker.environment import camilla_statefile_path
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.fanin import ring_readiness as rr
 from jasper.fanin.coupling_reconcile import start_audio_hardware_reconcile
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
+from jasper.paths import camilla_statefile
 
 logger = logging.getLogger(__name__)
 
@@ -168,14 +168,12 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
     load is active, because moving the anchor mid-load re-points the operator's
     own stop control. That refusal is this caller's safety.
 
-    ``--statefile`` IS passed, from the resolver ``applied_profile_displacement``
-    reads. The CLI's argparse default is a literal that ignores
-    ``JASPER_CAMILLA_STATEFILE``; taking it would let the divergence check read
-    one statefile while the re-emit re-pointed another.
+    ``--statefile`` is passed from the resolver ``applied_profile_displacement``
+    reads, so the divergence check and the re-emit name one statefile.
     """
     from jasper.cli import active_speaker as cli  # lazy: import cost, the whole CLI tree (ADR-0226)
 
-    statefile = str(camilla_statefile_path())
+    statefile = str(camilla_statefile())
     argv = ["baseline-reemit", "--endpoint", "ring", "--statefile", statefile]
     try:
         rc = int(cli.main(argv))

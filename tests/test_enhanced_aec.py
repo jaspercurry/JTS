@@ -129,7 +129,7 @@ def test_chip_aec_overlay_is_not_needed_without_losing_underlying_truth(capabili
     assert result["action"]["enabled"] is False
 
 
-def test_streambox_never_offers_or_runs_voice_brain_enhancement(
+def test_streambox_never_offers_or_runs_the_enhancement(
     capability,
     monkeypatch,
 ):
@@ -138,7 +138,7 @@ def test_streambox_never_offers_or_runs_voice_brain_enhancement(
     result = _status(capability)
 
     assert result["state"] == "not_needed"
-    assert result["unavailable_reason"] == "voice_brain_not_installed"
+    assert result["unavailable_reason"] == "no_wake_detection"
     assert result["action"]["enabled"] is False
     assert enhanced_aec_install.install(
         source_root=capability.source,
@@ -146,7 +146,7 @@ def test_streambox_never_offers_or_runs_voice_brain_enhancement(
         cache_root=capability.source.parent / "cache",
     ) == {
         "changed": False,
-        "reason": "voice_brain_not_installed",
+        "reason": "no_wake_detection",
     }
 
 

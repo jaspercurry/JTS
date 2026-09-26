@@ -54,11 +54,9 @@ class SpeechInputContract:
 
     profile: str
     source: str
-    raw: bool
     echo_cancelled: bool
     denoised: bool
     beamformed: bool
-    gain_controlled: bool
     provenance: str
 
     @property
@@ -112,11 +110,9 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
         return SpeechInputContract(
             profile="xvf_chip_aec" if chip_enabled else "xvf_software_aec3",
             source=mic_device,
-            raw=False,
             echo_cancelled=True,
             denoised=True,
             beamformed=chip_enabled,
-            gain_controlled=True,
             provenance="aec_reconciler",
         )
 
@@ -124,22 +120,18 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
         return SpeechInputContract(
             profile="custom_udp",
             source=mic_device,
-            raw=False,
             echo_cancelled=False,
             denoised=False,
             beamformed=False,
-            gain_controlled=False,
             provenance="operator",
         )
 
     return SpeechInputContract(
         profile="direct_mic",
         source=mic_device or "not_configured",
-        raw=True,
         echo_cancelled=False,
         denoised=False,
         beamformed=False,
-        gain_controlled=False,
         provenance=(
             "operator"
             if mic_device and mic_device not in ALSA_CARD_NAMES

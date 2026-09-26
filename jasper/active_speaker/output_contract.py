@@ -29,11 +29,7 @@ from ._common import issue as _issue
 ACTIVE_BASELINE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config"
 )
-# The follower's driver-domain-only (Layer-A) emit. Independently named here
-# (not imported from the emitter) so the verifier re-proves the graph without
-# trusting the producer — emitter<->verifier independence, exactly as
-# ACTIVE_BASELINE_SOURCE is. The keystone round-trip test pins that the two
-# spellings match.
+# Grouped graph-family marker; its persisted value must remain readable.
 ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )

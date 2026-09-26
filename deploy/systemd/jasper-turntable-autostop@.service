@@ -1,6 +1,6 @@
 [Unit]
-Description=Stop the experimental USB turntable on hot-plug (%I)
-Documentation=file:/opt/jasper/experiments/usb-turntable/README.md
+Description=Stop the USB turntable on hot-plug (%I)
+Documentation=file:/opt/jasper/jasper/turntable/README.md
 BindsTo=dev-%i.device
 After=dev-%i.device
 ConditionPathExists=/dev/%I
@@ -19,7 +19,7 @@ Type=oneshot
 User=pi
 SupplementaryGroups=dialout
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/jts_turntable.py --port /dev/%I --json hotplug-stop
+ExecStart=/usr/bin/python3 /opt/jasper/jasper/turntable/jts_turntable.py --port /dev/%I --json hotplug-stop
 # Worst-case retry-loop math (AUTOSTOP_ATTEMPTS/AUTOSTOP_IO_TIMEOUT/
 # AUTOSTOP_RETRY_SECONDS) lives in jts_turntable.py next to those constants;
 # it totals 70.5s, so this stays above that with margin.

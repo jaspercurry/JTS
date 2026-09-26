@@ -26,7 +26,6 @@ from jasper.dsp_apply import (
     DspWriterLockTimeout,
     ValidationStatus,
     apply_dsp_config,
-    config_file_sha256,
     same_config_file,
     _DSP_LOCK_OWNERSHIP,
     _default_apply_lock_path,
@@ -38,6 +37,7 @@ from jasper.dsp_apply import (
     record_dsp_apply_state,
     validate_camilla_config,
 )
+from jasper.json_fields import sha256_file
 
 from ._async_wait import wait_signalled
 
@@ -703,22 +703,12 @@ async def test_a_matching_digest_still_loads(tmp_path: Path):
         load_config=load,
         state_path=tmp_path / "dsp_apply_state.json",
         lock_path=tmp_path / "dsp_apply.lock",
-        expected_candidate_sha256=config_file_sha256(cfg),
+        expected_candidate_sha256=sha256_file(cfg),
         validate=_always_valid,
     )
 
     assert state.result == "success"
     assert loaded == [str(cfg)]
-
-
-def test_config_file_sha256_is_the_hasher_the_proof_uses(tmp_path: Path):
-    """The public helper exists so a caller verifying the same bytes cannot
-    reach a different answer than the proof does."""
-    cfg = tmp_path / "candidate.yml"
-    cfg.write_text("---\ndevices: {}\n")
-
-    assert config_file_sha256(cfg) == dsp_apply_module._sha256(cfg)
-    assert config_file_sha256(tmp_path / "absent.yml") is None
 
 
 def test_same_config_file_never_raises_on_a_path_it_cannot_resolve(tmp_path: Path):
@@ -920,7 +910,7 @@ async def test_a_rejected_apply_keeps_the_graph_it_emitted_when_not_in_place(
         )
 
     assert cfg.read_text() == emitted
-    assert excinfo.value.state.config_sha256 == config_file_sha256(cfg)
+    assert excinfo.value.state.config_sha256 == sha256_file(cfg)
 
 
 async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path):

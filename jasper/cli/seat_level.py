@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.seat_level_sweep import SweepLevelReader, watchdog_seconds
 from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.camilla import primary_controller
+from jasper.camilla import CamillaUnavailable, primary_controller
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.seat_level_reference import (
@@ -90,12 +90,6 @@ class _OperatorStopped(Exception):
 
 
 async def _stoppable(pass_coro: Any) -> LevelResult:
-    """Run the leveling pass with SIGINT wired to its own cancellation.
-
-    Stopping must be possible at ANY moment, and it must stop the stimulus and
-    give the household its volume back — which is the pass's own teardown, not
-    a second one here.
-    """
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(pass_coro)
     stopped = False
@@ -160,8 +154,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             playback_device=context.playback_device,
             protection_sections_by_role=confirmed_protection_sections(context.safety_profile, context.role_targets),
         )
-    except (OSError, RuntimeError, ValueError, LookupError) as exc:
-        code = getattr(exc, "code", REFUSE_CEILING_UNDERIVABLE)
+    except (CamillaUnavailable, OSError, RuntimeError, ValueError, LookupError) as exc:
+        code = getattr(exc, "code", "measurement_graph_unavailable" if isinstance(exc, CamillaUnavailable) else REFUSE_CEILING_UNDERIVABLE)
         if code == "composition_saved_tune_unavailable":
             code = "applied_baseline_snapshot_unavailable"
         return _refused(code, str(exc))
@@ -254,8 +248,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         return _refused("seat_level_watchdog_expired", "Leveling timed out", restored=restored)
     except _OperatorStopped:
         return _refused(REFUSE_INTERRUPTED, "Stopped by the operator", restored=restored)
-    except (OSError, RuntimeError, ValueError) as exc:
-        return _refused(getattr(exc, "code", getattr(exc, "reason", "ramp_error")), str(exc), restored=restored)
+    except (CamillaUnavailable, OSError, RuntimeError, ValueError) as exc:
+        return _refused(getattr(exc, "code", getattr(exc, "reason", "measurement_graph_unavailable" if isinstance(exc, CamillaUnavailable) else "ramp_error")), str(exc), restored=restored)
     log_event(logger, "active_speaker.seat_level_result", status=result.status, reason=result.reason,
               gain_db=result.gain_db, leveled_db_spl=result.leveled_db_spl,
               ambient_db_spl=result.ambient_db_spl, readings=len(result.readings))

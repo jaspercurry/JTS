@@ -39,19 +39,12 @@ import numpy as np
 import jasper.tts_playout as tts_mod
 from jasper.tts_playout import TtsPlayout
 
-from tests._playout import FakeOutputdStream
+from tests._playout import FakeOutputdStream, playout_over_fake_stream
 
 
 def _make_playout(monkeypatch) -> tuple[TtsPlayout, FakeOutputdStream]:
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p = TtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = FakeOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
-    return p, stream
+    return playout_over_fake_stream()
 
 
 async def test_write_under_watermark_does_not_sleep(monkeypatch):

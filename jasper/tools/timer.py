@@ -70,14 +70,21 @@ def _update_confirm(new_timer: "Timer") -> str:
     return f"Updated the timer to {duration}."
 
 
-def make_timer_tools(scheduler: "TimerScheduler"):
-    """Build the timer CRUD tools. Returns a list of decorated
-    coroutines suitable for `ToolRegistry.register(...)`.
+def _no_single_match(timer: str, matches: list["Timer"]) -> dict:
+    if not matches:
+        return {"ok": False, "reason": "not_found", "error": f"No timer matches {timer!r}."}
+    return {
+        "ok": False,
+        "reason": "ambiguous",
+        "matches": [_serialise(t) for t in matches],
+        "error": (
+            f"{len(matches)} timers match {timer!r} — ask the "
+            f"user which one (offer their durations to disambiguate)."
+        ),
+    }
 
-    The scheduler handles its own pre-render hook (set via
-    `scheduler.set_pre_render(...)` on the daemon side); this
-    module doesn't need a cue-manager reference."""
 
+def _set_timer_tool(scheduler: "TimerScheduler"):
     @tool(labels=("productivity", "timer"))
     async def set_timer(seconds: int, label: str = "") -> dict:
         """Schedule a timer that announces when it fires.
@@ -114,12 +121,12 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             timer = scheduler.add(int(seconds), label or None)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
-        return {
-            "ok": True,
-            "confirm": _set_confirm(timer),
-            **_serialise(timer),
-        }
+        return {"ok": True, "confirm": _set_confirm(timer), **_serialise(timer)}
 
+    return set_timer
+
+
+def _list_timers_tool(scheduler: "TimerScheduler"):
     @tool(labels=("productivity", "timer"))
     async def list_timers() -> dict:
         """Return all active timers with remaining time.
@@ -135,11 +142,12 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         minutes." If `count` is 0: "No timers running."
         """
         timers = scheduler.list_active()
-        return {
-            "count": len(timers),
-            "timers": [_serialise(t) for t in timers],
-        }
+        return {"count": len(timers), "timers": [_serialise(t) for t in timers]}
 
+    return list_timers
+
+
+def _cancel_timer_tool(scheduler: "TimerScheduler"):
     @tool(labels=("productivity", "timer"))
     async def cancel_timer(timer: str) -> dict:
         """Cancel a timer by label or id.
@@ -177,22 +185,12 @@ def make_timer_tools(scheduler: "TimerScheduler"):
                 "cancelled": _serialise(t),
                 "confirm": _cancel_confirm(t),
             }
-        if not matches:
-            return {
-                "ok": False,
-                "reason": "not_found",
-                "error": f"No timer matches {timer!r}.",
-            }
-        return {
-            "ok": False,
-            "reason": "ambiguous",
-            "matches": [_serialise(t) for t in matches],
-            "error": (
-                f"{len(matches)} timers match {timer!r} — ask the "
-                f"user which one (offer their durations to disambiguate)."
-            ),
-        }
+        return _no_single_match(timer, matches)
 
+    return cancel_timer
+
+
+def _update_timer_tool(scheduler: "TimerScheduler"):
     @tool(labels=("productivity", "timer"))
     async def update_timer(timer: str, seconds: int) -> dict:
         """Change an existing timer's duration in one atomic step.
@@ -228,9 +226,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         it word-for-word.
         """
         try:
-            updated, matches, new_timer = scheduler.update(
-                timer, int(seconds),
-            )
+            updated, matches, new_timer = scheduler.update(timer, int(seconds))
         except ValueError as e:
             return {"ok": False, "error": str(e)}
         if updated and new_timer is not None:
@@ -240,23 +236,24 @@ def make_timer_tools(scheduler: "TimerScheduler"):
                 "previous": _serialise(matches[0]),
                 **_serialise(new_timer),
             }
-        if not matches:
-            return {
-                "ok": False,
-                "reason": "not_found",
-                "error": f"No timer matches {timer!r}.",
-            }
-        return {
-            "ok": False,
-            "reason": "ambiguous",
-            "matches": [_serialise(t) for t in matches],
-            "error": (
-                f"{len(matches)} timers match {timer!r} — ask the "
-                f"user which one (offer their durations to disambiguate)."
-            ),
-        }
+        return _no_single_match(timer, matches)
 
-    return [set_timer, list_timers, cancel_timer, update_timer]
+    return update_timer
+
+
+def make_timer_tools(scheduler: "TimerScheduler"):
+    """Build the timer CRUD tools. Returns a list of decorated
+    coroutines suitable for `ToolRegistry.register(...)`.
+
+    The scheduler handles its own pre-render hook (set via
+    `scheduler.set_pre_render(...)` on the daemon side); this
+    module doesn't need a cue-manager reference."""
+    return [
+        _set_timer_tool(scheduler),
+        _list_timers_tool(scheduler),
+        _cancel_timer_tool(scheduler),
+        _update_timer_tool(scheduler),
+    ]
 
 
 __all__ = ["make_timer_tools"]

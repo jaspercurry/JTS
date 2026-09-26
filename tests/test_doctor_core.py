@@ -106,18 +106,33 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
     ]
 
 
-def test_doctor_check_exception_becomes_fail_result():
+def _run_one(monkeypatch, entry: RegisteredCheck) -> CheckResult:
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(_harness, "registered_checks", lambda **_scope: [entry])
+    [result] = asyncio.run(doctor.run_async(SimpleNamespace()))
+    return result
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+def test_doctor_check_exception_becomes_fail_result(monkeypatch, is_async):
     def explode():
         raise RuntimeError("synthetic check failure")
 
-    result = _shared._run_doctor_check(("explosive check", explode))
+    async def explode_async():
+        explode()
 
-    assert result.name == "explosive check"
-    assert result.status == "fail"
-    assert result.reason == _shared.REASON_CHECK_CRASHED
+    result = _run_one(monkeypatch, _reg(
+        explode_async if is_async else explode,
+        is_async=is_async,
+        label="explosive check",
+    ))
+
+    assert (result.name, result.status, result.reason) == (
+        "explosive check", "fail", _shared.REASON_CHECK_CRASHED,
+    )
 
 
-def test_doctor_check_exception_redacts_secret_like_values():
+def test_doctor_check_exception_redacts_secret_like_values(monkeypatch):
     def explode():
         raise RuntimeError(
             "refresh_token=super-secret-refresh "
@@ -125,7 +140,7 @@ def test_doctor_check_exception_redacts_secret_like_values():
             "sk-super-secret-openai-key"
         )
 
-    result = _shared._run_doctor_check(("sensitive check", explode))
+    result = _run_one(monkeypatch, _reg(explode, label="sensitive check"))
 
     assert result.status == "fail"
     assert result.reason == _shared.REASON_CHECK_CRASHED
@@ -152,19 +167,6 @@ def test_check_result_redacts_a_credential_left_in_its_own_detail():
     assert result.reason == "some_reason"
     assert "sk-live-abc123" not in result.detail
     assert "<redacted>" in result.detail
-
-
-def test_async_doctor_check_exception_becomes_fail_result():
-    async def explode():
-        raise RuntimeError("synthetic async failure")
-
-    result = asyncio.run(
-        _shared._run_async_doctor_check("async check", explode),
-    )
-
-    assert result.name == "async check"
-    assert result.status == "fail"
-    assert result.reason == _shared.REASON_CHECK_CRASHED
 
 
 def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):

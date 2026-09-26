@@ -22,6 +22,13 @@ import pytest
 from jasper import env_load
 from jasper.cli.doctor import audio_runtime_ring
 from jasper.control import transport_eligibility
+from jasper.control.audio_signal_path import (
+    PARKED_DETAIL,
+    PARKED_HEADLINE,
+    park_detail,
+    transport_park_signal,
+)
+from jasper.control.audio_state_issues import state_issues
 from jasper.control.transport_eligibility import (
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
@@ -442,12 +449,9 @@ def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
 
 
 def test_unclassified_reaches_no_household_surface():
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_state_issues import _state_issues
-
     state = transport_eligibility.snapshot(_left_only(), {})
-    assert _transport_park_signal(state) is None
-    assert not _state_issues(
+    assert transport_park_signal(state) is None
+    assert not state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
     )
 
@@ -620,13 +624,10 @@ def test_no_named_park_also_reports_an_unproven_endpoint(
 def test_an_unproven_endpoint_reaches_no_household_surface():
     """Operator-only. The box plays today and is unproven rather than named
     silent afterwards; there is no household action either way."""
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_state_issues import _state_issues
-
     state = transport_eligibility.snapshot(_stereo_plus_subwoofer(), {})
     assert state["unproven_endpoint"] is True
-    assert _transport_park_signal(state) is None
-    issues = _state_issues(
+    assert transport_park_signal(state) is None
+    issues = state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
     )
     assert not [
@@ -886,16 +887,13 @@ def test_the_doctor_names_a_converge_refusal(monkeypatch, refusal, expected_reas
 def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):
     """Operator-only, like the ADR-0184 seam: the box is not claimed silent,
     and there is no household action either way."""
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_state_issues import _state_issues
-
     _loaded_graph(monkeypatch, converged=False)
     state = transport_eligibility.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
     assert state["converge_refused"]
-    assert _transport_park_signal(state) is None
-    issues = _state_issues(
+    assert transport_park_signal(state) is None
+    issues = state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
     )
     assert not [
@@ -984,10 +982,8 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
 def test_a_live_park_writes_one_household_incident_per_class(
     topology, env, park_class, issue, remedy
 ):
-    from jasper.control.audio_state_issues import _state_issues
-
     state = transport_eligibility.snapshot(topology, env)
-    issues = _state_issues(
+    issues = state_issues(
         {"warmup_active": True},
         None,
         {},
@@ -1000,11 +996,8 @@ def test_a_live_park_writes_one_household_incident_per_class(
 
 
 def test_a_live_park_takes_the_household_headline():
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_signal_path import PARKED_HEADLINE
-
     state = transport_eligibility.snapshot(_mono_awaiting_its_output(), {})
-    signal = _transport_park_signal(state)
+    signal = transport_park_signal(state)
     assert signal is not None
     assert signal["status"] == "issue"
     assert signal["headline"] == PARKED_HEADLINE
@@ -1021,20 +1014,16 @@ def test_a_live_park_says_which_shape_parked_the_box(
     Both household writers compose from the same table, so the incident row
     and the card cannot say different things about one park.
     """
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_signal_path import PARKED_DETAIL
-    from jasper.control.audio_state_issues import _state_issues
-
     state = transport_eligibility.snapshot(topology, env)
     rows = {
         row["key"]: row
-        for row in _state_issues(
+        for row in state_issues(
             {"warmup_active": True}, None, {}, {}, None, transport_park=state
         )
     }
     row = rows[f"path.transport_park.{park_class}"]
     assert row["detail"] != PARKED_DETAIL
-    assert row["detail"] in _transport_park_signal(state)["detail"]
+    assert row["detail"] in transport_park_signal(state)["detail"]
     if issue is not None:
         assert issue in row["detail"]
     else:
@@ -1046,13 +1035,11 @@ def test_a_live_park_says_which_shape_parked_the_box(
 
 
 def test_each_park_class_gets_its_own_household_sentence():
-    from jasper.control.audio_signal_path import PARKED_DETAIL, _park_detail
-
     details = set()
     for case in _PARK_CASES:
         topology, env, park_class = case.values[:3]
         state = transport_eligibility.snapshot(topology, env)
-        details.add(_park_detail(
+        details.add(park_detail(
             [park for park in state["parks"] if park["park_class"] == park_class]
         ))
     assert len(details) == len(_PARK_CASES)
@@ -1065,10 +1052,6 @@ def test_an_unnamed_park_class_keeps_the_canned_sentence():
     It degrades to what every class said before this table existed, which is
     the one thing a park must never do: go quiet.
     """
-    from jasper.control.audio_health import _transport_park_signal
-    from jasper.control.audio_signal_path import PARKED_DETAIL, PARKED_HEADLINE
-    from jasper.control.audio_state_issues import _state_issues
-
     state = {
         "status": "parked",
         "parked": True,
@@ -1079,10 +1062,10 @@ def test_an_unnamed_park_class_keeps_the_canned_sentence():
             "detail": "operator evidence",
         }],
     }
-    signal = _transport_park_signal(state)
+    signal = transport_park_signal(state)
     assert signal["headline"] == PARKED_HEADLINE
     assert signal["detail"] == PARKED_DETAIL
-    rows = _state_issues(
+    rows = state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
     )
     assert [

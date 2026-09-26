@@ -748,35 +748,25 @@ def test_request_rejected_without_running_anything(
     assert resp["ok"] is False
     assert expected_error_substring in resp["error"]
     assert calls == []
-    assert calls == []
 
 
-def test_start_only_unit_allows_start(broker):
+@pytest.mark.parametrize(
+    "unit",
+    [
+        pytest.param("jasper-audio-hardware-reconcile.service", id="start_only_unit"),
+        pytest.param("jasper-wifi-scan-repair.service", id="wifi_scan_repair_helper"),
+    ],
+)
+def test_start_only_unit_allows_start(broker, unit):
     sock_path, calls, _ = broker
     resp = _request_restart_retrying_transient_failures(
-        "jasper-audio-hardware-reconcile.service",
+        unit,
         verb="start",
         no_block=False,
         socket_path=sock_path,
     )
     assert resp["ok"] is True
-    assert calls == [
-        ["systemctl", "start", "jasper-audio-hardware-reconcile.service"],
-    ]
-
-
-def test_wifi_scan_repair_helper_allows_start_only(broker):
-    sock_path, calls, _ = broker
-    resp = _request_restart_retrying_transient_failures(
-        "jasper-wifi-scan-repair.service",
-        verb="start",
-        no_block=False,
-        socket_path=sock_path,
-    )
-    assert resp["ok"] is True
-    assert calls == [
-        ["systemctl", "start", "jasper-wifi-scan-repair.service"],
-    ]
+    assert calls == [["systemctl", "start", unit]]
 
 
 def test_one_bad_unit_blocks_the_whole_request(broker):

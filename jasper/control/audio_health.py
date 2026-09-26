@@ -32,29 +32,28 @@ from ..service_units import (
 )
 from ._health_fields import mapping as _mapping
 from ._health_sources import SOURCE_LABELS
-from .audio_attribution import _input_attribution
 from .audio_incident_view import (
-    _incident_is_relevant,
-    _incident_priority,
-    _present_incident,
+    incident_is_relevant,
+    incident_priority,
+    present_incident,
 )
 from .audio_signal_path import (
-    _active_source,
-    _activity_truth_unknown,
-    _activity_unavailable_signal,
-    _parked_signal,
-    _selected_source,
-    _signal_path,
-    _stopped_dsp_signal,
-    _transport_park_signal,
-    _undeclared_hardware_signal,
+    activity_truth_unknown,
+    activity_unavailable_signal,
+    classify_signal_path,
+    fanin_selected_source,
+    parked_signal,
+    resolve_active_source,
+    stopped_dsp_signal,
+    transport_park_signal,
+    undeclared_hardware_signal,
 )
 from .audio_source_cards import (
-    _not_applicable_timing,
-    _source_cards,
-    _usb_timing,
+    build_source_cards,
+    not_applicable_timing,
+    usb_timing,
 )
-from .audio_stream_card import _current_stream, _fresh_dac_delay_ms
+from .audio_stream_card import build_current_stream
 
 SCHEMA_VERSION = 1
 
@@ -67,13 +66,13 @@ SCHEMA_VERSION = 1
 # CamillaDSP is gone, so a named cause must still displace it.
 _SYMPTOM_ONLY_CODES = frozenset({"output_deaf", "output_ring_stalled"})
 
-# The two `_signal_path` codes that mean "outputd is not delivering audio, for
-# a reason `_signal_path` cannot see": outputd never started at all (its
-# missing-declaration `ExecCondition` kept the unit down, so its control socket
-# never answers) or it is up but self-reports a non-ALSA backend
+# The two `classify_signal_path` codes that mean "outputd is not delivering
+# audio, for a reason `classify_signal_path` cannot see": outputd never started
+# at all (its missing-declaration `ExecCondition` kept the unit down, so its
+# control socket never answers) or it is up but self-reports a non-ALSA backend
 # (`action=park_until_active_graph` keeps sockets alive on a `fake` backend
-# without opening ALSA). `_undeclared_hardware_signal` refines only these two;
-# every other concrete `_signal_path` issue is left untouched.
+# without opening ALSA). `undeclared_hardware_signal` refines only these two;
+# every other concrete `classify_signal_path` issue is left untouched.
 _UNDECLARED_OUTPUT_CODES = frozenset({"output_absent", "output_backend_inactive"})
 
 # The shared-path units whose restart interrupts every source, and the incident
@@ -89,7 +88,7 @@ def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
     """True when a cause-naming detector may replace this signal path.
 
     Shared by the three "the box cannot emit at all" detectors in
-    :func:`compose_audio_health`: they claim only the ground where the path
+    :func:`_named_cause_path`: they claim only the ground where the path
     looks clean, plus :data:`_SYMPTOM_ONLY_CODES`. A concrete live fan-in /
     outputd failure still wins.
     """
@@ -99,41 +98,7 @@ def _yields_to_a_named_cause(signal_path: Mapping[str, Any]) -> bool:
     )
 
 
-def _incident_context(
-    airplay: Mapping[str, Any],
-    outputd: Mapping[str, Any] | None,
-    active_source: str | None,
-    system: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Capture persisted incident evidence."""
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    source_input = (
-        _mapping(_mapping(fanin.get("inputs")).get(active_source))
-        if active_source is not None else {}
-    )
-    output = _mapping(_mapping(outputd).get("dac"))
-    host = _mapping(system)
-    context: dict[str, Any] = {
-        "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
-        "input": {"rms_dbfs": source_input.get("rms_dbfs")},
-        "output": {"snd_pcm_delay_ms": _fresh_dac_delay_ms(output)},
-        # Why the box could not keep up, frozen with the incident: SoC
-        # throttling and memory stall pressure are the two host conditions
-        # that starve the audio path without leaving a trace in it.
-        "host": {
-            "throttled_now": host.get("throttled_now"),
-            "throttled_history": host.get("throttled_history"),
-            "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
-        },
-    }
-    attribution = _input_attribution(airplay, active_source)
-    if attribution is not None:
-        context["attribution"] = attribution
-    return context
-
-
-def _health_prelude(
+def health_prelude(
     ap: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
     mux: Mapping[str, Any] | None,
@@ -143,28 +108,214 @@ def _health_prelude(
     sampler's ``_tick`` both need before their two paths diverge: this
     composer layers its cause-naming overrides onto the returned
     ``signal_path``, while the sampler passes this bare version straight to
-    :func:`~jasper.control.audio_state_issues._state_issues` alongside those
+    :func:`~jasper.control.audio_state_issues.state_issues` alongside those
     same overrides as separate arguments.
 
     ``mux`` and ``route_state`` are the already-resolved observations --
     each caller keeps its own fallback for producing them.
     """
-    active_source = _active_source(ap, mux)
-    activity_unknown = _activity_truth_unknown(ap, mux)
-    signal_path = _signal_path(ap, outputd, active_source)
+    active_source = resolve_active_source(ap, mux)
+    activity_unknown = activity_truth_unknown(ap, mux)
+    signal_path = classify_signal_path(ap, outputd, active_source)
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
-        signal_path = _activity_unavailable_signal()
+        signal_path = activity_unavailable_signal()
     fanin = _mapping(_mapping(ap.get("current")).get("fanin"))
     if active_source == Source.USBSINK.value:
-        latency = _usb_timing(
+        latency = usb_timing(
             route_state,
             _mapping(fanin.get("host_clock")) or None,
             _mapping(_mapping(fanin.get("inputs")).get(Source.USBSINK.value)),
             active=True,
         )
     else:
-        latency = _not_applicable_timing()
+        latency = not_applicable_timing()
     return active_source, activity_unknown, signal_path, latency
+
+
+def _named_cause_path(
+    signal_path: dict[str, Any],
+    ap: Mapping[str, Any],
+    route_state: Mapping[str, Any],
+    service_states: Mapping[str, Any] | None,
+    transport_park: Mapping[str, Any] | None,
+    output_hardware: Any,
+    output_topology_snapshot: Any,
+) -> dict[str, Any]:
+    """``signal_path`` with the cause-naming detectors layered onto it."""
+    # Rank order: a stopped DSP is fixed NOW by starting it, a live coherence
+    # contradiction by changing the layout, a transport park only by rebuilding
+    # the topology on the ring. Each outranks ok / warn / idle / unknown: the
+    # box cannot emit audio at all, and absence of evidence should not hide that.
+    for cause in (
+        stopped_dsp_signal(ap, service_states),
+        parked_signal(route_state),
+        transport_park_signal(transport_park),
+    ):
+        if cause is not None and _yields_to_a_named_cause(signal_path):
+            signal_path = cause
+    undeclared_hardware = undeclared_hardware_signal(
+        output_hardware, output_topology_snapshot
+    )
+    # Checked by CODE, not the `_yields_to_a_named_cause` guard above:
+    # `classify_signal_path`'s outputd-absent/non-ALSA branch is already
+    # "issue" status, so this refines its generic wording rather than
+    # outranking a different concrete issue. Runs last, so `stopped_dsp`
+    # and `parked` keep priority.
+    if (
+        undeclared_hardware is not None
+        and signal_path.get("code") in _UNDECLARED_OUTPUT_CODES
+    ):
+        return undeclared_hardware
+    return signal_path
+
+
+def _verdict(
+    signal_path: Mapping[str, Any],
+    source_cards: list[dict[str, Any]],
+    active_source: str | None,
+    latency: Mapping[str, Any],
+) -> tuple[str, str, str]:
+    """The card's ``(status, headline, detail)``: the first rule that holds."""
+    unavailable_sources = [
+        str(source.get("label") or source.get("id")) for source in source_cards
+        if source.get("status") == "issue" and source.get("id") == active_source
+    ]
+    path_status = str(signal_path.get("status") or "unknown")
+    headline = str(signal_path.get("headline"))
+    detail = str(signal_path.get("detail"))
+    if path_status in {"issue", "unknown"}:
+        return path_status, headline, detail
+    if unavailable_sources:
+        unavailable = ", ".join(unavailable_sources)
+        return "warn", "A playback source needs attention", f"Unavailable: {unavailable}."
+    if path_status == "warn":
+        if active_source:
+            return "warn", "Audio is playing", headline
+        return "warn", headline, detail
+    if path_status == "idle":
+        return "idle", headline, detail
+    if active_source is None:
+        return "idle", "Audio is ready", "No source is playing."
+    if latency.get("status") in {"warn", "unknown"}:
+        return "warn", "Audio is playing", str(latency.get("headline"))
+    label = SOURCE_LABELS.get(active_source, active_source)
+    return "ok", "Audio is playing", f"{label} · sound path healthy."
+
+
+def _overall(
+    verdict: tuple[str, str, str],
+    active_source: str | None,
+    previous_overall: Mapping[str, Any] | None,
+    sampled_at: float,
+) -> dict[str, Any]:
+    """The card's verdict, dated from when this same verdict began."""
+    status, headline, detail = verdict
+    previous = _mapping(previous_overall)
+    same_overall = (
+        previous.get("status") == status
+        and previous.get("headline") == headline
+        and previous.get("active_source") == active_source
+    )
+    return {
+        "status": status,
+        "headline": headline,
+        "detail": detail,
+        "active_source": active_source,
+        "since": previous.get("since") if same_overall else sampled_at,
+    }
+
+
+def _incident_views(
+    issues: list[dict[str, Any]], active_source: str | None, sampled_at: float,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The one incident the card leads with, and up to five others."""
+    priority = lambda issue: incident_priority(issue, active_source)
+    ongoing_issues = [
+        issue for issue in issues
+        if issue.get("status") == "ongoing"
+        and incident_is_relevant(issue, active_source)
+    ]
+    ongoing = max(ongoing_issues, key=priority, default=None)
+    current_incident = (
+        None if ongoing is None else present_incident(ongoing, sampled_at, issues)
+    )
+    secondary_ongoing = sorted(
+        (issue for issue in ongoing_issues if issue is not ongoing),
+        key=priority,
+        reverse=True,
+    )
+    recovered = [issue for issue in issues if issue.get("status") == "recovered"]
+    recent_incidents = [
+        present_incident(issue, sampled_at, issues)
+        for issue in (*secondary_ongoing, *recovered)
+    ][:5]
+    return current_incident, recent_incidents
+
+
+def _activity_unknown_stream(
+    ap: Mapping[str, Any], session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The stream card while mux cannot say what is playing."""
+    selected = fanin_selected_source(ap)
+    stream: dict[str, Any] = {
+        "source_id": selected,
+        "label": SOURCE_LABELS.get(selected or "", "Audio activity"),
+        "signal": {
+            "summary": "Playback state unavailable",
+            "detail": "Waiting for a fresh reading of what is playing.",
+            "details": [],
+        },
+    }
+    if session is not None:
+        stream["session"] = dict(session)
+    return stream
+
+
+def _technical(
+    ap: Mapping[str, Any],
+    outputd: Mapping[str, Any] | None,
+    route_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The daemons' own readings behind the household card."""
+    current = _mapping(ap.get("current"))
+    fanin = _mapping(current.get("fanin"))
+    return {
+        "sampler": {
+            "last_sample_at": ap.get("last_sample_at"),
+            "warmup_active": bool(ap.get("warmup_active")),
+            "suppressed_reason": ap.get("suppressed_reason"),
+        },
+        "fanin": {
+            "available": bool(fanin.get("available")),
+            "input_buffer_frames": fanin.get("input_buffer_frames"),
+            "inputs": copy.deepcopy(fanin.get("inputs")),
+            "host_clock": copy.deepcopy(fanin.get("host_clock")),
+            "watchdog": copy.deepcopy(fanin.get("watchdog")),
+            "output": copy.deepcopy(fanin.get("output")),
+            "tts": copy.deepcopy(fanin.get("tts")),
+        },
+        "outputd": {
+            "available": outputd is not None,
+            "mix": copy.deepcopy(_mapping(outputd).get("mix")),
+            "content": copy.deepcopy(_mapping(outputd).get("content")),
+            "dac": copy.deepcopy(_mapping(outputd).get("dac")),
+            "tts": copy.deepcopy(_mapping(outputd).get("tts")),
+        },
+        "route": {
+            "route_id": route_state.get("route_id"),
+            "route_config_hash": route_state.get("route_config_hash"),
+        },
+        "airplay": {
+            "status": ap.get("status"),
+            "reason": ap.get("reason"),
+            "mpris": copy.deepcopy(current.get("mpris")),
+            "camilla": copy.deepcopy(current.get("camilla")),
+            "summary_5m": copy.deepcopy(ap.get("summary_5m")),
+            "summary_30m": copy.deepcopy(ap.get("summary_30m")),
+            "storm": copy.deepcopy(ap.get("storm")),
+        },
+        "link": copy.deepcopy(current.get("link")),
+    }
 
 
 def compose_audio_health(
@@ -190,10 +341,7 @@ def compose_audio_health(
     ``output_topology_snapshot`` is a
     :class:`~jasper.output_topology_store.OutputTopologySnapshot` or ``None``
     (before the sampler's first slow-cadence read) — deliberately the
-    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`.
-    Both typed loosely because this module imports those layers lazily (same
-    convention as ``topology`` in
-    :func:`~jasper.control.audio_route_claim._transport_state`).
+    snapshot, not the bare topology; see :func:`undeclared_hardware_signal`.
 
     ``transport_park`` is ``jasper.control.transport_eligibility.snapshot()`` (or
     ``None`` before the first slow-cadence read), passed in rather than read
@@ -202,155 +350,30 @@ def compose_audio_health(
     """
     ap = _mapping(airplay)
     route_state = _mapping(route)
-    mux = mux_status
-    active_source, activity_unknown, signal_path, latency = _health_prelude(
-        ap, outputd, mux, route_state,
+    active_source, activity_unknown, signal_path, latency = health_prelude(
+        ap, outputd, mux_status, route_state,
     )
-    stopped_dsp = _stopped_dsp_signal(ap, service_states)
-    if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
-        # Ahead of both parked states: a daemon that is not running is
-        # happening NOW and is fixed by starting it, while parked is persistent
-        # and fixed by changing the layout.
-        signal_path = stopped_dsp
-    parked = _parked_signal(route_state)
-    if parked is not None and _yields_to_a_named_cause(signal_path):
-        # A verified structural fault outranks ok / warn / idle / unknown: the
-        # box cannot emit audio at all, and absence of evidence should not hide
-        # that.
-        signal_path = parked
-    transport_parked = _transport_park_signal(transport_park)
-    if transport_parked is not None and _yields_to_a_named_cause(signal_path):
-        # Last and most structural of the three: a live coherence contradiction
-        # or a stopped daemon names something an operator can act on THIS boot,
-        # while a transport park is cleared only by rebuilding the topology on
-        # the ring.
-        signal_path = transport_parked
-    undeclared_hardware = _undeclared_hardware_signal(
-        output_hardware, output_topology_snapshot
+    signal_path = _named_cause_path(
+        signal_path, ap, route_state, service_states, transport_park,
+        output_hardware, output_topology_snapshot,
     )
-    if (
-        undeclared_hardware is not None
-        and signal_path.get("code") in _UNDECLARED_OUTPUT_CODES
-    ):
-        # Checked by CODE, not the `_yields_to_a_named_cause` guard above:
-        # `_signal_path`'s outputd-absent/non-ALSA branch is already "issue"
-        # status, so this refines its generic wording rather than outranking a
-        # different concrete issue. Runs last, so `stopped_dsp` and `parked`
-        # keep priority.
-        signal_path = undeclared_hardware
-    current = _mapping(ap.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    source_cards = _source_cards(
-        ap,
-        signal_path,
-        route_state,
-        active_source,
-        service_states,
-        source_intents,
+    source_cards = build_source_cards(
+        ap, signal_path, route_state, active_source, service_states, source_intents,
     )
-    unavailable_sources = [
-        str(source.get("label") or source.get("id"))
-        for source in source_cards
-        if source.get("status") == "issue"
-        and source.get("id") == active_source
-    ]
-
-    path_status = str(signal_path.get("status") or "unknown")
-    if path_status in {"issue", "unknown"}:
-        overall_status = path_status
-        headline = str(signal_path.get("headline"))
-        detail = str(signal_path.get("detail"))
-    elif unavailable_sources:
-        overall_status = "warn"
-        headline = "A playback source needs attention"
-        detail = f"Unavailable: {', '.join(unavailable_sources)}."
-    elif path_status == "warn":
-        overall_status = "warn"
-        headline = "Audio is playing" if active_source else str(signal_path.get("headline"))
-        detail = str(signal_path.get("headline") if active_source else signal_path.get("detail"))
-    elif path_status == "idle":
-        overall_status = "idle"
-        headline = str(signal_path.get("headline"))
-        detail = str(signal_path.get("detail"))
-    elif active_source is None:
-        overall_status = "idle"
-        headline = "Audio is ready"
-        detail = "No source is playing."
-    elif latency.get("status") in {"warn", "unknown"}:
-        overall_status = "warn"
-        headline = "Audio is playing"
-        detail = str(latency.get("headline"))
-    else:
-        overall_status = "ok"
-        headline = "Audio is playing"
-        detail = (
-            f"{SOURCE_LABELS.get(active_source, active_source)} · sound path healthy."
+    overall = _overall(
+        _verdict(signal_path, source_cards, active_source, latency),
+        active_source, previous_overall, sampled_at,
+    )
+    current_incident, recent_incidents = _incident_views(issues, active_source, sampled_at)
+    current_stream = (
+        _activity_unknown_stream(ap, session) if activity_unknown
+        else build_current_stream(
+            active_source=active_source, airplay=ap, outputd=outputd,
+            route=route_state, timing=latency, sampled_at=sampled_at,
+            session=session, restart_watch_units=RESTART_WATCH_UNITS,
+            service_states=service_states,
         )
-
-    previous = _mapping(previous_overall)
-    same_overall = (
-        previous.get("status") == overall_status
-        and previous.get("headline") == headline
-        and previous.get("active_source") == active_source
     )
-    since = previous.get("since") if same_overall else sampled_at
-    overall = {
-        "status": overall_status,
-        "headline": headline,
-        "detail": detail,
-        "active_source": active_source,
-        "since": since,
-    }
-    ongoing_issues = [
-        issue for issue in issues
-        if issue.get("status") == "ongoing"
-        and _incident_is_relevant(issue, active_source)
-    ]
-    ongoing = max(
-        ongoing_issues,
-        key=lambda issue: _incident_priority(issue, active_source),
-        default=None,
-    )
-    current_incident = (
-        _present_incident(ongoing, sampled_at, issues)
-        if ongoing is not None else None
-    )
-    secondary_ongoing = sorted(
-        (issue for issue in ongoing_issues if issue is not ongoing),
-        key=lambda issue: _incident_priority(issue, active_source),
-        reverse=True,
-    )
-    recovered = [
-        issue for issue in issues if issue.get("status") == "recovered"
-    ]
-    recent_incidents = [
-        _present_incident(issue, sampled_at, issues)
-        for issue in (*secondary_ongoing, *recovered)
-    ][:5]
-    current_stream = _current_stream(
-        active_source=active_source,
-        airplay=ap,
-        outputd=outputd,
-        route=route_state,
-        timing=latency,
-        sampled_at=sampled_at,
-        session=session,
-        restart_watch_units=RESTART_WATCH_UNITS,
-        service_states=service_states,
-    )
-    if activity_unknown:
-        selected = _selected_source(ap)
-        current_stream = {
-            "source_id": selected,
-            "label": SOURCE_LABELS.get(selected or "", "Audio activity"),
-            "signal": {
-                "summary": "Playback state unavailable",
-                "detail": "Waiting for a fresh reading of what is playing.",
-                "details": [],
-            },
-        }
-        if session is not None:
-            current_stream["session"] = dict(session)
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at": sampled_at,
@@ -362,41 +385,5 @@ def compose_audio_health(
         "current_stream": current_stream,
         "current_incident": current_incident,
         "recent_incidents": recent_incidents,
-        "technical": {
-            "sampler": {
-                "last_sample_at": ap.get("last_sample_at"),
-                "warmup_active": bool(ap.get("warmup_active")),
-                "suppressed_reason": ap.get("suppressed_reason"),
-            },
-            "fanin": {
-                "available": bool(fanin.get("available")),
-                "input_buffer_frames": fanin.get("input_buffer_frames"),
-                "inputs": copy.deepcopy(fanin.get("inputs")),
-                "host_clock": copy.deepcopy(fanin.get("host_clock")),
-                "watchdog": copy.deepcopy(fanin.get("watchdog")),
-                "output": copy.deepcopy(fanin.get("output")),
-                "tts": copy.deepcopy(fanin.get("tts")),
-            },
-            "outputd": {
-                "available": outputd is not None,
-                "mix": copy.deepcopy(_mapping(outputd).get("mix")),
-                "content": copy.deepcopy(_mapping(outputd).get("content")),
-                "dac": copy.deepcopy(_mapping(outputd).get("dac")),
-                "tts": copy.deepcopy(_mapping(outputd).get("tts")),
-            },
-            "route": {
-                "route_id": route_state.get("route_id"),
-                "route_config_hash": route_state.get("route_config_hash"),
-            },
-            "airplay": {
-                "status": ap.get("status"),
-                "reason": ap.get("reason"),
-                "mpris": copy.deepcopy(current.get("mpris")),
-                "camilla": copy.deepcopy(current.get("camilla")),
-                "summary_5m": copy.deepcopy(ap.get("summary_5m")),
-                "summary_30m": copy.deepcopy(ap.get("summary_30m")),
-                "storm": copy.deepcopy(ap.get("storm")),
-            },
-            "link": copy.deepcopy(current.get("link")),
-        },
+        "technical": _technical(ap, outputd, route_state),
     }

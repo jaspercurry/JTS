@@ -242,10 +242,8 @@ def _reconcile_after_failure() -> str:
 
 def _wait_for_expected_profile(
     target: xvf3800.FirmwareUpdateTarget,
-    *,
-    timeout_s: float = REENUMERATION_TIMEOUT_SEC,
 ) -> xvf3800.RuntimeProfile:
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + REENUMERATION_TIMEOUT_SEC
     last = xvf3800.detect_runtime_profile()
     while time.monotonic() < deadline:
         last = xvf3800.detect_runtime_profile()

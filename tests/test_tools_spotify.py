@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from jasper.tools.spotify import make_spotify_tools
+from jasper.tools.spotify import format_name_list, make_spotify_tools
 from tests._spotify_tool_fakes import (
     FakeAccountClient,
     FakeRenderer,
@@ -51,7 +51,7 @@ def test_play_airplay_short_circuits_to_sender_device():
     )
 
     with patch(
-        "jasper.spotify_router.airplay_client_name",
+        "jasper.tools.spotify.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
         "jasper.tools.spotify.airplay_now_playing",
@@ -85,7 +85,7 @@ def test_play_airplay_short_circuit_falls_through_when_no_device_id():
     )
 
     with patch(
-        "jasper.spotify_router.airplay_client_name",
+        "jasper.tools.spotify.airplay_client_name",
         new=lambda: _coro_return("Jasper's iPhone"),
     ), patch(
         "jasper.tools.spotify.airplay_now_playing",
@@ -800,12 +800,11 @@ def test_revoked_no_names_falls_back_to_generic_account_phrasing():
 def test_format_name_list_pluralization():
     """English-list join used for voice output. Pin the spoken shape:
     one → bare name; two → 'a and b'; three+ → Oxford comma."""
-    from jasper.tools.spotify import _format_name_list
-    assert _format_name_list([]) == ""
-    assert _format_name_list(["Jasper"]) == "jasper"  # lowercased
-    assert _format_name_list(["jasper", "brittany"]) == "jasper and brittany"
-    assert _format_name_list(["a", "b", "c"]) == "a, b, and c"
-    assert _format_name_list(["a", "b", "c", "d"]) == "a, b, c, and d"
+    assert format_name_list([]) == ""
+    assert format_name_list(["Jasper"]) == "jasper"  # lowercased
+    assert format_name_list(["jasper", "brittany"]) == "jasper and brittany"
+    assert format_name_list(["a", "b", "c"]) == "a, b, and c"
+    assert format_name_list(["a", "b", "c", "d"]) == "a, b, c, and d"
 
 
 def test_revoked_then_relinked_recovers_without_daemon_restart():

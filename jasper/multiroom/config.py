@@ -549,15 +549,6 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     )
 
 
-def is_enabled(path: str = GROUPING_ENV_FILE) -> bool:
-    """Cheap enabled-check. True only if the file parses to enabled=True.
-
-    A configured-but-invalid bond is still `enabled` (the fail-LOUD
-    state) — callers that need validity inspect `load_config().error`.
-    """
-    return load_config(path).enabled
-
-
 def is_active_member(cfg: GroupingConfig) -> bool:
     """Is this speaker an ACTIVE member of a running bond — enabled AND valid?
 
@@ -566,7 +557,7 @@ def is_active_member(cfg: GroupingConfig) -> bool:
     :func:`jasper.multiroom.reconcile_plan.plan`). So "active member" = a speaker
     whose local audio is actually part of a synced stream. PURE.
 
-    Distinct from :func:`is_enabled`, which is True even for a fail-LOUD
+    Distinct from ``cfg.enabled``, which is True even for a fail-LOUD
     invalid config (nothing is streaming there, so it is NOT an active member).
     """
     return cfg.enabled and cfg.error is None

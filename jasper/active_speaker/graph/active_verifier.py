@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
+from jasper.json_fields import as_float, finite_float
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.speaker_layout import (
@@ -53,7 +53,6 @@ from ..graph_safety import (
     bass_extension_block_valid,
     bass_management_corner_matched,
     filter_param_matches,
-    float_value as _float_value,
     mains_highpass_present,
     mixer_output_proved as _mixer_output_proved,
     output_terminally_muted,
@@ -223,16 +222,6 @@ def _exact_filter_step_channels(
         and all(type(value) is int for value in raw_channels)
         and set(raw_channels) == expected
     )
-
-
-def _strict_finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (OverflowError, TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
 
 
 def _post_split_filter_names(
@@ -407,7 +396,7 @@ def _unsafe_post_split_gains(payload: dict[str, Any]) -> tuple[str, ...]:
         for name in names:
             if not isinstance(name, str) or _filter_type(payload, name) != "Gain":
                 continue
-            gain = _strict_finite_number(_filter_params(payload, name).get("gain"))
+            gain = finite_float(_filter_params(payload, name).get("gain"))
             if gain is None or gain > 0.0:
                 unsafe.add(name)
     return tuple(sorted(unsafe))
@@ -430,14 +419,14 @@ def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
     filter_type = _filter_type(payload, name)
     params = _filter_params(payload, name)
     if filter_type == "Delay":
-        delay_ms = _strict_finite_number(params.get("delay"))
+        delay_ms = finite_float(params.get("delay"))
         return (
             params.get("unit") == "ms"
             and delay_ms is not None
             and 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
         )
     if filter_type == "Gain":
-        gain = _strict_finite_number(params.get("gain"))
+        gain = finite_float(params.get("gain"))
         return (
             gain is not None
             and gain <= 0.0
@@ -481,7 +470,7 @@ def _post_split_delay_evidence(
         if _filter_type(payload, name) != "Delay":
             continue
         params = _filter_params(payload, name)
-        delay_ms = _strict_finite_number(params.get("delay"))
+        delay_ms = finite_float(params.get("delay"))
         if (
             params.get("unit") != "ms"
             or delay_ms is None
@@ -518,7 +507,7 @@ def _crossover_filter_safe(
     suffix = "lp" if direction == "lowpass" else "hp"
     params = _filter_params(payload, name)
     order = params.get("order")
-    frequency = _strict_finite_number(params.get("freq"))
+    frequency = finite_float(params.get("freq"))
     minimum_frequency = (
         TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
         if role == "tweeter" and direction == "highpass"
@@ -549,7 +538,7 @@ def _bass_management_filter_safe(
         _filter_type(payload, name) == "BiquadCombo"
         and params.get("type") == f"LinkwitzRiley{direction.title()}"
         and SUB_CROSSOVER_HZ_LO
-        <= (_strict_finite_number(params.get("freq")) or 0.0)
+        <= (finite_float(params.get("freq")) or 0.0)
         <= SUB_CROSSOVER_HZ_HI
         and params.get("order") == SUB_CROSSOVER_ORDER
     )
@@ -562,9 +551,9 @@ def _baseline_gain_limiter_safe(
     limiter_name: str,
 ) -> bool:
     gain_params = _filter_params(payload, gain_name)
-    gain = _strict_finite_number(gain_params.get("gain"))
+    gain = finite_float(gain_params.get("gain"))
     limiter_params = _filter_params(payload, limiter_name)
-    clip_limit = _strict_finite_number(limiter_params.get("clip_limit"))
+    clip_limit = finite_float(limiter_params.get("clip_limit"))
     return (
         _filter_type(payload, gain_name) == "Gain"
         and gain is not None
@@ -609,7 +598,7 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     """
     if _filter_type(payload, "active_baseline_headroom") != "Gain":
         return 0.0
-    gain = _strict_finite_number(
+    gain = finite_float(
         _filter_params(payload, "active_baseline_headroom").get("gain")
     )
     if gain is None or gain >= 0.0:
@@ -621,7 +610,7 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
         for name in filters:
             if not isinstance(name, str) or not name.startswith("room_peq"):
                 continue
-            room_gain = _strict_finite_number(
+            room_gain = finite_float(
                 _filter_params(payload, name).get("gain")
             )
             if room_gain is not None and room_gain > 0.0:
@@ -640,9 +629,9 @@ def _linearization_biquad(payload: dict[str, Any], name: str) -> dict[str, Any]:
     params = _filter_params(payload, name)
     return {
         "biquad_type": str(params.get("type") or ""),
-        "freq": _strict_finite_number(params.get("freq")) or 0.0,
-        "q": _strict_finite_number(params.get("q")) or 0.0,
-        "gain": _strict_finite_number(params.get("gain")) or 0.0,
+        "freq": finite_float(params.get("freq")) or 0.0,
+        "q": finite_float(params.get("q")) or 0.0,
+        "gain": finite_float(params.get("gain")) or 0.0,
     }
 
 
@@ -670,7 +659,7 @@ def _linearization_chain_peak_db(
     sections: list[CrossoverSection] = []
     for direction, name in crossovers:
         params = _filter_params(payload, name)
-        freq = _strict_finite_number(params.get("freq"))
+        freq = finite_float(params.get("freq"))
         order = params.get("order")
         if freq is None or isinstance(order, bool) or not isinstance(order, int):
             continue
@@ -679,7 +668,7 @@ def _linearization_chain_peak_db(
                 fc_hz=float(freq), order=int(order), highpass=direction == "highpass",
             )
         )
-    trim_db = _strict_finite_number(_filter_params(payload, gain_name).get("gain"))
+    trim_db = finite_float(_filter_params(payload, gain_name).get("gain"))
     return branch_chain_peak(
         filters,
         sections=tuple(sections),
@@ -700,7 +689,7 @@ def _linearization_filter_safe(
     params = _filter_params(payload, name)
     if str(params.get("type") or "") not in biquad_types:
         return False
-    gain = _strict_finite_number(params.get("gain"))
+    gain = finite_float(params.get("gain"))
     return gain is not None
 
 
@@ -923,7 +912,7 @@ def _baseline_output_chain(
         limiter_name,
     )
     delay_params = _filter_params(payload, expected_tail[0])
-    delay_ms = _strict_finite_number(delay_params.get("delay"))
+    delay_ms = finite_float(delay_params.get("delay"))
     if (
         chain[cursor:] != expected_tail
         or _filter_type(payload, expected_tail[0]) != "Delay"
@@ -952,7 +941,7 @@ def _commissioning_output_chain(
     names = _post_split_filter_names(payload, channel=channel)
     mute_name = _commission_mute_name(channel)
     mute_params = _filter_params(payload, mute_name)
-    mute_gain = _strict_finite_number(mute_params.get("gain"))
+    mute_gain = finite_float(mute_params.get("gain"))
     mute_safe = (
         _filter_type(payload, mute_name) == "Gain"
         and mute_gain is not None
@@ -964,7 +953,7 @@ def _commissioning_output_chain(
         limiter_name = _sub_startup_limiter_name()
         expected = (_sub_lowpass_name(), limiter_name, mute_name)
         limiter = _filter_params(payload, limiter_name)
-        clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+        clip_limit = finite_float(limiter.get("clip_limit"))
         return (
             ()
             if (
@@ -1005,7 +994,7 @@ def _commissioning_output_chain(
             _filter_type(payload, protective_name) == "BiquadCombo"
             and protective.get("type") == "LinkwitzRileyHighpass"
             and (
-                _strict_finite_number(protective.get("freq")) or 0.0
+                finite_float(protective.get("freq")) or 0.0
             ) >= TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
             and not isinstance(protective_order, bool)
             and isinstance(protective_order, int)
@@ -1036,9 +1025,9 @@ def _commissioning_output_chain(
         (f"as_out{channel}_rear_pending_mute",) if assignment.output_variant == "rear" else ()
     )
     delay = _filter_params(payload, delay_name)
-    delay_ms = _strict_finite_number(delay.get("delay"))
+    delay_ms = finite_float(delay.get("delay"))
     limiter = _filter_params(payload, limiter_name)
-    clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+    clip_limit = finite_float(limiter.get("clip_limit"))
     if (
         names[cursor:] != expected_tail
         or not mute_safe
@@ -1128,8 +1117,8 @@ def _crossover_pair_matches(
     lower = _filter_params(payload, lower_name)
     upper = _filter_params(payload, upper_name)
     return (
-        _strict_finite_number(lower.get("freq"))
-        == _strict_finite_number(upper.get("freq"))
+        finite_float(lower.get("freq"))
+        == finite_float(upper.get("freq"))
         and lower.get("order") == upper.get("order")
     )
 
@@ -1178,7 +1167,7 @@ def _driver_domain_pair_trim_safe(
     )
     if not present:
         return True
-    gain = _float_value(_filter_params(payload, _DRIVER_DOMAIN_PAIR_TRIM).get("gain"))
+    gain = as_float(_filter_params(payload, _DRIVER_DOMAIN_PAIR_TRIM).get("gain"))
     return (
         _filter_type(payload, _DRIVER_DOMAIN_PAIR_TRIM) == "Gain"
         and gain is not None
@@ -1799,7 +1788,7 @@ def _active_graph_evidence(
                     "active_baseline_headroom_unwired",
                     "active baseline graph does not wire the shared headroom filter",
                 ))
-            headroom = _float_value(
+            headroom = finite_float(
                 _filter_params(payload, "active_baseline_headroom").get("gain")
             )
             if headroom is None or headroom > 0.0:
@@ -2103,11 +2092,10 @@ def _active_graph_evidence(
                     ),
                 ))
             limiter_params = _filter_params(payload, limiter_name)
-            limiter_clip = _float_value(limiter_params.get("clip_limit"))
+            limiter_clip = finite_float(limiter_params.get("clip_limit"))
             if (
                 _filter_type(payload, limiter_name) != "Limiter"
                 or limiter_clip is None
-                or not math.isfinite(limiter_clip)
                 or limiter_clip > 0.0
                 or not _truthy_bool(limiter_params.get("soft_clip"))
             ):
@@ -2119,8 +2107,8 @@ def _active_graph_evidence(
                         f"DAC output {index + 1} ({role})"
                     ),
                 ))
-            gain = _float_value(_filter_params(payload, gain_name).get("gain"))
-            if gain is None or not math.isfinite(gain) or gain > 0.0:
+            gain = finite_float(_filter_params(payload, gain_name).get("gain"))
+            if gain is None or gain > 0.0:
                 issues.append(_issue(
                     "blocker",
                     "active_baseline_gain_positive",
@@ -2135,7 +2123,7 @@ def _active_graph_evidence(
                     if _filter_type(payload, name) == "BiquadCombo"
                     and str(_filter_params(payload, name).get("type") or "")
                     == "LinkwitzRileyHighpass"
-                    and (_float_value(_filter_params(payload, name).get("freq")) or 0.0)
+                    and (as_float(_filter_params(payload, name).get("freq")) or 0.0)
                     > 0.0
                 ]
                 if not highpass_names:

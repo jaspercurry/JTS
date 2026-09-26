@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from jasper.control._health_fields import _read_int_file, _read_text_file
+from jasper.control._health_fields import read_int_file, read_text_file
 from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
@@ -79,8 +79,8 @@ def _default_context_probe(now_wall: float) -> dict[str, Any]:
     """Cheap correlation context captured once at storm onset."""
     return {
         "soc_temp_c": _read_soc_temp_c(),
-        "cpu_governor": _read_text_file(CPU_GOVERNOR_PATH),
-        "cpu_freq_khz": _read_int_file(CPU_FREQ_PATH),
+        "cpu_governor": read_text_file(CPU_GOVERNOR_PATH),
+        "cpu_freq_khz": read_int_file(CPU_FREQ_PATH),
         "sec_since_camilla_restart": _seconds_since_camilla_restart(),
         "sec_since_deploy": _seconds_since_deploy(now_wall),
     }
@@ -337,7 +337,7 @@ class CamillaRateStorm:
             "capture_rate": cam.get("capture_rate"),
             "buffer_level": buffer_level,
             "soc_temp_c": soc_temp,
-            "cpu_freq_khz": _read_int_file(CPU_FREQ_PATH),
+            "cpu_freq_khz": read_int_file(CPU_FREQ_PATH),
             "material_per_min": round(self._last_material_per_min, 1),
         }
         ext = self._extent

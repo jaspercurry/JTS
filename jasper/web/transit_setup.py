@@ -54,10 +54,10 @@ the handler, routes, and save logic.
 """
 from __future__ import annotations
 
+import functools
 import html
 import logging
 import os
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -67,19 +67,21 @@ from ..transit import geocode as geocode_mod
 from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file
+from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ._common import (
     RESTART_CLAUSE,
     api_key_token_is_valid,
     begin_request,
     dispatch_get,
     dispatch_post,
+    flash_error,
     form_guarded,
     send_html_response,
     send_see_other,
     restart_voice_daemon,
     SECRET_ENV_MODE,
 )
-from .chrome import safe_back_href
+from .chrome import return_to_href
 # Rendering helpers resolve names in transit_page's globals: patch
 # transit_page.<name>, not these aliases. transit_page also owns the
 # LAT_ENV/etc. constants below; import rather than redeclare.
@@ -89,16 +91,15 @@ from .transit_page import (
     LAT_ENV,
     LON_ENV,
     TRAVEL_DEFAULT_MODE_ENV,
-    _index_html,
-    _wrap_transit_page,
+    index_html,
+    wrap_transit_page,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# Persisted at /var/lib/jasper/transit.env. Mode 0640 — the BusTime
-# key is mildly sensitive but not as critical as an OAuth token.
-TRANSIT_FILE = location_state.TRANSIT_FILE
+# Mode 0640 — the BusTime key is mildly sensitive but not as critical as an
+# OAuth token.
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
 
@@ -119,7 +120,7 @@ def _owned_env_keys() -> set[str]:
     }
 
 
-def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
+def _load_state(path: str = TRANSIT_ENV_PATH) -> dict[str, str]:
     return read_env_file(path)
 
 
@@ -155,7 +156,7 @@ def _locked_apply(state_path: str, current: dict[str, str], new: dict[str, str])
 def _seed_weather_from_transit_if_missing(
     transit_state: dict[str, str],
     *,
-    weather_path: str = location_state.WEATHER_FILE,
+    weather_path: str = WEATHER_ENV_PATH,
 ) -> bool:
     """Copy transit coords into weather.env when weather has no coords.
 
@@ -418,166 +419,160 @@ def _apply_cities(
 # ----------------------------------------------------------------------
 
 
-def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    """Build the request handler closed over `cfg` (state-file path).
-    Tests pass a tmpdir-based path; production uses TRANSIT_FILE."""
-    cfg = {
-        "state_path": cfg.get("state_path", TRANSIT_FILE),
-        "routes_secret_path": cfg.get("routes_secret_path", GOOGLE_ROUTES_SECRET_FILE),
-        "weather_path": cfg.get("weather_path", location_state.WEATHER_FILE),
-    }
+def _get_index(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
+    state = _load_state(cfg["state_path"])
+    ctx = begin_request(handler)
+    # A render failure (corrupt CSV, malformed env file) still answers a
+    # page whose banner says what broke, never a bare 500.
+    try:
+        routes_state = read_env_file(cfg["routes_secret_path"])
+        body = index_html(
+            state,
+            ctx["csrf_token"],
+            routes_state=routes_state,
+            status_msg=ctx["flash"],
+            back_href=return_to_href(handler.path, default="/assistant/"),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("transit wizard render failed")
+        body = wrap_transit_page(
+            "Transit",
+            f'<div class="banner banner--danger" role="status">'
+            f'Couldn\'t render the page: {html.escape(str(e))}. '
+            f'Check the daemon logs for the full traceback '
+            f'(<code>journalctl -u jasper-web</code>).</div>',
+        )
+    send_html_response(handler, body)
 
-    # The route tables live in this closure so the bodies can read `cfg`.
-    def _get_index(handler: BaseHTTPRequestHandler) -> None:
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
-        state = _load_state(cfg["state_path"])
-        ctx = begin_request(handler)
-        # Wrap render in a top-level guard: an unexpected
-        # exception (corrupt CSV, malformed env file, etc.)
-        # should yield a useful page with a diagnostic banner
-        # rather than 500ing the whole route. The wizard's job
-        # is to tell the user what to do next.
-        try:
-            routes_state = read_env_file(cfg["routes_secret_path"])
-            body = _index_html(
-                state,
-                ctx["csrf_token"],
-                routes_state=routes_state,
-                status_msg=ctx["flash"],
-                back_href=safe_back_href(
-                    (qs.get("return_to") or [""])[0],
-                    default="/assistant/",
-                ),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("transit wizard render failed")
-            body = _wrap_transit_page(
-                "Transit",
-                f'<div class="banner banner--danger" role="status">'
-                f'Couldn\'t render the page: {html.escape(str(e))}. '
-                f'Check the daemon logs for the full traceback '
-                f'(<code>journalctl -u jasper-web</code>).</div>',
-            )
-        send_html_response(handler, body)
 
-    @form_guarded
-    def _post_geocode(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
-    ) -> None:
-        current = _load_state(cfg["state_path"])
-        new, err = _apply_geocode(form, current)
-        if err is not None:
-            send_see_other(handler, "./", flash=err)
-            return
-        try:
-            _locked_apply(cfg["state_path"], current, new)
+def _post_geocode(
+    cfg: dict[str, Any], handler: BaseHTTPRequestHandler, form: dict[str, str],
+) -> None:
+    current = _load_state(cfg["state_path"])
+    new, err = _apply_geocode(form, current)
+    if err is not None:
+        send_see_other(handler, "./", flash=err)
+        return
+    try:
+        _locked_apply(cfg["state_path"], current, new)
+        _seed_weather_from_transit_if_missing(
+            new, weather_path=cfg["weather_path"],
+        )
+    except OSError as e:
+        logger.exception("could not write transit.env after geocode")
+        flash_error(handler, "Could not save", e)
+        return
+    display = new.get(DISPLAY_NAME_ENV, "")
+    # Geocoded coordinates and display names reveal the household's
+    # location, so record only that a successful mutation landed.
+    log_event(logger, "transit.geocode", client=handler.address_string())
+    send_see_other(handler, "./", flash=f"Found location: {display}")
+
+
+def _post_save(
+    cfg: dict[str, Any], handler: BaseHTTPRequestHandler, form: dict[str, str],
+) -> None:
+    current = _load_state(cfg["state_path"])
+    new, err = _apply_save(form, current)
+    if err is not None:
+        send_see_other(handler, "./", flash=err)
+        return
+    routes_current = read_env_file(cfg["routes_secret_path"])
+    routes_new, routes_err = _apply_routes_save(form, routes_current)
+    if routes_err is not None:
+        send_see_other(handler, "./", flash=routes_err)
+        return
+    try:
+        _locked_apply(cfg["state_path"], current, new)
+        if new:
             _seed_weather_from_transit_if_missing(
                 new, weather_path=cfg["weather_path"],
             )
-        except OSError as e:
-            logger.exception("could not write transit.env after geocode")
-            send_see_other(handler, "./", flash=f"Could not save: {e}")
-            return
-        display = new.get(DISPLAY_NAME_ENV, "")
-        # Geocoded coordinates and display names reveal the household's
-        # location, so record only that a successful mutation landed.
-        log_event(logger, "transit.geocode", client=handler.address_string())
-        send_see_other(handler, "./", flash=f"Found location: {display}")
-
-    @form_guarded
-    def _post_save(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
-    ) -> None:
-        current = _load_state(cfg["state_path"])
-        new, err = _apply_save(form, current)
-        if err is not None:
-            send_see_other(handler, "./", flash=err)
-            return
-        routes_current = read_env_file(cfg["routes_secret_path"])
-        routes_new, routes_err = _apply_routes_save(form, routes_current)
-        if routes_err is not None:
-            send_see_other(handler, "./", flash=routes_err)
-            return
-        try:
-            _locked_apply(cfg["state_path"], current, new)
-            if new:
-                _seed_weather_from_transit_if_missing(
-                    new, weather_path=cfg["weather_path"],
-                )
-            if routes_new:
-                write_env_file(
-                    cfg["routes_secret_path"],
-                    routes_new,
-                    mode=SECRET_ENV_MODE,
-                    owner=location_state.TRANSIT_ENV_OWNER,
-                )
-            else:
-                delete_env_file(cfg["routes_secret_path"])
-        except OSError as e:
-            logger.exception("could not write transit.env after save")
-            send_see_other(handler, "./", flash=f"Could not save: {e}")
-            return
-        # No station/stop/dock IDs in the log — those reveal the
-        # household's home location. Record only that a save landed.
-        log_event(logger, "transit.save", client=handler.address_string())
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
-        send_see_other(handler, "./", flash=f"Saved.{clause}")
-
-    @form_guarded
-    def _post_cities(
-        handler: BaseHTTPRequestHandler, form: dict[str, str],
-    ) -> None:
-        current = _load_state(cfg["state_path"])
-        new = _apply_cities(form, current)
-        # _apply_cities always sets JASPER_TRANSIT_CITIES (possibly empty),
-        # so `new` is never an empty dict — write, never delete. (Coords are
-        # normally present too, since the cities form only renders with
-        # coords; a hand-crafted coords-less POST just persists the toggle,
-        # which is harmless.)
-        try:
-            _locked_apply(cfg["state_path"], current, new)
-        except OSError as e:
-            logger.exception("could not write transit.env after cities save")
-            send_see_other(handler, "./", flash=f"Could not save: {e}")
-            return
-        log_event(
-            logger,
-            "transit.cities",
-            cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
-            client=handler.address_string(),
-        )
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
-        send_see_other(handler, "./", flash=f"Saved cities.{clause}")
-
-    @form_guarded
-    def _post_clear(
-        handler: BaseHTTPRequestHandler, _form: dict[str, str],
-    ) -> None:
-        current = _load_state(cfg["state_path"])
-        new = _apply_clear(current)
-        # _apply_clear always records JASPER_TRANSIT_CITIES="" (present-empty
-        # = "no cities"), so `new` is never empty — always write, never
-        # delete. Deleting would drop the key back to ABSENT, which reads as
-        # "all packs eligible" and would wrongly re-enable every city.
-        try:
-            _locked_apply(cfg["state_path"], current, new)
+        if routes_new:
+            write_env_file(
+                cfg["routes_secret_path"],
+                routes_new,
+                mode=SECRET_ENV_MODE,
+                owner=location_state.TRANSIT_ENV_OWNER,
+            )
+        else:
             delete_env_file(cfg["routes_secret_path"])
-        except OSError as e:
-            logger.exception("could not write transit.env after clear")
-            send_see_other(handler, "./", flash=f"Could not save: {e}")
-            return
-        log_event(logger, "transit.clear", client=handler.address_string())
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
-        send_see_other(
-            handler, "./", flash=f"Cleared transit settings.{clause}",
-        )
+    except OSError as e:
+        logger.exception("could not write transit.env after save")
+        flash_error(handler, "Could not save", e)
+        return
+    # No station/stop/dock IDs in the log — those reveal the
+    # household's home location. Record only that a save landed.
+    log_event(logger, "transit.save", client=handler.address_string())
+    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    send_see_other(handler, "./", flash=f"Saved.{clause}")
 
-    _GET_ROUTES = {"/": _get_index}
+
+def _post_cities(
+    cfg: dict[str, Any], handler: BaseHTTPRequestHandler, form: dict[str, str],
+) -> None:
+    current = _load_state(cfg["state_path"])
+    new = _apply_cities(form, current)
+    # _apply_cities always sets JASPER_TRANSIT_CITIES (possibly empty),
+    # so `new` is never an empty dict — write, never delete. (Coords are
+    # normally present too, since the cities form only renders with
+    # coords; a hand-crafted coords-less POST just persists the toggle,
+    # which is harmless.)
+    try:
+        _locked_apply(cfg["state_path"], current, new)
+    except OSError as e:
+        logger.exception("could not write transit.env after cities save")
+        flash_error(handler, "Could not save", e)
+        return
+    log_event(
+        logger,
+        "transit.cities",
+        cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
+        client=handler.address_string(),
+    )
+    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    send_see_other(handler, "./", flash=f"Saved cities.{clause}")
+
+
+def _post_clear(
+    cfg: dict[str, Any], handler: BaseHTTPRequestHandler, _form: dict[str, str],
+) -> None:
+    current = _load_state(cfg["state_path"])
+    new = _apply_clear(current)
+    # _apply_clear always records JASPER_TRANSIT_CITIES="" (present-empty
+    # = "no cities"), so `new` is never empty — always write, never
+    # delete. Deleting would drop the key back to ABSENT, which reads as
+    # "all packs eligible" and would wrongly re-enable every city.
+    try:
+        _locked_apply(cfg["state_path"], current, new)
+        delete_env_file(cfg["routes_secret_path"])
+    except OSError as e:
+        logger.exception("could not write transit.env after clear")
+        flash_error(handler, "Could not save", e)
+        return
+    log_event(logger, "transit.clear", client=handler.address_string())
+    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    send_see_other(
+        handler, "./", flash=f"Cleared transit settings.{clause}",
+    )
+
+
+def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    """Build the request handler closed over `cfg` (state-file path).
+    Tests pass a tmpdir-based path; production uses TRANSIT_ENV_PATH."""
+    cfg = {
+        "state_path": cfg.get("state_path", TRANSIT_ENV_PATH),
+        "routes_secret_path": cfg.get("routes_secret_path", GOOGLE_ROUTES_SECRET_FILE),
+        "weather_path": cfg.get("weather_path", WEATHER_ENV_PATH),
+    }
+
+    # The tables live in this closure because they bind each route body to `cfg`.
+    _GET_ROUTES = {"/": functools.partial(_get_index, cfg)}
     _POST_ROUTES = {
-        "/geocode": _post_geocode,
-        "/save": _post_save,
-        "/cities": _post_cities,
-        "/clear": _post_clear,
+        "/geocode": form_guarded(functools.partial(_post_geocode, cfg)),
+        "/save": form_guarded(functools.partial(_post_save, cfg)),
+        "/cities": form_guarded(functools.partial(_post_cities, cfg)),
+        "/clear": form_guarded(functools.partial(_post_clear, cfg)),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -601,14 +596,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    state_path: str = TRANSIT_FILE,
-    routes_secret_path: str = GOOGLE_ROUTES_SECRET_FILE,
-    weather_path: str = location_state.WEATHER_FILE,
+    state_path: str = TRANSIT_ENV_PATH,
+    weather_path: str = WEATHER_ENV_PATH,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
-    cfg = {
-        "state_path": state_path,
-        "routes_secret_path": routes_secret_path,
-        "weather_path": weather_path,
-    }
+    cfg = {"state_path": state_path, "weather_path": weather_path}
     return systemd.make_http_server(target, _make_handler(cfg))

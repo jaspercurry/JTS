@@ -55,7 +55,7 @@ from ._shared import (
     RED,
     RESET,
     YELLOW,
-    _exception_detail,
+    exception_detail,
     check_row,
     summarize,
 )
@@ -273,7 +273,7 @@ def main() -> None:
             _emit_json(
                 _error_payload(
                     f"config: {e}",
-                    detail=_exception_detail(e),
+                    detail=exception_detail(e),
                     reason=REASON_CONFIG_ERROR,
                 ),
                 args.out,
@@ -286,7 +286,7 @@ def main() -> None:
         results = asyncio.run(run_async(cfg, core_only=args.core, only=args.only))
     except Exception as e:  # noqa: BLE001
         if args.json:
-            detail = _exception_detail(e)
+            detail = exception_detail(e)
             _emit_json(
                 _error_payload(
                     f"doctor crashed: {detail}",

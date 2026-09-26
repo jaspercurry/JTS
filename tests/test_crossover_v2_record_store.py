@@ -14,6 +14,7 @@ files — so a pin that passes here is a pin about what they will find.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -44,8 +45,9 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.attribution.findings import FindingSet
-from jasper.attribution.session_identity import SESSION_IDENTITY_KEY, SessionIdentity
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
+from jasper.attribution.session_identity import SESSION_IDENTITY_KEY
+from tests._log_events import event_fields
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -108,10 +110,13 @@ def _take(
     }
 
 
+def _banked_path(store: BankedRecordStore, record_id: str) -> Path:
+    return Path(store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
+
+
 def _banked_file(store: BankedRecordStore, record_id: str) -> dict[str, Any]:
     """The bytes on disk, read without going through the store's own reader."""
-    path = Path(store.evidence.bundle_dir) / "evidence/v1/artifacts" / record_id
-    return json.loads(path.read_text())
+    return json.loads(_banked_path(store, record_id).read_text())
 
 
 #: The analysis blocks a banked take may carry, with a real value each: three
@@ -317,7 +322,7 @@ async def test_the_record_lands_under_the_capture_id(real_store):
 
 
 # --------------------------------------------------------------------------- #
-# the fold — the five publishers' artifact kinds, on one seam
+# the fold — the publishers' artifact kinds, on one seam
 # --------------------------------------------------------------------------- #
 
 
@@ -331,41 +336,11 @@ def _candidate() -> MeasuredCrossoverCandidate:
     )
 
 
-def _finding_set() -> dict[str, Any]:
-    """A finding set with the phase the CALLER injects for the route."""
-    return {
-        **FindingSet(
-            session=SessionIdentity(session_id="bundle-1"),
-            produced_by="test",
-            findings=(),
-        ).to_dict(),
-        "phase": "cloud_measure",
-    }
-
-
-async def test_a_banked_finding_set_is_exactly_what_its_reader_expects(real_store):
-    """The findings route's ``phase`` ROUTES the record; it is not payload.
-
-    ``FindingSet.to_dict()`` carries no phase, so a routing key left in the file
-    would make the store a non-drop-in for the publisher whose bytes the
-    bundle's readers already know.
-    """
-    built = FindingSet(
-        session=SessionIdentity(session_id="bundle-1"), produced_by="test",
-        findings=(),
-    )
-
-    record_id = await real_store.bank({**built.to_dict(), "phase": "cloud_measure"})
-
-    assert _banked_file(real_store, record_id) == built.to_dict()
-
-
 def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
-    """All SIX routes: the five publishers' kinds plus the position take.
+    """All five routes: the four publishers' kinds plus the position take.
 
     Parametrized together and not sampled, because the route table is where a
-    kind gets forgotten — the findings route shipped with a ``phase`` nothing
-    supplied, and only three of six routes had a pin to catch it.
+    kind gets forgotten.
     """
     return [
         ("position", _take(), f"positions/{_take()['take_id']}.json"),
@@ -385,7 +360,6 @@ def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
             {"schema_version": 2, "kind": ROUND_RECEIPT_KIND, "round_id": "r1"},
             "round_receipt.json",
         ),
-        ("findings", _finding_set(), "findings_cloud_measure.json"),
     ]
 
 
@@ -418,10 +392,9 @@ async def test_a_folded_kind_lands_where_its_reader_looks(
 async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
     """F1: the cloud payload's BYTES, not only its path.
 
-    ``publish_cloud`` stamps the session identity so a finding can cite the
-    artifact across two id namespaces. The store is the writer now, so the
-    stamp is the store's, and it names both namespaces because the capture id is
-    minted after the bundle id and is not derivable from it.
+    The store stamps the session identity, and it names both namespaces
+    because the capture id is minted after the bundle id and is not derivable
+    from it.
     """
     record = {
         "kind": CLOUD_EVIDENCE_KIND, "phase": "cloud_measure", "ripple_db": 3.0,
@@ -443,8 +416,7 @@ async def test_a_banked_candidate_is_where_candidate_bank_globs(real_store):
     sessions_root = Path(real_store.evidence.bundle_dir).parent
 
     assert [str(path) for path in sessions_root.glob(CANDIDATE_ARTIFACT_GLOB)] == [
-        str(Path(real_store.evidence.bundle_dir)
-            / "evidence/v1/artifacts" / record_id)
+        str(_banked_path(real_store, record_id))
     ]
 
 
@@ -549,3 +521,18 @@ async def test_an_unroutable_record_is_refused(real_store):
     """Strict, and loud: a kind with no place to land is a defect, not a drop."""
     with pytest.raises(ValueError):
         await real_store.bank({"kind": "jts_not_a_banked_artifact"})
+
+
+@pytest.mark.parametrize("record, live", [
+    ({"kind": CHECK_EVIDENCE_KIND, "gain_plan_db": {"woofer": -6.0}}, "false"),
+    ({"kind": RUN_MANIFEST_KIND, "run_id": "r1"}, "true"),
+])
+async def test_a_banked_record_logs_its_kind_path_and_size(real_store, caplog, record, live):
+    caplog.set_level(logging.INFO, logger=BankedRecordStore.__module__)
+
+    record_id = await real_store.bank(record)
+
+    assert event_fields(caplog, "active_speaker.record_banked") == {
+        "kind": record["kind"], "path": record_id, "live": live,
+        "bytes": str(_banked_path(real_store, record_id).stat().st_size),
+    }

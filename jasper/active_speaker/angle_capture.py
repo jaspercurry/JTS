@@ -21,8 +21,6 @@ poses and refusals, the session host tags indexes with a phase.
 from __future__ import annotations
 
 import math
-from collections import Counter
-from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -36,7 +34,7 @@ from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
+from .crossover_v2.capture_plan import room_sweep_band_hz
 from .crossover_v2.contracts import (
     REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
@@ -87,7 +85,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
-    wall_clock_ceiling_s,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
@@ -121,7 +118,6 @@ __all__ = [
     "stop_specs",
     "default_run_level",
     "request_for_program",
-    "walk_price",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -162,9 +158,9 @@ REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 MAX_ANGLE_DEG = 80
 
 #: How far the lab positioner can actually travel; the turntable adapter
-#: (``experiments/usb-turntable/jts_turntable.py``) refuses a ``position`` outside +/-45
-#: deg. Restated, not imported (``experiments/`` is not a dependency), pinned together
-#: by ``tests/test_arm_walk.py``.
+#: (``jasper/turntable/jts_turntable.py``) refuses a ``position`` outside +/-45
+#: deg. The adapter runs under system Python; ``tests/test_arm_walk.py`` pins
+#: this bound to its subprocess contract.
 ARM_ENVELOPE_DEG = 45
 
 #: How far ABOVE or BELOW mark height a person may be asked to hold the microphone.
@@ -825,29 +821,6 @@ def request_for_program(
             else f"{program.program_id}/{program.size}"
         ),
     )
-
-
-def walk_price(
-    request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int | float | None]:
-    """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
-    SESSION (base entries plus these captures), rounded UP to whole minutes.
-    ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
-    """
-    takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
-    return {
-        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
-        "captures": captures,
-        "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + request.repeats - 1 + captures) / 60
-        ),
-        "stimulus_s": (
-            None if request.template.sweep_s is None
-            else captures * request.template.sweep_s
-            * max(1, len(request.template.level_ladder_dbfs))
-        ),
-    }
 
 
 # --------------------------------------------------------------------------- #

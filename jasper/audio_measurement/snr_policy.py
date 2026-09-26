@@ -30,6 +30,7 @@ from jasper.audio_measurement.band_ladders import (
 )
 from jasper.audio_measurement.quality import dbfs
 from jasper.audio_measurement.quality_model import ROOM, QualityModel
+from jasper.json_fields import as_float
 
 DBFS_FLOOR = ROOM.dbfs_floor
 
@@ -49,13 +50,6 @@ _ALIGNMENT_BAND_METHODS = frozenset({
 # magnitude thresholds: a TrustLevel LABELS a number, this REFUSES a decision and is scoped per
 # decision class, so one capture is legitimately magnitude-"ok" and alignment-"insufficient".
 _VERDICT_RANK: dict[str, int] = {"ok": 0, "reduced": 1, "insufficient": 2}
-
-
-def _to_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def band_levels_dbfs(
@@ -309,7 +303,7 @@ def _worst_snr_key(band: Mapping[str, Any]) -> float:
     silently remove the cap. ``-inf`` shares that bucket too: it's a degenerate sentinel, not a
     measurement, and unreachable anyway (:func:`band_snr_verdicts` always verdicts it
     "insufficient", so verdict RANK selects it before this key is consulted)."""
-    snr = _to_float(band.get("estimated_snr_db"))
+    snr = as_float(band.get("estimated_snr_db"))
     if snr is None or not math.isfinite(snr):
         return math.inf
     return snr
@@ -414,7 +408,7 @@ def band_snr_verdicts(
             continue
         band_id = capture_band.get("band_id")
         band_hz = capture_band.get("band_hz")
-        capture_level = _to_float(capture_band.get("level_dbfs"))
+        capture_level = as_float(capture_band.get("level_dbfs"))
         if capture_level is None:
             continue
 
@@ -422,7 +416,7 @@ def band_snr_verdicts(
         method = "none"
         noise_band = noise_by_band.get(band_id)
         if noise_band is not None:
-            noise_level = _to_float(noise_band.get("level_dbfs"))
+            noise_level = as_float(noise_band.get("level_dbfs"))
             if noise_level is not None:
                 # One-decimal rounding: an unrounded 19.999999 would fail the inclusive 20 dB
                 # threshold while displaying as 20.0 dB.

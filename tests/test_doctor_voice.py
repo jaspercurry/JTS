@@ -402,7 +402,7 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_NO_USAGE
 
-    UsageStore(tuning_usage_db_path(str(tmp_path / "usage.db")))._conn.close()
+    UsageStore(tuning_usage_db_path(str(tmp_path / "usage.db"))).close()
 
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_OK
@@ -853,7 +853,7 @@ def test_check_home_assistant_probe_raised_redacts_credential_shaped_text(
     monkeypatch,
 ):
     """probe_status runs with the live ha_token; a raised exception's text
-    must route through `_exception_detail` (redact + cap) like every other
+    must route through `exception_detail` (redact + cap) like every other
     crash branch, not bare `{e}` — and its literal ha_token pass must catch
     the token even in a shape none of the keyword patterns recognise (no
     `token=`/`Bearer` neighbour), unlike the keyword-matched value alongside

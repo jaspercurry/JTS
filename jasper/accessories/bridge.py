@@ -908,9 +908,7 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
 
 
 async def _run_wiim_remote_mic() -> None:
-    # Imported here, not at module scope: dbus-next and the ADPCM decoder cost
-    # resident memory that a box with no WiiM Remote 2 paired must not pay.
-    from .wiim_remote_mic import MicAdapterConfig, run
+    from .wiim_remote_mic import MicAdapterConfig, run  # lazy: import cost, dbus-next and the ADPCM decoder wait for a paired WiiM Remote 2
 
     await run(MicAdapterConfig())
 

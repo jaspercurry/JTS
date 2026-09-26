@@ -108,7 +108,6 @@ export function buildAudioPanel(handlers) {
     sources: sources.body,
     technical: technicalBodyHost,
     latency,
-    qualitySection: quality.section,
     aq: quality,
     _memo: {},
   };
@@ -119,16 +118,6 @@ export function buildAudioPanel(handlers) {
     if (!panel.hidden) refreshRelativeTimes(panel);
   }, 1000);
   return { panel, refs };
-}
-
-function applyCapabilities(refs, caps) {
-  refs.systemCapabilities = caps || null;
-  const allowed = !caps || caps.audio_quality !== false;
-  refs.qualitySection.hidden = !allowed;
-  refs.aq.buttons.forEach((button) => {
-    if (!allowed) button.el.disabled = true;
-    else if (!button.el.dataset.applying) button.el.disabled = false;
-  });
 }
 
 export function updateAudio(refs, snap) {
@@ -180,10 +169,5 @@ export function updateAudio(refs, snap) {
     updateAudioQuality(refs.aq, snap.audio_quality);
   } catch (e) {
     console.error("audio status: updating audio-quality failed", e);
-  }
-  try {
-    applyCapabilities(refs, snap.system_capabilities);
-  } catch (e) {
-    console.error("audio status: applying capabilities failed", e);
   }
 }

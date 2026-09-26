@@ -139,14 +139,6 @@ class RemoteMicSupport:
 
 
 @dataclass(frozen=True)
-class ReservedFeature:
-    """Intentional extension point for hardware behavior not wired yet."""
-
-    id: str
-    detail: str
-
-
-@dataclass(frozen=True)
 class RemoteProfile:
     """A supported evdev-backed HID remote or knob."""
 
@@ -155,7 +147,6 @@ class RemoteProfile:
     identity: RemoteIdentity
     keymap: Mapping[int, Action]
     mic: RemoteMicSupport = field(default_factory=RemoteMicSupport)
-    reserved_features: tuple[ReservedFeature, ...] = ()
 
 
 # Anticater VK-01 Desktop Volume Knob (USB-C / BT 5.1 HID).
@@ -198,24 +189,6 @@ VK01 = RemoteProfile(
             "tested VK-01. The profile reserves a remote-mic slot for "
             "variants that expose one through ALSA, Bluetooth, or a "
             "future vendor adapter."
-        ),
-    ),
-    reserved_features=(
-        ReservedFeature(
-            id="true_hold",
-            detail=(
-                "Factory firmware collapses physical long-press into a "
-                "short press+release. If a configured variant emits a "
-                "real hold edge, map it here with HoldAction."
-            ),
-        ),
-        ReservedFeature(
-            id="remote_mic",
-            detail=(
-                "If a variant exposes an internal mic, add a capture "
-                "profile and route that source into the voice pipeline; "
-                "do not fake it through the HID button bridge."
-            ),
         ),
     ),
 )
@@ -265,15 +238,6 @@ WIIM_REMOTE_2 = RemoteProfile(
             "voice report, not a standard Linux capture device. The "
             "wiim_remote_mic adapter task inside jasper-input decodes that "
             "stream and forwards it to the wiim_remote_2 manual mic source."
-        ),
-    ),
-    reserved_features=(
-        ReservedFeature(
-            id="input_button",
-            detail=(
-                "KEY_BACK/input-source is captured but not mapped to a "
-                "JTS source semantic yet."
-            ),
         ),
     ),
 )

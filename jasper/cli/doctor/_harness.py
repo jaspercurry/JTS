@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runs the registered jasper-doctor checks — profile skips, bounded
-concurrency, exclusive lanes and the per-row timeout — and returns the
-results in registry order.
+"""Runs the registered jasper-doctor checks — crash isolation (so one
+crashing check cannot abort the run), profile skips, bounded concurrency,
+exclusive lanes and the per-row timeout — and returns the results in
+registry order.
 
 Check membership and order are owned by
 :mod:`~jasper.cli.doctor._registry`."""
@@ -14,7 +15,7 @@ import asyncio
 from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
-from typing import Awaitable, Callable
+from typing import Any, Callable
 
 from ...config import Config
 from ...install_profile import (
@@ -34,13 +35,27 @@ from ._registry import (
 )
 from ._shared import (
     CheckResult,
-    DoctorCheck,
+    REASON_CHECK_CRASHED,
     REASON_CHECK_TIMED_OUT,
     REASON_NOT_INSTALLED,
-    _check_name,
-    _run_async_doctor_check,
-    _run_doctor_check,
+    exception_detail,
 )
+
+
+def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
+    return CheckResult(
+        name,
+        "fail",
+        f"check crashed: {exception_detail(exc)}",
+        reason=REASON_CHECK_CRASHED,
+    )
+
+
+def _check_name(check: Callable[[], CheckResult]) -> str:
+    name = getattr(check, "__name__", "doctor check")
+    if name.startswith("check_"):
+        name = name[len("check_"):]
+    return name.replace("_", " ")
 
 
 def _registered_check_name(entry) -> str:
@@ -70,7 +85,7 @@ def _doctor_skip_detail(entry, install_profile: str) -> str:
 @dataclass(frozen=True)
 class _RunnableDoctorCheck:
     name: str
-    check: DoctorCheck | Callable[[], Awaitable[CheckResult]]
+    check: Callable[[], Any]
     is_async: bool = False
     exclusive_group: str = ""
 
@@ -93,16 +108,13 @@ def _build_doctor_checks(
         if skip_detail:
             skipped = _profile_skip_result(entry, detail=skip_detail)
             checks.append(
-                _RunnableDoctorCheck(
-                    name, (name, partial(_already_decided, skipped))
-                )
+                _RunnableDoctorCheck(name, partial(_already_decided, skipped))
             )
             continue
-        call = partial(entry.func, cfg) if entry.needs_cfg else entry.func
         checks.append(
             _RunnableDoctorCheck(
                 name,
-                call if entry.is_async else (name, call),  # type: ignore[arg-type]
+                partial(entry.func, cfg) if entry.needs_cfg else entry.func,
                 is_async=entry.is_async,
                 exclusive_group=entry.exclusive_group,
             )
@@ -113,15 +125,12 @@ def _build_doctor_checks(
 async def _run_runnable_doctor_check(
     runnable: _RunnableDoctorCheck,
 ) -> CheckResult:
-    if runnable.is_async:
-        return await _run_async_doctor_check(
-            runnable.name,
-            runnable.check,  # type: ignore[arg-type]
-        )
-    return await asyncio.to_thread(
-        _run_doctor_check,
-        runnable.check,  # type: ignore[arg-type]
-    )
+    try:
+        if runnable.is_async:
+            return await runnable.check()
+        return await asyncio.to_thread(runnable.check)
+    except Exception as e:  # noqa: BLE001
+        return _crashed_check_result(runnable.name, e)
 
 
 async def _run_runnable_with_timeout(

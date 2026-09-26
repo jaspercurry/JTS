@@ -23,15 +23,14 @@ from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _PROBE_FRAMES, run
-from .audio_runtime_camilla import _camilla_statefile
+from ._shared import CheckResult, PROBE_FRAMES, run
+from .audio_runtime_camilla import evidence_statefile
 from .audio_runtime_fanin import _requires_roleful_graph
-from .audio_runtime_outputd import _outputd_reconciled_env
+from .audio_runtime_outputd import outputd_reconciled_env
 from ...service_units import FANIN_SERVICE
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
-_JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # Every PCM the ring conf.d defines, with the tool that probes its direction and
@@ -186,14 +185,14 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     ring_path = _jts_ring_path_for(pcm)
     pre_existed = ring_path is not None and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
-    # (feed silence in), 48 kHz, bounded by `_PROBE_FRAMES` frames of work.
+    # (feed silence in), 48 kHz, bounded by `PROBE_FRAMES` frames of work.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
     # Backstop only, and generous: up to three PCMs are probed in one row and a
     # doctor row is cut off at 15 s.
     try:
         proc = run(
             [tool, "-D", pcm, "-c", str(channels), "-r", "48000",
-             "-f", sample_format, "-s", _PROBE_FRAMES, sink],
+             "-f", sample_format, "-s", PROBE_FRAMES, sink],
             timeout=4.0,
         )
     except subprocess.TimeoutExpired:
@@ -287,7 +286,7 @@ def check_content_transport_coherence() -> CheckResult:
     window from a wedge by the reconcile entry lock.
     """
     from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
-    from jasper.audio_runtime_settings import DEFAULT_CAMILLA2_STATEFILE_PATH
+    from jasper.paths import crossover_statefile
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -303,7 +302,7 @@ def check_content_transport_coherence() -> CheckResult:
     label = "content transport coherence"
     # LAYERED, because a bonded box's grouping env carries the marker and the
     # unit reads that file last — the stand-downs have to see what outputd sees.
-    outputd_env = _outputd_reconciled_env()
+    outputd_env = outputd_reconciled_env()
     if dac_content_ring_served(outputd_env):
         return CheckResult(
             label,
@@ -340,7 +339,7 @@ def check_content_transport_coherence() -> CheckResult:
     # comes from the run's one statefile read so an operator's
     # `JASPER_CAMILLA_STATEFILE` override keeps working.
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
-        _camilla_statefile(), DEFAULT_CAMILLA2_STATEFILE_PATH
+        evidence_statefile(), crossover_statefile()
     )
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (

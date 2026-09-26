@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _detail, _finite_number, mapping
+from ._health_fields import detail_row, finite_number, mapping
 
 ATTRIBUTION_NETWORK_RATIO = 0.35
 ATTRIBUTION_RECEIVER_RATIO = 0.70
@@ -36,7 +36,7 @@ _ATTRIBUTION_LABELS = {
 ATTRIBUTION_VERDICTS = frozenset(_ATTRIBUTION_LABELS)
 
 
-def _input_attribution(
+def input_attribution(
     airplay: Mapping[str, Any],
     active_source: str | None,
 ) -> dict[str, Any] | None:
@@ -65,11 +65,11 @@ def _input_attribution(
     link = mapping(current.get("link"))
     receiver = mapping(link.get("receiver"))
 
-    baseline = _finite_number(link.get("rx_bytes_per_sec_baseline"))
-    rx_rate = _finite_number(link.get("rx_bytes_per_sec"))
+    baseline = finite_number(link.get("rx_bytes_per_sec_baseline"))
+    rx_rate = finite_number(link.get("rx_bytes_per_sec"))
     state = receiver.get("state")
-    majflt_rate = _finite_number(receiver.get("majflt_per_sec"))
-    rcvbuf_delta = _finite_number(link.get("udp_rcvbuf_errors_delta"))
+    majflt_rate = finite_number(receiver.get("majflt_per_sec"))
+    rcvbuf_delta = finite_number(link.get("udp_rcvbuf_errors_delta"))
 
     if not ring or baseline is None or baseline <= 0 or rx_rate is None:
         verdict = "unknown"
@@ -84,17 +84,17 @@ def _input_attribution(
     else:
         verdict = "unknown"
 
-    details = [_detail("Verdict", _ATTRIBUTION_LABELS[verdict])]
+    details = [detail_row("Verdict", _ATTRIBUTION_LABELS[verdict])]
     if rx_rate is not None and baseline:
-        details.append(_detail(
+        details.append(detail_row(
             "Link rate",
             f"{rx_rate:.0f} B/s (baseline {baseline:.0f} B/s)",
         ))
     if state is not None:
-        details.append(_detail("Receiver state", state))
-    packet_rate = _finite_number(link.get("udp_in_datagrams_per_sec"))
+        details.append(detail_row("Receiver state", state))
+    packet_rate = finite_number(link.get("udp_in_datagrams_per_sec"))
     if packet_rate is not None:
-        details.append(_detail("Packets in", f"{float(packet_rate):.0f}/s"))
+        details.append(detail_row("Packets in", f"{float(packet_rate):.0f}/s"))
     if rcvbuf_delta is not None and rcvbuf_delta > 0:
-        details.append(_detail("UDP recv buffer errors", f"+{int(rcvbuf_delta)}"))
+        details.append(detail_row("UDP recv buffer errors", f"+{int(rcvbuf_delta)}"))
     return {"verdict": verdict, "details": details[:5]}

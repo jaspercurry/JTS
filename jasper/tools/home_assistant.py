@@ -180,27 +180,35 @@ class _ConfirmationStore:
         self._pending = None
 
 
-def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.monotonic):
-    """Build the home_assistant tool factory.
+def _confirmation_gate(query: str, store: _ConfirmationStore, monitor) -> dict | None:
+    """The structural gate: a consequential `query` while untrusted content
+    was read recently (or no monitor is wired: fail-safe) is stashed in
+    `store` for home_assistant_confirm and answered with a question, never
+    executed in the call that requests it. None means run it now — a clean
+    voice-only session pays no confirmation cost outside the risk window."""
+    label = classify_consequential(query)
+    tainted = monitor is None or monitor.is_tainted()
+    if label is not None and tainted:
+        store.arm(query, label)
+        log_event(logger, "ha.confirm_gate", action=label)
+        # A plain yes/no question, nothing more: the needs_confirmation rule
+        # in SYSTEM_INSTRUCTION owns the wait/confirm protocol.
+        return {"needs_confirmation": True, "action": label,
+                "spoken_response": f"Do you want me to {label}?"}
+    # Non-arming path: a fresh command supersedes any unconfirmed pending (the
+    # household moved on), so a later "yes" can't fire an abandoned action.
+    # The tool has no turn context (no per-turn trace context reaches
+    # production tools; jasper/voice/trace.py's sink is only installed by the
+    # voice-eval harness), so this and the TTL are what bound a stale pending.
+    store.clear()
+    if label is not None:
+        # Consequential in a clean session, so it runs without asking; DEBUG
+        # for forensics ("why no confirm?") without journal spam.
+        log_event(logger, "ha.consequential_direct", action=label, level=logging.DEBUG)
+    return None
 
-    Returns an empty list when `ha` is None (HA not configured) so the
-    model never sees a tool whose every call would fail. Mirrors the
-    gating pattern of `make_bus_tools` and `make_subway_tools`.
 
-    `monitor` (an `UntrustedContentMonitor`, optional) makes the
-    consequential-action confirmation *conditional*: a consequential action
-    confirms only when untrusted content (email/calendar) was read recently
-    — a clean voice-only session runs it directly, no prompt. `monitor=None`
-    is the fail-safe (always confirm consequential actions), so a wiring
-    miss errs toward more caution, never less.
-
-    `clock` is injectable so the confirmation TTL is testable; production
-    callers use the default monotonic clock."""
-    if ha is None:
-        return []
-
-    store = _ConfirmationStore(clock=clock)
-
+def _home_assistant_tool(ha: HAClient, store: _ConfirmationStore, monitor):
     @tool(
         timeout=_HA_TOOL_TIMEOUT_SEC,
         log_payload=False,
@@ -276,45 +284,16 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
         well under a second on the rule-based path, and the user
         gains nothing from a status update.
         """
-        label = classify_consequential(query)
-        tainted = monitor is None or monitor.is_tainted()
-        if label is not None and tainted:
-            # Consequential AND untrusted content was read recently (or no
-            # monitor wired → fail-safe). Structural gate: never execute a
-            # consequential action in the call that requests it. Stash it and
-            # ask; only the user's confirmation (home_assistant_confirm) runs
-            # it. A clean voice-only session (untainted) skips this and runs
-            # the action directly — the cost lands only in the risk window.
-            store.arm(query, label)
-            log_event(logger, "ha.confirm_gate", action=label)
-            # Phrasing: a plain yes/no question, nothing more. The daemon has
-            # no follow-up-listening yet (after this turn the user must
-            # re-wake to answer), so a
-            # "say yes to confirm" suffix would imply an instant reply we
-            # can't honor. The question itself elicits "yes"; the
-            # needs_confirmation rule in SYSTEM_INSTRUCTION owns the wait/
-            # confirm protocol. Reads the same once barge-in lands.
-            return {
-                "needs_confirmation": True,
-                "action": label,
-                "spoken_response": f"Do you want me to {label}?",
-            }
-        # Non-arming path: this is a fresh command, not a consequential
-        # confirmation. It supersedes any unconfirmed pending — the household
-        # moved on — so a later "yes" can't fire an abandoned action. The tool
-        # itself has no turn context (no per-turn trace context is threaded
-        # to production tools; jasper/voice/trace.py's trace sink is only
-        # installed by the voice-eval harness), so this + the TTL are what
-        # bound a stale pending.
-        store.clear()
-        if label is not None:
-            # Consequential, but the session was clean (untainted) so we ran it
-            # without asking. DEBUG-level for forensics ("why no confirm?")
-            # without journal spam on the common path.
-            log_event(logger, "ha.consequential_direct", action=label, level=logging.DEBUG)
+        confirmation = _confirmation_gate(query, store, monitor)
+        if confirmation is not None:
+            return confirmation
         result = await ha.process(query)
         return result.as_tool_result()
 
+    return home_assistant
+
+
+def _home_assistant_confirm_tool(ha: HAClient, store: _ConfirmationStore):
     @tool(
         timeout=_HA_TOOL_TIMEOUT_SEC,
         log_payload=False,
@@ -343,12 +322,32 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
         """
         pending = store.take()
         if pending is None:
-            return {
-                "success": False,
-                "spoken_response": "There's nothing waiting to be confirmed.",
-            }
+            return {"success": False,
+                    "spoken_response": "There's nothing waiting to be confirmed."}
         log_event(logger, "ha.confirm_execute", action=pending.label)
         result = await ha.process(pending.query)
         return result.as_tool_result()
 
-    return [home_assistant, home_assistant_confirm]
+    return home_assistant_confirm
+
+
+def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.monotonic):
+    """Build the home_assistant tool factory.
+
+    Returns an empty list when `ha` is None (HA not configured) so the
+    model never sees a tool whose every call would fail. Mirrors the
+    gating pattern of `make_bus_tools` and `make_subway_tools`.
+
+    `monitor` (an `UntrustedContentMonitor`, optional) makes the
+    consequential-action confirmation *conditional*: a consequential action
+    confirms only when untrusted content (email/calendar) was read recently
+    — a clean voice-only session runs it directly, no prompt. `monitor=None`
+    is the fail-safe (always confirm consequential actions), so a wiring
+    miss errs toward more caution, never less.
+
+    `clock` is injectable so the confirmation TTL is testable; production
+    callers use the default monotonic clock."""
+    if ha is None:
+        return []
+    store = _ConfirmationStore(clock=clock)
+    return [_home_assistant_tool(ha, store, monitor), _home_assistant_confirm_tool(ha, store)]

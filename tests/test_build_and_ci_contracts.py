@@ -13,7 +13,6 @@ import pytest
 import yaml
 
 from tests.lane_fixtures import (
-    fast_lane_selected_tests,
     lane_env,
     scratch_lane_repo,
     write_recording_pytest,
@@ -345,19 +344,6 @@ def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
     assert "-q --tb=short --ignore=tests/voice_eval -n 4" in test_merge
 
 
-def test_ci_compiles_both_host_safe_ring_benchmarks() -> None:
-    """Keep the C benchmarks and the plugin compile check inside the host
-    build gate; the .so is only ever installed by
-    deploy/lib/install/ring-platform.sh, on the Pi."""
-    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
-    makefile = (ROOT / "c" / "jts-ring-ioplug" / "Makefile").read_text(
-        encoding="utf-8"
-    )
-
-    assert "run: make test bench plugin" in workflow
-    assert "bench: ring_writer_bench ring_reader_bench" in makefile
-
-
 def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
     """Agents should have stable commands instead of inventing test strategy."""
 
@@ -389,29 +375,6 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
     assert any("tests/test_new_feature.py" in call for call in calls), calls
 
 
-def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> None:
-    """An edit inside experiments/<kit>/ selects that kit's guard, only.
-
-    Experiment kits keep their guards under tests/, so without this routing
-    an edit to a kit selects nothing in the fast lane and its layout/path
-    pins first run in the merge lane. The second assertion is what makes
-    the arm worth having in this shape: it derives the guard from the
-    directory name, so editing one kit does not drag in every other kit's
-    tests.
-    """
-
-    selected = fast_lane_selected_tests(
-        tmp_path,
-        changed_path="experiments/e0-capture/README.md",
-        routed_tests=(
-            "tests/test_e0_capture_experiment.py",
-            "tests/test_usb_turntable_experiment.py",
-        ),
-    )
-    assert "tests/test_e0_capture_experiment.py" in selected
-    assert "tests/test_usb_turntable_experiment.py" not in selected
-
-
 def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
     """Keep the lenient type-checker wiring intact across packaging surfaces."""
 
@@ -426,10 +389,7 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
         for dep in data["project"]["optional-dependencies"]["dev"]
         if dep.startswith("mypy")
     ] == ["mypy>=2.3.0,<2.4"]
-    assert data["tool"]["mypy"]["files"] == [
-        "jasper",
-        "experiments/usb-turntable/jts_turntable.py",
-    ]
+    assert data["tool"]["mypy"]["files"] == ["jasper"]
     assert data["tool"]["mypy"]["ignore_missing_imports"] is True
     assert {
         override["follow_imports"]

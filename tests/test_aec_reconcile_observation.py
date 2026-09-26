@@ -2,23 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""`jasper.cli.capture_card` — the reconciler's capture-card classifier.
-
-Everything here drives the real CLI against a tmp_path ALSA tree and parses
-its shell payload; nothing asserts on prose. What the classification then
-decides — `aec_ready`, candidate selection, the park under them — is pinned
-against the real bash in `tests/test_aec_reconcile.py`; this file pins only
-the payload that bash reads, so the two never restate each other.
-"""
+"""One package-owned microphone/AEC observation snapshot."""
 from __future__ import annotations
 
-import shlex
-import subprocess
-import sys
 from pathlib import Path
 
 from jasper.audio_measurement import mic_identity
-from jasper.cli import capture_card
+from jasper.aec.reconcile.observe import observe
 from jasper.mics import xvf3800
 from tests.test_aec_reconcile import _write_card, _write_usb_card
 
@@ -27,43 +17,24 @@ UMIK2_USB_ID = mic_identity.SUPPORTED_MODELS["minidsp_umik2"]["usb_ids"][0]
 XVF_USB_ID = xvf3800.USB_VID_PIDS[0]
 
 
-def _run(tmp_path: Path, *cards: str) -> dict[str, str]:
-    """Run the CLI as bash does and parse the shell assignments it prints."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "jasper.cli.capture_card",
-            "--asound-root",
-            str(tmp_path / "asound"),
-            "--",
-            *cards,
-        ],
-        check=False,
-        cwd=Path(__file__).resolve().parents[1],
-        text=True,
-        capture_output=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    values: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        key, _, raw = line.partition("=")
-        values[key] = " ".join(shlex.split(raw))
-    return values
+def _run(tmp_path: Path, *cards: str) -> frozenset[str]:
+    return observe(
+        {"JASPER_MIC_DEVICE_CANDIDATES": ",".join(cards)},
+        tmp_path / "asound", str(tmp_path / "absent-outputd.sock"), lambda _message: None,
+    ).measurement_cards
 
 
 def test_only_registered_ids_are_excluded(tmp_path: Path) -> None:
     """An over-broad filter leaves the speaker deaf, which is worse than not
     excluding an instrument — so the excluded set is exactly the registered
-    one, in the order asked."""
+    one."""
     _write_usb_card(tmp_path, "UMIK2", UMIK2_USB_ID, channels=1)
     _write_usb_card(tmp_path, "Array", XVF_USB_ID, channels=6)
     _write_card(tmp_path, card="I2S", channels=2)
 
     values = _run(tmp_path, "Array", "UMIK2", "I2S", "Absent")
 
-    assert values[capture_card.ENV_KEY].split() == ["UMIK2"]
+    assert values == {"UMIK2"}
 
 
 def test_a_card_the_kernel_never_enumerated_excludes_nothing(
@@ -73,12 +44,11 @@ def test_a_card_the_kernel_never_enumerated_excludes_nothing(
     and must not fail the pass."""
     values = _run(tmp_path, "Array", "UMIK2")
 
-    assert values[capture_card.ENV_KEY] == ""
+    assert values == frozenset()
 
 
 def test_a_hand_written_usbid_is_normalised(tmp_path: Path) -> None:
-    """The kernel writes %04x:%04x, but a hand-made fixture (and a future
-    kernel) may not: case and surrounding whitespace cannot decide whether a
+    """The kernel writes %04x:%04x, but a hand-made fixture may not: case and surrounding whitespace cannot decide whether a
     speaker keeps its microphone."""
     _write_card(tmp_path, card="UMIK2", channels=1)
     usbid = tmp_path / "asound" / "UMIK2" / "usbid"
@@ -86,7 +56,7 @@ def test_a_hand_written_usbid_is_normalised(tmp_path: Path) -> None:
 
     values = _run(tmp_path, "UMIK2")
 
-    assert values[capture_card.ENV_KEY].split() == ["UMIK2"]
+    assert values == {"UMIK2"}
 
 
 def test_an_undecodable_usbid_only_unclassifies_its_own_card(
@@ -102,4 +72,41 @@ def test_an_undecodable_usbid_only_unclassifies_its_own_card(
 
     values = _run(tmp_path, "UMIK2", "SPARE")
 
-    assert values[capture_card.ENV_KEY].split() == ["UMIK2"]
+    assert values == {"UMIK2"}
+
+
+def test_each_owner_is_observed_once_and_the_status_is_forwarded(tmp_path: Path, monkeypatch) -> None:
+    import importlib
+    from collections import Counter
+
+    observation = importlib.import_module("jasper.aec.reconcile.observe")
+    calls = Counter()
+    status = {"reference_outputs": {}}
+    profile = xvf3800.detect_runtime_profile(asound_root=tmp_path / "asound")
+    gate_owner = observation.resolve_chip_aec_dac_gate
+
+    def mic(**kwargs):
+        calls["mic"] += 1
+        return profile
+
+    def accessories():
+        calls["accessories"] += 1
+        return ("remote",)
+
+    def outputd(_path):
+        calls["outputd"] += 1
+        return status
+
+    def gate(*args, **kwargs):
+        calls["policy"] += 1
+        assert kwargs["outputd_status"] is status
+        return gate_owner(*args, **kwargs)
+
+    monkeypatch.setattr(observation.xvf3800, "detect_runtime_profile", mic)
+    monkeypatch.setattr(observation, "read_accessory_mic_sources", accessories)
+    monkeypatch.setattr(observation, "read_status_socket", outputd)
+    monkeypatch.setattr(observation, "resolve_chip_aec_dac_gate", gate)
+    facts = observation.observe({}, tmp_path / "asound", "unused", lambda _message: None)
+    assert calls == {"mic": 1, "accessories": 1, "outputd": 1, "policy": 1}
+    assert facts.mic is profile
+    assert facts.accessory_sources == ("remote",)

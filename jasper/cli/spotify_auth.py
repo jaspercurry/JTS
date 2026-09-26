@@ -25,16 +25,19 @@ import sys
 
 from spotipy.oauth2 import SpotifyPKCE
 
+from .. import env_load
 from ..config import Config
 from ..spotify_router import SPOTIFY_SCOPE
 
 
 def main() -> None:
+    env_load.load_env_files()
     cfg = Config.from_env()
     if not cfg.spotify_enabled:
         print(
-            "SPOTIFY_CLIENT_ID must be set in /etc/jasper/jasper.env "
-            "before running this command. (PKCE — no client secret needed.)",
+            f"No Spotify Client ID in {env_load.SPOTIFY_CREDENTIALS_ENV_PATH}; "
+            f"save it with the web wizard at {cfg.spotify_setup_url}, then re-run "
+            "this command. (PKCE — no client secret needed.)",
             file=sys.stderr,
         )
         sys.exit(2)

@@ -1,8 +1,7 @@
 [Unit]
 Description=Jasper streambox web setup wizards (renderer/DSP + assistant) — socket
-# Static file, so it binds every port a streambox may host: renderer/DSP
-# plus the assistant wizards, which appear when the tier holds
-# Capability.ASSISTANT. Wake-side ports stay off (no WAKE_DETECTION here).
+# Binds every port a streambox hosts: renderer/DSP plus the assistant
+# wizards. Wake-side ports stay off (no WAKE_DETECTION here).
 
 [Socket]
 # Order is undefined per systemd issue #16647, so the Python side matches by

@@ -16,6 +16,7 @@ import math
 
 import pytest
 
+from jasper.active_speaker import channel_select_mixer_name
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
     MONO_SUM_GAIN_DB,
@@ -124,6 +125,10 @@ def test_mono_sum_sources_is_exactly_clip_safe():
     assert mono_sum_sources(inverted=True) == [
         (0, MONO_SUM_GAIN_DB, True), (1, MONO_SUM_GAIN_DB, True)
     ]
+
+
+def test_channel_select_mixer_name_is_one_shared_constant() -> None:
+    assert channel_select_mixer_name == CHANNEL_SELECT_MIXER == "channel_select"
 
 
 def test_channel_select_mono_composes_the_shared_sum():

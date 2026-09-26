@@ -58,6 +58,7 @@ class IsolationHold:
     plan: Any
     volume_door: Any
     window_open: bool = False
+    restore_result: SessionVolumeRestoreResult | None = None
 
 
 @dataclass
@@ -69,7 +70,6 @@ class OpenMeasurementDoor:
     graph_fingerprint: str
     spl_monitor: WiredSplMonitor
     entry_scope_fingerprint: str = ""
-    restore_result: SessionVolumeRestoreResult | None = None
 
 
 @asynccontextmanager
@@ -125,10 +125,10 @@ async def level_window(
     if hold.window_open:
         raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, "A level window is already open")
     hold.window_open = True
+    hold.restore_result = SessionVolumeRestoreResult.FAILED
     graph, claim, plan = hold.graph, hold.claim, hold.plan
     body_error: BaseException | None = None
     volume_open = False
-    opened_door: OpenMeasurementDoor | None = None
     try:
         try:
             opened = await plan.open(level_db, hold.volume_door)
@@ -161,8 +161,7 @@ async def level_window(
                 reason="measurement_door_closed" if volume_open else "measurement_door_open_failed",
                 body_error=body_error,
             ))
-            if opened_door is not None:
-                opened_door.restore_result = result
+            hold.restore_result = result or SessionVolumeRestoreResult.FAILED
             if body_error is None:
                 if result is SessionVolumeRestoreResult.DEFERRED:
                     raise MeasurementDoorRefused(REASON_VOLUME_RESTORE_DEFERRED, "Household volume restore is pending")

@@ -233,7 +233,31 @@ class LiveSocket:
         self.events.put_nowait(exc)
 
 
-def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs):
+async def no_wait(_seconds: float) -> None:
+    """A reconnect backoff that is over at once."""
+    await asyncio.sleep(0)
+
+
+async def never_elapses(_seconds: float) -> None:
+    """A reconnect backoff that outlasts the test: no retry ever lands."""
+    await asyncio.Event().wait()
+
+
+def stop_after(conn, attempts: int) -> list[float]:
+    """Run ``attempts`` reconnect attempts back to back, then stop the
+    reconnect loop at its next backoff. Returns every delay it asked for."""
+    delays: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) > attempts:
+            conn._stopping.set()
+
+    conn._sleep = _sleep
+    return delays
+
+
+def make_provider(provider, *, sleep=no_wait, watchdog_sec=None, **kwargs):
     if provider == "openai_live":
         return OpenAILiveConnection(api_key="test", connect=LiveSocket, **kwargs), None
     if watchdog_sec is not None:
@@ -241,7 +265,6 @@ def make_provider(provider, *, sleep=asyncio.sleep, watchdog_sec=None, **kwargs)
             kwargs["rotate_after_sec"] = watchdog_sec
         else:
             kwargs.update(session_max_sec=2 * watchdog_sec, proactive_buffer_sec=watchdog_sec)
-    kwargs.setdefault("backoff_schedule", (0.0, 0.0))
     kwargs.setdefault("context_reset_sec", 9999.0)
     if provider == "gemini":
         if types is None:

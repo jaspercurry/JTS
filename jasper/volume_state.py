@@ -42,15 +42,10 @@ class VolumeState:
     mute_token: str | None = None
 
     @classmethod
-    def from_record(
-        cls,
-        record: "VolumeRecord | None",
-        *,
-        default_level: int = 50,
-    ) -> "VolumeState":
+    def from_record(cls, record: "VolumeRecord | None") -> "VolumeState":
         """Project persistence through the one public volume-state contract."""
         if record is None:
-            return cls(max(0, min(100, int(default_level))))
+            return cls(50)
         level = (
             int(record.listening_level)
             if record.listening_level is not None

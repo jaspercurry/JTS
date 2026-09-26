@@ -270,9 +270,7 @@ install_web_unit_files() {
     done
 }
 
-# Renderer/DSP + assistant wizard ports; the assistant ones are bound
-# whether or not the tier currently holds Capability.ASSISTANT, because a
-# static socket cannot follow the grant table. Forbidden = the WAKE_DETECTION
+# Renderer/DSP + assistant wizard ports. Forbidden = the WAKE_DETECTION
 # wizards, which a Zero-2-W-class board never runs. Kept in step with
 # deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
 # tests/test_web_main_imports.py.
@@ -596,6 +594,8 @@ activate_staged_unit_files() {
         fi
     done
     systemctl daemon-reload
+    # Remove after all pre-package turntable installs have been upgraded.
+    rm -rf -- "${INSTALL_DIR:?}/experiments/usb-turntable"
     reload_audio_recovery_udev_rules_for_install
     activate_usb_network
 }
@@ -1360,6 +1360,10 @@ _stage_streambox_unit_files() {
     install_hid_accessory_unit_files
     install_voice_unit_files
     install_audio_output_recovery_unit_files
+    if [[ -f "${SYSTEMD_DIR}/jasper-turntable-autostop@.service" ]]; then
+        _install_file_rows \
+            "0644 deploy/systemd/jasper-turntable-autostop@.service ${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
+    fi
     validate_streambox_web_socket
 }
 
@@ -1419,7 +1423,7 @@ _stage_full_unit_files() {
     install_grouping_unit_files
 
     install_audio_output_recovery_unit_files
-    # Experimental microphone-rig guard: a CH340 tty hot-plug starts one
+    # Microphone-rig guard: a CH340 tty hot-plug starts one
     # bounded identity-check-and-stop attempt. It is never enabled or polled.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-turntable-autostop@.service" \

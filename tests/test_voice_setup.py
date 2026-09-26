@@ -84,7 +84,7 @@ def test_provider_ids_manifest_is_shell_readable_catalog_projection():
 
 @pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
 def test_index_offers_selected_provider_catalog_and_defaults(provider):
-    page = voice_setup._index_html({}, "tok", selected=provider.id).decode()
+    page = voice_setup.index_html({}, "tok", selected=provider.id).decode()
     for model in provider.models:
         assert model.display_label in page
     for field, default in (
@@ -101,7 +101,7 @@ def test_index_preserves_unknown_model_as_custom_experimental():
         "OPENAI_API_KEY": "sk-x",
         "JASPER_OPENAI_MODEL": "gpt-realtime-new-live",
     }
-    page = voice_setup._index_html(
+    page = voice_setup.index_html(
         state,
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
@@ -117,7 +117,7 @@ def test_index_merges_discovered_models_as_experimental_options():
         "OPENAI_API_KEY": "sk-x",
         "JASPER_OPENAI_MODEL": "gpt-realtime-new-live",
     }
-    page = voice_setup._index_html(
+    page = voice_setup.index_html(
         state,
         "csrf-token-for-test-" + "x" * 32,
         discovery={
@@ -137,7 +137,7 @@ def test_index_merges_discovered_models_as_experimental_options():
 
 
 def test_index_renders_manual_refresh_button_without_page_load_fetch():
-    page = voice_setup._index_html(
+    page = voice_setup.index_html(
         {"OPENAI_API_KEY": "sk-x", "JASPER_VOICE_PROVIDER": "openai"},
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
@@ -277,7 +277,7 @@ def _usage_db_with_cost(
 
 def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path):
     db = _usage_db_with_cost(tmp_path, 0.81)
-    status = voice_costs._read_spend_cap_status({
+    status = voice_costs.read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.25",
@@ -292,7 +292,7 @@ def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path)
 
 def test_costs_renders_spend_cap_status_and_save_form(tmp_path: Path):
     db = _usage_db_with_cost(tmp_path, 0.25)
-    page = voice_cost_page._costs_html(
+    page = voice_cost_page.costs_html(
         {"JASPER_USAGE_DB": str(db), "JASPER_DAILY_SPEND_CAP_USD": "2.00"},
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
@@ -313,7 +313,7 @@ def test_read_spend_cap_status_tuning_only_ledger_shows_dollars(tmp_path: Path):
     'Turns today' stays VOICE-only, so it reads 0 here."""
     usage_db = tmp_path / "usage.db"  # never created
     _usage_db_with_cost(tmp_path, 0.40, name="usage-tuning.db")
-    status = voice_costs._read_spend_cap_status({
+    status = voice_costs.read_spend_cap_status({
         "JASPER_USAGE_DB": str(usage_db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -330,7 +330,7 @@ def test_read_spend_cap_status_turns_today_counts_voice_only(tmp_path: Path):
     figure counts only voice sessions."""
     db = _usage_db_with_cost(tmp_path, 0.10)  # 1 voice session
     _usage_db_with_cost(tmp_path, 0.05, name="usage-tuning.db")  # 1 tuning tap
-    status = voice_costs._read_spend_cap_status({
+    status = voice_costs.read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -342,7 +342,7 @@ def test_read_spend_cap_status_turns_today_counts_voice_only(tmp_path: Path):
 
 def test_apply_spend_cap_writes_env_keys_and_preserves_provider_state():
     current = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    new, err = voice_setup._apply_spend_cap({
+    new, err = voice_setup.apply_spend_cap({
         "daily_spend_cap_usd": "5",
         "daily_spend_cap_safety_multiplier": "1.1",
     }, current)
@@ -356,14 +356,14 @@ def test_apply_spend_cap_writes_env_keys_and_preserves_provider_state():
 
 def test_apply_spend_cap_rejects_negative_or_weak_multiplier():
     current = {"JASPER_VOICE_PROVIDER": "openai"}
-    new, err = voice_setup._apply_spend_cap({
+    new, err = voice_setup.apply_spend_cap({
         "daily_spend_cap_usd": "-1",
         "daily_spend_cap_safety_multiplier": "1.25",
     }, current)
     assert err is not None
     assert new == current
 
-    new, err = voice_setup._apply_spend_cap({
+    new, err = voice_setup.apply_spend_cap({
         "daily_spend_cap_usd": "1",
         "daily_spend_cap_safety_multiplier": "0.5",
     }, current)
@@ -379,7 +379,7 @@ def test_apply_spend_cap_rejects_negative_or_weak_multiplier():
 def test_selected_provider_form_preserves_controls_and_masks_keys(provider, saved):
     key = "test-key-123456789-tail"
     state = {provider.key_env: key} if saved else {}
-    page = voice_setup._index_html(state, "tok", selected=provider.id).decode()
+    page = voice_setup.index_html(state, "tok", selected=provider.id).decode()
     assert key not in page
     if saved:
         assert _common.mask_secret(key) in page
@@ -941,7 +941,7 @@ def test_e2e_clear_credentials_removes_provider_keys(
 # ---------- Pricing editor (/pricing) --------------------------------------
 @pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
 def test_costs_renders_only_selected_provider_pricing_buckets(provider):
-    page = voice_cost_page._costs_html({}, "tok", selected=provider.id).decode()
+    page = voice_cost_page.costs_html({}, "tok", selected=provider.id).decode()
     for model in provider.models:
         for bucket in provider.pricing_buckets:
             assert f'name="price__{model.id}__{bucket}"' in page
@@ -951,7 +951,7 @@ def test_costs_renders_only_selected_provider_pricing_buckets(provider):
 
 
 def test_costs_prefills_custom_override_and_tags_it():
-    page = voice_cost_page._costs_html(
+    page = voice_cost_page.costs_html(
         {"JASPER_VOICE_PROVIDER": "openai"}, "tok",
         overrides={"gpt-realtime-2": {"text_output_per_million_usd": 28.0}},
     ).decode()
@@ -967,7 +967,7 @@ def test_apply_pricing_save_is_sparse_and_omits_defaults():
         "price__gpt-realtime-2__audio_output_per_million_usd": "64",  # == default
         "price__gpt-realtime-2__audio_input_per_million_usd": "",     # blank
     }
-    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    out = voice_setup.apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
     assert out == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
 
 
@@ -978,7 +978,7 @@ def test_apply_pricing_save_preserves_other_providers():
         "provider": "openai",
         "price__gpt-realtime-2__text_output_per_million_usd": "30",
     }
-    out = voice_setup._apply_pricing_save(
+    out = voice_setup.apply_pricing_save(
         form, openai, ["gpt-realtime-2"], existing,
     )
     assert out["grok-voice-think-fast-1.0"] == {"flat_per_hour_usd": 5.0}
@@ -987,7 +987,7 @@ def test_apply_pricing_save_preserves_other_providers():
 
 def test_apply_pricing_save_blank_resets_model():
     grok = catalog.provider_by_id("grok")
-    out = voice_setup._apply_pricing_save(
+    out = voice_setup.apply_pricing_save(
         {"provider": "grok",
          "price__grok-voice-think-fast-1.0__flat_per_hour_usd": ""},
         grok, ["grok-voice-think-fast-1.0"],
@@ -1003,7 +1003,7 @@ def test_apply_pricing_save_rejects_nonnumeric_and_negative():
         "price__gpt-realtime-2__text_output_per_million_usd": "abc",
         "price__gpt-realtime-2__audio_input_per_million_usd": "-5",
     }
-    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    out = voice_setup.apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
     assert out == {}
 
 
@@ -1012,7 +1012,7 @@ def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
     applied by pricing_for_model (the full daemon-facing contract)."""
     from jasper import usage
     openai = catalog.provider_by_id("openai")
-    out = voice_setup._apply_pricing_save(
+    out = voice_setup.apply_pricing_save(
         {"provider": "openai",
          "price__gpt-realtime-2__text_output_per_million_usd": "30"},
         openai, ["gpt-realtime-2"], {},
@@ -1047,7 +1047,7 @@ def test_research_prompt_includes_discovered_models():
 
 
 def test_costs_renders_research_prompt_and_import_form():
-    page = voice_cost_page._costs_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
+    page = voice_cost_page.costs_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
     assert 'action="pricing-import"' in page
     assert 'id="pricing-prompt"' in page
 
@@ -1074,22 +1074,22 @@ def test_costs_renders_research_prompt_and_import_form():
     ],
 )
 def test_pricing_import_parses_various_input_shapes(pasted, expected_models):
-    models, _as_of, err = voice_setup._apply_pricing_paste(pasted)
+    models, _as_of, err = voice_setup.apply_pricing_paste(pasted)
     assert err is None
     assert models == expected_models
 
 
 def test_pricing_import_rejects_garbage_and_empty():
-    assert voice_setup._apply_pricing_paste("not json")[0] is None
-    assert voice_setup._apply_pricing_paste("")[0] is None
+    assert voice_setup.apply_pricing_paste("not json")[0] is None
+    assert voice_setup.apply_pricing_paste("")[0] is None
     # Valid JSON but no usable rate fields → rejected with a message.
-    out, _as_of, err = voice_setup._apply_pricing_paste('{"models": {"x": {"bogus": 1}}}')
+    out, _as_of, err = voice_setup.apply_pricing_paste('{"models": {"x": {"bogus": 1}}}')
     assert out is None and err
 
 
 def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
     from jasper import usage
-    models, _as_of, err = voice_setup._apply_pricing_paste(
+    models, _as_of, err = voice_setup.apply_pricing_paste(
         '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 33}}}'
     )
     assert err is None
@@ -1114,7 +1114,7 @@ def test_catalog_entries_carry_pricing_metadata():
 
 
 def test_apply_pricing_paste_preserves_as_of():
-    models, as_of, err = voice_setup._apply_pricing_paste(
+    models, as_of, err = voice_setup.apply_pricing_paste(
         '{"as_of": "2026-09-09", "models": '
         '{"gpt-realtime-2": {"text_output_per_million_usd": 30}}}'
     )
@@ -1123,7 +1123,7 @@ def test_apply_pricing_paste_preserves_as_of():
 
 
 def test_sparsify_overrides_drops_at_default_fields():
-    sp = voice_setup._sparsify_overrides({
+    sp = voice_setup.sparsify_overrides({
         "gpt-realtime-2": {
             "text_output_per_million_usd": 24.0,   # == bundled default → drop
             "audio_input_per_million_usd": 99.0,   # custom → keep

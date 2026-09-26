@@ -198,8 +198,6 @@ deploy/            install.sh + lib/install/, systemd units, nginx confs,
 scripts/           Laptop-side operator tools (deploy, logs, diagnostics)
 tests/             Hardware-free pytest suite; voice_eval/ makes paid calls
 docs/              Operator manuals, ADRs, designs, research archive
-experiments/       Lab spikes — except usb-turntable/, which is production
-                     (turntable-driven speaker measurement) despite the path
 logs/              Landing directory fetch-pi-logs.sh writes into (gitignored)
 LICENSES/          Apache-2.0 plus vendored third-party license texts
 .claude/           Repo-scoped Claude Code commands (onboard-pi, reviews)

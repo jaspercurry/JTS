@@ -45,7 +45,7 @@ from jasper.cli import angle_capture as cli
 from tests._log_events import event_fields, event_records
 
 ROOT = Path(__file__).resolve().parents[1]
-TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
+TURNTABLE_SCRIPT = ROOT / "jasper" / "turntable" / "jts_turntable.py"
 
 
 @pytest.mark.parametrize("initial_s,expected", [
@@ -723,11 +723,8 @@ def test_the_park_runs_once(failure_code, failures, attempts, parked):
     "jasper/cli/angle_capture.py",
 ])
 def test_the_adapter_is_a_subprocess_and_never_an_import(module):
-    """``experiments/`` is not a package product code may depend on.
-
-    A subprocess is also what gives each command a clean serial session and the
-    adapter's own documented one-retry recovery.
-    """
+    """A subprocess gives each command a clean serial session and the adapter's
+    own documented one-retry recovery."""
     import ast
 
     tree = ast.parse((ROOT / module).read_text())
@@ -737,8 +734,7 @@ def test_the_adapter_is_a_subprocess_and_never_an_import(module):
             imported.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.append(node.module or "")
-    assert not [name for name in imported
-                if "turntable" in name or "experiment" in name]
+    assert not [name for name in imported if "turntable" in name]
 
 
 def test_no_adapter_verb_this_module_emits_can_redefine_zero():
@@ -888,11 +884,15 @@ def test_transient_vendor_failure_retries_once(
     power = json.dumps({"ok": True, "power": {"status": {
         "available": True, "current_flags": [], "history_flags": [], "raw": "0x0",
     }}})
+    named = error_code == "port_busy"
     failure = _Proc(json.dumps({
         "ok": False,
         "error": aw._VENDOR_HEARTBEAT_FRAME_ERROR if error_code is None else "port_busy",
         "code": error_code,
+        **({"holder": {"pid": 4242, "argv": ["jts_turntable.py", "--json", "hotplug-stop"]}}
+           if named else {}),
     }), 1)
+    holder = {"holder_pid": 4242, "holder_argv": "jts_turntable.py --json hotplug-stop"} if named else {}
     responses = [_Proc(power)] + ([_Proc(good)] if failure_at == "position" else [])
     responses.append(failure)
     retried = retry_succeeds is not None
@@ -917,6 +917,7 @@ def test_transient_vendor_failure_retries_once(
         assert event_fields(caplog, "arm_walk.vendor_tool_retried") == {
             "subcommand": failure_at,
             "attempt": "2",
+            **{key: str(value) for key, value in holder.items()},
         }
     else:
         assert event_records(caplog, "arm_walk.vendor_tool_retried") == []
@@ -927,6 +928,7 @@ def test_transient_vendor_failure_retries_once(
         failed = trail.error("move_failed")
         assert failed["subcommand"] == failure_at
         assert failed["after_retry"] is retried
+        assert {key: value for key, value in failed.items() if key.startswith("holder_")} == holder
         assert event_fields(caplog, "arm_walk.vendor_tool_failed")["after_retry"] == str(retried).lower()
 
 

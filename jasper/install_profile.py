@@ -36,14 +36,11 @@ by lightweight surfaces such as jasper-control, jasper-doctor, and the
 multi-room reconciler without pulling in the full speaker stack.
 
 **Capabilities are a pure function of the tier — no I/O, ever.** They
-must never read hardware, the environment, or a file. Two consumers
-compute the same map at different times (install.sh bakes it into the
-static landing page; jasper-control serves it live at ``/system``), and
-they agree only because both derive from the marker and nothing else.
-The moment a capability reads something dynamic, a baked page can be
-wrong at runtime and the landing page's ``applyCapabilities`` fails
-closed — hiding a section forever with no error. Pinned by
-tests/test_install_profile_capabilities.py.
+must never read hardware, the environment, or a file: install.sh bakes
+the map into the static landing page and hubs once, so a capability that
+read something dynamic would freeze its install-time answer, and the
+page's ``initSettingsStatus`` fails closed — hiding a section forever
+with no error. Pinned by tests/test_install_profile_capabilities.py.
 """
 from __future__ import annotations
 
@@ -79,12 +76,7 @@ _LEGACY_STREAMBOX_ALIASES = frozenset({"endpoint", "satellite"})
 class Capability(str, Enum):
     """What an install tier grants, named one axis at a time.
 
-    Two capabilities, deliberately — not one per feature:
-
-    ``ASSISTANT``
-        The voice daemon, the provider session, tools, assistant
-        integrations, TTS playout, the assistant wizards, the spend cap.
-        "Can this box hold a conversation."
+    The assistant is not on this axis: every tier offers it (ADR-0363).
 
     ``WAKE_DETECTION``
         This *hardware class* has the headroom to run always-on wake
@@ -110,26 +102,19 @@ class Capability(str, Enum):
     would be the second instance; split the axis then, not now.
     """
 
-    ASSISTANT = "assistant"
     WAKE_DETECTION = "wake_detection"
 
 
 # Pure-data grant table: install profile -> capabilities. The single
 # place a tier's grants are stated. Adding a tier means adding a row
 # here; tests/test_install_profile_capabilities.py fails if the rows and
-# VALID_INSTALL_PROFILES ever disagree, so a new tier cannot silently
-# ship with no capabilities.
+# VALID_INSTALL_PROFILES ever disagree, so a new tier cannot ship without
+# stating its grants.
 PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
-    FULL_INSTALL_PROFILE: frozenset({
-        Capability.ASSISTANT,
-        Capability.WAKE_DETECTION,
-    }),
-    # Streambox grants ASSISTANT — a mic-bearing Bluetooth remote turns it
-    # into a conversational endpoint — but not WAKE_DETECTION: the Zero 2 W
-    # lacks the headroom for always-on wake inference (see the Capability
-    # docstring above). See
-    # docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
-    STREAMBOX_INSTALL_PROFILE: frozenset({Capability.ASSISTANT}),
+    FULL_INSTALL_PROFILE: frozenset({Capability.WAKE_DETECTION}),
+    # The Zero 2 W lacks the headroom for always-on wake inference (see the
+    # Capability docstring above).
+    STREAMBOX_INSTALL_PROFILE: frozenset(),
 }
 
 
@@ -205,11 +190,6 @@ def is_streambox_install_profile(profile: str | None) -> bool:
     return normalize_install_profile(profile) == STREAMBOX_INSTALL_PROFILE
 
 
-def install_profile_allows_local_sources(profile: str | None) -> bool:
-    """Whether this install role may advertise/run local music sources."""
-    return normalize_install_profile(profile) in VALID_INSTALL_PROFILES
-
-
 def install_profile_has_capability(
     profile: str | None, capability: Capability,
 ) -> bool:
@@ -228,18 +208,6 @@ def install_profile_has_capability(
     hardware. See the module docstring for why that is load-bearing.
     """
     return capability in PROFILE_CAPABILITIES[normalize_install_profile(profile)]
-
-
-def install_profile_allows_voice_brain(profile: str | None) -> bool:
-    """Whether the assistant runs locally on this install profile.
-
-    Exactly ``Capability.ASSISTANT``, under the name every existing
-    caller already imports. It does NOT also mean "wake detection runs
-    here" — that is ``install_profile_supports_wake_detection``. They
-    are separate questions; a caller that means one should not ask the
-    other.
-    """
-    return install_profile_has_capability(profile, Capability.ASSISTANT)
 
 
 def install_profile_supports_wake_detection(profile: str | None) -> bool:
@@ -261,54 +229,18 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
     return install_profile_has_capability(profile, Capability.WAKE_DETECTION)
 
 
-def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
+def system_capabilities_for_profile(profile: str | None) -> dict[str, bool]:
     """The management-UI capability map for an install profile.
 
-    Single source of truth, shared by two consumers: jasper-control's
-    /system snapshot (runtime) AND install.sh, which bakes the result into
-    the static landing page so its capability-gated sections are correct at
-    first paint with no network round-trip. Kept here (stdlib-only) so the
-    installer can compute it without importing the full control stack.
+    install.sh bakes the result into the static landing page and hubs so
+    their capability-gated sections are correct at first paint with no
+    network round-trip. One key per :class:`Capability`, which is what those
+    pages' ``data-requires`` name (``jasper.web.nav``, deploy/index.html).
+    Kept here (stdlib-only) so the installer can compute it without
+    importing the full control stack.
 
     Values are derived purely from the profile — no env, no files, no
-    hardware probes — so the baked page and the live snapshot always
-    agree for the same marker. That purity is the whole contract here;
-    see the module docstring for what breaks without it.
+    hardware probes. That purity is the whole contract here; see the
+    module docstring for what breaks without it.
     """
-    role = normalize_install_profile(profile)
-    full = role == FULL_INSTALL_PROFILE
-    local_sources = install_profile_allows_local_sources(profile)
-    voice_brain = install_profile_allows_voice_brain(profile)
-    wake_detection = install_profile_supports_wake_detection(profile)
-    return {
-        # `install_profile` echoes the token this is CALLED with; the boolean
-        # caps below — what the page gates on — derive from the normalized
-        # role. In production both callers (the /system snapshot and the
-        # install.sh bake) pass read_install_profile(), which already
-        # normalizes endpoint/satellite -> streambox, so this field reads
-        # full|streambox and baked vs live always agree. A raw legacy token
-        # only appears if the function is called directly with one.
-        "install_profile": profile,
-        "role": role,
-        "local_sources": local_sources,
-        "content_dsp": local_sources,
-        "voice_brain": voice_brain,
-        # Separate key on purpose: a tier can hold a conversation without
-        # having the headroom to listen for a wake word all day. The
-        # landing page's mic card and /assistant/wake/ row gate on THIS key; the
-        # Assistant and Integrations blocks stay on voice_brain, whose
-        # wizards are served on both tiers (deploy/index.html). See
-        # install_profile_supports_wake_detection's docstring for its
-        # consumers.
-        "wake_detection": wake_detection,
-        "network_settings": True,
-        "speaker_settings": True,
-        "pair_management": True,
-        "developer_tools": full,
-        "audio_quality": local_sources,
-        "restart_voice": voice_brain,
-        "restart_audio": local_sources,
-        "reboot": True,
-        "poweroff": True,
-        "diagnostics": True,
-    }
+    return {c.value: install_profile_has_capability(profile, c) for c in Capability}

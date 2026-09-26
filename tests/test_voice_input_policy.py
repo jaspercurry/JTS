@@ -115,7 +115,7 @@ def test_auto_asks_for_far_intent_on_raw_direct_mic_input():
     policy = build_effective_speech_input_policy(_cfg(mic_device="Array"))
 
     assert policy.input_contract.profile == "direct_mic"
-    assert policy.input_contract.raw is True
+    assert policy.input_contract.already_processed is False
     assert policy.noise_reduction == "far"
     assert policy.noise_reduction_source == "auto_raw_far"
 

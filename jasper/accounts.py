@@ -133,6 +133,22 @@ class Account:
     playlists: dict[str, str] = field(default_factory=dict)
 
 
+# `\-`, not a bare `-`: browsers compile an input's `pattern=` with the `v`
+# flag, where a bare `-` is a syntax error and the pattern is silently ignored.
+_ACCOUNT_NAME_CHARS = r"a-zA-Z0-9_\-"
+ACCOUNT_NAME_PATTERN = f"[{_ACCOUNT_NAME_CHARS}]+"
+
+
+def valid_account_name(name: str) -> bool:
+    return re.fullmatch(ACCOUNT_NAME_PATTERN, name) is not None
+
+
+def account_file_stem(name: str) -> str:
+    """``name`` with every character a valid name cannot hold turned to ``_``,
+    so no name escapes its credential directory."""
+    return re.sub(f"[^{_ACCOUNT_NAME_CHARS}]", "_", name)
+
+
 class _NamedRecord(Protocol):
     name: str
     __dataclass_fields__: ClassVar[dict[str, Any]]
@@ -204,12 +220,18 @@ class RecordRegistry(Generic[RecordT]):
                 return d
         return self.accounts[0] if self.accounts else None
 
-    def remove(self, name: str) -> bool:
-        before = len(self.accounts)
+    def set_default(self, name: str) -> bool:
+        if self.get(name) is None:
+            return False
+        self.default_name = name
+        return True
+
+    def remove(self, name: str) -> RecordT | None:
+        record = self.get(name)
         self.accounts = [a for a in self.accounts if a.name != name]
         if self.default_name == name:
             self.default_name = self.accounts[0].name if self.accounts else ""
-        return len(self.accounts) < before
+        return record
 
 
 class Registry(RecordRegistry[Account]):
@@ -268,8 +290,7 @@ class Registry(RecordRegistry[Account]):
 
 
 def default_cache_path_for(name: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
-    return os.path.join(DEFAULT_CACHE_DIR, f"{safe}.json")
+    return os.path.join(DEFAULT_CACHE_DIR, f"{account_file_stem(name)}.json")
 
 
 def maybe_migrate_legacy(

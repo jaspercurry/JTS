@@ -21,6 +21,7 @@ from jasper.bluetooth.scan import (
     _battery_level_characteristic_path,
     _battery_percent_from_read_value,
 )
+from tests._async_wait import settle
 
 
 DEVICE_PATH = "/org/bluez/hci0/dev_CA_AC_04_04_09_D7"
@@ -180,11 +181,6 @@ class _FakeBus:
         self.disconnected = True
 
 
-async def _settle() -> None:
-    for _ in range(6):
-        await asyncio.sleep(0)
-
-
 async def _next_event(
     events: AsyncIterator[tuple[str, BluetoothDevice]],
 ) -> tuple[str, BluetoothDevice]:
@@ -333,7 +329,7 @@ async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     events = subscription.events()
     action, device = await _next_event(events)
     assert (action, device.path, device.battery) == ("add", DEVICE_PATH, 40)
-    await _settle()
+    await settle(6)
 
     first_props = bus.properties[DEVICE_PATH]
     assert len(first_props.callbacks) == 2
@@ -350,12 +346,12 @@ async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     )
     action, device = await _next_event(events)
     assert (action, device.path, device.battery) == ("add", second_path, None)
-    await _settle()
+    await settle(6)
 
     bus.om.emit_added(second_path, {BATTERY_IFACE: {"Percentage": 60}})
     action, device = await _next_event(events)
     assert (action, device.battery) == ("update", 60)
-    await _settle()
+    await settle(6)
     second_props = bus.properties[second_path]
     stale_battery_callbacks = list(second_props.callbacks)
     second_props.emit(BATTERY_IFACE, {"Percentage": 61}, [])
@@ -374,7 +370,7 @@ async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     )
     action, device = await _next_event(events)
     assert (action, device.battery, device.rssi) == ("add", None, -50)
-    await _settle()
+    await settle(6)
     for callback in stale_battery_callbacks:
         callback(BATTERY_IFACE, {"Percentage": 99}, [])
     observed = observer.get(second_path)
@@ -385,7 +381,7 @@ async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     bus.om.emit_added(second_path, {BATTERY_IFACE: {"Percentage": 70}})
     action, device = await _next_event(events)
     assert (action, device.battery) == ("update", 70)
-    await _settle()
+    await settle(6)
     live_callbacks = list(second_props.callbacks)
     bus.om.emit_removed(second_path, [BATTERY_IFACE])
     action, device = await _next_event(events)
@@ -466,7 +462,7 @@ async def test_device_observer_direct_battery_read_updates_once_and_stays_remove
     assert (action, device.battery) == ("add", None)
     action, device = await _next_event(events)
     assert (action, device.battery) == ("update", 72)
-    await _settle()
+    await settle(6)
     assert direct.read_calls == 1
     assert subscription._q.empty()
 
@@ -492,11 +488,11 @@ async def test_device_observer_direct_battery_read_updates_once_and_stays_remove
     bus.om.emit_removed(stale_path, [BATTERY_IFACE])
     action, device = await _next_event(events)
     assert (action, device.path, device.battery) == ("update", stale_path, None)
-    await _settle()
+    await settle(6)
     assert stale_battery.cancelled is True
     battery_release.set()
     await asyncio.wait_for(battery_task, timeout=1.0)
-    await _settle()
+    await settle(6)
     observed = observer.get(stale_path)
     assert observed is not None
     assert observed.battery is None
@@ -514,11 +510,11 @@ async def test_device_observer_direct_battery_read_updates_once_and_stays_remove
     bus.om.emit_removed(stale_path, [DEVICE_IFACE])
     action, device = await _next_event(events)
     assert (action, device.path) == ("remove", stale_path)
-    await _settle()
+    await settle(6)
     assert stale_device.cancelled is True
     device_release.set()
     await asyncio.wait_for(device_task, timeout=1.0)
-    await _settle()
+    await settle(6)
 
     assert observer.get(stale_path) is None
     assert stale_path not in observer._battery_props

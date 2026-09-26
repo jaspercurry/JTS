@@ -30,11 +30,11 @@ from jasper.voice.earcons import (
     _I32_MAX,
     _I32_MIN,
     _PCM32_FULL_SCALE,
-    _generate_listening_chirp,
-    _generate_mute_click,
+    generate_listening_chirp,
+    generate_mute_click,
     _normalized,
     _render_layers,
-    _synthetic_audio_profile,
+    synthetic_audio_profile,
     _to_pcm16,
     _to_pcm32,
 )
@@ -64,10 +64,10 @@ _NARROW_GOLDEN = {
 
 def _bakes(*, wide: bool) -> dict[str, bytes]:
     return {
-        "chirp_on": _generate_listening_chirp(going_on=True, wide=wide),
-        "chirp_off": _generate_listening_chirp(going_on=False, wide=wide),
-        "mute_on": _generate_mute_click(going_on=True, wide=wide),
-        "mute_off": _generate_mute_click(going_on=False, wide=wide),
+        "chirp_on": generate_listening_chirp(going_on=True, wide=wide),
+        "chirp_off": generate_listening_chirp(going_on=False, wide=wide),
+        "mute_on": generate_mute_click(going_on=True, wide=wide),
+        "mute_off": generate_mute_click(going_on=False, wide=wide),
     }
 
 
@@ -85,10 +85,10 @@ def test_every_narrow_earcon_bake_is_byte_identical_to_its_committed_golden():
 
 def test_the_default_bake_is_the_narrow_one():
     """A caller that says nothing gets exactly what it always got."""
-    assert _generate_listening_chirp(going_on=True) == _generate_listening_chirp(
+    assert generate_listening_chirp(going_on=True) == generate_listening_chirp(
         going_on=True, wide=False
     )
-    assert _generate_mute_click(going_on=False) == _generate_mute_click(
+    assert generate_mute_click(going_on=False) == generate_mute_click(
         going_on=False, wide=False
     )
 
@@ -238,8 +238,8 @@ def test_both_packers_share_one_normalization_and_one_fade():
 def test_an_earcon_reports_the_same_loudness_at_both_widths():
     """Outputd decides gain from this profile; a width-dependent number would
     make a wide box play its earcons at a different level."""
-    narrow = _generate_listening_chirp(going_on=True)
-    wide = _generate_listening_chirp(going_on=True, wide=True)
+    narrow = generate_listening_chirp(going_on=True)
+    wide = generate_listening_chirp(going_on=True, wide=True)
     n = measure_pcm_24k_mono(narrow)
     w = measure_pcm_24k_mono(wide, wide=True)
     assert abs(n.source_lufs - w.source_lufs) < 0.05
@@ -248,12 +248,12 @@ def test_an_earcon_reports_the_same_loudness_at_both_widths():
 
 
 def test_the_synthetic_profile_carries_the_width_through_to_the_measurement():
-    wide = _generate_mute_click(going_on=True, wide=True)
-    narrow = _generate_mute_click(going_on=True)
-    wide_profile = _synthetic_audio_profile(
+    wide = generate_mute_click(going_on=True, wide=True)
+    narrow = generate_mute_click(going_on=True)
+    wide_profile = synthetic_audio_profile(
         model="synthetic-mute-click", voice="unmute", pcm=wide, wide=True
     )
-    narrow_profile = _synthetic_audio_profile(
+    narrow_profile = synthetic_audio_profile(
         model="synthetic-mute-click", voice="unmute", pcm=narrow
     )
     assert wide_profile.confidence == 1.0, "a wide bake must measure, not fall back"
@@ -268,7 +268,7 @@ def test_measuring_a_wide_buffer_as_narrow_is_visibly_wrong():
     sample as two — so the guard is that the mis-read answer is far off, which
     is what makes forgetting the flag a loud failure rather than a quiet one.
     """
-    wide = _generate_listening_chirp(going_on=True, wide=True)
+    wide = generate_listening_chirp(going_on=True, wide=True)
     correct = measure_pcm_24k_mono(wide, wide=True)
     misread = measure_pcm_24k_mono(wide)
     assert abs(correct.source_lufs - misread.source_lufs) > 1.0

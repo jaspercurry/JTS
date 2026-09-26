@@ -154,7 +154,8 @@ class MeasureSpec:
     ``level_ladder_dbfs`` rungs are stimulus levels in dBFS: the ladder moves
     the STIMULUS and never the claim, which is what ruling S8's "same drive
     voltage, nothing touched between measurements" rests on. Empty means the
-    single stimulus the program declares.
+    single stimulus the program declares; at a driver's pose, its level probe
+    (ADR-0365).
 
     The polarity flip is RELATIVE to the design polarity the graph would
     otherwise carry, so a ``polarity=inverted`` record can name a graph whose

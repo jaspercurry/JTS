@@ -184,7 +184,7 @@ def test_route_allowed_iff_the_profile_grants_its_capability(
 @pytest.mark.parametrize("profile", ["streambox", "endpoint"])
 def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes(profile):
     """A streambox serves every other route, including the measurement routes
-    its own measurement pages call and the assistant's (ADR-0217)."""
+    its own measurement pages call and the assistant's (ADR-0363)."""
     routes = {(method, path) for method, path, _ in _ROUTES}
     allowed = {
         (method, path)
@@ -214,7 +214,7 @@ def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
 ):
     # A persisted legacy "endpoint" marker normalizes to streambox, so the
     # HTTP route gate applies the streambox policy: source routes are allowed,
-    # voice-brain routes are 404.
+    # wake-stack routes are 404.
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
@@ -224,88 +224,13 @@ def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
     assert status == 200
     assert body == {"ok": True}
 
-    # voice-brain route blocked
+    # wake-stack route blocked
     status, _body = _get(f"{base}/mic")
     assert status == 404
 
     # a streambox-allowed route is not 404 from the route gate
     status, _body = _get(f"{base}/grouping")
     assert status != 404
-
-
-def _grant_streambox(monkeypatch, *capabilities):
-    """Rewrite the streambox row of the pure-data grant table.
-
-    The route gate must follow the GRANT, so the pin drives the grant
-    directly instead of restating whatever the shipped table happens to
-    say — that table is pinned by tests/test_install_profile_capabilities.py.
-    """
-    from jasper import install_profile as ip
-
-    monkeypatch.setattr(ip, "PROFILE_CAPABILITIES", {
-        **ip.PROFILE_CAPABILITIES,
-        ip.STREAMBOX_INSTALL_PROFILE: frozenset(capabilities),
-    })
-
-
-@pytest.mark.parametrize("assistant", [True, False])
-@pytest.mark.parametrize("path", [
-    "/session/start", "/session/end", "/cue/play", "/system/restart/voice",
-])
-def test_streambox_assistant_routes_follow_the_assistant_grant(
-    monkeypatch, assistant, path,
-):
-    """A streambox granted Capability.ASSISTANT serves the assistant's own
-    surface — the two push-to-talk turn boundaries its paired remote's
-    bridge posts, cue playback, and restarting the unit. Without the grant
-    they stay off the route table. See ADR-0217."""
-    from jasper.install_profile import Capability
-
-    _grant_streambox(monkeypatch, *([Capability.ASSISTANT] if assistant else []))
-
-    assert _control_route_allowed_for_install_profile(
-        "streambox", method="POST", path=path,
-    ) is assistant
-
-
-@pytest.mark.parametrize("method, path", [
-    ("GET", "/mic"),
-    ("GET", "/aec"),
-    ("POST", "/mic/mute"),
-    ("POST", "/aec/commission"),
-])
-def test_streambox_wake_stack_routes_stay_blocked_under_the_assistant_grant(
-    monkeypatch, method, path,
-):
-    """ASSISTANT does not carry the local-mic/wake/AEC stack with it: those
-    routes need Capability.WAKE_DETECTION, which no Zero-class board gets."""
-    from jasper.install_profile import Capability
-
-    _grant_streambox(monkeypatch, Capability.ASSISTANT)
-
-    assert not _control_route_allowed_for_install_profile(
-        "streambox", method=method, path=path,
-    )
-
-
-def test_streambox_serves_a_session_start_over_http(
-    monkeypatch,
-    server_with_coordinator,
-):
-    """End to end through the same guard chain the accessory bridge's
-    localhost POST takes: the route gate no longer 404s it."""
-    import jasper.control.server as srv_mod
-    from jasper.install_profile import Capability
-
-    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
-    _grant_streambox(monkeypatch, Capability.ASSISTANT)
-
-    base, _ = server_with_coordinator
-    status, _body = _post(f"{base}/session/start", {"source": "wiim_remote_2"})
-    assert status != 404
-
-    status, _body = _get(f"{base}/mic")
-    assert status == 404
 
 
 def test_cross_site_get_rejects_diagnostics_before_subprocess(
@@ -401,13 +326,9 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         VolumeRoutes,
     )
 
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        ha_status_cache=object(),
-    )
-    assert {"do_GET", "do_POST"} <= set(handler.__dict__)
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock", ha_status_cache=object())
+    central = [c for c in handler.__mro__ if c.__module__ == _make_handler.__module__]
+    assert any({"do_GET", "do_POST"} <= set(c.__dict__) for c in central)
 
     concern_mixins = (
         VolumeRoutes,
@@ -423,7 +344,7 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         for handler_name, _requires in table.values()
     }
     for method_name in routed_methods:
-        assert method_name not in handler.__dict__
+        assert not any(method_name in c.__dict__ for c in central)
         owners = [mixin for mixin in concern_mixins if method_name in mixin.__dict__]
         assert len(owners) == 1, (method_name, owners)
 
@@ -827,7 +748,7 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     ]
     for cfg, want in cases:
         monkeypatch.setattr(mcfg, "load_config", lambda *a, _c=cfg, **k: _c)
-        assert srv_mod._pair_follower_leader_addr() == want
+        assert srv_mod.pair_follower_leader_addr() == want
 
 
 def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
@@ -849,7 +770,7 @@ def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
         },
     )
 
-    assert srv_mod._pair_follower_leader_addr() is None
+    assert srv_mod.pair_follower_leader_addr() is None
 
 
 @pytest.fixture
@@ -860,7 +781,7 @@ def follower_server(monkeypatch, server_with_coordinator):
     from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
     seen: list = []
 
@@ -934,7 +855,7 @@ def test_follower_forward_failure_is_502_with_leader_named(
     import jasper.control.handlers.peering as srv_mod
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
 
     def exploding_request(method, path, **kwargs):
@@ -959,7 +880,7 @@ def test_follower_forward_relays_leader_http_verdict(
     from jasper.platform.control_client import ControlResponse
 
     monkeypatch.setattr(
-        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+        srv_mod, "pair_follower_leader_addr", lambda: "jts.local",
     )
 
     def rejecting_request(method, path, **kwargs):

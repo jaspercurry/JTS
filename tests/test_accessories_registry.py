@@ -96,15 +96,10 @@ def test_vk01_click_is_tap_action_for_transport():
     assert click.window_ms > 0
 
 
-def test_vk01_profile_reserves_hold_and_mic_extension_points():
+def test_vk01_profile_reserves_a_mic_slot():
     assert VK01.mic.status == "reserved"
     assert VK01.mic.capture_profile_id is None
     assert "standard Linux audio capture device" in VK01.mic.detail
-    reserved = {feature.id: feature.detail for feature in VK01.reserved_features}
-    assert "true_hold" in reserved
-    assert "remote_mic" in reserved
-    assert "HoldAction" in reserved["true_hold"]
-    assert "voice pipeline" in reserved["remote_mic"]
 
 
 def test_wiim_remote_2_media_keymap_targets_control_routes():

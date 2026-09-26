@@ -58,6 +58,7 @@ from jasper.attribution.session_identity import (
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
+from jasper.paths import camilla_statefile
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 from .state_paths import DEFAULT_CAMPAIGN_ROOT
@@ -129,10 +130,10 @@ def _ssot_documents(
     statefile_path: Path | None,
 ) -> tuple[tuple[str, Path | None], ...]:
     """``(banked filename, source path)`` for the six documents beside the
-    bundle, defaulting to each document's own on-box SSOT constant.
+    bundle, defaulting to each document's own on-box SSOT path.
 
-    Both halves come from ``round_inputs``, the reader that opens them, so
-    writer and reader cannot drift apart silently.
+    Both halves are the ones ``round_inputs``, the reader that opens them,
+    uses, so writer and reader cannot drift apart silently.
     """
     from .crossover_v2 import round_inputs as reader  # lazy: reader imports this module
 
@@ -156,10 +157,7 @@ def _ssot_documents(
             reader.DECLARED_GEOMETRY_FILENAME,
             declared_geometry_path or reader.DECLARED_GEOMETRY_DEFAULT_PATH,
         ),
-        (
-            reader.STATEFILE_FILENAME,
-            statefile_path or reader.STATEFILE_DEFAULT_PATH,
-        ),
+        (reader.STATEFILE_FILENAME, camilla_statefile(statefile_path)),
     )
 
 

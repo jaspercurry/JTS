@@ -255,19 +255,19 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
         for stop in plan.stops for repeat in (1, 2)
     ]
     assert report.mic_moves == report.price["mic_moves"] == 3
-    assert report.price["captures"] == 12
+    assert report.price["captures"] == 14
     assert report.price["ceiling_min"] > 0
     assert report.spl_ceiling_db_spl == 85
     assert report.plan.level.resolved.anchor_db_spl == 75
     assert {row.graph_scope for row in report.schedule} == {"candidate"}
 
 
-@pytest.mark.parametrize("fault", ["box", "wrong_mic", "no_calibration"])
-def test_live_facts_surface_owner_refusals(monkeypatch, fault):
+@pytest.mark.parametrize("fault,branch", [("box", False), ("box", True), ("wrong_mic", False), ("no_calibration", False)])
+def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = request_for_program(program("branches", "express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
@@ -287,6 +287,8 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault):
     report = preflight(plan, preflight_live.read_preflight_facts(plan))
     code = "measure_box_not_ready" if fault == "box" else "measure_spl_calibration_required"
     assert any(issue.code == code and issue.blocking and issue.next_action for issue in report.issues)
+    if branch:
+        assert report.price == {}
 
 
 def test_supplied_facts_do_not_read_files(monkeypatch):

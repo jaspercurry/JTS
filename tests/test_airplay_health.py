@@ -13,6 +13,7 @@ import pytest
 
 import jasper.control.airplay_health as airplay_health
 from jasper import service_units
+from jasper.control._health_fields import as_int
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
@@ -82,12 +83,11 @@ def _sampler(
     )
 
 
-@pytest.mark.parametrize("value", [True, False])
-def test_as_int_treats_bool_as_absent_not_1(value: bool) -> None:
-    """airplay_health._as_int is jasper.control._health_fields._as_int now
-    (R-135/#4805): a stray bool from upstream JSON must read as "couldn't
-    tell" (the default), never as the numeric identity of True/False."""
-    assert airplay_health._as_int(value, default=7) == 7
+@pytest.mark.parametrize("value", [True, False, float("inf")])
+def test_as_int_treats_bool_and_infinity_as_absent(value: object) -> None:
+    """A stray bool or infinity in upstream JSON reads as "couldn't tell" (the
+    default), never as True/False's numeric identity or an OverflowError."""
+    assert as_int(value, default=7) == 7
 
 
 def test_classify_journal_lines_for_documented_airplay_patterns() -> None:

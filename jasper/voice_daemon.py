@@ -21,7 +21,6 @@ from .mic_capture import InputDeviceUnavailable
 from .tts_playout import TtsPlayout
 from .wake_events import WakeEventStore
 from .cues import AudioCueManager
-from .cues.registry import NO_ROOM_MIC_CUE_SLUG
 from .vad import SpeechVAD
 from .config import Config
 from .conversation_history import ConversationStore
@@ -1266,23 +1265,7 @@ class WakeLoop:
             )
             return "UNKNOWN_SOURCE"
         if source is None and self._push_to_talk.only:
-            # No source named, and this speaker has no always-listening mic to
-            # be the implied one — the push-to-talk-only shape (issue #2205).
-            # Accepting would open a turn nothing can feed: `_pre_roll` is
-            # empty because no primary loop fills it, `_manual_mic_loop` drops
-            # every frame while `active_source` is None, and the turn
-            # ducks the music, chirps, and dies to the idle watchdog ~20 s
-            # later having sent zero bytes — which misses both end-of-turn
-            # warnings (keyed on bytes_sent > 0), so the household gets
-            # silence and the journal gets nothing.
-            #
-            # Refused ahead of the mute/measuring/cap/paused gates: those
-            # describe transient state, this the speaker's permanent shape, so
-            # ranking it lower would let a passing BUSY or MUTED mask a
-            # request that can never succeed. Cued, like the paused refusal
-            # below and unlike the mute/measuring ones: those answer a state
-            # the household just chose, these answer "I pressed something and
-            # nothing happened".
+            # See ADR-0340.
             log_event(
                 logger,
                 "session.manual_refused",
@@ -1294,7 +1277,6 @@ class WakeLoop:
                 ),
                 level=logging.WARNING,
             )
-            self._spawn_manual_refusal_cue(NO_ROOM_MIC_CUE_SLUG)
             return "NO_ROOM_MIC"
         if self._turns.state is State.SESSION or self._acquiring:
             log_event(logger, "session.manual_refused", reason="busy")

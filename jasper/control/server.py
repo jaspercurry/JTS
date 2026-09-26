@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
+from .. import flight_recorder
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
@@ -68,6 +69,20 @@ from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from ..volume_curve import percent_to_db
+from ..volume_process import install_env_canonical_target_provider
+from ..watchdog import Heartbeat
+from .audio_incidents import IncidentStore
+from .ha_status_cache import HomeAssistantStatusCache
+from .handlers import (
+    AecRoutes,
+    GroupingRoutes,
+    MeasurementRoutes,
+    PeeringRoutes,
+    SystemRoutes,
+    VoiceRoutes,
+    VolumeRoutes,
+)
+from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
 from .single_flight import SingleFlightTTLCache
 from ..platform.uds import (
     local_status_json as _local_status_json,
@@ -79,8 +94,7 @@ logger = logging.getLogger(__name__)
 
 
 # Each route names its handler method and the Capability an install profile
-# must grant to be served it (None: every profile). The mic/AEC routes ride
-# WAKE_DETECTION, not ASSISTANT (ADR-0217).
+# must grant to be served it (None: every profile).
 _GET_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/healthz": ("_get_healthz", None),
     "/volume": ("_get_volume", None),
@@ -104,9 +118,9 @@ _POST_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/transport/next": ("_post_transport", None),
     "/transport/previous": ("_post_transport", None),
     "/source/select": ("_post_source_select", None),
-    "/session/start": ("_post_session", Capability.ASSISTANT),
-    "/session/end": ("_post_session", Capability.ASSISTANT),
-    "/cue/play": ("_post_cue_play", Capability.ASSISTANT),
+    "/session/start": ("_post_session", None),
+    "/session/end": ("_post_session", None),
+    "/cue/play": ("_post_cue_play", None),
     "/mic/mute": ("_post_mic_mute", Capability.WAKE_DETECTION),
     "/aec/leg": ("_post_aec_leg", Capability.WAKE_DETECTION),
     "/aec/profile": ("_post_aec_profile", Capability.WAKE_DETECTION),
@@ -124,7 +138,7 @@ _POST_ROUTES: dict[str, tuple[str, Capability | None]] = {
     "/system/usb-latency": ("_post_system_usb_latency", None),
     "/measurement/hold": ("_post_measurement_hold", None),
     "/measurement/release": ("_post_measurement_release", None),
-    "/system/restart/voice": ("_post_system_action", Capability.ASSISTANT),
+    "/system/restart/voice": ("_post_system_action", None),
     "/system/restart/audio": ("_post_system_action", None),
     "/system/reboot": ("_post_system_action", None),
     "/system/poweroff": ("_post_system_action", None),
@@ -235,7 +249,7 @@ async def _get_state(
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    return await _state_aggregate._get_state(
+    return await _state_aggregate.get_state(
         airplay_playing_snapshot=airplay_playing_snapshot,
         audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,
@@ -254,7 +268,7 @@ async def _with_coordinator(
     camilla_port: int,
     duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
-    return await _volume_ops._with_coordinator(
+    return await _volume_ops.with_coordinator(
         op,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
@@ -271,50 +285,37 @@ def _make_duck_active_probe(
     )
 
 
-def _make_handler(
-    camilla_host: str,
-    camilla_port: int,
-    voice_socket_path: str,
-    sampler: Any = None,
-    audio_health_sampler: Any = None,
-    ha_status_cache: Any = None,
-) -> type[BaseHTTPRequestHandler]:
+class VolumeOps:
+    """The volume operations one handler class serves.
 
-    # Route-body imports stay factory-local so importing this module stays
-    # cheap: the concern mixins arrive only when a concrete server is built.
-    from .handlers import (
-        AecRoutes,
-        GroupingRoutes,
-        MeasurementRoutes,
-        PeeringRoutes,
-        SystemRoutes,
-        VoiceRoutes,
-        VolumeRoutes,
-    )
+    Each mutating op runs on a fresh coordinator (`_with_coordinator`) and
+    they share one duck-active probe, which is stateless (it only closes
+    over the voice socket path). `get` reads the persisted state without
+    building a coordinator or actuators.
+    """
 
-    # One probe instance per handler — stateless (it only closes over
-    # voice_socket_path), so all mutating volume ops share it. Read-only
-    # `_get_op` bypasses coordinator/actuator construction.
-    duck_active_probe = _make_duck_active_probe(voice_socket_path)
-    state_response_cache = SingleFlightTTLCache(
-        STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
-    )
-    if ha_status_cache is None:
-        from .ha_status_cache import HomeAssistantStatusCache
+    def __init__(
+        self, camilla_host: str, camilla_port: int, voice_socket_path: str,
+    ) -> None:
+        self._duck_active_probe = _make_duck_active_probe(voice_socket_path)
+        self._camilla_host = camilla_host
+        self._camilla_port = camilla_port
 
-        ha_status_cache = HomeAssistantStatusCache()
+    async def _run(self, op: Callable[[Any], Any]) -> Any:
+        return await _with_coordinator(
+            op,
+            camilla_host=self._camilla_host, camilla_port=self._camilla_port,
+            duck_active_probe=self._duck_active_probe,
+        )
 
-    async def _set_op(percent: int) -> VolumeState:
+    async def set(self, percent: int) -> VolumeState:
         async def _op(coord):
             await coord.set_listening_level(percent)
             return coord.get_volume_state()
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-            duck_active_probe=duck_active_probe,
-        )
+        return await self._run(_op)
 
-    async def _observe_op(
+    async def observe(
+        self,
         source_name: str,
         percent: int,
         *,
@@ -333,7 +334,7 @@ def _make_handler(
         try:
             source_enum = Source(source_name)
         except ValueError:
-            return await _set_op(percent), True
+            return await self.set(percent), True
 
         async def _op(coord):
             applied = await coord.observe_source_volume(
@@ -344,369 +345,360 @@ def _make_handler(
             # Return the one canonical state projection rather than asking
             # this boundary to reinterpret mute.
             return coord.get_volume_state(), bool(applied)
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-            duck_active_probe=duck_active_probe,
-        )
+        return await self._run(_op)
 
-    async def _adjust_op(delta_percent: int) -> VolumeState:
+    async def adjust(self, delta_percent: int) -> VolumeState:
         async def _op(coord):
             await coord.adjust_listening_level(delta_percent)
             return coord.get_volume_state()
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-            duck_active_probe=duck_active_probe,
-        )
+        return await self._run(_op)
 
-    def _get_op() -> VolumeState:
+    @staticmethod
+    def get() -> VolumeState:
         return _read_volume_state()
 
-    async def _mute_set_op(want_muted: bool) -> VolumeState:
+    async def mute_set(self, want_muted: bool) -> VolumeState:
         async def _op(coord):
             return await coord.set_muted(want_muted)
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-            duck_active_probe=duck_active_probe,
-        )
+        return await self._run(_op)
 
-    async def _mute_toggle_op() -> VolumeState:
+    async def mute_toggle(self) -> VolumeState:
         async def _op(coord):
             return await coord.toggle_mute()
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-            duck_active_probe=duck_active_probe,
+        return await self._run(_op)
+
+
+class _ControlHandler(
+    VolumeRoutes,
+    VoiceRoutes,
+    AecRoutes,
+    GroupingRoutes,
+    MeasurementRoutes,
+    PeeringRoutes,
+    SystemRoutes,
+):
+    """Request guards, JSON I/O and dispatch around the concern route
+    mixins; `_make_handler` subclasses it per server to bind the state
+    `ControlHandlerMixin` declares."""
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+        logger.info("%s - %s", self.address_string(), fmt % args)
+
+    def log_request(  # noqa: A003
+        self, code: int | str = "-", size: int | str = "-",
+    ) -> None:
+        # The supervisor polls its own /healthz every few seconds
+        # (system_supervisor.py); a 200 there is a liveness no-op, not
+        # an event, and was ~45% of this daemon's idle journal volume.
+        # /system/snapshot gets the same treatment: the dashboard polls
+        # it every 5s per open tab (main.js POLL_MS), pure read, no
+        # state change. Every other response, and any non-200 on
+        # either path, still logs.
+        if code == 200 and self.path in ("/healthz", "/system/snapshot"):
+            return
+        super().log_request(code, size)
+
+    def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict[str, Any]:
+        """Return a JSON object body; empty/malformed/non-object => {}.
+
+        The mutating-request guard owns Content-Length validation before
+        any POST handler reaches this helper.
+        """
+        length = int(self.headers.get("Content-Length") or "0")
+        if length < 0 or length > CONTROL_MAX_POST_BYTES:
+            raise ValueError("invalid body length")
+        if not length:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _voice_cmd_or_error(
+        self,
+        cmd: str,
+        *,
+        timeout: float | None = None,
+        missing_error: str | None = "voice_daemon not running",
+        log_label: str = "voice command",
+        refusal_event: str | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            kwargs = {} if timeout is None else {"timeout": timeout}
+            return asyncio.run(
+                _voice_socket_command(self._voice_socket_path, cmd, **kwargs),
+            )
+        except (OSError, asyncio.TimeoutError) as e:
+            # FileNotFoundError is an OSError subtype; it gets the
+            # caller's friendlier missing_error text where one is given,
+            # everything else (ConnectionRefusedError, read timeout, ...)
+            # the generic message. Both mean the same thing to a
+            # caller: the daemon could not be reached right now.
+            error = (
+                missing_error
+                if isinstance(e, FileNotFoundError) and missing_error is not None
+                else f"voice_daemon unreachable: {e}"
+            )
+            if refusal_event:
+                log_event(
+                    logger, refusal_event,
+                    reason="voice_daemon_unreachable", cmd=cmd,
+                )
+            self._send_json(
+                {"error": error, "reason": "voice_daemon_unreachable"},
+                status=503,
+            )
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.exception("%s failed", log_label)
+            self._send_json({"error": str(e)}, status=502)
+            return None
+
+    def _collect_state(
+        self,
+        *,
+        camilla_host: str,
+        camilla_port: int,
+        voice_socket_path: str,
+        airplay_playing_snapshot: Any = None,
+        audio_health_snapshot: Any = None,
+    ) -> Any:
+        # A bare-name call, not `self._x` or a captured closure: this
+        # must re-look-up `_get_state` on every call so a test can
+        # monkeypatch the module attribute after the handler is built
+        # (server_with_coordinator builds it in the fixture, before the
+        # test body's own patch runs).
+        return _get_state(
+            camilla_host=camilla_host,
+            camilla_port=camilla_port,
+            voice_socket_path=voice_socket_path,
+            airplay_playing_snapshot=airplay_playing_snapshot,
+            audio_health_snapshot=audio_health_snapshot,
         )
 
-    # A class body does not close over a same-named function local when the
-    # class also assigns that name, so the aliases below are required.
-    handler_adjust_op = _adjust_op
-    handler_get_op = _get_op
-    handler_mute_set_op = _mute_set_op
-    handler_mute_toggle_op = _mute_toggle_op
-    handler_observe_op = _observe_op
-    handler_set_op = _set_op
-
-    class Handler(
-        VolumeRoutes,
-        VoiceRoutes,
-        AecRoutes,
-        GroupingRoutes,
-        MeasurementRoutes,
-        PeeringRoutes,
-        SystemRoutes,
-    ):
-        _adjust_op = staticmethod(handler_adjust_op)
-        _audio_health_sampler = audio_health_sampler
-        _camilla_host = camilla_host
-        _camilla_port = camilla_port
-        _get_op = staticmethod(handler_get_op)
-        _ha_status_cache = ha_status_cache
-        _install_profile = staticmethod(_control_install_profile)
-        _mute_set_op = staticmethod(handler_mute_set_op)
-        _mute_toggle_op = staticmethod(handler_mute_toggle_op)
-        _observe_op = staticmethod(handler_observe_op)
-        _sampler = sampler
-        _set_op = staticmethod(handler_set_op)
-        _state_response_cache = state_response_cache
-        _voice_socket_path = voice_socket_path
-
-        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def log_request(  # noqa: A003
-            self, code: int | str = "-", size: int | str = "-",
-        ) -> None:
-            # The supervisor polls its own /healthz every few seconds
-            # (system_supervisor.py); a 200 there is a liveness no-op, not
-            # an event, and was ~45% of this daemon's idle journal volume.
-            # /system/snapshot gets the same treatment: the dashboard polls
-            # it every 5s per open tab (main.js POLL_MS), pure read, no
-            # state change. Every other response, and any non-200 on
-            # either path, still logs.
-            if code == 200 and self.path in ("/healthz", "/system/snapshot"):
-                return
-            super().log_request(code, size)
-
-        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _read_json(self) -> dict[str, Any]:
-            """Return a JSON object body; empty/malformed/non-object => {}.
-
-            The mutating-request guard owns Content-Length validation before
-            any POST handler reaches this helper.
-            """
-            length = int(self.headers.get("Content-Length") or "0")
-            if length < 0 or length > CONTROL_MAX_POST_BYTES:
-                raise ValueError("invalid body length")
-            if not length:
-                return {}
-            raw = self.rfile.read(length)
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                return {}
-            return payload if isinstance(payload, dict) else {}
-
-        def _voice_cmd_or_error(
-            self,
-            cmd: str,
-            *,
-            timeout: float | None = None,
-            missing_error: str | None = "voice_daemon not running",
-            log_label: str = "voice command",
-            refusal_event: str | None = None,
-        ) -> dict[str, Any] | None:
-            try:
-                kwargs = {} if timeout is None else {"timeout": timeout}
-                return asyncio.run(
-                    _voice_socket_command(voice_socket_path, cmd, **kwargs),
-                )
-            except (OSError, asyncio.TimeoutError) as e:
-                # FileNotFoundError is an OSError subtype; it gets the
-                # caller's friendlier missing_error text where one is given,
-                # everything else (ConnectionRefusedError, read timeout, ...)
-                # the generic message. Both mean the same thing to a
-                # caller: the daemon could not be reached right now.
-                error = (
-                    missing_error
-                    if isinstance(e, FileNotFoundError) and missing_error is not None
-                    else f"voice_daemon unreachable: {e}"
-                )
-                if refusal_event:
-                    log_event(
-                        logger, refusal_event,
-                        reason="voice_daemon_unreachable", cmd=cmd,
-                    )
-                self._send_json(
-                    {"error": error, "reason": "voice_daemon_unreachable"},
-                    status=503,
-                )
-                return None
-            except Exception as e:  # noqa: BLE001
-                logger.exception("%s failed", log_label)
-                self._send_json({"error": str(e)}, status=502)
-                return None
-
-        def _collect_state(
-            self,
-            *,
-            camilla_host: str,
-            camilla_port: int,
-            voice_socket_path: str,
-            airplay_playing_snapshot: Any = None,
-            audio_health_snapshot: Any = None,
-        ) -> Any:
-            # A bare-name call, not `self._x` or a captured closure: this
-            # must re-look-up `_get_state` on every call so a test can
-            # monkeypatch the module attribute after the handler is built
-            # (server_with_coordinator builds it in the fixture, before the
-            # test body's own patch runs).
-            return _get_state(
-                camilla_host=camilla_host,
-                camilla_port=camilla_port,
-                voice_socket_path=voice_socket_path,
-                airplay_playing_snapshot=airplay_playing_snapshot,
-                audio_health_snapshot=audio_health_snapshot,
+    def _guard_management_read(self) -> bool:
+        if self.path == "/healthz":
+            ok, reason = management_read_allowed(
+                {"Host": self.headers.get("Host") or ""},
             )
+        else:
+            ok, reason = management_read_allowed(self.headers)
+        if ok:
+            return True
+        log_event(
+            logger,
+            "http.reject",
+            reason=reason,
+            host=repr(self.headers.get("Host")),
+            sec_fetch_site=repr(self.headers.get("Sec-Fetch-Site")),
+            path=self.path,
+            client=self.address_string(),
+            level=logging.WARNING,
+        )
+        self._send_json({"error": reason}, status=403)
+        return False
 
-        def _guard_management_read(self) -> bool:
-            if self.path == "/healthz":
-                ok, reason = management_read_allowed(
-                    {"Host": self.headers.get("Host") or ""},
-                )
-            else:
-                ok, reason = management_read_allowed(self.headers)
-            if ok:
-                return True
+    def _guard_mutating_request(self) -> bool:
+        ok, reason = mutating_request_allowed(self.headers)
+        if not ok:
             log_event(
                 logger,
                 "http.reject",
                 reason=reason,
                 host=repr(self.headers.get("Host")),
-                sec_fetch_site=repr(self.headers.get("Sec-Fetch-Site")),
+                origin=repr(self.headers.get("Origin")),
                 path=self.path,
                 client=self.address_string(),
                 level=logging.WARNING,
             )
             self._send_json({"error": reason}, status=403)
             return False
-
-        def _guard_mutating_request(self) -> bool:
-            ok, reason = mutating_request_allowed(self.headers)
-            if not ok:
-                log_event(
-                    logger,
-                    "http.reject",
-                    reason=reason,
-                    host=repr(self.headers.get("Host")),
-                    origin=repr(self.headers.get("Origin")),
-                    path=self.path,
-                    client=self.address_string(),
-                    level=logging.WARNING,
-                )
-                self._send_json({"error": reason}, status=403)
-                return False
-            raw_length = self.headers.get("Content-Length") or "0"
-            try:
-                length = int(raw_length)
-            except ValueError:
-                self._send_json({"error": "invalid_content_length"}, status=400)
-                return False
-            if length < 0:
-                self._send_json({"error": "invalid_content_length"}, status=400)
-                return False
-            if length > CONTROL_MAX_POST_BYTES:
-                log_event(
-                    logger,
-                    "http.reject",
-                    reason="body_too_large",
-                    bytes=length,
-                    limit=CONTROL_MAX_POST_BYTES,
-                    path=self.path,
-                    client=self.address_string(),
-                    level=logging.WARNING,
-                )
-                self._send_json(
-                    {
-                        "error": "request_body_too_large",
-                        "max_bytes": CONTROL_MAX_POST_BYTES,
-                    },
-                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                )
-                return False
-            return True
-
-        def _guard_install_profile_route(self) -> bool:
-            profile = _control_install_profile()
-            if _control_route_allowed_for_install_profile(
-                profile,
-                method=self.command,
-                path=self.path,
-            ):
-                return True
-            log_event(
-                logger,
-                "control.route_blocked",
-                profile=profile,
-                method=self.command,
-                path=self.path,
-                client=self.address_string(),
-                level=logging.WARNING,
-            )
-            self.send_error(HTTPStatus.NOT_FOUND)
+        raw_length = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw_length)
+        except ValueError:
+            self._send_json({"error": "invalid_content_length"}, status=400)
             return False
-
-        def _volume_payload(self, state: VolumeState) -> dict[str, Any]:
-            """Serialize the coordinator's one canonical volume projection.
-
-            ``percent`` and ``db`` are always the currently effective values,
-            so a temporary mute reports 0 while ``restore_percent`` preserves
-            its separate restore target — a client reading only ``percent``
-            stays correct, and no client has to infer mute.
-
-            ``measurement`` is measurement_hold's own snapshot (the 409
-            body's shape; see ``_refuse_authoritative_write``) so every
-            volume response — not just the refused write — tells a poller
-            whether a measurement still owns the fader.
-            """
-            percent = int(state.effective_percent)
-            return {
-                "db": round(percent_to_db(percent), 3),
-                "percent": percent,
-                "muted": bool(state.muted),
-                "restore_percent": state.restore_percent,
-                "measurement": measurement_hold.snapshot(),
-            }
-
-        # --- routes ---
-        #
-        # SECURITY ORDERING IS LOAD-BEARING: the management-read /
-        # mutating-request guard runs FIRST, then install-profile route
-        # scope, and the ordinary table lookup happens LAST. So an
-        # unknown path under a hostile Host/Origin is still rejected by
-        # the guard (403/400/413) BEFORE it can 404 — the inverse of the
-        # web-wizard "route-check before guard" convention, preserved here
-        # on purpose. Do not reorder lookup ahead of the guard.
-
-        def do_GET(self) -> None:  # noqa: N802
-            if not self._guard_management_read():
-                return
-            if not self._guard_install_profile_route():
-                return
-            route = _GET_ROUTES.get(self.path)
-            if route is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_name, _requires = route
-            getattr(self, handler_name)()
-
-        def do_POST(self) -> None:  # noqa: N802
-            if not self._guard_mutating_request():
-                return
-            if not self._guard_install_profile_route():
-                return
-            if not self._guard_control_token():
-                return
-            route = _POST_ROUTES.get(self.path)
-            if route is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            handler_name, _requires = route
-            getattr(self, handler_name)()
-
-        def _guard_control_token(self) -> bool:
-            """Require the startup-created control token for high-impact mutations.
-
-            Runs after the browser-origin/install-profile guards so an unknown
-            path still returns 404. A request to a token-gated route without a
-            matching X-JTS-Token is rejected with 403. The token is never logged.
-            """
-            if self.path not in _TOKEN_GATED_ROUTES:
-                return True
-            if control_token.verify(self.headers.get("X-JTS-Token")):
-                return True
-            # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
-            # fan-out (rooms_setup) or an autonomous re-group presents the
-            # household credential (X-JTS-Household), which each member verifies
-            # against its own persisted copy — not the control token a
-            # leader can't hold for a follower. Accept EITHER on this route only;
-            # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
-            # update) are browser->own-speaker and stay control-token-only.
-            # household_credential is fail-safe (absent => accept) so the first
-            # bond, which DISTRIBUTES the secret over this very route, isn't
-            # rejected by the gate it installs.
-            if self.path == "/grouping/set" and household_credential.verify(
-                self.headers.get("X-JTS-Household")
-            ):
-                return True
+        if length < 0:
+            self._send_json({"error": "invalid_content_length"}, status=400)
+            return False
+        if length > CONTROL_MAX_POST_BYTES:
             log_event(
                 logger,
-                "control_token.denied",
+                "http.reject",
+                reason="body_too_large",
+                bytes=length,
+                limit=CONTROL_MAX_POST_BYTES,
                 path=self.path,
                 client=self.address_string(),
                 level=logging.WARNING,
             )
             self._send_json(
                 {
-                    "error": "control_token_required",
-                    "detail": "this control action requires X-JTS-Token; "
-                    "enable/inspect with jasper-control-token; see "
-                    "SECURITY.md",
+                    "error": "request_body_too_large",
+                    "max_bytes": CONTROL_MAX_POST_BYTES,
                 },
-                status=403,
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
             )
             return False
+        return True
+
+    def _guard_install_profile_route(self) -> bool:
+        profile = _control_install_profile()
+        if _control_route_allowed_for_install_profile(
+            profile,
+            method=self.command,
+            path=self.path,
+        ):
+            return True
+        log_event(
+            logger,
+            "control.route_blocked",
+            profile=profile,
+            method=self.command,
+            path=self.path,
+            client=self.address_string(),
+            level=logging.WARNING,
+        )
+        self.send_error(HTTPStatus.NOT_FOUND)
+        return False
+
+    def _volume_payload(self, state: VolumeState) -> dict[str, Any]:
+        """Serialize the coordinator's one canonical volume projection.
+
+        ``percent`` and ``db`` are always the currently effective values,
+        so a temporary mute reports 0 while ``restore_percent`` preserves
+        its separate restore target — a client reading only ``percent``
+        stays correct, and no client has to infer mute.
+
+        ``measurement`` is measurement_hold's own snapshot (the 409
+        body's shape; see ``_refuse_authoritative_write``) so every
+        volume response — not just the refused write — tells a poller
+        whether a measurement still owns the fader.
+        """
+        percent = int(state.effective_percent)
+        return {
+            "db": round(percent_to_db(percent), 3),
+            "percent": percent,
+            "muted": bool(state.muted),
+            "restore_percent": state.restore_percent,
+            "measurement": measurement_hold.snapshot(),
+        }
+
+    # --- routes ---
+    #
+    # SECURITY ORDERING IS LOAD-BEARING: the management-read /
+    # mutating-request guard runs FIRST, then install-profile route
+    # scope, and the ordinary table lookup happens LAST. So an
+    # unknown path under a hostile Host/Origin is still rejected by
+    # the guard (403/400/413) BEFORE it can 404 — the inverse of the
+    # web-wizard "route-check before guard" convention, preserved here
+    # on purpose. Do not reorder lookup ahead of the guard.
+
+    def do_GET(self) -> None:  # noqa: N802
+        if not self._guard_management_read():
+            return
+        if not self._guard_install_profile_route():
+            return
+        route = _GET_ROUTES.get(self.path)
+        if route is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        handler_name, _requires = route
+        getattr(self, handler_name)()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self._guard_mutating_request():
+            return
+        if not self._guard_install_profile_route():
+            return
+        if not self._guard_control_token():
+            return
+        route = _POST_ROUTES.get(self.path)
+        if route is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        handler_name, _requires = route
+        getattr(self, handler_name)()
+
+    def _guard_control_token(self) -> bool:
+        """Require the startup-created control token for high-impact mutations.
+
+        Runs after the browser-origin/install-profile guards so an unknown
+        path still returns 404. A request to a token-gated route without a
+        matching X-JTS-Token is rejected with 403. The token is never logged.
+        """
+        if self.path not in _TOKEN_GATED_ROUTES:
+            return True
+        if control_token.verify(self.headers.get("X-JTS-Token")):
+            return True
+        # /grouping/set is the one DEVICE-TO-DEVICE gated route: a peer
+        # fan-out (rooms_setup) or an autonomous re-group presents the
+        # household credential (X-JTS-Household), which each member verifies
+        # against its own persisted copy — not the control token a
+        # leader can't hold for a follower. Accept EITHER on this route only;
+        # the other gated routes (poweroff/reboot/restart/mic-mute/firmware
+        # update) are browser->own-speaker and stay control-token-only.
+        # household_credential is fail-safe (absent => accept) so the first
+        # bond, which DISTRIBUTES the secret over this very route, isn't
+        # rejected by the gate it installs.
+        if self.path == "/grouping/set" and household_credential.verify(
+            self.headers.get("X-JTS-Household")
+        ):
+            return True
+        log_event(
+            logger,
+            "control_token.denied",
+            path=self.path,
+            client=self.address_string(),
+            level=logging.WARNING,
+        )
+        self._send_json(
+            {
+                "error": "control_token_required",
+                "detail": "this control action requires X-JTS-Token; "
+                "enable/inspect with jasper-control-token; see "
+                "SECURITY.md",
+            },
+            status=403,
+        )
+        return False
+
+
+def _make_handler(
+    camilla_host: str,
+    camilla_port: int,
+    voice_socket_path: str,
+    sampler: Any = None,
+    audio_health_sampler: Any = None,
+    ha_status_cache: Any = None,
+) -> type[BaseHTTPRequestHandler]:
+    state_response_cache = SingleFlightTTLCache(
+        STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
+    )
+    if ha_status_cache is None:
+        ha_status_cache = HomeAssistantStatusCache()
+
+    class Handler(_ControlHandler):
+        _audio_health_sampler = audio_health_sampler
+        _camilla_host = camilla_host
+        _camilla_port = camilla_port
+        _ha_status_cache = ha_status_cache
+        _sampler = sampler
+        _state_response_cache = state_response_cache
+        _voice_socket_path = voice_socket_path
+        _volume = VolumeOps(camilla_host, camilla_port, voice_socket_path)
 
     return Handler
 
@@ -853,7 +845,6 @@ def build_server(
     )
 
 
-
 def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]:
     previous = signal.getsignal(signal.SIGTERM)
 
@@ -877,7 +868,7 @@ def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]
     return _restore
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="jasper-control",
         description="HTTP control surface for the JTS speaker",
@@ -886,47 +877,90 @@ def main(argv: list[str] | None = None) -> int:
         "--host", default=os.environ.get("JASPER_CONTROL_HOST", "0.0.0.0"),
         help="bind host (default 0.0.0.0 — LAN-reachable)",
     )
-    parser.add_argument(
-        "--port", type=int, default=CONTROL_PORT,
-    )
-    parser.add_argument(
-        "--camilla-host",
-        default=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-    )
+    parser.add_argument("--port", type=int, default=CONTROL_PORT)
+    parser.add_argument("--camilla-host", default=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"))
     parser.add_argument(
         "--camilla-port", type=int,
         default=int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT)),
     )
     parser.add_argument(
         "--voice-socket",
-        default=os.environ.get(
-            "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
-        ),
+        default=os.environ.get("JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH),
         help="path to voice_daemon's control UDS",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def _start_companion_services() -> Any:
+    # Arm the control-token gate before serving. ensure_token()
+    # auto-generates the token (0640 group jasper) if absent, so the
+    # destructive routes are always gated with no operator action;
+    # canonical_page auto-delivers it to the dashboard, invisible to the
+    # household. Idempotent — never rotates an existing token. Failure is
+    # non-fatal (the gate fail-safes to off) so a transient write error can't
+    # keep the recovery surface from starting.
+    try:
+        control_token.ensure_token()
+    except OSError as exc:
+        log_event(logger, "control_token.ensure_failed", error=str(exc),
+                  level=logging.WARNING)
+    # The privileged restart broker: jasper-control is the single mediated
+    # systemctl boundary. jasper-web's wizard restarts, jasper-mux's librespot
+    # recovery, and the room-correction renderer pause ask it to run an
+    # allowlisted, closed-vocabulary restart over a SO_PEERCRED'd UNIX socket,
+    # so those daemons need no privilege of their own. Bind failure is
+    # non-fatal (logged): callers fall back to their fail-soft "restart didn't
+    # happen, logged" behaviour.
+    restart_broker_server = restart_broker.start_broker()
+    # Multi-device peering daemon. The coroutine always starts; it reads
+    # /var/lib/jasper/peering.env and returns immediately (no multicast
+    # socket) when JASPER_PEERING=off — the default. The /sound/pair/
+    # Speakers page writes that env file and restarts jasper-control to
+    # pick up the new mode.
+    start_peering_daemon_if_enabled()
+    # Protocol-level liveness probe so a wedged shairport-sync AP2 control
+    # plane recovers without manual intervention. Off via
+    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
+    shairport_supervisor.start_supervisor()
+    # Userspace-liveness supervisor for the case where PID 1 still pats the
+    # kernel watchdog but userspace is dead. Probes the sshd banner, our own
+    # HTTP /healthz, and /proc/loadavg; clean `systemctl reboot` after 3
+    # consecutive failures, rate-limited to 1 reboot per 24 hours.
+    # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
+    system_supervisor.start_supervisor()
+    # Bonded-member runtime liveness between grouping reconciles: sustained
+    # dac_content starvation kicks the reconciler (rate-limited), and the
+    # leader's snapcast group→stream bindings are read-repaired every poll.
+    # Costs one grouping.env read per 30 s when solo. Off via
+    # JASPER_GROUPING_SUPERVISOR=disabled.
+    grouping_supervisor.start_supervisor()
+    # Runtime debug toggle: clear an expired session left on disk, or re-arm
+    # the auto-quiet timer if a debug session is still active across this
+    # restart. See jasper/control/debug_control.py.
+    debug_control.reconcile_on_startup()
+    return restart_broker_server
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
 
     configure_logging()
     # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
     # the journal at INFO, applies the /system Debug card's toggle, and wires
     # SIGUSR1 -> dump. See jasper/flight_recorder.py.
-    from .. import flight_recorder
     flight_recorder.install("control")
 
     # The live pair-balance trim patches the graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from ..volume_process import install_env_canonical_target_provider
-
     install_env_canonical_target_provider()
 
     # 5 s ring buffer for the /system dashboard; daemon thread.
-    from .system_metrics import SystemSampler
+    from .system_metrics import SystemSampler  # lazy: test patch boundary (tests/test_control_server.py)
     sampler = SystemSampler()
     sampler.start()
     # The ONE resident audio-monitor thread: it composes the AirPlay probes
     # with cheap outputd state and slow route-certification reads.
-    from .audio_health_sampler import AudioHealthSampler
-    from .audio_incidents import IncidentStore
+    from .audio_health_sampler import AudioHealthSampler  # lazy: test patch boundary (tests/test_control_server.py)
     audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
@@ -954,71 +988,18 @@ def main(argv: list[str] | None = None) -> int:
             errno=exc.errno, error=exc.strerror or str(exc),
         )
         return CONTROL_BIND_FAILED_EXIT
-    # Arm the control-token gate before serving. ensure_token()
-    # auto-generates the token (0640 group jasper) if absent, so the
-    # destructive routes are always gated with no operator action;
-    # canonical_page auto-delivers it to the dashboard, invisible to the
-    # household. Idempotent — never rotates an existing token. Failure is
-    # non-fatal (the gate fail-safes to off) so a transient write error can't
-    # keep the recovery surface from starting.
-    try:
-        control_token.ensure_token()
-    except OSError as exc:
-        log_event(logger, "control_token.ensure_failed", error=str(exc),
-                  level=logging.WARNING)
-    # The privileged restart broker: jasper-control is the single mediated
-    # systemctl boundary. jasper-web's wizard restarts, jasper-mux's librespot
-    # recovery, and the room-correction renderer pause ask it to run an
-    # allowlisted, closed-vocabulary restart over a SO_PEERCRED'd UNIX socket,
-    # so those daemons need no privilege of their own. Bind failure is
-    # non-fatal (logged): callers fall back to their fail-soft "restart didn't
-    # happen, logged" behaviour.
-    restart_broker_server = restart_broker.start_broker()
-    # Multi-device peering daemon. The coroutine always starts; it reads
-    # /var/lib/jasper/peering.env and returns immediately (no multicast
-    # socket) when JASPER_PEERING=off — the default. The /sound/pair/
-    # Speakers page writes that env file and restarts jasper-control to
-    # pick up the new mode.
-    # lazy: import cost — handlers/ loads every route mixin
-    from .handlers.peering import start_peering_daemon_if_enabled, stop_peering_daemon
-
-    start_peering_daemon_if_enabled()
-    # Protocol-level liveness probe so a wedged shairport-sync AP2 control
-    # plane recovers without manual intervention. Off via
-    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
-    shairport_supervisor.start_supervisor()
-    # Userspace-liveness supervisor for the case where PID 1 still pats the
-    # kernel watchdog but userspace is dead. Probes the sshd banner, our own
-    # HTTP /healthz, and /proc/loadavg; clean `systemctl reboot` after 3
-    # consecutive failures, rate-limited to 1 reboot per 24 hours.
-    # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
-    system_supervisor.start_supervisor()
-    # Bonded-member runtime liveness between grouping reconciles: sustained
-    # dac_content starvation kicks the reconciler (rate-limited), and the
-    # leader's snapcast group→stream bindings are read-repaired every poll.
-    # Costs one grouping.env read per 30 s when solo. Off via
-    # JASPER_GROUPING_SUPERVISOR=disabled.
-    grouping_supervisor.start_supervisor()
-    # Runtime debug toggle: clear an expired session left on disk, or re-arm
-    # the auto-quiet timer if a debug session is still active across this
-    # restart. See jasper/control/debug_control.py.
-    debug_control.reconcile_on_startup()
+    restart_broker_server = _start_companion_services()
     # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
     # WATCHDOG=1 pats and systemd restarts us. No-ops outside systemd
     # (NOTIFY_SOCKET unset). See jasper/watchdog.py.
-    from ..watchdog import Heartbeat
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
     log_event(
-        logger,
-        "control.ready",
-        host=args.host,
-        port=args.port,
-        camilla_host=args.camilla_host,
-        camilla_port=args.camilla_port,
+        logger, "control.ready", host=args.host, port=args.port,
+        camilla_host=args.camilla_host, camilla_port=args.camilla_port,
         voice_socket=args.voice_socket,
     )
     restore_sigterm = _install_sigterm_shutdown(server)
@@ -1029,7 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         restore_sigterm()
         stop_peering_daemon()
-        # None when the broker failed to bind (non-fatal, logged above).
+        # None when the broker failed to bind (non-fatal, logged).
         if restart_broker_server is not None:
             restart_broker_server.shutdown()
             restart_broker_server.server_close()

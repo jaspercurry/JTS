@@ -100,17 +100,6 @@ def test_registry_default_falls_back_to_first_account_when_unset():
     assert r.default().name == "jasper"
 
 
-def test_registry_remove_updates_default():
-    r = GoogleRegistry()
-    r.add_or_update(GoogleAccount(name="jasper"), make_default=True)
-    r.add_or_update(GoogleAccount(name="brittany"))
-    assert r.default_name == "jasper"
-    r.remove("jasper")
-    assert r.default_name == "brittany"
-    r.remove("brittany")
-    assert r.default_name == ""
-
-
 def test_default_token_path_blocks_traversal():
     p = default_token_path_for("alice/../etc/passwd")
     assert "/etc/passwd" not in p

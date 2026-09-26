@@ -62,12 +62,6 @@ REASON_COMPARTMENT_OVER_EXPOSED = "compartment_over_exposed"
 REASON_COMPARTMENT_EXPOSED_AND_UNAVAILABLE = "compartment_exposed_and_unavailable"
 REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 
-# privsep is the single home for "could a process with this uid + group-set
-# read this stat'd file?" and "what identity does this unit run as?".
-_process_can_read = privsep._process_can_read
-_describe = privsep._describe
-_is_glob = privsep._is_glob
-
 
 @dataclass(frozen=True)
 class SecretCompartment:
@@ -194,7 +188,7 @@ def _file_over_exposed_to(
     if st.st_mode & (_stat.S_IROTH | _stat.S_IWOTH):
         exposed.append("world")
     for nm in non_members:
-        if _process_can_read(st, nm.uid, nm.gids):
+        if privsep.process_can_read(st, nm.uid, nm.gids):
             exposed.append(nm.user)
     return _unique_names(exposed)
 
@@ -202,7 +196,7 @@ def _file_over_exposed_to(
 def _file_unreadable_by(st: os.stat_result, members: list[_Identity]) -> list[str]:
     """Which member daemons CANNOT read this stat'd file (the availability side)."""
     return _unique_names([
-        m.user for m in members if not _process_can_read(st, m.uid, m.gids)
+        m.user for m in members if not privsep.process_can_read(st, m.uid, m.gids)
     ])
 
 
@@ -275,7 +269,9 @@ def _classify_compartment(
     checked = 0
     for pattern, may_glob in comp.resolved_files():
         matches = (
-            sorted(glob_fn(pattern)) if may_glob and _is_glob(pattern) else [pattern]
+            sorted(glob_fn(pattern))
+            if may_glob and privsep.is_glob(pattern)
+            else [pattern]
         )
         for match in matches:
             try:
@@ -286,7 +282,7 @@ def _classify_compartment(
             exposed = _file_over_exposed_to(st, non_members)
             if exposed:
                 fails.append(
-                    f"{_describe(match, st)} grants read to {', '.join(exposed)} "
+                    f"{privsep.describe(match, st)} grants read to {', '.join(exposed)} "
                     f"beyond `{comp.group}` — expected 0640 group `{comp.group}` "
                     "(no o+r, not the shared `jasper` group); re-deploy to re-tighten"
                 )
@@ -294,7 +290,7 @@ def _classify_compartment(
             unreadable = _file_unreadable_by(st, members)
             if unreadable:
                 warns.append(
-                    f"{_describe(match, st)} not readable by {', '.join(unreadable)} "
+                    f"{privsep.describe(match, st)} not readable by {', '.join(unreadable)} "
                     f"— expected group `{comp.group}` 0640; re-deploy to heal"
                 )
 
@@ -344,10 +340,11 @@ def _truncate(items: list[str], limit: int = 6) -> list[str]:
 
 
 def _systemctl_available() -> bool:
-    """True if ``systemctl show`` works on this host. ``_unit_runtime_identity``
-    returns ``None`` only when the systemctl subprocess errors (dev / non-Linux
-    host) — a real unit, even a not-found one, yields a ``LoadState`` field."""
-    return privsep._unit_runtime_identity(_UNIVERSE_UNITS[0]) is not None
+    """True if ``systemctl show`` works on this host.
+    ``privsep.unit_runtime_identity`` returns ``None`` only when the systemctl
+    subprocess errors (dev / non-Linux host) — a real unit, even a not-found
+    one, yields a ``LoadState`` field."""
+    return privsep.unit_runtime_identity(_UNIVERSE_UNITS[0]) is not None
 
 
 def _resolve_unit(unit: str) -> _Identity | None:
@@ -358,7 +355,7 @@ def _resolve_unit(unit: str) -> _Identity | None:
     everything anyway, and as a non-member it is root — root reading a secret
     is not the compartment leak this guards.
     """
-    info = privsep._unit_runtime_identity(unit)
+    info = privsep.unit_runtime_identity(unit)
     if info is None:
         return None
     if info.get("LoadState", "") in ("not-found", "masked"):
@@ -366,7 +363,7 @@ def _resolve_unit(unit: str) -> _Identity | None:
     user = info.get("User", "").strip()
     if user in ("", "root"):
         return None
-    resolved = privsep._resolve_identity(
+    resolved = privsep.resolve_identity(
         user,
         info.get("Group", "").strip() or "jasper",
         tuple(info.get("SupplementaryGroups", "").split()),

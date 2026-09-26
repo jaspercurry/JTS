@@ -42,6 +42,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0252](0252-the-python-tree-publishes-from-a-staging-path.md) | The Python tree publishes from a staging path | accepted |
 | [0315](0315-hardware-tier-and-direct-updates.md) | Hardware tier and direct updates | accepted |
 | [0348](0348-the-installer-builds-from-source-on-stock-pi-os.md) | The installer builds from source on stock Pi OS; no prebuilt image or runtime bundle | accepted |
+| [0363](0363-the-assistant-is-on-every-tier-and-wake-detection-is-the-only-tier-capability.md) | The assistant is on every tier; wake detection is the only tier capability | accepted |
 
 ## Audio path & output (ring/fanin/outputd/DAC)
 
@@ -173,7 +174,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0154](0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md) | Reactive cues never cool down; proactive cues are rate-limited | amended by 0215 |
 | [0170](0170-a-selectable-audio-input-profile-owns-its-whole-wake-leg-set.md) | A selectable audio-input profile owns its whole wake-leg set | accepted |
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
-| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | accepted |
+| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363 |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
 | [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
@@ -266,8 +267,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
 | [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | §4 amended by 0265, §1 superseded by 0303 |
-| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | amended by 0277, 0278, 0360 |
-| [0277](0277-the-seat-cloud-adds-eleven-positions-without-renaming-saved-cubes.md) | The seat cloud adds eleven positions without renaming saved cubes | accepted |
+| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | amended by 0277, 0278, 0360; §4 superseded by 0366 |
+| [0277](0277-the-seat-cloud-adds-eleven-positions-without-renaming-saved-cubes.md) | The seat cloud adds eleven positions without renaming saved cubes | amended by 0366 |
 | [0263](0263-a-ring-ended-camilladsp-graph-takes-the-ring-geometry.md) | A ring-ended CamillaDSP graph takes the ring geometry | accepted |
 | [0274](0274-frequency-charts-share-display-preparation.md) | Frequency charts share display preparation | accepted |
 | [0265](0265-the-mic-calibration-door-is-a-cli-verb-and-the-daemons-root-mounted-routes-are-gone.md) | The mic calibration door is a CLI verb; the daemon's root-mounted routes are gone | accepted |
@@ -281,7 +282,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0288](0288-the-v1-commissioning-lane-is-deleted.md) | The v1 commissioning lane is deleted | accepted |
 | [0296](0296-one-executor-lives-in-the-daemon.md) | One executor lives in the daemon; every mover is a client of one gate | `jasper-measure` paragraph superseded by 0342 |
 | [0297](0297-the-plan-is-posted-in-the-run-body.md) | The plan is posted in the run body; the staged spool is deleted | accepted |
-| [0298](0298-tiers-and-stages-retire.md) | Tiers and stages retire; the program registry is the only pose vocabulary | accepted |
+| [0298](0298-tiers-and-stages-retire.md) | Tiers and stages retire; the program registry is the only pose vocabulary | amended by 0366 |
 | [0299](0299-one-evidence-manifest-per-run.md) | One evidence manifest per run, written by the executor | accepted |
 | [0300](0300-one-fault-registry.md) | One fault registry: code, household copy, next action, retriable | accepted |
 | [0301](0301-an-intact-trial-capture-is-the-measured-requirement.md) | The listening flag retires; an intact trial capture is the measured requirement; verification is advice | accepted |
@@ -319,6 +320,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0337](0337-conversation-history-is-local-opt-in-native-text.md) | Conversation history is local, opt-in native text | accepted |
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
+| [0340](0340-microphone-absence-is-silent.md) | Microphone absence is silent | accepted |
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
@@ -333,6 +335,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
 | [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |
 | [0359](0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md) | The bass boost plays at every volume: one native biquad per lane, and the compressor gives way only near the amp's clip point | accepted |
-| [0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | amended by 0362 |
-| [0361](0361-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md) | A near-field take levels itself to 80 dB at the microphone, in its digital gain under the seat-equivalent level | accepted |
+| [0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | amended by 0362; §1, §3 and §5's key superseded by 0366 |
+| [0361](0361-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md) | A near-field take levels itself to 80 dB at the microphone, in its digital gain under the seat-equivalent level | §3 amended by 0364, §2 superseded by 0365 |
 | [0362](0362-the-near-field-rows-take-each-woofer-at-15-and-30-mm.md) | The near-field rows take each woofer at 15 and 30 mm, with no re-seat | accepted |
+| [0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |
+| [0365](0365-a-drivers-pose-finds-its-level-with-a-probe.md) | A driver's pose finds its level with a probe: a rising staircase of short sweeps, stopped at the ramp bound under the SPL stop, solves its take's gain | accepted |
+| [0366](0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) | One pose model (kind, distance, angle or seat offset, optional driver), a level found at each pose by one solver, and a trusted band stated from the pose; registry rows become presets over named layouts | accepted |

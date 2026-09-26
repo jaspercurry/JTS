@@ -151,15 +151,6 @@ def profile_for_outputd(
     return profile
 
 
-def save_profile(
-    profile: AssistantLoudnessProfile,
-    *,
-    path: str | os.PathLike[str] = DEFAULT_PROFILE_PATH,
-) -> None:
-    with _PROFILE_LOCK:
-        _save_profile_unlocked(profile, path=path)
-
-
 def _save_profile_unlocked(
     profile: AssistantLoudnessProfile,
     *,
@@ -391,7 +382,7 @@ def upsample_2x(samples: "Any") -> "Any":
     through the float32 playout path); numpy-only for the RSS reason
     ``jasper.dsp_numpy`` states (issue #3697). One dimension only.
     """
-    from .dsp_numpy import resample_poly
+    from .dsp_numpy import resample_poly  # lazy: import cost, numpy stays out of jasper-control and jasper-mux
 
     return resample_poly(samples, 2, 1)
 
@@ -478,9 +469,7 @@ def _build_active_seed_backend(
     max_attempts: int | None = None,
     retry_backoff_sec: float | None = None,
 ) -> Any | None:
-    # Keep generator imports lazy on daemon startup while sharing the
-    # provider dispatch with cue rendering.
-    from .cues.factory import build_provider_tts_backend
+    from .cues.factory import build_provider_tts_backend  # lazy: cycle (cues.manager imports this module); TTS generator import cost
 
     backend, _voice_label = build_provider_tts_backend(
         cfg,

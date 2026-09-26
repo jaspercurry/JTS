@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from jasper.active_speaker.wizard_client import WizardClient
+from jasper.json_fields import as_float
 from jasper.active_speaker.baseline_profile import (
     baseline_profile_state_path,
     load_applied_baseline_profile_state,
@@ -87,20 +88,13 @@ def _door(
     return payload
 
 
-def _float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _trims(corrections: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(corrections, Mapping):
         return {}
     out = {
         str(role): {
-            "gain_db": _float(entry.get("gain_db")),
-            "delay_ms": _float(entry.get("delay_ms")),
+            "gain_db": as_float(entry.get("gain_db")),
+            "delay_ms": as_float(entry.get("delay_ms")),
             "inverted": bool(entry.get("inverted")),
         }
         for role, entry in corrections.items()

@@ -222,14 +222,9 @@ async def find_bluetooth_conflicts(
             logger.debug("speaker-name bluetooth bus disconnect failed: %s", e)
 
 
-async def find_name_conflicts(
-    requested_name: str,
-    *,
-    mdns_timeout: float = 2.0,
-    bluetooth_timeout: float = 3.0,
-) -> list[NameConflict]:
+async def find_name_conflicts(requested_name: str) -> list[NameConflict]:
     mdns, bluetooth = await asyncio.gather(
-        find_mdns_conflicts(requested_name, timeout=mdns_timeout),
-        find_bluetooth_conflicts(requested_name, timeout=bluetooth_timeout),
+        find_mdns_conflicts(requested_name),
+        find_bluetooth_conflicts(requested_name),
     )
     return [*mdns, *bluetooth]

@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime setting vocabulary, precedence, and buffer rules.
-Route-policy vocabulary and statefile constants."""
+"""Runtime setting vocabulary, precedence, and buffer rules, plus the
+route-policy vocabulary."""
 
 from __future__ import annotations
 
@@ -70,9 +70,6 @@ SourceKind = Literal[
     "lab_override",
 ]
 
-
-DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
-DEFAULT_CAMILLA2_STATEFILE_PATH = "/var/lib/camilladsp/crossover-statefile.yml"
 
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"

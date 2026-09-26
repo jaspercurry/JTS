@@ -299,14 +299,10 @@ def test_the_tone_gate_anchors_on_the_declared_low_limit_not_the_class_default(
         band_limit={"type": "highpass", "highpass_hz": DE250_LOW_LIMIT_HZ},
         declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
     )
-    assert at_the_declared_floor["band_limit_highpass_ok"] is True
     assert at_the_declared_floor["issues"] == []
     assert at_the_declared_floor["audio_allowed"] is True
     assert at_the_declared_floor["low_limit_hz"] == DE250_LOW_LIMIT_HZ
     assert at_the_declared_floor["low_limit_provenance"] == LOW_LIMIT_DECLARED
-    assert at_the_declared_floor["low_limit_summary"] == (
-        "1600 Hz (manufacturer declared)"
-    )
 
     below = driver_protection_payload(
         "tweeter",
@@ -314,7 +310,6 @@ def test_the_tone_gate_anchors_on_the_declared_low_limit_not_the_class_default(
         band_limit={"type": "highpass", "highpass_hz": 1500.0},
         declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
     )
-    assert below["band_limit_highpass_ok"] is False
     refusal = next(
         issue for issue in below["issues"]
         if issue["code"] == "high_frequency_highpass_below_low_limit"
@@ -337,7 +332,6 @@ def test_the_class_default_still_gates_a_tone_for_an_undeclared_driver() -> None
         band_limit={"type": "highpass", "highpass_hz": 1900.0},
     )
 
-    assert payload["band_limit_highpass_ok"] is False
     assert payload["audio_allowed"] is False
     assert payload["low_limit_hz"] == COMPRESSION_DRIVER_CLASS_DEFAULT_HZ
     assert payload["low_limit_provenance"] == LOW_LIMIT_STYLE_DEFAULT
@@ -421,7 +415,9 @@ def test_a_declared_low_limit_above_the_class_default_still_tightens() -> None:
         declared_low_limit_hz=10000.0,
     )
 
-    assert payload["band_limit_highpass_ok"] is False
+    assert [issue["code"] for issue in payload["issues"]] == [
+        "high_frequency_highpass_below_low_limit"
+    ]
     assert payload["low_limit_hz"] == 10000.0
     assert payload["low_limit_provenance"] == LOW_LIMIT_DECLARED
 

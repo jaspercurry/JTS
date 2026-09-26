@@ -846,7 +846,7 @@ def test_pair_banner_renders_on_each_wizard_page(monkeypatch):
     def render_all():
         out = {}
         import jasper.web.voice_setup as vs
-        out["voice"] = vs._index_html({}, "tok")
+        out["voice"] = vs.index_html({}, "tok")
         import jasper.web.wake_setup as ws
         out["wake"] = ws._index_html({}, "tok")
         return out

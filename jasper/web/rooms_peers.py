@@ -63,7 +63,7 @@ DISCOVERY_CACHE_TTL_SEC = 30.0
 # Name / room / hostname come from jasper.identity.reader.read_identity, read ONCE
 # per request in rooms_setup._build_rooms_payload so the three fields agree
 # within one render. The LAN address is NOT part of identity (it is
-# NIC-derived), which is why self_addresses / _self_address live here.
+# NIC-derived), which is why self_addresses / self_address live here.
 
 
 def self_addresses() -> set[str]:
@@ -93,21 +93,21 @@ def self_addresses() -> set[str]:
     return {a for a in addrs if a and not a.startswith("127.")}
 
 
-def _self_address(known: set[str] | None = None) -> str:
+def self_address(known: set[str] | None = None) -> str:
     """A representative LAN address for the self card. Empty string when we
     genuinely can't resolve one (the module renders it as a dash)."""
     pool = known if known is not None else self_addresses()
     return next(iter(sorted(pool)), "")
 
 
-def _leader_handle() -> str:
+def leader_handle() -> str:
     """This speaker's STABLE address to hand a follower as ``leader_addr``.
 
     The mDNS .local FQDN, NOT a NIC IP: snapclient_argv in
     jasper/multiroom/reconcile.py passes leader_addr verbatim to
     ``snapclient --host``, which resolves a .local name, so the bond survives
     DHCP lease churn that would invalidate a baked-in IP. Distinct from
-    _self_address, which stays NIC-derived for SSRF self-routing in
+    self_address, which stays NIC-derived for SSRF self-routing in
     post_grouping_to_member / lan_target."""
     return identity.read_identity().hostname
 
@@ -200,7 +200,7 @@ def discover_speakers_cached() -> list[dict]:
 # ----------------------------------------------------------------------
 
 
-def _generate_bond_id() -> str:
+def generate_bond_id() -> str:
     """A short, unique bond identifier — an opaque label shared by a bond's
     members; the user never types it."""
     return "bond-" + uuid.uuid4().hex[:8]
@@ -326,7 +326,7 @@ def _grouping_set_success_detail(status: int, raw: bytes) -> str:
 _PEER_FANOUT_MAX_WORKERS = 8
 
 
-def _map_peers(fn, items):
+def map_peers(fn, items):
     """Run ``fn(item)`` over ``items`` on a bounded thread pool, returning
     results in INPUT order. The ONE concurrency primitive for cross-speaker
     I/O.
@@ -334,7 +334,7 @@ def _map_peers(fn, items):
     A serial loop would block ~5 s per unreachable peer, so at six speakers a
     dissolve could hang 10–25 s. ``fn`` MUST NOT raise: ``pool.map`` surfaces
     the first exception out of the batch, so the peer-call helpers
-    (:func:`post_grouping_to_member`, :func:`_get_member_grouping`) return a
+    (:func:`post_grouping_to_member`, :func:`get_member_grouping`) return a
     value on every failure instead. ``pool.map`` preserves submission order,
     so callers can pair results back positionally."""
     items = list(items)
@@ -345,7 +345,7 @@ def _map_peers(fn, items):
         return list(pool.map(fn, items))
 
 
-def _fan_out_grouping(
+def fan_out_grouping(
     targets: list[tuple[str, dict]], *, known: set[str] | None = None,
     token: str | None = None, household: str | None = None,
 ) -> list[tuple[bool, str]]:
@@ -363,7 +363,7 @@ def _fan_out_grouping(
     bond/swap/trim so each member reads the current secret itself."""
     if known is None:
         known = self_addresses()
-    return _map_peers(
+    return map_peers(
         lambda t: post_grouping_to_member(
             t[0], t[1], known, token=token, household=household,
         ),
@@ -388,7 +388,7 @@ def _get_member_grouping_response(
     return _get_remote_json_result(target, "/grouping", timeout=timeout)
 
 
-def _get_member_grouping(
+def get_member_grouping(
     addr: str, known: set[str] | None = None, *,
     timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
 ) -> dict | None:
@@ -462,7 +462,7 @@ def _get_remote_json_result(
     return parsed, None
 
 
-def _preflight_grouping_target(
+def preflight_grouping_target(
     addr: str, body: dict, known: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Fail closed when a member cannot safely join this bond."""
@@ -487,7 +487,7 @@ def _peer_name_from_directory(addr: str) -> str:
     return ""
 
 
-def _stereo_pair_members_from_intent(peer_addr: str) -> list[dict]:
+def stereo_pair_members_from_intent(peer_addr: str) -> list[dict]:
     """Server-owned topology for the primary "create stereo pair" intent."""
     return [
         {"addr": "", "role": "leader", "channel": "left"},

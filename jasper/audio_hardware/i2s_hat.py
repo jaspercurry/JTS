@@ -12,12 +12,12 @@ step; the intent file is the toggle for the HATs that carry no EEPROM to read
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
+from jasper.paths import resolve_state_path
 
 from .config_txt import (
     OVERLAY_LINE_RE,
@@ -47,9 +47,7 @@ def i2s_hat_intent_path() -> Path:
     ``JASPER_I2S_HAT_INTENT_FILE`` (the env var the reconciler resolves and
     passes down to its own CLI invocation)."""
 
-    return Path(
-        os.environ.get("JASPER_I2S_HAT_INTENT_FILE", DEFAULT_I2S_HAT_INTENT_PATH)
-    )
+    return resolve_state_path(None, "JASPER_I2S_HAT_INTENT_FILE", DEFAULT_I2S_HAT_INTENT_PATH)
 
 
 def managed_i2s_hat_block_present(content: str) -> bool:

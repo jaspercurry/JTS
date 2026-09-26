@@ -131,7 +131,7 @@ MANAGEMENT_502_HINT = (
 )
 
 
-def _read_management_response(url: str, host: str) -> tuple[int, str]:
+def read_management_response(url: str, host: str) -> tuple[int, str]:
     """Read nginx through the management host guard; bound time and body size."""
     req = urllib.request.Request(url, headers={"Host": host})
     try:
@@ -158,7 +158,7 @@ def check_management_surface() -> CheckResult:
         )
     host = resolve_hostname()
     try:
-        status, detail = _read_management_response(MANAGEMENT_PROBE_URL, host)
+        status, detail = read_management_response(MANAGEMENT_PROBE_URL, host)
     except OSError as e:
         return CheckResult(
             label, "fail",

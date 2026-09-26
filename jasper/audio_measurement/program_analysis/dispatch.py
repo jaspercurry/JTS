@@ -30,24 +30,28 @@ from jasper.audio_measurement.comparison_bands import (
 )
 from jasper.audio_measurement.frame_fit import fit_frame, FrameComparison
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+from jasper.audio_measurement.level import LevelReading, stimulus_level
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     ExcitationProgram,
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
     PROGRAM_PHASE_VERIFY,
+    is_level_probe,
+    segment_emitted_band_hz,
 )
 from jasper.log_event import log_event
 from .check import (
     _aggregate_linearity_ok,
     _aggregate_tri_state_ok,
     _ambient_from_capture,
+    _pilot_ambient_samples,
     _pilot_observations,
     _pilot_verdicts,
     _solve_gain_plan,
 )
 from .drift import _estimate_drift, _sweep_occurrences_by_role
-from .locate import _global_offset, _locate_segments
+from .locate import _global_offset, _locate_segments, _staircase_offset
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
@@ -69,6 +73,7 @@ from .model import (
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RecordedImpulse,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SegmentLocation,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_NOTCH_EXCLUSION_DB,
@@ -142,12 +147,17 @@ def analyze_program_capture(
     geometry = geometry or MeasurementGeometry()
     priors = priors or MeasurementPriors()
 
-    global_offset, _first, stimuli, anchor = _global_offset(
-        program, capture, sample_rate
-    )
+    probe = is_level_probe(program)
+    if not probe:
+        global_offset, _first, stimuli, anchor = _global_offset(program, capture, sample_rate)
+    else:
+        (global_offset, stimuli), anchor = _staircase_offset(program, capture, sample_rate), None
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
-    if is_branch_program(program):
+    if probe:
+        # A level probe is read for its levels alone (ADR-0365).
+        analysis = ProgramAnalysis(phase=program.phase, program_id=program.program_id, locations=tuple(locations))
+    elif is_branch_program(program):
         analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
                                     gate_exempt_reason=geometry.gate_exempt_reason)
     elif program.phase == PROGRAM_PHASE_CHECK:
@@ -187,7 +197,30 @@ def analyze_program_capture(
             float(discontinuity) if isinstance(discontinuity, (int, float)) else None
         ),
         pilots=pilots, mic_meter_status=mic_meter_status,
+        stimulus_levels=_stimulus_levels(program, capture, sample_rate, global_offset, locations),
     )
+
+
+def _stimulus_levels(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
+    global_offset: int, locations: Sequence[SegmentLocation],
+) -> tuple[LevelReading, ...]:
+    """One driver's located sweeps over the room before them, one reading per gain
+    (ADR-0364). A sweep the capture does not hold, such as a probe's burst after its
+    stop, reads nothing (ADR-0365)."""
+    by_role = _sweep_occurrences_by_role([loc for loc in locations if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR])
+    if len(by_role) != 1:
+        return ()
+    (sweeps,) = by_role.values()
+    by_gain: dict[float, list[np.ndarray]] = {}
+    for loc in sweeps:
+        segment = program.segment(loc.segment_id)
+        by_gain.setdefault(segment.gain_db, []).append(_raw_sweep_segment(capture, segment, loc.located_start))
+    floor = _pilot_ambient_samples(program, capture, global_offset)
+    band_hz = segment_emitted_band_hz(program.segment(sweeps[0].segment_id))
+    return tuple(reading for gain_db, stimuli in sorted(by_gain.items())
+                 if (reading := stimulus_level(stimuli, floor, gain_db=gain_db, sample_rate=sample_rate,
+                                               band_hz=band_hz)) is not None)
 
 
 def _analyze_check(

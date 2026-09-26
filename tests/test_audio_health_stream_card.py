@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""`_current_stream`: the presentation shape for what is playing right now --
-the USB latency breakdown, when the processing/media/output rows appear at
-all, and AirPlay's sync-evidence-only latency (no numeric claim).
+"""`build_current_stream`: the presentation shape for what is playing right
+now -- the USB latency breakdown, when the processing/media/output rows appear
+at all, and AirPlay's sync-evidence-only latency (no numeric claim).
 
 Behavior lives in :mod:`jasper.control.audio_stream_card`; these exercise it
 only through :func:`compose_audio_health`, the public contract, matching how

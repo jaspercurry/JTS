@@ -21,8 +21,6 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
-    DEFAULT_CAMILLA2_STATEFILE_PATH,
-    DEFAULT_CAMILLA_STATEFILE_PATH,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
     OUTPUTD_DAC_BUFFER_KEY,
@@ -155,8 +153,8 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
     ok, lines = validate_outputd_env(
         base_env=str(base_env),
         outputd_env=str(outputd_env),
-        camilla_statefile=DEFAULT_CAMILLA_STATEFILE_PATH,
-        camilla2_statefile=DEFAULT_CAMILLA2_STATEFILE_PATH,
+        camilla_statefile=str(tmp_path / "statefile.yml"),
+        camilla2_statefile=str(tmp_path / "statefile.yml"),
         overrides=str(store),
     )
 

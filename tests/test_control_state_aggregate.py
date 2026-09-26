@@ -106,7 +106,7 @@ async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_p
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
     try:
-        state = await sa._get_state(
+        state = await sa.get_state(
             camilla_host="127.0.0.1", camilla_port=1234, voice_socket_path="/unused",
             voice_socket_command=voice_status, mux_socket_command=no_status,
             local_status_json=no_status,

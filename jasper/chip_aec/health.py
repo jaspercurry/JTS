@@ -160,9 +160,7 @@ class AlignmentHealth:
         it answers for those and for no custom profile.
 
         Both ids are compared as written: `selection` is the caller's already
-        normalized profile id, and the stamp is normalized by its writer —
-        `deploy/bin/jasper-aec-reconcile` resolves the profile through
-        `jasper.cli.audio_input_profile` before stamping it.  The profile
+        normalized profile id, and the stamp is normalized by its writer. The profile
         vocabulary itself belongs to `jasper.audio_profile_state`, which
         consumes this module, so `custom_profile` is passed in rather than
         imported back.

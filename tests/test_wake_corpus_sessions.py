@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import capture_plan, recording_backend
+from jasper.wake_corpus import capture_plan, recording_backend, session_store
 
 from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
@@ -250,7 +250,7 @@ def test_loaded_legacy_capture_plan_requires_rebuild_before_append(
     md = out / "metadata"
     md.mkdir(parents=True)
     (md / "enroll_jasper_legacy.json").write_text(json.dumps({
-        "metadata_schema_version": recording_backend.METADATA_SCHEMA_VERSION,
+        "metadata_schema_version": session_store.METADATA_SCHEMA_VERSION,
         "session_id": "legacy",
         "member": "jasper",
         "ports": {"on": 9876},

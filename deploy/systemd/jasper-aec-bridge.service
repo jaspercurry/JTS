@@ -109,11 +109,7 @@ Restart=on-failure
 #                     JASPER_OUTPUTD_CHIP_REF_PCM; the opt-in wake-corpus USB
 #                     leg naming a mic that is not plugged in.
 #   66 (EX_NOINPUT) — the wake mic itself would not open.
-# Both codes park a speaker that can no longer hear, so the bridge speaks its
-# own cue before it exits (non-negotiable 6): the 78 codes play the
-# not-set-up cue, 66 the mic-loss one. That is separate from the card-removal
-# hand-off in ADR-0239, where the udev rule starts jasper-aec-reconcile, which
-# marks voice-input-absent and stops jasper-voice.
+# See ADR-0340 for silent microphone absence.
 SuccessExitStatus=66 78
 RestartPreventExitStatus=66 78
 RestartSec=5

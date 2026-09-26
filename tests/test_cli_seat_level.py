@@ -26,7 +26,7 @@ from jasper.active_speaker import seat_level_sweep as sweep
 from jasper.active_speaker.auto_level import MAX_STEP_DB, MIC_RESPONSE_MIN_RISE_DB, reading_budget
 from jasper.active_speaker.crossover_v2 import composition
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
-from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
+from jasper.active_speaker.session_volume_plan import SessionVolumePlan, SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
@@ -655,6 +655,24 @@ def test_sweep_fader_readback_refusals_are_distinct(box, monkeypatch, capsys, ga
     assert result['detail']['restored'] is True
     assert reason in seat_level.REASON_REGISTRY
     assert not box.admissions
+
+
+@pytest.mark.parametrize("phase", ["context", "volume"])
+def test_unreachable_camilla_refuses_with_registered_code(box, monkeypatch, capsys, phase):
+    failure = seat_level.CamillaUnavailable("offline")
+    if phase == "context":
+        monkeypatch.setattr(seat_level, "resolve_conductor_context", Mock(side_effect=failure))
+    else:
+        cam = seat_level.primary_controller()
+        cam.get_volume_db = AsyncMock(side_effect=failure)
+        monkeypatch.setattr(seat_level, "SessionVolumePlan", SessionVolumePlan)
+        monkeypatch.setattr(seat_level, "DEFAULT_SESSION_VOLUME_STATE_PATH", box.bundle_dir / "volume.json")
+    assert seat_level.main([]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "refused"
+    assert result["reason"] == "measurement_graph_unavailable"
+    assert result["reason"] in seat_level.REASON_REGISTRY
+    assert not box.bank.called and not box.programs
 
 
 def test_repeated_sweep_reuses_render_but_installs_and_admits_each_time(box, monkeypatch):

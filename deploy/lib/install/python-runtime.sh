@@ -249,11 +249,6 @@ install_jasper() {
         "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
         "${REPO_DIR}/pyproject.toml" \
         "${staging}/"
-    install -d -m 0755 "${staging}/experiments"
-    rsync -a --link-dest="${INSTALL_DIR}/experiments" \
-        --exclude='__pycache__' --exclude='*.pyc' \
-        "${REPO_DIR}/experiments/usb-turntable" \
-        "${staging}/experiments/"
 
     # ADR-0204: install the operator docs without the development corpus.
     install -d -m 0755 "${staging}/docs"

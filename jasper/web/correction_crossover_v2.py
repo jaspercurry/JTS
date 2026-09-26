@@ -330,7 +330,6 @@ def prepare_v2_session(
         return rc
 
     async def _run(pi_session: Any) -> None:
-        """Close the evidence bundle after the worker releases the speaker."""
         if held is None:
             raise RuntimeError(
                 "the v2 measurement session was run before it was opened"
@@ -348,7 +347,7 @@ def prepare_v2_session(
                 and restored in {
                     SessionVolumeRestoreResult.EXACT_RESTORED,
                     SessionVolumeRestoreResult.EMERGENCY_ATTENUATED,
-                    SessionVolumeRestoreResult.ALREADY_RESOLVED,
+                    SessionVolumeRestoreResult.ALREADY_RESOLVED, "not_opened",
                 }
             ):
                 closed = mark_state(Path(evidence_store.bundle_dir), "closed")

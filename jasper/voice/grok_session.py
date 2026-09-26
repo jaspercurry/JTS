@@ -38,7 +38,6 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
         # observed empirically.
         session_max_sec: float = 0.0,
         proactive_buffer_sec: float = 0.0,
-        backoff_schedule: tuple[float, ...] | None = None,
         connect_factory=None,
         base_url: str | None = None,
     ) -> None:
@@ -54,7 +53,6 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
             reasoning_effort="",
             session_max_sec=session_max_sec,
             proactive_buffer_sec=proactive_buffer_sec,
-            backoff_schedule=backoff_schedule,
             connect_factory=connect_factory,
             base_url=base_url or GROK_WEBSOCKET_BASE_URL,
         )

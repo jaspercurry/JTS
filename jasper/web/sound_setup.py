@@ -27,6 +27,7 @@ import os
 import sys
 import time
 import urllib.parse
+from contextlib import AbstractContextManager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -321,10 +322,9 @@ def _make_handler(
     library_path: str | Path,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        idle_hold = staticmethod(no_hold)
-
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
@@ -435,7 +435,7 @@ def _make_handler(
                         state = asyncio.run(set_compare_state(requested, cam=camilla_factory(), trim_db=trim or 0.0))
                         if state["status"] == "auditioning":
                             start_web_audition_holder(state, camilla_factory,
-                                                     lambda: self.idle_hold("speaker audition"))
+                                                     lambda: idle_hold("speaker audition"))
                     except AuditionRefused as e:
                         self._send_json({"error": e.reason, "message": e.detail},
                                         status=502 if e.reason in {REFUSE_LOAD, REFUSE_RESTORE} else 409)
@@ -840,6 +840,7 @@ def make_server(
     profile_path: str | Path | None = None,
     library_path: str | Path | None = None,
     config_dir: str | Path | None = None,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
 
@@ -861,5 +862,6 @@ def make_server(
                 "JASPER_SOUND_CONFIG_DIR",
                 DEFAULT_CONFIG_DIR,
             ),
+            idle_hold=idle_hold,
         ),
     )

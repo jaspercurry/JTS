@@ -309,12 +309,6 @@ class GeminiLiveConnection(BaseLiveConnection):
         # 0 disables the planned rotation (tests, and any model whose
         # server does not abort idle sessions).
         rotate_after_sec: float = SESSION_ROTATE_AFTER_SEC,
-        # Production: leave None → supervisor reconnects FOREVER with
-        # `reconnect_delay()` (1, 2, 4, 8, 16, 32, 60, 60, …s with ±25%
-        # jitter while the failure is transient; a fixed slow poll once
-        # it is terminal). Tests pass a bounded tuple to make
-        # exhaustion observable and runs fast.
-        backoff_schedule: tuple[float, ...] | None = None,
         # Test seam: replace `client.aio.live.connect` so unit tests can
         # mock the SDK without touching the network.
         connect_factory=None,
@@ -326,7 +320,6 @@ class GeminiLiveConnection(BaseLiveConnection):
             model=model,
             voice=voice,
             context_reset_sec=context_reset_sec,
-            backoff_schedule=backoff_schedule,
             sleep=sleep,
         )
         self._api_key = api_key

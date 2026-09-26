@@ -5,13 +5,8 @@
 """The measurement-microphone model registry: which mics JTS knows, and how
 to recognise one as measurement-class hardware.
 
-Split out of :mod:`jasper.audio_measurement.calibration` (which re-exports
-everything here) with one hard constraint: **this module imports nothing
-beyond the stdlib**. It backs ``python -m jasper.cli.capture_card``, which
-``deploy/bin/jasper-aec-reconcile`` spawns from the hotplug path on every
-pass that sees a USB capture card; pulling numpy in here re-inflates that
-spawn to a 190-module interpreter (~85 ms measured on the dev host). Keep it
-stdlib-only.
+The reconcile pass imports this on boot and hotplug, so its import graph must
+stay within the standard library (ADR-0226).
 """
 from __future__ import annotations
 
@@ -108,10 +103,7 @@ DEFAULT_SIGN_CONVENTION = "response"
 def measurement_mic_usb_ids() -> tuple[str, ...]:
     """Every USB ``vid:pid`` this registry declares for a measurement mic.
 
-    ``jasper.cli.capture_card`` classifies local capture cards against this
-    list so ``deploy/bin/jasper-aec-reconcile`` can keep a calibrated
-    measurement mic out of the voice-input candidate set — a measurement mic
-    has no wake/AEC contract. Lower-cased and de-duplicated, matching how the
+    Lower-cased and de-duplicated, matching how the
     kernel writes ``/proc/asound/<card>/usbid`` (``%04x:%04x``); order follows
     the registry.
     """
@@ -136,8 +128,7 @@ def read_card_usb_id(card_dir: str | os.PathLike[str]) -> str:
 
     The kernel writes ``%04x:%04x``, so the normalisation only tidies a
     hand-made fixture (and a future kernel). Sole reader of that file, so
-    :func:`measurement_mic_usb_ids` and ``jasper.cli.capture_card`` compare
-    against one spelling.
+    readers compare against one spelling.
     """
     try:
         return (Path(card_dir) / "usbid").read_text().strip().lower()

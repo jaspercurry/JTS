@@ -56,6 +56,7 @@ from jasper.audio_measurement.program import (
     RoleBand,
     build_measure_program,
     build_verify_program,
+    is_level_probe,
     render_program_pcm,
     write_program_wav,
 )
@@ -1045,9 +1046,11 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     assert admission.channels[0].cap_dbfs == -36
 
 
-def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None):
+def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.0):
     """A one-driver take composed the production way: the real conductor
-    context of a cardioid cabinet, its session excitation, the plan host."""
+    context of a cardioid cabinet, its session excitation, the plan host. It
+    asks for the loudest level its ceiling allows; asking none composes the
+    pose's level probe (ADR-0365)."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
     from jasper.web.correction_run_host import compose_plan_program
 
@@ -1067,7 +1070,7 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None):
     excitation = excitation_from_context(context, context.session_volume_db)
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
-        spec, None, context=context)
+        spec, stimulus_dbfs, context=context)
     return topology, safety, context, spec, excitation, program
 
 
@@ -1077,8 +1080,9 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     its pilots and three bit-identical sweeps on its target alone, on channel
     0 of a program as wide as its graph's capture, inside the band and
     duration limit the conductor resolved for THAT target, and is admitted
-    against that target's own declared caps. Every silence after its first
-    sound is short. The capture window covers it."""
+    against that target's own declared caps, as is the pose's level probe.
+    Every silence after its first sound is short. The capture window covers
+    the take and the probe."""
     from jasper.active_speaker.crossover_v2.capture_plan import (
         CAPTURE_ENTRY_MARGIN_MS, CloudPositionPrompt, _program_duration_ms, build_inline_session_spec,
     )
@@ -1108,12 +1112,18 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
         program, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
         session_volume_db=context.session_volume_db, declared_sensitivities=context.declared_sensitivities)
     assert admission.allowed, admission.to_dict()
+    *_, probe = _cardioid_solo_take(monkeypatch, target, stimulus_dbfs=None)
+    write_program_wav(wav, probe)
+    assert is_level_probe(probe)
+    assert readmit_program_from_wav(
+        probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
+        session_volume_db=context.session_volume_db, declared_sensitivities=context.declared_sensitivities).allowed
 
     plan = build_inline_session_spec(
         [(spec, CloudPositionPrompt("close"), "")], roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         excitation=excitation, acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
-    assert plan.entries[0].duration_ms >= _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS
+    assert plan.entries[0].duration_ms >= max(map(_program_duration_ms, (program, probe))) + CAPTURE_ENTRY_MARGIN_MS
 
 
 def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, monkeypatch):

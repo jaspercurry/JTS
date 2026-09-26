@@ -75,6 +75,7 @@ from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
 __all__ = [
     "CODE_WIRED_MIC_MISSING",
+    "PERIOD_FRAMES",
     "WIRED_CAPTURE_CHAIN",
     "WIRED_POST_ROLL_S",
     "WIRED_PRE_PLAY_ALLOWANCE_S",
@@ -124,6 +125,9 @@ START_TIMEOUT_S = 5.0
 # Consecutive failed reads before the reader gives up. pyalsaaudio recovers an overrun
 # internally and returns the negative once, so a chain this long means the device is gone.
 MAX_CONSECUTIVE_READ_FAILURES = 8
+
+#: Frames per capture read, about 21 ms at 48 kHz: the period the SPL stop judges.
+PERIOD_FRAMES = 1024
 
 #: Periods in the ALSA capture ring: 32 x 1024 frames ≈ 683 ms at 48 kHz. A reader stalled
 #: that long (#5632) reads the backlog late instead of losing it, so the SPL stop judges that
@@ -429,7 +433,7 @@ class WiredRecorder:
         sample_rate_hz: int,
         channels: int,
         max_capture_s: float,
-        period_frames: int = 1024,
+        period_frames: int = PERIOD_FRAMES,
         pcm_factory: Callable[[], CapturePcm] | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
         spl_monitor: WiredSplMonitor | None = None,

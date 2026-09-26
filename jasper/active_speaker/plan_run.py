@@ -21,24 +21,24 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand, KIND_PILOT, KIND_SUMMED_SWEEP
+from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
-    REGIME_PER_DRIVER, REGIME_SUMMED,
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
-    AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
-    design_axis_spec, resolve_request, stop_specs,
+    AngleCaptureRequest, LateralWalkRefused,
+    resolve_request, stop_specs,
 )
+from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
-from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
+from .crossover_v2.journey import PHASE_CHECK
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
@@ -51,7 +51,7 @@ from .crossover_v2.planning import analysis_json
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
 from .measurement_programs import (
-    BASE_CANDIDATE, BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER, candidate_identity,
+    BASE_CANDIDATE,
 )
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
@@ -118,59 +118,6 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
     return json_fingerprint(request.to_dict())
 
 
-@dataclass(frozen=True)
-class PlanCapture:
-    stop: AngleStop
-    spec: MeasureSpec
-    repeat: int = 1
-
-    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
-        return resolve_request(replace(request, stops=(self.stop,),
-            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
-
-
-def prepare_plan_captures(
-    request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = (),
-) -> tuple[PlanCapture, ...]:
-    """Derive preparation and requested captures together (ADR-0297)."""
-    resolved = resolve_request(request)
-    placed = stop_specs(request,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
-                        roles_bands=roles_bands)
-    captures: list[PlanCapture] = []
-    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
-        captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER),
-            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
-        ))
-    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE and stop.purpose == PURPOSE_SPEAKER), None)
-    # The speaker flow needs an entry baseline; other rounds use their first take as the level reference.
-    if base_stop is not None:
-        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
-                               candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request,
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
-                                roles_bands=roles_bands)
-        assert base_spec is not None
-        captures.extend(PlanCapture(base_request.stops[0], replace(
-            base_spec, graph_scope="timing", program_phase=PHASE_ENTRY_BASELINE,
-        ), repeat) for repeat in range(1, request.repeats + 1))
-    for offset, spec in enumerate(placed):
-        stop = request.stops[offset // request.repeats]
-        if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
-            if stop.driver:
-                spec = replace(spec, branch_target_ids=(stop.driver,), regime=stop.regime)
-        captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
-        )), offset % request.repeats + 1))
-    return tuple(captures)
-
-
 @dataclass
 class RunDoor:
     hold: AbstractAsyncContextManager[IsolationHold]
@@ -179,8 +126,8 @@ class RunDoor:
     device: Any
     ceiling_db_spl: float | None
     current: TuningSession | None = None
-    opened: OpenMeasurementDoor | None = None
-    program_for_spec: Callable[[MeasureSpec], ExcitationProgram] | None = None
+    isolation: IsolationHold | None = None
+    program_for_spec: Callable[..., ExcitationProgram] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -212,22 +159,24 @@ def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
 HUMAN_MOVE_ALLOWANCE_S = 30
 
 
-def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
+def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[..., ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
     poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
-    opener_seconds = 0.0
+    probe_seconds = 0.0
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
         for measurement, (pose, spec) in enumerate(batch, 1):
             if not details:
                 poses.append(dict(pose))
-            excitation = program_for_spec(spec)
+            first = program_for_spec(spec)
+            # A driver's pose plays its level probe before its first take (ADR-0365).
+            probe = first if is_level_probe(first) else None
+            excitation = first if probe is None else program_for_spec(spec, stimulus_dbfs=0.0)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
-            if measurement == 1 and pose.get("driver"):
-                # A driver's pose plays a quiet opener before its levelled take (ADR-0361).
-                opener_seconds += sum(segment.n_samples for segment in segments) / excitation.sample_rate_hz
+            if measurement == 1 and probe is not None:
+                probe_seconds += probe.total_samples / probe.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
@@ -246,7 +195,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
-            "estimated_seconds": sum(row["seconds"] for row in rows) + opener_seconds +
+            "estimated_seconds": sum(row["seconds"] for row in rows) + probe_seconds +
                                  (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 
@@ -437,7 +386,6 @@ async def _run(
     retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
-    landed: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
                               mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
@@ -450,7 +398,7 @@ async def _run(
         if door is not None:
             if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
-            hold = await stack.enter_async_context(door.hold)
+            hold = door.isolation = await stack.enter_async_context(door.hold)
         while offset < len(work):
             if signals.complete.is_set():
                 manifest.reason = "complete_requested"
@@ -494,8 +442,7 @@ async def _run(
                     if gate:
                         gate.abandon_hold()
                     if at_driver:
-                        # A new placement at a driver's pose starts quiet again (ADR-0361).
-                        landed.discard(item.pose_index)
+                        # A new placement at a driver's pose starts at its probe again (ADR-0365).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -515,7 +462,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if at_driver:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs or item.pose_index in landed else "opener"
+                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "probe"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -542,8 +489,8 @@ async def _run(
                         topology=None, preset=None, sensitivity=door.sensitivity, device=door.device,
                         resolved_ceiling_db_spl=door.ceiling_db_spl,
                     )
-                    door.opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
-                    session = door.build_session(door.opened, manifest.allocate_take_id)
+                    opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
+                    session = door.build_session(opened, manifest.allocate_take_id)
                     door.current = session
                     await stack.enter_async_context(session)
                 assert session is not None
@@ -575,6 +522,13 @@ async def _run(
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
+                                if is_level_probe(program):
+                                    log_event(logger, "active_speaker.level_probe", fields={
+                                        "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
+                                        "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
+                                        "next_gain_db": assessed.next_gain_db,
+                                        **{key: value for key, value in assessed.evidence.items()
+                                           if key.startswith("level_")}})
                         except (ValueError, KeyError, OSError) as exc:
                             manifest.detail = exception_detail(exc)
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
@@ -613,7 +567,6 @@ async def _run(
                 retry_was_measured = False
                 if at_driver:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
-                    landed.add(item.pose_index)
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)

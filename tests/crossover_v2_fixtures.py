@@ -1108,7 +1108,7 @@ class _AcceptingStore:
         self.bundle_dir = str(bundle_dir)
 
     def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
-        return SimpleNamespace(fingerprint=f"fp-{relpath}")
+        return SimpleNamespace(fingerprint=f"fp-{relpath}", byte_size=0)
 
     def identify_artifact(self, relpath: str) -> Any:
         return SimpleNamespace(fingerprint=f"fp-{relpath}")
@@ -1125,7 +1125,7 @@ class _RecordingCheckStore:
 
     def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
         self.published.append((relpath, payload))
-        return SimpleNamespace(fingerprint="fp-check-pin")
+        return SimpleNamespace(fingerprint="fp-check-pin", byte_size=0)
 
     def identify_artifact(self, relpath: str) -> Any:
         return SimpleNamespace(fingerprint="fp-check-pin")

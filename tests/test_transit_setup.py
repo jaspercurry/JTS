@@ -423,7 +423,7 @@ def test_apply_save_subway_direction_default_when_unset_renders_both():
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
     }
-    body = transit_setup._index_html(state).decode()
+    body = transit_setup.index_html(state).decode()
     # "Both" option is selected when no default direction is set.
     assert 'value="both" selected' in body
 
@@ -541,7 +541,7 @@ def test_apply_clear_disables_cities_not_resets_to_all():
 
 def test_index_html_cold_state_only_shows_address_input(tmp_path: Path):
     state: dict[str, str] = {}
-    html = transit_setup._index_html(state).decode()
+    html = transit_setup.index_html(state).decode()
     assert "Where you are" in html
     assert "Provider keys" not in html  # voice wizard only
     # No provider cards rendered yet.
@@ -554,7 +554,7 @@ def test_index_html_with_coords_shows_subway_card(monkeypatch):
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_TRANSIT_DISPLAY_NAME": "Sunset Park",
     }
-    html = transit_setup._index_html(state).decode()
+    html = transit_setup.index_html(state).decode()
     # Subway card always renders (keyless).
     assert "NYC Subway" in html
     # Picker rows present.
@@ -593,7 +593,7 @@ def test_index_html_with_coords_shows_citibike_card(monkeypatch):
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_TRANSIT_DISPLAY_NAME": "Sunset Park",
     }
-    html = transit_setup._index_html(state).decode()
+    html = transit_setup.index_html(state).decode()
     # Citi Bike card present
     assert "Citi Bike" in html
     # Live snapshot rendered: 7-3=4 classic, 3 ebikes, 25 docks
@@ -615,7 +615,7 @@ def test_index_html_with_coords_renders_ebike_only_checked_when_set(monkeypatch)
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_CITIBIKE_EBIKE_ONLY": "1",
     }
-    html = transit_setup._index_html(state).decode()
+    html = transit_setup.index_html(state).decode()
     # The checkbox should be rendered with `checked` attribute.
     assert 'name="citibike_ebike_only" form="save-form" checked' in html
 
@@ -626,7 +626,7 @@ def test_index_html_outside_nyc_shows_no_coverage():
         "JASPER_TRANSIT_LON": "-0.1",
         "JASPER_TRANSIT_DISPLAY_NAME": "London",
     }
-    html = transit_setup._index_html(state).decode()
+    html = transit_setup.index_html(state).decode()
     assert "No transit support" in html
     assert "NYC Subway" not in html or "no UI yet" in html
 

@@ -41,16 +41,14 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
-from jasper.active_speaker.environment import (
-    DEFAULT_CAMILLA_STATEFILE as STATEFILE_DEFAULT_PATH,
-)
+from jasper.paths import camilla_statefile
 
 __all__ = [
     'APPLIED_PROFILE_DEFAULT_PATH', 'APPLIED_PROFILE_FILENAME', 'CAPTURE_STATE_FILENAME',
     'DECLARED_GEOMETRY_DEFAULT_PATH', 'DECLARED_GEOMETRY_FILENAME', 'DESIGN_DRAFT_FILENAME',
     'DRIVERS_DEFAULT_PATH', 'REPEAT_FLOOR_DEFAULT_PATH', 'REPEAT_FLOOR_FILENAME',
     'RoundInputs', 'RoundViewsError', 'STATE_DEFAULT_PATH',
-    'STATE_FILENAME', 'STATE_SESSION_UNKNOWN', 'STATEFILE_DEFAULT_PATH',
+    'STATE_FILENAME', 'STATE_SESSION_UNKNOWN',
     'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
@@ -188,7 +186,7 @@ def round_inputs(path: Path) -> RoundInputs:
             applied_profile_path=APPLIED_PROFILE_DEFAULT_PATH,
             repeat_floor_path=REPEAT_FLOOR_DEFAULT_PATH,
             declared_geometry_path=DECLARED_GEOMETRY_DEFAULT_PATH,
-            statefile_path=STATEFILE_DEFAULT_PATH,
+            statefile_path=camilla_statefile(),
             banked=False,
             state_reason=state_reason,
         )
@@ -465,8 +463,9 @@ def resolve_set(
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and len(sets) > 1:
         raise RoundSetRefused("set_required", sets=[
-            {"set_id": row["set_id"], "candidate_id": row["capture_basis"].get("candidate_id")}
-            for row in sets
+            {"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
+             "role": group.role, "take_count": len(group.selected_ids)}
+            for group in map(SetTakes.from_row, sets)
         ])
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:

@@ -47,7 +47,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
+from ..audio_hardware.dac import by_id as _dac_by_id
 from ..env_load import outputd_reconciled_env
+from ..output_hardware import load_state as _load_output_hardware_state
 from ..output_topology_store import load_output_topology_strict
 
 if TYPE_CHECKING:
@@ -119,13 +121,9 @@ def _active_endpoint_remedy(topology: "OutputTopology") -> str:
     "nothing recognized" — it keeps the normal remedy too; only a record that
     POSITIVELY names no DAC swaps the text.
     """
-    from ..output_hardware import load_state as _load_output_hardware_state
-
     state = _load_output_hardware_state()
     if state is None or state.observed_profile_id is not None:
         return ACTIVE_ENDPOINT_REMEDY
-
-    from ..audio_hardware.dac import by_id as _dac_by_id
 
     profile = _dac_by_id(topology.hardware.device_id)
     if profile is not None and profile.connection == "i2s":
@@ -204,7 +202,7 @@ def _endpoint_graph_refusal() -> str | None:
     and the surfaces that own that shape (``active_speaker_parked``,
     ``camilla_recover``) are already loud about it.
     """
-    from ..fanin.ring_readiness import (
+    from ..fanin.ring_readiness import (  # lazy: import cost, ring_readiness stays out of jasper-doctor; test patch boundary (tests/test_transport_eligibility.py)
         graph_at_active_ring_endpoint,
         read_loaded_camilla_graph,
     )
@@ -236,7 +234,7 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import (
+    from ..fanin_coupling import (  # lazy: test patch boundary (tests/_armed_transport.py)
         dac_content_marker_contradicted,
         ring_active_endpoint_armed,
     )

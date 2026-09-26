@@ -92,6 +92,14 @@ NEAR_FIELD_SWEEP_S = 8.0
 # still cover the analysis's deconvolution pre-guard (DECONV_PRE_GUARD_S, 0.25 s).
 NEAR_FIELD_SILENCE_S = 0.5
 
+# --- a driver's level probe (ADR-0365) ---
+#: Every probe segment is named from here; see is_level_probe.
+LEVEL_PROBE_SEGMENT_PREFIX = "level_probe_"
+#: A probe's first burst is about this long.
+LEVEL_PROBE_BURST_S = 0.5
+#: Each next burst is at least this much longer, in whole cycles at the band's floor.
+LEVEL_PROBE_GROWTH_S = 0.125
+
 # Per-driver occurrences in MEASURE (#1668): N-1 bit-identical repeats feed
 # the drift/glitch estimator (§3.1); must stay under
 # CROSSOVER_CAPTURE_MAX_WAV_BYTES (5 MiB), pinned by a test.
@@ -1131,6 +1139,38 @@ def build_verify_program(
 SUMMED_REFUSE_FC_INVALID = "summed_sweep_fc_invalid"
 SUMMED_REFUSE_DURATION_UNCLOSEABLE = "summed_sweep_duration_uncloseable"
 SUMMED_REFUSE_LIMITS_INCOMPLETE = "summed_sweep_limits_incomplete"
+
+
+def build_level_probe_program(
+    role_band: RoleBand, gains_db: Sequence[float], *, sweep_band_hz: tuple[float, float],
+    gap_s: float, downstream_gain_db: float, channels: int,
+) -> ExcitationProgram:
+    """The room, then one short sweep of the band per gain, quietest first (ADR-0365).
+
+    Each burst is longer than the one before by whole cycles at the band's floor
+    (at least :data:`LEVEL_PROBE_GROWTH_S`), so no two share a shape in any band.
+    """
+    f1_hz, f2_hz = _intersect_band(role_band.band, *sweep_band_hz)
+    step_s = max(math.log(f2_hz / f1_hz) / f1_hz, LEVEL_PROBE_GROWTH_S)
+    gap_n = _seconds_to_samples(gap_s, PROGRAM_SAMPLE_RATE_HZ)
+    segments: list[ProgramSegment] = []
+    cursor = _append_pilot_ambient_window(segments, 0)
+    for index, gain_db in enumerate(gains_db):
+        burst = _stimulus(
+            segment_id=f"{LEVEL_PROBE_SEGMENT_PREFIX}{index}", kind=KIND_SWEEP, role=role_band.role,
+            channel=role_band.channel, start=cursor, f1_hz=f1_hz, f2_hz=f2_hz,
+            duration_s=LEVEL_PROBE_BURST_S + index * step_s, gain_db=gain_db,
+            downstream_gain_db=downstream_gain_db,
+        )
+        segments.append(burst)
+        cursor += burst.n_samples
+        segments.append(_silence(f"{LEVEL_PROBE_SEGMENT_PREFIX}gap_{index}", cursor, gap_n))
+        cursor += gap_n
+    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor)
+
+
+def is_level_probe(program: ExcitationProgram) -> bool:
+    return any(segment.segment_id.startswith(LEVEL_PROBE_SEGMENT_PREFIX) for segment in program.segments)
 
 
 class SummedSweepUnavailable(ValueError):

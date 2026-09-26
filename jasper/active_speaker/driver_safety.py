@@ -31,7 +31,6 @@ from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
-    format_low_limit,
     resolve_driver_low_limit,
 )
 from .linearization_budget import normalise_fit_budget
@@ -133,9 +132,9 @@ def driver_protection_policy_view(
     same, so the page needs ``max_auto_level_dbfs`` to recognise it.
 
     The class low limit travels only as ``low_limit_hz`` +
-    ``low_limit_provenance`` + a rendered ``low_limit_summary``, never as a bare
-    ``min_highpass_hz`` beside a declared figure — two unlabelled floats one key
-    apart is the ambiguity this replaced. Resolving that needs the operator's
+    ``low_limit_provenance``, never as a bare ``min_highpass_hz`` beside a
+    declared figure — two unlabelled floats one key apart is the ambiguity this
+    replaced. Resolving that needs the operator's
     visible values, hence ``manual_settings``; without them every target reports
     the class fallback, labelled as such.
 
@@ -171,9 +170,6 @@ def driver_protection_policy_view(
             "low_limit_hz": low_limit.frequency_hz if low_limit is not None else None,
             "low_limit_provenance": (
                 low_limit.provenance if low_limit is not None else None
-            ),
-            "low_limit_summary": (
-                format_low_limit(low_limit) if low_limit is not None else None
             ),
         })
     return {

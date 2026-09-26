@@ -47,7 +47,10 @@ from ..tool_catalog_view import (
     build_pack_payloads,
 )
 from . import ToolRegistry
+from .bus import make_bus_tools
+from .citibike import make_citibike_tools
 from .packs import TOOL_PACKS, CapabilityPack, CatalogPack, ToolDeps, register_packs
+from .subway import make_subway_tools
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +98,6 @@ def _sentinel_transit_tools() -> list[Any]:
     """The 3 shipped transit tools, built hardware-free with lazy stubs.
     Shared with tests/_tool_pack_contract.py::transit_tool_stubs so the
     two sentinel-registry builders can't drift apart."""
-    from .bus import make_bus_tools
-    from .citibike import make_citibike_tools
-    from .subway import make_subway_tools
     transit: list[Any] = []
     transit += list(make_subway_tools(object()))
     transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))

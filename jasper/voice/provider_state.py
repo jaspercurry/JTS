@@ -42,6 +42,7 @@ from typing import Literal
 from ..atomic_io import locked_update_env_file
 from ..env_load import (
     BASE_ENV_PATH,
+    VOICE_PROVIDER_ENV_PATH,
     merged_env_files,
     parse_bool_value,
     read_env_file_state,
@@ -70,13 +71,12 @@ logger = logging.getLogger(__name__)
 # below, in the group-`jasper-secrets` dir that only jasper-voice + jasper-web can read.
 # So jasper-control keeps reading the active provider/model here for /system/ (this
 # module) without gaining access to the LLM keys.
-PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
 PROVIDER_FILE_MODE = 0o640
 VOICE_PROVIDER_ENV_OWNER = (
     "jasper.voice.provider_state; change it at /assistant/voice/ or with jasper-settings"
 )
 
-# The three provider API keys (GEMINI/OPENAI/XAI) split out of PROVIDER_FILE into a
+# The three provider API keys (GEMINI/OPENAI/XAI) split out of the provider file into a
 # sibling secret dir narrowed to the `jasper-secrets` group {jasper-voice, jasper-web}.
 # The /voice wizard writes it; jasper-voice + jasper-web source it via EnvironmentFile.
 # Outside the /var/lib/jasper StateDirectory on purpose — systemd's recursive
@@ -133,7 +133,7 @@ class ActiveProviderState:
 def _resolve_path(path: str | None) -> str:
     if path is not None:
         return path
-    return os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE)
+    return os.environ.get("JASPER_VOICE_PROVIDER_FILE", VOICE_PROVIDER_ENV_PATH)
 
 
 def resolve_active_provider(env: dict[str, str]) -> str:
@@ -211,7 +211,7 @@ def read_active_model_from_env_files(
     module's file instead — the later file wins, which
     is exactly what merging the full env-file set (operator file first,
     wizard file after — the same order ``jasper-voice`` sources them in)
-    gives you. That is why this doesn't just read :data:`PROVIDER_FILE`
+    gives you. That is why this doesn't just read this module's file
     alone: a model an operator pinned only in ``jasper.env`` would read
     back as the catalog default there.
 

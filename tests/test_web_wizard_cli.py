@@ -19,28 +19,28 @@ from jasper.web import (
     system_setup,
 )
 
-# module, console-script prog, ExecStart default port, the idle threshold the
-# wizard asks the runner for, and its on-idle-exit hook.
+# module, console-script prog, ExecStart default port, and the idle threshold
+# the wizard asks the runner for.
 WIZARDS = [
     (
         bluetooth_setup, "jasper-bluetooth-web", 8769,
-        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC, None,
+        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
     ),
     (
         chat_setup, "jasper-chat-web", 8787,
-        chat_setup.IDLE_SHUTDOWN_SEC, None,
+        chat_setup.IDLE_SHUTDOWN_SEC,
     ),
     (
         correction_setup, "jasper-correction-web", 8770,
-        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC, None,
+        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
     ),
     (
         system_setup, "jasper-system-web", 8772,
-        system_setup.IDLE_SHUTDOWN_SEC, None,
+        system_setup.IDLE_SHUTDOWN_SEC,
     ),
 ]
 
-_COLUMNS = "module, prog, default_port, idle_sec, on_idle_exit"
+_COLUMNS = "module, prog, default_port, idle_sec"
 
 # The two whose routes start work they do not await, so they need the hold.
 _HOLDERS = [row for row in WIZARDS if row[0] in (bluetooth_setup, correction_setup)]
@@ -51,11 +51,9 @@ class _RecordingTracker:
         self,
         idle_threshold_sec: float = _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
         watchdog_period_sec: float = _systemd.DEFAULT_WATCHDOG_NOTIFY_SEC,
-        on_idle_exit: Any = None,
     ) -> None:
         self.idle_threshold_sec = idle_threshold_sec
         self.watchdog_period_sec = watchdog_period_sec
-        self.on_idle_exit = on_idle_exit
         self.started = False
         self.stopped = False
 
@@ -132,7 +130,7 @@ def wizard_harness_fixture(monkeypatch):
 
 @pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_binds_the_execstart_defaults(
-    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+    wizard_harness, module, prog, default_port, idle_sec
 ):
     record = wizard_harness(module, [])
     assert module.main([]) == 0
@@ -143,7 +141,7 @@ def test_main_binds_the_execstart_defaults(
 
 @pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_serves_the_inherited_listener_not_a_fresh_bind(
-    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+    wizard_harness, module, prog, default_port, idle_sec
 ):
     inherited = object()
     record = wizard_harness(module, [inherited])
@@ -153,19 +151,18 @@ def test_main_serves_the_inherited_listener_not_a_fresh_bind(
 
 @pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_builds_the_tracker_this_wizard_asked_for(
-    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+    wizard_harness, module, prog, default_port, idle_sec
 ):
     record = wizard_harness(module, [])
     assert module.main([]) == 0
     tracker = record["tracker"]
     assert tracker.idle_threshold_sec == idle_sec
-    assert tracker.on_idle_exit is on_idle_exit
     assert tracker.started
 
 
 @pytest.mark.parametrize(_COLUMNS, _HOLDERS)
 def test_a_wizard_with_background_work_gets_the_trackers_hold(
-    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+    wizard_harness, module, prog, default_port, idle_sec
 ):
     record = wizard_harness(module, [])
     assert module.main([]) == 0
@@ -175,7 +172,7 @@ def test_a_wizard_with_background_work_gets_the_trackers_hold(
 @pytest.mark.parametrize(_COLUMNS, WIZARDS)
 @pytest.mark.parametrize("serve_error", [None, KeyboardInterrupt(), RuntimeError()])
 def test_main_releases_listener_and_idle_tracker_on_exit(
-    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit, serve_error
+    wizard_harness, module, prog, default_port, idle_sec, serve_error
 ):
     record = wizard_harness(module, [], serve_error=serve_error)
     if isinstance(serve_error, RuntimeError):
@@ -190,7 +187,7 @@ def test_main_releases_listener_and_idle_tracker_on_exit(
 
 @pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_usage_errors_name_the_console_script(
-    capsys, wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+    capsys, wizard_harness, module, prog, default_port, idle_sec
 ):
     with pytest.raises(SystemExit) as exc:
         module.main(["--no-such-flag"])

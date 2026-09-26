@@ -119,7 +119,7 @@ def nearfield_view(
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
         row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
                "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
-               "max_window_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("max_window_db_spl"),
+               "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
                          if (band := _band(freqs, sweeps, edges, swept)) is not None]}
         placed.setdefault(row["driver"], {}).setdefault(row["distance_mm"], []).append(len(rows))

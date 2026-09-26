@@ -489,6 +489,7 @@ def _drive_raw_sound_post(
     content_length: int,
     body: bytes = b"must-not-be-read",
     response_sink: io.BytesIO | None = None,
+    idle_hold=sound_setup.no_hold,
 ) -> tuple[bytes, list[int]]:
     """Drive the real sound Handler with an otherwise-valid raw POST."""
 
@@ -497,6 +498,7 @@ def _drive_raw_sound_post(
         library_path=tmp_path / "sound_profiles.json",
         config_dir=tmp_path / "configs",
         camilla_factory=lambda: None,
+        idle_hold=idle_hold,
     )
     raw = (
         f"POST {path} HTTP/1.1\r\n".encode()
@@ -5846,8 +5848,7 @@ def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
     hold = MagicMock()
     if failure == "enter":
         hold.__enter__.side_effect = LookupError()
-    monkeypatch.setattr(sound_setup, "no_hold", Mock(return_value=hold,
-                       side_effect=LookupError() if failure == "hold" else None))
+    idle_hold = Mock(return_value=hold, side_effect=LookupError() if failure == "hold" else None)
     if failure == "thread":
         monkeypatch.setattr(audition.threading, "Thread", Mock(side_effect=RuntimeError()))
     elif failure == "start":
@@ -5857,7 +5858,8 @@ def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {"available": True})
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     body = b'{"state":"off"}'
-    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body),
+                                        body=body, idle_hold=idle_hold)
     assert b" 502 " in response.split(b"\r\n", 1)[0]
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "audition_load_refused"
     restore.assert_awaited_once_with(cam=None, expect_token="session")
@@ -5969,8 +5971,7 @@ def test_web_startup_recovers_after_installing_idle_hold(monkeypatch):
     from jasper.web import __main__ as web_main
 
     events = []
-    class Handler:
-        pass
+    holds = []
     class Tracker:
         @contextmanager
         def hold(self, label):
@@ -5982,11 +5983,14 @@ def test_web_startup_recovers_after_installing_idle_hold(monkeypatch):
         def start(self):
             events.append("tracker_start")
     tracker = Tracker()
-    server = SimpleNamespace(RequestHandlerClass=Handler, serve_forever=lambda: events.append("serve"))
+    server = SimpleNamespace(RequestHandlerClass=object, serve_forever=lambda: events.append("serve"))
+    def make_server(target, *, idle_hold):
+        holds.append(idle_hold)
+        return server
     spec = replace(next(s for s in web_main.WIZARD_SPECS if s.label == "/sound"),
-                   make_server=lambda target: server)
+                   make_server=make_server)
     async def recover(cam):
-        assert Handler.idle_hold == tracker.hold
+        assert holds == [tracker.hold]
         assert events == ["hold"]
         events.append("recover")
     monkeypatch.setattr(web_main, "recover_web_audition", recover)

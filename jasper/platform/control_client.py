@@ -315,17 +315,6 @@ def get_measurement(
     return hold if isinstance(hold, dict) else {}
 
 
-def healthz(
-    *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
-) -> bool:
-    """True iff ``/healthz`` returns 2xx. Never raises — returns False on any
-    transport failure (it is a liveness check, so absence == not healthy)."""
-    try:
-        return get("/healthz", base_url=base_url, timeout=timeout).ok
-    except ControlError:
-        return False
-
-
 # --- async API: long-lived daemons (accessory bridge, usbsink) -------------
 class AsyncControlClient:
     """Async control client for long-lived daemons. Runs the blocking stdlib

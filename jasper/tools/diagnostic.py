@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from .. import flight_recorder
 from ..log_event import log_event
 from . import tool
 
@@ -154,7 +155,6 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
         # as a WARNING, so dump the recent DEBUG context (voice's flight
         # recorder) to the journal. Best-effort. See jasper/flight_recorder.py.
         try:
-            from .. import flight_recorder
             flight_recorder.dump("voice_flagged")
         except Exception:  # noqa: BLE001
             pass

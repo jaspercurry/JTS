@@ -11,14 +11,15 @@
 > mechanics; WO-8 (room line) → Wave 5; the mechanism registry + fix-class
 > vocabulary → the per-feature record join (ticket 1.10). The attribution
 > package's shipped findings/promotion code is substrate for that join, not a
-> parallel system" (that plan's Supersessions section). So the shipped code
-> under `jasper/attribution/` stands; the open work orders below are
+> parallel system" (that plan's Supersessions section). The package's findings,
+> registry, promotion and storage modules were later deleted once no product
+> code wrote a finding (#5652, #5668), leaving only
+> `jasper/attribution/session_identity.py` (§6). The open work orders below are
 > **absorbed, not pursued independently from here**. Preserved for
 > primary-source archaeology — specific facts (WO ladder state, seam names,
 > §4's seed table) will drift over time. Read this for the narrative of the
 > work orders, not for current state; the definitions and open-decision
-> records the shipped modules cite (§3.1, §5, §6 and §9 among them) remain
-> live.
+> records the tree still cites (§6 and §9 among them) remain live.
 >
 > Anchors [issue #1866](https://github.com/jaspercurry/JTS/issues/1866),
 > where every owner ruling and prior-art adoption below is recorded. Gate:

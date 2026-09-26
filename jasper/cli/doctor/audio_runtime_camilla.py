@@ -33,9 +33,9 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_MISSING,
     REASON_CAMILLA_CONFIG_UNREADABLE,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
-    _group_writable_dir,
-    _parked_ago,
-    _service_state_failure,
+    group_writable_dir,
+    parked_ago,
+    service_state_failure,
 )
 
 REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
@@ -98,7 +98,7 @@ def check_camilla_service() -> CheckResult:
       - fail when the unit is missing, disabled, or enabled and not active.
     """
     label = "jasper-camilla service"
-    service_failure = _service_state_failure(
+    service_failure = service_state_failure(
         label,
         CAMILLA_SERVICE,
         missing=REASON_CAMILLA_UNIT_MISSING,
@@ -178,7 +178,7 @@ def _camilla_configs_writable_result(
             reason=REASON_CAMILLA_CONFIG_DIR_UNREADABLE,
         )
 
-    writable, group_name = _group_writable_dir(st, expected_group=expected_group)
+    writable, group_name = group_writable_dir(st, expected_group=expected_group)
     mode = st.st_mode & 0o7777
     detail = f"{path} mode={mode:04o} group={group_name}"
     if not writable:
@@ -201,7 +201,7 @@ def check_camilla_configs_writable() -> CheckResult:
     return _camilla_configs_writable_result(CAMILLA_CONFIGS_DIR)
 
 
-def _camilla_statefile() -> Path:
+def evidence_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
     # Lazy: at module scope this drags `correction` into every `--core` run.
@@ -213,7 +213,7 @@ def _camilla_statefile() -> Path:
     return statefile
 
 
-def _loaded_device_fields(config_path: Path | str | None) -> dict[str, Any]:
+def loaded_device_fields(config_path: Path | str | None) -> dict[str, Any]:
     """Every ``devices.*`` field the audio-runtime checks compare, keyed
     ``<block>_<field>``, from ONE read of ``config_path`` per doctor run.
 
@@ -298,7 +298,7 @@ def check_camilla_playback_format() -> CheckResult:
             "no loaded config to compare",
             reason=REASON_PLAYBACK_FORMAT_NO_CONFIG,
         )
-    devices = _loaded_device_fields(config_path)
+    devices = loaded_device_fields(config_path)
     loaded_format = devices.get("playback_format")
     if loaded_format is None:
         return CheckResult(
@@ -380,7 +380,7 @@ def check_camilla_volume_limit() -> CheckResult:
     if config_path is None:
         return CheckResult(
             "CamillaDSP volume_limit", "warn",
-            f"could not read config_path from {_camilla_statefile()}",
+            f"could not read config_path from {evidence_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -433,7 +433,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     if config_path is None:
         return CheckResult(
             label, "warn",
-            f"could not read config_path from {_camilla_statefile()}",
+            f"could not read config_path from {evidence_statefile()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
@@ -447,7 +447,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             label, "fail", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
-    devices = _loaded_device_fields(config_path)
+    devices = loaded_device_fields(config_path)
 
     ring_ends = [
         name
@@ -590,7 +590,7 @@ def check_camilla_recover_park() -> CheckResult:
         detail = "no core-graph recovery park this boot"
         if isinstance(last_park, dict):
             detail += (
-                f" (parked {_parked_ago(last_park.get('parked_at'))}, since "
+                f" (parked {parked_ago(last_park.get('parked_at'))}, since "
                 f"retired: {last_park.get('reason') or '?'})"
             )
         return CheckResult(label, "ok", detail)
@@ -731,7 +731,6 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     (see `deploy/bin/jasper-camilla-topology-gate`). The next convergence that
     writes a statefile clears either.
     """
-    from ...active_speaker.environment import camilla_statefile_path
     from ...output_topology_store import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
@@ -739,7 +738,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
         topology_stamp_version,
     )
 
-    statefile = camilla_statefile_path()
+    statefile = evidence_statefile()
     proved = read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile))
     unproved = read_topology_fingerprint_stamp(
         statefile_unproved_stamp_path(statefile)

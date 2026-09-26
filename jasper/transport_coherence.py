@@ -37,6 +37,12 @@ from jasper.fanin_coupling import (
     resolve_ring_path,
     ring_active_endpoint_armed,
 )
+from jasper.multiroom.dac_content_ring import (
+    DAC_CONTENT_RING_CHANNELS,
+    DAC_CONTENT_RING_FILE,
+    DAC_CONTENT_RING_FORMAT,
+    DAC_CONTENT_RING_PCM,
+)
 from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 
 
@@ -109,16 +115,6 @@ def transport_topology_for_coupling(
         "sample_rate": DEFAULT_SAMPLE_RATE,
     }
     if dac_content_lane:
-        # Function-local: `jasper.multiroom.dac_content_ring` pulls the whole
-        # multiroom package (and `jasper.camilla_emit`) into the import time of
-        # this module's socket-activated read-only consumers.
-        from jasper.multiroom.dac_content_ring import (
-            DAC_CONTENT_RING_CHANNELS,
-            DAC_CONTENT_RING_FILE,
-            DAC_CONTENT_RING_FORMAT,
-            DAC_CONTENT_RING_PCM,
-        )
-
         return TransportTopology(
             name=TRANSPORT_DAC_CONTENT_RING,
             fanin_to_camilla=fanin_to_camilla,

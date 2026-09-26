@@ -19,9 +19,9 @@ HID button bridge (volume, push-to-talk) down with it.
 Where wake detection runs, it owns the *accessory* fact alone: the voice-input
 gate marker is the AND of "no local mic" and "no accessory mic", so moving this
 half hands the decision to that marker's single writer, ``jasper-aec-reconcile``
-(see ``refresh_voice_input``). Where the assistant is granted WITHOUT wake
-detection no such owner is installed and the remote is the only microphone, so
-this reconciler runs ``jasper-voice`` itself — see ``voice_follows_accessory_mic``.
+(see ``refresh_voice_input``). Where wake detection does not run, no such owner
+is installed and the remote is the only microphone, so this reconciler runs
+``jasper-voice`` itself — see ``voice_follows_accessory_mic``.
 """
 from __future__ import annotations
 
@@ -37,8 +37,6 @@ from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
 from jasper.install_profile import (
-    install_profile_allows_local_sources,
-    install_profile_allows_voice_brain,
     install_profile_supports_wake_detection,
     read_install_profile,
 )
@@ -159,23 +157,6 @@ class BluetoothSourceIntentError(AccessoryReconcileError):
 
 class AdapterHostRefreshError(AccessoryReconcileError):
     """An adapter host did not accept the refresh that applies the new plan."""
-
-
-def _local_sources_allowed() -> bool:
-    """Mirror the source coordinator's install-role + grouping permission."""
-
-    try:
-        if not install_profile_allows_local_sources(read_install_profile()):
-            return False
-        return local_sources_allowed()[0]
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "accessory_mic.role_probe_failed",
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return False
 
 
 @dataclass(frozen=True)
@@ -484,10 +465,10 @@ def refresh_voice_input(*, systemctl: Systemctl = _systemctl) -> str:
 def voice_follows_accessory_mic() -> bool:
     """Whether this box's voice brain lives and dies with the accessory mic.
 
-    True exactly when the install profile grants the assistant WITHOUT wake
-    detection. Nothing installs ``jasper-aec-reconcile`` there, so no gate
-    owner exists to hand the decision back to and the paired remote is the only
-    microphone: this reconciler owns ``jasper-voice.service`` outright. See
+    True exactly when the install profile lacks wake detection. Nothing
+    installs ``jasper-aec-reconcile`` there, so no gate owner exists to hand
+    the decision back to and the paired remote is the only microphone: this
+    reconciler owns ``jasper-voice.service`` outright. See
     docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
 
     An unreadable install role answers False, which keeps the gate-owner
@@ -505,10 +486,7 @@ def voice_follows_accessory_mic() -> bool:
             level=logging.WARNING,
         )
         return False
-    return (
-        install_profile_allows_voice_brain(profile)
-        and not install_profile_supports_wake_detection(profile)
-    )
+    return not install_profile_supports_wake_detection(profile)
 
 
 def _unit_active(unit: str) -> bool:
@@ -590,9 +568,8 @@ async def reconcile_once(
             f"cannot read Bluetooth source intent: {exc}"
         )
 
-    role_allowed = _local_sources_allowed() if bluetooth_enabled else False
-    effective_enabled = bluetooth_enabled and role_allowed
-    if effective_enabled:
+    role_allowed = bluetooth_enabled and local_sources_allowed()[0]
+    if role_allowed:
         try:
             managed = await asyncio.wait_for(
                 bluez_managed_objects(),

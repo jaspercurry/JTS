@@ -16,7 +16,7 @@ from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing
 from . import tool
-from .spotify import _format_name_list
+from .spotify import ensure_clients, no_account_msg
 from ..spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,6 @@ async def _mpris_call(method: str) -> None:
         raise RuntimeError(
             f"mpris {method} failed: {result.stderr.decode(errors='replace').strip()}"
         )
-
-
-async def _mpris_now_playing() -> dict[str, str]:
-    """Read Shairport metadata through the renderer's canonical MPRIS parser."""
-    return await airplay_now_playing()
 
 
 async def _detect_source(renderer) -> str:
@@ -119,7 +114,7 @@ async def _resolve_airplay_account(router):
     if not client_name:
         return None
     try:
-        metadata = await _mpris_now_playing()
+        metadata = await airplay_now_playing()
     except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
         return None
     title = metadata.get("title", "")
@@ -215,26 +210,11 @@ def make_transport_dispatcher(renderer, router):
                 await _mpris_call(_PLAYER_METHODS[action])
                 return {"ok": True, "source": "airplay"}
             if source == "spotify":
-                if router is None:
-                    return {"error": "spotify not configured"}
-                # Lazy rebuild covers the post-revocation re-link path:
-                # if the router went empty after a bad refresh, give it
-                # one more chance before we tell the user it's broken.
-                if not router.clients:
-                    await router.refresh_if_empty()
-                active = await router.active(airplay_active=False)
+                active = None
+                if await ensure_clients(router):
+                    active = await router.active(airplay_active=False)
                 if active is None:
-                    if router.empty_reason() == "revoked":
-                        names = router.revoked_account_names()
-                        who = (
-                            _format_name_list(names) if names
-                            else "your spotify account"
-                        )
-                        return {
-                            "error": f"spotify signed {who} out. "
-                            f"tell the user to re-link at {hostname}/spotify.",
-                        }
-                    return {"error": "no spotify account configured"}
+                    return {"error": no_account_msg(router, f"{hostname}/spotify")}
                 device_id = await _spotify_active_device_id(active.sp)
                 await _spotify_call(active.sp, action, device_id)
                 return {
@@ -341,7 +321,7 @@ def make_transport_tools(renderer, router):
                             "source": "airplay+spotify",
                             "account": matched.account.name,
                         }
-                return {**await _mpris_now_playing(), "source": "airplay"}
+                return {**await airplay_now_playing(), "source": "airplay"}
             if source == "spotify" and router is not None:
                 active = await router.active(airplay_active=False)
                 if active is not None:

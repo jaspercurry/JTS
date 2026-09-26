@@ -14,7 +14,6 @@ from ...audio_hardware.dac import (
     by_id as _dac_profile_for,
 )
 from ...config import Config
-from ... import ring_assets
 from ...mics import xvf3800
 from ...output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -85,14 +84,6 @@ _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
     "dual_apple_stable_identity_missing",
     "dual_apple_endpoint_not_synchronous",
 })
-
-# Re-exported from the shared jasper.ring_assets SSOT (which owns the paths and
-# their constraints) so the doctor probe and the coupling reconciler's
-# activation gate name the same files.
-_JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
-_JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
-_JTS_RING_CONF_D = ring_assets.RING_CONF_D
-_JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 
 
 def _observed_output_hardware_clock_blockers(

@@ -13,27 +13,29 @@ from typing import Any
 
 from ...accessories import status as accessory_status
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
-from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
+from ...control.restart_broker import SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import (
+    AEC_BRIDGE_SERVICE,
+    GROUPING_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
+    LIBRESPOT_SERVICE,
+    SHAIRPORT_SYNC_SERVICE,
     USB_HCD_RECOVER_UNIT,
     unit_unstable,
     unit_uptime_sec,
 )
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
-from ... import outputd_failure_reconcile_state
+from ... import outputd_failure_reconcile_state, source_intent_units
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
     control_signal_path,
-    _nested_dict,
-    _ONESHOT_RUNTIME_STATE_UNITS,
-    _parked_ago,
-    _RUNTIME_STATE_UNITS,
+    nested_dict,
+    parked_ago,
     silence_unobserved,
     speaker_silence_code,
     run,
@@ -99,6 +101,42 @@ REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
 REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
+# A oneshot normally stays `activating` during its pass; its unit timeout
+# moves a stalled pass to `failed`.
+_ONESHOT_RUNTIME_STATE_UNITS = (
+    # A failed coupling-reconcile pass parks the unit in `failed` with the
+    # evidence only in `systemctl --failed` + the journal; tracking it here
+    # makes that doctor-visible.
+    source_intent_units.USB_COUPLING_UNIT,
+    # Same reasoning (#2802 item 3): a dead grouping or source-intent
+    # reconciler was doctor-invisible except indirectly, via USB combo
+    # consistency.
+    GROUPING_RECONCILE_SERVICE,
+    source_intent_units.RECONCILE_UNIT,
+)
+
+# NO audio-path unit: `service_state_failure` (jasper-fanin, jasper-camilla)
+# and check_outputd_failure_reconcile_park (jasper-outputd, park record and
+# all) own their runtime state, so one down unit is one fail row.
+_RUNTIME_STATE_UNITS = (
+    "nginx.service",
+    JASPER_VOICE_SERVICE,
+    AEC_BRIDGE_SERVICE,
+    _CONTROL_UNIT,
+    "jasper-input.service",
+    # A .path unit fails on a bad spec; check_required_units_active defers
+    # every non-`inactive` state to this row, so both must track it.
+    "jasper-accessory-reconcile.path",
+    "jasper-mux.service",
+    "nqptp.service",
+    SHAIRPORT_SYNC_SERVICE,
+    LIBRESPOT_SERVICE,
+    "bluealsa.service",
+    "bluealsa-aplay.service",
+    "bt-agent.service",
+    *_ONESHOT_RUNTIME_STATE_UNITS,
+)
+
 @doctor_check(core=True)
 def check_service_runtime_state() -> CheckResult:
     """Judge the tracked units' runtime state: `failed`, or a non-oneshot
@@ -154,7 +192,7 @@ def check_service_runtime_state() -> CheckResult:
 # state no other row reports. One down unit is one row, so a unit whose own
 # check already names it stays out: nginx and jasper-control belong to
 # `web.check_management_surface`, and the audio-path daemons to
-# `_service_state_failure`, `check_outputd_failure_reconcile_park`,
+# `service_state_failure`, `check_outputd_failure_reconcile_park`,
 # `renderers` and `check_voice_unit_running` below.
 _REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
     "jasper-input.service",
@@ -423,7 +461,7 @@ def _classify_supervisor_snapshots(
 
 
 def _read_resilience_state() -> dict[str, Any] | None:
-    return _nested_dict(evidence.control_state().payload, "resilience")
+    return nested_dict(evidence.control_state().payload, "resilience")
 
 
 @doctor_check()
@@ -467,7 +505,7 @@ def check_supply_voltage() -> CheckResult:
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
-        metrics = _nested_dict(evidence.control_system_snapshot().payload, "metrics")
+        metrics = nested_dict(evidence.control_system_snapshot().payload, "metrics")
         sampled_at = metrics.get("last_sample_at") if metrics else None
         if metrics is not None:
             age = (
@@ -641,7 +679,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
         return CheckResult(
             label, "fail",
             "PARKED — jasper-outputd's stop helper recorded a park "
-            f"{_parked_ago(state.get('parked_at'))} "
+            f"{parked_ago(state.get('parked_at'))} "
             f"(exit_status={state.get('exit_status') or '?'}, "
             f"reason={state.get('park_reason') or '?'}) and nothing retries "
             "it. Fix the output env, then run "
@@ -685,7 +723,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
     last_park = state.get("last_park")
     detail = f"{reader.UNIT} is running and carries no park record"
     if isinstance(last_park, dict):
-        detail += f" (last park {_parked_ago(last_park.get('parked_at'))})"
+        detail += f" (last park {parked_ago(last_park.get('parked_at'))})"
         return CheckResult(label, "ok", detail, reason=REASON_OUTPUTD_PREVIOUSLY_PARKED)
     return CheckResult(label, "ok", detail)
 

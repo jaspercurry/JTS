@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import signal
 import subprocess
 import sys
@@ -94,8 +95,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: absorbed; a wrong ``--hostname``, a 403, or a stopped wizard never clears.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
-#: Where ``install.sh`` puts the turntable adapter on a speaker.
-DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
+DEFAULT_TOOL_PATH = Path(__file__).resolve().parents[1] / "turntable" / "jts_turntable.py"
 
 # Issue #2516: the vendor retries offset/probe/position itself; stop is safe to
 # repeat here because it is idempotent before the absolute position re-homes.
@@ -314,11 +314,25 @@ def parse_power(payload: Mapping[str, Any]) -> PowerVerdict:
     return PowerVerdict(True, str(status.get("raw") or "throttled=0x0"))
 
 
+def _port_holder(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Who held the port, from a ``port_busy`` refusal's ``holder`` (#5381).
+
+    The adapter records its own parsed argv; none of its options takes a secret.
+    """
+    holder = payload.get("holder")
+    if not isinstance(holder, Mapping):
+        return {}
+    argv = holder.get("argv")
+    return {
+        "holder_pid": holder.get("pid"),
+        "holder_argv": shlex.join(map(str, argv)) if isinstance(argv, list) else str(argv),
+    }
+
+
 @dataclass
 class TurntableMover:
-    """The installed ``jts_turntable.py`` adapter, driven as a subprocess. Never an import:
-    ``experiments/`` is not a dependency, and each command gets a clean serial session
-    and its documented one-retry recovery.
+    """The ``jts_turntable.py`` adapter, driven as a subprocess and never imported, so
+    each command gets a clean serial session and its documented one-retry recovery.
     """
 
     tool_path: Path = DEFAULT_TOOL_PATH
@@ -354,7 +368,7 @@ class TurntableMover:
             self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
             code = int(getattr(proc, "returncode", 1))
             error = f"{stderr}\n{payload.get('error', '')}"
-            # experiments/usb-turntable/jts_turntable.py:main emits port_busy before
+            # jasper/turntable/jts_turntable.py:main emits port_busy before
             # controller access: refused stop/position sent zero bytes, safe to retry once.
             if (
                 attempt == 1
@@ -370,6 +384,7 @@ class TurntableMover:
                     "arm_walk.vendor_tool_retried",
                     subcommand=subcommand,
                     attempt=2,
+                    **_port_holder(payload),
                 )
                 self.sleep(_VENDOR_RETRY_S)
                 continue
@@ -415,6 +430,7 @@ class TurntableMover:
             "code": payload.get("code", ""),
             "stderr_tail": self._stderr_tail or str(payload.get("error", ""))[-200:],
             "after_retry": self._after_retry or bool(payload.get("retried")),
+            **_port_holder(payload),
         }
         log_event(
             logger,

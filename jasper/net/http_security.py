@@ -174,7 +174,7 @@ def _origin_host(origin: str) -> str | None:
     return normalize_host(parsed.hostname)
 
 
-def _is_loopback_name(host: str) -> bool:
+def is_loopback_name(host: str) -> bool:
     if host == "localhost":
         return True
     ip = _parse_ip(host)
@@ -184,7 +184,7 @@ def _is_loopback_name(host: str) -> bool:
 def _same_request_origin(request_host: str, origin_host: str) -> bool:
     if request_host == origin_host:
         return True
-    return _is_loopback_name(request_host) and _is_loopback_name(origin_host)
+    return is_loopback_name(request_host) and is_loopback_name(origin_host)
 
 
 def _fetch_metadata_allowed(headers: Mapping[str, str]) -> tuple[bool, str]:

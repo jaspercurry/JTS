@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 import jasper.cli.doctor as doctor_pkg
-from jasper.cli.doctor import voice as doctor_voice
+from jasper.cli.doctor import _shared, voice as doctor_voice
 from jasper.cli.doctor._evidence import evidence as doctor_evidence
 from jasper.cli.doctor._registry import registered_checks
 from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
@@ -303,7 +303,7 @@ def test_child_output_is_length_capped(monkeypatch, probe):
     result = doctor_voice.check_provider_importable()
     assert result.status == "fail"
     assert "x" * 5000 not in result.detail
-    assert result.detail.count("x") <= doctor_voice._EXCEPTION_DETAIL_LIMIT
+    assert result.detail.count("x") <= _shared._EXCEPTION_DETAIL_LIMIT
 
 
 def test_probe_timeout_warns(monkeypatch, probe):

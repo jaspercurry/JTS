@@ -144,7 +144,7 @@ class VolumePersistence:
                 self._state_transaction_depth -= 1
 
     @asynccontextmanager
-    async def operation_lock(self, *, timeout_sec: float = 10.0):
+    async def operation_lock(self):
         """Serialize source-changing volume intents across all daemons.
 
         The state-file lock above is deliberately tiny. This separate lease may
@@ -156,7 +156,7 @@ class VolumePersistence:
         """
         async with advisory_file_lock_async(
             self._operation_lock_path,
-            timeout_sec=timeout_sec,
+            timeout_sec=10.0,
         ):
             yield
 

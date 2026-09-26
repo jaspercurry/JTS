@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.fanin_coupling import RING_A_CHANNELS
 from jasper.speaker_layout import measurement_target_id
@@ -322,39 +321,6 @@ def _sub_baseline_pipeline_lines(
         f"    channels: [{sub.physical_output_index}]",
         f"    names: [{chain}]",
     ]
-
-
-def _emit_driver_domain_pipeline(preset: ActiveSpeakerPreset) -> str:
-    # Driver-domain-only (follower) pipeline, in order: the inter-speaker
-    # channel-select (a 2->2 Mixer picking L/R/mono from the leader's corrected
-    # program), the pair-balance trim, the intra-speaker 2->N split, then each
-    # driver's crossover/delay/gain/limiter chain. One helper owns this
-    # ordering so the bass-extension-trimmed and untrimmed cases cannot fork.
-    lines = [
-        "  - type: Mixer",
-        f"    name: {CHANNEL_SELECT_MIXER}",
-    ]
-    lines.extend([
-        "  - type: Filter",
-        "    channels: [0, 1]",
-        f"    names: [{DRIVER_DOMAIN_PAIR_TRIM_FILTER}]",
-    ])
-    lines.extend([
-        "  - type: Mixer",
-        f"    name: split_active_{preset.way_count}way",
-    ])
-    for role in required_driver_roles(preset.way_count):
-        channels = _channels_for_role(preset, role)
-        chain = ", ".join(
-            _driver_baseline_filter_chain(preset, role)
-        )
-        lines.extend([
-            "  - type: Filter",
-            f"    channels: [{', '.join(str(ch) for ch in channels)}]",
-            f"    names: [{chain}]",
-        ])
-    lines.extend(_sub_baseline_pipeline_lines(preset))
-    return "\n".join(lines)
 
 
 def _commissioning_driver_filter_chain(

@@ -1,12 +1,6 @@
 # USB turntable control on JTS3
 
-> **Production tooling, deliberately under `experiments/`** — this drives
-> the turntable-based speaker measurement program and deploys to the Pi.
-> The owner accepted the path anomaly (2026-08-25 right-sizing campaign)
-> rather than force a move that would re-verify the arm tooling for no
-> behavior win.
-
-This is an experimental controller for the USB turntable on JTS3. Positioning
+Production controller for the USB turntable on JTS3. Positioning
 remains manual and opt-in: there is no voice tool, measurement scheduler, or
 permanent polling daemon. The sole automatic behavior is a bounded one-shot
 stop request when the turntable's USB serial adapter appears.
@@ -38,11 +32,11 @@ serial link, so it can't raise this error at all. This never applies to
 ## Setup
 
 Use the Pi-side checkout, normally `/home/pi/jts`, for manual commands. The
-installer separately stages the same experiment under `/opt/jasper` for the
+installer separately stages the same package under `/opt/jasper` for the
 hot-plug one-shot:
 
 ```sh
-cd /home/pi/jts/experiments/usb-turntable
+cd /home/pi/jts/jasper/turntable
 python3 --version                 # Python 3.10 or newer
 python3 jts_turntable.py --help
 lsusb

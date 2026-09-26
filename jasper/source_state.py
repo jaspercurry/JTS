@@ -190,8 +190,8 @@ async def usbsink_streaming() -> bool:
     quiet content cannot drop the source. This is the answer mux arbitrates
     on, and therefore the one every "which source owns the speaker" fallback
     must use so the two cannot disagree. The LEVEL predicate is
-    :func:`usbsink_direct_playing`, which display and ``/state`` surfaces
-    apply to a STATUS they already hold. Missing/old snapshots fail soft.
+    :func:`usbsink_direct_audible`, which ``/state`` applies to a STATUS it
+    already holds. Missing/old snapshots fail soft.
     """
 
     status = await asyncio.to_thread(read_fanin_status)
@@ -258,30 +258,6 @@ def usbsink_direct_audible(
     if rms is None:
         return None
     return rms > threshold_dbfs
-
-
-def usbsink_direct_playing(
-    fanin_status: dict[str, Any] | None,
-) -> bool | None:
-    """Current USB activity from fan-in's DIRECT lane, or ``None`` if absent.
-
-    ``direct.health`` proves capture is flowing now; ``rms_dbfs`` rejects a
-    host that is merely streaming digital silence.
-    """
-
-    lane = fanin_usbsink_input(fanin_status)
-    if not (
-        isinstance(lane, dict)
-        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
-    ):
-        return None
-    audible = usbsink_direct_audible(fanin_status)
-    if audible is None:
-        return False
-    direct = lane.get("direct")
-    if not isinstance(direct, dict):
-        return False
-    return direct.get("health") == "capturing" and audible
 
 
 async def bluetooth_playing_observed() -> bool | None:

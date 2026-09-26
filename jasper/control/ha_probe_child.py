@@ -13,30 +13,16 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from typing import Any
 
-
-# Deliberately not jasper.home_assistant.failed_status: this card is what the
-# child answers when importing that module is itself what failed.
-def _fallback(error: str) -> dict[str, Any]:
-    return {
-        "configured": False,
-        "connected": False,
-        "url": "",
-        "instance_name": None,
-        "version": None,
-        "error": error,
-    }
+from .. import home_assistant
 
 
 def main() -> int:
     rc = 0
     try:
-        from .. import home_assistant
-
         status = asyncio.run(home_assistant.probe_status_from_env())
     except Exception:  # noqa: BLE001 - child must never crash the dashboard
-        status = _fallback("probe failed")
+        status = home_assistant.failed_status("probe failed")
         rc = 1
 
     json.dump(status, sys.stdout, separators=(",", ":"))

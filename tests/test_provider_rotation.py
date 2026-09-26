@@ -70,8 +70,7 @@ async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff(persist
         delays.append(seconds)
 
     conn, factory = persistent_provider(
-        backoff_schedule=None, sleep=sleep,
-        watchdog_sec=0.05 if pending == "deferred" else None,
+        sleep=sleep, watchdog_sec=0.05 if pending == "deferred" else None,
     )
     await conn.start(ToolRegistry(), "system")
     try:

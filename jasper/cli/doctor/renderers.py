@@ -27,8 +27,8 @@ from ._shared import (
     REASON_HOSTNAME_UNREADABLE,
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
-    _PROBE_FRAMES,
-    _exception_detail,
+    PROBE_FRAMES,
+    exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
     run,
@@ -268,10 +268,8 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
 def check_librespot_running(cfg: Config) -> CheckResult:
     """Verify librespot is installed and the systemd unit is active.
 
-    librespot 0.8.0 (rust) replaced go-librespot in the debian-stack
-    on 2026-05-07 specifically for the configurable volume curve
-    (--volume-ctrl log over 60 dB range). It has no local control
-    HTTP, so health is checked via systemd state + binary version."""
+    librespot has no local control HTTP, so health is systemd state
+    plus binary presence."""
     parked = _parked_follower_result(LIBRESPOT_SERVICE)
     if parked is not None:
         return parked
@@ -286,8 +284,8 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     if not os.path.isfile(bin_path):
         return CheckResult(
             "librespot binary", "fail",
-            f"{bin_path} not present. Install: "
-            "apt install raspotify (provides librespot via .deb)",
+            f"{bin_path} not present; redeploy "
+            "(bash scripts/deploy-to-pi.sh) installs it",
             reason=REASON_LIBRESPOT_BINARY_MISSING,
         )
     state = (evidence.unit_state(LIBRESPOT_SERVICE) or {}).get(
@@ -300,7 +298,6 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "systemctl status librespot",
             reason=REASON_LIBRESPOT_NOT_ACTIVE,
         )
-    # Best-effort version line (librespot prints to stderr at startup)
     return CheckResult(
         LIBRESPOT_SERVICE, "ok",
         f"{bin_path} active (state file: {cfg.librespot_state_path})",
@@ -310,7 +307,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
 def check_shairport_sync_ap2() -> CheckResult:
     """Verify shairport-sync is installed with AirPlay 2 support
     AND the systemd unit is active. The Debian Trixie apt package
-    is AP1-only; the migration's source-build emits a binary whose
+    is AP1-only; the installer's source build emits a binary whose
     `-V` output contains 'AirPlay2'."""
     parked = _parked_follower_result("shairport-sync AP2")
     if parked is not None:
@@ -325,7 +322,7 @@ def check_shairport_sync_ap2() -> CheckResult:
     if shutil.which("shairport-sync") is None:
         return CheckResult(
             "shairport-sync AP2", "fail",
-            "binary not found. Source-build per deploy/debian-stack/README.md",
+            "binary not found; redeploy (bash scripts/deploy-to-pi.sh) builds it",
             reason=REASON_SHAIRPORT_BINARY_MISSING,
         )
     p = run(["shairport-sync", "-V"])
@@ -333,8 +330,8 @@ def check_shairport_sync_ap2() -> CheckResult:
     if "AirPlay2" not in out:
         return CheckResult(
             "shairport-sync AP2", "fail",
-            f"binary lacks --with-airplay-2 (got: {out!r}). "
-            f"Apt's package is AP1-only; rebuild from source.",
+            f"binary lacks --with-airplay-2 (got: {out!r}). Apt's package "
+            "is AP1-only; redeploy (bash scripts/deploy-to-pi.sh) rebuilds it.",
             reason=REASON_SHAIRPORT_NOT_AP2,
         )
     state = (evidence.unit_state("shairport-sync.service") or {}).get(
@@ -697,7 +694,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
-            f"could not build Spotify clients: {_exception_detail(e)}. "
+            f"could not build Spotify clients: {exception_detail(e)}. "
             f"This usually means no accounts have OAuth tokens — visit "
             f"{cfg.spotify_setup_url} to link an account.",
             reason=REASON_SPOTIFY_CLIENT_BUILD_FAILED,
@@ -718,7 +715,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             devices = ac.sp.devices()
         except Exception as e:  # noqa: BLE001
             missed_accounts.append(
-                f"{account_name} (devices fetch failed: {_exception_detail(e)})"
+                f"{account_name} (devices fetch failed: {exception_detail(e)})"
             )
             continue
         names = [(d.get("name") or "") for d in devices.get("devices", [])]
@@ -1023,7 +1020,7 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
 
-#: `timeout(1)`'s kill guard over a `_PROBE_FRAMES` burst: a kill (124) is a
+#: `timeout(1)`'s kill guard over a `PROBE_FRAMES` burst: a kill (124) is a
 #: FAILURE, since a probe that never finished proved nothing.
 _PROBE_TIMEOUT_SEC = "2.0"
 
@@ -1062,7 +1059,7 @@ def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     cannot carry one and exit 0, the marker being fatal where it prints.
 
     Otherwise ONLY a clean exit is success: aplay bounds itself at
-    `_PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
+    `PROBE_FRAMES`, so rc 0 means open, prepare, write and drain all
     completed. Everything else failed, 124 included: a killed probe finished
     nothing and proves nothing.
     """
@@ -1085,7 +1082,7 @@ def _probe_open_as_user(
     Why aplay + /dev/zero: it exercises the same code path the renderer uses
     (alsalib's snd_pcm_open through the user-space plugin chain) while writing
     only silence — additive into any mix, so safe while music is playing. The
-    burst is `_PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
+    burst is `PROBE_FRAMES`, the kill guard `_PROBE_TIMEOUT_SEC`; read both
     notes before changing either.
     """
     # `env LC_ALL=C` rides INSIDE the command because sudo resets the
@@ -1094,7 +1091,7 @@ def _probe_open_as_user(
         "env", "LC_ALL=C",
         "timeout", _PROBE_TIMEOUT_SEC,
         "aplay", "-q",
-        "-s", _PROBE_FRAMES,
+        "-s", PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
@@ -1386,7 +1383,4 @@ def check_mux_mode_state() -> CheckResult:
     A corrupt file or a pin to a source that no longer exists is
     fail-open at runtime (mux silently runs auto), so this line is the
     only place an operator learns the household's pin was dropped."""
-    path = Path(
-        os.environ.get("JASPER_MUX_MODE_STATE_PATH", _MUX_MODE_DEFAULT_PATH),
-    )
-    return _classify_mux_mode(path)
+    return _classify_mux_mode(Path(_MUX_MODE_DEFAULT_PATH))

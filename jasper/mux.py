@@ -119,6 +119,7 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
+from .spotify_router import build_router
 from .volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
@@ -127,12 +128,6 @@ logger = logging.getLogger(__name__)
 
 FANIN_CONTROL_SOCKET = os.environ.get(
     "JASPER_FANIN_CONTROL_SOCKET", FANIN_STATUS_SOCKET,
-)
-# Persisted so a household's manual pin survives the Restart=always
-# deploy/restart cycle. RuntimeDirectory is wiped on restart, so this lives
-# under /var/lib/jasper, not /run.
-MUX_MODE_STATE_PATH = os.environ.get(
-    "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
 # USB preempt is a MUTE/UNMUTE of THIS fan-in lane — the only USB-silencing
 # primitive, since fan-in DIRECT-captures the gadget as its sole live ingress
@@ -261,7 +256,7 @@ class Mux:
         self,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
         volume_coordinator: Any | None = None,
-        mode_state_path: str = MUX_MODE_STATE_PATH,
+        mode_state_path: str = mux_mode_persistence.DEFAULT_PATH,
     ) -> None:
         self._librespot_state_path = librespot_state_path
         self._mode_state_path = mode_state_path
@@ -1581,10 +1576,6 @@ class Mux:
             )
             return None
         try:
-            # lazy: an import failure here must degrade the pause path
-            # (the except below), not stop jasper-mux from starting.
-            from .spotify_router import build_router
-
             router = build_router(
                 client_id=client_id,
                 redirect_uri=resolved_spotify_redirect_uri(),

@@ -15,7 +15,7 @@ import pytest
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_SCHEMA_VERSION
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv, intent_from_env
-from jasper.cli.doctor import _evidence, _shared, aec
+from jasper.cli.doctor import _evidence, aec
 from jasper.control import aec_endpoints
 
 from .doctor_test_support import _stub_unit_active_states
@@ -418,7 +418,7 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
 
     with patch("glob.glob", return_value=sub_paths):
         # All closed → inactive.
-        assert _shared._loopback_playback_active() is False
+        assert aec._loopback_playback_active() is False
         # Flip sub2 to RUNNING → active. The reader is cached per doctor run
         # (ADR-0233 rule 4), so simulate a fresh run rather than expecting a
         # second call within the same run to re-read /proc.
@@ -426,13 +426,13 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
         (fake_root / "sub2" / "status").write_text(
             "state: RUNNING\nowner_pid   : 12345\n"
         )
-        assert _shared._loopback_playback_active() is True
+        assert aec._loopback_playback_active() is True
 
     # No status files at all (e.g., snd-aloop not loaded) → inactive,
     # never raises.
     _evidence.evidence.reset()
     with patch("glob.glob", return_value=[]):
-        assert _shared._loopback_playback_active() is False
+        assert aec._loopback_playback_active() is False
 
 
 def _reference_input_stats(
@@ -1832,7 +1832,7 @@ def test_audio_validation_passive_evidence_follows_dac_approval(
     dac_id, check_overrides, expected_reason
 ):
     statuses = {
-        name: "pass" for name in _shared._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
+        name: "pass" for name in aec._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
     }
     statuses.update({"bridge_counters": "warn", "measured_drift_delay": "not_run"})
     statuses.update(check_overrides)

@@ -47,6 +47,7 @@ from jasper.output_topology import (
     OutputTopologyError,
 )
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
+from jasper import paths
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
 from ._common import issue as _issue
@@ -64,7 +65,6 @@ from .graph_safety import (
 from .environment import (
     CAMILLA_CLASS_ACTIVE_PARKED,
     CAMILLA_CLASS_PROGRAM_BAKE,
-    DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
     parse_camilla_statefile_config_path,
     read_camilla_statefile_config_path,
@@ -92,7 +92,6 @@ logger = logging.getLogger(__name__)
 # The ONE flat outputd startup graph. It is a RING graph: the ring is the only
 # transport (ADR-0100), so there is no sibling to re-seed instead of.
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
-DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
 GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
@@ -370,10 +369,6 @@ def flat_program_graph_blocked_reason(
 
     block = flat_program_graph_block(topology)
     return block[1] if block is not None else None
-
-
-def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
-    return read_camilla_statefile_config_path(statefile_path)
 
 
 def _path_matches(left: str | Path | None, right: str | Path | None) -> bool:
@@ -1616,7 +1611,7 @@ def outputd_active_lane_decision(
     from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
 
-    primary_statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    primary_statefile = paths.camilla_statefile(statefile_path)
     _selected, primary_problem = _config_path_from_statefile_with_reason(
         primary_statefile,
         missing="camilla_statefile_missing",
@@ -1675,9 +1670,7 @@ def outputd_active_lane_decision(
             primary_graph=primary_graph,
         )
 
-    crossover_statefile = Path(
-        crossover_statefile_path or DEFAULT_CAMILLA2_STATEFILE
-    )
+    crossover_statefile = paths.crossover_statefile(crossover_statefile_path)
     crossover_graph = classify_bass_extension_graph(
         topology,
         evidence_source="persisted_boot",
@@ -1906,7 +1899,7 @@ def safe_graph_for_current_topology(
             config_path=parked_config_path,
             reason="no speaker layout is configured; parked with every output muted",
         )
-    statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    statefile = paths.camilla_statefile(statefile_path)
     applied_path = Path(applied_baseline_path or baseline_profile_state_path())
     staged_path_authority = Path(staged_metadata_path or default_staged_path())
 
@@ -2215,7 +2208,7 @@ def write_camilla_statefile(
 def apply_safe_graph_decision_to_statefile(
     decision: SafeGraphDecision,
     *,
-    statefile_path: str | Path = DEFAULT_CAMILLA_STATEFILE,
+    statefile_path: str | Path,
     topology: OutputTopology | None = None,
 ) -> bool:
     """Persist the selected graph if the statefile is absent or needs repair.
@@ -2251,7 +2244,7 @@ def apply_safe_graph_decision_to_statefile(
     # OLD statefile was proved against the NEW topology — the exact pair the
     # boot gate reads as "no mismatch", which is the one answer that must not
     # come out of a write that did not happen.
-    current = _statefile_config_path(statefile_path)
+    current = read_camilla_statefile_config_path(statefile_path)
     if _path_matches(current, decision.selected_config_path):
         stamp_statefile_topology(statefile_path, topology)
         return False

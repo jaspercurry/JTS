@@ -16,6 +16,7 @@ from .audio_health_fixtures import (
     _airplay,
     _declared_topology,
     _mux,
+    _output_hardware,
     _outputd,
     _route,
 )
@@ -247,36 +248,38 @@ def test_output_hardware_probe_failure_is_fail_soft() -> None:
     assert health["signal_path"]["code"] == "output_absent"
 
 
-def test_output_topology_probe_failure_is_fail_soft() -> None:
-    """A raising output-topology probe must not break a tick either, and
-    must not blank a previously-good cached topology (a transient read
-    failure is not "the box just uninstalled its speaker layout")."""
-    def _raise() -> None:
-        raise OSError("topology file vanished mid-read")
+def test_output_topology_read_failure_is_fail_soft(monkeypatch) -> None:
+    """A raising topology read (through the production default reader) must
+    not break a tick either, and must not blank a previously-good cached
+    topology (a transient read failure is not "the box just uninstalled its
+    speaker layout")."""
+    reads: list[OutputTopologySnapshot | None] = [None, _declared_topology(), None]
 
+    def _load() -> OutputTopologySnapshot:
+        snapshot = reads.pop(0)
+        if snapshot is None:
+            raise OSError("topology file vanished mid-read")
+        return snapshot
+
+    monkeypatch.setattr(audio_health_sampler, "load_output_topology_snapshot", _load)
     sampler = AudioHealthSampler(
         airplay_sampler=_FakeAirPlay([_airplay()]),
         outputd_probe=lambda: None,
         mux_probe=lambda: {"sources": {}},
         route_probe=_route,
-        output_hardware_probe=lambda: OutputHardwareState(
-            profile_id="dual_apple_usb_c_dac_4ch",
-            profile_label="Dual Apple USB-C DAC 4-channel pair",
-            status="ready",
-            physical_output_count=4,
-            apple_dac_count=2,
-        ),
-        output_topology_probe=_raise,
+        route_interval_sec=0.0,
+        output_hardware_probe=_output_hardware,
         time_fn=lambda: 1000.0,
     )
 
-    sampler._tick()
-    health = sampler.snapshot()
+    codes = []
+    for _ in range(3):
+        sampler._tick()
+        codes.append(sampler.snapshot()["signal_path"]["code"])
 
-    assert health is not None
-    # No cached topology yet (first tick, probe raised) -- fails toward the
-    # pre-existing generic message rather than guessing a mismatch.
-    assert health["signal_path"]["code"] == "output_absent"
+    # With nothing cached yet, a failed read falls back to the generic
+    # verdict rather than guessing a mismatch.
+    assert codes == ["output_absent", "undeclared_hardware", "undeclared_hardware"]
 
 
 def test_output_topology_probe_runs_on_the_slow_route_cadence_not_every_tick() -> None:

@@ -38,7 +38,6 @@ from ...fanin.latency_mode import (
     options as _usb_latency_options,
     read_state as _read_usb_latency_state,
 )
-from ...install_profile import system_capabilities_for_profile
 from ...local_sources import (
     local_source_audio_refresh_units,
     local_source_park_units,
@@ -46,9 +45,11 @@ from ...local_sources import (
 from ...log_event import log_event
 from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
 from .. import aec_endpoints
+from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker
 from .. import state_aggregate
+from .. import transport_eligibility
 from .. import usb_gadget_forensics
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
@@ -241,8 +242,6 @@ def _camilla_topology_gate_field(action: str) -> dict[str, Any]:
     """
     if action != "restart-audio":
         return {}
-    from .. import camilla_topology_gate_state
-
     state = _safe("topology gate", camilla_topology_gate_state.snapshot, {})
     if not isinstance(state, dict) or not state.get("refused"):
         return {}
@@ -345,11 +344,9 @@ class SystemRoutes(ControlHandlerMixin):
         cached verdict when it has one, so every row in the payload is the
         same observation; the module's own fail-soft read otherwise, because
         the route must keep answering without a sampler."""
-        from ..transport_eligibility import snapshot
-
         return getattr(
             self._audio_health_sampler, "transport_park_snapshot", None,
-        ) or snapshot
+        ) or transport_eligibility.snapshot
 
     def _get_healthz(self) -> None:
         self._send_json({"ok": True})
@@ -398,10 +395,10 @@ class SystemRoutes(ControlHandlerMixin):
         # home_assistant connection status.
         # Sampler may be None in tests / direct CLI invocation;
         # surface an empty history rather than 500.
-        from ..system_metrics import read_build_info
-        from ...voice.provider_state import read_active_provider
+        from ..system_metrics import read_build_info  # lazy: test patch boundary (tests/test_system_metrics.py)
+        from ...voice.provider_state import read_active_provider  # lazy: import cost, jasper.voice.* stays off control startup
 
-        ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
+        ha_status = state_aggregate.ha_status(self._ha_status_cache.snapshot)
 
         def _read_airplay_health() -> Any:
             if self._audio_health_sampler is None:
@@ -413,8 +410,8 @@ class SystemRoutes(ControlHandlerMixin):
             # route re-probes nothing (ADR-0233 rule 2); same shaper either way.
             cached = getattr(self._audio_health_sampler, "outputd_snapshot", None)
             if cached is None:
-                return asyncio.run(state_aggregate._outputd_status())
-            return state_aggregate._outputd_section(cached())
+                return asyncio.run(state_aggregate.outputd_status())
+            return state_aggregate.outputd_section(cached())
 
         airplay_health = _safe("airplay health", _read_airplay_health)
         outputd_status = _safe("outputd status", _read_outputd_status)
@@ -427,7 +424,6 @@ class SystemRoutes(ControlHandlerMixin):
         )
         park_reader = self._transport_park_reader()
 
-        install_profile = self._install_profile()
         payload: dict[str, Any] = {
             "build": read_build_info(),
             "transport_park": park_reader(),
@@ -444,11 +440,8 @@ class SystemRoutes(ControlHandlerMixin):
             "audio_quality": _safe_audio_quality_state(),
             "usb_latency": _safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
-            "speaker_name": state_aggregate._speaker_name_section(),
+            "speaker_name": state_aggregate.speaker_name_section(),
             "home_assistant": ha_status,
-            "system_capabilities": system_capabilities_for_profile(
-                install_profile,
-            ),
             "usb_gadget_forensics": usb_gadget_forensics.snapshot(),
         }
         self._send_json(payload)
@@ -697,7 +690,7 @@ class SystemRoutes(ControlHandlerMixin):
         # (consistent with the wizards). Anyone already on the
         # trusted WiFi can trigger these; the dashboard's
         # confirm dialogs are UX, not security.
-        parked = _peering._pair_follower_leader_addr() is not None
+        parked = _peering.pair_follower_leader_addr() is not None
         restart_units: list[str] = []
         try_restart_units: list[str] = []
         if self.path == "/system/restart/voice":

@@ -23,11 +23,12 @@ import io
 import json
 import shutil
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import pytest
 
-from jasper.web import _common, wake_setup
+from jasper.web import _common, chrome, wake_setup
 from jasper.web._common import RestartOutcome
 
 
@@ -212,6 +213,16 @@ def test_get_root_renders_canonical_page(tmp_path):
     assert cap["status"] == 200
     assert b"/assets/app.css" in cap["body"]
     assert b"app-header" in cap["body"]
+
+
+def test_get_root_shows_the_flash_a_save_left(tmp_path):
+    _make_request.state_path = str(tmp_path / "wake_model.env")
+    flash = "Saved Alexa."
+    h, cap = _make_request(
+        "GET", "/", cookie=f"{_common.FLASH_COOKIE_NAME}={urllib.parse.quote(flash)}",
+    )
+    h.do_GET()
+    assert chrome.canonical_banner(flash).encode() in cap["body"]
 
 
 def test_get_detection_json_proxies_aec(tmp_path, monkeypatch):

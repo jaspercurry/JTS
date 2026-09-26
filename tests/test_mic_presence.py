@@ -18,13 +18,11 @@ import pytest
 
 from jasper.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
-    MIC_ABSENT_CHIP_AEC_VALIDATING,
     MIC_ABSENT_GENERIC_DETAIL,
     MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
     MIC_ABSENT_UNKNOWN,
     MicPresence,
     read_mic_presence,
-    voice_park_is_transient,
 )
 
 
@@ -164,26 +162,6 @@ def test_only_a_vocabulary_code_reads_back_as_one(
     assert mp.present is False
     assert mp.reason == reason
     assert mp.detail == detail
-
-
-@pytest.mark.parametrize(
-    ("body", "transient"),
-    [
-        (f"reason={MIC_ABSENT_CHIP_AEC_VALIDATING}\n", True),
-        (f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n", False),
-        # Fail-safe: an unreadable code is a real absence, so the shutdown cue
-        # (ADR-0239) still fires.
-        ("reason=nonsense\n", False),
-        ("", False),
-    ],
-    ids=("validating", "real-absence", "unknown-code", "no-marker-body"),
-)
-def test_transient_is_a_property_of_the_code(
-    paths: tuple[Path, Path], body: str, transient: bool
-) -> None:
-    _, marker = paths
-    marker.write_text(body)
-    assert voice_park_is_transient() is transient
 
 
 def test_marker_wins_over_stale_xvf_json(paths: tuple[Path, Path]) -> None:

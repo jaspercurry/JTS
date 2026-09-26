@@ -293,43 +293,6 @@ def test_is_available_for_present_external_file(tmp_path: Path):
     assert wake_models.is_available(fake) is True
 
 
-# ---------- Threshold logic -----------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "state",
-    [
-        pytest.param({}, id="absent"),
-        pytest.param({"JASPER_WAKE_THRESHOLD": "not-a-float"}, id="malformed"),
-        pytest.param({"JASPER_WAKE_THRESHOLD": "9.0"}, id="out_of_range"),
-    ],
-)
-def test_active_threshold_falls_back_to_default(monkeypatch, state):
-    """An absent, malformed, or out-of-range value must not break the page —
-    fall through to the next source, ultimately the compiled default."""
-    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    assert wake_setup._active_threshold(state) == wake_setup.DEFAULT_WAKE_THRESHOLD
-
-
-def test_active_threshold_reads_from_state(monkeypatch):
-    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    assert wake_setup._active_threshold(
-        {"JASPER_WAKE_THRESHOLD": "0.3"},
-    ) == 0.3
-
-
-def test_active_threshold_state_wins_over_env(monkeypatch):
-    monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.7")
-    assert wake_setup._active_threshold(
-        {"JASPER_WAKE_THRESHOLD": "0.4"},
-    ) == 0.4
-
-
-def test_active_threshold_falls_back_to_env(monkeypatch):
-    monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.2")
-    assert wake_setup._active_threshold({}) == 0.2
-
-
 # ---------- Page render ----------------------------------------------------
 
 

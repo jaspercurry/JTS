@@ -16,7 +16,7 @@ sits). Mute stays open as the emergency door; any other level write,
 including unmute, is refused while the hold is live.
 
 Why the fact has to live HERE and not in the volume coordinator:
-``jasper.control.volume_ops._with_coordinator`` builds a **fresh**
+``jasper.control.volume_ops.with_coordinator`` builds a **fresh**
 ``VolumeCoordinator`` per HTTP request and disposes it in ``finally``, so no
 in-memory measurement state can survive between two requests there. This
 module is process-scoped instead — the same lifetime as jasper-control
@@ -415,10 +415,9 @@ def read_measurement_hold() -> dict[str, Any] | None:
     ``None`` means "jasper-control could not be asked" and is deliberately
     distinct from ``{"active": False}`` ("asked, and nothing is held") —
     callers that must degrade conservatively can only do so if those two are
-    not conflated. The client import is lazy so importing this module inside
-    jasper-control stays free of it.
+    not conflated.
     """
-    from ..platform.control_client import ControlError, get_measurement
+    from ..platform.control_client import ControlError, get_measurement  # lazy: test patch boundary (tests/test_measurement_hold.py)
 
     try:
         hold = get_measurement()

@@ -35,7 +35,7 @@ import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
 from jasper.install_profile import (
@@ -49,8 +49,23 @@ from jasper.active_speaker.audition import recover_web_audition
 from jasper.camilla import primary_controller
 
 from ..accounts import registry_path as spotify_registry_path
+from ..env_load import SPEAKER_NAME_ENV_PATH, VOICE_PROVIDER_ENV_PATH
 from ..google_creds import registry_path as google_registry_path
 from ..platform import systemd as _systemd
+from . import (
+    google_setup,
+    home_assistant_setup,
+    rooms_setup,
+    sound_setup,
+    sources_setup,
+    speaker_setup,
+    spotify_setup,
+    tools_setup,
+    transit_setup,
+    voice_setup,
+    weather_setup,
+    wifi_setup,
+)
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -63,7 +78,7 @@ class WizardSpec:
     label: str
     env_var: str
     default_port: int
-    make_server: Callable[[object], object]
+    make_server: Callable[..., ThreadingHTTPServer]
     requires: Capability | None
 
     def port(self) -> int:
@@ -162,7 +177,7 @@ def _make_lazy_wake_corpus_server(
     *,
     output_dir: Path,
     ports: dict[str, int],
-):
+) -> ThreadingHTTPServer:
     """Bind `/wake-corpus/` without importing NumPy until first use."""
 
     class _LazyWakeCorpusHandler(BaseHTTPRequestHandler):
@@ -184,7 +199,7 @@ def _make_lazy_wake_corpus_server(
                     ports=ports,
                 )
                 backend.start()
-                real_cls = wake_corpus_setup._make_handler_class(backend)
+                real_cls = wake_corpus_setup.make_handler_class(backend)
 
                 for base in reversed(real_cls.mro()):
                     if base in {
@@ -227,43 +242,28 @@ def _make_lazy_wake_corpus_server(
     return _systemd.make_http_server(target, _LazyWakeCorpusHandler)
 
 
-def _make_spotify_server(target: object) -> object:
-    from . import spotify_setup
-
+def _make_spotify_server(target: object) -> ThreadingHTTPServer:
     return spotify_setup.make_server(
         target,
         registry_path=spotify_registry_path(),
     )
 
 
-def _make_voice_server(target: object) -> object:
-    from . import voice_setup
-
+def _make_voice_server(target: object) -> ThreadingHTTPServer:
     return voice_setup.make_server(
         target,
         state_path=os.environ.get(
             "JASPER_VOICE_PROVIDER_FILE",
-            voice_setup.PROVIDER_FILE,
+            VOICE_PROVIDER_ENV_PATH,
         ),
     )
 
 
-def _make_google_server(target: object) -> object:
-    from . import google_setup
-
+def _make_google_server(target: object) -> ThreadingHTTPServer:
     return google_setup.make_server(target, registry_path=google_registry_path())
 
 
-def _make_sources_server(target: object) -> object:
-    from . import sources_setup
-
-    return sources_setup.make_server(target)
-
-
-def _make_speaker_server(target: object) -> object:
-    from . import speaker_setup
-    from ..env_load import SPEAKER_NAME_ENV_PATH
-
+def _make_speaker_server(target: object) -> ThreadingHTTPServer:
     return speaker_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -273,15 +273,11 @@ def _make_speaker_server(target: object) -> object:
     )
 
 
-def _make_wake_server(target: object) -> object:
-    from . import wake_setup
+def _make_wake_server(target: object) -> ThreadingHTTPServer:
+    from . import wake_setup  # lazy: only a wake-detection tier builds it
 
     return wake_setup.make_server(
         target,
-        state_path=os.environ.get(
-            "JASPER_WAKE_MODEL_FILE",
-            wake_setup.WAKE_MODEL_FILE,
-        ),
         control_base=os.environ.get(
             "JASPER_CONTROL_BASE",
             wake_setup.DEFAULT_CONTROL_BASE,
@@ -289,109 +285,7 @@ def _make_wake_server(target: object) -> object:
     )
 
 
-def _make_wifi_server(target: object) -> object:
-    from . import wifi_setup
-
-    return wifi_setup.make_server(target)
-
-
-def _make_rooms_server(target: object) -> object:
-    from . import rooms_setup
-
-    return rooms_setup.make_server(target)
-
-
-def _make_tools_server(target: object) -> object:
-    from . import tools_setup
-
-    return tools_setup.make_server(
-        target,
-        catalog_path=os.environ.get(
-            "JASPER_TOOLS_CATALOG_FILE",
-            tools_setup.DEFAULT_CATALOG_PATH,
-        ),
-        state_path=os.environ.get(
-            "JASPER_TOOL_STATE_FILE",
-            tools_setup.TOOL_STATE_FILE,
-        ),
-        prompt_overrides_path=os.environ.get(
-            "JASPER_TOOL_PROMPT_OVERRIDES_FILE",
-            tools_setup.PROMPT_OVERRIDES_FILE,
-        ),
-    )
-
-
-def _transit_state_path() -> str:
-    from . import transit_setup
-
-    return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
-
-
-def _routes_secret_path() -> str:
-    from . import transit_setup
-
-    return os.environ.get(
-        "JASPER_GOOGLE_ROUTES_FILE",
-        transit_setup.GOOGLE_ROUTES_SECRET_FILE,
-    )
-
-
-def _weather_state_path() -> str:
-    from . import weather_setup
-
-    return os.environ.get("JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE)
-
-
-def _make_transit_server(target: object) -> object:
-    from . import transit_setup
-
-    return transit_setup.make_server(
-        target,
-        state_path=_transit_state_path(),
-        routes_secret_path=_routes_secret_path(),
-        weather_path=_weather_state_path(),
-    )
-
-
-def _make_ha_server(target: object) -> object:
-    from . import home_assistant_setup
-
-    return home_assistant_setup.make_server(
-        target,
-        state_path=os.environ.get(
-            "JASPER_HA_FILE",
-            home_assistant_setup.HA_ENV_FILE,
-        ),
-    )
-
-
-def _make_weather_server(target: object) -> object:
-    from . import weather_setup
-
-    return weather_setup.make_server(
-        target,
-        state_path=_weather_state_path(),
-        transit_path=_transit_state_path(),
-    )
-
-
-def _make_sound_server(target: object) -> object:
-    from . import sound_setup
-
-    return sound_setup.make_server(
-        target,
-        profile_path=os.environ.get(
-            "JASPER_SOUND_PROFILE_PATH",
-            sound_setup.PROFILE_PATH,
-        ),
-        config_dir=os.environ.get(
-            "JASPER_SOUND_CONFIG_DIR",
-            sound_setup.DEFAULT_CONFIG_DIR,
-        ),
-    )
-
-
-def _make_wake_corpus_server(target: object) -> object:
+def _make_wake_corpus_server(target: object) -> ThreadingHTTPServer:
     return _make_lazy_wake_corpus_server(
         target,
         output_dir=Path(
@@ -404,12 +298,8 @@ def _make_wake_corpus_server(target: object) -> object:
     )
 
 
-# `requires` is what makes a wizard reachable, so it is the tier gate:
-# ASSISTANT for the pages that configure what the assistant says and does
-# (provider, tool packs, integrations), WAKE_DETECTION for the always-on
-# wake/mic/AEC pages, None for the renderer/DSP/network pages every tier
-# hosts. Granting a tier a capability is then the ONLY edit needed to make
-# its wizards appear — nothing here names a profile.
+# `requires` is the tier gate: WAKE_DETECTION for the always-on wake/mic/AEC
+# pages, None for the pages every tier hosts. Nothing here names a profile.
 WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
@@ -417,14 +307,14 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     ),
     WizardSpec(
         "/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
         "/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server,
-        requires=Capability.ASSISTANT,
+        requires=None,
     ),
     WizardSpec(
-        "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,
+        "/sources", "JASPER_SOURCES_WEB_PORT", 8773, sources_setup.make_server,
         requires=None,
     ),
     WizardSpec(
@@ -432,20 +322,20 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
         requires=Capability.WAKE_DETECTION,
     ),
     WizardSpec(
-        "/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server,
+        "/wifi", "JASPER_WIFI_WEB_PORT", 8775, wifi_setup.make_server,
         requires=None,
     ),
     WizardSpec(
-        "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, _make_transit_server,
-        requires=Capability.ASSISTANT,
+        "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, transit_setup.make_server,
+        requires=None,
     ),
     WizardSpec(
-        "/ha", "JASPER_HA_WEB_PORT", 8778, _make_ha_server,
-        requires=Capability.ASSISTANT,
+        "/ha", "JASPER_HA_WEB_PORT", 8778, home_assistant_setup.make_server,
+        requires=None,
     ),
     WizardSpec(
-        "/weather", "JASPER_WEATHER_WEB_PORT", 8779, _make_weather_server,
-        requires=Capability.ASSISTANT,
+        "/weather", "JASPER_WEATHER_WEB_PORT", 8779, weather_setup.make_server,
+        requires=None,
     ),
     WizardSpec(
         "/wake-corpus", "JASPER_WAKE_CORPUS_WEB_PORT", 8782,
@@ -456,16 +346,16 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
         requires=None,
     ),
     WizardSpec(
-        "/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server,
+        "/sound", "JASPER_SOUND_WEB_PORT", 8784, sound_setup.make_server,
         requires=None,
     ),
     WizardSpec(
-        "/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server,
+        "/rooms", "JASPER_ROOMS_WEB_PORT", 8785, rooms_setup.make_server,
         requires=None,
     ),
     WizardSpec(
-        "/tools", "JASPER_TOOLS_WEB_PORT", 8786, _make_tools_server,
-        requires=Capability.ASSISTANT,
+        "/tools", "JASPER_TOOLS_WEB_PORT", 8786, tools_setup.make_server,
+        requires=None,
     ),
 )
 
@@ -532,10 +422,14 @@ def main() -> int:
         wizards=",".join(spec.label for spec in specs),
     )
 
-    servers: list[tuple[WizardSpec, int, object]] = []
+    # Built before the servers so /sound's handler can hold the process up
+    # across audition work a request starts but never awaits (issue #1854).
+    tracker = _systemd.IdleShutdownTracker()
+    servers: list[tuple[WizardSpec, int, ThreadingHTTPServer]] = []
     for spec in specs:
         port = spec.port()
-        servers.append((spec, port, spec.make_server(target_for(port))))
+        hold = {"idle_hold": tracker.hold} if spec.label == "/sound" else {}
+        servers.append((spec, port, spec.make_server(target_for(port), **hold)))
 
     # The .socket unit is static and binds ports this tier's capabilities may
     # not grant. Left unaccepted they hang nginx and re-trigger the unit
@@ -549,10 +443,8 @@ def main() -> int:
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
     # patch each one's log_request to bump the shared tracker.
-    tracker = _systemd.IdleShutdownTracker()
     for spec, _, server in servers:
         if spec.label == "/sound":
-            server.RequestHandlerClass.idle_hold = staticmethod(tracker.hold)
             with tracker.hold("speaker audition recovery"):
                 asyncio.run(recover_web_audition(primary_controller()))
         _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)

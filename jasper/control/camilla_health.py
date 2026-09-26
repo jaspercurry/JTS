@@ -26,7 +26,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
     read_camilla_devices_config,
 )
-from jasper.control._health_fields import _as_int
+from jasper.control._health_fields import as_int
 from jasper.control.camilla_rate_storm import (
     STORM_SAMPLE_INTERVAL_SEC,
     CamillaRateStorm,
@@ -57,8 +57,8 @@ def classify_camilla_line(unit: str, line: str) -> dict[str, Any] | None:
         return None
     m = CAMILLA_SHORT_READ_RE.search(line)
     if m:
-        frames_read = _as_int(m.group("read"))
-        frames_requested = _as_int(m.group("requested"))
+        frames_read = as_int(m.group("read"))
+        frames_requested = as_int(m.group("requested"))
         deficit = max(0, frames_requested - frames_read)
         if frames_requested > 0:
             benign_deficit = math.ceil(

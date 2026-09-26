@@ -16,7 +16,6 @@ from __future__ import annotations
 FLAT_EVENT_NAMES: tuple[str, ...] = (
     "active_speaker_baseline_config_written",
     "active_speaker_commissioning_config_written",
-    "active_speaker_driver_domain_config_written",
     "active_speaker_program_bake_config_written",
     "active_speaker_program_config_written",
     "active_speaker_startup_config_written",

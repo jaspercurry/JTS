@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 
-from jasper.control import audio_health
+from jasper.control import audio_health_sampler
 from jasper.control.audio_health import compose_audio_health
 from jasper.control.audio_incidents import (
     INCIDENT_HISTORY_MAX_BYTES,
@@ -285,7 +285,7 @@ def test_attribution_survives_incident_store_round_trip_and_drops_bad_token(
         ring={"attached": True}, rx_bytes_per_sec=100.0,
         rx_bytes_per_sec_baseline=1000.0,
     )
-    context = audio_health._incident_context(airplay, None, "airplay")
+    context = audio_health_sampler._incident_context(airplay, None, "airplay")
     assert context["attribution"]["verdict"] == "network"
 
     record = {

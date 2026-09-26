@@ -580,7 +580,7 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
 
     import numpy as np
 
-    from jasper.audio_measurement.alignment import (
+    from jasper.audio_measurement.alignment import (  # lazy: import cost, numpy/scipy stay out of jasper-aec-init
         alignment_at,
         correlation,
         cross_correlation_alignment,
@@ -669,7 +669,7 @@ def _capture_windows(
 
     import numpy as np
 
-    from jasper.audio_measurement.alignment import cross_correlation_alignment
+    from jasper.audio_measurement.alignment import cross_correlation_alignment  # lazy: import cost, numpy/scipy stay out of jasper-aec-init
 
     starts = [
         cross_correlation_alignment(channels[:, index], active, sample_rate=RATE).lag_samples
@@ -807,7 +807,7 @@ def commissioning_stimulus() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     import numpy as np
 
-    from jasper.audio_measurement.sweep import synchronized_swept_sine
+    from jasper.audio_measurement.sweep import synchronized_swept_sine  # lazy: import cost, numpy stays out of jasper-aec-init
 
     sweep, _ = synchronized_swept_sine(
         f1=300, f2=3_600, duration_approx_s=0.30, sample_rate=PLAYBACK_RATE,
