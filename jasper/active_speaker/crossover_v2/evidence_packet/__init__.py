@@ -43,9 +43,11 @@ from ..prescription_contract import (
 from ..record_index import Measurement, bundle_measurements
 from ..round_inputs import (
     NO_ROUND_ARTIFACTS_REASON,
+    PACKET_FILENAME,
     STATE_SESSION_UNKNOWN,
     CrossoverEvidencePacketError,
     RoundInputs,
+    banked_round_of,
     contract_sources,
     round_artifact_dir,
     round_inputs,
@@ -109,7 +111,10 @@ __all__ = [
     "PACKET_SCHEMA_VERSION",
     "RING_SIDECAR_GLOB",
     "CrossoverEvidencePacketError",
+    "EVIDENCE_KEY",
     "build_crossover_evidence_packet",
+    "build_round_evidence",
+    "round_evidence",
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
     "packet_positional_evidence",
@@ -122,6 +127,10 @@ __all__ = [
     "REPEAT_FLOOR_UNUSABLE",
     "STRUCTURAL_HISTORY_AXES",
 ]
+
+#: ``packet.json``'s copy of the packet its bank built, less the derived views
+#: and the fingerprint, which ``packet.json`` carries beside it.
+EVIDENCE_KEY = "evidence"
 
 #: The one block that carries operator prose. Named in ``privacy`` so the
 #: document points at its own quarantine, and asserted to RESOLVE by
@@ -515,10 +524,10 @@ def build_crossover_evidence_packet(
     holding the round receipt, the cloud evidence, each phase's finding set
     and the per-position records.
 
-    Every other path is OPTIONAL and INJECTED rather than resolved here — this
-    packet is rebuilt by every reader, and a path resolved here would make a
-    banked round's answer, and its ``packet_fingerprint``, depend on whatever
-    the READING machine happens to have. Each absence is reported in the
+    Every other path is OPTIONAL and INJECTED rather than resolved here — a
+    path resolved here would make a round's answer, and its
+    ``packet_fingerprint``, depend on whatever the BUILDING machine happens to
+    have. Each absence is reported in the
     ``not_evaluated`` block rather than papered over, and each costs the packet
     something specific:
 
@@ -740,3 +749,40 @@ def build_crossover_evidence_packet(
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
+
+
+def build_round_evidence(inputs: RoundInputs) -> dict[str, Any]:
+    """The packet built from the round's own inputs, as its bank builds it.
+
+    A live session is built without its flow state and CamillaDSP statefile:
+    both are rewritten as it runs, and would move its fingerprint (#3316). A
+    banked round's copies are frozen.
+    """
+    return build_crossover_evidence_packet(
+        inputs.session_dir, round_context=inputs,
+        state_path=inputs.state_path if inputs.banked else None,
+        statefile_path=inputs.statefile_path if inputs.banked else None,
+        driver_draft_path=inputs.design_draft_path, applied_profile_path=inputs.applied_profile_path,
+        repeat_floor_path=inputs.repeat_floor_path, declared_geometry_path=inputs.declared_geometry_path,
+    )
+
+
+def round_evidence(inputs: RoundInputs) -> dict[str, Any]:
+    """The round's packet as its bank stored it in ``packet.json``, derived views read now.
+
+    A round with no stored packet (a live session, a laptop-banked tree, a
+    round banked before the bank stored one) is built from its inputs, and
+    answers with any fingerprint its bank stored.
+    """
+    # See ADR-0371
+    round_dir = banked_round_of(inputs.session_dir)
+    stored = _mapping(_read_json(round_dir / PACKET_FILENAME)[0]) if round_dir else {}
+    evidence = stored.get(EVIDENCE_KEY)
+    if isinstance(evidence, dict):
+        artifact_dir, reason = round_artifact_dir(inputs.session_dir)
+        if artifact_dir is None:
+            raise CrossoverEvidencePacketError(f"{reason}: {inputs.session_dir}")
+        packet = {**evidence, DERIVED_VIEWS: _derived_views_block(artifact_dir, inputs)}
+    else:
+        packet = build_round_evidence(inputs)
+    return {**packet, "packet_fingerprint": stored.get("packet_fingerprint") or packet.get("packet_fingerprint")}

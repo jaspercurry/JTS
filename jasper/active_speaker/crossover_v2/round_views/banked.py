@@ -15,7 +15,7 @@ import numpy as np
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
-    build_crossover_evidence_packet,
+    round_evidence,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundInputs,
@@ -62,15 +62,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     round_dir = Path(round_dir)
     inputs = round_inputs(round_dir)
     try:
-        packet = build_crossover_evidence_packet(
-            inputs.session_dir,
-            state_path=inputs.state_path,
-            driver_draft_path=inputs.design_draft_path,
-            applied_profile_path=inputs.applied_profile_path,
-            repeat_floor_path=inputs.repeat_floor_path,
-            declared_geometry_path=inputs.declared_geometry_path,
-            statefile_path=inputs.statefile_path,
-        )
+        packet = round_evidence(inputs)
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
 

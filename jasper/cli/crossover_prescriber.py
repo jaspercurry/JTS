@@ -25,7 +25,7 @@ from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     DERIVED_VIEWS, CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
-    packet_feature_classifications, packet_region_band_hz,
+    packet_feature_classifications, packet_region_band_hz, round_evidence,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -189,6 +189,9 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
     if args.session_dir is None:
         raise CrossoverEvidencePacketError("name a round directory")
     inputs = inputs or round_inputs(Path(args.session_dir))
+    if not any((args.state, args.drivers, args.applied_profile, args.repeat_floor, args.declared_geometry)):
+        return round_evidence(inputs)
+    # A status what-if: built from the inputs named, fingerprinted as built.
     return build_crossover_evidence_packet(
         inputs.session_dir, round_context=inputs,
         # No default for the flow state: the web host rewrites it as a round

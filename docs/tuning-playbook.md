@@ -12,7 +12,9 @@ once, asks analysis views for missing answers, and writes one prescription.
 It does not direct an active measurement.
 
 `packet.json` holds the numbers. `index.md` names them and the commands.
-`frequency.png` shows the response. Read `result` and `reason`, then `applied`
+`frequency.png` shows the response. `evidence` is the round's evidence packet,
+built once when the round was banked; `packet_fingerprint` names it, and every
+candidate composed against the round records it (ADR-0371). Read `result` and `reason`, then `applied`
 identity and `layers`, then the program evidence. Speaker evidence is in
 `fits`; room and bass evidence is in `packet["room"]` and `packet["bass"]`,
 one entry per set. Artifact paths remain as fallbacks for failed views. A

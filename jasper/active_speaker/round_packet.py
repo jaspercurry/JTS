@@ -17,7 +17,7 @@ from .applied_identity import applied_identity
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
-from .crossover_v2.evidence_packet import build_crossover_evidence_packet
+from .crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_round_evidence
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
@@ -211,20 +211,16 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         except ROUND_INPUT_ERRORS as exc:
             limits[group["set_id"]] = {"status": "unavailable", "reason": getattr(exc, "reason", "evidence_unreadable")}
     try:
-        fingerprint = build_crossover_evidence_packet(
-            inputs.session_dir, round_context=inputs, driver_draft_path=inputs.design_draft_path,
-            applied_profile_path=inputs.applied_profile_path, repeat_floor_path=inputs.repeat_floor_path,
-            declared_geometry_path=inputs.declared_geometry_path,
-        )["packet_fingerprint"]
+        evidence = build_round_evidence(inputs)
     except ROUND_INPUT_ERRORS as exc:
-        fingerprint = None
-        errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
+        evidence = {}
+        errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(exc, "reason", "evidence_unavailable")})
     clouds = design_clouds(inputs, manifest)
     alignments, alignment_verdict = round_alignment(
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
     axis = commissioning_alignment(alignments) or {}
-    packet = {"schema": "jts_round_packet/2", "round_id": target.name, "run_id": manifest.get("run_id"),
+    packet = {"schema": "jts_round_packet/3", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
@@ -243,7 +239,10 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "next_action": timing_next_action(alignment_verdict or {},
                   measured=axis.get("timing_verdict") == TIMING_MEASURED,
                   needs_measurement=axis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT),
-              "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
+              "packet_fingerprint": evidence.get("packet_fingerprint"),
+              EVIDENCE_KEY: {key: value for key, value in evidence.items()
+                             if key not in ("packet_fingerprint", DERIVED_VIEWS)} or None,
+              "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)

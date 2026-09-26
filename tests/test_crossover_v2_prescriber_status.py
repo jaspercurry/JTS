@@ -42,7 +42,7 @@ from tests.test_round_inputs import _bank_packet
 from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
-from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
+from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
@@ -221,13 +221,13 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 ):
     session, _ = _speaker_dirs(tmp_path)
     seen: dict[str, Any] = {}
-    build = cli.build_crossover_evidence_packet
+    build = evidence_packet.build_crossover_evidence_packet
 
     def _spy(session_dir: Path, **kwargs: Any) -> dict[str, Any]:
         seen.update(kwargs, session_dir=session_dir)
         return build(session_dir, **kwargs)
 
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _spy)
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", _spy)
     _status([str(session)], capsys)  # no --state/--drivers/--applied-profile
 
     assert seen == {
@@ -372,7 +372,7 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
     session, _ = _speaker_dirs(tmp_path)
     monkeypatch.setattr(
         cli,
-        "build_crossover_evidence_packet",
+        "round_evidence",
         lambda *a, **k: {"session": {"round_id": "from-the-builder"}, "round":
                          {"available": True}},
     )
@@ -680,7 +680,7 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(level))
     _bank_reference(level, -9.0)
     packet_builder = []
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", lambda *a, **kw: packet_builder.append(kw))
+    monkeypatch.setattr(cli, "round_evidence", lambda *a, **kw: packet_builder.append(kw))
     before = _tree(tmp_path)
 
     code, payload = _status([], capsys)
