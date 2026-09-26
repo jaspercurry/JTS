@@ -75,8 +75,8 @@ _PROGRAM_PROMPT_LINES = {
         "a person any bearing.",
     ),
     "bass": (
-        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --poses bass/nearfield "
-        "--mover human (microphone 3 cm from the woofer).",
+        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --poses seat_express "
+        "--mover human (microphone at the seat).",
     ),
 }
 

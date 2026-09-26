@@ -38,7 +38,6 @@ from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
-    REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
@@ -276,7 +275,7 @@ class AngleStop:
     def plays_summed(self) -> bool:
         """Whether this stop plays a summed graph (the scope a summed sweep
         rides); a stop naming its driver plays that driver alone instead."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD) and not self.driver
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.driver
 
     @property
     def place(self) -> tuple[object, ...]:
@@ -716,7 +715,6 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 

@@ -59,7 +59,6 @@
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]}
     ]},
-    "bass_nearfield": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "headline": "Place the microphone at the woofer", "detail": "Place the microphone capsule 3 cm from the centre of the woofer cone, pointed straight at it. Keep it still for all passes."}]},
     "bass_axis": {"mover": "arm", "poses": [{"azimuth_deg": 0, "elevation_deg": 0}]},
     "room_quick": {"mover": "arm", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0},
@@ -108,7 +107,6 @@
     {"id": "bass", "size": "axis", "layout": "bass_axis", "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
     {"id": "bass", "size": "cloud", "layout": "seat_cloud", "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
     {"id": "bass", "size": "quick", "layout": "room_quick", "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
-    {"id": "bass", "size": "nearfield", "layout": "bass_nearfield", "purpose": "bass", "regime": "near_field", "levels": "auto", "stimulus": "bass"},
     {"id": "close", "size": "spot", "layout": "close_spot", "purpose": "reference", "regime": "summed"},
     {"id": "nearfield", "size": "woofer", "layout": "nearfield_woofer", "purpose": "reference", "regime": "near_field"},
     {"id": "nearfield", "size": "rear", "layout": "nearfield_rear", "purpose": "reference", "regime": "near_field"},

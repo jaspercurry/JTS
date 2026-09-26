@@ -21,7 +21,7 @@ from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitati
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.measurement_programs import gate_exemption, load_programs, program, run_program, validated_capture_purpose
+from jasper.active_speaker.measurement_programs import gate_exemption, load_programs, program, validated_capture_purpose
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
@@ -98,20 +98,16 @@ def _replay(bass, raw, tmp_path, monkeypatch):
 def test_registry_stimulus_reaches_the_capture_spec():
     rows = load_programs().values()
     bass = [row for row in rows if row.purpose == "bass"]
-    assert {row.layout for row in bass} == {"bass_axis", "seat_cloud", "room_quick", "bass_nearfield"}
+    assert {row.layout for row in bass} == {"bass_axis", "seat_cloud", "room_quick"}
     for row in rows:
         assert (row.stimulus is not None) == (row.purpose == "bass")
     for row in bass:
         assert row.stimulus == {"ceiling_hz": 1100.0}
         request = request_for_program(row, mover=row.mover or "human", candidates=("trial",))
         assert all(capture.spec.stimulus == row.stimulus for capture in prepare_plan_captures(request))
-    near = run_program("bass", "bass_nearfield")
-    assert (near.regime, near.mover, near.capture_count) == ("near_field", "human", 1)
-    capture, = prepare_plan_captures(request_for_program(near, candidates=("trial",)))
-    assert (capture.spec.regime, capture.stop.kind, capture.stop.distance_m) == ("near_field", "close", 0.03)
 
 
-@pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", True), ("branches", False), ("per_driver", False), ("reference_axis", False)])
+@pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", False), ("branches", False), ("per_driver", False), ("reference_axis", False)])
 def test_bass_capture_regimes(regime, allowed):
     if allowed:
         assert validated_capture_purpose("bass", "close", regime) == "bass"
@@ -148,10 +144,9 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
         assert quiet.n_samples >= math.ceil(required_pre_guard_s(meta) * bass.sample_rate_hz)
 
 
-@pytest.mark.parametrize("size", ["axis", "nearfield"])
-def test_bass_capture_program_agrees_across_surfaces(bass_fixture, size):
+def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     _, safety, targets, excitation = bass_fixture
-    row = program("bass", size)
+    row = program("bass", "axis")
     request = request_for_program(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)

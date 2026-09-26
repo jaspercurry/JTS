@@ -102,9 +102,9 @@ _PROGRAM_SECTIONS = (
     ),
     ProgramDefinition(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
-        (CandidateField("bass_extension", dict),), (REGIME_SUMMED, REGIME_NEAR_FIELD), 2,
+        (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
-        trial=("bass_axis", "bass_nearfield"), graph_evidence=True,
+        trial=("bass_axis", "seat_express"), graph_evidence=True,
     ),
     ProgramDefinition(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
