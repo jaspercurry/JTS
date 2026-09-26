@@ -152,10 +152,10 @@ def compile_commissioning_profile(
             banked = (find_candidate(fingerprint) if find_candidate is not None
                       else candidate_bank.load_applied_candidate(fingerprint, applied_profile=applied))
         else:
-            from .commissioning_experiment import commissioning_candidate  # lazy: import cost (the program analysis)
+            from .candidate_parts import candidate_from_design_draft  # lazy: import cost (the program analysis)
 
             banked = candidate_bank.bank_candidate(
-                commissioning_candidate(topology, draft), find_candidate=find_candidate)
+                candidate_from_design_draft(topology, draft), find_candidate=find_candidate)
         candidate = banked.candidate
         preference_filters, trim_db = sound_settings.saved_sound_layers()
         text = measurement_emit.compile_tuning_graph(declaration, candidate=candidate,
