@@ -29,6 +29,14 @@ from tests.test_audio_hardware_reconcile import _dual_apple_cards
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _hardware_reconciler_source() -> str:
+    """The output-hardware reconcile pass: ``reconcile.py`` and its step modules."""
+    return "".join(
+        path.read_text()
+        for path in sorted((REPO / "jasper" / "audio_hardware").glob("reconcile*.py"))
+    )
+
+
 def _non_comment(text: str) -> str:
     return "\n".join(
         line for line in text.splitlines()
@@ -141,7 +149,7 @@ def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
 
 def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
+    reconcile = _hardware_reconciler_source()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
     # Classification is registry-backed and the shell holds no hardware label:
@@ -814,7 +822,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
+    reconcile = _hardware_reconciler_source()
     runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
@@ -917,7 +925,7 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
 
     # The unit owns these names; the reconciler must not become a second writer.
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
+    reconcile = _hardware_reconciler_source()
     assert "TTS_ENV_FILE" not in reconcile
     assert VOICE_TTS_SOCKET_ENV not in reconcile
 
