@@ -37,7 +37,7 @@ per-step lease does not:
   separate fact, and the graph swap around each stimulus used to answer no —
   its duck released to the household level rather than the declared one
   (#2929; wave 6d then stopped the measurement swap ducking at all, and the
-  bound that defect broke lives in :func:`jasper.volume_owner.duck_release_target_db`).
+  bound that defect broke lives in :func:`jasper.volume_latch.duck_release_target_db`).
   A per-step lease never needed this because it re-set the volume every step.
   The re-proof stays as the tripwire that would catch the next such writer.
 

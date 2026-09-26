@@ -62,6 +62,7 @@ from typing import Any, Awaitable, Callable
 from .volume_latch import (
     FADER_IO_ERRORS,
     READBACK_TOLERANCE_DB,
+    duck_release_target_db,
     fader_matches,
     read_fader_db,
     set_and_confirm_volume,
@@ -77,7 +78,6 @@ __all__ = [
     "VolumeClaimHandle",
     "VolumeClaimRefused",
     "VolumeOwner",
-    "duck_release_target_db",
     "install_volume_owner",
     "volume_owner",
 ]
@@ -133,23 +133,6 @@ class VolumeClaimHandle:
     token: int
     level_db: float | None = None
     depth_db: float | None = None
-
-
-def duck_release_target_db(
-    *, reference_db: float, current_db: float | None, depth_db: float,
-) -> float:
-    """Where a releasing DUCK lands the fader — ADR-0004's algebra.
-
-    ``min(reference, current + depth)``. Both halves are load-bearing; the ADR
-    records why, and the two opposite failure modes each one closes.
-
-    An unreadable fader falls back to the reference: the level that should be
-    in effect is still known, and it is never louder than the relative
-    give-back would have been.
-    """
-    if current_db is None:
-        return float(reference_db)
-    return min(float(reference_db), float(current_db) + abs(float(depth_db)))
 
 
 def _finite(value: Any, what: str) -> float:

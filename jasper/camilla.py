@@ -24,7 +24,11 @@ from .camilla_config_contract import (
     check_volume_limit,
 )
 from .log_event import log_event
-from .volume_latch import READBACK_TOLERANCE_DB, fader_matches
+from .volume_latch import (
+    READBACK_TOLERANCE_DB,
+    duck_release_target_db,
+    fader_matches,
+)
 from .volume_owner import volume_owner
 
 if TYPE_CHECKING:
@@ -88,60 +92,13 @@ CanonicalTargetDbProvider = Callable[[], Awaitable[float]]
 
 _canonical_target_db_provider: CanonicalTargetDbProvider | None = None
 
+
 def set_canonical_target_db_provider(
     provider: CanonicalTargetDbProvider | None,
 ) -> None:
     """Register this process's canonical main_volume target."""
     global _canonical_target_db_provider
     _canonical_target_db_provider = provider
-
-
-async def _duck_release_target_db(
-    camilla: "CamillaController",
-    *,
-    snapshot_db: float,
-    duck_depth_db: float,
-) -> float:
-    """Where a duck holder should land the fader when it lets go.
-
-    ``min(reference, current + duck_depth_db)`` — give back this holder's own
-    attenuation and nothing else, and never end above the level that should be
-    in effect. Both halves are load-bearing even with the graph-swap bracket
-    as the only holder that ducks the main fader in production — a volume
-    change landing inside that bracket's window can go either way:
-
-    * replaying the entry snapshot ignores that change, stranding the fader
-      at the pre-duck level instead of the one the change set;
-    * a bare relative release fails the other way, clamping to 0 dB — loud —
-      when a volume change lands inside the window.
-
-    ``duck_depth_db`` is the positive attenuation this holder applied.
-
-    The reference is the canonical household target, for every holder. The
-    declared-reference exception (#2925 / #2929) is gone with the swap that
-    needed it: the measurement path no longer ducks at all (wave 6d), so there
-    is no release for a session-owned level to steer. See ADR-0004 for the
-    algebra's derivation, and
-    :func:`jasper.volume_owner.duck_release_target_db` for the ranked owner's
-    statement of the same ``min``.
-    """
-    current_db = await camilla.get_volume_db(best_effort=True)
-    released_db = (
-        snapshot_db if current_db is None else current_db + abs(duck_depth_db)
-    )
-    provider = _canonical_target_db_provider
-    if provider is None:
-        return min(snapshot_db, released_db)
-    try:
-        canonical_db = await provider()
-    except (CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError):
-        logger.warning(
-            "canonical volume target unavailable; releasing duck against "
-            "the entry snapshot instead",
-            exc_info=True,
-        )
-        return min(snapshot_db, released_db)
-    return min(canonical_db, released_db)
 
 
 @dataclass
@@ -221,18 +178,9 @@ class CamillaUnavailable(Exception):
 class CamillaConfigRejected(CamillaUnavailable):
     """CamillaDSP was reachable and answered, but refused the config itself.
 
-    A ``CamillaUnavailable`` subclass (not a bare sibling) so every existing
-    ``except CamillaUnavailable`` call site keeps working unchanged — this is
-    a journal-honesty distinction, not a new control-flow branch (W6 hardware
-    run 4 finding J). Before this class existed, ``_call`` folded pycamilladsp's
-    ``camilladsp.exceptions.ConfigValidationError`` (raised by a live, healthy
-    CamillaDSP daemon that parsed ``SetConfig``'s payload and rejected it —
-    e.g. "Use of missing mixer 'split_active_2way'") into the same
-    ``CamillaUnavailable`` a dead/unreachable daemon raises, so the journal
-    logged ``reason=CamillaUnavailable`` while Camilla was up and answering.
-    The generic failure loggers key off ``reason=type(exc).__name__``, so this
-    class name alone gets an honest ``reason=CamillaConfigRejected`` wherever
-    one of them fires — no call site needed to change.
+    A subclass so every ``except CamillaUnavailable`` site keeps its control
+    flow; the failure loggers key off ``reason=type(exc).__name__``, so the
+    class name alone tells a refused config from an unreachable daemon.
     """
 
 
@@ -773,8 +721,8 @@ class CamillaController:
         that survives the reload.
 
         The duck deliberately rides ``main_volume`` rather than ``main_mute``:
-        the release algebra above is stated in dB and a mute has none, and it
-        keeps the two existing ``main_mute`` writers — the coordinator and the
+        the release algebra (ADR-0004) is stated in dB and a mute has none, and
+        it keeps the two existing ``main_mute`` writers — the coordinator and the
         floor-tone audition — the only ones. What keeps the 1 Hz reconciler
         off the fader for the length of this bracket is the writer lock it
         probes (`CamillaController.graph_mutation_in_progress`), not the
@@ -815,9 +763,29 @@ class CamillaController:
                 await asyncio.shield(self._release_graph_swap_duck(before_db))
 
     async def _release_graph_swap_duck(self, before_db: float) -> None:
-        """Let the swap duck go, best-effort, and say so when it does not."""
-        target_db = await _duck_release_target_db(
-            self, snapshot_db=before_db, duck_depth_db=GRAPH_SWAP_DUCK_DB,
+        """Let the swap duck go, best-effort, and say so when it does not.
+
+        Where it lands: ADR-0004.
+        """
+        current_db = await self.get_volume_db(best_effort=True)
+        reference_db = before_db
+        provider = _canonical_target_db_provider
+        if provider is not None:
+            try:
+                reference_db = await provider()
+            except (
+                CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError,
+            ):
+                logger.warning(
+                    "canonical volume target unavailable; releasing duck "
+                    "against the entry snapshot instead",
+                    exc_info=True,
+                )
+        target_db = duck_release_target_db(
+            reference_db=reference_db,
+            current_db=current_db,
+            depth_db=GRAPH_SWAP_DUCK_DB,
+            entry_db=before_db,
         )
         # Best-effort so a release failure cannot mask the mutation's own
         # error; the event is what keeps a stranded quiet fader visible.

@@ -572,29 +572,20 @@ async def test_failed_graph_mutation_restores_the_pre_swap_volume(
     assert fake.volume.main_volume() == pytest.approx(-18.0)
 
 
-
-async def test_every_ducking_swap_releases_to_the_canonical_target(
-    tmp_path: Path, monkeypatch,
+@pytest.mark.parametrize(
+    "canonical_db,readable,expected_db",
+    [
+        (-21.212121, True, -21.212121),
+        # Unreadable at release: never above the -12.5 dB entry level.
+        (-10.0, False, -12.5),
+    ],
+)
+async def test_every_ducking_swap_releases_against_the_canonical_target(
+    tmp_path: Path, monkeypatch, canonical_db, readable, expected_db,
 ) -> None:
-    """One release reference, no exceptions (wave 6e).
-
-    The declared-reference exception (#2925 / #2929) is gone with the swap that
-    needed it: the measurement path stopped ducking in 6d, so there is no
-    release left for a session-owned level to steer. Every swap that still
-    ducks lands on the canonical household target.
-
-    The ranked owner keeps the algebra and the bound this used to guard —
-    `volume_owner.duck_release_target_db`, pinned by
-    `test_the_duck_release_gives_back_its_own_depth_and_no_more`, with #2929's
-    defect made structural by
-    `test_a_duck_rides_the_claim_in_effect_not_the_household_level`.
-
-    `patch_config` left this loop when it stopped ducking — it has no release
-    to land anywhere, which is pinned by
-    `test_patch_config_is_serialized_but_never_ducked` rather than dropped.
-    """
+    """Every swap that ducks releases against the canonical target (ADR-0004)."""
     async def household() -> float:
-        return -21.212121
+        return canonical_db
 
     monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
 
@@ -605,10 +596,18 @@ async def test_every_ducking_swap_releases_to_the_canonical_target(
         fake = _FakeClient()
         fake.volume.values.append(-12.5)
         fake.ops.clear()
+        if not readable:
+            reads = [fake.volume.main_volume]
+
+            def main_volume() -> float:
+                if not reads:
+                    raise CamillaUnavailable("fader unreadable at release")
+                return reads.pop()()
+
+            fake.volume.main_volume = main_volume  # type: ignore[method-assign]
         cam = _controller(fake, tmp_path)
         assert await mutate(cam)
-        assert fake.volume.main_volume() == pytest.approx(-21.212121)
-
+        assert fake.volume.values[-1] == pytest.approx(expected_db)
 
 
 async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
@@ -627,12 +626,6 @@ async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     assert await cam.set_active_config_raw(CEILING_GRAPH)
 
     assert fake.ops == ["set_active_raw"]
-
-
-
-
-
-
 
 
 class _FakeWebSocket:

@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared fail-closed main-fader primitives: read, compare, set-and-confirm.
+"""Shared fail-closed main-fader primitives: read, compare, set-and-confirm,
+and where a releasing duck lands.
 
 Each consumer owns its own durable state schema and lifecycle, so only the
 primitives and their tolerance live here.
@@ -69,6 +70,27 @@ def fader_matches(
     ):
         return False
     return abs(float(observed) - float(expected_db)) <= tolerance_db
+
+
+def duck_release_target_db(
+    *,
+    reference_db: float,
+    current_db: float | None,
+    depth_db: float,
+    entry_db: float | None = None,
+) -> float:
+    """Where a releasing duck lands the fader: ``min(reference, current + depth)``.
+
+    ``reference_db`` is the level that should be in effect, resolved at release
+    time and never at duck entry; ``depth_db`` is this holder's own attenuation.
+    An unreadable fader (``current_db is None``) lands on
+    ``min(reference, entry)`` when the holder knows its entry level, else on
+    the reference. See ADR-0004.
+    """
+    reference = float(reference_db)
+    if current_db is None:
+        return reference if entry_db is None else min(reference, float(entry_db))
+    return min(reference, float(current_db) + abs(float(depth_db)))
 
 
 async def set_and_confirm_volume(
