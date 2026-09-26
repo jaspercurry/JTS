@@ -445,9 +445,3 @@ def boot_role_events(
             )
         )
     return tuple(events)
-
-
-if __name__ == "__main__":
-    from jasper.cli.usb_port_role import main
-
-    raise SystemExit(main())
