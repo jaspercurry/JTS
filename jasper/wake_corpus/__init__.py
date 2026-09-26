@@ -20,8 +20,10 @@ recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
     sidecars.
   - :mod:`jasper.wake_corpus.clip_capture` — ``RecordingTask``: one clip's
     multi-leg UDP capture into PCM buffers, with the live level meter.
+  - :mod:`jasper.wake_corpus.clip_store` — ``ClipStore``: the open
+    session's clip records and their WAV files.
   - :mod:`jasper.wake_corpus.recording_backend` — ``RecordingBackend``:
-    session and clip lifecycle, clip/metadata writing, and the test-mode
+    session and clip lifecycle, metadata writing, and the test-mode
     marker crash-recovery. Owns a background asyncio loop driven from sync
     HTTP handler threads.
 

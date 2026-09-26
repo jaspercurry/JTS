@@ -32,17 +32,13 @@ from jasper.aec_sweep import (
     config_metadata,
     variant_metadata,
 )
-from jasper.cli.wake_enroll import VOICE_UNIT, write_wav
+from jasper.cli.wake_enroll import VOICE_UNIT
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
 )
-from jasper.wake_conditions import (
-    CONDITIONS,
-    CORPUS_DIR_BY_CONDITION,
-    DISTANCES,
-)
+from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
@@ -56,6 +52,7 @@ from .capture_plan import (
     validate_active_capture_plan,
 )
 from .clip_capture import RecordingTask
+from .clip_store import ClipStore
 from .runtime_probe import (
     BASE_LEGS,
     CORPUS_PROFILES,
@@ -268,7 +265,7 @@ class RecordingBackend:
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
         self._capture_plan: dict[str, Any] | None = None
         self._audio_context: dict[str, Any] | None = None
-        self._clips: list[ClipMetadata] = []
+        self._clips = ClipStore(self._lock, output_dir)
         self._current: RecordingTask | None = None
         self._current_clip_id: str | None = None
         self._current_meta: dict[str, str] | None = None  # condition, distance, start_ts
@@ -549,7 +546,7 @@ class RecordingBackend:
     def _clear_session_state_locked(self) -> None:
         self._session_id = None
         self._member = None
-        self._clips = []
+        self._clips.replace_locked([])
         self._include_raw_mic_0 = False
         self._include_dtln = False
         self._include_usb_mic = False
@@ -575,7 +572,7 @@ class RecordingBackend:
         with self._lock:
             for key in _SESSION_STATE_KEYS:
                 setattr(self, f"_{key}", parsed[key])
-            self._clips = clips
+            self._clips.replace_locked(clips)
         return {
             **{key: parsed[key] for key in _SESSION_SUMMARY_KEYS},
             "clip_count": sum(1 for c in clips if not c.deleted),
@@ -846,7 +843,7 @@ class RecordingBackend:
             )
             self._session_id = session_id
             self._member = safe_member
-            self._clips = []
+            self._clips.replace_locked([])
             self._include_raw_mic_0 = RAW0_LEG in enabled_legs
             self._include_dtln = DTLN_LEG in enabled_legs
             self._include_usb_mic = effective_include_usb_mic
@@ -973,7 +970,7 @@ class RecordingBackend:
                 "elapsed_sec": (
                     self._current.elapsed_sec() if self._current is not None else 0.0
                 ),
-                "clip_count": sum(1 for c in self._clips if not c.deleted),
+                "clip_count": self._clips.live_count_locked(),
             }
         # Stateless fallbacks + the conformance re-check are pure functions
         # of the values snapshotted above, so they run outside the lock
@@ -1470,28 +1467,14 @@ class RecordingBackend:
         duration_sec = task.elapsed_sec()
         capture_health = task.capture_health(duration_sec)
 
-        # Pick the next sequence number. Sequence is per-session, not
-        # per-condition, so filenames stay unique across the whole
-        # session. Include deleted clips in the max() so a later clip
-        # never reuses a previous filename after the operator deletes
-        # one bad take.
-        with self._lock:
-            seq = max((c.seq for c in self._clips), default=0) + 1
-
-        files: dict[str, str] = {}
-        # Condition → directory mapping. "nomusic" preserved for
-        # backward compat with existing recordings + downstream tools
-        # (extract-wake-corpus.py emits the same name). "ambient" gets
-        # its own dir so training can slice on it explicitly.
-        condition_dir = CORPUS_DIR_BY_CONDITION[meta["condition"]]
-        for leg, pcm in pcm_per_leg.items():
-            if not pcm:
-                continue
-            filename = f"enroll_{member}_{session_id}_{seq:03d}.aec-{leg}.wav"
-            full_path = self._output_dir / f"aec_{leg}_{condition_dir}" / filename
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            write_wav(full_path, pcm)
-            files[leg] = str(full_path)
+        seq = self._clips.next_seq()
+        files = self._clips.write_wavs(
+            member=member,
+            session_id=session_id,
+            seq=seq,
+            condition=meta["condition"],
+            pcm_per_leg=pcm_per_leg,
+        )
 
         clip = ClipMetadata(
             clip_id=clip_id,
@@ -1514,8 +1497,7 @@ class RecordingBackend:
             audio_context=audio_context,
             capture_health=capture_health,
         )
-        with self._lock:
-            self._clips.append(clip)
+        self._clips.append(clip)
         self._save_metadata()
         logger.info(
             "clip saved: %s seq=%d condition=%s distance=%s dur=%.2fs%s%s",
@@ -1533,43 +1515,17 @@ class RecordingBackend:
         with self._lifecycle_transaction(
             "can't delete clip: lifecycle transition in progress",
         ):
-            return self._delete_clip(clip_id)
-
-    def _delete_clip(self, clip_id: str) -> bool:
-        with self._lock:
-            clip = next(
-                (c for c in self._clips
-                 if c.clip_id == clip_id and not c.deleted),
-                None,
-            )
-            if clip is None:
+            if not self._clips.delete(clip_id):
                 return False
-            for path_str in clip.files.values():
-                p = Path(path_str)
-                try:
-                    p.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError as e:
-                    logger.warning("failed to delete %s: %s", p, e)
-            clip.deleted = True
-        self._save_metadata()
-        logger.info("clip deleted: %s", clip_id)
-        return True
+            self._save_metadata()
+            logger.info("clip deleted: %s", clip_id)
+            return True
 
     def list_clips(self, include_deleted: bool = False) -> list[ClipMetadata]:
-        with self._lock:
-            return [
-                c for c in self._clips
-                if include_deleted or not c.deleted
-            ]
+        return self._clips.list_clips(include_deleted)
 
     def clip(self, clip_id: str) -> ClipMetadata | None:
-        with self._lock:
-            return next(
-                (c for c in self._clips if c.clip_id == clip_id),
-                None,
-            )
+        return self._clips.clip(clip_id)
 
     # ----- metadata persistence -------------------------------------
 
@@ -1605,7 +1561,7 @@ class RecordingBackend:
                 "enabled_legs": list(self._enabled_legs),
                 "capture_plan": self._capture_plan,
                 "audio_context": self._audio_context,
-                "clips": [c.to_json() for c in self._clips],
+                "clips": self._clips.to_json_locked(),
             }
         session_store.write_metadata_atomic(path, data)
 
