@@ -1542,6 +1542,27 @@ def test_the_seam_returns_both_of_the_aligners_scores():
     assert scores["silence"][0] > scores["silence"][1] * ANCHOR_DISCRIMINATION_RATIO
 
 
+@pytest.mark.parametrize(("full", "banded", "kept", "reads"), [
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.25, SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.1, "full", 2),
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.25, SWEEP_LOCATE_CONFIDENCE_FLOOR, "banded", 2),
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_LOCATE_CONFIDENCE_FLOOR + 0.2, "full", 1),
+], ids=["both_under_floor", "in_band_clears", "full_band_clears"])
+def test_the_in_band_sweep_reading_counts_only_when_it_clears_the_floor(monkeypatch, full, banded, kept, reads):
+    """``_locate_sweep`` reads above the modal tails only when the full band misses
+    the locate floor, and keeps that reading only when it clears the floor (#5632)."""
+    sweep = _verify_program().segment("sweep_verify")
+    readings = {"full": (101, full, 0.5), "banded": (102, banded, 0.6)}
+    bands = []
+
+    def locate(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
+        bands.append(band_hz)
+        return readings["full" if band_hz is None else "banded"]
+
+    monkeypatch.setattr(locate_mod, "_locate_in_window", locate)
+    assert locate_mod._locate_sweep(np.zeros(1), np.zeros(1), 100, sweep, sample_rate=SR) == readings[kept]
+    assert [band is None for band in bands] == [True, False][:reads]
+
+
 @pytest.mark.parametrize(
     ("confidence", "step", "corroborated"),
     [(0.18, -1066.7, False),

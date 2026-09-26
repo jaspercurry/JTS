@@ -139,7 +139,8 @@ def _sweep_over_ambient_db(
     keeps, of the take's ambient window repeated to the same length and deconvolved the
     same way (#5672). Read above :data:`WITNESS_BAND_FLOOR_HZ` where the sweep reaches
     past it: below it, the floor a take hears after its pilots can sit well above the
-    floor of its ambient window.
+    floor of its ambient window. Not ``impulse_shape``'s peak-to-noise (ADR-0355): its noise
+    is the 40 ms before an onset that noise alone can place, and this needs a scheduled silence.
     """
     tail = round(DEFAULT_VERIFY_TAIL_S * sample_rate)
     room, _ = _deconvolve_window(np.resize(ambient, origin_index + segment.n_samples + tail),
