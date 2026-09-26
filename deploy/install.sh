@@ -49,7 +49,6 @@ INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
-source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/state-and-secrets.sh"
 source "${REPO_DIR}/deploy/lib/install/retirements.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
@@ -794,21 +793,13 @@ ensure_crossover_camilla_statefile() {
     fi
 }
 
-find_card() {
-    # find_card "<aplay|arecord>" "<grep regex>"
-    jasper_find_alsa_card "$1" "$2"
-}
-
+# `-L` prints each PCM name (with its CARD=) on the line above the description
+# the regex is matched against.
 detect_card() {
-    # detect_card "<aplay|arecord>" "<grep regex>" "<fallback>"
-    local tool="$1" regex="$2" fallback="$3"
-    local card
-    card=$(find_card "$tool" "$regex" || true)
-    if [[ -n "$card" ]]; then
-        echo "$card"
-    else
-        echo "$fallback"
-    fi
+    local tool="$1" regex="$2" fallback="$3" card
+    card="$("${tool}" -L 2>/dev/null | grep -B1 -iE "${regex}" \
+        | grep -oE 'CARD=[^,]+' | head -1 | sed 's/CARD=//' || true)"
+    printf '%s\n' "${card:-${fallback}}"
 }
 
 select_audio_hardware_roles() {
