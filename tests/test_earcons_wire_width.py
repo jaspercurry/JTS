@@ -90,6 +90,20 @@ def test_the_default_bake_is_the_narrow_one():
 # ---------------------------------------------------------------------------
 
 
+def test_the_wide_full_scale_is_the_promoted_narrow_one_not_the_containers():
+    """The bake's 0.5 peak uses the promoted S16 full scale."""
+    pcm = generate_listening_chirp(going_on=True, wide=True)
+    samples = np.frombuffer(pcm, dtype="<i4").astype(np.int64)
+    assert np.abs(samples).max() == (32_767 << 16) // 2
+
+
+def test_the_wide_packer_rounds_to_nearest_rather_than_truncating():
+    pcm = generate_listening_chirp(going_on=True, wide=True)
+    samples = np.frombuffer(pcm, dtype="<i4")
+    # Sample 2 is 693832.605... before quantization; truncation gives 693832.
+    assert samples[2] == 693_833
+
+
 def test_the_wide_bake_is_the_same_sound_with_sub_lsb_detail_the_narrow_lost():
     for name, wide_pcm in _bakes(wide=True).items():
         narrow_pcm = _bakes(wide=False)[name]

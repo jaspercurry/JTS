@@ -147,6 +147,7 @@ async def _spotify_call(sp, action: str, device_id: str | None) -> None:
 
 
 async def _dispatch_airplay(action: str, router, hostname: str) -> dict:
+    # Prefer Spotify's API: DACP silently no-ops on iOS 17.4+ Spotify (shairport-sync #1822).
     matched = await _resolve_airplay_account(router)
     if matched is not None:
         device_id = await _spotify_active_device_id(matched.sp)
