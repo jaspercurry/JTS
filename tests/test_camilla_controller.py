@@ -576,8 +576,12 @@ async def test_failed_graph_mutation_restores_the_pre_swap_volume(
     "canonical_db,readable,expected_db",
     [
         (-21.212121, True, -21.212121),
-        # Unreadable at release: never above the -12.5 dB entry level.
+        # Unreadable at release: the canonical target, never above the -12.5 dB
+        # entry level.
         (-10.0, False, -12.5),
+        (-30.0, False, -30.0),
+        # A provider that fails releases against the entry snapshot instead.
+        (OSError("provider down"), True, -12.5),
     ],
 )
 async def test_every_ducking_swap_releases_against_the_canonical_target(
@@ -585,6 +589,8 @@ async def test_every_ducking_swap_releases_against_the_canonical_target(
 ) -> None:
     """Every swap that ducks releases against the canonical target (ADR-0004)."""
     async def household() -> float:
+        if isinstance(canonical_db, Exception):
+            raise canonical_db
         return canonical_db
 
     monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)

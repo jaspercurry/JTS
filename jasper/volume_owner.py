@@ -28,7 +28,8 @@ level a caller derives arrives as an argument to
 ``0.0`` and ``jasper.camilla._coerce_main_volume_db`` clamps every positive
 write; the owner sits BEHIND that door as its only caller, never as its
 exception. It refuses only *non-finite* numbers, which is arithmetic integrity
-(a NaN would poison the ``min`` below), not a safety clamp.
+(a NaN would poison :func:`jasper.volume_latch.duck_release_target_db`), not a
+safety clamp.
 
 **The release algebra is ADR-0004's.** The one thing not stated there, because
 it only arises once claims are ranked: a *level* claim's release restores the

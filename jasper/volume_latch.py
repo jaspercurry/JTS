@@ -79,14 +79,8 @@ def duck_release_target_db(
     depth_db: float,
     entry_db: float | None = None,
 ) -> float:
-    """Where a releasing duck lands the fader: ``min(reference, current + depth)``.
-
-    ``reference_db`` is the level that should be in effect, resolved at release
-    time and never at duck entry; ``depth_db`` is this holder's own attenuation.
-    An unreadable fader (``current_db is None``) lands on
-    ``min(reference, entry)`` when the holder knows its entry level, else on
-    the reference. See ADR-0004.
-    """
+    """Where a releasing duck lands the fader (ADR-0004); ``depth_db`` is this
+    holder's own attenuation."""
     reference = float(reference_db)
     if current_db is None:
         return reference if entry_db is None else min(reference, float(entry_db))
