@@ -12,13 +12,11 @@
 # This helper resets the gadget's "Capture Pitch 1000000" ctl to the neutral
 # value (1000000).
 #
-# WHY A SHIPPED HELPER, NOT INLINE `sh -c` IN THE UNIT (defect E, 2026-07-05):
-# the previous inline form derived the card with `card="${card%%,*}"`. systemd
-# consumes `%%` as a specifier escape ("Invalid environment variable name
-# evaluates to an empty string: card%,*") and then runs the shell with the
-# SHORTEST-match `${card%,*}` — wrong for any `hw:Card,dev,subdev` device and a
-# footgun that only worked by luck for the current bare-card device names. A
-# shipped script has no `%` gymnastics and is unit-testable on its own.
+# WHY A SHIPPED HELPER, NOT INLINE `sh -c` IN THE UNIT: systemd consumes `%%`
+# in a unit's command line as a specifier escape, so an inline
+# `card="${card%%,*}"` runs as the SHORTEST-match `${card%,*}`, which is wrong
+# for any `hw:Card,dev,subdev` device. A shipped script has no `%` gymnastics
+# and is unit-testable on its own.
 #
 # The owner gate matches the daemon: fan-in writes a non-neutral pitch only when
 # BOTH JASPER_FANIN_HOST_CLOCK and JASPER_FANIN_USB_DIRECT are `enabled` in the
