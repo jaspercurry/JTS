@@ -6,7 +6,7 @@
 
 The Rust ``RingWriter`` writes the fan-in -> Camilla SHM ring (Ring A) and the
 Python emitter describes it as a CamillaDSP ioplug capture. If the ring path, env
-names, slot bounds, or coupling token diverge, fan-in writes a ring nobody reads
+names, slot bounds, or wire format diverge, fan-in writes a ring nobody reads
 or the daemon and the emitted/armed config disagree on the transport.
 """
 from __future__ import annotations
@@ -16,9 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin_coupling import (
-    COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
@@ -97,35 +95,6 @@ def _call_sites(fn: str, code: str) -> int:
     fix.
     """
     return len(re.findall(rf"(?<!\w){re.escape(fn)}\(", code))
-
-
-def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
-    """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
-
-    Ring A is the daemon's only transport (ADR-0100), so this key SELECTS
-    nothing on either side; Python no longer writes it at all and sweeps a
-    persisted value off migrating boxes
-    (``coupling_reconcile._LEGACY_FANIN_COUPLING_ENV``). Rust still has to serve
-    what the fleet can legitimately present and refuse the rest (that refusal
-    half is pinned behaviorally in-crate by
-    `only_a_ring_declaration_or_none_is_served`).
-
-    UNSET is a first-class served state and this is the row the sweep depends
-    on: once the key is gone, every box presents ``None`` and must start.
-
-    Shape-level on purpose: it complements the in-crate behavioral pin rather
-    than restating it, and what can drift across the language boundary is the
-    accept-set's MEMBERSHIP, which is what this reads.
-    """
-    text = _config_rs_text()
-    assert f'"{_LEGACY_FANIN_COUPLING_ENV}"' in text, (
-        f"Rust must still read {_LEGACY_FANIN_COUPLING_ENV} to refuse a value "
-        "it cannot serve"
-    )
-    assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
-        "the Rust accept arm must serve the undeclared key (None), a cleared "
-        f"key (empty), and the {COUPLING_SHM_RING!r} token — all three in one arm"
-    )
 
 
 def test_shm_ring_env_var_names_and_defaults_agree():

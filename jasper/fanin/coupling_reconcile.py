@@ -99,23 +99,6 @@ FANIN_UNIT = FANIN_SERVICE
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = CAMILLA_SERVICE
 
-# Legacy env keys of deleted selectors. Nothing writes either; each is retained
-# ONLY so a reconcile pass can UNSET a stale value off a migrating box's env
-# file. One-way migration sweeps, not vocabulary.
-#
-# Remove once every deployed Pi has booted a build carrying this sweep; the
-# Camilla -> outputd File playback pipe (ADR-0100).
-_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
-_LEGACY_OUTPUTD_RING_SLOTS_ENV = "JASPER_OUTPUTD_SHM_RING_SLOTS"
-# Remove once every deployed Pi has booted a build carrying this sweep; the
-# fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
-# still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
-# behind here would park the unit. The sweep reaches the reconciler-owned
-# fanin.env ONLY: jasper-fanin.service also loads /etc/jasper/jasper.env, which
-# nothing here writes, so a hand-set copy there now reaches the daemon and parks
-# it — `grep -R JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/` and remove it by hand.
-_LEGACY_FANIN_COUPLING_ENV = "JASPER_FANIN_CAMILLA_COUPLING"
-
 # Cross-invocation serialization of the reconcile ENTRY verbs.
 # NOT under /run/jasper — that is jasper-voice's RuntimeDirectory, reaped on
 # every voice stop; a reaped+recreated lock file would hand a second holder a
@@ -708,11 +691,7 @@ def _converge_ring(
     fanin_snapshot = read_snapshot(env_path)
     outputd_snapshot = read_snapshot(outputd_env_path)
 
-    fanin_new_text, fanin_changed = _apply_action(
-        fanin_snapshot.text,
-        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
-    )
-    outputd_new_text, outputd_changed = _apply_actions(
+    outputd_new_text, changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(outputd_snapshot.text)
     )
     # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
@@ -726,43 +705,27 @@ def _converge_ring(
     ring_path_converged = (
         outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
     )
-    changed = fanin_changed or outputd_changed
 
     # A write failure aborts BEFORE any daemon op so we never bounce a daemon
-    # into a value the file doesn't carry. Each write folds onto the FRESH file
-    # content under its own per-file lock (ADR-0235) rather than replaying this
+    # into a value the file doesn't carry. The write folds onto the FRESH file
+    # content under its per-file lock (ADR-0235) rather than replaying this
     # stale pre-lock text, so a concurrent writer's key is preserved.
-    #
-    # NOTHING IS ROLLED BACK (ADR-0100), so the failure path reports what
-    # actually reached the disk: the fanin write can succeed and the outputd one
-    # fail.
-    wrote = False
     if changed:
         try:
-            if fanin_changed:
-                fanin_new_text, _ = _write_env_actions(
-                    fanin_snapshot.path,
-                    lambda _text: (
-                        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
-                    ),
-                )
-                wrote = True
-            if outputd_changed:
-                outputd_new_text, _ = _write_env_actions(
-                    outputd_snapshot.path, _outputd_actions
-                )
-                wrote = True
+            outputd_new_text, _ = _write_env_actions(
+                outputd_snapshot.path, _outputd_actions
+            )
         except OSError as e:
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
                 result="write_failed",
                 reason=reason,
-                changed=wrote,
+                changed=False,
                 error=e,
                 level=logging.ERROR,
             )
-            return CouplingResult(ok=False, changed=wrote, detail=str(e))
+            return CouplingResult(ok=False, changed=False, detail=str(e))
 
     if ring_path_converged:
         log_event(
@@ -1178,11 +1141,6 @@ def _migrate_stale_fanin_ring_slots(
     also disagrees about the WIRE, converging the slots alone would make the
     geometry look repaired while the ring still cannot attach, so the wire is
     read first and a shear there DECLINES the write.
-
-    Runs AFTER the legacy-key sweep, so the passed ``fanin_snapshot`` is the
-    PRE-sweep snapshot; the file is re-read fresh here and the override written
-    into the CURRENT content — writing the stale snapshot back would reinstate
-    the lines the sweep just removed.
     """
     current = read_snapshot(fanin_snapshot.path)
 
@@ -1434,11 +1392,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
     one end reading or writing a ring nobody serves.
 
-    It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key — a
-    one-way migration sweep (see its constant) so a box that once armed it
-    converges clean on its next reconcile. The fanin.env half of the pass sweeps
-    ``JASPER_FANIN_CAMILLA_COUPLING`` the same way.
-
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     The marker is the FACT (written by ``jasper-audio-hardware-reconcile`` from
     the accepted active-lane decision) and the path is its PROJECTION, derived by
@@ -1462,8 +1415,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             OUTPUTD_RING_PATH_ENV_VAR,
             outputd_ring_path_for(outputd_text),
         ),
-        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
-        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_RING_SLOTS_ENV),
     )
 
 
@@ -1488,11 +1439,8 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     write uses, so the in-process env can never carry a different ring than the
     file just written.
     """
-    os.environ.pop(_LEGACY_FANIN_COUPLING_ENV, None)
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
-    os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
-    os.environ.pop(_LEGACY_OUTPUTD_RING_SLOTS_ENV, None)
 
 
 @dataclass(frozen=True)

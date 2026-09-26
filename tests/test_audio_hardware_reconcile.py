@@ -1430,7 +1430,7 @@ def test_reconcile_arms_each_recognized_single_dac_role(
         # their keys reaches apply_route_env's drop branch. That function runs
         # in an `if` CONDITION, which disables set -e for its whole body — a
         # refused lock there was discarded and the caller restarted anyway.
-        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER=1\n"),
+        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink\n"),
     ],
 )
 def test_a_refused_env_lock_fails_the_pass_without_restarting(
@@ -2853,11 +2853,9 @@ def test_route_env_change_restarts_fanin_exactly_once(tmp_path: Path):
 
     first = _run_reconcile(
         tmp_path, APPLE_LISTING, "--reason", "test", initial_env=route_env,
-        initial_fanin_env="JASPER_FANIN_INPUT_RESAMPLER=stale\n",
     )
     assert first.returncode == 0, first.stderr
     fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
-    assert "JASPER_FANIN_INPUT_RESAMPLER=" not in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env

@@ -90,9 +90,8 @@ header. There
 is no coupling to declare either — the Python selector vocabulary is gone, and
 fan-in still refuses any `JASPER_FANIN_CAMILLA_COUPLING` token but
 unset/empty/`shm_ring` as a config-class fault (exit 78, the unit parks) until
-that accept-set is removed too. The reconciler's sweep unsets a stale value in
-the `fanin.env` it owns, but not in `/etc/jasper/jasper.env`, which fan-in also
-loads — so a hand-set copy there still parks the daemon; `grep -R
+that accept-set is removed too. Nothing unsets a stale value, so a hand-set
+copy in `fanin.env` or `/etc/jasper/jasper.env` parks the daemon; `grep -R
 JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/ /var/lib/jasper/` is the check.
 CamillaDSP
 writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
