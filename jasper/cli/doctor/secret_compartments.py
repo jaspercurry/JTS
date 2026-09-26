@@ -48,7 +48,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
-from ...env_load import SPOTIFY_CREDENTIALS_ENV_PATH
+from ...env_load import GOOGLE_CREDENTIALS_ENV_PATH, SPOTIFY_CREDENTIALS_ENV_PATH
 from ...google_routes import GOOGLE_ROUTES_SECRET_FILE
 from ...home_assistant import HA_ENV_FILE
 from ...voice.provider_state import KEYS_FILE
@@ -117,7 +117,7 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
         ),
         files=(
             KEYS_FILE,
-            "/var/lib/jasper-secrets/google_credentials.env",
+            GOOGLE_CREDENTIALS_ENV_PATH,
             GOOGLE_ROUTES_SECRET_FILE,
             google_registry_path,
             f"{GOOGLE_DEFAULT_TOKEN_DIR}/*.json",

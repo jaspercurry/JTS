@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     if not cfg.google_enabled:
         print(
             "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in "
-            "/var/lib/jasper-secrets/google_credentials.env before running "
+            f"{env_load.GOOGLE_CREDENTIALS_ENV_PATH} before running "
             f"this command. Use the web wizard at {cfg.google_setup_url} to "
             "paste them — it is the only writer of that file.",
             file=sys.stderr,
