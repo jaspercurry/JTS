@@ -463,8 +463,9 @@ def resolve_set(
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and len(sets) > 1:
         raise RoundSetRefused("set_required", sets=[
-            {"set_id": row["set_id"], "candidate_id": row["capture_basis"].get("candidate_id")}
-            for row in sets
+            {"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
+             "role": group.role, "take_count": len(group.selected_ids)}
+            for group in map(SetTakes.from_row, sets)
         ])
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:

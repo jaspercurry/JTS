@@ -320,16 +320,6 @@ def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
 
 
 
-def _incumbent_phrase(record: dict[str, Any]) -> str:
-    """One classified incumbent record as the report says it."""
-    return (
-        f"{record['n_filters']} blend filter(s)"
-        if record["available"]
-        else f"none ({record['reason']})"
-    )
-
-
-
 def _declared_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
@@ -496,19 +486,12 @@ def _banked_section(
 def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """Keep the round receipt and applied profile BLEND records separate;
-    incumbent.linearization is not surfaced yet (#2863 follow-up).
-    """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
     from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)
     return {
         "from_round_receipt": from_receipt,
         "from_applied_profile": from_profile,
-        "summary": (
-            f"round receipt: {_incumbent_phrase(from_receipt)}; "
-            f"applied profile: {_incumbent_phrase(from_profile)}"
-        ),
     }
 
 
@@ -596,8 +579,10 @@ def status_document(
     action = next_program_action(profile, identity, latest_banked_rounds(identity, programs=programs),
                                  programs=programs)
     banked = latest_banked_rounds(identity, programs=programs, include_stale=True)
+    layers = applied_layer_names(profile)
     sections["applied"].update(
-        layers=applied_layer_names(profile), candidate_fingerprint=identity.get("candidate"),
+        layers=layers, candidate_fingerprint=identity.get("candidate"),
+        summary="applied layers: " + (", ".join(name for name, applied in layers.items() if applied) or "none"),
         reference_volume_db=seat_level_db, leveled_db_spl=level.get("leveled_db_spl"),
     )
     return {

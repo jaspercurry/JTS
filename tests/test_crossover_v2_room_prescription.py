@@ -333,7 +333,8 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
                      *(["--preview"] if preview else [])]) == 1
     answer = json.loads(capsys.readouterr().out)
     assert (answer["code"], answer["detail"]["section"]) == ("set_required", "room")
-    assert answer["detail"]["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}"} for i in range(2)]
+    assert answer["detail"]["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}",
+                                                    "role": "summed", "take_count": 0} for i in range(2)]
 
 
 @pytest.mark.parametrize("filters,code", [
