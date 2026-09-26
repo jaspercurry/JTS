@@ -103,10 +103,6 @@ _OWNER_OPERATION_TIMEOUT_BUDGET_SEC = (
     + _ADAPTER_VERIFY_TIMEOUT_SEC
     + _VOICE_REFRESH_TIMEOUT_BUDGET_SEC
 )
-_UNVERIFIED = frozenset({
-    accessory_status.MIC_NOT_READY_ADAPTER_DOWN,
-    accessory_status.MIC_NOT_READY_LINK_UNKNOWN,
-})
 
 
 # Request protocol for jasper-accessory-reconcile.path. This module is the
@@ -292,16 +288,18 @@ async def _verify_adapters(sources: Sequence[str]) -> tuple[str, ...]:
     """Wait, bounded, for each source's adapter to report a BlueZ answer.
 
     That answer — the remote connected, or asleep — is the readiness check a
-    source passes before it is armed (ADR-0372). Returns failure lines for the
-    caller's list, like ``refresh_adapter_hosts``.
+    source passes before it is armed (ADR-0372): it passes once ``not_armed``
+    is all that stops it streaming. Returns failure lines for the caller's
+    list, like ``refresh_adapter_hosts``.
     """
     deadline = time.monotonic() + _ADAPTER_VERIFY_TIMEOUT_SEC
     while True:
         snap = accessory_status.snapshot()
         unverified = {
             source: why for source in sources
-            if (why := accessory_status.mic_not_ready_reason(source, snap))
-            in _UNVERIFIED
+            if (why := accessory_status.mic_not_ready_reason(
+                source, snap, armed=False,
+            )) != accessory_status.MIC_NOT_READY_NOT_ARMED
         }
         if not unverified:
             return ()

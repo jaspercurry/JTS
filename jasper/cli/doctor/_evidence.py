@@ -408,7 +408,7 @@ class Evidence:
         return self.get("install_profile_is_streambox", _install_profile_is_streambox)
 
     def streambox_awaiting_accessory(self) -> bool:
-        """ADR-0217: streambox tier, no mic-bearing accessory paired yet."""
+        """ADR-0217: streambox tier, no mic-bearing accessory armed yet."""
         return (
             self.install_profile_is_streambox()
             and not self.mic_presence().accessory_present

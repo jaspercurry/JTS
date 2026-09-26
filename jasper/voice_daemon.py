@@ -1254,7 +1254,7 @@ class WakeLoop:
         OK / BUSY / MUTED / MEASURING / CAP / NOT_READY / PAUSED /
         UNKNOWN_SOURCE / NO_ROOM_MIC / ERROR for the caller's logging.
         """
-        if source and source not in self._push_to_talk.sources:
+        if source and not self._push_to_talk.known(source):
             log_event(
                 logger,
                 "session.manual_refused",
@@ -1309,7 +1309,8 @@ class WakeLoop:
             return "CAP"
         if source and (not_ready := self._push_to_talk.not_ready(source)):
             # A remote waking from sleep is back by the next press, which is
-            # what the cue asks for (issue #3346).
+            # what the cue asks for (issue #3346). One registered but not
+            # armed is cued here too (ADR-0372).
             log_event(
                 logger,
                 "manual_mic.hold_failed",

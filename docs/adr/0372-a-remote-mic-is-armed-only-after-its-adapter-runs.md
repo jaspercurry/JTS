@@ -30,6 +30,21 @@
      (`accessory_mic.host_refresh_failed`, then a failed oneshot).
   4. Voice converges only when a pass leaves the armed file different. A
      source withdrawn and re-armed within one pass does not bounce voice.
+  5. A press from a remote that is registered but not armed (named in the
+     plan, or running in jasper-input) reached the box, so where voice runs
+     it fails like a not-ready hold: the `internal_error` cue and
+     `event=manual_mic.hold_failed reason=not_ready link=<code>`. Voice counts
+     as armed only the sources it opened at start. The code is
+     `adapter_down` or `link_unknown` while the check would still fail, and
+     `not_armed` once the adapter answers. A source id this box has not
+     registered stays an uncued `unknown_source` refusal.
+  6. Where no voice process runs, nothing can play that cue, so the press is
+     silent (ADR-0340): a streambox parks voice until a remote is armed, and
+     a full box with no local mic is gated off. There, `/state.voice.push_to_talk`
+     and the doctor's accessory row show the remote `armed: false` with its
+     not-ready code, and the failed pass logs the failed check. The doctor
+     always reads the published files. `/state` reads them only while voice
+     cannot answer, and otherwise shows voice's own view.
 - **Consequences:**
   - **Armed means a verified producer.** Nothing the reconciler arms lacks
     one, so whether a hold can stream depends only on the remote's live

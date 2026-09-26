@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
+from jasper.accessories import status as accessory_status
 from jasper.service_units import JASPER_VOICE_SERVICE
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
@@ -1064,6 +1065,48 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     assert body["voice"]["reachable"] is True
     assert body["voice"]["push_to_talk_only"] is True
     assert body["voice"]["push_to_talk"] == readiness
+
+
+@pytest.mark.parametrize(
+    ("armed", "link", "expected"),
+    [
+        (
+            True, {"connected": False, "subscribed": False},
+            {"armed": True, "ready": False, "not_ready": "disconnected"},
+        ),
+        (
+            False, {"connected": None, "subscribed": False},
+            {"armed": False, "ready": False, "not_ready": "link_unknown"},
+        ),
+    ],
+    ids=["armed_asleep", "registered_unverified"],
+)
+def test_state_reports_each_registered_remote_while_voice_is_parked(
+    server_with_coordinator, monkeypatch, tmp_path, armed, link, expected,
+):
+    """With voice down, /state.voice.push_to_talk reads the accessory
+    reconciler's published files and jasper-input's status, so a remote that
+    is registered but not armed shows on a streambox whose voice stays parked
+    until one is armed (ADR-0372)."""
+    base, _ = server_with_coordinator
+    armed_file = tmp_path / "accessory-mics.env"
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(armed_file))
+    published = "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=udp:9892\n"
+    (tmp_path / "accessory-adapters.env").write_text(published)
+    if armed:
+        armed_file.write_text(published)
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": {
+            "wiim_remote_2": {"restarts": 0, "last_error": None, "link": link},
+        }},
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["voice"]["reachable"] is False
+    assert body["voice"]["push_to_talk"] == {"wiim_remote_2": expected}
 
 
 class FakeCamillaMetrics:
