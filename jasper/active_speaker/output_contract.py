@@ -178,7 +178,7 @@ def rear_cabinet_channels(contract: OutputContract) -> tuple[int, int, int] | No
     """``(front woofer, rear woofer, tweeter)`` of the one mono cabinet a rear
     calibration document describes, from the SAVED topology rather than a preset."""
     roleful = [
-        (item.role, item.output_variant, item.physical_output_index)
+        (item.role, item.output_variant, int(item.physical_output_index))
         for item in contract.roleful_assignments
         if item.physical_output_index is not None
     ]
