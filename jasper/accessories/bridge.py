@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import logging
 import signal
 import time
@@ -61,8 +62,8 @@ from .registry import (
     lookup,
     lookup_by_name,
 )
-from .status import STATUS_PATH
-from .supervisor import Bridge, Publish, supervise
+from .status import STATUS_PATH, MicLink
+from .supervisor import Bridge, Detail, Publish, supervise
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -907,20 +908,22 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
         await asyncio.gather(*active.values(), return_exceptions=True)
 
 
-async def _run_wiim_remote_mic() -> None:
+async def _run_wiim_remote_mic(link: MicLink) -> None:
     from .wiim_remote_mic import MicAdapterConfig, run  # lazy: import cost, dbus-next and the ADPCM decoder wait for a paired WiiM Remote 2
 
-    await run(MicAdapterConfig())
+    await run(MicAdapterConfig(), link)
 
+
+MicAdapter = Callable[[MicLink], Awaitable[None]]
 
 # Manual mic source id (as published in accessory-mics.env) -> the adapter that
-# produces it inside this process.
-MIC_ADAPTERS: dict[str, Bridge] = {
+# produces it inside this process, run as the bridge of the same name.
+MIC_ADAPTERS: dict[str, MicAdapter] = {
     WIIM_REMOTE_2_SOURCE_ID: _run_wiim_remote_mic,
 }
 
 
-def _published_mic_adapters() -> dict[str, Bridge]:
+def _published_mic_adapters() -> dict[str, MicAdapter]:
     """The adapters jasper-accessory-reconcile currently publishes a source for.
 
     An unreadable or corrupt file degrades to "no accessory mic" rather than
@@ -948,8 +951,12 @@ async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None
     readers = _ReaderHealth()
     bridges: dict[str, Bridge] = {
         "hid": lambda: _run_hid_bridge(control_url, readers),
-        **_published_mic_adapters(),
     }
+    details: dict[str, Detail] = {"hid": readers.register}
+    for source, adapter in _published_mic_adapters().items():
+        link = MicLink()
+        bridges[source] = functools.partial(adapter, link)
+        details[source] = link.register
     # Cancel on the signal rather than letting the default disposition kill the
     # interpreter: every pair/forget try-restarts this unit, and the bridges'
     # cleanup (GATT StopNotify, the udev observer thread, evdev fds) only runs
@@ -963,9 +970,7 @@ async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None
                 loop.add_signal_handler(sig, current.cancel)
     log_event(logger, "accessory.bridges_started", bridges=",".join(bridges))
     try:
-        await supervise(
-            bridges, status_path=status_path, detail=("hid", readers.register),
-        )
+        await supervise(bridges, status_path=status_path, details=details)
     except asyncio.CancelledError:
         log_event(logger, "accessory.bridges_stopped")
 

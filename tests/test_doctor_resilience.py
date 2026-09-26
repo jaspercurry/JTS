@@ -19,6 +19,7 @@ import pytest
 
 from jasper import service_units
 from jasper.cli.doctor import _evidence, _shared, resilience, web
+from jasper.mic_presence import MicPresence
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
@@ -258,6 +259,39 @@ def test_check_accessory_bridges_warns_on_restart_loop(monkeypatch):
     assert (result.status, result.reason) == (
         "warn", resilience.REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
     )
+
+
+@pytest.mark.parametrize(
+    ("link", "status", "reason"),
+    [
+        ({"connected": True, "subscribed": True}, "ok", ""),
+        # Asleep is a remote's normal idle; the next press wakes it.
+        ({"connected": False, "subscribed": False}, "ok", ""),
+        (
+            {"connected": True, "subscribed": False}, "warn",
+            resilience.REASON_ACCESSORY_MIC_NOT_READY,
+        ),
+        (None, "warn", resilience.REASON_ACCESSORY_MIC_NOT_READY),
+    ],
+    ids=["ready", "asleep", "unsubscribed", "no_adapter"],
+)
+def test_check_accessory_bridges_reports_an_armed_mics_readiness(
+    monkeypatch, link, status, reason,
+):
+    bridges = {"hid": {"restarts": 0, "last_error": None}}
+    if link is not None:
+        bridges["wiim_remote_2"] = {"restarts": 0, "last_error": None, "link": link}
+    monkeypatch.setattr(
+        resilience.accessory_status, "snapshot",
+        lambda: {"published": True, "bridges": bridges},
+    )
+    _evidence.evidence.seed(
+        "mic_presence", MicPresence(present=True, accessory_sources=("wiim_remote_2",)),
+    )
+
+    result = resilience.check_accessory_bridges()
+
+    assert (result.status, result.reason) == (status, reason)
 
 
 # --------------------------------------------------- check_voice_unit_running

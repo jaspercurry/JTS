@@ -27,9 +27,12 @@ from jasper.accessories.registry import (
     RemoteProfile,
     TapAction,
 )
+from jasper.accessories import status as accessory_status
 from jasper.accessories.status import snapshot
 from jasper.accessories.supervisor import supervise
 from jasper.platform.control_client import ControlError, ControlResponse
+
+from ._async_wait import wait_until
 
 
 # Window short enough that tests finish quickly but long enough that
@@ -989,14 +992,14 @@ def _healthy_bridge(started: asyncio.Event):
 
 
 async def _supervise_until(
-    bridges, predicate, *, backoff_sec: float, status_path, detail=None,
+    bridges, predicate, *, backoff_sec: float, status_path, details=None,
 ) -> bool:
     task = asyncio.create_task(
         supervise(
             bridges,
             backoff_sec=backoff_sec,
             status_path=status_path,
-            detail=detail,
+            details=details,
         ),
     )
     loop = asyncio.get_running_loop()
@@ -1125,6 +1128,83 @@ def test_a_missing_status_file_reads_as_unpublished(tmp_path):
     }
 
 
+def _adapter_entry(*, connected, subscribed, last_error=None) -> dict:
+    return {
+        "restarts": 0, "last_error": last_error,
+        "link": {"connected": connected, "subscribed": subscribed},
+    }
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        (None, accessory_status.MIC_NOT_READY_ADAPTER_DOWN),
+        (
+            _adapter_entry(connected=True, subscribed=True, last_error="ImportError"),
+            accessory_status.MIC_NOT_READY_ADAPTER_DOWN,
+        ),
+        (
+            _adapter_entry(connected=None, subscribed=False),
+            accessory_status.MIC_NOT_READY_LINK_UNKNOWN,
+        ),
+        (
+            _adapter_entry(connected=False, subscribed=False),
+            accessory_status.MIC_NOT_READY_DISCONNECTED,
+        ),
+        (
+            _adapter_entry(connected=True, subscribed=False),
+            accessory_status.MIC_NOT_READY_UNSUBSCRIBED,
+        ),
+        (_adapter_entry(connected=True, subscribed=True), None),
+    ],
+    ids=["absent", "restart_backoff", "unprobed", "asleep", "unsubscribed", "ready"],
+)
+def test_a_mic_is_ready_only_while_its_adapter_is_connected_and_subscribed(
+    entry, expected,
+):
+    bridges = {} if entry is None else {"wiim_remote_2": entry}
+
+    assert accessory_status.mic_not_ready_reason(
+        "wiim_remote_2", {"published": True, "bridges": bridges},
+    ) == expected
+
+
+async def test_a_mic_adapter_publishes_its_link_under_its_source_id(
+    monkeypatch, tmp_path,
+):
+    """Readers find an adapter's readiness in the status entry named by its
+    source id; a link registered anywhere else reads as `adapter_down`."""
+    status_path = tmp_path / "status.json"
+
+    async def adapter(link) -> None:
+        link.update(connected=True, subscribed=True)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        asyncio.get_running_loop(), "add_signal_handler", lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        bridge_mod, "_run_hid_bridge",
+        lambda _url, _readers: asyncio.Event().wait(),
+    )
+    monkeypatch.setattr(
+        bridge_mod, "_published_mic_adapters", lambda: {"wiim_remote_2": adapter},
+    )
+
+    task = asyncio.create_task(
+        bridge_mod._run_bridges("http://127.0.0.1:8780", str(status_path)),
+    )
+    try:
+        await wait_until(
+            lambda: accessory_status.mic_not_ready_reason(
+                "wiim_remote_2", snapshot(status_path),
+            ) is None,
+            timeout=5.0,
+        )
+    finally:
+        await _stop(task)
+
+
 def _install_fake_pyudev(monkeypatch, observers: Optional[List] = None) -> None:
     """Inject a minimal fake `pyudev` so the HID bridge's discovery and
     hot-plug loop run on dev hosts. The monitor fires nothing on its own —
@@ -1229,7 +1309,7 @@ async def test_a_dead_reader_is_reported_and_re_armed(
         ),
         backoff_sec=3600.0,
         status_path=status_path,
-        detail=("hid", readers.register),
+        details={"hid": readers.register},
     )
 
     assert still_running
@@ -1518,7 +1598,8 @@ async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(
         bridge_mod, "_run_hid_bridge", lambda _url, _readers: bridge("hid")(),
     )
     monkeypatch.setattr(
-        bridge_mod, "_published_mic_adapters", lambda: {"mic": bridge("mic")},
+        bridge_mod, "_published_mic_adapters",
+        lambda: {"mic": lambda _link: bridge("mic")()},
     )
 
     task = asyncio.create_task(
