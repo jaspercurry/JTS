@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import recording_backend
+from jasper.wake_corpus import clip_recording, recording_backend
 from jasper.web import wake_corpus_setup
 
 from tests._log_events import event_records
@@ -74,7 +74,7 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     monkeypatch, mute_backend, mute_path: Path, caplog,
 ) -> None:
 
-    monkeypatch.setattr(recording_backend, "MUTE_POLL_INTERVAL_SEC", 0.05)
+    monkeypatch.setattr(clip_recording, "MUTE_POLL_INTERVAL_SEC", 0.05)
     _write_mute(mute_path, False)
     mute_backend.begin_session("jasper")
     mute_backend.start_recording("quiet", "near")

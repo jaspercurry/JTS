@@ -65,7 +65,7 @@ class ClipMetadata:
     deleted: bool = False
     auto_stopped: bool = False
     # True when the recording was force-stopped because the household
-    # muted the mic mid-clip (see recording_backend.MUTE_POLL_INTERVAL_SEC).
+    # muted the mic mid-clip (see clip_recording.MUTE_POLL_INTERVAL_SEC).
     # The audio on disk predates the mute flip (±1 poll interval); the
     # flag tells the operator why the clip ended early.
     mute_stopped: bool = False
