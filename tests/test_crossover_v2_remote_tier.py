@@ -143,15 +143,13 @@ def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
 
 
 def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
-    """S4b. The geometry-locked retake builds its pose by hand
-    (``_prompt_shown_for``), so it carries an offset and NO side. Before this
-    guard that read back as 0° — "already on the design axis" — so a driver
-    would have been told to stay put for a capture the plan believed was 75 cm
-    off-axis, and the evidence would have recorded an offset the microphone
-    never had."""
+    """S4b. A pose built by hand with an offset and NO side must not read back
+    as 0°, "already on the design axis": a driver would be told to stay put for
+    a capture the plan believed was 75 cm off-axis, and the evidence would
+    record an offset the microphone never had."""
     unsigned = capture_plan.CloudPositionPrompt(
         headline="Same measurement, wider spot.",
-        offset_cm=capture_plan.GEOMETRY_RETRY_OFFSET_CM,
+        offset_cm=75.0,
         role=POSITION_ROLE_OFFAX,
     )
     assert unsigned.lateral_sign == 0

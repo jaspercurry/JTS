@@ -44,7 +44,12 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ... import audio_profile_state, conversation_history, mic_mute_persistence
+from ... import audio_profile_state, conversation_history, mic_mute_persistence, mux_mode_persistence
+from ...active_speaker.design_draft import DEFAULT_DESIGN_DRAFT_PATH
+from ...control.control_token import TOKEN_FILE
+from ...sound.profile import PROFILE_PATH
+from ...sound.settings import SETTINGS_PATH
+from ...volume_persistence import VolumePersistence
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from ...env_load import (
     GROUPING_ENV_FILE,
@@ -117,7 +122,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         ),
         paths=(
             # Security gate: present-but-unreadable = CSRF gate silently off.
-            "/var/lib/jasper/control_token",
+            TOKEN_FILE,
             # SSOT files jasper-control re-reads FRESH on every /state / endpoint
             # call (it is not restarted on a wizard save).
             GROUPING_ENV_FILE,
@@ -127,11 +132,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
             str(audio_profile_state.DEFAULT_AEC_MODE_PATH),
-            # /state's sound card: load_profile() + load_sound_settings() are
-            # called fresh on every /state aggregation (control.state_aggregate),
-            # so a 0600 regression silently degrades the dashboard sound card.
-            "/var/lib/jasper/sound_profile.json",
-            "/var/lib/jasper/sound_settings.json",
+            PROFILE_PATH,
+            SETTINGS_PATH,
             str(DEFAULT_CAMILLA_STATEFILE),
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
         ),
@@ -158,19 +160,15 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # EQ editor + the sound config family.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
-            # Wizard SSOT / status files re-read fresh on page render.
             VOICE_PROVIDER_ENV_PATH,
             WAKE_MODEL_ENV_PATH,
             TRANSIT_ENV_PATH,
-            # weather_setup._load_state opens this on every /assistant/weather/ render,
-            # same shape as transit.env above.
             WEATHER_ENV_PATH,
             SPEAKER_NAME_ENV_PATH,
             TOOL_STATE_ENV_PATH,
-            # /sound/ wizard reads the active profile + global settings.
-            "/var/lib/jasper/sound_profile.json",
-            "/var/lib/jasper/sound_settings.json",
-            "/var/lib/jasper/active_speaker_design_draft.json",
+            PROFILE_PATH,
+            SETTINGS_PATH,
+            str(DEFAULT_DESIGN_DRAFT_PATH),
         ),
     ),
     DaemonReadSpec(
@@ -195,7 +193,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # The graphs the measurement daemon validates, applies and rolls back.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
-            "/var/lib/jasper/active_speaker_design_draft.json",
+            str(DEFAULT_DESIGN_DRAFT_PATH),
         ),
     ),
     DaemonReadSpec(
@@ -220,7 +218,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # The dashboard writes nothing and proxies the rest to
             # jasper-control. Its one on-disk read is the token canonical_page()
             # embeds — and the token read fails safe to gate-OFF on EACCES.
-            "/var/lib/jasper/control_token",
+            TOKEN_FILE,
         ),
     ),
     DaemonReadSpec(
@@ -230,8 +228,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("jasper-intsecrets",),
         paths=(
-            "/var/lib/jasper/mux_mode.json",
-            "/var/lib/jasper/speaker_volume.json",
+            mux_mode_persistence.DEFAULT_PATH,
+            VolumePersistence.DEFAULT_PATH,
         ),
     ),
     DaemonReadSpec(

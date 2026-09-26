@@ -12,12 +12,14 @@ import math
 import wave
 
 import numpy as np
+import yaml
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ, band_ladder_name
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
 from jasper.json_fields import sha256_file
 
+from ..graph_safety import view_from_yaml_dict
 from .derivation import ArtifactHeader, derive_offline_render_config
 from .render import DEPLOYED_PROCESSING_PRECISION, RenderBounds, render_config, resolve_render_binary
 
@@ -25,17 +27,24 @@ DSP_REPLAY_SCHEMA = "jts_dsp_replay/1"
 DSP_LEVELS_SCHEMA = "jts_dsp_levels/1"
 
 
-def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass_reference_db: float) -> dict:
-    if any(not math.isfinite(value) or not -120 <= value <= 0 for value in (main_db, bass_reference_db)):
+def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float,
+                 bass_reference_db: float | None = None) -> dict:
+    """``bass_reference_db`` is the Aux1 level a graph emitted before ADR-0359 reads through its
+    Loudness taper; a graph that reads no Aux1 fader replays without one."""
+    faders = (main_db,) if bass_reference_db is None else (main_db, bass_reference_db)
+    if any(not math.isfinite(value) or not -120 <= value <= 0 for value in faders):
         raise ValueError("dsp_replay_fader_invalid")
     with wave.open(str(stimulus), "rb") as wav:
         header = ArtifactHeader(wav.getframerate(), wav.getnchannels(), 8 * wav.getsampwidth())
         duration_s = wav.getnframes() / wav.getframerate()
-    out.mkdir(parents=True, exist_ok=True)
     raw, config = out.resolve() / "output.f64le", out.resolve() / "render.yml"
     derived = derive_offline_render_config(graph.read_text(), roles=None,
         capture_filename=str(stimulus.resolve()), capture_header=header,
         playback_filename=str(raw), processing_precision=DEPLOYED_PROCESSING_PRECISION)
+    if bass_reference_db is None and any(filter_.params.get("fader") == "Aux1" for filter_ in
+                                         view_from_yaml_dict(yaml.safe_load(derived.yaml_text)).filters.values()):
+        raise ValueError("dsp_replay_fader_invalid")
+    out.mkdir(parents=True, exist_ok=True)
     config.write_text(derived.yaml_text)
     binary = resolve_render_binary()
     invocation = render_config(binary.path, config, output_path=raw,

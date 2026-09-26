@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from io import TextIOWrapper
 from typing import Any, Callable, Protocol
+from uuid import uuid4
 
 import fcntl
 
@@ -349,13 +350,13 @@ def atomic_write_bytes(
     path: str | os.PathLike,
     data: bytes,
     *,
-    mode: int = 0o644,
+    mode: int | None = 0o644,
     group_from_parent: bool = True,
     preserve_target_stat: bool = False,
     preserve_target_owner: bool = False,
     durable: bool = False,
 ) -> None:
-    """Atomically write ``data`` to ``path``, then ``chmod`` to ``mode``.
+    """Atomically publish bytes. ``mode=None`` retains the creator's umask.
 
     Writes to a tempfile in the same directory as ``path`` and ``os.replace``s
     it into place, so a concurrent reader sees either the old file or the
@@ -418,7 +419,11 @@ def atomic_write_bytes(
     # Prefix with "." + basename so a directory listing groups it with the
     # target and a stray temp (e.g. on a crash mid-write) is recognisable.
     basename = os.path.basename(fspath)
-    fd, tmp = tempfile.mkstemp(prefix="." + basename + ".", suffix=".tmp", dir=parent)
+    if mode is None:
+        tmp = os.path.join(parent, f".{basename}.{uuid4().hex}.tmp")
+        fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o666)
+    else:
+        fd, tmp = tempfile.mkstemp(prefix="." + basename + ".", suffix=".tmp", dir=parent)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -432,7 +437,8 @@ def atomic_write_bytes(
                 # non-root caller replacing a file it can write is normally
                 # already the owner. Mode below still applies.
                 pass
-        os.chmod(tmp, mode)  # before the rename: no wider-permission window
+        if mode is not None:
+            os.chmod(tmp, mode)  # before the rename: no wider-permission window
         if durable:
             # Sync after ownership/mode changes so the durability promise
             # covers both file contents and the metadata published at rename.
@@ -474,7 +480,7 @@ def atomic_write_text(
     path: str | os.PathLike,
     text: str,
     *,
-    mode: int = 0o644,
+    mode: int | None = 0o644,
     group_from_parent: bool = True,
     preserve_target_stat: bool = False,
     preserve_target_owner: bool = False,
@@ -506,22 +512,17 @@ def atomic_write_json(
     path: str | os.PathLike,
     payload: Any,
     *,
-    mode: int = 0o644,
+    mode: int | None = 0o644,
     group_from_parent: bool = True,
     preserve_target_stat: bool = False,
     durable: bool = False,
+    default: Callable[[Any], Any] | None = None,
 ) -> None:
-    """Serialize ``payload`` deterministically and publish it atomically.
-
-    This is the JSON form of :func:`atomic_write_text`; it deliberately exposes
-    the same ownership and durability policy knobs so state owners choose those
-    once without reimplementing tempfile publication. The canonical encoding is
-    UTF-8, two-space indentation, sorted keys, and one trailing newline.
-    """
+    """Publish UTF-8 JSON with sorted keys, two-space indent and a final newline."""
 
     atomic_write_text(
         path,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        json.dumps(payload, indent=2, sort_keys=True, default=default) + "\n",
         mode=mode,
         group_from_parent=group_from_parent,
         preserve_target_stat=preserve_target_stat,

@@ -131,7 +131,6 @@ Environment:
   JASPER_INSTALL_PROFILE=full|streambox
                              Install tier. Unset/default is full speaker.
                              streambox is the Zero-class local renderer tier.
-                             Legacy endpoint/satellite tokens map to streambox.
   JASPER_HOSTNAME=<name>.local
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
@@ -140,14 +139,12 @@ EOF
 }
 
 normalize_install_profile() {
-    # Legacy endpoint/satellite tokens map to streambox so a field box with
-    # a persisted endpoint marker auto-migrates on its next deploy. Mirror
-    # of jasper.install_profile.normalize_install_profile.
+    # Mirror of jasper.install_profile.normalize_install_profile.
     case "${1:-}" in
         ""|full)
             printf 'full\n'
             ;;
-        streambox|endpoint|satellite)
+        streambox)
             printf 'streambox\n'
             ;;
         *)
@@ -265,32 +262,6 @@ JASPER_ALLOW_UNSUPPORTED_ARCH=1 to attempt the install anyway (expect
 the prebuilt fetches to fail).
 EOF
     return 2
-}
-
-# The RAW first line of the marker, before normalization. Used only to
-# detect a legacy endpoint/satellite marker so the migration to streambox
-# can be logged once. Mirrors jasper.install_profile._normalize_with_migration_log.
-read_raw_persisted_install_profile() {
-    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
-    [[ -f "${marker}" ]] || return 0
-    head -n1 "${marker}" | tr -d '[:space:]'
-}
-
-# True when the persisted marker carries a legacy endpoint/satellite token —
-# i.e. this deploy auto-migrates the box to streambox. Lets main() emit a
-# single greppable log line WITHOUT polluting resolve_install_profile's
-# captured stdout (which is the resolved profile value).
-# Tests pass an alternate marker path; main() calls it with no args (the
-# canonical marker). shellcheck only sees the no-arg production call.
-# shellcheck disable=SC2120
-install_profile_legacy_marker_migrating() {
-    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
-    local raw
-    raw="$(read_raw_persisted_install_profile "${marker}")" || return 1
-    case "${raw}" in
-        endpoint|satellite) return 0 ;;
-        *) return 1 ;;
-    esac
 }
 
 # Test helpers pass an alternate marker path directly; production calls use the
@@ -953,55 +924,6 @@ EOF
     echo "  Build manifest (verified install): ${git_sha} on ${git_branch}"
 }
 
-migrate_calibration_sign_convention() {
-    # A measurement mic's vendor calibration file (miniDSP UMIK, Dayton)
-    # states the MICROPHONE'S RESPONSE; the correction JTS applies is its
-    # negation. Records fetched before 2026-07-27 were stored claiming the
-    # opposite, so every measurement they calibrated carried twice the
-    # file's value with the wrong sign. New fetches are fixed at the source
-    # (jasper.audio_measurement.calibration.SUPPORTED_MODELS); this repairs
-    # what is already on disk. Keyed on each record's own stored convention,
-    # so it is idempotent and can never double-negate a correct record, and
-    # it is a no-op on a speaker that never fetched a vendor calibration.
-    if [[ ! -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
-        # Pre-venv ordering (or a failed runtime install): say so rather than
-        # returning silently, so "no line in the transcript" never has to be
-        # read as either "nothing to repair" or "step vanished".
-        echo "  mic calibration sign convention: skipped (no ${INSTALL_DIR}/.venv/bin/python yet)"
-        return 0
-    fi
-    local output
-    if output="$("${INSTALL_DIR}/.venv/bin/python" - <<'PY' 2>&1
-from jasper.audio_measurement.calibration import migrate_stored_sign_conventions
-
-counts = migrate_stored_sign_conventions()
-# `uploads_untouched` is the household-visible number the doctor's
-# "correction state dirs" row (REASON_UPLOADED_CALIBRATION_SIGN_REVIEW)
-# follows up on: uploaded records carry the household's OWN sign
-# declaration and are never flipped here.
-print(
-    "repaired={} scanned={} already_response={} uploads_untouched={} "
-    "unreadable={} write_failed={}".format(
-        counts["migrated_rederived"] + counts["migrated_negated"],
-        counts["scanned"],
-        counts["already_response"],
-        counts["skipped_not_vendor"],
-        counts["unreadable"],
-        counts["write_failed"],
-    )
-)
-PY
-    )"; then
-        echo "  mic calibration sign convention: ${output}"
-    else
-        # Non-fatal: a household with no stored vendor calibration loses
-        # nothing, and aborting a deploy over a metadata repair would be a
-        # worse outcome than a loud line. Records stay as they were.
-        echo "  WARNING: mic calibration sign-convention migration failed: ${output}"
-    fi
-}
-
-
 install_journald_persistent_storage() {
     # Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
     # which forces Storage=volatile. With the kernel watchdog reaping wedged
@@ -1572,18 +1494,8 @@ install_camillagui() {
         "${REPO_DIR}/deploy/systemd/camillagui.socket" \
         "${SYSTEMD_DIR}/camillagui.socket"
 
-    # Migration: earlier installs ran camillagui.service directly,
-    # always-on. We're switching to socket-activation via the
-    # .socket + systemd-socket-proxyd. Disable the boot-time pull
-    # of camillagui.service (it's dependency-activated now) so the
-    # idle-exit lifecycle works as designed. Idempotent — re-runs
-    # are a no-op once we're on the new layout.
-    if systemctl is-enabled camillagui.service >/dev/null 2>&1; then
-        systemctl disable camillagui.service
-    fi
-    # Stop the always-on instance so the next request goes through
-    # the new socket-activation path. Safe whether it's running or
-    # not — the socket activation will re-spawn on demand.
+    # Stop a running backend (the proxy's Requires= stops the proxy with it)
+    # so the next request starts the backend just installed.
     systemctl stop camillagui.service 2>/dev/null || true
 
     systemctl daemon-reload
@@ -1642,7 +1554,6 @@ INSTALL_STEPS=(
     "audio_cues|full|regenerate_audio_cues|regenerate the local audio cues"
     "secrets_perms|both|reassert_secrets_compartment_perms|re-assert the /var/lib/jasper-secrets compartment"
     "intsecrets_perms|both|reassert_intsecrets_compartment_perms|re-assert the /var/lib/jasper-intsecrets compartment"
-    "mic_cal_sign|both|migrate_calibration_sign_convention|repair mic calibrations stored under the wrong sign convention"
     "output_hw_state|both|ensure_output_hardware_state|write output hardware state before the Camilla statefile seed"
     "outputd_config|both|render_outputd_cutover_config|render the outputd flat startup config"
     "outputd_statefile|both|ensure_outputd_camilla_statefile|seed or validate the outputd Camilla statefile"
@@ -1750,9 +1661,6 @@ main() {
     fi
 
     echo "==> install.sh starting (profile: ${install_profile})"
-    if install_profile_legacy_marker_migrating; then
-        echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=${install_profile} source=marker"
-    fi
     # Fixed prologue, not table rows: the tier report and the root check are
     # read-only and must precede every mutation, the trap can only be armed
     # once root is proven, and the gate the trap clears is set with it.

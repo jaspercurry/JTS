@@ -21,12 +21,16 @@ import pytest
 from jasper import audio_profile_state, wake_conditions
 from jasper.cli import wake_enroll
 from jasper.wake_corpus import (
+    active_session,
     bridge_session,
     clip_capture,
+    clip_recording,
+    clip_store,
     recording_backend,
     runtime_probe,
     session_store,
 )
+from jasper.wake_corpus.errors import NoRecordingError
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
@@ -179,7 +183,7 @@ def test_begin_session_rejects_concurrent_initialization(
         return {"test": True}
 
     monkeypatch.setattr(
-        recording_backend,
+        active_session,
         "build_session_audio_context",
         blocking_audio_context,
     )
@@ -238,7 +242,7 @@ def test_start_recording_rejects_double_start(backend) -> None:
 
 def test_stop_recording_without_start_raises(backend) -> None:
     backend.begin_session("jasper")
-    with pytest.raises(recording_backend.NoRecordingError):
+    with pytest.raises(NoRecordingError):
         backend.stop_recording()
 
 
@@ -301,11 +305,11 @@ def test_sequential_clips_get_incrementing_seq(backend) -> None:
     assert seqs == [1, 2, 3]
 
 
-def test_sequence_excludes_deleted_clips(backend) -> None:
-    """Deleting clip 1 must not let the next clip reuse seq=2.
+def test_sequence_counts_deleted_clips(backend) -> None:
+    """A clip's sequence number is never reused, even after it is deleted.
 
-    Filenames include the per-session sequence number, so reusing a
-    sequence can overwrite a later good take in the same condition.
+    Filenames include the per-session sequence number, so a reused
+    number gives a new take WAV paths an earlier record still names.
     """
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
@@ -324,6 +328,12 @@ def test_sequence_excludes_deleted_clips(backend) -> None:
     clip3 = backend.stop_recording()
     # Sequence is monotonic across the session, including deleted clips.
     assert clip3.seq == 3
+
+    backend.delete_clip(clip3.clip_id)
+
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    assert backend.stop_recording().seq == 4
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +913,7 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
     }
     md_file = md_dir / "enroll_jasper_20260525T120000Z.json"
     md_file.write_text(json.dumps(session_data))
-    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "20260525T120000Z",
     }))
 
@@ -956,10 +966,10 @@ def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
     md_file.write_text(json.dumps({
         "session_id": "old", "member": "jasper", "ports": {}, "clips": [],
     }))
-    marker = md_dir / recording_backend.ACTIVE_SESSION_MARKER
+    marker = md_dir / active_session.ACTIVE_SESSION_MARKER
     marker.write_text(json.dumps({"session_id": "old"}))
     # Force mtime to be old
-    old_mtime = time.time() - (recording_backend.RESUME_WINDOW_SEC + 60)
+    old_mtime = time.time() - (active_session.RESUME_WINDOW_SEC + 60)
     os.utime(md_file, (old_mtime, old_mtime))
     os.utime(marker, (old_mtime, old_mtime))
 
@@ -1011,7 +1021,7 @@ def test_begin_session_after_recovery_starts_fresh(
         "session_id": "recovered", "member": "jasper",
         "ports": {}, "clips": [],
     }))
-    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "recovered",
     }))
 
@@ -1177,8 +1187,8 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     expected_mute: bool,
 ) -> None:
     """Safety stops retain no new frames and eventually publish the clip."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.2)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.2)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.2)
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     time.sleep(0.03)
@@ -1202,7 +1212,8 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
         trigger_thread = threading.Thread(
-            target=backend._safety_stop, args=(generation,), kwargs=labels,
+            target=clip_recording._safety_stop, args=(backend, generation),
+            kwargs=labels,
         )
         trigger_thread.start()
         trigger_thread.join(timeout=0.25)
@@ -1217,11 +1228,11 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
             assert retry_handle is not None
             assert backend._pending_stop_generation == generation
             assert backend._stop_retry_attempts >= 1
-        assert retry_handle.interval <= recording_backend.STOP_RETRY_MAX_SEC
+        assert retry_handle.interval <= clip_recording.STOP_RETRY_MAX_SEC
 
         # Repeated triggers merge into the existing timer; no extra Timer/worker threads.
         for _ in range(3):
-            backend._safety_stop(generation, **labels)
+            clip_recording._safety_stop(backend, generation, **labels)
         with backend._lock:
             assert backend._stop_retry_handle is retry_handle
             assert backend._stop_retry_attempts == 1
@@ -1253,9 +1264,9 @@ def test_stop_retry_gives_up_after_max_attempts(
     caplog,
 ) -> None:
     """A lifecycle owner that never releases is abandoned, not retried forever."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.001)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_ATTEMPTS", 3)
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1263,9 +1274,9 @@ def test_stop_retry_gives_up_after_max_attempts(
         clip_id = backend._current_clip_id
     generation = (clip_id, task)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", lambda *a, **k: False)
 
-    backend._safety_stop(generation, auto=True, mute_stopped=False)
+    clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
 
     def _gave_up() -> bool:
         with backend._lock:
@@ -1287,9 +1298,9 @@ def test_recorder_usable_after_stop_retry_abandoned(
     caplog,
 ) -> None:
     """A later recording can start after stop retries are exhausted."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.001)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.001)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_ATTEMPTS", 3)
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1297,8 +1308,8 @@ def test_recorder_usable_after_stop_retry_abandoned(
         clip_id = backend._current_clip_id
     generation = (clip_id, task)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
-    backend._safety_stop(generation, auto=True, mute_stopped=False)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", lambda *a, **k: False)
+    clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
 
     def _gave_up() -> bool:
         with backend._lock:
@@ -1321,7 +1332,7 @@ def test_stale_retry_callback_cannot_stop_the_next_clip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Timer admitted for clip A remains generation-bound after B starts."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.01)
     backend.begin_session("jasper")
     first = backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1332,9 +1343,9 @@ def test_stale_retry_callback_cannot_stop_the_next_clip(
     callback_entered = threading.Event()
     release_callback = threading.Event()
     callback_done = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def blocked_recovery(generation, **labels):
+    def blocked_recovery(backend_arg, generation, **labels):
         is_stale_timer = generation == first_generation and isinstance(
             threading.current_thread(), threading.Timer,
         )
@@ -1342,15 +1353,17 @@ def test_stale_retry_callback_cannot_stop_the_next_clip(
             callback_entered.set()
             assert release_callback.wait(timeout=2)
         try:
-            return original_recovery(generation, **labels)
+            return original_recovery(backend_arg, generation, **labels)
         finally:
             if is_stale_timer:
                 callback_done.set()
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._safety_stop(first_generation, auto=True, mute_stopped=False)
+        clip_recording._safety_stop(
+            backend, first_generation, auto=True, mute_stopped=False,
+        )
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1375,7 +1388,7 @@ def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Clip A's cleanup stays under lifecycle ownership and cannot erase B."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.2)
     backend.begin_session("jasper")
     first = backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1385,16 +1398,16 @@ def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
 
     cleanup_entered = threading.Event()
     release_cleanup = threading.Event()
-    original_clear = backend._clear_pending_stop
+    original_clear = clip_recording.clear_pending_stop
 
-    def blocked_clear(generation=None):
+    def blocked_clear(backend_arg, generation=None):
         if generation == first_generation:
             cleanup_entered.set()
             assert backend._lifecycle_lock.locked()
             assert release_cleanup.wait(timeout=2)
-        return original_clear(generation)
+        return original_clear(backend_arg, generation)
 
-    monkeypatch.setattr(backend, "_clear_pending_stop", blocked_clear)
+    monkeypatch.setattr(clip_recording, "clear_pending_stop", blocked_clear)
     stopped: list[object] = []
     stop_thread = threading.Thread(target=lambda: stopped.append(backend.stop_recording()))
     stop_thread.start()
@@ -1412,7 +1425,9 @@ def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
     second_generation = (second["clip_id"], second_task)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._safety_stop(second_generation, auto=True, mute_stopped=False)
+        clip_recording._safety_stop(
+            backend, second_generation, auto=True, mute_stopped=False,
+        )
         with backend._lock:
             assert backend._pending_stop_generation == second_generation
             assert backend._stop_retry_handle is not None
@@ -1426,7 +1441,7 @@ def test_mute_intent_merges_after_auto_stop_owns_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mute wins when it linearizes before auto publication takes state."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.2)
     backend.begin_session("jasper")
     started = backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1436,21 +1451,21 @@ def test_mute_intent_merges_after_auto_stop_owns_lifecycle(
 
     publisher_entered = threading.Event()
     release_publisher = threading.Event()
-    original_stop = backend._stop_recording
+    original_stop = clip_recording._stop_recording
 
     def blocked_stop(*args, **kwargs):
         publisher_entered.set()
         assert release_publisher.wait(timeout=2)
         return original_stop(*args, **kwargs)
 
-    monkeypatch.setattr(backend, "_stop_recording", blocked_stop)
+    monkeypatch.setattr(clip_recording, "_stop_recording", blocked_stop)
     auto_thread = threading.Thread(
-        target=backend._safety_stop, args=(generation,),
+        target=clip_recording._safety_stop, args=(backend, generation),
         kwargs={"auto": True, "mute_stopped": False},
     )
     auto_thread.start()
     assert publisher_entered.wait(timeout=2)
-    backend._safety_stop(generation, auto=False, mute_stopped=True)
+    clip_recording._safety_stop(backend, generation, auto=False, mute_stopped=True)
     release_publisher.set()
     auto_thread.join(timeout=2)
     assert not auto_thread.is_alive()
@@ -1466,7 +1481,7 @@ def test_shutdown_joins_active_retry_before_closing_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal shutdown prevents an admitted Timer from publishing/rearming."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.01)
     backend.begin_session("jasper")
     started = backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1476,18 +1491,18 @@ def test_shutdown_joins_active_retry_before_closing_loop(
 
     callback_entered = threading.Event()
     release_callback = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def blocked_recovery(generation_arg, **labels):
+    def blocked_recovery(backend_arg, generation_arg, **labels):
         if isinstance(threading.current_thread(), threading.Timer):
             callback_entered.set()
             assert release_callback.wait(timeout=2)
-        return original_recovery(generation_arg, **labels)
+        return original_recovery(backend_arg, generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._safety_stop(generation, auto=True, mute_stopped=False)
+        clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1529,18 +1544,18 @@ def test_shutdown_joins_admitted_initial_worker_before_closing_loop(
 
     worker_entered = threading.Event()
     release_worker = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def blocked_recovery(generation_arg, **labels):
+    def blocked_recovery(backend_arg, generation_arg, **labels):
         worker_entered.set()
         assert release_worker.wait(timeout=2)
         # The admitted worker may encounter shutdown too. It must return to
         # the external teardown owner instead of waiting on itself.
         backend.shutdown()
-        return original_recovery(generation_arg, **labels)
+        return original_recovery(backend_arg, generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
-    backend._auto_stop_threadsafe(generation)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", blocked_recovery)
+    clip_recording._auto_stop_threadsafe(backend, generation)
     assert worker_entered.wait(timeout=2)
     with backend._lock:
         assert len(backend._safety_workers) == 1
@@ -1574,7 +1589,7 @@ def test_retry_join_timeout_keeps_loop_alive_until_later_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bounded timeout never closes the loop beneath an active Timer."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.01)
     monkeypatch.setattr(recording_backend, "STOP_SHUTDOWN_JOIN_SEC", 0.05)
     backend.begin_session("jasper")
     started = backend.start_recording("quiet", "near")
@@ -1586,22 +1601,22 @@ def test_retry_join_timeout_keeps_loop_alive_until_later_shutdown(
     callback_entered = threading.Event()
     release_callback = threading.Event()
     callback_done = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def blocked_recovery(generation_arg, **labels):
+    def blocked_recovery(backend_arg, generation_arg, **labels):
         if isinstance(threading.current_thread(), threading.Timer):
             callback_entered.set()
             assert release_callback.wait(timeout=2)
             try:
-                return original_recovery(generation_arg, **labels)
+                return original_recovery(backend_arg, generation_arg, **labels)
             finally:
                 callback_done.set()
-        return original_recovery(generation_arg, **labels)
+        return original_recovery(backend_arg, generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._safety_stop(generation, auto=True, mute_stopped=False)
+        clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1626,7 +1641,7 @@ def test_retry_timer_can_initiate_shutdown_without_self_join(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Timer-owned shutdown skips joining itself and closes safely."""
-    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.01)
     backend.begin_session("jasper")
     started = backend.start_recording("quiet", "near")
     with backend._lock:
@@ -1634,19 +1649,19 @@ def test_retry_timer_can_initiate_shutdown_without_self_join(
     assert task is not None
     generation = (started["clip_id"], task)
     callback_done = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def timer_shutdown(generation_arg, **labels):
+    def timer_shutdown(backend_arg, generation_arg, **labels):
         if isinstance(threading.current_thread(), threading.Timer):
             backend.shutdown()
             callback_done.set()
             return True
-        return original_recovery(generation_arg, **labels)
+        return original_recovery(backend_arg, generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", timer_shutdown)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", timer_shutdown)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._safety_stop(generation, auto=True, mute_stopped=False)
+        clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
@@ -1664,17 +1679,17 @@ def test_shutdown_terminal_rejects_start_and_retry_admission(backend) -> None:
         task = backend._current
     assert task is not None and task._task is not None
     generation = (started["clip_id"], task)
-    backend._quiesce_current_capture(generation)
+    clip_recording._quiesce_current_capture(backend, generation)
     wait_until_sync(lambda: task._task.done(), interval=0.005)
     assert task._task.done()
     backend.shutdown()
 
     with pytest.raises(recording_backend.StateError, match="shutting down"):
         backend.start_recording("quiet", "near")
-    backend._schedule_stop_retry(
-        generation, auto=True, mute_stopped=False,
+    clip_recording._schedule_stop_retry(
+        backend, generation, auto=True, mute_stopped=False,
     )
-    backend._auto_stop_threadsafe(generation)
+    clip_recording._auto_stop_threadsafe(backend, generation)
     with backend._lock:
         assert backend._pending_stop is None
         assert backend._stop_retry_handle is None
@@ -1695,15 +1710,15 @@ def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
 
     worker_entered = threading.Event()
     release_worker = threading.Event()
-    original_recovery = backend._stop_with_recovery
+    original_recovery = clip_recording._stop_with_recovery
 
-    def blocked_recovery(generation_arg, **labels):
+    def blocked_recovery(backend_arg, generation_arg, **labels):
         worker_entered.set()
         assert release_worker.wait(timeout=2)
-        return original_recovery(generation_arg, **labels)
+        return original_recovery(backend_arg, generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
-    backend._auto_stop_threadsafe(generation)
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", blocked_recovery)
+    clip_recording._auto_stop_threadsafe(backend, generation)
     assert worker_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
     first_done = threading.Event()
@@ -1739,6 +1754,7 @@ def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
 def test_begin_session_refuses_while_stop_is_saving_clip(
     backend,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The stop/WAV/metadata transaction stays bound to its session."""
     original_session_id = backend.begin_session("jasper")
@@ -1747,7 +1763,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
 
     entered = threading.Event()
     release = threading.Event()
-    original_write_wav = recording_backend.write_wav
+    original_write_wav = clip_store.write_wav
 
     def blocking_write_wav(path: Path, pcm: bytes) -> None:
         entered.set()
@@ -1755,7 +1771,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
             raise TimeoutError("test did not release clip WAV save")
         original_write_wav(path, pcm)
 
-    monkeypatch.setattr(recording_backend, "write_wav", blocking_write_wav)
+    monkeypatch.setattr(clip_store, "write_wav", blocking_write_wav)
     stopped: list[session_store.ClipMetadata] = []
     errors: list[BaseException] = []
 
@@ -1783,7 +1799,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
     assert errors == []
     assert len(stopped) == 1
     assert stopped[0].session_id == original_session_id
-    _, metadata = _session_metadata(backend._output_dir.parent)
+    _, metadata = _session_metadata(tmp_path)
     assert [clip["clip_id"] for clip in metadata["clips"]] == [
         stopped[0].clip_id,
     ]

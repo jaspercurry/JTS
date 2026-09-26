@@ -21,5 +21,7 @@ class AuxRing:
     # Direct PCMs have no plug conversion: both ends must match Snapcast.
     format: str = "S16_LE"
     channels: int = 2
+    # The reader's period, so it never holds a partial slot (#3656). A slot of
+    # period_frames x channels x 2 B must fit JTS_RING_MAX_SLOT_BYTES (65536).
     period_frames: int = RING_SLOT_FRAMES
     slots: int = 16  # Ioplug ceiling; shallower rings cannot reach the rate target.

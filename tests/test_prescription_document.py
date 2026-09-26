@@ -55,6 +55,7 @@ from tests.test_active_speaker_measured_crossover_candidate import (
     _acoustic_rear_document, _candidate, _rear_document, _room_correction,
 )
 from tests.test_rear_output_foundation import _rear_pair
+from tests.test_active_speaker_local_subwoofer import _stereo_topology
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
     WOOFER_FEATURE_HZ, _classification, _draft, _document as driver_document,
@@ -279,8 +280,9 @@ def bass_document(packet):
     return {**_bass_descriptor().payload(), "round_id": packet["round_id"]}
 
 
+@pytest.mark.parametrize("banded", [True, False])
 @pytest.mark.parametrize("pin", [{}, {"tweeter": -9.52}])
-def test_empty_driver_chain_clears_all_roles_and_keeps_trim_context(base, bank, evidence, pin):
+def test_empty_driver_chain_clears_all_roles_and_keeps_trim_context(base, bank, evidence, pin, banded):
     base = publish_authored_candidate(replace(base.candidate, linearization={
         role: {"filters": [{"biquad_type": "Peaking", "freq": freq, "q": 1, "gain": -1}
                            for freq in freqs]}
@@ -288,7 +290,7 @@ def test_empty_driver_chain_clears_all_roles_and_keeps_trim_context(base, bank, 
     }), root=bank)
     evidence = replace(evidence, packet={**evidence.packet, "incumbent": {"linearization": {
         "from_applied_profile": {role: entry["filters"] for role, entry in base.candidate.linearization.items()},
-    }}})
+    }}}, sources={**evidence.sources, **({} if banded else {"draft": {}})})
     raw = driver_document([], dict(evidence.packet), pinned_trim_db=pin)
     child = judge_prescription_document(document(base.fingerprint, {"driver": raw}), base=base, evidence=evidence)
     assert child.analysis["resolution"]["driver"] == "document"
@@ -296,6 +298,29 @@ def test_empty_driver_chain_clears_all_roles_and_keeps_trim_context(base, bank, 
     assert child.linearization == {}
     assert child.role_attenuations_db == {**base.candidate.role_attenuations_db, **pin}
     assert child.role_attenuations_db["woofer"] == 0.0
+
+
+@pytest.mark.parametrize(("gains", "refusal", "outside"), [
+    ([-3.0], None, 1), ([3.0], "driver_passband_unavailable", None), ([], None, 0),
+], ids=["cut", "boost", "clear"])
+def test_a_one_way_speaker_with_no_declared_band_judges_its_full_range_role(bank, evidence, gains, refusal, outside):
+    box = _stereo_topology(mode="full_range_passive", subwoofer=True)
+    preset, _, _ = build_passive_mains_preset(box)
+    base = publish_authored_candidate(MeasuredCrossoverCandidate(
+        program_id="passive", analysis={"measurement_status": "unmeasured"},
+        source_preset=preset, role_attenuations_db={"full_range": 0.0},
+    ), root=bank)
+    evidence = replace(evidence, sources={**evidence.sources, "draft": {"topology": box.to_dict()}})
+    filters = [{"role": "full_range", "biquad_type": "Peaking", "freq": 2500.0, "q": 4.0, "gain": gain}
+               for gain in gains]
+    raw = document(base.fingerprint, {"driver": driver_document(filters, dict(evidence.packet))})
+    if refusal is not None:
+        with pytest.raises(PrescriptionDocumentRefused) as refused:
+            judge_prescription_document(raw, base=base, evidence=evidence)
+        assert (refused.value.section, refused.value.code) == ("driver", refusal)
+        return
+    child = judge_prescription_document(raw, base=base, evidence=evidence)
+    assert child.analysis["evidence"]["prescriptions"]["driver"]["cuts_outside_passband"] == outside
 
 
 @pytest.fixture

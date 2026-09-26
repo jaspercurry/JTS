@@ -83,8 +83,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0177](0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md) | Duck ownership is asked of the owner, never inferred from a dB gap | accepted |
 | [0206](0206-the-airplay-sender-slider-is-an-inbound-control-surface.md) | The AirPlay sender slider is an inbound control surface — shairport's volume hook drives the master fader | accepted |
 | [0211](0211-a-live-eq-edit-ducks-only-when-camilladsp-rebuilds.md) | A live EQ edit ducks only when CamillaDSP rebuilds | accepted |
-| [0213](0213-the-reconciler-asks-the-dsp-writer-lock-before-it-corrects-the-fader.md) | The reconciler asks the DSP writer lock before it corrects the fader | accepted |
+| [0213](0213-the-reconciler-asks-the-dsp-writer-lock-before-it-corrects-the-fader.md) | The reconciler asks the DSP writer lock before it corrects the fader | amended by 0368 |
 | [0313](0313-the-camilla-controller-refuses-a-graph-that-breaks-the-hearing-ceiling.md) | The CamillaController refuses a graph that breaks the hearing ceiling | accepted |
+| [0368](0368-the-volume-floor-audition-holds-the-dsp-writer-lock.md) | The volume-floor audition holds the DSP writer lock, so the reconciler has no quiet carve-out | accepted |
 
 ## Local sources & renderers
 
@@ -252,7 +253,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
-| [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | accepted |
+| [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | amended by 0367 |
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
 | [0210](0210-polarity-has-two-frames-and-one-conversion-owner.md) | Polarity has two frames, and one conversion owner | accepted |
@@ -342,3 +343,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |
 | [0365](0365-a-drivers-pose-finds-its-level-with-a-probe.md) | A driver's pose finds its level with a probe: a rising staircase of short sweeps, stopped at the ramp bound under the SPL stop, solves its take's gain | accepted |
 | [0366](0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) | One pose model (kind, distance, angle or seat offset, optional driver), a level found at each pose by one solver, and a trusted band stated from the pose; registry rows become presets over named layouts | accepted |
+| [0367](0367-a-drivers-declared-band-bounds-a-boost-and-discloses-a-cut.md) | A driver's declared band bounds a boost; a cut outside it is admitted and disclosed on the receipt | accepted |

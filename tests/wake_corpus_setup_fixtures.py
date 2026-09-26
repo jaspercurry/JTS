@@ -31,7 +31,13 @@ import pytest
 
 from jasper import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
-from jasper.wake_corpus import clip_capture, recording_backend, runtime_probe
+from jasper.wake_corpus import (
+    active_session,
+    clip_capture,
+    clip_recording,
+    recording_backend,
+    runtime_probe,
+)
 from jasper.wake_corpus.capture_plan import PlanConformance
 from jasper.mics import xvf3800
 from jasper.web import wake_corpus_setup
@@ -106,17 +112,18 @@ def _page_css() -> str:
 
 
 def _allow_capture_plan_conformance(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        recording_backend,
-        "validate_active_capture_plan",
-        lambda plan: PlanConformance(
+    def conformant(plan: dict) -> PlanConformance:
+        return PlanConformance(
             ok=True,
             status="ok",
             active_plan_id=str(plan.get("plan_id") or ""),
             expected_plan_id=str(plan.get("plan_id") or ""),
             emitted_legs=list(plan.get("expected_emitted_legs") or []),
-        ),
-    )
+        )
+
+    # Clip start and the status snapshot each run the conformance check.
+    for module in (active_session, clip_recording):
+        monkeypatch.setattr(module, "validate_active_capture_plan", conformant)
 
 
 def _block_recording_task_start(

@@ -206,11 +206,6 @@ def packet_index(
                                for group in packet["sets"] for take in group["takes"]
                                if not take["selected"] and (fault := take["fault"])))
     lines.append("## Decisions")
-    commissioning = packet.get("commissioning") or {}
-    if commissioning.get("candidate_fingerprint"):
-        lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
-    if commissioning.get("status") == "alignment_unmeasured":
-        lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
     takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}

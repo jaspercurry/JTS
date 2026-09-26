@@ -918,8 +918,7 @@ def test_crossover_reset_ignores_a_legacy_volume_safety_file(
 ) -> None:
     """The pre-v2 per-step leveler's read side used to hydrate
     active_speaker_crossover_volume_safety.json as an unresolved latch even
-    after its writer was deleted, so a box that had not re-run install (the
-    file's retirement is a deploy/lib/install/retirements.sh row) got
+    after its writer was deleted, so a box that had not re-run install got
     /crossover/reset refused forever. Nothing reads that file any more --
     writing one here only reproduces the on-disk scenario."""
     import json
