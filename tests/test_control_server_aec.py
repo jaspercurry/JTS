@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from jasper import wake_models
 from jasper.control import aec_endpoints
 
 from tests._log_events import event_fields
@@ -106,6 +107,7 @@ def test_aec_threshold_persists_and_restarts_voice(
     model_file = tmp_path / "wake_model.env"
     model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
     monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    monkeypatch.setattr(wake_models, "WAKE_MODEL_FILE", str(model_file))
     calls = _record_broker(monkeypatch)
 
     status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
@@ -152,6 +154,7 @@ def test_aec_restart_502s_when_the_broker_refuses(
     model_file = tmp_path / "wake_model.env"
     model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
     monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    monkeypatch.setattr(wake_models, "WAKE_MODEL_FILE", str(model_file))
     _record_broker(monkeypatch, ok=False)
 
     status, body = _post(f"{base}{path}", payload)

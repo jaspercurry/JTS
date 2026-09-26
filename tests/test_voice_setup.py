@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from jasper.control import service_restart
 from jasper import atomic_io, env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
@@ -529,7 +530,7 @@ def test_e2e_save_writes_file_and_redirects(
     # Prevent the test from actually shelling out to systemctl.
     called = []
     monkeypatch.setattr(
-        _common, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
+        service_restart, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
     )
     # The voice_setup module imported the symbol directly; patch it
     # there too.

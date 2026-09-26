@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from jasper.control.service_restart import restart_voice_daemon
 from jasper.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
     ensure_seed_profile,
@@ -60,7 +61,6 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     form_guarded,
-    restart_voice_daemon,
     send_html_response,
     send_rejected_form,
     send_see_other,
@@ -294,8 +294,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             return None
         provider = provider_by_id(new["JASPER_VOICE_PROVIDER"])
         assert provider is not None  # _apply_save refused an unknown one
-        # select_voice writes these two; the halves below leave them as found.
-        selection = ("JASPER_VOICE_PROVIDER", provider.model_env)
+        selection = ("JASPER_VOICE_PROVIDER", provider.model_env, provider.voice_env)
         settings = {k: v for k, v in new.items() if k not in selection}
         settings.update((k, current[k]) for k in selection if k in current)
         keys_saved = False
@@ -305,7 +304,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _write_half(cfg, current, settings, secret=True)
             keys_saved = True
             select_voice(
-                provider.id, new.get(provider.model_env),
+                provider.id, new.get(provider.model_env), voice=new.get(provider.voice_env),
                 via="wizard", client=handler.address_string(),
                 path=cfg["state_path"], keys_path=cfg["keys_path"],
                 discovery_path=cfg["discovery_cache_path"],

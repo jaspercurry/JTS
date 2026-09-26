@@ -53,7 +53,7 @@ from ..chip_aec.policy import (
     combine_mic_availability,
     effective_chip_aec_dac_gate,
 )
-from ..wake_models import WAKE_MODEL_ENV_OWNER, WAKE_MODEL_FILE
+from ..wake_models import WAKE_MODEL_FILE, read_wake_threshold
 from .. import systemd_probe
 from . import restart_broker
 
@@ -304,40 +304,6 @@ def _write_audio_input_profile(profile: str) -> None:
         profile_env_updates(normalized),
         mode=0o644,
         owner=_AEC_MODE_ENV_OWNER,
-    )
-
-
-def _read_wake_threshold() -> float:
-    """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
-    (the /assistant/wake/ wizard's home) with the daemon's compiled-in default
-    (0.3) as fallback. Same precedence the daemon uses on startup."""
-    val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
-    if not val:
-        val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
-    try:
-        # Mirror the daemon's compiled-in default (in jasper/config.py:
-        # `wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3)`, also
-        # shipped in .env.example) so the slider + /state show what's
-        # actually live. A higher fallback here would make a Save at the
-        # displayed value silently raise the real threshold.
-        return float(val) if val else 0.3
-    except ValueError:
-        return 0.3
-
-
-def _write_wake_threshold(value: float) -> None:
-    """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
-    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed by the
-    /assistant/wake/ page (model picker writes JASPER_WAKE_MODEL via the form
-    save; sensitivity slider posts to /assistant/wake/sensitivity which lands
-    here)."""
-    if not 0.0 <= value <= 1.0:
-        raise ValueError(f"threshold out of range: {value}")
-    locked_update_env_file(
-        _WAKE_MODEL_FILE,
-        {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
-        mode=0o644,
-        owner=WAKE_MODEL_ENV_OWNER,
     )
 
 
@@ -715,7 +681,7 @@ def _build_aec_full_status() -> dict:
                 ),
             ),
         },
-        "threshold": _read_wake_threshold(),
+        "threshold": read_wake_threshold(),
         "wake_word": _read_wake_word_status(),
         "chip_aec_gate": chip_gate,
         "audio_profile": profile_status["audio_profile"],

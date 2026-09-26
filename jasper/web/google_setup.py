@@ -50,6 +50,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
 from ..accounts import ACCOUNT_NAME_PATTERN, valid_account_name
 from ..atomic_io import write_env_file
 from ..env_file import read_env_file
@@ -72,7 +73,6 @@ from ._common import (
     dispatch_post,
     flash_error,
     form_guarded,
-    restart_voice_daemon,
     send_html_response,
     send_see_other,
     SECRET_ENV_MODE,

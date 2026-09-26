@@ -54,6 +54,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from jasper.control.service_restart import restart_voice_daemon
 from ..identity import reader as identity
 from ..control import household_credential
 from ..multiroom.airplay_latency import with_airplay_latency_fit
@@ -68,7 +69,6 @@ from ._common import (
     dispatch_post,
     local_web_host,
     read_json_body,
-    restart_voice_daemon,
     restart_systemd_units,
     send_html_response,
     send_json_response,
