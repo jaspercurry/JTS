@@ -93,14 +93,14 @@ class SlotAttempts:
         return max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_household - self.by_speaker)
 
     def can_retry(self, charge: TakeCharge = "operator") -> bool:
-        return (self.automatic_left if charge == "speaker" else self.extras_left) > 0
+        return charge == "replay" or (self.automatic_left if charge == "speaker" else self.extras_left) > 0
 
     def spend(self, charge: TakeCharge) -> None:
         if not self.can_retry(charge):
             raise AttemptOverspendError("slot has no attempts left for this initiator")
         if charge == "speaker":
             self.by_speaker += 1
-        else:
+        elif charge != "replay":
             self.by_household += 1
 
     def to_payload(self) -> dict[str, Any]:
@@ -208,12 +208,7 @@ def assess_begin(
     default_code: str,
     retry_charge: TakeCharge = "operator",
 ) -> BeginDecision:
-    """Admit (or refuse) one phone ``begin_capture`` (§5.7).
-
-    The ``code`` on :data:`REFUSE_EXTRAS_SPENT` is the condition actually
-    observed at this slot, never a generic exhaustion code that would erase
-    what went wrong.
-    """
+    """Admit (or refuse) one phone ``begin_capture`` (§5.7)."""
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
     # The ``is not None`` half narrows the type and changes no answer: the flow
@@ -226,6 +221,6 @@ def assess_begin(
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
     return BeginDecision(
         ADMIT,
-        spends_extra=True,
+        spends_extra=retry_charge != "replay",
         initiator=ATTEMPT_INITIATOR_SPEAKER if ledger.charge == "speaker" else ATTEMPT_INITIATOR_HOUSEHOLD,
     )

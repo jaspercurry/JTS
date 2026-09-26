@@ -934,26 +934,30 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
 
 
-@pytest.mark.parametrize("redo_at,readings,allowed", [
-    ((0,), (66.0, 80.0, 80.0), 0),
-    ((3,), (66.0, 80.0, 80.0, 66.0, 80.0, 80.0), 2),
-], ids=["before_any_take", "during_the_second_take"])
-def test_a_redo_leaves_a_driver_pose_its_retries(monkeypatch, redo_at, readings, allowed):
-    """Admission charges every attempt after a take's first. A redo before any
-    take played only asks for the placement again, and a redo after two takes
-    carries a retry for each take it plays again, so a pose with no retries
-    still completes (ADR-0361)."""
+@pytest.mark.parametrize("driver,repeats,retries,redo_first,left,reason", [
+    (True, 2, 0, True, 0, ""), (True, 2, 0, False, 0, ""), (True, 6, 3, False, 3, ""),
+    (False, 2, 1, False, 0, ""), (False, 6, 3, False, 2, ""), (False, 2, 0, False, 0, "retries_spent"),
+])
+def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, driver, repeats, retries, redo_first, left, reason):
+    """A redo during a pose's last take plays the pose again from its start, and
+    each take it plays again is free (#5722), so the round goes on: a far-field
+    redo costs its own retry, and a driver's pose gets its retries back (ADR-0361).
+    A redo before any take played only asks for the placement again; one the pose
+    cannot pay for ends the round with its retries spent."""
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
-        ProgramPose(0, 0, repeats=2, kind="close", distance_m=0.015, driver="woofer"),),
-        purpose="reference", regime="near_field"), retries_per_pose=0)
+    request = (ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
+        purpose="reference", regime="near_field"), retries_per_pose=retries) if driver else
+        replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
+    placement = (66.0, *(80.0,) * repeats) if driver else (70.0,) * repeats
 
-    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+    result, fakes, selected, gate = _run_levelled(request, placement * 2,
+                                                  redo_at=(0,) if redo_first else (repeats + driver,))
 
-    assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
-    assert [index for index, _ in gate.grants] == [1, 1]
-    assert selected[-2:] == [True, True]
-    assert [p["budget"]["allowed"] for p in gate.progress if "budget" in p][-1] == allowed
+    assert (result.status, result.reason) == ("partial" if reason else "complete", reason)
+    assert [index for index, _ in gate.grants] == [1] * (1 if reason else 2)
+    assert selected[-repeats:] == [True] * repeats
+    assert gate.progress[-1]["budget"]["left"] == left
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
