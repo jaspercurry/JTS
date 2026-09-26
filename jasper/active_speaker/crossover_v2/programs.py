@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
+    MEASURE_SWEEP_BAND_HZ,
     NEAR_FIELD_SILENCE_S,
     NEAR_FIELD_SWEEP_BAND_HZ,
     NEAR_FIELD_SWEEP_S,
@@ -33,6 +34,7 @@ from jasper.audio_measurement.ramp import MAX_STEP_DB
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
+from .contracts import REGIME_NEAR_FIELD
 from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
@@ -152,11 +154,20 @@ def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, floa
             program_channel_count(branch_channels_for(spec)))
 
 
+def _solo_sweeps(spec: Any, role: str) -> dict[str, Any]:
+    """A near-field take's sweeps, short silences between them (see #5684); any
+    other one-driver take plays MEASURE's band and spacing (#5696)."""
+    if spec.regime != REGIME_NEAR_FIELD:
+        return {"sweep_band_hz": MEASURE_SWEEP_BAND_HZ}
+    return {"sweep_band_hz": NEAR_FIELD_SWEEP_BAND_HZ, "sweep_durations": {role: NEAR_FIELD_SWEEP_S},
+            "gap_s": NEAR_FIELD_SILENCE_S, "guard_s": NEAR_FIELD_SILENCE_S / 2, "pilot_gap_s": NEAR_FIELD_SILENCE_S / 2}
+
+
 def compose_target_program(excitation: SessionExcitation, spec: Any,
                            stimulus_dbfs: float | None = None) -> ExcitationProgram:
-    """A near-field take's program: the one target its spec names, alone, its
+    """A one-driver take's program: the one target its spec names, alone, its
     pilots and bit-identical sweeps on its own channel at its own band, cap and
-    duration limit, with short silences (see #5684).
+    duration limit.
 
     The program is as wide as the graph that plays it
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
@@ -167,9 +178,7 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     band, _, ceiling, channels = _solo_take(excitation, spec)
     gain = ceiling if stimulus_dbfs is None else min(ceiling, stimulus_dbfs)
     return build_measure_program(
-        {band.role: gain}, (band,),
-        sweep_durations={band.role: NEAR_FIELD_SWEEP_S}, sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ,
-        gap_s=NEAR_FIELD_SILENCE_S, guard_s=NEAR_FIELD_SILENCE_S / 2, pilot_gap_s=NEAR_FIELD_SILENCE_S / 2,
+        {band.role: gain}, (band,), **_solo_sweeps(spec, band.role),
         sweep_duration_limits_s={band.role: excitation.sweep_duration_limits_s[band.role]},
         downstream_gain_db=excitation.session_volume_db,
         leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=band.role,
@@ -186,7 +195,7 @@ def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationP
     steps = math.ceil(round((ceiling - start) / MAX_STEP_DB, 6))
     return build_level_probe_program(
         band, tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
-        sweep_band_hz=NEAR_FIELD_SWEEP_BAND_HZ, gap_s=NEAR_FIELD_SILENCE_S,
+        sweep_band_hz=_solo_sweeps(spec, band.role)["sweep_band_hz"], gap_s=NEAR_FIELD_SILENCE_S,
         downstream_gain_db=excitation.session_volume_db, channels=channels,
     )
 

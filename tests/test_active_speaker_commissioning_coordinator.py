@@ -141,7 +141,7 @@ def test_program_order_consumers(consumer):
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
-        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("nearfield",)
+        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("drivers", "nearfield")
         order = order[:len(RUNNABLE_PROGRAMS)]
     else:
         order = tuple(next_program_action(

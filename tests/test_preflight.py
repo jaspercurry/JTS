@@ -141,6 +141,19 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
 
 
+def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
+    """A stop naming its driver plays that driver alone on the drivers graph
+    whatever its regime, so preflight checks no branch pair for it and prices
+    its one take (ADR-0366)."""
+    plan = AngleCaptureRequest((AngleStop(0, "branches", purpose="reference", driver="woofer",
+                                          branch_pair="front_rear"),))
+    report = preflight(plan, ready_facts(plan, declared_target_ids=("tweeter", "woofer"),
+                                         near_field_drivers=("tweeter", "woofer")))
+    assert [issue.code for issue in report.issues] == []
+    assert [row.graph_scope for row in report.schedule] == ["drivers"]
+    assert report.price["captures"] == 1
+
+
 @pytest.mark.parametrize("program_id,poses,banks", [
     ("nearfield", "nearfield/woofer", True),
     ("nearfield", None, True),
@@ -156,12 +169,16 @@ def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, poses
         [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
 
 
-@pytest.mark.parametrize("tweeter_floor_hz,offered", [(800.0, True), (1000.0, False)])
-def test_a_near_field_driver_the_view_cannot_read_is_not_offered(monkeypatch, tweeter_floor_hz, offered):
+@pytest.mark.parametrize("regime,kind,distance_m,tweeter_floor_hz,offered", [
+    ("near_field", "close", 0.015, 800.0, True), ("near_field", "close", 0.015, 1000.0, False),
+    ("per_driver", "bearing", None, 1000.0, True)])
+def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
+        monkeypatch, regime, kind, distance_m, tweeter_floor_hz, offered):
     """The near-field sweep stops at 2 kHz and the view reads its top band,
     800 Hz - 2 kHz, only whole, so a driver whose band starts above 800 Hz is
-    refused before a session plays takes no band can read."""
-    plan = AngleCaptureRequest((AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference",
+    refused at a near-field pose before a session plays takes no band can read;
+    in the far field it plays MEASURE's band (#5696)."""
+    plan = AngleCaptureRequest((AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose="reference",
                                           driver="tweeter"),))
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), role_targets={},
