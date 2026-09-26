@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Optional AEC bridge legs built only for the wake-corpus recorder.
+"""Optional AEC bridge legs built and run only for the wake-corpus recorder.
 
 `jasper-voice` never asks for these: the reference leg, the XVF raw0
 WebRTC/DTLN lanes, the USB raw/WebRTC/DTLN lanes, the AEC3 delay-sweep variants
@@ -17,12 +17,13 @@ from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import os
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any, Callable
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
+    AEC3_SWEEP_SOURCE_XVF,
     Aec3SweepVariant,
     USB_AEC3_CORPUS_LABEL,
     USB_AEC3_CORPUS_OVERRIDES,
@@ -55,9 +56,35 @@ class SweepPath:
     input_source: str
 
 
-@dataclass(frozen=True)
+def _process_optional_engine(
+    engine: Any,
+    input_bytes: bytes,
+    ref_bytes: bytes,
+    *,
+    failure_message: str | None,
+) -> tuple[Any | None, bytes, Exception | None]:
+    """Process one optional leg and disable it after its first failure.
+
+    The primary AEC engine deliberately does not use this helper: a primary
+    failure must still escape and trigger the bridge's systemd recovery path.
+    """
+    try:
+        return engine, engine.process(input_bytes, ref_bytes), None
+    except Exception as exc:  # noqa: BLE001
+        if failure_message is not None:
+            # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key
+            # is the record's file:line, so the caller's must survive.
+            logger.exception(failure_message, exc, stacklevel=2)
+        return None, b"", exc
+
+
+@dataclass(eq=False)
 class CorpusLanes:
-    """Every optional lane built for one bridge configuration."""
+    """Every optional lane built for one bridge configuration.
+
+    The per-frame methods disable a lane in place when its engine fails. An
+    emitter exists whenever its engine or input queue does.
+    """
 
     xvf_raw0_engine: Any | None
     xvf_raw0_webrtc_emitter: LegEmitter | None
@@ -73,6 +100,164 @@ class CorpusLanes:
     emit_aec3_sweep: Callable[[bytes, bytes], None]
     dtln_engine: Any | None
     dtln_emitter: LegEmitter | None
+
+    def emit_reference(self, ref_bytes: bytes) -> None:
+        if self.ref_emitter is not None:
+            self.ref_emitter.emit(ref_bytes)
+
+    def process_raw0(self, raw0_bytes: bytes, ref_bytes: bytes) -> None:
+        """Run the XVF raw0 WebRTC and DTLN lanes on the frame `raw0` just emitted."""
+        if self.xvf_raw0_engine is not None:
+            self.xvf_raw0_engine, clean, _error = _process_optional_engine(
+                self.xvf_raw0_engine,
+                raw0_bytes,
+                ref_bytes,
+                failure_message=(
+                    "XVF raw0 WebRTC process() crashed; disabling "
+                    "xvf_raw0_webrtc_aec3 path: %s"
+                ),
+            )
+            if clean:
+                assert self.xvf_raw0_webrtc_emitter is not None
+                self.xvf_raw0_webrtc_emitter.emit(clean)
+        if self.xvf_raw0_dtln_engine is not None:
+            self.xvf_raw0_dtln_engine, clean, _error = _process_optional_engine(
+                self.xvf_raw0_dtln_engine,
+                raw0_bytes,
+                ref_bytes,
+                failure_message=(
+                    "XVF raw0 DTLN process() crashed; disabling "
+                    "xvf_raw0_dtln path: %s"
+                ),
+            )
+            if clean:
+                assert self.xvf_raw0_dtln_emitter is not None
+                self.xvf_raw0_dtln_emitter.emit(clean)
+
+    def process_frame(
+        self,
+        mic_bytes: bytes,
+        ref_bytes: bytes,
+        usb_raw_q: Queue | None,
+        *,
+        sweep_source: str,
+        emitters: dict[str, LegEmitter],
+        stats: BridgeStats,
+    ) -> None:
+        """Run the DTLN observation, AEC3 sweep and USB lanes after the primary.
+
+        DTLN runs AFTER engine.process so the wake loop's primary mic stream
+        keeps its normal critical path: the extra ~1.5 ms of DTLN inference
+        per frame spends the slack in the 20 ms frame budget.
+        """
+        if self.dtln_engine is not None:
+            self._process_dtln(self.dtln_engine, mic_bytes, ref_bytes, emitters, stats)
+        if sweep_source == AEC3_SWEEP_SOURCE_XVF:
+            self.emit_aec3_sweep(mic_bytes, ref_bytes)
+        if usb_raw_q is not None:
+            self._process_usb(usb_raw_q, ref_bytes, sweep_source)
+
+    def _process_dtln(
+        self,
+        engine: Any,
+        mic_bytes: bytes,
+        ref_bytes: bytes,
+        emitters: dict[str, LegEmitter],
+        stats: BridgeStats,
+    ) -> None:
+        self.dtln_engine, dtln_clean, dtln_error = _process_optional_engine(
+            engine,
+            mic_bytes,
+            ref_bytes,
+            failure_message=None,
+        )
+        if dtln_error is not None:
+            # DTLN is observational: preserve the primary AEC3 path
+            # and make this transition authoritative for the stats
+            # writer and doctor. Nulling the engine keeps it to one
+            # event rather than one warning per audio frame.
+            with suppress(Exception):
+                engine.close()
+            failed_dtln_emitter = emitters.pop("dtln", None)
+            if failed_dtln_emitter is not None:
+                with suppress(Exception):
+                    failed_dtln_emitter.close()
+            self.dtln_emitter = None
+            stats.mark_leg_unavailable("dtln", error=str(dtln_error))
+            log_event(
+                logger,
+                "aec_bridge.leg_degraded",
+                leg="dtln",
+                phase="process",
+                action="disable",
+                error_type=type(dtln_error).__name__,
+                error=str(dtln_error),
+                level=logging.WARNING,
+                exc_info=(
+                    type(dtln_error),
+                    dtln_error,
+                    dtln_error.__traceback__,
+                ),
+            )
+        if dtln_clean:
+            assert self.dtln_emitter is not None
+            self.dtln_emitter.emit(dtln_clean)
+
+    def _process_usb(
+        self, usb_raw_q: Queue, ref_bytes: bytes, sweep_source: str,
+    ) -> None:
+        try:
+            usb_bytes = usb_raw_q.get_nowait()
+        except Empty:
+            usb_bytes = b""
+        if not usb_bytes:
+            return
+        assert self.usb_raw_emitter is not None
+        self.usb_raw_emitter.emit(usb_bytes)
+
+        if self.usb_engine is not None:
+            self.usb_engine, usb_clean, _error = _process_optional_engine(
+                self.usb_engine,
+                usb_bytes,
+                ref_bytes,
+                failure_message=(
+                    "USB WebRTC process() crashed; disabling "
+                    "usb_webrtc path: %s"
+                ),
+            )
+            if usb_clean:
+                assert self.usb_webrtc_emitter is not None
+                self.usb_webrtc_emitter.emit(usb_clean)
+
+        if self.usb_dtln_engine is not None:
+            self.usb_dtln_engine, usb_dtln_clean, _error = _process_optional_engine(
+                self.usb_dtln_engine,
+                usb_bytes,
+                ref_bytes,
+                failure_message=(
+                    "USB DTLN process() crashed; disabling "
+                    "usb_dtln path: %s"
+                ),
+            )
+            if usb_dtln_clean:
+                assert self.usb_dtln_emitter is not None
+                self.usb_dtln_emitter.emit(usb_dtln_clean)
+        if sweep_source == AEC3_SWEEP_SOURCE_USB:
+            self.emit_aec3_sweep(usb_bytes, ref_bytes)
+
+    def close_engines(self) -> None:
+        """Close the lane engines still running; `emitters` owns the sockets."""
+        for engine in (
+            self.xvf_raw0_engine,
+            self.xvf_raw0_dtln_engine,
+            self.usb_engine,
+            self.usb_dtln_engine,
+        ):
+            if engine is not None:
+                engine.close()
+        for path in self.aec3_sweep_paths:
+            with suppress(Exception):
+                path.engine.close()
 
 
 def build_corpus_lanes(

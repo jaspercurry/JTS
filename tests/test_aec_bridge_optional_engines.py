@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+from jasper.aec import bridge_corpus_lanes
 from jasper.cli import aec_bridge
 
 
@@ -15,7 +16,7 @@ def test_optional_engine_process_preserves_successful_engine():
     engine = Mock()
     engine.process.return_value = b"clean"
 
-    active, clean, error = aec_bridge._process_optional_engine(
+    active, clean, error = bridge_corpus_lanes._process_optional_engine(
         engine,
         b"mic",
         b"ref",
@@ -32,7 +33,7 @@ def test_optional_engine_process_disables_only_failed_leg(caplog):
     engine.process.side_effect = RuntimeError("inference failed")
 
     with caplog.at_level("ERROR", logger=aec_bridge.logger.name):
-        active, clean, error = aec_bridge._process_optional_engine(
+        active, clean, error = bridge_corpus_lanes._process_optional_engine(
             engine,
             b"mic",
             b"ref",
