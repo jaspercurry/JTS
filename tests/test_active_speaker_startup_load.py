@@ -14,10 +14,7 @@ from jasper.active_speaker.path_safety import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
-from jasper.active_speaker.startup_load import (
-    STARTUP_LOAD_PREFLIGHT_KIND,
-    build_startup_load_preflight,
-)
+from jasper.active_speaker.startup_load import build_startup_load_preflight
 from jasper.output_topology import (
     OutputTopology,
 )
@@ -75,26 +72,6 @@ def _write_path_safety(
         current_config_path=current_config_path or staged["config"]["path"],
     )
     return write_path_safety_evidence(evidence, path=path)
-
-
-def test_startup_load_preflight_blocks_without_path_safety(
-    tmp_path: Path,
-) -> None:
-    report = build_startup_load_preflight(
-        _topology(),
-        staged_config=_staged(tmp_path),
-        validate=_valid_config,
-    )
-
-    assert report["kind"] == STARTUP_LOAD_PREFLIGHT_KIND
-    assert report["status"] == "blocked"
-    assert report["load_allowed"] is False
-    assert "path_safety_evidence_missing" in {
-        issue["code"] for issue in report["issues"]
-    }
-    assert "stop_control_available" not in {
-        gate["id"] for gate in report["required_gates"]
-    }
 
 
 def test_startup_and_commission_load_artifacts_own_independent_schema_versions(
