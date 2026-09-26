@@ -183,8 +183,8 @@ class GateDisclosure:
     reflection_toa_ms: float | None
     delta_rms_db: float | None
     delta_band_hz: tuple[float, float] | None
-    #: Unresolved early entries; the field name is retained for compatibility.
-    internal_reflection_count: int
+    #: Unresolved early entries.
+    unresolved_early_count: int
     ledger_count: int
     #: The room's floor in Hz
     #: (:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`).
@@ -318,9 +318,9 @@ def build_gate_disclosure(
             and _finite(band[1]) is not None
             else None
         ),
-        internal_reflection_count=sum(
+        unresolved_early_count=sum(
             1 for e in entries if e.get("classification") in (
-                gating.CLASS_UNRESOLVED_EARLY, "DUT_internal_ungateable",
+                gating.CLASS_UNRESOLVED_EARLY, gating.CLASS_LEGACY_INTERNAL,
             )
         ),
         ledger_count=len(entries),
@@ -414,7 +414,7 @@ def _entanglement_clause(d: GateDisclosure) -> str:
 
 
 def _ledger_clause(d: GateDisclosure) -> str:
-    n = d.internal_reflection_count
+    n = d.unresolved_early_count
     if not n:
         return ""
     noun = "feature" if n == 1 else "features"

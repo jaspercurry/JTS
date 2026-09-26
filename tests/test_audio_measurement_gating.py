@@ -38,6 +38,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import gating
+from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 SR = 48000
 
@@ -734,7 +735,7 @@ def test_a_sub_search_window_feature_is_classified_and_never_gates(near_wall):
     """Early features cannot establish their physical source by timing alone."""
     if near_wall:
         # Source and mic 1 m apart, both 20 cm from a wall: image-source delay.
-        delay_ms = (np.hypot(1.0, 0.4) - 1.0) / 343.0 * 1000.0
+        delay_ms = (np.hypot(1.0, 0.4) - 1.0) / DEFAULT_SOUND_SPEED_M_S * 1000.0
         ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, delay_ms, -6.0)
     else:
         ir = _band_limited_ir(2500.0, 18000.0)
