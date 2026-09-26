@@ -16,7 +16,6 @@ from ..feature_classification import (
     LAB_ROW_UNCERTAINTY,
     read_feature_verdicts,
 )
-from ..journey import PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from ..prescription_contract import CONTRACT_COMMAND
 from ..round_inputs import RoundInputs, view_path
 
@@ -35,18 +34,6 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: The views that filed into a round's own evidence before ADR-0346; a round
 #: banked then may still carry their outputs there.
 LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
-
-#: The three phases a finding set was banked under, each at its own
-#: ``findings_{phase}.json``: the two cloud-group closes and the level-frame
-#: gate's own MEASURE-phase set. No writer remains; reading them keeps a
-#: rebuilt packet's shape, and so its fingerprint, unchanged (#5668).
-_FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
-
-#: The phases whose banked set came from carve-out promotion, which read only
-#: the cloud group's ``echo_band_hz``: a feature outside that band could not
-#: become a finding in one. The MEASURE set was the level-frame gate's own and
-#: carried the band of the record it came from.
-_ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 
 #: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
 #: ``**/`` also admits older pulled rings with a directory per phase. Both
@@ -173,8 +160,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
             "available": False,
             "status": "not_evaluated",
             # NEVER the bare read reason: a file that PARSED into a non-object
-            # carries the empty string, and the honest list drops any entry
-            # whose reason is falsy.
+            # carries the empty string.
             "reason": reason or (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
@@ -362,54 +348,4 @@ def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[st
         "legacy_view_files_in_evidence": any(legacy for _, legacy in reads.values()),
         "feature_classification": _classification_block(*_read_json(reads[CLASSIFICATION_ARTIFACT][0])),
         "harmonics": _harmonics_block(*_read_json(reads[HARMONICS_ARTIFACT][0])),
-    }
-
-
-def _findings_block(round_dir: Path, cloud: dict[str, Any]) -> dict[str, Any]:
-    """Every phase's banked finding set, keyed by phase, and the band bounding
-    the two that are scanned for.
-
-    ``present`` carries the distinction ``produced_by`` exists for: a banked
-    set with an empty ``findings`` list RAN and promoted nothing. What its
-    ABSENCE means is per phase — the cloud closes bank a set either way, while
-    the level-frame gate banks one only when it promotes — and ``reason``
-    separates a set banked here that this install could not read.
-
-    ``echo_band_hz`` is the round's resolved echo-detector window and
-    ``echo_band_bounds`` the phases it bounds (:data:`_ECHO_BAND_PHASES`), so
-    an empty set is not read as a clean bill outside that band.
-    """
-    phases: dict[str, Any] = {}
-    counts: dict[str, Any] = {}
-    field_descriptions: dict[str, Any] = {}
-    for phase in _FINDING_PHASES:
-        raw, reason = _read_json(round_dir / f"findings_{phase}.json")
-        document = _mapping(raw)
-        present = isinstance(raw, dict)
-        if raw is not None and not present:
-            reason = f"parsed as {type(raw).__name__}, not as a JSON object"
-        rows = document.get("findings")
-        rows = rows if isinstance(rows, list) else []
-        phases[phase] = {
-            "present": present,
-            "produced_by": document.get("produced_by"),
-            "reason": reason,
-            "findings": rows,
-        }
-        counts[phase] = len(rows) if present else None
-        # Per-SCHEMA and identical in every set, so one copy rather than three.
-        field_descriptions = field_descriptions or _mapping(
-            document.get("field_descriptions")
-        )
-    return {
-        "summary": {
-            "phases_present": [
-                phase for phase in _FINDING_PHASES if phases[phase]["present"]
-            ],
-            "finding_count": counts,
-            "echo_band_hz": cloud.get("echo_band_hz"),
-            "echo_band_bounds": list(_ECHO_BAND_PHASES),
-        },
-        "phases": phases,
-        "field_descriptions": field_descriptions,
     }

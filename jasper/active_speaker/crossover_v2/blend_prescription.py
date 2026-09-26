@@ -360,7 +360,7 @@ def prescription_response_format() -> dict[str, Any]:
                 "SPL spend is read on a sampled grid, and no fixed grid can "
                 "bound an arbitrarily narrow boost's between-bin peak"
             ),
-            "freq_must_be_inside": "the packet's crossover_region.band_hz",
+            "freq_must_be_inside": "the blend contract's bounds.band_hz",
             "max_filter_boost_db": PRESCRIPTION_MAX_FILTER_BOOST_DB,
             "max_composed_boost_db": PRESCRIPTION_MAX_TOTAL_BOOST_DB,
             "composed_caps_are_evaluated": (
@@ -652,12 +652,13 @@ def read_blend_prescription(
     Otherwise a validated :class:`BlendPrescription`, or
     :class:`BlendPrescriptionRefused` naming which gate said no.
 
-    The three keywords are the evidence packet's own answers, read out by
-    :mod:`.evidence_packet`'s named readers. Taking VALUES rather than the
-    packet keeps this module a leaf of the DAG (the packet imports the response
-    format from here). All three are required and undefaulted: they are the
-    only inputs a prescriber willing to lie cannot forge, so a caller that
-    forgot one would lose the evidence's opinion and never know.
+    The three keywords are the evidence's answers: the packet's fingerprint
+    and positional evidence, and the blend contract's ``bounds.band_hz``.
+    Taking VALUES rather than the packet keeps this module a leaf of the DAG
+    (the packet imports the response format from here). All three are
+    required and undefaulted: they are the only inputs a prescriber willing to
+    lie cannot forge, so a caller that forgot one would lose the evidence's
+    opinion and never know.
 
     Order is deliberate — shape, identity, region, per-filter bounds, composed
     cascade, the route, and last the shipped strict reader — because each
@@ -673,8 +674,8 @@ def read_blend_prescription(
     if band_hz is None:
         _refuse(
             REGION_UNAVAILABLE,
-            "this packet establishes no crossover region, so there is no band a "
-            "prescription could be checked against",
+            "the blend contract names no band (bounds.band_hz), so there is no "
+            "band a prescription could be checked against",
         )
     band = band_hz
 

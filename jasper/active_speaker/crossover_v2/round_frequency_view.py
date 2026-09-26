@@ -113,7 +113,6 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
     curve = _mapping(packet.get("curve"))
     positions = _mapping(packet.get("positions"))
     grid = _mapping(positions.get("curve_grid"))
-    round_block = _mapping(packet.get("round"))
     honesty = _mapping(packet.get("honesty_mask"))
     identity = _mapping(packet.get("identity"))
 
@@ -195,7 +194,6 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
         id=run_id,
         measurement_family=MEASUREMENT_FAMILY,
         started_at=session.get("started_at"),
-        round_id=session.get("round_id"),
         state=session.get("state"),
         metadata={
             "position_count": positions.get("n_positions") or 0,
@@ -208,10 +206,6 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
             "validity_floor_hz": honesty.get("validity_floor_hz"),
             "trusted_floor_hz": honesty.get("trusted_floor_hz"),
             "excluded_bands_hz": honesty.get("merged_excluded_bands_hz") or [],
-            "entry_graph_fingerprint": round_block.get("entry_graph_fingerprint"),
-            "applied_graph_fingerprint": round_block.get("applied_graph_fingerprint"),
-            "adoption": _mapping(round_block.get("adoption")),
-            "verification": _mapping(round_block.get("verification")),
             "topology_id": identity.get("topology_id"),
             "topology_fingerprint": identity.get("topology_fingerprint"),
             "build_sha": identity.get("build_sha"),

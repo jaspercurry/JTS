@@ -9,6 +9,7 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
+from dataclasses import replace
 import errno
 import json
 import re
@@ -26,6 +27,7 @@ from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
 from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
@@ -66,6 +68,8 @@ from jasper.active_speaker.round_bank import (
 )
 
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round, bank_seat_round
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_crossover_v2_driver_prescription import _draft
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
@@ -654,6 +658,35 @@ def test_a_round_answers_with_the_fingerprint_its_bank_stored(tmp_path, monkeypa
     assert status["packet_fingerprint"] == packet["packet_fingerprint"] is not None
     if stored_evidence:
         assert status["contracts"] == packet[EVIDENCE_KEY]["contracts"]
+
+
+@pytest.mark.parametrize("named_by", ["bank", "bundle"])
+@pytest.mark.parametrize("verb", ["status", "judge"])
+@pytest.mark.parametrize("stale", [False, True], ids=["current", "stale"])
+def test_a_banked_round_says_whether_its_stored_contracts_are_current(tmp_path, capsys, stale, verb, named_by):
+    """A contract code change can move the contracts from the ones the bank stored (ADR-0371)."""
+    session, state = _live_session(tmp_path)
+    draft = tmp_path / "design-draft.json"
+    draft.write_text(json.dumps(_draft()))
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, design_draft_path=draft)
+    path = banked.path / "packet.json"
+    packet = json.loads(path.read_text())
+    now = packet[EVIDENCE_KEY]["contracts"]
+    if stale:
+        packet[EVIDENCE_KEY]["contracts"] = {**now, next(iter(now)): "0" * 64}
+        path.write_text(json.dumps(packet))
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    document = tmp_path / "prescription.json"
+    document.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                    "rationale": "none", "sections": {}}))
+    named = banked.path if named_by == "bank" else round_inputs(banked.path).session_dir
+    argv = ["status", str(named)] if verb == "status" else [
+        "judge", str(document), "--round", str(named), "--root", str(root)]
+
+    assert crossover_prescriber.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["packet_contracts"] == {
+        "contract_current": not stale, "stored": packet[EVIDENCE_KEY]["contracts"], "now": now}
 
 
 @pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])

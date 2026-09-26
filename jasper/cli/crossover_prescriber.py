@@ -25,8 +25,8 @@ from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescript
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    DERIVED_VIEWS, CrossoverEvidencePacketError, build_round_evidence, packet_driver_passbands_hz,
-    packet_feature_classifications, packet_region_band_hz, round_evidence,
+    DERIVED_VIEWS, CrossoverEvidencePacketError, build_round_evidence, contract_currency,
+    packet_driver_passbands_hz, packet_feature_classifications, round_evidence,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -168,7 +168,8 @@ def _cmd_document(args: argparse.Namespace) -> int:
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
         answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
-                  "measurement_status": "unmeasured", "adopted": False}
+                  "measurement_status": "unmeasured", "adopted": False,
+                  "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
         if args.command == "judge":
             answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
         else:
@@ -230,12 +231,6 @@ def _cmd_contract(args: argparse.Namespace) -> int:
 
 
 
-def _band_phrase(lo: float, hi: float) -> str:
-    """One frequency span, spelled the one way this tool spells it."""
-    return f"{lo:.1f}-{hi:.1f} Hz"
-
-
-
 def _passband_phrase(role: str, lo: float, hi: float) -> str:
     """One role's declared band, to whole hertz.
 
@@ -267,25 +262,16 @@ def _reason(block: dict[str, Any], packet_error: str) -> str:
 
 
 def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
-    """One side of the packet's incumbent block, classified but not reconciled.
+    """The packet's applied incumbent, classified.
 
-    The packet makes no judgement between its two records, so neither does
-    this. An empty list is ``available`` with zero filters: "the round recorded
-    an empty incumbent" and "no receipt was readable" are the two facts a
+    An empty list is ``available`` with zero filters: "the profile applied an
+    empty correction" and "no profile was readable" are the two facts a
     prescription author most needs kept apart, because a prescription is a
-    TOTAL. The reason is echoed only from the absence shape the packet builder
-    writes, so a receipt whose ``incumbent`` is some other object cannot print
-    that object's ``reason`` key as though the builder had explained something.
+    TOTAL.
     """
     if isinstance(value, list):
         return {"available": True, "n_filters": len(value)}
-    authored = (
-        isinstance(value, dict) and value.get("status") == "not_evaluated"
-    )
-    return {
-        "available": False,
-        "reason": _reason(value if authored else {}, packet_error),
-    }
+    return {"available": False, "reason": _reason(value if isinstance(value, dict) else {}, packet_error)}
 
 
 
@@ -359,26 +345,10 @@ def _degree_list(block: dict[str, Any], key: str) -> list[int]:
 def _banked_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """The round, and the two bounds a prescription of either class reads.
-
-    The region (this round's evidence) and the classified features (the
-    classification view filed beside it) ride inside the banked section.
-    ``walk`` has its own availability — ``lateral_poses`` is filled by
-    ACCEPTED takes while ``available`` needs a ``round_receipt.json``, so a
-    measurement-only angle walk banks poses and no receipt.
-    """
-    region = packet_region_band_hz(packet)
+    """The round, its classified features (the classification view filed
+    beside it) and its walk (the ACCEPTED lateral takes)."""
     verdicts = packet_feature_classifications(packet)
     candidates = _candidate_records()
-    region_state: dict[str, Any] = {
-        "available": region is not None,
-        "band_hz": [region[0], region[1]] if region else None,
-        "reason": (
-            None
-            if region
-            else _reason(_block(packet, "crossover_region"), packet_error)
-        ),
-    }
     classification = {
         "available": bool(verdicts),
         "n_verdicts": len(verdicts) if verdicts else 0,
@@ -401,19 +371,12 @@ def _banked_section(
     }
     # "0 deg" is not a raise worth a clause.
     raised = [deg for deg in walk["elevations_deg"] if deg]
-    round_block = _block(packet, "round")
     session = _block(packet, "session")
-    available = bool(round_block.get("available"))
-    reason = None if available else _reason(round_block, packet_error)
+    available = bool(session)
+    reason = None if available else _reason(session, packet_error)
     summary = (
         (
-            f"round {session.get('round_id')} in session "
-            f"{session.get('bundle_session_id')}"
-            + (
-                f", region {_band_phrase(*region_state['band_hz'])}"
-                if region_state["available"]
-                else f", no region ({region_state['reason']})"
-            )
+            f"round in session {session.get('bundle_session_id')}"
             + (
                 f", {classification['n_verdicts']} classified feature(s)"
                 if classification["available"]
@@ -421,7 +384,7 @@ def _banked_section(
             )
         )
         if available
-        else f"no round receipt ({reason})"
+        else f"no round ({reason})"
     ) + (
         f"; {walk['n_takes']} walk take(s) at "
         f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
@@ -442,8 +405,6 @@ def _banked_section(
         "available": available,
         "reason": reason,
         "bundle_session_id": session.get("bundle_session_id"),
-        "round_id": session.get("round_id"),
-        "region": region_state,
         "classification": classification,
         "walk": walk,
         "candidates": candidates,
@@ -456,12 +417,7 @@ def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
     block = _block(packet, "incumbent")
-    from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
-    from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)
-    return {
-        "from_round_receipt": from_receipt,
-        "from_applied_profile": from_profile,
-    }
+    return {"from_applied_profile": _incumbent_record(block.get("from_applied_profile"), packet_error)}
 
 
 
@@ -522,9 +478,12 @@ def status_document(
         "latest_agent_note": None, "context_error": None,
     }
     recent = []
+    currency = None
     try:
         if session_dir:
-            context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
+            inputs = round_inputs(Path(session_dir))
+            context.update(context_artifacts(inputs, Path(session_dir)))
+            currency = contract_currency(inputs)
         else:
             for bundle in recent_round_sessions():
                 path = str(banked_round_of(bundle) or bundle)
@@ -563,6 +522,7 @@ def status_document(
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "contracts": (packet or {}).get("contracts"),
+        "packet_contracts": currency,
         "packet_error": packet_error or None,
         "selected_round": session_dir,
         "recent_rounds": recent,
