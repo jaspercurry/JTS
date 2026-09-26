@@ -26,7 +26,7 @@ from tests.test_bass_extension_dynamic import _descriptor as _bass_descriptor
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
 from jasper.active_speaker.crossover_v2.topology_prescription import candidate_topology
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
-from jasper.active_speaker.branch_chain import beaming_onset_hz
+from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,

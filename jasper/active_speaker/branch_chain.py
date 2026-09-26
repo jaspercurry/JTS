@@ -23,6 +23,7 @@ import numpy as np
 
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.audio_measurement.piston import far_field_ceiling_hz
 from jasper.biquad import (
     RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
 )
@@ -372,28 +373,6 @@ def radiating_band_hz(
     return lo_hz, hi_hz
 
 
-# ka at which a circular piston is taken to be BEAMING outright, named by
-# #1675's owner ruling, disclosure only (ADR-0011). ka=2 is roughly -6 dB at
-# 45 deg off-axis (checked in
-# docs/research/2026-07-23-driver-linearization/03-fact-check.md claim L).
-BEAMING_KA = 2.0
-
-
-def beaming_onset_hz(radiating_diameter_mm: float, *, ka: float = BEAMING_KA) -> float:
-    """Frequency at which a piston of this diameter reaches ``ka``. ``f = ka*c / (2*pi*a)``;
-    JTS3 woofer's 114 mm diameter gives 957.7 Hz at ka=1. GEOMETRY, not DSP-fixable
-    (#1675). Non-positive input raises.
-    """
-    if not math.isfinite(radiating_diameter_mm) or radiating_diameter_mm <= 0.0:
-        raise ValueError(
-            f"radiating diameter must be positive (got {radiating_diameter_mm})"
-        )
-    if not math.isfinite(ka) or ka <= 0.0:
-        raise ValueError(f"ka must be positive (got {ka})")
-    radius_m = float(radiating_diameter_mm) / 2000.0
-    return ka * DEFAULT_SOUND_SPEED_M_S / (2.0 * math.pi * radius_m)
-
-
 #: Driver diameters of margin added to the piston far-field distance by
 #: :func:`recommended_distance`; chosen so #3501's anchor cases land right
 #: (5.5 in/2.5 kHz -> ~12 in, 12 in/500 Hz -> ~25 in, 2.5 in/2.5 kHz -> ~5 in).
@@ -406,22 +385,6 @@ PLACEMENT_TOLERANCE_M = 0.0127
 #: Aim slop that costs nothing measurable in a close capture's validity band
 #: (woofer is omnidirectional there).
 AIM_TOLERANCE_DEG = 5.0
-
-
-def far_field_ceiling_hz(
-    diameter_m: float,
-    distance_m: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> float:
-    """Highest frequency at which ``distance_m`` is still the driver's far field. Rayleigh
-    distance ``2*a**2/lambda`` GROWS with frequency, so solving for ``f`` gives a
-    CEILING: near-field at HIGH frequencies, never low ones.
-    """
-    radius = 0.5 * float(diameter_m)
-    if radius <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    return float(sound_speed_m_s) * float(distance_m) / (2.0 * radius**2)
 
 
 def placement_tolerance_db(
