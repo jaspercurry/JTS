@@ -19,8 +19,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_active_speaker_driver_domain import driver_domain_graph
-
 from tests._log_events import event_field_maps
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.multiroom_reconcile_fixtures import _FakeCamilla
@@ -63,6 +61,7 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_PCM,
     GROUPING_RING_PERIOD_FRAMES,
 )
+from tests.active_speaker_fixtures import driver_domain_graph
 from tests.test_active_speaker_profile import _two_way_preset
 
 _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH = fc._prove_live_bass_extension_graph

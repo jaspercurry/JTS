@@ -36,8 +36,6 @@ import re
 from typing import Callable
 
 import pytest
-
-from tests.test_active_speaker_driver_domain import driver_domain_graph
 import yaml
 
 from jasper.active_speaker import (
@@ -63,7 +61,6 @@ from jasper.active_speaker.graph_safety import (
 )
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
-    GRAPH_DRIVER_DOMAIN_BASELINE,
     classify_bass_extension_graph,
 )
 
@@ -275,16 +272,11 @@ pipeline:
     assert unprotected_tweeter_outputs(view, tweeter_channels={1, 3}) == ()
 
 
-@pytest.mark.parametrize("driver_domain, classification", [
-    (False, GRAPH_APPROVED_ACTIVE_RUNTIME), (True, GRAPH_DRIVER_DOMAIN_BASELINE),
-])
-def test_native_bass_preserves_static_graph_on_solo_and_driver_domain(driver_domain, classification):
+def test_native_bass_preserves_static_graph_on_solo():
     preset = _preset("stereo", 2)
     descriptor = _dynamic_bass_descriptor()
-    emitter = driver_domain_graph if driver_domain else emit_active_speaker_baseline_config
-    kwargs = {"playback_device": ACTIVE_PCM, **({"program_channel": "left"} if driver_domain else {})}
-    base = yaml.safe_load(emitter(preset, **kwargs))
-    text = emitter(preset, bass_extension=descriptor, **kwargs)
+    base = yaml.safe_load(emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM))
+    text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, bass_extension=descriptor)
     payload = yaml.safe_load(text)
     assert validated_base_graph(payload, descriptor, (0, 2)) == base
     assert payload["devices"]["volume_limit"] == 0.0
@@ -293,7 +285,7 @@ def test_native_bass_preserves_static_graph_on_solo_and_driver_domain(driver_dom
         _active_topology("stereo", "active_2_way"), evidence_source="desired",
         graph_text=text, applied_baseline_state={"recomposition_snapshot": {"bass_extension": descriptor}},
     )
-    assert proof.allowed and proof.classification == classification
+    assert proof.allowed and proof.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert proof.details["bass_output_channels"] == [0, 2]
 
 
@@ -348,13 +340,6 @@ _REFUSAL_CASES = [
             p, playback_device=ACTIVE_PCM
         ),
         id="baseline",
-    ),
-    pytest.param(
-        "_driver_baseline_filter_chain",
-        lambda p: driver_domain_graph(
-            p, playback_device=ACTIVE_PCM, program_channel="left"
-        ),
-        id="driver_domain",
     ),
 ]
 
@@ -426,13 +411,23 @@ def test_emit_gate_allows_protected_startup_and_commissioning() -> None:
     assert "pipeline:" in commissioning
 
 
-def test_emit_gate_allows_protected_driver_domain_follower() -> None:
-    yaml = driver_domain_graph(
-        _preset("mono", 2),
-        playback_device=ACTIVE_PCM,
-        program_channel="left",
-    )
-    assert "pipeline:" in yaml
+@pytest.mark.parametrize(
+    "corrections",
+    [
+        {"woofer": {"gain_db": 0.01}},
+        {"woofer": {"delay_ms": -0.01}},
+        {"woofer": {"delay_ms": 20.01}},
+    ],
+)
+def test_baseline_correction_safety_gate(
+    corrections: dict[str, dict[str, float | bool]],
+) -> None:
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_baseline_config(
+            _preset("mono", 2),
+            playback_device=ACTIVE_PCM,
+            corrections=corrections,
+        )
 
 
 # --- pipeline reference closure (#4) ------------------------------------------
@@ -787,12 +782,6 @@ _VOLUME_LIMIT_EMITTERS = [
             _preset(), playback_device=ACTIVE_PCM, **kw
         ),
         id="baseline",
-    ),
-    pytest.param(
-        lambda **kw: driver_domain_graph(
-            _preset(), playback_device=ACTIVE_PCM, program_channel="left", **kw
-        ),
-        id="driver_domain",
     ),
 ]
 

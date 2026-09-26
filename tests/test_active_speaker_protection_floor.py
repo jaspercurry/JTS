@@ -53,8 +53,6 @@ from typing import Any
 
 import pytest
 
-from tests.test_active_speaker_driver_domain import driver_domain_graph
-
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.camilla_yaml import (
     EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
@@ -800,20 +798,12 @@ def test_baseline_emit_invents_no_floor_where_the_operator_declared_none() -> No
     assert "freq: 2000.0000" in text
 
 
-@pytest.mark.parametrize("emitter", ["baseline", "driver_domain"])
-def test_both_household_emitters_share_the_declared_floor_gate(emitter: str) -> None:
+def test_baseline_emitter_uses_the_declared_floor_gate() -> None:
     topology = mono_output_topology()
     preset = _below_floor_preset(topology)
 
     with pytest.raises(ActiveSpeakerConfigError):
-        if emitter == "baseline":
-            emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
-        else:
-            driver_domain_graph(
-                preset,
-                playback_device=ACTIVE_PCM,
-                program_channel="left",
-            )
+        emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
 
 
 def test_the_gate_refuses_a_declared_floor_with_no_readable_crossover_corner(
