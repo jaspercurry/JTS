@@ -160,7 +160,7 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # measurement and the model cancels out of a measured-vs-model grade.
 REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # The apply transaction came back blocked or raised.
-# ``_persist_terminal_failure`` scopes its §5.6 evidence reset away from this
+# ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a

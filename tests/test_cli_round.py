@@ -1176,7 +1176,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, lambda *a, **kw: TakeVerdict(True)))
     hold = host.isolation_hold
     monkeypatch.setattr(host, "isolation_hold", lambda **kw: hold(**{**kw, "plan": None, "volume_state_path": tmp_path / "volume.json"}))
-    for name in ("persist_conductor_state", "_persist_execution_result", "_persist_terminal_failure"):
+    for name in ("persist_conductor_state", "persist_execution_result", "persist_terminal_failure"):
         monkeypatch.setattr(wired.v2state, name, lambda *a, **kw: None)
 
     def engine(**kw):
