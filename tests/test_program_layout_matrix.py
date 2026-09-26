@@ -167,7 +167,7 @@ def test_every_program_on_every_layout(speaker, row):
 @pytest.mark.parametrize('mover,trials', [
     (None, {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/axis', 'room': 'room/seat'}),
     ('arm', {'speaker': 'speaker/mark', 'rear': 'rear/express', 'bass': 'bass/axis', 'room': 'room/arm'}),
-    ('human', {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/nearfield', 'room': 'room/seat'}),
+    ('human', {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/seat', 'room': 'room/seat'}),
 ], ids=('default', 'arm', 'human'))
 @pytest.mark.parametrize('program', RUNNABLE_PROGRAMS)
 def test_a_document_trials_its_own_program_through_the_composer(speaker, program, mover, trials):

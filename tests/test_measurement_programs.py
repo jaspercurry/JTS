@@ -136,9 +136,12 @@ def test_shipped_run_purposes(program_id, size):
     assert row.co_purposes == expected[1:]
 
 
-@pytest.mark.parametrize("name", ["rear", "rear/custom", "speaker/express", "reference", ""])
-def test_run_purposes_preserves_primary_identity_without_a_registry_row(name):
-    assert mp.run_purposes(name) == (mp.run_purpose(name),)
+@pytest.mark.parametrize("name,purpose", [
+    ("rear", "rear"), ("rear/custom", "rear"), ("speaker/express", "speaker"), ("reference", "reference"), ("", ""),
+    ("bass/nearfield", "bass"),
+])
+def test_run_purposes_preserves_primary_identity_without_a_registry_row(name, purpose):
+    assert mp.run_purposes(name) == (mp.run_purpose(name),) == (purpose,)
 
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
@@ -253,7 +256,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
     assert choices == (
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
-        ("bass", "nearfield"), ("bass", "quick"), ("branches", "express"), ("close", "spot"),
+        ("bass", "quick"), ("branches", "express"), ("close", "spot"),
         ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
         ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
         ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
@@ -452,8 +455,7 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
     (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.015, "woofer", False),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", False),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.3, "", True),
-    (mp.PURPOSE_BASS, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
-    (mp.PURPOSE_BASS, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.03, "", True),
+    (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
 ])
 def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
     door, refusal, purpose, regime, kind, distance_m, driver, accepted,
@@ -614,11 +616,11 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         mp.load_programs(_write_config(tmp_path, config))
 
 
-@pytest.mark.parametrize("layout,ceiling", [("bass_axis", 1100), ("bass_nearfield", 1200), ("room_quick", 1100)])
+@pytest.mark.parametrize("layout,ceiling", [("bass_axis", 1100), ("seat_cloud", 1200), ("room_quick", 1100)])
 def test_run_uses_the_matching_purposes_stimulus(tmp_path, monkeypatch, layout, ceiling):
     config = _bundled_config()
     config["stimuli"]["near"] = {"ceiling_hz": 1200}
-    next(row for row in config["programs"] if row["id"] == "bass" and row["size"] == "nearfield")["stimulus"] = "near"
+    next(row for row in config["programs"] if row["id"] == "bass" and row["size"] == "cloud")["stimulus"] = "near"
     monkeypatch.setattr(mp, "_PROGRAMS", mp.load_programs(_write_config(tmp_path, config)))
     assert mp.run_program("bass", layout).stimulus == {"ceiling_hz": ceiling}
 
