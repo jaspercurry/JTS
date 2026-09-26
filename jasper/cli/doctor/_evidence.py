@@ -339,9 +339,9 @@ class Evidence:
     def camilla_config_path(self) -> str | None:
         """The config path CamillaDSP's statefile names, read once; None when
         the statefile is unreadable or names nothing."""
-        from .correction import _active_camilla_config_path
+        from .correction import active_camilla_config_path
 
-        _statefile, path = self.get("camilla_config", _active_camilla_config_path)
+        _statefile, path = self.get("camilla_config", active_camilla_config_path)
         return path
 
     def camilla_config_text(self) -> str | None:

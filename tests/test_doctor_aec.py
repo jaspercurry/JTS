@@ -370,7 +370,7 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     """Nothing of this check's own domain (RMS windows, reference stats)
     exists to assess without a running bridge — that is a skip, not an ok,
     and the row it defers to is check_aec_bridge_running."""
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {})
 
     result = aec.check_aec_bridge_output_health()
@@ -392,7 +392,7 @@ def _no_subprocess(*_args, **_kwargs):
 
 def _stage_bridge_windows(monkeypatch, entries: list[dict]) -> None:
     stats = _reference_input_stats(rms_entries=entries)
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "run", _no_subprocess)
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
@@ -793,7 +793,7 @@ def _install_reference_health_check_fakes(
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
     monkeypatch.setattr(aec.time, "monotonic", lambda: _NOW_MONOTONIC)
     monkeypatch.setattr(aec.time, "time", lambda: 50_000.0)
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     calls: list[list[str]] = []
 
@@ -1603,7 +1603,7 @@ def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
     def unexpected_status(**_kwargs):
         raise AssertionError("the running branch must not re-render /aec")
 
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(
         aec, "_audio_profile_status_for_doctor", unexpected_status,
@@ -1622,7 +1622,7 @@ def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
     must report that as the intended state, not a red bridge failure with a
     restart remedy."""
 
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(
         monkeypatch, {"jasper-aec-commission.service": "activating"},
     )
@@ -1644,7 +1644,7 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
 
     marker = tmp_path / "aec-bridge-ready"
     monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
-    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(aec, "parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {})
     monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     monkeypatch.setattr(

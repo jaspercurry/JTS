@@ -276,7 +276,7 @@ def _seed_airplay_avahi(monkeypatch, stdout: str) -> None:
 
 
 def _seed_airplay_intentionally_off(monkeypatch) -> None:
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
     _seed_unit_states(**{
         "shairport-sync.service": {"active_state": "inactive"},
@@ -1125,7 +1125,7 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     """Intentional Off is desired state, not a dead-renderer incident."""
     from jasper.bluetooth.rfkill import BluetoothRfkillState
 
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
     _seed_unit_states(**{
         "librespot.service": {"active_state": "inactive"},
@@ -1159,7 +1159,7 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
 
 
 def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
     _seed_unit_states(**{"librespot.service": {"active_state": "active"}})
     result = renderers.check_librespot_running(None)
@@ -1171,7 +1171,7 @@ def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
 def test_jasper_mux_skips_without_systemctl(monkeypatch):
     """ADR-0233 rule 3: unreachable evidence (no systemctl) is `skipped`,
     never `fail` — nothing was observed, so there is nothing to fail."""
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(
         _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
     )
@@ -1183,7 +1183,7 @@ def test_jasper_mux_skips_without_systemctl(monkeypatch):
 
 
 def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
 
     def invalid(_source):
         raise RuntimeError("bad source intent")
@@ -1200,7 +1200,7 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
 ):
     from jasper.bluetooth.rfkill import BluetoothRfkillState
 
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
         renderers,
@@ -1226,7 +1226,7 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
 def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
     from jasper.bluetooth.rfkill import BluetoothRfkillState
 
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
         renderers,
@@ -1249,7 +1249,7 @@ def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
 
 
 def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
-    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "parked_follower_result", lambda _label: None)
     monkeypatch.setattr(renderers, "source_intent_enabled", lambda _source: True)
 
     def unreadable_rfkill():

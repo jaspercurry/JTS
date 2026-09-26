@@ -1349,7 +1349,7 @@ def test_the_ring_doctor_checks_are_still_registered():
             f"{func.__name__} is no longer a registered doctor check"
         )
     # ...and the private helper must NOT have been swept in.
-    assert audio_runtime_fanin._requires_roleful_graph.__name__ not in registered
+    assert audio_runtime_fanin.requires_roleful_graph.__name__ not in registered
 
 
 def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypatch):
@@ -1373,12 +1373,12 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     # land in the same REASON_RING_FLOOR_NOT_DECLARED branch) — not a
     # structured field, so it is not pinned here per AGENTS.md/ADR-0233 rule 3;
     # the branch itself (why the check reads ok) is.
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
 
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
@@ -1409,12 +1409,12 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     # As above: roleful-vs-passive is an additive prose note, not a distinct
     # reason (both are REASON_RING_FLOOR_RENDERED) — pin the branch, not the
     # note (AGENTS.md/ADR-0233 rule 3).
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
 
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
@@ -1435,7 +1435,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1458,7 +1458,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
 
     # A PASSIVE box keeps the plain expectation and the plain remedy — the
     # honest phrasing is scoped to the case where the stereo ring is forbidden.
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_fanin.check_fanin_coupling()
     assert passive.status == "warn"
     assert passive.reason == audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING
@@ -1482,7 +1482,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
