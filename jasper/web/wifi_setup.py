@@ -41,11 +41,12 @@ Lockout safety:
     the currently-connected SSID gets an extra-loud warning.
 
 Security:
-  - PSKs ride argv into nmcli (briefly visible in /proc to root) and
-    are persisted by NetworkManager itself under /etc/NetworkManager/
-    system-connections/ at mode 0600 — we never touch those files.
-  - PSKs are NEVER logged: the subprocess wrapper replaces the PSK
-    argv element with `<redacted>` before the argv is joined.
+  - The wizard's new-network connects never put PSKs on argv: they run
+    `nmcli --ask device wifi connect ...` and write the PSK to the
+    child's stdin, so it never appears in /proc/<pid>/cmdline (root
+    included). NM still persists the resulting profile itself under
+    /etc/NetworkManager/system-connections/ at mode 0600 — we never
+    touch those files.
   - HTTP, not HTTPS — matches the rest of the JTS wizard surface. The
     PSK is the most sensitive thing we transmit; the deployment posture
     is LAN-only.
@@ -136,40 +137,28 @@ _SCAN_REPAIR_ROOT_TIMEOUT = 20.0
 # ============================================================
 
 
-def _redacted_argv(cmd: list[str]) -> str:
-    """Shell-quoted argv with the element after `password` replaced.
-
-    Positional, not pattern-based: `shlex.join` renders a PSK holding a
-    quote as `'don'"'"'t'`, and no pattern can recover the element from
-    that. WPA passphrases are 8-63 printable ASCII, quotes included."""
-    parts: list[str] = []
-    redact_next = False
-    for arg in cmd:
-        # A display form, never re-run: the placeholder goes in unquoted so
-        # the log reads `password <redacted>`, not `password '<redacted>'`.
-        parts.append("<redacted>" if redact_next else shlex.quote(arg))
-        redact_next = arg == "password"
-    return " ".join(parts)
-
-
 def _run_nmcli(
     cmd: list[str],
     *,
     timeout: float = _DEFAULT_NMCLI_TIMEOUT,
     log_argv: bool = True,
+    stdin_secret: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an nmcli command. Returns the CompletedProcess; callers
     inspect returncode + stdout/stderr.
 
-    `log_argv=False` is used by callers that pass a PSK on the
-    command line — they log a redacted argv themselves. Other callers
-    can log the full argv safely (nmcli takes no other secret args we
-    use)."""
+    `stdin_secret`, when given, is written to the child's stdin
+    (newline-terminated) instead of a caller putting it on argv — pair
+    it with `--ask` so nmcli prompts for the missing secret and reads
+    it there. No argv element is ever a secret, so `log_argv=True`
+    (the default) is always safe to log verbatim; `log_argv=False`
+    just quiets frequent state-probe calls."""
     if log_argv:
-        logger.info("nmcli: %s", " ".join(cmd))
+        logger.info("nmcli: %s", shlex.join(cmd))
     try:
         return subprocess.run(
             cmd,
+            input=f"{stdin_secret}\n" if stdin_secret is not None else None,
             check=False,
             timeout=timeout,
             capture_output=True,
@@ -180,7 +169,7 @@ def _run_nmcli(
             logger,
             "wifi.nmcli_timeout",
             timeout=timeout,
-            argv=_redacted_argv(cmd),
+            argv=shlex.join(cmd),
             level=logging.WARNING,
         )
         # Synthesize a CompletedProcess so callers don't have to
@@ -190,17 +179,6 @@ def _run_nmcli(
             stdout=(e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""),
             stderr="Timed out waiting for nmcli",
         )
-
-
-def _run_nmcli_secret(
-    cmd: list[str],
-    *,
-    timeout: float = _DEFAULT_NMCLI_TIMEOUT,
-) -> subprocess.CompletedProcess[str]:
-    """Same as _run_nmcli but logs a redacted argv (PSK → `<redacted>`).
-    Use for any command that has a PSK on the command line."""
-    logger.info("nmcli: %s", _redacted_argv(cmd))
-    return _run_nmcli(cmd, timeout=timeout, log_argv=False)
 
 
 def _harden_wifi_profile(profile_name: str) -> None:
@@ -762,10 +740,16 @@ def _connect_wifi_command(
     *,
     hidden: bool = False,
 ) -> list[str]:
-    cmd = ["nmcli", "--wait", str(_CONNECT_WAIT),
-           "device", "wifi", "connect", ssid]
+    """Build the nmcli argv for a new-network connect.
+
+    The PSK never appears here. When `password` is set we add `--ask`
+    so nmcli prompts for the missing secret instead of requiring it on
+    argv; the caller feeds the value over stdin via
+    `_run_nmcli(..., stdin_secret=password)`."""
+    cmd = ["nmcli", "--wait", str(_CONNECT_WAIT)]
     if password:
-        cmd.extend(["password", password])
+        cmd.append("--ask")
+    cmd += ["device", "wifi", "connect", ssid]
     if hidden:
         cmd.extend(["hidden", "yes"])
     return cmd
@@ -1000,9 +984,10 @@ def connect_new(
     prev = _current_wifi()
     prev_profile = prev["profileName"] if prev else None
     existed_before = _profile_exists(ssid)
+    stdin_secret = password or None
 
     cmd = _connect_wifi_command(ssid, password, hidden=hidden)
-    proc = _run_nmcli_secret(cmd, timeout=_CONNECT_TIMEOUT)
+    proc = _run_nmcli(cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=stdin_secret)
     err = _readable_nmcli_error(proc, password)
 
     # Manual entry has two useful recovery modes:
@@ -1017,8 +1002,8 @@ def connect_new(
         and _looks_like_ssid_lookup_failure(err)
     ):
         hidden_cmd = _connect_wifi_command(ssid, password, hidden=True)
-        hidden_proc = _run_nmcli_secret(
-            hidden_cmd, timeout=_CONNECT_TIMEOUT,
+        hidden_proc = _run_nmcli(
+            hidden_cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=stdin_secret,
         )
         proc = hidden_proc
         if hidden_proc.returncode != 0:
@@ -1343,6 +1328,14 @@ def _post_connect(handler: _Handler, body: dict[str, Any]) -> None:
     password = body.get("password")
     hidden = bool(body.get("hidden"))
     if ssid:
+        # nmcli's `--ask` prompt reads one line, so a line break or NUL would
+        # truncate the PSK instead of failing NetworkManager's PSK validation.
+        if isinstance(password, str) and any(c in password for c in "\r\n\0"):
+            handler._send_json(
+                {"ok": False, "message": "password must not contain line breaks or NUL"},
+                status=400,
+            )
+            return
         ok, msg = connect_new(ssid, password or None, hidden=hidden)
     elif name:
         ok, msg = connect_saved(name)
