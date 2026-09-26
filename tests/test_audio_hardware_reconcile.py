@@ -25,6 +25,7 @@ from unittest import mock
 import pytest
 
 from jasper.audio_hardware import reconcile as reconcile_module
+from jasper.audio_hardware import reconcile_units
 from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
@@ -884,7 +885,7 @@ def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
     The fake logs each verb AFTER doing its work, so the transcript's order is
     completion order, and a killed stop leaves no line at all.
     """
-    monkeypatch.setattr(reconcile_module, "SYSTEMCTL_TIMEOUT_SEC", 0.5)
+    monkeypatch.setattr(reconcile_units, "SYSTEMCTL_TIMEOUT_SEC", 0.5)
     slow = _script(
         tmp_path,
         "slow-systemctl",
@@ -970,7 +971,7 @@ def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
     any pair converges against the previous topology's bytes or gates units on
     a lane no graph proved."""
     order: list[str] = []
-    gate = reconcile_module.Pass.gate_role_services
+    gate = reconcile_units.gate_role_services
 
     def recorded_gate(run: reconcile_module.Pass) -> None:
         order.append("gate")
@@ -985,7 +986,7 @@ def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
         return _converged(**kwargs)
 
     with mock.patch.object(
-        reconcile_module.Pass, "gate_role_services", recorded_gate
+        reconcile_units, "gate_role_services", recorded_gate
     ):
         result = _run_reconcile(
             tmp_path,
