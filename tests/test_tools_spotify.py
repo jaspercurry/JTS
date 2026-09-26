@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -149,34 +151,27 @@ def test_artist_search_uses_field_qualifier():
     assert sp.last_search_q == 'artist:"Matt and Kim"'
 
 
-def test_album_search_uses_field_qualifier():
+@pytest.mark.parametrize(
+    'kind,result_title,query,expected',
+    [
+        ('album', 'Some Album', 'Grace', 'album:"Grace"'),
+        ('track', 'Daylight', 'Daylight by Matt and Kim', 'Daylight by Matt and Kim'),
+        ('artist', 'X', 'Foo "Bar"', 'artist:"Foo Bar"'),
+    ],
+    ids=['album-field', 'unqualified-track', 'strip-artist-quotes'],
+)
+def test_search_query_qualification(kind, result_title, query, expected):
     sp = FakeSpotify(
         devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
-        search_results={"album": ("spotify:album:abc", "Some Album")},
+        search_results={kind: (f"spotify:{kind}:abc", result_title)},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
     renderer = FakeRenderer(renderers={}, currentsong={})
 
     tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
-    asyncio.run(tools["spotify_play"](query="Grace", kind="album"))
-    assert sp.last_search_q == 'album:"Grace"'
-
-
-def test_track_search_passes_query_through_unqualified():
-    """Track queries stay unqualified so 'Daylight by Matt and Kim' still
-    works — a `track:` filter would zero-result that."""
-    sp = FakeSpotify(
-        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
-        search_results={"track": ("spotify:track:abc", "Daylight")},
-    )
-    active = FakeAccountClient("jasper", sp)
-    router = FakeRouter(active_account=active)
-    renderer = FakeRenderer(renderers={}, currentsong={})
-
-    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
-    asyncio.run(tools["spotify_play"](query="Daylight by Matt and Kim", kind="track"))
-    assert sp.last_search_q == "Daylight by Matt and Kim"
+    asyncio.run(tools["spotify_play"](query=query, kind=kind))
+    assert sp.last_search_q == expected
 
 
 def test_track_kind_rejects_unrelated_result():
@@ -221,21 +216,6 @@ def test_track_kind_accepts_relevant_result():
     sp.start_playback.assert_called_once()
     _, kwargs = sp.start_playback.call_args
     assert kwargs.get("uris") == ["spotify:track:abc"]
-
-
-def test_artist_search_strips_stray_quotes():
-    """Defensive: a stray double-quote breaks the field syntax. Strip them."""
-    sp = FakeSpotify(
-        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
-        search_results={"artist": ("spotify:artist:abc", "X")},
-    )
-    active = FakeAccountClient("jasper", sp)
-    router = FakeRouter(active_account=active)
-    renderer = FakeRenderer(renderers={}, currentsong={})
-
-    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
-    asyncio.run(tools["spotify_play"](query='Foo "Bar"', kind="artist"))
-    assert sp.last_search_q == 'artist:"Foo Bar"'
 
 
 # ============================================================

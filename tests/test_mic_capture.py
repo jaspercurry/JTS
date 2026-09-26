@@ -32,17 +32,17 @@ from jasper.mic_capture import (
 # ---- parse_udp_device ----
 
 
-def test_parse_udp_shorthand():
-    assert parse_udp_device("udp:9876") == ("127.0.0.1", 9876)
-
-
-def test_parse_udp_url():
-    assert parse_udp_device("udp://10.0.0.5:5000") == ("10.0.0.5", 5000)
-
-
-def test_parse_udp_uppercase():
-    """Case-insensitive scheme — operator typo guard."""
-    assert parse_udp_device("UDP:1234") == ("127.0.0.1", 1234)
+@pytest.mark.parametrize(
+    'device,expected',
+    [
+        ('udp:9876', ('127.0.0.1', 9876)),
+        ('udp://10.0.0.5:5000', ('10.0.0.5', 5000)),
+        ('UDP:1234', ('127.0.0.1', 1234)),
+    ],
+    ids=['shorthand', 'url', 'uppercase'],
+)
+def test_parse_udp_device_forms(device, expected):
+    assert parse_udp_device(device) == expected
 
 
 def test_parse_non_udp_returns_none():
@@ -53,19 +53,18 @@ def test_parse_non_udp_returns_none():
     assert parse_udp_device("") is None
 
 
-def test_parse_udp_malformed_missing_port():
-    with pytest.raises(ValueError, match="missing port"):
-        parse_udp_device("udp://hostonly")
-
-
-def test_parse_udp_malformed_bad_separator():
-    with pytest.raises(ValueError, match="malformed"):
-        parse_udp_device("udp9876")  # no separator
-
-
-def test_parse_udp_malformed_non_integer_port():
-    with pytest.raises(ValueError, match="non-integer port"):
-        parse_udp_device("udp:abc")
+@pytest.mark.parametrize(
+    'device,match',
+    [
+        ('udp://hostonly', 'missing port'),
+        ('udp9876', 'malformed'),
+        ('udp:abc', 'non-integer port'),
+    ],
+    ids=['missing-port', 'bad-separator', 'non-integer-port'],
+)
+def test_parse_udp_malformed(device, match):
+    with pytest.raises(ValueError, match=match):
+        parse_udp_device(device)
 
 
 def test_parse_udp_port_out_of_range():

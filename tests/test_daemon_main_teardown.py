@@ -365,36 +365,29 @@ async def test_every_resource_exits_in_reverse_of_entry(teardown_trace) -> None:
     assert exited == list(reversed(entered))
 
 
-async def test_control_socket_closes_before_the_wake_loop_it_dispatches_into(
-    teardown_trace,
-) -> None:
-    """The socket hands commands to the wake loop, so it must stop
-    accepting them before that loop's own teardown starts."""
+@pytest.mark.parametrize(
+    'first,first_phase,second,second_phase',
+    [
+        ('control_socket', 'exit', 'wake_loop', 'exit'),
+        ('cue_regen', 'run', 'mic', 'enter'),
+        ('measurement_adopt', 'run', 'serve', 'run'),
+        ('connection', 'exit', 'tts', 'exit'),
+    ],
+    ids=[
+        'socket-before-wake-close',
+        'cue-before-mic-park',
+        'hold-before-capture',
+        'connection-before-playout-close',
+    ],
+)
+async def test_daemon_lifetime_order(
+    teardown_trace, first, first_phase, second, second_phase,
+):
+    """NN-6: cue baking precedes mic parks; #4789: adopt holds before capture."""
     await _run_daemon_once(teardown_trace)
-
     assert (
-        teardown_trace.index_of("control_socket", "exit")
-        < teardown_trace.index_of("wake_loop", "exit")
-    )
-
-
-async def test_the_cue_bake_is_scheduled_before_the_checks_that_park(
-    teardown_trace,
-) -> None:
-    """NN-6: `main()` can only speak a park cue that already has a baked WAV.
-
-    The mic-open parks this reorder covers — the mic itself, the SpeechVAD
-    built beside it, `_require_usable_input` — all raise at or after the mic
-    open, and deploy/install.sh bakes cues in its LAST full-profile step, so
-    an install that aborted part-way leaves the daemon to bake them.
-    Scheduling that after the checks (where it used to sit, beside the
-    playout) means the park it announces has already happened.
-    """
-    await _run_daemon_once(teardown_trace)
-
-    assert (
-        teardown_trace.index_of("cue_regen", "run")
-        < teardown_trace.index_of("mic", "enter")
+        teardown_trace.index_of(first, first_phase)
+        < teardown_trace.index_of(second, second_phase)
     )
 
 
@@ -408,34 +401,6 @@ async def test_schedulers_stop_before_the_playout_they_announce_through(
     tts_at = teardown_trace.index_of("tts", "exit")
     assert teardown_trace.index_of("timer_scheduler", "exit") < tts_at
     assert teardown_trace.index_of("startup_tasks", "exit") < tts_at
-
-
-async def test_a_live_measurement_hold_is_adopted_before_the_first_mic_frame(
-    teardown_trace,
-) -> None:
-    """Issue #4789: a daemon restarted mid-sweep asks jasper-control for the
-    hold that outlived it BEFORE it starts consuming mic frames, or it wakes
-    through the rest of the window the sweep is still measuring."""
-    await _run_daemon_once(teardown_trace)
-
-    assert (
-        teardown_trace.index_of("measurement_adopt", "run")
-        < teardown_trace.index_of("serve", "run")
-    )
-
-
-async def test_the_connection_stops_before_the_playout_it_speaks_through(
-    teardown_trace,
-) -> None:
-    """The connection escalates a provider failure by playing a cue
-    (`set_failure_escalation_cb(wake_loop.play_supervisor_cue)`), so it
-    must stop before the playout that cue is written to."""
-    await _run_daemon_once(teardown_trace)
-
-    assert (
-        teardown_trace.index_of("connection", "exit")
-        < teardown_trace.index_of("tts", "exit")
-    )
 
 
 async def test_a_raising_release_does_not_replace_the_park_exception(
