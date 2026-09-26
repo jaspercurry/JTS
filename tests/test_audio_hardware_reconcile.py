@@ -25,7 +25,7 @@ from unittest import mock
 import pytest
 
 from jasper.audio_hardware import reconcile as reconcile_module
-from jasper.audio_hardware import reconcile_units
+from jasper.audio_hardware import reconcile_env_files, reconcile_units
 from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
@@ -3414,7 +3414,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
         ),
         _captured_events() as events,
     ):
-        assert run.validate_outputd_env_stage() is True
+        assert reconcile_env_files.validate_outputd_env_stage(run) is True
     assert stderr_event(
         events.getvalue(), "audio_hardware_reconcile.outputd_env_note"
     )["detail"] == _log_token(out.strip()[len("ok note=") :])
