@@ -68,7 +68,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "usbsink": ("jasper", "usbsink"),
     "voice": ("jasper", "voice", "web"),
     "volume": ("control", "jasper", "tools"),
-    "wake": ("control", "jasper", "voice", "web"),
+    "wake": ("jasper", "voice", "web"),
     "wake_corpus": ("wake_corpus", "web"),
     "weather": ("jasper", "web"),
 }
