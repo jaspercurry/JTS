@@ -176,7 +176,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0154](0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md) | Reactive cues never cool down; proactive cues are rate-limited | amended by 0215 |
 | [0170](0170-a-selectable-audio-input-profile-owns-its-whole-wake-leg-set.md) | A selectable audio-input profile owns its whole wake-leg set | accepted |
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
-| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363 |
+| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363, 0372 |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
 | [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
@@ -194,7 +194,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0143](0143-observability-has-three-planes-and-debug-verbosity-is-additive-only.md) | Observability has three planes, and debug verbosity is additive only | accepted |
 | [0144](0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md) | Diagnostics leave the box over SSH, not over the LAN | accepted |
 | [0146](0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md) | Userspace liveness is two software layers, and three deferred dials | accepted |
-| [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | accepted |
+| [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | amended by 0372 |
 | [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | rule 2 `/state` superseded by 0270, rule 3 amended by 0270 |
 | [0243](0243-a-secret-is-replaced-whole-by-one-redactor-per-language.md) | A secret is replaced whole, by one redactor per language | accepted |
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
@@ -203,6 +203,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | superseded by 0349 |
 | [0349](0349-jasper-heal-is-deleted.md) | jasper-heal is deleted | accepted |
 | [0350](0350-agents-change-settings-through-the-owner-function-and-jasper-settings.md) | Agents change settings through the owner function and `jasper-settings` | accepted |
+| [0372](0372-a-remote-mic-is-armed-only-after-its-adapter-runs.md) | A remote mic is armed only after its adapter runs | accepted |
 
 ## Web & UI
 

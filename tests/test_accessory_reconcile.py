@@ -9,6 +9,8 @@ import pytest
 
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
+from jasper.accessories import status as accessory_status
+from jasper.accessories.mic_env import ADAPTER_PLAN_HEADER, adapter_plan_path
 from tests.systemd_unit_helpers import value_for as _value_for
 from tests._log_events import event_field_maps, event_fields
 from jasper.music_sources import Source
@@ -19,8 +21,32 @@ HOST_REFRESH = ("try-restart", HOST)
 HOST_ACTIVE_PROBE = ("is-active", HOST)
 
 
+_PUBLISHED = f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n"
+_ASLEEP = {"connected": False, "subscribed": False}
+
+
 def _variant(value):
     return SimpleNamespace(value=value)
+
+
+def _publish_steady_state(env_file: Path) -> None:
+    """A paired remote's two files as an earlier pass left them: the host's
+    adapter plan, and the armed sources voice reads."""
+    env_file.write_text(_PUBLISHED, encoding="utf-8")
+    Path(adapter_plan_path(str(env_file))).write_text(
+        ADAPTER_PLAN_HEADER + _PUBLISHED, encoding="utf-8",
+    )
+
+
+def _adapter_reports(monkeypatch, link: dict | None = _ASLEEP) -> None:
+    """jasper-input's status as the host publishes it; None is no adapter."""
+    bridges = {} if link is None else {
+        "wiim_remote_2": {"restarts": 0, "last_error": None, "link": link},
+    }
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": bridges},
+    )
 
 
 def _recording_systemctl(monkeypatch, calls, *, host_active=True, voice_active=False):
@@ -127,10 +153,7 @@ def test_no_change_boot_reconcile_does_not_restart_the_adapter_host(
     tmp_path: Path,
 ):
     env_file = tmp_path / "accessory-mics.env"
-    env_file.write_text(
-        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-        encoding="utf-8",
-    )
+    _publish_steady_state(env_file)
     calls = []
 
     async def fake_bluez():
@@ -197,8 +220,11 @@ def test_a_refused_host_refresh_raises_with_the_refusal_carried(
     tmp_path: Path,
     caplog,
 ):
+    """The source is not armed and voice is not touched: a host that would
+    not run the adapter has nothing to arm (ADR-0372)."""
     calls = []
     refusal = "refresh refused"
+    env_file = tmp_path / "accessory-mics.env"
 
     async def fake_bluez():
         return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
@@ -224,7 +250,7 @@ def test_a_refused_host_refresh_raises_with_the_refusal_carried(
         with pytest.raises(reconcile.AdapterHostRefreshError):
             asyncio.run(
                 reconcile.reconcile_once(
-                    env_file=str(tmp_path / "accessory-mics.env"),
+                    env_file=str(env_file),
                     systemctl=fake_systemctl,
                     reason="test",
                 ),
@@ -232,11 +258,13 @@ def test_a_refused_host_refresh_raises_with_the_refusal_carried(
 
     assert HOST_REFRESH in calls
     assert _host_never_disarmed(calls)
+    assert not env_file.exists()
+    assert not any(reconcile.VOICE_UNIT in command for command in calls)
     fields = event_fields(caplog, "accessory_mic.host_refresh_failed")
     assert (fields["reason"], fields["env_changed"], fields["voice"]) == (
         "test",
-        "1",
-        "voice_try_restart",
+        "0",
+        "none",
     )
     assert fields["failures"].endswith(refusal)
 
@@ -246,10 +274,7 @@ def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
     tmp_path: Path,
 ):
     env_file = tmp_path / "accessory-mics.env"
-    env_file.write_text(
-        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-        encoding="utf-8",
-    )
+    _publish_steady_state(env_file)
     calls = []
     intent_reads = []
 
@@ -290,10 +315,7 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
     caplog,
 ):
     env_file = tmp_path / "accessory-mics.env"
-    env_file.write_text(
-        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-        encoding="utf-8",
-    )
+    _publish_steady_state(env_file)
     calls = []
     intent_detail = "invalid intent value for bluetooth: maybe"
 
@@ -341,10 +363,7 @@ def test_grouping_verdict_gates_the_accessory_mic_source(
     published,
 ):
     env_file = tmp_path / "accessory-mics.env"
-    env_file.write_text(
-        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-        encoding="utf-8",
-    )
+    _publish_steady_state(env_file)
     calls = []
     intent_reads = []
     bluez_queries = []
@@ -543,10 +562,7 @@ def test_refresh_failure_raises_after_env_cleanup_and_voice_refresh(
     error_type,
 ):
     env_file = tmp_path / "accessory-mics.env"
-    env_file.write_text(
-        f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-        encoding="utf-8",
-    )
+    _publish_steady_state(env_file)
     calls = []
     intent_detail = "malformed Bluetooth intent"
     refusal = "refresh refused"
@@ -812,6 +828,7 @@ def test_reconciler_owns_voice_where_it_follows_the_accessory_mic(
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
+    _adapter_reports(monkeypatch)
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -848,6 +865,7 @@ def test_owned_voice_restarts_when_published_sources_change_under_it(
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
+    _adapter_reports(monkeypatch)
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -878,6 +896,7 @@ def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
+    _adapter_reports(monkeypatch)
 
     asyncio.run(
         reconcile.reconcile_once(
@@ -989,10 +1008,7 @@ def test_a_published_source_with_a_dead_host_is_not_a_clean_pass(
     """
     env_file = tmp_path / "accessory-mics.env"
     if already_published:
-        env_file.write_text(
-            f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
-            encoding="utf-8",
-        )
+        _publish_steady_state(env_file)
     calls = []
 
     async def fake_bluez():
@@ -1059,3 +1075,80 @@ def test_active_probe_preserves_strict_readiness(monkeypatch, state, returncode,
 
     monkeypatch.setattr("jasper.systemd_probe.subprocess.run", run)
     assert reconcile._unit_active(HOST) is expected
+
+
+
+@pytest.mark.parametrize(
+    ("before", "paired", "link", "profile", "armed_after"),
+    [
+        (None, True, _ASLEEP, "streambox", True),
+        ("steady", False, _ASLEEP, "full", False),
+        (None, True, None, "streambox", False),
+        (None, True, {"connected": None, "subscribed": False}, "full", False),
+        ("upgrade", True, _ASLEEP, "full", True),
+        ("upgrade", True, None, "streambox", False),
+    ],
+    ids=[
+        "pair", "forget", "pair_no_adapter", "pair_no_bluez_answer",
+        "upgrade", "upgrade_no_adapter",
+    ],
+)
+def test_a_source_is_armed_only_while_its_adapter_runs(
+    monkeypatch, tmp_path: Path, caplog, before, paired, link, profile,
+    armed_after,
+):
+    """Withdraw, instruct the host, then arm (ADR-0372). No source is armed
+    while the host restarts — not even one an earlier single-file install
+    armed — and afterwards a planned source is armed only if its adapter
+    answered BlueZ; otherwise the pass fails loudly. A streambox runs voice
+    exactly while a source is armed; elsewhere voice converges only when the
+    armed file ends up different."""
+    env_file = tmp_path / "accessory-mics.env"
+    plan_file = Path(adapter_plan_path(str(env_file)))
+    if before == "steady":
+        _publish_steady_state(env_file)
+    elif before == "upgrade":
+        env_file.write_text(_PUBLISHED, encoding="utf-8")
+    at_restart = []
+    calls = []
+    recording = _recording_systemctl(monkeypatch, calls)
+
+    def systemctl(args):
+        if tuple(args) == HOST_REFRESH:
+            at_restart.append(env_file.exists())
+        return recording(args)
+
+    async def fake_bluez():
+        return (
+            {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
+            if paired else {}
+        )
+
+    monkeypatch.setattr(reconcile, "read_install_profile", lambda: profile)
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(reconcile, "_ADAPTER_VERIFY_TIMEOUT_SEC", 0.05)
+    _adapter_reports(monkeypatch, link)
+    a_pass = reconcile.reconcile_once(
+        env_file=str(env_file), systemctl=systemctl, reason="test",
+    )
+
+    if paired and not armed_after:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(reconcile.AdapterHostRefreshError):
+                asyncio.run(a_pass)
+    else:
+        asyncio.run(a_pass)
+
+    assert at_restart == [False]
+    assert env_file.exists() is armed_after
+    if profile == "streambox":
+        voice_run = ("--no-block", "start", reconcile.VOICE_UNIT) in calls
+        assert voice_run is armed_after
+    else:
+        voice_refreshed = ("--no-block", "try-restart", reconcile.VOICE_UNIT) in calls
+        assert voice_refreshed is ((before is not None) is not armed_after)
+    if armed_after:
+        assert env_file.read_text(encoding="utf-8") == _PUBLISHED
+        assert plan_file.read_text(encoding="utf-8") == ADAPTER_PLAN_HEADER + _PUBLISHED
