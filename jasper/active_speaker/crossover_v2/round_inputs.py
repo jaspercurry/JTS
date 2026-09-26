@@ -346,10 +346,9 @@ def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
 
 
-def _banked_room(rows: list[Any], set_id: str | None) -> dict[str, Any]:
-    """The room document the bank stored for ``set_id``, or for the round's only room set."""
-    matches = [row for row in rows if isinstance(row, dict) and set_id in (None, row.get("set_id"))]
-    return matches[0] if len(matches) == 1 else {}
+def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:
+    """The bank's copy of the room view it wrote as ``name``, or ``{}``."""
+    return next((row for row in rows if isinstance(row, dict) and Path(str(row.get("out"))).name == name), {})
 
 
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
@@ -357,9 +356,9 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     artifact_dir, reason = round_artifact_dir(inputs.session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
-    # A re-run room view is a view: a banked round's contract reads the room its bank stored (ADR-0371).
+    # A re-run room view is a view: a banked round's contract reads its bank's copy (ADR-0371).
     banked_rooms = banked_packet(inputs).get("room")
-    room = (_banked_room(banked_rooms, set_id) if isinstance(banked_rooms, list)
+    room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
             else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},

@@ -27,7 +27,9 @@ from jasper.active_speaker.crossover_v2.corner_admissibility import (
 from jasper.active_speaker.crossover_v2.prescription_contract import (
     CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    contract_sources, default_out, read_run_manifest, round_inputs, set_artifact_name,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
@@ -369,13 +371,17 @@ def test_linkwitz_schema_edges_match_the_validator(name):
             validate(shape[rules["target_hz_exclusive_upper_field"]])
 
 
-def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys):
+@pytest.mark.parametrize("named_set", [False, True])
+def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, named_set):
     """A re-run room view is a view (ADR-0371)."""
     bank, _ = round_bank
+    set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"] if named_set else None
+    view = bank / set_artifact_name("room.json", set_id)
     stored = json.loads((bank / "room.json").read_text())
-    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "set_id": "set-1"}]}))
-    (bank / "room.json").write_text(json.dumps({}))
-    assert cli.main(["contract", "--round", str(bank), "--section", "room"]) == cli.EXIT_OK
+    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "out": str(view)}]}))
+    view.write_text(json.dumps({}))
+    assert cli.main(["contract", "--round", str(bank), "--section", "room",
+                     *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
     served = json.loads(capsys.readouterr().out)
     assert served["evidence_status"] == "evaluated"
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
