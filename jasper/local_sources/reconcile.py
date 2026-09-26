@@ -40,7 +40,7 @@ from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
-from jasper.service_units import LIBRESPOT_SERVICE
+from jasper.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 from jasper.source_intent import (
     SOURCE_STATUS_PATH,
     intent_fingerprint,
@@ -67,14 +67,14 @@ logger = logging.getLogger(__name__)
 SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS = 5.0
 _MUX_UNIT = "jasper-mux.service"
 _WORST_CASE_ORDINARY_STOP_ACTIONS = (
-    ("shairport-sync.service", "stop"),
+    (SHAIRPORT_SYNC_SERVICE, "stop"),
     ("nqptp.service", "stop"),
     (LIBRESPOT_SERVICE, "stop"),
     ("bt-agent.service", "stop"),
     ("bluealsa-aplay.service", "stop"),
     ("bluealsa.service", "stop"),
     ("jasper-usbsink.service", "stop"),
-    ("jasper-usbgadget.service", "restart"),
+    (USBGADGET_SERVICE, "restart"),
 )
 # The status-invalidating entry point waits out a legitimate in-flight pass
 # rather than racing it, so its lock wait outlasts the unit ceiling. It stays
@@ -131,8 +131,6 @@ def _publish_reconcile_status(
 
 @dataclass(frozen=True)
 class ReconcileOps:
-    """Root-owned host operations for the four source appliers."""
-
     set_enabled: SystemctlRunner
     run_unit: UnitRunner
     unit_enabled: UnitProbe

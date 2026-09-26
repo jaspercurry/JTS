@@ -45,7 +45,7 @@ from ...json_fields import finite_float, sha256_file
 from ...service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
-    OUTPUTD_REF_UDP_PORT_ENV,
+    OUTPUTD_REF_UDP_PORT_ENV, OUTPUTD_REF_UDP_PORT,
     REF_SOURCE_ENV,
 )
 from ...aec.bridge_engines import DTLN_ENABLED_ENV
@@ -61,12 +61,6 @@ from ._shared import (
     _parked_follower_result,
     run,
 )
-
-# One snake_case constant per distinct decision branch across the aec-domain
-# checks below. `detail` stays the human sentence (free to reword); `reason`
-# is what tests pin instead (AGENTS.md: assert types/codes/structured fields,
-# never prose). Grouped by check.
-
 
 REASON_AUDIO_PROFILE_OK = "audio_profile_ok"
 REASON_AUDIO_PROFILE_NEEDS_ATTENTION = "audio_profile_needs_attention"
@@ -1291,7 +1285,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     ).strip().lower()
     expected_endpoint = (
         f"{os.environ.get(OUTPUTD_REF_UDP_HOST_ENV, '127.0.0.1').strip()}:"
-        f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, '9891').strip()}"
+        f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, str(OUTPUTD_REF_UDP_PORT)).strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
     # EITHER end saying `outputd_udp` enables the authoritative freshness

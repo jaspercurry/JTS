@@ -14,6 +14,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from jasper.aec.bridge_config import OUTPUTD_REF_UDP_PORT
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.aec.reconcile.observe import card_id, observe
 from jasper.aec_ready import aec_bridge_ready_marker_path
@@ -235,7 +236,7 @@ class Reconcile:
         reference = bridge == "reference"
         chip = (running and chip) or reference
         software = running and not chip
-        port = self.values.get("JASPER_AEC_OUTPUTD_REF_UDP_PORT") or "9891"
+        port = self.values.get("JASPER_AEC_OUTPUTD_REF_UDP_PORT") or str(OUTPUTD_REF_UDP_PORT)
         observed = software and self.observe_ref and bool(self.chip_ref_pcm)
         updates = {
             "JASPER_MIC_DEVICE_RAW": f"udp:{self.values.get('JASPER_AEC_UDP_PORT_RAW') or '9877'}" if software and raw else "",
@@ -303,8 +304,7 @@ class Reconcile:
     def init_alignment(self) -> bool:
         try:
             with self.alignment_path.open() as handle:
-                # aec-init publishes shell quoting, so parse its four assignments
-                # as data; never execute a record left by another process.
+                # aec-init writes shell quoting; parse its assignments as data, never execute.
                 lines = handle.read(4096).splitlines()
             values = {}
             for line in lines:

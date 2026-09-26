@@ -319,9 +319,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
 
     Served to whichever selection asks — see the module docstring for why this
     record crosses selections and the alignment record does not. The caller
-    turns the verdict into a per-selection answer with ``ChipAecGate.permits``,
-    which is the mapping the reconciler's ``carry_chip_aec_dac_gate`` applies
-    to this same record.
+    turns the verdict into a per-selection answer with ``ChipAecGate.permits``.
     """
 
     status = str(
