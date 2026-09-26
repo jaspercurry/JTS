@@ -158,7 +158,8 @@ def build_v2_wired_run_and_consume(
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
             detail = result.detail if result is not None else ""
-            v2state.persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
+            v2state.persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc),
+                                             failed_roles=result.failed_roles if result is not None else ())
             raise
         else:
             try:

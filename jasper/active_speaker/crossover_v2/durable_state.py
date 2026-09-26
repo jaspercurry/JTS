@@ -429,6 +429,7 @@ def build_conductor_state(
     evidence: Mapping[str, Any] | None = None,
     failure_refusals: Sequence[str] = (),
     failure_detail: str = "",
+    failure_roles: Sequence[str] = (),
 ) -> ConductorState:
     """The whole document one persist writes, over the one it is replacing.
 
@@ -502,6 +503,7 @@ def build_conductor_state(
                     if failure_pilot_heard is not None
                     else {}
                 ),
+                **({"failed_roles": [str(role) for role in failure_roles]} if failure_roles else {}),
             }
             if failure_code
             else None

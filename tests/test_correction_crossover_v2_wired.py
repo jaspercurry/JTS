@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from tests.crossover_v2_fixtures import _inline_spec
 
-from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
+from jasper.active_speaker.round_copy import coverage_lines
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.web.correction_run_host import compose_plan_program
@@ -75,8 +77,9 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
-    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _verify_pilot, plan_context,
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _pilot_obs, _verify_pilot, plan_context,
 )
+from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
@@ -684,6 +687,37 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert saved["code"] == manifest.reason == code
     assert saved["detail"] == manifest.detail == "ValueError: x"
     assert fakes.graph.restores == 1
+
+
+@pytest.mark.parametrize("failed, kept", [(("tweeter",), True), (("tweeter", "woofer"), True), (("tweeter",), False)])
+async def test_a_channel_map_stop_names_its_drivers_on_the_page(monkeypatch, tmp_path, box, failed, kept):
+    """The drivers whose CHECK pilots failed the channel map reach the durable failure, the
+    page's sentence and the round's lines; a verdict from before they were kept names none (#1922)."""
+    persist, terminal = v2state.persist_conductor_state, v2state.persist_terminal_failure
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(v2state, "persist_conductor_state", persist)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", terminal)
+    check = replace(_check_analysis(SimpleNamespace(program_id="check"), channel_map=False),
+                    pilots=tuple(_pilot_obs(role, channel_map_ok=role not in failed) for role in ("tweeter", "woofer")))
+
+    def assess(*_args, **_kwargs):
+        verdict = capture_dispatch.assess(check, phase="check")
+        return verdict if kept else replace(verdict, evidence={
+            key: value for key, value in verdict.evidence.items()
+            if not key.startswith(refusal_copy.CHANNEL_MAP_FAILED_PREFIX)})
+
+    monkeypatch.setattr(plan_run, "assess", assess)
+    with pytest.raises(refusal_copy.CrossoverV2Refused):
+        await runner(session)
+    named, code = failed if kept else (), refusal_copy.REASON_CHANNEL_MAP_MISMATCH
+    failure = v2state.load_v2_state()["failure"]
+    assert (failure["code"], failure.get("failed_roles", [])) == (code, list(named))
+    page = build_crossover_envelope_v2(_status(applied=False, failure=failure))
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert page["verdict_text"] == refusal_copy.reason_message(code, spec, failed_roles=named)
+    assert (page["verdict_text"] != spec.message) is kept
+    assert page["verdict_text"] in coverage_lines({}, manifest.to_dict())[-1]
 
 
 @pytest.mark.parametrize("opened", [False, True])

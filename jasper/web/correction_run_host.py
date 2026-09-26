@@ -228,6 +228,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                                        aborts={}, save_ladder=packet.update_schedule)
             if signals.stop.is_set() or signals.complete.is_set():
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
+                manifest.failed_roles = results[-1].failed_roles if results else ()
             return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
         except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
             classified = classify_program_failure(exc)

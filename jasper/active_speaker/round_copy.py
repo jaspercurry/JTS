@@ -116,10 +116,12 @@ def measured_line(count: int, retakes: int = 0) -> str:
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
-    from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
+    from .crossover_v2.refusal_copy import channel_map_failed_roles, refusal_copy_for  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
     counts = take_counts(manifest)
+    failed_roles = channel_map_failed_roles(*((t.get("quality") or {}).get("evidence") or {}
+                                              for g in manifest.get("sets", ()) for t in g["takes"]))
     lines = [measured_line(counts["takes"], counts["retakes"])]
     poses = list(dict.fromkeys(pose_name(t["pose"]) for t in takes if t.get("pose")))
     if poses:
@@ -132,7 +134,7 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
         name = pose_name(json.loads(pose))
         count_label = f" ({len(reasons)} planned measurements)" if len(reasons) > 1 else ""
         prefix = "Waived" if set(reasons) == {"complete_requested"} else "Not measured"
-        details = " ".join(refusal_copy_for(reason)[0] for reason in dict.fromkeys(reasons)
+        details = " ".join(refusal_copy_for(reason, failed_roles=failed_roles)[0] for reason in dict.fromkeys(reasons)
                            if reason != "complete_requested")
         lines.append(f"{prefix}: {name}{count_label}. {details}".rstrip())
     lines += list(dict.fromkeys(f"Unqualified band ({t['role']}): below {t['trusted_floor_hz']:g} Hz."

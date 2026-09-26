@@ -332,6 +332,7 @@ def persist_conductor_state(
     evidence: Mapping[str, Any] | None = None,
     failure_refusals: Sequence[str] = (),
     failure_detail: str = "",
+    failure_roles: Sequence[str] = (),
 ) -> None:
     """Write the conductor's durable snapshot + host-observed failure state.
 
@@ -361,6 +362,7 @@ def persist_conductor_state(
         evidence=evidence,
         failure_refusals=failure_refusals,
         failure_detail=failure_detail,
+        failure_roles=failure_roles,
     )
     session_id = built.state["session_id"]
     applied_profile = load_applied_baseline_profile_state()
@@ -409,6 +411,7 @@ def persist_conductor_state(
 
 def persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (), detail: str = "",
+    failed_roles: Sequence[str] = (),
 ) -> bool:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
@@ -457,6 +460,7 @@ def persist_terminal_failure(
 
     persist_conductor_state(
         conductor, failure_code=code, failure_refusals=refusals, failure_detail=detail,
+        failure_roles=failed_roles,
     )
     state = load_v2_state()
     if state is None:

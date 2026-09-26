@@ -312,6 +312,8 @@ def _assess_recording(
         return (refuse(reasons.REASON_PILOT_STEP_IMPLAUSIBLE) if analysis.pilot_snr_ok is True
                 else quiet(reasons.REASON_SNR_FLOOR))
     if phase == "check" and analysis.channel_map_ok is False:
+        evidence.update({f"{reasons.CHANNEL_MAP_FAILED_PREFIX}{pilot.role}": True
+                         for pilot in analysis.pilots if pilot.channel_map_ok is False})
         return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
     if analysis.pilot_snr_ok is False:
         return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
