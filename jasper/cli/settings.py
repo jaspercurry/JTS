@@ -17,11 +17,11 @@ import os
 from typing import Any, Callable
 
 from jasper import wake_models
-from jasper.env_load import env_file_path
+from jasper.env_load import env_file_path, merged_env_files
 from jasper.logging_setup import configure_logging
 from jasper.model_downloads import active_wake_model
 from jasper.voice import model_discovery
-from jasper.voice.catalog import PROVIDERS, VALID_PROVIDER_IDS
+from jasper.voice.catalog import PROVIDERS, VALID_PROVIDER_IDS, default_voice_id
 from jasper.voice.provider_state import (
     VoiceSelectionRefused,
     keys_set,
@@ -30,6 +30,7 @@ from jasper.voice.provider_state import (
     read_active_provider,
     read_active_provider_state,
     select_voice,
+    resolve_barge_in_enabled,
     voice_env_files,
 )
 from jasper.control.service_restart import RestartOutcome, restart_voice_daemon
@@ -62,12 +63,13 @@ or on a bonded follower, the change is saved and applies when voice next starts.
 stdout is one JSON document:
   show           {{"voice": <voice>, "wake": <wake>}}
   voice          {{"provider", "model", "providers": {{ID: {{"key": "set"|"unset",
-                 "model", "models": [ID, ...]}}}}}}
-  wake           {{"model", "models": {{KEY: "available"|"not_downloaded"}}}}
-  voice --provider/--model
-                 {{"provider", "model", "changed": ["provider", "model"],
+                 "model", "models": [ID, ...], "voice", "voices", "barge_in"}}}}}}
+  wake           {{"model", "threshold", "models": {{KEY: "available"|"not_downloaded"}}}}
+  voice --provider/--model/--voice/--barge-in
+                 {{"provider", "model", "voice", "barge_in", "changed": [<changed field>, ...],
                  "restart": "ran"|"skipped", "restart_reason"}}
-  wake --model   {{"model", "restart", "restart_reason"}}
+  wake --model/--threshold
+                 {{"model", "threshold", "restart", "restart_reason"}}
   a failure      {{"status": "refused"|"unreadable"|"unwritable", "reason", "detail"}}
 
 exit codes:
@@ -83,12 +85,16 @@ exit codes:
 def _voice_view() -> dict[str, Any]:
     files = voice_env_files()
     keys = keys_set(files)
+    values = merged_env_files(files[:2], require_readable=True)
     provider = read_active_provider_state().provider
     discovered = model_discovery.load_cache(model_discovery.DEFAULT_CACHE_PATH)
     providers = {
         p.id: {
             "key": "set" if p.key_env in keys else "unset",
             "model": read_active_model_from_env_files(p.id, files),
+            "voice": values.get(p.voice_env) or default_voice_id(p.id),
+            "voices": [v.id for v in p.voices],
+            "barge_in": resolve_barge_in_enabled(p.id, values),
             "models": offered_models(p, discovered.get(p.id)),
         }
         for p in PROVIDERS
@@ -96,6 +102,8 @@ def _voice_view() -> dict[str, Any]:
     return {
         "provider": provider,
         "model": providers[provider]["model"] if provider else None,
+        "voice": providers[provider]["voice"] if provider else None,
+        "barge_in": providers[provider]["barge_in"] if provider else None,
         "providers": providers,
     }
 
@@ -108,6 +116,7 @@ def _wake_view() -> dict[str, Any]:
     entry = wake_models.by_model(active)
     return {
         "model": entry.key if entry else active,
+        "threshold": wake_models.read_wake_threshold(),
         "models": {
             e.key: "available" if wake_models.is_available(e) else "not_downloaded"
             for e in wake_models.REGISTRY
@@ -143,7 +152,7 @@ def _show(args: argparse.Namespace) -> int:
 
 
 def _voice(args: argparse.Namespace) -> int:
-    if args.provider is None and args.model is None:
+    if all(value is None for value in (args.provider, args.model, args.voice, args.barge_in)):
         return _answer(_voice_view)
     try:
         # The files select_voice reads, read first: unreadable is exit 2, not 3.
@@ -151,7 +160,8 @@ def _voice(args: argparse.Namespace) -> int:
     except OSError as exc:
         return failed(EXIT_UNREADABLE, "unreadable", str(exc))
     try:
-        selection = select_voice(args.provider, args.model, via="cli")
+        selection = select_voice(args.provider, args.model, via="cli", voice=args.voice,
+            barge_in=None if args.barge_in is None else args.barge_in == "on")
     except VoiceSelectionRefused as exc:
         return refused(exc.reason, str(exc), exit_code=EXIT_REFUSED)
     except ValueError as exc:
@@ -163,19 +173,25 @@ def _voice(args: argparse.Namespace) -> int:
         "provider": selection.provider,
         "model": selection.model,
         "changed": list(selection.changed),
+        "voice": selection.voice, "barge_in": selection.barge_in,
     })
 
 
 def _wake(args: argparse.Namespace) -> int:
-    if args.model is None:
+    if args.model is None and args.threshold is None:
         return _answer(_wake_view)
     try:
-        selection = wake_models.select_wake_model(args.model, via="cli")
+        if args.model is None:
+            wake_models.select_wake_threshold(args.threshold, via="cli")
+        else:
+            wake_models.select_wake_model(args.model, via="cli", threshold=args.threshold)
     except wake_models.WakeModelRefused as exc:
         return refused(exc.reason, str(exc), exit_code=EXIT_REFUSED)
+    except ValueError as exc:
+        return refused("threshold_out_of_range", str(exc), exit_code=EXIT_REFUSED)
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "save_failed", str(exc))
-    return _restart({"model": selection.entry.key})
+    return _restart(_wake_view())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -205,12 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model", metavar="ID",
         help="a model the provider offers (listed by `voice`); default: the one it runs",
     )
+    voice.add_argument("--voice", metavar="NAME", help="a voice listed by `voice`")
+    voice.add_argument("--barge-in", choices=("on", "off"), help="allow speech to interrupt the assistant")
     voice.set_defaults(run=_voice)
     wake = verbs.add_parser("wake", help="the /assistant/wake/ page: wake word")
     wake.add_argument(
         "--model", metavar="KEY",
         help=f"one of: {', '.join(entry.key for entry in wake_models.REGISTRY)}",
     )
+    wake.add_argument("--threshold", type=float, metavar="VALUE", help="wake score threshold, from 0 to 1")
     wake.set_defaults(run=_wake)
     return parser
 

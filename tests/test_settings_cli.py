@@ -51,6 +51,8 @@ CASES = {
         "voice.providers.openai.key": "set",
         "voice.providers.gemini.key": "set",
         "voice.providers.grok.key": "unset",
+        "voice.voice": "marin", "voice.barge_in": False,
+        "wake.threshold": .65,
         "wake.models.alexa": "available",
         "wake.models.jarvis_v2": "not_downloaded",
     }),
@@ -107,6 +109,33 @@ CASES = {
     "undownloaded_wake_model_is_refused": Case(
         ["wake", "--model", "jarvis_v2"], 1, {"reason": "not_downloaded"},
     ),
+    "voice_name_writes": Case(
+        ["voice", "--voice", "cedar"], 0, {"voice": "cedar", "changed": ["voice"]},
+        writes={"JASPER_OPENAI_VOICE": "cedar"}, event="voice.save",
+    ),
+    "barge_in_off_writes": Case(
+        ["voice", "--barge-in", "off"], 0, {"barge_in": False, "changed": ["barge_in"]},
+        writes={"JASPER_BARGE_IN_OPENAI_LIVE": "false"}, provider="openai_live",
+    ),
+    "provider_voice_and_barge_in_save_together": Case(
+        ["voice", "--provider", "gemini", "--voice", "Puck", "--barge-in", "on"], 0,
+        {"provider": "gemini", "voice": "Puck", "barge_in": True},
+        writes={"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_VOICE": "Puck", "JASPER_BARGE_IN_GEMINI": "true"},
+    ),
+    "unknown_voice_saves_nothing": Case(
+        ["voice", "--model", "gpt-realtime-new", "--voice", "unknown"], 1, {"reason": "unknown_voice"},
+    ),
+    "threshold_writes": Case(
+        ["wake", "--threshold", "0.426"], 0, {"threshold": 0.43, "restart": "ran"},
+        writes={"JASPER_WAKE_THRESHOLD": "0.43"}, event="wake.threshold",
+    ),
+    "threshold_and_model_save_together": Case(
+        ["wake", "--model", "alexa", "--threshold", "0.65"], 0, {"model": "alexa", "threshold": .65},
+        writes={"JASPER_WAKE_MODEL": "alexa", "JASPER_WAKE_THRESHOLD": "0.65"},
+    ),
+    **{f"invalid_threshold_{value}_saves_nothing": Case(
+        ["wake", "--model", "alexa", "--threshold", value], 1, {"reason": "threshold_out_of_range"},
+    ) for value in ("-0.1", "1.1", "nan", "inf")},
     "not_root_is_refused": Case(["show"], 1, {"reason": "not_root"}, euid=1000),
 }
 
@@ -127,12 +156,13 @@ def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys, caplog):
     paths["keys"].write_bytes(case.keys)
     if case.provider:
         paths["provider"].write_text(f"JASPER_VOICE_PROVIDER={case.provider}\n")
-    (tmp_path / "jasper.env").write_text(f"GEMINI_API_KEY={GEMINI_KEY}\n")
+    (tmp_path / "jasper.env").write_text(f"GEMINI_API_KEY={GEMINI_KEY}\nJASPER_WAKE_THRESHOLD=0.65\n")
     (tmp_path / "discovery.json").write_text(json.dumps(
         {"providers": {"openai": {"models": ["gpt-realtime-new", "gpt-realtime\nbroken"]}}},
     ))
     caplog.set_level(logging.DEBUG)
     monkeypatch.setenv("JASPER_LOG_JSON", "1")
+    monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.99")
     monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(paths["provider"]))
     monkeypatch.setattr(provider_state, "KEYS_FILE", str(paths["keys"]))
