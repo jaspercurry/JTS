@@ -25,8 +25,9 @@ recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
   - :mod:`jasper.wake_corpus.clip_store` — ``ClipStore``: the open
     session's clip records and their WAV files.
   - :mod:`jasper.wake_corpus.active_session` — begin, load, unload and
-    delete the open session, write its sidecar, and recover it (and
-    corpus test mode) at startup from the crash-recovery markers.
+    delete the open session, write its sidecar, build its ``/api/status``
+    snapshot, and recover it (and corpus test mode) at startup from the
+    crash-recovery markers.
   - :mod:`jasper.wake_corpus.recording_backend` — ``RecordingBackend``:
     the state those modules share under one lock, clip recording, and the
     lifecycle. Owns a background asyncio loop driven from sync HTTP

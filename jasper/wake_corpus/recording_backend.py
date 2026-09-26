@@ -22,11 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jasper.aec_sweep import (
-    AEC3_SWEEP_SOURCE_XVF,
-    config_metadata,
-    variant_metadata,
-)
+from jasper.aec_sweep import AEC3_SWEEP_SOURCE_XVF
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
@@ -46,10 +42,7 @@ from .errors import (
     NoRecordingError,
     StateError,
 )
-from .runtime_probe import (
-    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-    PROFILE_STANDARD,
-)
+from .runtime_probe import PROFILE_STANDARD
 from .session_store import ClipMetadata
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -423,68 +416,8 @@ class RecordingBackend:
             return dict(self._audio_context) if self._audio_context else None
 
     def status_snapshot(self) -> dict[str, Any]:
-        """Every `/api/status` field, read under one lock acquisition so a
-        session switch (begin/load/unload) cannot mix fields from two
-        sessions in one response.
-        """
-        with self._lock:
-            include_aec3_sweep = self._include_aec3_sweep
-            aec3_sweep_variants = (
-                list(self._aec3_sweep_variants)
-                if include_aec3_sweep and self._aec3_sweep_variants else None
-            )
-            aec3_sweep_config = (
-                dict(self._aec3_sweep_config)
-                if include_aec3_sweep and self._aec3_sweep_config else None
-            )
-            capture_plan = dict(self._capture_plan) if self._capture_plan else None
-            capture_plan_conformance = (
-                dict(self._current_plan_conformance)
-                if self._current_plan_conformance else None
-            )
-            snapshot = {
-                "session_id": self._session_id,
-                "member": self._member,
-                "include_raw_mic_0": self._include_raw_mic_0,
-                "include_dtln": self._include_dtln,
-                "include_usb_mic": self._include_usb_mic,
-                "include_usb_dtln": self._include_usb_dtln,
-                "include_xvf_raw0_dtln": self._include_xvf_raw0_dtln,
-                "include_aec3_sweep": include_aec3_sweep,
-                "corpus_profile": self._corpus_profile,
-                "chip_aec_config": (
-                    dict(self._chip_aec_config) if self._chip_aec_config else None
-                ),
-                "aec3_sweep_source": self._aec3_sweep_source,
-                "enabled_legs": list(self._enabled_legs),
-                "capture_plan": capture_plan,
-                "audio_context": (
-                    dict(self._audio_context) if self._audio_context else None
-                ),
-                "is_recording": (
-                    self._current is not None
-                    or self._starting_clip_id is not None
-                ),
-                "elapsed_sec": (
-                    self._current.elapsed_sec() if self._current is not None else 0.0
-                ),
-                "clip_count": self._clips.live_count_locked(),
-            }
-        # Stateless fallbacks + the conformance re-check are pure functions
-        # of the values snapshotted above, so they run outside the lock
-        # without re-reading any `self._*` field.
-        snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
-            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-        )
-        snapshot["aec3_sweep_config"] = aec3_sweep_config or config_metadata(
-            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-        )
-        if capture_plan and capture_plan_conformance is None:
-            capture_plan_conformance = validate_active_capture_plan(capture_plan).to_json()
-        snapshot["capture_plan_conformance"] = (
-            capture_plan_conformance if capture_plan else None
-        )
-        return snapshot
+        """Every `/api/status` field, under one lock acquisition."""
+        return active_session.status_snapshot(self)
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.

@@ -5,12 +5,13 @@
 """The wake-corpus recorder's open session and its crash recovery.
 
 Begin, load, unload and delete the session ``RecordingBackend`` appends
-clips to, write its sidecar, and recover after a crash from the two markers
-under the metadata dir: the active-session marker names the session a
-restarted process reattaches, and the test-mode marker records that corpus
-test mode stopped jasper-voice. These functions read and write the
-backend's session fields under its state lock; the backend runs each
-session transition inside its lifecycle transaction.
+clips to, write its sidecar, snapshot it for ``/api/status``, and recover
+after a crash from the two markers under the metadata dir: the
+active-session marker names the session a restarted process reattaches,
+and the test-mode marker records that corpus test mode stopped
+jasper-voice. These functions read and write the backend's session fields
+under its state lock; the backend runs each session transition inside its
+lifecycle transaction.
 """
 from __future__ import annotations
 
@@ -39,11 +40,16 @@ from .bridge_session import (
     chip_aec_config_metadata,
     exit_corpus_test_mode,
 )
-from .capture_plan import CAPTURE_PLAN_STATE_SESSION, build_capture_plan
+from .capture_plan import (
+    CAPTURE_PLAN_STATE_SESSION,
+    build_capture_plan,
+    validate_active_capture_plan,
+)
 from .errors import StateError
 from .runtime_probe import (
     BASE_LEGS,
     CORPUS_PROFILES,
+    DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
@@ -527,6 +533,71 @@ def save_metadata(backend: RecordingBackend) -> None:
             "clips": backend._clips.to_json_locked(),
         }
     session_store.write_metadata_atomic(path, data)
+
+
+def status_snapshot(backend: RecordingBackend) -> dict[str, Any]:
+    """Every `/api/status` field, read under one lock acquisition so a
+    session switch (begin/load/unload) cannot mix fields from two
+    sessions in one response.
+    """
+    with backend._lock:
+        include_aec3_sweep = backend._include_aec3_sweep
+        aec3_sweep_variants = (
+            list(backend._aec3_sweep_variants)
+            if include_aec3_sweep and backend._aec3_sweep_variants else None
+        )
+        aec3_sweep_config = (
+            dict(backend._aec3_sweep_config)
+            if include_aec3_sweep and backend._aec3_sweep_config else None
+        )
+        capture_plan = dict(backend._capture_plan) if backend._capture_plan else None
+        capture_plan_conformance = (
+            dict(backend._current_plan_conformance)
+            if backend._current_plan_conformance else None
+        )
+        snapshot: dict[str, Any] = {
+            "session_id": backend._session_id,
+            "member": backend._member,
+            "include_raw_mic_0": backend._include_raw_mic_0,
+            "include_dtln": backend._include_dtln,
+            "include_usb_mic": backend._include_usb_mic,
+            "include_usb_dtln": backend._include_usb_dtln,
+            "include_xvf_raw0_dtln": backend._include_xvf_raw0_dtln,
+            "include_aec3_sweep": include_aec3_sweep,
+            "corpus_profile": backend._corpus_profile,
+            "chip_aec_config": (
+                dict(backend._chip_aec_config) if backend._chip_aec_config else None
+            ),
+            "aec3_sweep_source": backend._aec3_sweep_source,
+            "enabled_legs": list(backend._enabled_legs),
+            "capture_plan": capture_plan,
+            "audio_context": (
+                dict(backend._audio_context) if backend._audio_context else None
+            ),
+            "is_recording": (
+                backend._current is not None
+                or backend._starting_clip_id is not None
+            ),
+            "elapsed_sec": (
+                backend._current.elapsed_sec() if backend._current is not None else 0.0
+            ),
+            "clip_count": backend._clips.live_count_locked(),
+        }
+    # Stateless fallbacks + the conformance re-check are pure functions
+    # of the values snapshotted above, so they run outside the lock
+    # without re-reading any backend field.
+    snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
+        input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
+    )
+    snapshot["aec3_sweep_config"] = aec3_sweep_config or config_metadata(
+        input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
+    )
+    if capture_plan and capture_plan_conformance is None:
+        capture_plan_conformance = validate_active_capture_plan(capture_plan).to_json()
+    snapshot["capture_plan_conformance"] = (
+        capture_plan_conformance if capture_plan else None
+    )
+    return snapshot
 
 
 def load_session(
