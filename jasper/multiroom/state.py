@@ -621,6 +621,8 @@ def read_grouping_state(
         "buffer_ms": cfg.buffer_ms,
         "codec": cfg.codec,
         "trim_db": cfg.trim_db,
+        "left_delay_ms": cfg.left_delay_ms,
+        "right_delay_ms": cfg.right_delay_ms,
         "peer_addr": cfg.peer_addr,
         "peer_name": cfg.peer_name,
         # The bond roster (leader only): every follower the leader recorded

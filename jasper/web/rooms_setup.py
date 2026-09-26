@@ -421,10 +421,8 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "roster": [],
         }
         if fresh_bond:
-            # A new pair must not inherit stale balance trim from a previous
-            # bond/unbond cycle. Existing-bond edits omit trim_db so a
-            # calibrated L/R balance is preserved.
-            body["trim_db"] = 0.0
+            # Existing-bond edits preserve calibration; a new pair must not inherit it.
+            body.update(trim_db=0.0, left_delay_ms=0.0, right_delay_ms=0.0)
         if role == "leader":
             # The LEADER records every OTHER member so _unbond can disable ALL
             # of them. peer_addr / peer_name stay the PRIMARY L/R sibling so
@@ -606,7 +604,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         ]
 
     # Self first (empty addr → loopback), then each matching peer.
-    disabled_body = {"enabled": False, "trim_db": 0.0}
+    disabled_body = {"enabled": False, "trim_db": 0.0, "left_delay_ms": 0.0, "right_delay_ms": 0.0}
     targets: list[tuple[str, dict]] = [("", dict(disabled_body))]
     targets += [(addr, dict(disabled_body)) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
