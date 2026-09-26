@@ -164,8 +164,8 @@ One seat cannot show which features persist. Seek at least three
 positions before a room claim; three is the boost-admission minimum, not a
 rule that makes smaller clouds unreadable. A boost needs presence at 70% of
 positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
-`jasper/audio_measurement/room_limits.py`; design basis in
-`docs/room-correction-regime-plan.md`, D5). The views still answer with the
+`jasper/audio_measurement/room_limits.py`, whose docstring holds the boost
+rule). The views still answer with the
 available count and spread. State what that evidence supports.
 
 Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
@@ -188,7 +188,7 @@ The cut floor varies by frequency with the cross-position sigma. A large
 spread supports less correction. A boost is admitted only where seats agree
 on a dip with enough width and bounded depth. The current room boost cap is
 6 dB; a dip deeper than 10 dB is not filled (`ROOM_MAX_FILTER_BOOST_DB`,
-`ROOM_BOOST_MAX_DIP_DB`, `room_limits.py`; regime-plan D5). These are current
+`ROOM_BOOST_MAX_DIP_DB`, `room_limits.py`). These are current
 implementation limits, not universal audibility thresholds. Read the per-bin
 cap before spending the full allowance.
 

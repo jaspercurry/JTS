@@ -17,7 +17,7 @@ share is imported from it rather than restated: the prohibited-key walk, the
 intake readers, the filter record, the composed grid, the refusal values whose
 meaning is identical, and the exception class.
 
-`See ADR-0256` rules 1-2 and `docs/room-correction-regime-plan.md` D5.
+`See ADR-0256` rules 1-2.
 """
 
 from __future__ import annotations
@@ -586,8 +586,8 @@ def _check_bounds(
 ) -> str:
     """Every per-filter bound, and the class the gains add up to.
 
-    The boost cap is per-FREQUENCY: D5's cap, already tapered toward the room
-    ceiling. A cut's depth is never a bound here (`See ADR-0343`).
+    The boost cap is per-FREQUENCY: ``room_limits``' cap, already tapered
+    toward the room ceiling. A cut's depth is never a bound here (`See ADR-0343`).
     """
     lo, hi = median.band_hz
     boosts = 0
@@ -652,7 +652,7 @@ def _check_boosts(
     """The spatial bar, per boosting filter. **It refuses on the first miss.**
 
     A GATE, because feeding an interference null spends headroom on a
-    cancellation that swallows it (`See docs/room-correction-regime-plan.md` D5).
+    cancellation that swallows it (``room_limits``' boost rule).
     """
     findings: list[BoostAdmission] = []
     for entries in sides.values():

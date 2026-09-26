@@ -1,20 +1,24 @@
 # Room-correction regime — retained proposal
 
-This is the acoustic proposal from the [July research](research/2026-07-27-acoustics-round-2/02-room-correction-competitive.md),
+> **Status: historical.** Archived by
+> [ADR-0369](../adr/0369-the-gating-v2-and-room-correction-regime-plans-are-archived.md).
+> D5's boost-admission rule lives in `jasper/audio_measurement/room_limits.py`.
+
+This is the acoustic proposal from the [July research](../research/2026-07-27-acoustics-round-2/02-room-correction-competitive.md),
 not a current work order or a list of shipped features. Room is a layer of the
 one tuning toolbox
-([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md));
-its operator steps are the [runbook](tuning-operator-runbook.md)'s Room section.
+([ADR-0259](../adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md));
+its operator steps are the [runbook](../tuning-operator-runbook.md)'s Room section.
 D-numbers remain because code and research cite them.
 
 The shared boundary in
-[room_boundary.py](../jasper/audio_measurement/room_boundary.py) is implemented.
+[room_boundary.py](../../jasper/audio_measurement/room_boundary.py) is implemented.
 A per-room estimator, residual upper tier, and spatially admitted LF boosts are
 proposals below, not current correction guarantees. The old RC1–RC5
 file inventories and delivery/review ladder have been removed; current repository
 rules own review and tests.
 
-Owner rulings of 2026-09-08 ([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)): D1's proposed per-room
+Owner rulings of 2026-09-08 ([ADR-0256](../adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)): D1's proposed per-room
 estimator is superseded — the ceiling is derived from the applied tune's trusted
 floor; D6 and D7 are reaffirmed; D2's residual tier above the ceiling is deferred
 to last. D1–D7 stay as written because code and research cite them.

@@ -33,8 +33,8 @@
 > [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
 > then the planning authority for agent-assisted tuning surfaces, itself
 > historical since 2026-08-21;
-> [`gating-v2-plan.md`](../gating-v2-plan.md); and
-> [`room-correction-regime-plan.md`](../room-correction-regime-plan.md).
+> [`gating-v2-plan.md`](gating-v2-plan.md); and
+> [`room-correction-regime-plan.md`](room-correction-regime-plan.md).
 > **Supersedes: nothing.**
 >
 > Verbatim research — the two briefs and the owner-run dissertation whose
@@ -315,7 +315,7 @@ The profile is a *policy input consumed above the shared foundation*:
 
 Two accuracy notes on that boundary:
 
-- [`room-correction-regime-plan.md`](../room-correction-regime-plan.md) is an
+- [`room-correction-regime-plan.md`](room-correction-regime-plan.md) is an
   **adopted work order whose RC1–RC5 ladder has not shipped**. Its Schroeder
   helper is documented there as dead in practice (its only caller passes no
   arguments, and nothing measures room volume). The room line consumes that

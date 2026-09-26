@@ -15,12 +15,13 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0199](0199-the-handoff-doc-corpus-is-deleted.md) | The HANDOFF doc corpus is deleted | accepted |
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
 | [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
-| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230 |
+| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 | [0334](0334-the-repository-root-holds-only-entry-points-and-build-contracts.md) | The repository root holds only entry points and build contracts | accepted |
 | [0347](0347-ci-tests-python-3-13-only.md) | CI tests Python 3.13 only | accepted |
 | [0351](0351-a-source-scan-test-stays-only-with-a-non-negotiable-tie.md) | A source-scan test stays only with a non-negotiable or recurrence tie; the tied set is locked | accepted |
+| [0369](0369-the-gating-v2-and-room-correction-regime-plans-are-archived.md) | The gating-v2 and room-correction regime plans are archived; D5's boost evidence lives in `room_limits.py` | accepted |
 
 ## Deploy, install & system
 

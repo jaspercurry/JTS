@@ -3,8 +3,8 @@
 > **Status: raw research archive.** Verbatim local LLM research
 > reports preserved for traceability. Do not treat these files as
 > current operational truth. The calibration-agent corpus it was distilled
-> into retired under ADR-0259 §2; room doctrine now lives in
-> `docs/room-correction-regime-plan.md`.
+> into retired under ADR-0259 §2; the room plan it fed is archived under
+> ADR-0369.
 
 ## Use Rules
 

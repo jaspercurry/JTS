@@ -1,8 +1,11 @@
 # Gating v2 — work order (issue #1790)
 
-> **Status: adopted work order (2026-07-27).** Synthesized from the
+> **Status: historical.** Archived by
+> [ADR-0369](../adr/0369-the-gating-v2-and-room-correction-regime-plans-are-archived.md):
+> adopted as a work order on 2026-07-27, no PR of its ladder landed, and most
+> of the code it targeted is deleted. Synthesized from the
 > owner-run deep-research result (verbatim:
-> [`docs/research/2026-07-27-acoustics-round-2/01-gating-v2.md`](research/2026-07-27-acoustics-round-2/01-gating-v2.md);
+> [`docs/research/2026-07-27-acoustics-round-2/01-gating-v2.md`](../research/2026-07-27-acoustics-round-2/01-gating-v2.md);
 > prompt and laptop-side evidence in `captures/gate-research-20260727/`)
 > against the code as verified on 2026-07-27. Anchors
 > [issue #1790](https://github.com/jaspercurry/JTS/issues/1790).
@@ -19,7 +22,7 @@ ceiling (floor 142.9 Hz) and one (`cloud_04`) "found" a reflection at
 ~0.56 ms — 3 samples past the search-start offset — collapsing its gate
 to 27 samples (floor 1777.8 Hz). The group floor is
 `max()` across positions (`cloud_validity_floor_hz`,
-[`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)),
+[`jasper/active_speaker/crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py)),
 so one capture's false detection removed 143–1778 Hz from spec grading,
 re-centred the reference −27.267 → −28.317 dB, moved the headline
 `max_db` +1.05 dB in the flattering direction, and flipped the
@@ -32,7 +35,7 @@ that fix, plus the detector and policy work around it.
 ## Current state (verified against code 2026-07-27 — the review bar)
 
 - Detector: `detect_first_reflection` in
-  [`jasper/audio_measurement/gating.py`](../jasper/audio_measurement/gating.py)
+  [`jasper/audio_measurement/gating.py`](../../jasper/audio_measurement/gating.py)
   — moving-RMS envelope (0.20 ms kernel) threshold-with-hysteresis:
   envelope must drop below `peak − 12 dB` (`REFLECTION_THRESHOLD_DB`)
   then rise back above it, searched in `[direct+0.5 ms, direct+7 ms]`
