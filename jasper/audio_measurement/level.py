@@ -19,10 +19,6 @@ from jasper.audio_measurement.wired_capture import PERIOD_FRAMES
 
 #: A reading this far over its floor is at most 0.46 dB noise-inflated (ISO 3744's K1).
 TRUSTED_OVER_FLOOR_DB = 10.0
-#: A solve aims this far under its target, inside the ±2 dB band.
-AIM_UNDER_TARGET_DB = 1.0
-#: The most one solve raises a gain (ADR-0361).
-MAX_RAISE_DB = 15.0
 
 
 @dataclass(frozen=True)
@@ -64,7 +60,9 @@ def stimulus_level(
                         dbfs(math.sqrt(float(np.median(floor_squares)))) if floor_squares.size else None)
 
 
-def solve_gain(reading: LevelReading, *, target_db: float) -> float:
-    """The gain one 1:1 step from ``reading`` lands just under ``target_db``."""
+def solve_gain(reading: LevelReading, *, target_db: float, tolerance_db: float, max_raise_db: float) -> float:
+    """The gain one 1:1 step from ``reading`` lands half of ``tolerance_db`` under
+    ``target_db``, raised at most ``max_raise_db``; the caller clamps it to its own
+    ceiling (ADR-0366)."""
     return reading.gain_db + capped_gap_step_db(measured_db=reading.level_db,
-                                                target_db=target_db - AIM_UNDER_TARGET_DB, cap_db=MAX_RAISE_DB)
+                                                target_db=target_db - tolerance_db / 2, cap_db=max_raise_db)
