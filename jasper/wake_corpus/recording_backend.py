@@ -139,12 +139,6 @@ class RecordingBackend:
         self._lifecycle_lock = threading.Lock()
         self._session_id: str | None = None
         self._member: str | None = None
-        # Whether THIS session includes the truly-raw mic 0 leg. Set
-        # by begin_session(include_raw_mic_0=…); read by
-        # start_recording to decide which UDP ports to subscribe to.
-        # Per-session (not per-clip) so a session's clips all share
-        # the same leg set and downstream training tools can rely on
-        # "session contains raw0 → every clip has it."
         self._include_raw_mic_0: bool = False
         self._include_dtln: bool = False
         self._include_usb_mic: bool = False
