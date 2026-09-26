@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from jasper.log_event import log_event
 
 from .audio_buffer import AudioBuffer
-from .mic_capture import InputDeviceUnavailable
+from .mic_capture import InputDeviceUnavailable, MicCapture
 from .tts_playout import TtsPlayout
 from .wake_events import WakeEventStore
 from .cues import AudioCueManager
@@ -96,13 +96,8 @@ VOICE_MIC_UNAVAILABLE_EXIT = 66
 # round trip. A refusal outlives that either way: it cues first.
 PAUSED_CONNECTION_WAIT_SEC = 1.2
 
-# Pre-roll: when wake fires, replay the most recent ~560 ms of mic
-# audio into the turn so the first phoneme of the user's command
-# isn't lost. openWakeWord fires when the END of "Hey Jarvis" passes
-# its window — by that point the user is already 200-400 ms into
-# their command. Without pre-roll we throw those frames away.
-# 7 × 80 ms = 560 ms covers the wake-word tail + the start of the
-# command for fast speakers.
+# Wake fires at the end of "Hey Jarvis". Keep 7 × 80 ms of pre-roll so
+# a fast speaker's command onset survives that detection delay.
 PRE_ROLL_FRAMES = 7
 
 
@@ -1161,7 +1156,9 @@ class WakeLoop:
             self._turns.speech.silence_started_at = 0.0
         elif self._turns.user_speech_seen:
             if self._turns.speech.silence_started_at == 0.0:
-                self._turns.speech.silence_started_at = now
+                self._turns.speech.silence_started_at = (
+                    now - MicCapture.OUTPUT_FRAME_SAMPLES / MicCapture.OUTPUT_RATE
+                )
                 self._turn_timeline.stamp("speech_end", first=False)
             elif now - self._turns.speech.silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
                 await self._end_session_input("end-of-utterance")
