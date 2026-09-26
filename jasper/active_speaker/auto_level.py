@@ -10,7 +10,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED, capped_gap_step_db
+from jasper.audio_measurement.level import LevelReading, solve_gain
+from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
 from jasper.env_load import bounded_env_float
 
@@ -148,14 +149,11 @@ async def level_to(
             if len(result.readings) < budget:
                 if buried or unsettled:
                     magnitude = min(MAX_STEP_DB, max(1.0, DAMPING * abs(gap)))
-                    step_db = magnitude if gap >= 0 else -magnitude
+                    await write(gain + (magnitude if gap >= 0 else -magnitude))
                 else:
-                    step_db = capped_gap_step_db(
-                        measured_db=observed,
-                        target_db=target_db_spl if gap < 0 else observed + DAMPING * gap,
-                        cap_db=MAX_STEP_DB,
-                    )
-                await write(gain + step_db)
+                    # Half the band under the target, so a 1:1 step lands inside it rather than on its edge.
+                    await write(solve_gain(LevelReading(gain, observed), target_db=target_db_spl,
+                                           aim_under_db=tolerance_db / 2, max_raise_db=MAX_STEP_DB))
         raise _Refused(REFUSE_LEVEL_UNSETTLED if ever_unsettled and not last_buried else _cap_reason())
     except WiredSplCeilingExceeded as exc:
         result.reason = SPL_CEILING_EXCEEDED

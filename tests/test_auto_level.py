@@ -8,8 +8,9 @@ import random
 import pytest
 
 from jasper.active_speaker import auto_level as level
+from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
+from jasper.audio_measurement.ramp import RAMP_MARGIN_DB, SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
 
@@ -167,6 +168,47 @@ def test_converges_downward_from_above(slope, offset):
     assert result.readings[0][1] == pytest.approx(offset - 40 * slope)
     assert len(result.readings) <= math.ceil(abs(75.0 - result.readings[0][1]) / level.MAX_STEP_DB) + 4
     assert result.gain_db < result.readings[0][0]
+
+
+@pytest.mark.parametrize("kwargs,writes,reason,last_reading", [
+    ({}, [-40.0, -34.0, -28.0, -22.0, -20.5], None, 74.5),
+    ({"offset": 120.0}, [-40.0, -45.5], None, 74.5),
+    ({"slope": 0.8, "offset": 105.0}, [-40.0, -38.5], None, 74.2),
+    ({"slope": 1.2, "offset": 105.0}, [-40.0, -34.0, -28.0, -24.9], None, 75.12),
+    ({"ambient": 52.0, "offset": 80.0}, [-40.0, -34.0, -28.0, -22.0, -16.0, -10.0, -5.5], None, 74.5),
+    ({"cap": -26.0}, [-40.0, -34.0, -28.0, -26.0], level.REFUSE_LEVEL_UNREACHABLE, 69.0),
+], ids=["climbs-then-solves", "solves-down", "shallow-chain", "steep-chain", "buried-then-solves", "held-at-cap"])
+def test_a_clear_reading_solves_half_the_band_under_the_target_one_step_at_most(kwargs, writes, reason, last_reading):
+    """A reading clear of the room solves 1:1 to half the ±1 dB band under 75 dB,
+    raised at most one step; a buried one keeps its damped climb (ADR-0366). The
+    loop stops on two readings in the band, or at the fader cap."""
+    chain = Chain(**kwargs)
+    result = asyncio.run(chain.run())
+    assert chain.writes == pytest.approx(writes)
+    assert (result.status == "converged", result.reason) == (reason is None, reason)
+    assert result.readings[-1][1] == pytest.approx(last_reading)
+
+
+def test_no_step_climbs_past_the_ramp_bound_the_fader_cap_or_one_step():
+    """On chains that rise at most 1 dB per dB of fader, as the 1:1 solve assumes,
+    from any start, room, limiter and cap: the fader stays at or under its cap, no
+    write rises more than one step, and no reading after the first climbs past the
+    ramp bound, a step and a margin under the 85 dB stop (non-negotiable 1)."""
+    bound = spl_raise_bound_db_spl(85.0, margin_db=RAMP_MARGIN_DB)
+    rng = random.Random(5714)
+    seen = set()
+    for _ in range(1000):
+        slope = rng.uniform(0.3, 1.0)
+        chain = Chain(slope=slope, offset=75.0 - slope * rng.uniform(-60.0, 10.0),
+                      limiter=rng.choice([math.inf, rng.uniform(50.0, 95.0)]), current=rng.uniform(-80.0, 0.0),
+                      ambient=rng.uniform(30.0, 68.9), cap=rng.uniform(-45.0, 10.0))
+        result = asyncio.run(chain.run())
+        first, *rest = (reading for _, reading in result.readings)
+        assert all(gain <= min(chain.cap, level.HARD_CEILING_DBFS) for gain in chain.writes)
+        assert all(after - before <= level.MAX_STEP_DB + 1e-9 for before, after in zip(chain.writes, chain.writes[1:]))
+        assert all(reading <= max(first, bound) + 1e-9 for reading in rest)
+        seen.add(result.reason or ("from_above" if first > bound else "from_below"))
+    assert seen >= {"from_below", "from_above", level.REFUSE_LEVEL_UNREACHABLE, SPL_CEILING_EXCEEDED}
 
 
 def test_random_linear_and_limiter_chains_respect_both_stops():
