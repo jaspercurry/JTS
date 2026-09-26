@@ -4,9 +4,6 @@
 """Level with the room/bass summed sweep and the watch's loudest half-second.
 
 See ADR-0309 for the statistic shared with measurement takes.
-The mic's ``Sens Factor`` is quoted at its maximum capture volume.
-Confirm ``amixer -c <card>`` shows the capture control at 100% before trusting
-any absolute SPL this prints.
 """
 from __future__ import annotations
 
@@ -279,18 +276,13 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Play the room/bass summed measurement sweep and adjust the fader "
             "until the calibrated mic's loudest half-second (loudest_half_second_db_spl) "
-            "reads the target; bank the session gain. "
-            "PRECONDITION: `amixer -c <card>` shows "
-            "the mic's capture control at 100%, where its Sens Factor is "
-            "quoted, or every absolute SPL is wrong by the shortfall."
+            "reads the target; bank the session gain."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
             "  - a reference is already banked for this session and you are\n"
             "    not deliberately re-leveling\n"
-            "  - the mic capture control is not confirmed at 100% (see the\n"
-            "    PRECONDITION above) -- level first, then re-run this\n"
             "\n"
             "EXAMPLE\n"
             "  jasper-seat-level\n"

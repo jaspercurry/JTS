@@ -2,7 +2,7 @@
 
 ## Entry contract
 
-Register the wired microphone with `jasper-mic-calibration`; set its capture control to 100%, and confirm its serial and calibration. Run `jasper-seat-level` once at the mark with a calibrated microphone. Each run holds one level; the session gain is the default. Keep the session gain across rounds so a DSP change's loudness effect stays visible. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
+Register the wired microphone with `jasper-mic-calibration` and confirm its serial and calibration. Run `jasper-seat-level` once at the mark with a calibrated microphone. Each run holds one level; the session gain is the default. Keep the session gain across rounds so a DSP change's loudness effect stays visible. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
 
 ## The loop
 
@@ -76,7 +76,7 @@ Each take banks how the playback route's counters moved across its capture in `c
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and reapply the current candidate, including its tuning layers. Without an applied candidate, use the saved profile or commissioning candidate. No evidence is deleted. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
-| `jasper-seat-level` | Play the room/bass summed measurement sweep and adjust the fader until the calibrated mic's loudest half-second (loudest_half_second_db_spl) reads the target; bank the session gain. PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
+| `jasper-seat-level` | Play the room/bass summed measurement sweep and adjust the fader until the calibrated mic's loudest half-second (loudest_half_second_db_spl) reads the target; bank the session gain. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-crossover-prescriber rear-calibration\|contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and report applied layers, last banked rounds and the next program. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round run\|trial\|placed\|stop\|status\|wait\|apply\|reset\|list\|show` | Run a plan, bank its packet, list and show banked rounds, commission a speaker and apply candidates. | mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status`/`list`/`show` read) | `jasper/cli/round.py` |

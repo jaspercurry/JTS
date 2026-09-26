@@ -30,7 +30,9 @@ from jasper.active_speaker.session_volume_plan import SessionVolumePlan, Session
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
-from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredRecording, WiredSplCeilingExceeded
+from jasper.audio_measurement.wired_capture import (
+    CODE_CAPTURE_GAIN_UNVERIFIED, WiredCaptureError, WiredCaptureGainUnverified, WiredRecording, WiredSplCeilingExceeded,
+)
 from jasper.cli import seat_level
 from tests._log_events import event_fields
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
@@ -275,7 +277,7 @@ def box(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'ambient_start_lost', 'ambient_reads_lost', 'missing_spl',
-                                            'cancelled', 'error', 'bundle_failed'])
+                                            'ambient_gain_unverified', 'cancelled', 'error', 'bundle_failed'])
 def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     if outcome == 'stop':
         box.level = 86.0
@@ -284,6 +286,9 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     elif outcome.startswith('ambient_') and outcome.endswith('_lost'):
         box.ambient_failure = WiredCaptureError("failed N consecutive reads")
         box.ambient_start_fails = outcome == 'ambient_start_lost'
+    elif outcome == 'ambient_gain_unverified':
+        box.ambient_failure = WiredCaptureGainUnverified("short of full scale")
+        box.ambient_start_fails = True
     elif outcome == 'missing_spl':
         box.missing_spl = True
     elif outcome == 'cancelled':
@@ -303,6 +308,9 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
             assert result['restored'] is True
             if outcome in ('ambient_start_lost', 'ambient_reads_lost', 'missing_spl'):
                 assert result['reason'] == 'mic_feed_lost'
+            if outcome == 'ambient_gain_unverified':
+                assert result['reason'] == CODE_CAPTURE_GAIN_UNVERIFIED
+                assert result['reason'] in seat_level.REASON_REGISTRY
             if 'stop' in outcome:
 
                 assert result['reason'] == 'spl_ceiling_exceeded'

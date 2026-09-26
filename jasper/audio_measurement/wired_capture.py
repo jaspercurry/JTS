@@ -61,6 +61,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -71,9 +72,11 @@ from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_CAPTURE_GAPS,
     REPORT_KEY_CAPTURE_GAP_FRAMES,
 )
+from jasper.audio_measurement.mic_gain import set_full_scale_gain
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
 __all__ = [
+    "CODE_CAPTURE_GAIN_UNVERIFIED",
     "CODE_WIRED_MIC_MISSING",
     "PERIOD_FRAMES",
     "WIRED_CAPTURE_CHAIN",
@@ -83,6 +86,7 @@ __all__ = [
     "ZERO_RUN_RECORD_CAP",
     "WiredCaptureAnswer",
     "WiredCaptureError",
+    "WiredCaptureGainUnverified",
     "WiredMicDevice",
     "WiredMicMissing",
     "WiredRecorder",
@@ -159,10 +163,11 @@ WIRED_POST_ROLL_S = 1.0
 WIRED_PRE_PLAY_ALLOWANCE_S = 20.0
 
 #: The structured code :class:`WiredMicMissing` carries to the journal and the
-#: refused tap. Deliberately NOT a ``REASON_REGISTRY`` entry: that registry
-#: holds PERSISTED terminal failures the envelope renders, and this refusal
-#: fires before any durable state exists.
+#: refused tap.
 CODE_WIRED_MIC_MISSING = "wired_mic_missing"
+
+#: The structured code :class:`WiredCaptureGainUnverified` carries.
+CODE_CAPTURE_GAIN_UNVERIFIED = "mic_capture_gain_unverified"
 
 
 class WiredCaptureError(RuntimeError):
@@ -182,6 +187,13 @@ class WiredMicMissing(WiredCaptureError):
     """
 
     code = CODE_WIRED_MIC_MISSING
+
+
+class WiredCaptureGainUnverified(WiredCaptureError):
+    """The SPL stop's capture did not read back at full-scale gain, where the
+    Sens Factor is quoted, so the stop would read low and fire late (#4865)."""
+
+    code = CODE_CAPTURE_GAIN_UNVERIFIED
 
 
 class WiredSplCeilingExceeded(WiredCaptureError):
@@ -420,11 +432,15 @@ class WiredRecording:
     truncated: bool
     sample_rate_hz: int
     channels: int
+    #: The capture controls as read back before the stream opened; ``None`` when no
+    #: mixer was consulted.
+    capture_gain: Mapping[str, Any] | None = None
 
 
 class WiredRecorder:
     """Lifecycle: ``start()`` -> caller plays the excitation -> ``finish(tail_s=...)`` (or
-    ``abort()`` on failure). One instance is one capture. ``pcm_factory`` is the test seam."""
+    ``abort()`` on failure). One instance is one capture. ``pcm_factory`` and
+    ``set_capture_gain`` are the test seams."""
 
     def __init__(
         self,
@@ -437,6 +453,7 @@ class WiredRecorder:
         pcm_factory: Callable[[], CapturePcm] | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
         spl_monitor: WiredSplMonitor | None = None,
+        set_capture_gain: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
@@ -468,6 +485,8 @@ class WiredRecorder:
         self._truncated = False
         self._reader_error: WiredCaptureError | None = None
         self.spl_monitor = spl_monitor
+        self._set_capture_gain = set_capture_gain
+        self._capture_gain: Mapping[str, Any] | None = None
 
     # -- reader thread ------------------------------------------------------ #
 
@@ -562,6 +581,12 @@ class WiredRecorder:
         :class:`WiredCaptureError` BEFORE any excitation has played."""
         if self._thread is not None:
             raise WiredCaptureError("recorder already started")
+        if self._set_capture_gain is not None:
+            self._capture_gain = self._set_capture_gain()
+            if self.spl_monitor is not None and not self._capture_gain["verified"]:
+                raise WiredCaptureGainUnverified(
+                    f"the capture controls of {self._device} did not read back at full scale"
+                )
         self._pcm = self._pcm_factory()
         self._thread = threading.Thread(
             target=self._run_reader, name="wired-capture-reader", daemon=True
@@ -597,6 +622,7 @@ class WiredRecorder:
             truncated=self._truncated,
             sample_rate_hz=self._sample_rate_hz,
             channels=self._channels,
+            capture_gain=self._capture_gain,
         )
 
     def abort(self) -> None:
@@ -859,6 +885,8 @@ def mint_wired_answer(
         "channel_selected": channel,
         "channel_rms_dbfs": _json_safe_dbfs(rms_dbfs),
     }
+    if recording.capture_gain is not None:
+        device_meta["capture_gain"] = recording.capture_gain
     return WiredCaptureAnswer(
         wav=wav, device=device_meta, setup=setup, capture_integrity=report,
     )
@@ -882,4 +910,5 @@ def make_wired_recorder(
         sample_rate_hz=sample_rate_hz,
         channels=channels,
         max_capture_s=max_capture_s,
+        set_capture_gain=partial(set_full_scale_gain, device.card_id),
     )

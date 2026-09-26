@@ -162,8 +162,8 @@ async def level_to(
         if gain is not None:
             result.readings.append((gain, exc.observed_db_spl))
         return result
-    except WiredCaptureError:
-        result.reason = "mic_feed_lost"
+    except WiredCaptureError as exc:
+        result.reason = getattr(exc, "code", "mic_feed_lost")
         return result
     except _Refused as exc:
         result.reason = exc.reason
