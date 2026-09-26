@@ -27,8 +27,8 @@ from jasper.log_event import json_mode_enabled
     [
         *((v, True, True) for v in ("1", "true", "yes", "on", "enabled", " TrUe ", "ENABLED\n")),
         *((v, False, False) for v in ("0", "false", "no", "off", "disabled", " Off ", "n", "disable")),
-        *((v, None, False) for v in (None, "", "  ", "unknown", "2")),
-        *((v, True, False) for v in ("y", "enable", "\"yes\"", "'1'")),
+        *((v, None, False) for v in (None, "", "  ", "unknown", "2", "\"yes\"", "'1'", "'on", "on'", "'on\"")),
+        *((v, True, False) for v in ("y", "enable")),
     ],
 )
 def test_parse_bool_value_reads_the_shared_vocabulary(
@@ -189,7 +189,7 @@ def test_outputd_env_readability_preserves_layering_and_optional_files(
 @pytest.mark.parametrize(
     ("raw", "default", "expected"),
     [
-        *((raw, False, True) for raw in ("1", "on", "true", "yes", "y", "enabled", "ON", "'1'", '"yes"')),
+        *((raw, False, True) for raw in ("1", "on", "true", "yes", "y", "enabled", "ON", "'1'", '"yes"', "'on", "on'")),
         *((raw, True, False) for raw in ("0", "off", "false", "no", "n", "disabled", "", "  ", " 0 ")),
         ("garbage", True, True),
         ("garbage", False, False),

@@ -153,14 +153,16 @@ def parse_bool_value(value: str | None, default: bool) -> bool: ...
 
 
 def parse_bool_value(value: str | None, default: bool | None = None) -> bool | None:
-    """Parse the shared env vocabulary, including shell quotes.
+    """Parse the shared env vocabulary.
 
-    Without a default, blank or unknown means None. With a boolean default,
-    blank disables; only missing or unknown values use the default.
+    Without a default, blank or unknown means None. A boolean default enables
+    tolerant quote stripping; blank disables and missing/unknown use the default.
     """
     if value is None:
         return default
-    token = value.strip().strip("'\"").lower()
+    token = value.strip().lower()
+    if default is not None:
+        token = token.strip("'\"")
     if token in _TRUE_VALUES:
         return True
     if token in _FALSE_VALUES or (not token and default is not None):
