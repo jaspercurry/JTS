@@ -302,11 +302,11 @@ def test_sequential_clips_get_incrementing_seq(backend) -> None:
     assert seqs == [1, 2, 3]
 
 
-def test_sequence_excludes_deleted_clips(backend) -> None:
-    """Deleting clip 1 must not let the next clip reuse seq=2.
+def test_sequence_counts_deleted_clips(backend) -> None:
+    """A clip's sequence number is never reused, even after it is deleted.
 
-    Filenames include the per-session sequence number, so reusing a
-    sequence can overwrite a later good take in the same condition.
+    Filenames include the per-session sequence number, so a reused
+    number gives a new take WAV paths an earlier record still names.
     """
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
@@ -325,6 +325,12 @@ def test_sequence_excludes_deleted_clips(backend) -> None:
     clip3 = backend.stop_recording()
     # Sequence is monotonic across the session, including deleted clips.
     assert clip3.seq == 3
+
+    backend.delete_clip(clip3.clip_id)
+
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    assert backend.stop_recording().seq == 4
 
 
 # ---------------------------------------------------------------------------
@@ -1740,6 +1746,7 @@ def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
 def test_begin_session_refuses_while_stop_is_saving_clip(
     backend,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The stop/WAV/metadata transaction stays bound to its session."""
     original_session_id = backend.begin_session("jasper")
@@ -1784,7 +1791,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
     assert errors == []
     assert len(stopped) == 1
     assert stopped[0].session_id == original_session_id
-    _, metadata = _session_metadata(backend._output_dir.parent)
+    _, metadata = _session_metadata(tmp_path)
     assert [clip["clip_id"] for clip in metadata["clips"]] == [
         stopped[0].clip_id,
     ]

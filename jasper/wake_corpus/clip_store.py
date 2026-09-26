@@ -4,13 +4,12 @@
 
 """The open wake-corpus session's clip records and their WAV files.
 
-The store shares ``RecordingBackend``'s state lock: its plain methods take
-it, and a ``*_locked`` method runs inside a critical section its caller
-already holds.
+The store shares ``RecordingBackend``'s state lock: the methods that read
+or change the clip list take it, and a ``*_locked`` method runs inside a
+critical section its caller already holds. ``write_wavs`` runs without it.
 """
 from __future__ import annotations
 
-import logging
 import threading
 from pathlib import Path
 from typing import Any
@@ -18,9 +17,7 @@ from typing import Any
 from jasper.cli.wake_enroll import write_wav
 from jasper.wake_conditions import CORPUS_DIR_BY_CONDITION
 
-from .session_store import ClipMetadata
-
-logger = logging.getLogger("jasper-wake-corpus-web")
+from .session_store import ClipMetadata, unlink_wavs
 
 
 class ClipStore:
@@ -57,7 +54,7 @@ class ClipStore:
         condition: str,
         pcm_per_leg: dict[str, bytes],
     ) -> dict[str, str]:
-        """Write one clip's non-empty legs; return leg → absolute WAV path."""
+        """Write one clip's non-empty legs; return leg → WAV path."""
         files: dict[str, str] = {}
         condition_dir = CORPUS_DIR_BY_CONDITION[condition]
         for leg, pcm in pcm_per_leg.items():
@@ -87,14 +84,7 @@ class ClipStore:
             )
             if clip is None:
                 return False
-            for path_str in clip.files.values():
-                p = Path(path_str)
-                try:
-                    p.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError as e:
-                    logger.warning("failed to delete %s: %s", p, e)
+            unlink_wavs(clip.files.values())
             clip.deleted = True
         return True
 

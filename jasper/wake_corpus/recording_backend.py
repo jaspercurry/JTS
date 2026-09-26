@@ -219,7 +219,6 @@ class RecordingBackend:
         max_duration_sec: float = MAX_RECORDING_DURATION_SEC,
         mic_mute_path: Path | str = MIC_MUTE_STATE_PATH,
     ) -> None:
-        self._output_dir = output_dir
         self._metadata_dir = output_dir / DEFAULT_METADATA_SUBDIR
         # Persisted household mic-mute flag — checked before any
         # session/recording starts and polled mid-recording. See
