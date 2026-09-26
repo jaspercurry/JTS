@@ -408,6 +408,7 @@ async def _run(
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     def default_admit(index: int, attempt: int, entry: Any, ledger: SlotAttempts) -> None:
+        # Unlike authorize_begin, a level-drift retake ("none") stays free: charging it would spend the bass ladder's retries (#5722).
         if ledger.charge != "none":
             ledger.spend(ledger.charge)
         ledger.admitted += 1
@@ -463,12 +464,10 @@ async def _run(
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
                 if work[offset].stop["pose"].get("driver"):
-                    # A redo places a driver's pose again from its start with its retries (ADR-0361).
-                    # Admission charges every attempt after a take's first, so each take it
-                    # replays carries one retry; before any take played it only asks again.
-                    replayed = sum(1 for index, row in enumerate(work) if row.pose_index == pose and attempts[index])
-                    ledgers[pose] = SlotAttempts(retries_per_pose=retries + replayed)
-                    if not replayed:
+                    # A redo places a driver's pose again from its start with its retries, plus one for the
+                    # redo's own charge at its first take; before any take played it only asks again (ADR-0361).
+                    ledgers[pose] = SlotAttempts(retries_per_pose=retries + (attempts[offset] > 0))
+                    if not attempts[offset]:
                         retry = None
                         grant_epoch += 1
                         if gate:
@@ -527,7 +526,8 @@ async def _run(
             try:
                 if signals.stop.is_set():
                     raise CaptureStopped("capture stopped")
-                ledger.charge = retry.charge if retry is not None else "none"
+                # A redo's replay of a take that already played spends no retry (#5722).
+                ledger.charge = retry.charge if retry is not None else "replay" if attempts[offset] else "none"
                 if gate:
                     gate.publish(progress)
                 await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals,
@@ -548,10 +548,9 @@ async def _run(
                     await stack.enter_async_context(session)
                 assert session is not None
                 take_started = clock()
-                if retry is not None:
-                    progress["budget"] = ledger.to_payload()
-                    if gate:
-                        gate.publish(progress)
+                progress["budget"] = ledger.to_payload()
+                if gate:
+                    gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
