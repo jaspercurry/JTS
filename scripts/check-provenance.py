@@ -229,9 +229,19 @@ def registry_urls() -> set[str]:
     return urls
 
 
+def installer_paths(root: Path = ROOT) -> list[Path]:
+    return [
+        root / "deploy" / "install.sh",
+        *sorted((root / "deploy" / "lib" / "install").glob("*.sh")),
+    ]
+
+
 def discovered_fetch_urls(root: Path = ROOT) -> dict[str, set[str]]:
     return {
-        "deploy/install.sh": shell_fetch_urls(root / "deploy" / "install.sh"),
+        **{
+            str(path.relative_to(root)): shell_fetch_urls(path)
+            for path in installer_paths(root)
+        },
         "jasper_aec3/enhanced-aec-source.env": shell_fetch_urls(
             root / "jasper_aec3" / "enhanced-aec-source.env"
         ),
@@ -279,7 +289,9 @@ def validate_source_consistency(
     enhanced_aec_vars = shell_assignments(
         root / "jasper_aec3" / "enhanced-aec-source.env"
     )
-    install_text = (root / "deploy" / "install.sh").read_text(encoding="utf-8")
+    install_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in installer_paths(root)
+    )
 
     install_expectations = {
         "CAMILLA_SHA256": ("camilladsp", "sha256"),
@@ -333,7 +345,8 @@ def validate_source_consistency(
         sha = str(artifact.get("sha256", ""))
         if sha not in install_text:
             errors.append(
-                f"{artifact_id}: sha256 {sha!r} is not present in deploy/install.sh"
+                f"{artifact_id}: sha256 {sha!r} is not present in deploy/install.sh "
+                "or deploy/lib/install/"
             )
 
     _validate_pycamilladsp(data, root, errors)
