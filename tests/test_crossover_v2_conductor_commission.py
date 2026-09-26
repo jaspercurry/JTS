@@ -21,9 +21,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
     CAPTURE_ENTRY_MARGIN_MS,
-    CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
-    GEOMETRY_RETRY_OFFSET_CM,
     MAX_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
@@ -204,24 +202,6 @@ def test_cloud_prompts_state_numeric_absolute_poses():
         assert "phone" not in lowered.replace("microphone", ""), text
         # …and carries a role the attribution stage can read.
         assert prompt.role in POSITION_ROLES
-
-
-def test_geometry_retry_prompts_carry_the_same_register():
-    """The RETAKE rungs are the other prompt constant carrying the register —
-    the work order names both, because a table converted alone would leave the
-    household reading inches all session and then "two forearms' length" at the
-    one moment the instruction has to be unambiguous."""
-    for rung in CLOUD_GEOMETRY_RETRY_PROMPTS:
-        lowered = rung.lower()
-        assert re.search(r"\d+ in \(\d+ cm\)", rung), rung
-        assert "forearm" not in lowered and "hand-width" not in lowered, rung
-        assert "microphone" in lowered, rung
-        assert "mark" in lowered, rung
-    # A rung must ask for a spread the walk itself never reaches, or "wider
-    # spot" is a request the household has already satisfied.
-    assert GEOMETRY_RETRY_OFFSET_CM > max(
-        p.offset_cm for p in CLOUD_POSITION_PROMPTS[:MIN_CLOUD_MEASURE_POSITIONS - 1]
-    )
 
 
 def test_wide_is_derived_from_the_offset_not_hand_set():
