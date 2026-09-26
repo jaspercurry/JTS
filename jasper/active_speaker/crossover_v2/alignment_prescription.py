@@ -91,7 +91,6 @@ PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 #: own reason because an unknown corner is a number to go and derive while this
 #: one never exists (#3480).
 ALIGNMENT_NO_CROSSOVER_REGION = "alignment_no_crossover_region"
-PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: The preset's own declared delay window — the one bound here that does not
 #: depend on a number the operator supplied.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"

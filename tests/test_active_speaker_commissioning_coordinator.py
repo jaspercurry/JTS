@@ -123,7 +123,6 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     if reason_code is not None:
         assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
-    assert view["combined_groups"] == []
     if action == "save_baseline_profile":
         assert view["next_action"]["body"] == {}
     elif action == "copy_prompt":
