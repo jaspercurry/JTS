@@ -95,6 +95,7 @@ from .response import (
     _ripple_db,
     _select_alignment_pair,
     _select_summed_alignment_pair,
+    _sweep_over_ambient_db,
     solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
@@ -1060,6 +1061,7 @@ def _analyze_verify(
         program, sample_rate, locations, frame_ledger, capture=aligned, offset=global_offset,
         repeat_locations=repeat_locations, alignment=alignment,
     )
+    ambient = _pilot_ambient_samples(program, capture, global_offset)
     return ProgramAnalysis(
         phase=program.phase,
         program_id=program.program_id,
@@ -1078,4 +1080,6 @@ def _analyze_verify(
         pilot_snr_ok=pilot_snr_ok,
         capture_integrity=integrity,
         glitch_detected=integrity.glitched,
+        sweep_over_ambient_db=(None if ambient is None
+                               else _sweep_over_ambient_db(full_ir, pre, seg, ambient, sample_rate)),
     )

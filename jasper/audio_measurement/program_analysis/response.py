@@ -15,6 +15,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
+from jasper.audio_measurement.alignment import _bandlimit
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
     OVERLAP_OCTAVE_RATIO,
@@ -50,8 +51,9 @@ from .model import (
     RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SEARCH_STEP_DB,
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
+    SEGMENT_SEARCH_S,
 )
-from .signals import _band_average_db, _complex_tf
+from .signals import _above_modal_tails_hz, _band_average_db, _complex_tf
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
@@ -127,6 +129,28 @@ def recorded_impulse(
         segment_id=segment.segment_id,
         clock_shift_samples=float(clock_shift_samples),
     )
+
+
+def _sweep_over_ambient_db(
+    full_ir: np.ndarray, origin_index: int, segment: ProgramSegment, ambient: np.ndarray, sample_rate: int,
+) -> float | None:
+    """dB by which one deconvolved sweep's peak within :data:`SEGMENT_SEARCH_S` of its
+    scheduled start clears the loudest sample, over the span :func:`recorded_impulse`
+    keeps, of the take's ambient window repeated to the same length and deconvolved the
+    same way (#5672). Read above :data:`WITNESS_BAND_FLOOR_HZ` where the sweep reaches
+    past it: below it, the floor a take hears after its pilots can sit well above the
+    floor of its ambient window.
+    """
+    tail = round(DEFAULT_VERIFY_TAIL_S * sample_rate)
+    room, _ = _deconvolve_window(np.resize(ambient, origin_index + segment.n_samples + tail),
+                                 segment, origin_index, sample_rate)
+    band = _above_modal_tails_hz(segment)
+    if band is not None:
+        full_ir, room = (_bandlimit(ir, sample_rate, *band) for ir in (full_ir, room))
+    search = round(SEGMENT_SEARCH_S * sample_rate)
+    peak = float(np.max(np.abs(full_ir[max(0, origin_index - search):origin_index + search + 1])))
+    floor = float(np.max(np.abs(room[:kept_end(origin_index, room.size, sample_rate)])))
+    return 20.0 * math.log10(peak / floor) if peak > 0 and floor > 0 else None
 
 
 def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:
