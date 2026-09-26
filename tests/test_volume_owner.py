@@ -22,13 +22,12 @@ import pytest
 
 from ._async_wait import wait_signalled
 
-from jasper.volume_latch import READBACK_TOLERANCE_DB
+from jasper.volume_latch import READBACK_TOLERANCE_DB, duck_release_target_db
 from jasper.volume_owner import (
     ClaimKind,
     VolumeClaimConflict,
     VolumeClaimRefused,
     VolumeOwner,
-    duck_release_target_db,
     install_volume_owner,
     volume_owner,
 )
@@ -237,25 +236,27 @@ async def test_a_level_the_owner_cannot_arbitrate_is_refused(kind, level):
 
 
 @pytest.mark.parametrize(
-    "reference,current,depth,expected",
+    "reference,current,entry,expected",
     [
-        # A holder gives back its own attenuation and nothing else.
-        (-20.0, -60.0, 40.0, -20.0),
-        # ...but never ends above the level that should be in effect: a
-        # volume change inside the window lowers the reference, and a bare
-        # relative give-back would clamp back up to the old level.
-        (-45.0, -60.0, 40.0, -45.0),
-        # The relative bound wins when another holder is still down.
-        (-20.0, -90.0, 40.0, -50.0),
-        # An unreadable fader falls through to the reference.
-        (-20.0, None, 40.0, -20.0),
+        # Readable: the holder gives back its own 40 dB (-60 -> -20) and
+        # nothing else, never above the reference; the entry level is moot.
+        (-10.0, -60.0, None, -20.0),
+        (-30.0, -60.0, None, -30.0),
+        (-10.0, -60.0, -50.0, -20.0),
+        (-30.0, -60.0, -50.0, -30.0),
+        # Unreadable: the reference, and never above a known entry level.
+        (-10.0, None, None, -10.0),
+        (-30.0, None, None, -30.0),
+        (-10.0, None, -25.0, -25.0),
+        (-30.0, None, -25.0, -30.0),
     ],
 )
 def test_the_duck_release_gives_back_its_own_depth_and_no_more(
-    reference, current, depth, expected,
+    reference, current, entry, expected,
 ):
     assert duck_release_target_db(
-        reference_db=reference, current_db=current, depth_db=depth,
+        reference_db=reference, current_db=current, depth_db=40.0,
+        entry_db=entry,
     ) == pytest.approx(expected)
 
 

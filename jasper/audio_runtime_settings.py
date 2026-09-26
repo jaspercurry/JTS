@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime setting vocabulary, precedence, and buffer rules.
-Route-policy vocabulary and statefile constants."""
+"""Runtime setting vocabulary, precedence, and buffer rules, plus the
+route-policy vocabulary."""
 
 from __future__ import annotations
 
