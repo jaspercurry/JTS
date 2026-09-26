@@ -77,6 +77,10 @@ class ProgramDefinition:
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
+    #: Applied layers every take of this purpose plays cleared, and whether its
+    #: base also clears the purpose's own layer (doctrine §1a; ADR-0370).
+    clears: tuple[str, ...] = ()
+    base_clears_own: bool = False
 
 
 # Row order is the tuning order; stored documents retain their existing orders.
@@ -106,6 +110,7 @@ _PROGRAM_SECTIONS = (
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         trial=("bass_axis", "seat_express"), graph_evidence=True,
+        clears=("room_correction",), base_clears_own=True,
     ),
     ProgramDefinition(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
@@ -149,6 +154,15 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     ) is not None for group in topology.speaker_groups)
     return tuple(name for name in RUNNABLE_PROGRAMS
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
+
+
+def cleared_layers(purpose: str | None, *, base: bool) -> tuple[str, ...]:
+    """The applied candidate layers a take of ``purpose`` plays cleared, on the
+    run's base or on a candidate it names (ADR-0370)."""
+    row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
+    if row is None:
+        return ()
+    return row.clears + ((row.candidate_fields[0].name,) if base and row.base_clears_own else ())
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
