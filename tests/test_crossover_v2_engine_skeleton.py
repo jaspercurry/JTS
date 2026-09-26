@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from itertools import count
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -56,8 +57,10 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
     STAGE_ADMIT,
     STAGE_PLAY,
     STAGE_RESTORE,
+    PlaybackInterrupted,
     PlaybackOutcome,
 )
+from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.active_speaker.crossover_v2.session import (
     UNPROVEN_LEVEL,
     MeasureOutcome,
@@ -67,6 +70,7 @@ from jasper.active_speaker.crossover_v2.session import (
 from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 
 from tests._async_wait import wait_signalled
+from tests._log_events import event_field_maps
 
 
 # --------------------------------------------------------------------------- #
@@ -1154,9 +1158,10 @@ async def test_a_transaction_that_never_reached_play_banks_nothing():
     assert outcome.stimuli[0].incident == "capture_timeout"
 
 
-async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
+async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest(caplog):
     """The continue-not-break rule: one failed position must not end the walk,
     and every entry says what became of its own stimulus."""
+    caplog.set_level(logging.INFO, logger=TuningSession.__module__)
     session, parts = _session(play=_Play(script=[
         (STAGE_RESTORE, ""),
         (STAGE_ADMIT, "capture_timeout"),
@@ -1173,6 +1178,39 @@ async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     assert [s.incident for s in outcome.stimuli] == ["", "capture_timeout", ""]
     assert [s.banked for s in outcome.stimuli] == [True, False, True]
     assert [row["position_deg"] for row in parts["records"].banked] == [-22, 22]
+    assert [(event["position_deg"], event["path"], event["incident"])
+            for event in event_field_maps(caplog, "active_speaker.stimulus_measured")] == [
+        ("-22", "rec-1", "null"), ("0", "null", "capture_timeout"), ("22", "rec-2", "null")]
+
+
+@dataclass
+class _StoppedPlay(_Play):
+    """A stop that lands after the stimulus played: the audio is on disk."""
+
+    async def run(self, **kwargs: Any) -> PlaybackOutcome:
+        await super().run(**kwargs)
+        raise PlaybackInterrupted(PlaybackObservation(emission="completed"), wav_path="c/x.wav")
+
+
+@dataclass
+class _FailingRecords(_Records):
+    async def bank(self, record: Mapping[str, Any]) -> str:
+        raise OSError("disk full")
+
+
+@pytest.mark.parametrize("records, path", [(_Records(), "rec-1"), (_FailingRecords(), "null")])
+async def test_a_stop_after_play_banks_what_played_and_still_stops(caplog, records, path):
+    """The stop outranks a failed bank; either way the stimulus is on the record."""
+    caplog.set_level(logging.INFO, logger=TuningSession.__module__)
+    session, _ = _session(play=_StoppedPlay(), records=records)
+
+    with pytest.raises(PlaybackInterrupted) as stopped:
+        async with session:
+            await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+    assert isinstance(stopped.value.__context__, OSError) == (path == "null")
+    (event,) = event_field_maps(caplog, "active_speaker.stimulus_measured")
+    assert (event["path"], event["interrupted"], event["error"]) == (path, "true", "null")
 
 
 async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
