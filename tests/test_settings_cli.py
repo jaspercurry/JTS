@@ -204,3 +204,10 @@ def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys, caplog):
     assert stat.S_IMODE(paths[target].stat().st_mode) == MODES[target]
     assert after == {name: data for name, data in before.items() if name != target}
     assert restarts == [1]
+    if code == 0:
+        expected_keys = {"model", "threshold", "restart"} if target == "wake" else {
+            "provider", "model", "voice", "barge_in", "changed", "restart",
+        }
+        if case.restart is SKIPPED:
+            expected_keys.add("restart_reason")
+        assert set(document) == expected_keys

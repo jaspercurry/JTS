@@ -191,7 +191,8 @@ def _wake(args: argparse.Namespace) -> int:
         return refused("threshold_out_of_range", str(exc), exit_code=EXIT_REFUSED)
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "save_failed", str(exc))
-    return _restart(_wake_view())
+    saved = _wake_view()
+    return _restart({"model": saved["model"], "threshold": saved["threshold"]})
 
 
 def build_parser() -> argparse.ArgumentParser:
