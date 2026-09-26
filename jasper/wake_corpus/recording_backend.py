@@ -209,6 +209,28 @@ def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
     return tuple(leg for leg in BASE_LEGS if leg in ports)
 
 
+def _status_with_fallbacks(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Complete a locked status read: the new-session sweep defaults where
+    the session has none, and a fresh capture-plan check unless the
+    recording clip carries one."""
+    snapshot["aec3_sweep_variants"] = (
+        snapshot["aec3_sweep_variants"]
+        or variant_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
+    )
+    snapshot["aec3_sweep_config"] = (
+        snapshot["aec3_sweep_config"]
+        or config_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
+    )
+    capture_plan = snapshot["capture_plan"]
+    capture_plan_conformance = snapshot["capture_plan_conformance"]
+    if capture_plan and capture_plan_conformance is None:
+        capture_plan_conformance = validate_active_capture_plan(capture_plan).to_json()
+    snapshot["capture_plan_conformance"] = (
+        capture_plan_conformance if capture_plan else None
+    )
+    return snapshot
+
+
 class RecordingBackend:
     """Single-recording-at-a-time backend, controllable from sync HTTP
     handlers via a background asyncio event loop.
@@ -612,34 +634,8 @@ class RecordingBackend:
         with self._lock:
             if self._session_id is not None:
                 return  # already have a session, nothing to recover
-        if not self._metadata_dir.is_dir():
-            return
-
-        now = now if now is not None else time.time()
-        marker = self._active_session_marker_path()
-        if not marker.is_file():
-            return
-        age = now - marker.stat().st_mtime
-        if age > RESUME_WINDOW_SEC:
-            logger.info(
-                "skipping recovery: active session marker is %.0fs old "
-                "(window=%.0fs)", age, RESUME_WINDOW_SEC,
-            )
-            self._clear_active_session_marker()
-            return
-
-        try:
-            marker_data = json.loads(marker.read_text())
-            session_id = str(marker_data["session_id"])
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(
-                "recovery skipped: failed to read %s: %s", marker, e,
-            )
-            return
-        except KeyError:
-            logger.warning(
-                "recovery skipped: %s lacks session_id", marker,
-            )
+        session_id = self._resumable_session_id(now)
+        if session_id is None:
             return
 
         saved = session_store.find_session(self._metadata_dir, session_id)
@@ -664,6 +660,40 @@ class RecordingBackend:
             result["session_id"], result["member"], result["clip_count"],
             ",".join(result["enabled_legs"]),
         )
+
+    def _resumable_session_id(self, now: float | None) -> str | None:
+        """The active-session marker's session id; None when there is no
+        marker, when it is older than RESUME_WINDOW_SEC (it is then
+        cleared) or when it cannot be read."""
+        if not self._metadata_dir.is_dir():
+            return None
+
+        now = now if now is not None else time.time()
+        marker = self._active_session_marker_path()
+        if not marker.is_file():
+            return None
+        age = now - marker.stat().st_mtime
+        if age > RESUME_WINDOW_SEC:
+            logger.info(
+                "skipping recovery: active session marker is %.0fs old "
+                "(window=%.0fs)", age, RESUME_WINDOW_SEC,
+            )
+            self._clear_active_session_marker()
+            return None
+
+        try:
+            marker_data = json.loads(marker.read_text())
+            return str(marker_data["session_id"])
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "recovery skipped: failed to read %s: %s", marker, e,
+            )
+            return None
+        except KeyError:
+            logger.warning(
+                "recovery skipped: %s lacks session_id", marker,
+            )
+            return None
 
     def _maybe_recover_stale_test_mode(
         self, now: float | None = None,
@@ -955,63 +985,54 @@ class RecordingBackend:
         sessions in one response.
         """
         with self._lock:
-            include_aec3_sweep = self._include_aec3_sweep
-            aec3_sweep_variants = (
-                list(self._aec3_sweep_variants)
-                if include_aec3_sweep and self._aec3_sweep_variants else None
-            )
-            aec3_sweep_config = (
-                dict(self._aec3_sweep_config)
-                if include_aec3_sweep and self._aec3_sweep_config else None
-            )
-            capture_plan = dict(self._capture_plan) if self._capture_plan else None
-            capture_plan_conformance = (
-                dict(self._current_plan_conformance)
-                if self._current_plan_conformance else None
-            )
-            snapshot = {
-                "session_id": self._session_id,
-                "member": self._member,
-                "include_raw_mic_0": self._include_raw_mic_0,
-                "include_dtln": self._include_dtln,
-                "include_usb_mic": self._include_usb_mic,
-                "include_usb_dtln": self._include_usb_dtln,
-                "include_xvf_raw0_dtln": self._include_xvf_raw0_dtln,
-                "include_aec3_sweep": include_aec3_sweep,
-                "corpus_profile": self._corpus_profile,
-                "chip_aec_config": (
-                    dict(self._chip_aec_config) if self._chip_aec_config else None
-                ),
-                "aec3_sweep_source": self._aec3_sweep_source,
-                "enabled_legs": list(self._enabled_legs),
-                "capture_plan": capture_plan,
-                "audio_context": (
-                    dict(self._audio_context) if self._audio_context else None
-                ),
-                "is_recording": (
-                    self._current is not None
-                    or self._starting_clip_id is not None
-                ),
-                "elapsed_sec": (
-                    self._current.elapsed_sec() if self._current is not None else 0.0
-                ),
-                "clip_count": sum(1 for c in self._clips if not c.deleted),
-            }
+            snapshot = self._status_locked()
         # Stateless fallbacks + the conformance re-check are pure functions
         # of the values snapshotted above, so they run outside the lock
         # without re-reading any `self._*` field.
-        snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
-            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-        )
-        snapshot["aec3_sweep_config"] = aec3_sweep_config or config_metadata(
-            input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
-        )
-        if capture_plan and capture_plan_conformance is None:
-            capture_plan_conformance = validate_active_capture_plan(capture_plan).to_json()
-        snapshot["capture_plan_conformance"] = (
-            capture_plan_conformance if capture_plan else None
-        )
-        return snapshot
+        return _status_with_fallbacks(snapshot)
+
+    def _status_locked(self) -> dict[str, Any]:
+        include_aec3_sweep = self._include_aec3_sweep
+        return {
+            "session_id": self._session_id,
+            "member": self._member,
+            "include_raw_mic_0": self._include_raw_mic_0,
+            "include_dtln": self._include_dtln,
+            "include_usb_mic": self._include_usb_mic,
+            "include_usb_dtln": self._include_usb_dtln,
+            "include_xvf_raw0_dtln": self._include_xvf_raw0_dtln,
+            "include_aec3_sweep": include_aec3_sweep,
+            "corpus_profile": self._corpus_profile,
+            "chip_aec_config": (
+                dict(self._chip_aec_config) if self._chip_aec_config else None
+            ),
+            "aec3_sweep_source": self._aec3_sweep_source,
+            "enabled_legs": list(self._enabled_legs),
+            "capture_plan": dict(self._capture_plan) if self._capture_plan else None,
+            "audio_context": (
+                dict(self._audio_context) if self._audio_context else None
+            ),
+            "is_recording": (
+                self._current is not None
+                or self._starting_clip_id is not None
+            ),
+            "elapsed_sec": (
+                self._current.elapsed_sec() if self._current is not None else 0.0
+            ),
+            "clip_count": sum(1 for c in self._clips if not c.deleted),
+            "aec3_sweep_variants": (
+                list(self._aec3_sweep_variants)
+                if include_aec3_sweep and self._aec3_sweep_variants else None
+            ),
+            "aec3_sweep_config": (
+                dict(self._aec3_sweep_config)
+                if include_aec3_sweep and self._aec3_sweep_config else None
+            ),
+            "capture_plan_conformance": (
+                dict(self._current_plan_conformance)
+                if self._current_plan_conformance else None
+            ),
+        }
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.
