@@ -16,11 +16,13 @@ instance, though two sessions in two threads share nothing but their seams.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
 from jasper.audio_measurement.playback import PlaybackObservation
 
+from jasper.log_event import log_event
 from jasper.volume_latch import fader_matches
 from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
@@ -43,6 +45,8 @@ __all__ = [
     "StimulusOutcome",
     "TuningSession",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 async def _attach_cleanup_failure(
@@ -512,6 +516,10 @@ class TuningSession:
                     return written
 
                 record_id = await resilient_restore(_bank())
+        log_event(logger, "active_speaker.stimulus_measured", phase=spec.program_phase,
+                  scope=spec.graph_scope, position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
+                  record=record_id or None, incident=incident or None,
+                  interrupted=interruption is not None)
         if interruption is not None:
             raise interruption
         return StimulusOutcome(
