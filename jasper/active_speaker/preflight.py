@@ -14,10 +14,11 @@ from jasper.audio_measurement.quality_model import DRIVER
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
+from .capture_schedule import walk_price
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
     AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
-    REGIME_BRANCHES, walk_price,
+    REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for

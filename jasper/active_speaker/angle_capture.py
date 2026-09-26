@@ -21,7 +21,6 @@ poses and refusals, the session host tags indexes with a phase.
 from __future__ import annotations
 
 import math
-from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -86,7 +85,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
-    wall_clock_ceiling_s,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
@@ -120,7 +118,6 @@ __all__ = [
     "stop_specs",
     "default_run_level",
     "request_for_program",
-    "walk_price",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -824,25 +821,6 @@ def request_for_program(
             else f"{program.program_id}/{program.size}"
         ),
     )
-
-
-def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:
-    """Price the same capture schedule shown by the page, including preparation."""
-    from .plan_run import prepare_plan_captures  # lazy: plan_run imports this request model
-
-    captures = len(prepare_plan_captures(request, roles_bands=roles_bands))
-    return {
-        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
-        "captures": captures,
-        "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(captures) / 60
-        ),
-        "stimulus_s": (
-            None if request.template.sweep_s is None
-            else captures * request.template.sweep_s
-            * max(1, len(request.template.level_ladder_dbfs))
-        ),
-    }
 
 
 # --------------------------------------------------------------------------- #

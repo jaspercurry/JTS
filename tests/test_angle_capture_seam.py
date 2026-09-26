@@ -34,6 +34,7 @@ import numpy as np
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
+from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -1029,7 +1030,7 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
     assert [(s.kind, s.distance_m, s.seat_offset_m) for s in request.stops] == [
         (p.kind, p.distance_m, p.seat_offset_m) for p in program.poses
     ]
-    price = ac.walk_price(request)
+    price = walk_price(request)
     assert (price["mic_moves"], price["captures"]) == (
         program.mic_move_count, program.capture_count,
     )
@@ -1202,13 +1203,13 @@ def test_shipped_program_geometry_and_full_capture_price(
         for _candidate in (candidates or ("",))
     ]
     assert [pose_kind_fields(geometry) for geometry in geometries] == [{"mark_distance_m": 1.0}] * len(stops)
-    assert ac.walk_price(request) == price
+    assert walk_price(request) == price
 
 
 @pytest.mark.parametrize("repeats, ceiling_min", [(1, 30), (2, 30), (3, 30)])
 def test_walk_price_omits_entry_baseline_for_close_program(repeats, ceiling_min):
     request = ac.request_for_program(mp.program("close", "spot"), repeats=repeats)
-    assert ac.walk_price(request)["ceiling_min"] == ceiling_min
+    assert walk_price(request)["ceiling_min"] == ceiling_min
 
 
 def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
@@ -1284,7 +1285,7 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
             level_ladder_dbfs=level_ladder_dbfs,
         ),
     )
-    price = ac.walk_price(request)
+    price = walk_price(request)
 
     assert price["mic_moves"] == program.mic_move_count
     assert price["captures"] == len(prepare_plan_captures(request))
@@ -1475,8 +1476,8 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
     ]
-    assert ac.walk_price(request)["captures"] == len(specs)
-    assert ac.walk_price(request)["mic_moves"] == 3
+    assert walk_price(request)["captures"] == len(specs)
+    assert walk_price(request)["mic_moves"] == 3
 
 
 @pytest.mark.parametrize("row, pair", [("branches", ("woofer", "tweeter")),
