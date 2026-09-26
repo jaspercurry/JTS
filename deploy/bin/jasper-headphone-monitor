@@ -86,7 +86,7 @@ maybe_reset() {
         # as another event: without a floor between resets, anything holding
         # the control down turns that into a fight at event rate. `SECONDS` is
         # whole-second, so this holds resets to roughly one per second per
-        # card — the ceiling the `sleep 1` poll used to give for free.
+        # card.
         last_reset="${card_reset_at[$idx]}"
         if [[ -n "$last_reset" ]] &&
             (( SECONDS - last_reset < RESET_MIN_INTERVAL_SEC )); then
@@ -178,9 +178,9 @@ card_index() {
     return 1
 }
 
-# One `alsactl monitor hw:<card>` per armed card blocks in place of the 1 Hz
-# `amixer` poll this loop used to run: an unchanged control produces nothing
-# to read, so an idle board forks nothing at all (#4121). `alsactl monitor`
+# One `alsactl monitor hw:<card>` per armed card blocks until a control
+# changes: an unchanged control produces nothing to read, so an idle board
+# forks nothing at all (#4121). `alsactl monitor`
 # takes exactly one <card> (alsactl(1)), so a board with two Apple DACs runs
 # two of them, fanned out from a single process-substitution subshell that
 # `wait`s on both -- their stdout shares that subshell's one pipe, so a

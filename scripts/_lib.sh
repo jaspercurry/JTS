@@ -374,13 +374,9 @@ build_manifest_value() {
 #               NOT a clean "no"
 #
 # Echoes one of yes|no|error. The bare-`if` form treats exit >1 the same
-# as exit 1, so a transient git failure reads as a real "not an ancestor"
-# answer: on 2026-07-02 a deploy from a fresh worktree printed "diverged
-# histories" for an installed commit that was the direct PARENT of local
-# HEAD — a plain "forward" — because the ancestry probe hit a transient
-# error; re-running seconds later with identical inputs returned "forward".
-# Callers map the `error` token to their own can't-compare outcome instead
-# of guessing a topology.
+# as exit 1, so a transient git failure would read as a real "not an
+# ancestor" answer. Callers map the `error` token to their own
+# can't-compare outcome instead of guessing a topology.
 #
 # set -e-safe: the `|| rc=$?` capture keeps the non-zero git exit from
 # aborting a sourcing script under `set -euo pipefail`, and the function
@@ -407,9 +403,7 @@ _is_ancestor() {
 #   same               redeploying the installed commit
 #   forward            installed is an ancestor of local — normal upgrade
 #   downgrade          local is an ancestor of installed — this deploy
-#                      would REVERT commits the Pi already runs (the
-#                      2026-06-11 JTS3 incident: a stale parallel
-#                      checkout silently reverted same-day fixes)
+#                      would REVERT commits the Pi already runs
 #   diverged           histories split — neither contains the other
 #                      (two branches deploying to one Pi)
 #   unknown_installed  installed SHA not in this checkout's history
@@ -436,8 +430,8 @@ classify_deploy_direction() {
     fi
     # A git error (exit >1) on either ancestry probe must NOT fall through
     # to "diverged" — that mislabels a transient failure as a real split
-    # history (the 2026-07-02 spurious-diverged incident). Treat it as
-    # can't-compare so the caller's fetch-and-retry path runs instead.
+    # history. Treat it as can't-compare so the caller's fetch-and-retry
+    # path runs instead.
     case "$(_is_ancestor "$installed_sha" "$local_sha")" in
         yes) echo "forward"; return 0 ;;
         error) echo "unknown_installed"; return 0 ;;

@@ -17,12 +17,10 @@
 #      identity that the management allowlist, TLS cert, OAuth bounce,
 #      and spoken URLs derive from.
 #
-# Before this reconciler, a collision rename produced a locked-out
-# speaker: the renamed Pi answers at jts-2.local, but the management
-# host-allowlist only knew the OS hostname and JASPER_HOSTNAME, so every
-# page 403ed — the exact user-visible shape of the 2026-06-11
-# `Host: 0.0.0.0` regression, with no self-heal and no surface saying
-# why.
+# Without this reconciler, a collision rename locks the speaker out: the
+# renamed Pi answers at jts-2.local, but the management host-allowlist
+# knows only the OS hostname and JASPER_HOSTNAME, so every page answers
+# 403, with no self-heal and no surface saying why.
 #
 # This script is the single writer of /var/lib/jasper/identity.env: a
 # small, always-fresh snapshot of the three names plus a collision flag.
