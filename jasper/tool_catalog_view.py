@@ -26,9 +26,9 @@ import json
 import logging
 from typing import Any
 
+from .env_load import TOOL_STATE_ENV_PATH
 from .tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_PATH
 from .tool_prompt_overrides import read_prompt_overrides
-from .tool_state import DEFAULT_PATH as STATE_PATH
 from .tool_state import ToolState, read_tool_state
 
 logger = logging.getLogger(__name__)
@@ -238,7 +238,7 @@ def overlay(
 
 def catalog_view(
     catalog_path: str = DEFAULT_CATALOG_PATH,
-    state_path: str = STATE_PATH,
+    state_path: str = TOOL_STATE_ENV_PATH,
     prompt_overrides_path: str = PROMPT_OVERRIDES_PATH,
 ) -> dict[str, Any]:
     """The /assistant/tools/ wizard's /catalog.json payload: voice's catalog metadata
@@ -253,7 +253,7 @@ def catalog_view(
 
 def summary(
     catalog_path: str = DEFAULT_CATALOG_PATH,
-    state_path: str = STATE_PATH,
+    state_path: str = TOOL_STATE_ENV_PATH,
     prompt_overrides_path: str = PROMPT_OVERRIDES_PATH,
 ) -> dict[str, Any]:
     """Compact catalog state for /state + jasper-doctor: presence, counts,

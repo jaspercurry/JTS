@@ -43,9 +43,9 @@ from ..tts_routing import resolve_tts_routing_snapshot
 from ..volume_coordinator import VolumeCoordinator
 from ._tasks import await_cleanup_owned, capture_cleanup_error, run_cleanup_phases
 from .earcons import (
-    _generate_listening_chirp,
-    _generate_mute_click,
-    _synthetic_audio_profile,
+    generate_listening_chirp,
+    generate_mute_click,
+    synthetic_audio_profile,
 )
 from .output_gate import (
     AssistantOutputEpisode,
@@ -169,37 +169,37 @@ class AssistantOutput:
         # grid and promoted afterwards.
         earcon_wide = _tts_wire_is_wide()
         self._earcon_wide = earcon_wide
-        self._chirp_on_pcm: bytes = _generate_listening_chirp(
+        self._chirp_on_pcm: bytes = generate_listening_chirp(
             going_on=True, wide=earcon_wide,
         )
-        self._chirp_off_pcm: bytes = _generate_listening_chirp(
+        self._chirp_off_pcm: bytes = generate_listening_chirp(
             going_on=False, wide=earcon_wide,
         )
-        self._chirp_on_profile = _synthetic_audio_profile(
+        self._chirp_on_profile = synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="wake_start",
             pcm=self._chirp_on_pcm,
             wide=earcon_wide,
         )
-        self._chirp_off_profile = _synthetic_audio_profile(
+        self._chirp_off_profile = synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="turn_end",
             pcm=self._chirp_off_pcm,
             wide=earcon_wide,
         )
-        self._mute_click_on_pcm: bytes = _generate_mute_click(
+        self._mute_click_on_pcm: bytes = generate_mute_click(
             going_on=True, wide=earcon_wide,
         )
-        self._mute_click_off_pcm: bytes = _generate_mute_click(
+        self._mute_click_off_pcm: bytes = generate_mute_click(
             going_on=False, wide=earcon_wide,
         )
-        self._mute_click_on_profile = _synthetic_audio_profile(
+        self._mute_click_on_profile = synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="unmute",
             pcm=self._mute_click_on_pcm,
             wide=earcon_wide,
         )
-        self._mute_click_off_profile = _synthetic_audio_profile(
+        self._mute_click_off_profile = synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="mute",
             pcm=self._mute_click_off_pcm,

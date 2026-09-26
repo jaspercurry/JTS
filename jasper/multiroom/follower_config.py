@@ -40,7 +40,7 @@ import logging
 from pathlib import Path
 
 from ..active_speaker.state_paths import baseline_config_path
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig
@@ -466,13 +466,11 @@ async def _prove_live_bass_extension_graph(
     *,
     expected_config_path: str | Path,
     expected_classification: str,
-    statefile_path=None,
     settle_timeout_s: float = 2.0,
 ):
     """Canonical live graph/profile proof shared by both active bond roles."""
 
     from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
     from jasper.active_speaker.runtime_contract import (
         classify_active_bass_extension_graph,
     )
@@ -483,7 +481,7 @@ async def _prove_live_bass_extension_graph(
     while True:
         proof = await classify_active_bass_extension_graph(
             load_output_topology_strict(),
-            statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
+            statefile_path=camilla_statefile(),
             read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
             canonicalize_graph_text=lambda raw: cam.normalize_config_raw(
                 raw, best_effort=False

@@ -547,28 +547,38 @@ def test_start_rejects_bad_name(patched_common, tmp_path):
     assert "Invalid name" in _flash(patched_common.send_see_other)
 
 
-def test_default_sets_default_when_account_exists(patched_common):
-    fake = _post_handler(_cfg(), "/default", {"name": "britt"})
-    reg = mock.Mock()
-    reg.get.return_value = object()  # account exists
-    with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg):
-        fake.do_POST()
-    assert reg.default_name == "britt"
-    assert reg.save.called
+def _linked_registry(tmp_path, *names: str) -> str:
+    """An on-disk registry linking `names`, each with its own token file."""
+    registry = google_setup.GoogleRegistry(path=str(tmp_path / "accounts.json"))
+    for name in names:
+        token = tmp_path / f"{name}.token.json"
+        token.write_text("{}")
+        registry.add_or_update(
+            google_setup.GoogleAccount(name=name, token_path=str(token)),
+        )
+    registry.save()
+    return registry.path
 
 
-def test_remove_deletes_account_and_token(patched_common, tmp_path):
-    fake = _post_handler(_cfg(), "/remove", {"name": "jasper"})
-    tok = tmp_path / "jasper.json"
-    tok.write_text("{}")
-    reg = mock.Mock()
-    reg.get.return_value = SimpleNamespace(token_path=str(tok))
-    reg.remove.return_value = True
-    with mock.patch.object(google_setup.GoogleRegistry, "load", return_value=reg):
-        fake.do_POST()
-    assert reg.remove.called
-    assert not tok.exists()  # token file unlinked
-    assert patched_common.restart_voice_daemon.called
+def test_default_sets_default_when_account_exists(patched_common, tmp_path):
+    path = _linked_registry(tmp_path, "jasper", "britt")
+    _post_handler(_cfg(registry_path=path), "/default", {"name": "britt"}).do_POST()
+    assert google_setup.GoogleRegistry.load(path).default_name == "britt"
+
+
+@pytest.mark.parametrize("name, kept", [
+    ("jasper", ["britt"]),
+    ("ghost", ["jasper", "britt"]),
+])
+def test_remove_deletes_the_account_and_only_its_token(
+    patched_common, tmp_path, name, kept,
+):
+    path = _linked_registry(tmp_path, "jasper", "britt")
+    _post_handler(_cfg(registry_path=path), "/remove", {"name": name}).do_POST()
+    assert [a.name for a in google_setup.GoogleRegistry.load(path).accounts] == kept
+    tokens = sorted(p.name for p in tmp_path.glob("*.token.json"))
+    assert tokens == sorted(f"{n}.token.json" for n in kept)
+    assert patched_common.restart_voice_daemon.called is (name == "jasper")
 
 
 def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):

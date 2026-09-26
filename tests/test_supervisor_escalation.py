@@ -14,10 +14,12 @@ Gemini supervisor's reconnect loop. See ADR-0215.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import logging
 import socket
 import warnings
+from typing import AsyncIterator
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
@@ -34,6 +36,7 @@ from jasper.voice._supervisor import (
     outage_cue,
 )
 from tests._log_events import event_fields, event_records
+from tests._provider_fakes import no_wait
 from tests.failure_detail_fixtures import Rejected
 
 try:
@@ -63,7 +66,7 @@ class _Status:
         self.status_code = status_code
 
 
-class _Coded:
+class _Coded(Exception):
     """A google-genai ``APIError``: the code is on ``.code``, never
     ``.status_code``."""
 
@@ -95,6 +98,14 @@ def _we_closed(code: int) -> ConnectionClosedError:
 def _closed_abnormally() -> ConnectionClosedError:
     """A real close that exchanged no close frame in either direction."""
     return ConnectionClosedError(None, None, rcvd_then_sent=None)
+
+
+def _translated(code: int, close: ConnectionClosedError) -> _Coded:
+    """google-genai's shape: an ``APIError`` raised while handling the
+    close, which keeps it only as ``__context__``."""
+    error = _Coded(code)
+    error.__context__ = close
+    return error
 
 
 # Captured verbatim from the live xAI 403 that motivated ADR-0215.
@@ -142,6 +153,9 @@ def _wrapped(inner: BaseException) -> Exception:
         (_provider_closed(1007), False),
         (_we_closed(1007), True),
         (_we_closed(1002), True),
+        (_translated(1007, _we_closed(1007)), True),
+        (_translated(1007, _provider_closed(1007)), False),
+        (_translated(1007, _we_closed(1002)), False),
         (_provider_closed(1011), True),
         (_closed_abnormally(), True),
         (_Coded(400), False),
@@ -167,6 +181,41 @@ def test_is_transient_never_reads_the_deprecated_close_code() -> None:
         warnings.simplefilter("error", DeprecationWarning)
         assert is_transient(_provider_closed(1007)) is False
         assert is_transient(_closed_abnormally()) is True
+
+
+@_needs_genai
+@pytest.mark.parametrize(
+    ("close", "transient"),
+    [(_we_closed(1007), True), (_provider_closed(1007), False)],
+    ids=["our-close-echoed", "provider-refused"],
+)
+async def test_the_sdk_setup_error_still_says_who_closed(
+    monkeypatch: pytest.MonkeyPatch, close: ConnectionClosedError, transient: bool,
+) -> None:
+    """The real google-genai connect re-raises a setup close as an
+    ``APIError`` without ``rcvd_then_sent``. Fails when an SDK upgrade
+    stops chaining the close under it, which would bring back the false
+    alarm on an echoed close. See #3895."""
+    from google import genai
+    from google.genai import errors, live
+
+    class _Socket:
+        async def send(self, _message: object) -> None:
+            return None
+
+        async def recv(self, decode: bool = True) -> bytes:
+            raise close
+
+    @contextlib.asynccontextmanager
+    async def _dial(*_args: object, **_kwargs: object) -> AsyncIterator[_Socket]:
+        yield _Socket()
+
+    monkeypatch.setattr(live, "ws_connect", _dial)
+    client = genai.Client(api_key="fake")
+    with pytest.raises(errors.APIError) as failure:
+        async with client.aio.live.connect(model="fake-model"):
+            pass
+    assert is_transient(failure.value) is transient
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +498,8 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
         model="fake-model",
         voice="Aoede",
         rotate_after_sec=0.0,
-        backoff_schedule=(0.0, 0.0, 0.0),
         connect_factory=factory,
+        sleep=no_wait,
     )
 
     cue_calls: list[str] = []

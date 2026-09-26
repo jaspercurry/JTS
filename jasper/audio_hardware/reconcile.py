@@ -51,6 +51,7 @@ from jasper.atomic_io import (
     locked_upsert_env_file,
 )
 from jasper.audio_hardware.config_txt import boot_config_path
+from jasper.audio_hardware.i2s_hat import i2s_hat_intent_path
 from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH, observe
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
@@ -59,7 +60,11 @@ from jasper.env_file import read_env_file
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
-from jasper.paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
+from jasper.paths import (
+    OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH,
+    camilla_statefile,
+    crossover_statefile,
+)
 from jasper.output_hardware import (
     ObservedOutput,
     degraded_marker_path,
@@ -201,9 +206,7 @@ class Pass:
         self.management_transport_marker = (
             self.degraded_marker.parent / "management-transport.ok"
         )
-        self.i2s_hat_intent_file = (
-            env.get("JASPER_I2S_HAT_INTENT_FILE") or "/var/lib/jasper/i2s_hat.env"
-        )
+        self.i2s_hat_intent_file = str(i2s_hat_intent_path())
         self.i2s_hat_reboot_required_path = (
             env.get("JASPER_I2S_HAT_REBOOT_REQUIRED_PATH")
             or "/run/jasper-output-hardware/i2s-hat-reboot-required"
@@ -216,14 +219,8 @@ class Pass:
         )
         self._topology: Any | None = None
         self._topology_read = False
-        self.camilla_statefile = (
-            env.get("JASPER_CAMILLA_STATEFILE")
-            or "/var/lib/camilladsp/outputd-statefile.yml"
-        )
-        self.camilla2_statefile = (
-            env.get("JASPER_CAMILLA2_STATEFILE")
-            or "/var/lib/camilladsp/crossover-statefile.yml"
-        )
+        self.camilla_statefile = str(camilla_statefile())
+        self.camilla2_statefile = str(crossover_statefile())
         self.camilla_conf_dir = env.get("JASPER_CAMILLA_CONF_DIR") or "/etc/camilladsp"
         self.ring_conf_d = env.get("JASPER_RING_CONF_D") or ""
 

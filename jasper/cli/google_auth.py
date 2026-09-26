@@ -16,11 +16,11 @@ overwrites the previous refresh token for that label.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import urllib.parse
 
 from .. import env_load
+from ..accounts import valid_account_name
 from ..config import Config
 from ..google_creds import (
     GOOGLE_SCOPES,
@@ -33,8 +33,6 @@ from ..google_creds import (
 
 _AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
-
-_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def main() -> None:
@@ -64,7 +62,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not _NAME_RE.fullmatch(args.name):
+    if not valid_account_name(args.name):
         print(
             "name must be letters/digits/_/- only.",
             file=sys.stderr,

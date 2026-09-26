@@ -436,7 +436,7 @@ _TABLED_WIZARD_FACTORIES = {
         "assistant_loudness_profile_path": str(_SCRATCH / "voice-loudness.json"),
         "loudness_seed_fn": lambda *a, **k: None,
     }),
-    "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(object()),
+    "wake_corpus_setup": lambda: wake_corpus_setup.make_handler_class(object()),
     "wake_setup": lambda: wake_setup._make_handler(
         {
             "state_path": str(_SCRATCH / "wake.env"),
@@ -469,13 +469,20 @@ _HEADER_CSRF_WIZARDS = frozenset({
 
 def _route_table_paths(source_path: Path) -> dict[str, list[str]]:
     """The paths a wizard's `_GET_ROUTES` / `_POST_ROUTES` dict literals
-    declare, wherever in the module they are assigned — AST, not import, so
-    a closure-local table counts the same as a module-level one."""
+    declare, annotated or not, wherever in the module they are assigned —
+    AST, not import, so a closure-local table counts the same as a
+    module-level one."""
     tables: dict[str, list[str]] = {"_GET_ROUTES": [], "_POST_ROUTES": []}
     for node in ast.walk(ast.parse(source_path.read_text())):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
             continue
-        for target in node.targets:
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for target in targets:
             if isinstance(target, ast.Name) and target.id in tables:
                 tables[target.id].extend(
                     key.value for key in node.value.keys

@@ -1470,15 +1470,6 @@ impl TestRingWriter {
         Ok(Self { map, write_seq })
     }
 
-    /// Free slots available for publish (`n_slots - (W - R)`).
-    pub fn free_slots(&self) -> u64 {
-        let r = self
-            .map
-            .header_atomic(layout::OFF_READ_SEQ)
-            .load(Ordering::Acquire);
-        (self.map.geometry.n_slots as u64).saturating_sub(self.write_seq.wrapping_sub(r))
-    }
-
     /// Publish one slot from `samples` (`samples.len()` == samples_per_slot).
     /// Returns `true` if published, `false` if the ring was full (no space).
     /// This is the non-blocking try-publish; the real writer blocks/polls or
@@ -1681,14 +1672,13 @@ mod tests {
         assert!(writer.try_publish_slot(&s));
         // The ring is now full: the third publish must fail.
         assert!(!writer.try_publish_slot(&s));
-        assert_eq!(writer.free_slots(), 0);
 
-        // Consume one, then a publish succeeds again (ping-pong).
+        // Consume one, then a publish succeeds again (ping-pong) and fills it.
         let mut out = vec![0i16; n];
         assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Filled);
         assert_eq!(reader.metrics().occupancy, 1);
         assert!(writer.try_publish_slot(&s));
-        assert_eq!(writer.free_slots(), 0);
+        assert!(!writer.try_publish_slot(&s));
         cleanup(&path);
     }
 

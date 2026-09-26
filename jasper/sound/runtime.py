@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import same_config_file, dsp_writer_lock
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CONFIG_DIR
+from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CONFIG_DIR, camilla_statefile
 from jasper.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
 from jasper.sound.profile import (
@@ -123,9 +123,7 @@ class StatefileCamillaController:
     """
 
     def __init__(self, statefile_path: str | Path | None = None) -> None:
-        from jasper.active_speaker.environment import camilla_statefile_path
-
-        self.statefile_path = camilla_statefile_path(statefile_path)
+        self.statefile_path = camilla_statefile(statefile_path)
 
     async def get_config_file_path(
         self, *, best_effort: bool = False

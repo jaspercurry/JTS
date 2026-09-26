@@ -314,17 +314,6 @@ class DacProfile:
                 "supports_active_outputd_lane"
             )
 
-    def is_coherent_single(self) -> bool:
-        """True when this is one device on a single coherent clock domain.
-
-        The shape that takes the simple single-PCM transport: one ALSA device,
-        one clock, no inter-device drift correction. Folds the
-        ``kind == "single" and coherent_clock_domain`` check that active-route
-        resolution would otherwise inline.
-        """
-
-        return self.kind == "single" and self.coherent_clock_domain
-
 
 APPLE_HEADPHONE_CONTROL = MixerControl(
     name="Headphone",

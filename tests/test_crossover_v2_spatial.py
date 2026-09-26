@@ -737,7 +737,7 @@ def test_the_storage_seam_names_the_take_the_record_names():
 
         def publish_json_artifact(self, path, payload):
             minted.append(path)
-            return SimpleNamespace(fingerprint="fp")
+            return SimpleNamespace(fingerprint="fp", byte_size=0)
 
         def identify_artifact(self, path):
             return SimpleNamespace(fingerprint="fp")

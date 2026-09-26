@@ -62,6 +62,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ..atomic_io import read_json_mapping
+from ..json_fields import as_float
 from ..net import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
@@ -125,13 +126,6 @@ _SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
 _SCAN_REPAIR_UNIT = "jasper-wifi-scan-repair.service"
 _SCAN_REPAIR_RETRY_DELAYS = (2.0, 3.0)
 _NM_AUTOCONNECT_RETRIES_FOREVER = "0"
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 _SCAN_REPAIR_ROOT_TIMEOUT = 20.0
@@ -671,7 +665,7 @@ def _root_scan_repair_result(iface: str) -> dict[str, Any]:
     result["reason"] = "root_unit_started"
     state = _read_scan_repair_state()
     state_iface = state.get("iface")
-    last_attempt_at = _float_or_none(state.get("lastAttemptAt")) or 0.0
+    last_attempt_at = as_float(state.get("lastAttemptAt")) or 0.0
     if state_iface == iface and last_attempt_at >= started_at - 1.0:
         result["attempted"] = True
         result["ack"] = bool(state.get("lastAck"))
@@ -680,7 +674,7 @@ def _root_scan_repair_result(iface: str) -> dict[str, Any]:
         if state.get("error"):
             result["error"] = str(state["error"])
     elif state.get("nextAllowedAt") is not None:
-        next_allowed_at = _float_or_none(state.get("nextAllowedAt"))
+        next_allowed_at = as_float(state.get("nextAllowedAt"))
         remaining = (
             max(0.0, next_allowed_at - time.time())
             if next_allowed_at is not None

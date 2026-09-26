@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""`_state_issues`: the incident-row builder `AudioHealthSampler._tick` and
+"""`state_issues`: the incident-row builder `AudioHealthSampler._tick` and
 ADR-0178's parked-transport tests feed with the same signal-path/service-state
 facts `compose_audio_health` already classified.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.control.audio_state_issues import _state_issues
+from jasper.control.audio_state_issues import state_issues
 
 from .audio_health_fixtures import _CAMILLA_CLEAN_STOP, _airplay, _compose, _outputd
 
@@ -36,7 +36,7 @@ def test_a_deaf_content_source_is_an_issue_a_healthy_one_is_not() -> None:
     # A red headline with no incident row leaves `current_incident` None, so
     # the fault never enters history and never records a recovery. Every other
     # issue-status path code raises one; this is where it comes from.
-    rows = _state_issues(
+    rows = state_issues(
         _airplay(),
         _outputd(content_deaf=True),
         deaf["signal_path"],
@@ -67,7 +67,7 @@ def test_household_off_but_active_is_reported_as_drift() -> None:
     spotify = next(source for source in health["sources"] if source["id"] == "spotify")
     assert spotify["state"] == "unavailable"
 
-    issues = _state_issues(
+    issues = state_issues(
         _airplay(),
         _outputd(),
         {"status": "idle", "headline": "No source is playing", "detail": ""},
@@ -105,7 +105,7 @@ def test_usb_off_ignores_always_on_management_gadget() -> None:
     assert usb["state"] == "off"
     assert usb["status"] == "idle"
 
-    issues = _state_issues(
+    issues = state_issues(
         _airplay(),
         _outputd(),
         {"status": "idle", "headline": "No source is playing", "detail": ""},
@@ -138,7 +138,7 @@ def test_usb_off_with_active_audio_service_is_reported_as_drift() -> None:
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
 
-    issues = _state_issues(
+    issues = state_issues(
         _airplay(),
         _outputd(),
         {"status": "idle", "headline": "No source is playing", "detail": ""},
@@ -174,7 +174,7 @@ def test_usb_on_still_requires_its_management_gadget() -> None:
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
 
-    issues = _state_issues(
+    issues = state_issues(
         _airplay(),
         _outputd(),
         {"status": "idle", "headline": "No source is playing", "detail": ""},
@@ -215,7 +215,7 @@ def test_required_pairing_agent_failure_degrades_bluetooth() -> None:
     assert bluetooth["status"] == "issue"
     assert any(
         issue["key"] == "bluetooth.service.bt-agent.service"
-        for issue in _state_issues(
+        for issue in state_issues(
             _airplay(),
             _outputd(),
             {"status": "idle", "headline": "No source is playing", "detail": ""},
@@ -256,7 +256,7 @@ def _camilla_issues(camilla_state: dict | None, *, warmup: bool = False) -> list
     service_states = (
         None if camilla_state is None else {"jasper-camilla.service": camilla_state}
     )
-    issues = _state_issues(
+    issues = state_issues(
         _airplay(warmup=warmup),
         _outputd(),
         {"status": "idle", "headline": "No source is playing", "detail": ""},

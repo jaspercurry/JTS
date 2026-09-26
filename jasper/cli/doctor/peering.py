@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from ...env_load import parse_bool_value, read_env_file_state
+from ...env_load import PEERING_ENV_PATH, parse_bool_value, read_env_file_state
 from ...identity.reader import PEER_ID_FILE
 from ._registry import doctor_check
 from ._shared import CheckResult, run
@@ -30,8 +30,7 @@ def check_peering_mode() -> CheckResult:
     and ON (configured) are `ok` — the warn cases catch broken env files
     only."""
     label = "peering: mode"
-    p = Path("/var/lib/jasper/peering.env")
-    env = read_env_file_state(str(p))
+    env = read_env_file_state(PEERING_ENV_PATH)
     if env.status == "missing":
         return CheckResult(
             label, "ok",
@@ -40,7 +39,7 @@ def check_peering_mode() -> CheckResult:
         )
     if env.status == "unreadable":
         return CheckResult(
-            label, "warn", f"can't read {p}: {env.error}",
+            label, "warn", f"can't read {PEERING_ENV_PATH}: {env.error}",
             reason=REASON_PEERING_ENV_UNREADABLE,
         )
     raw = env.values.get("JASPER_PEERING", "")
@@ -56,7 +55,7 @@ def check_peering_mode() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"unknown JASPER_PEERING={raw!r}; defaults to off. "
-        "Edit /var/lib/jasper/peering.env or use /sound/pair/.",
+        f"Edit {PEERING_ENV_PATH} or use /sound/pair/.",
         reason=REASON_PEERING_MODE_UNKNOWN,
     )
 

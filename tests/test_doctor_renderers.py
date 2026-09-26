@@ -682,7 +682,7 @@ def test_probe_verdict_and_check_status(
         "env", "LC_ALL=C",
         "timeout", renderers._PROBE_TIMEOUT_SEC,
         "aplay", "-q",
-        "-s", renderers._PROBE_FRAMES,
+        "-s", renderers.PROBE_FRAMES,
         "-D", device,
         "-c", "2", "-r", "48000", "-f", "S16_LE",
         "/dev/zero",
@@ -1433,7 +1433,7 @@ def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Spotify Connect device — exception text must route through
-# `_shared._exception_detail` (redact + length-cap), never bare `{e}`.
+# `_shared.exception_detail` (redact + length-cap), never bare `{e}`.
 # ---------------------------------------------------------------------------
 
 

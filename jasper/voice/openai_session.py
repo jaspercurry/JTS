@@ -414,10 +414,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         # whatever the cap is") stays correct.
         session_max_sec: float = 0.0,
         proactive_buffer_sec: float = 0.0,
-        # Production: leave None → supervisor reconnects FOREVER with
-        # the shared exponential-with-jitter schedule. Tests pass a
-        # bounded tuple to make exhaustion observable.
-        backoff_schedule: tuple[float, ...] | None = None,
         # Test seam: replace the SDK's connect call. The factory must be
         # callable as ``factory(model: str)`` and return an async context
         # manager whose ``__aenter__`` yields a connection-like object
@@ -437,7 +433,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             model=model,
             voice=voice,
             context_reset_sec=context_reset_sec,
-            backoff_schedule=backoff_schedule,
             sleep=sleep,
             nudge_clock=clock,
         )

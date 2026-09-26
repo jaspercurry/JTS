@@ -7,13 +7,13 @@ incident store.
 
 A leaf on purpose: ``audio_incidents`` must not import the composer, so the
 two ends of one dashboard payload read its untyped daemon JSON through this
-module instead of through each other. Not
-:mod:`jasper.json_fields` — that one raises on a bad field and coerces to
-``float``; these return ``None`` and keep an ``int`` an ``int``, which is what
-a dashboard field that may simply be absent needs. ``_read_text_file`` and
-``_read_int_file`` apply the same rule to a small /proc or /sys file.
+module instead of through each other. A field that may simply be absent reads
+as ``None`` rather than raising, and a number stays an ``int`` where
+:func:`jasper.json_fields.finite_float` would widen it to ``float``.
+``read_text_file`` and ``read_int_file`` apply the same rule to a small /proc
+or /sys file.
 
-Also the shared home for ``_MONITOR_ERRORS``, the fail-soft exception tuple
+Also the shared home for ``MONITOR_ERRORS``, the fail-soft exception tuple
 every observability probe across the audio-health split degrades on, and for
 ``RESTART_REMEDY``/``DIAGNOSTICS_REMEDY``, the two household remedy sentences
 several leaves splice into their own text -- for the same downward-only
@@ -23,15 +23,14 @@ the constant without importing each other.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
-from jasper.json_fields import as_mapping
+from jasper.json_fields import as_mapping, finite_float
 
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
-_MONITOR_ERRORS = (
+MONITOR_ERRORS = (
     AttributeError,
     KeyError,
     OSError,
@@ -49,42 +48,22 @@ RESTART_REMEDY = "Try Restart audio."
 DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 
-def _finite_number(value: Any) -> int | float | None:
-    """One real number out of untyped JSON, unwidened, or ``None``.
-
-    ``bool`` is an ``int`` and a numeric string is something ``float``
-    accepts, so both are rejected; an arbitrary-precision ``int`` is legal
-    JSON and raises ``OverflowError`` rather than returning ``inf``.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (OverflowError, ValueError):
-        return None
-    if number != number or number in {float("inf"), float("-inf")}:
-        return None
-    return value
+def finite_number(value: Any) -> int | float | None:
+    """:func:`~jasper.json_fields.finite_float`'s verdict on ``value``,
+    returning ``value`` itself so an ``int`` stays an ``int``."""
+    return value if finite_float(value) is not None else None
 
 
 mapping = as_mapping
 
 
-def _as_int(value: Any, default: int = 0) -> int:
+def as_int(value: Any, default: int = 0) -> int:
     """``value`` as an ``int``, or ``default`` when it is not one."""
-    parsed = _as_int_or_none(value)
+    parsed = as_int_or_none(value)
     return default if parsed is None else parsed
 
 
-def _as_float(value: Any) -> float | None:
-    """``value`` as a ``float``, or ``None`` when it is not one."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int_or_none(value: Any) -> int | None:
+def as_int_or_none(value: Any) -> int | None:
     """``value`` as an ``int``, or ``None`` when it is not one — ``0`` would
     misread as "confirmed zero" rather than "couldn't tell".
 
@@ -95,47 +74,24 @@ def _as_int_or_none(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
-def _nonneg_delta(curr: Any, prev: Any) -> int | None:
+def nonneg_delta(curr: Any, prev: Any) -> int | None:
     """``curr - prev`` when both are ``int`` and non-decreasing, else ``None``."""
     if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
         return None
     return curr - prev
 
 
-def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+def nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
     """A monotonic counter's per-second delta, or ``None`` on wrap/reset/absence."""
-    delta = _nonneg_delta(curr, prev)
+    delta = nonneg_delta(curr, prev)
     return delta / dt if delta is not None else None
 
 
-def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
-    """Sum of the named counters, or ``None`` unless every one of them is present."""
-    total = 0
-    for key in keys:
-        value = _as_int_or_none(block.get(key))
-        if value is None:
-            return None
-        total += value
-    return total
-
-
-def _nonnegative_counter(value: Any) -> int | None:
-    """A monotonic counter's current reading, or ``None`` when unreadable.
-
-    A negative value cannot be a counter (they only go up between resets);
-    a bare ``float``/``str`` is rejected rather than coerced, since a counter
-    field that is not already an ``int`` in the daemon's JSON is corrupt.
-    """
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
-def _read_int_file(path: str) -> int | None:
+def read_int_file(path: str) -> int | None:
     try:
         with open(path, encoding="utf-8") as f:
             return int(f.read().strip())
@@ -143,7 +99,7 @@ def _read_int_file(path: str) -> int | None:
         return None
 
 
-def _read_text_file(path: str) -> str | None:
+def read_text_file(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8") as f:
             return f.read().strip() or None
@@ -151,12 +107,12 @@ def _read_text_file(path: str) -> str | None:
         return None
 
 
-def _detail(label: str, value: Any) -> dict[str, str]:
+def detail_row(label: str, value: Any) -> dict[str, str]:
     """One dashboard detail row: a fixed label paired with a stringified value."""
     return {"label": label, "value": str(value)}
 
 
-def _duration_label(seconds: float) -> str:
+def duration_label(seconds: float) -> str:
     """A duration as the dashboard prints it, coarsening as it grows."""
     seconds = max(0.0, seconds)
     if seconds < 1.0:

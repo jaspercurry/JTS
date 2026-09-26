@@ -18,12 +18,13 @@ import threading
 from typing import Any
 
 from ...log_event import log_event
+from ...multiroom import config as grouping_config
+from ...multiroom.effective_role import effective_follower_leader_addr
 from ...platform.control_client import (
     PEER_RESPONSE_MAX_BYTES,
     ControlError,
     request as control_request,
 )
-from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
 from ..supervisor_runtime import (
     run_supervisor_loop,
     signal_on_control_loop,
@@ -52,10 +53,8 @@ _PEERING_RETRY_JITTER_SEC = 3.0
 async def _run_peering(shutdown: asyncio.Event) -> None:
     """Own the peering daemon until `shutdown` is set by stop_peering_daemon."""
     global _peering_task
-    # lazy: import cost — these load on the control loop's thread rather
-    # than on jasper-control's startup import path.
-    from ...peering import load_config
-    from ...peering.daemon import PeeringDaemon
+    from ...peering import load_config  # lazy: import cost off the startup path; test patch boundary (tests/test_control_server.py)
+    from ...peering.daemon import PeeringDaemon  # lazy: import cost off the startup path; test patch boundary (tests/test_control_server.py)
 
     daemon = PeeringDaemon(load_config())
     started = False
@@ -141,14 +140,6 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # second hop (see PeeringRoutes._maybe_forward_pair_action_to_leader's loop
 # breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_VOICE_UNIT = JASPER_VOICE_SERVICE
-_VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
-    "activating",
-    "deactivating",
-    "reloading",
-})
-# Bounds the /mic request this read sits on; a wedged systemd must not hold it.
-_VOICE_UNIT_SHOW_TIMEOUT_SECONDS = 1.0
 
 # Patch seam scoping a test double to the forward's ONE network call;
 # patching the shared client module-wide would also intercept the test
@@ -157,67 +148,14 @@ _pair_request = control_request
 _PAIR_FORWARD_TIMEOUT_SECONDS = 2.5
 
 
-def _pair_follower_leader_addr() -> str | None:
+def pair_follower_leader_addr() -> str | None:
     """The leader's handle when THIS speaker is an active bonded follower,
     else None. One tiny env-file read per call (multiroom.config.load_config
     — never the runtime derive with its systemctl/RPC probes: this gates
     every /volume request). The predicate is the shared effective-role
     reader, so a refused bond that safely landed solo does not forward local
     controls to the requested leader."""
-    from ...multiroom.config import load_config
-    from ...multiroom.effective_role import effective_follower_leader_addr
-
-    return effective_follower_leader_addr(load_config())
-
-
-def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
-    return {
-        "status": "parked",
-        "reason": "bonded_follower",
-        "available": False,
-        "muted": True,
-        "pair_leader": leader,
-        "message": "Paired — the assistant listens on the pair leader",
-    }
-
-
-def _voice_starting_mic_payload() -> dict[str, Any] | None:
-    """Return a first-class /mic payload while jasper-voice is in flight.
-
-    The voice daemon creates its UDS socket late in startup, so during a
-    restart/provider switch/unbond a missing socket means "not ready yet",
-    not "offline". The distinction is drawn here so the landing page stays a
-    dumb renderer of /mic state.
-    """
-    states = read_unit_states((_VOICE_UNIT,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS)
-    record = (states or {}).get(_VOICE_UNIT) or {}
-    active_state = str(record.get("active_state") or "")
-    if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
-        return None
-    return {
-        "status": "starting",
-        "reason": "voice_daemon_starting",
-        "available": False,
-        "muted": True,
-        "message": "Voice control is restarting",
-        "unit": {
-            "name": _VOICE_UNIT,
-            "active_state": active_state,
-            "sub_state": record.get("sub_state"),
-            "result": record.get("result"),
-        },
-    }
-
-
-def _voice_offline_mic_payload(error: str) -> dict[str, Any]:
-    return {
-        "status": "offline",
-        "reason": "voice_daemon_unreachable",
-        "available": False,
-        "muted": True,
-        "message": "Voice control offline",
-        "error": error,
-    }
+    return effective_follower_leader_addr(grouping_config.load_config())
 
 
 class PeeringRoutes(ControlHandlerMixin):
@@ -237,7 +175,7 @@ class PeeringRoutes(ControlHandlerMixin):
         env-file parse (load_config), NOT the heavy runtime derive — this
         sits on every volume call.
         """
-        leader = _pair_follower_leader_addr()
+        leader = pair_follower_leader_addr()
         if leader is None:
             return False
         # Loop breaker: a forwarded request never re-forwards. Two

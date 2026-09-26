@@ -41,12 +41,12 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
 from jasper.atomic_io import atomic_write_text, locked_update_env_file
+from jasper.env_load import WAKE_MODEL_ENV_PATH
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -55,11 +55,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Persisted at /var/lib/jasper/wake_model.env. The systemd unit for
-# jasper-voice sources this AFTER /etc/jasper/jasper.env, so wizard-
-# written values win over operator-managed defaults — same pattern as
-# voice_provider.env and spotify_credentials.env.
-WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
+# The systemd unit for jasper-voice sources this AFTER /etc/jasper/jasper.env,
+# so wizard-written values win over operator-managed defaults — same pattern
+# as voice_provider.env and spotify_credentials.env.
+WAKE_MODEL_FILE = WAKE_MODEL_ENV_PATH
 #: Also the header of jasper-control's sensitivity-slider write
 #: (JASPER_WAKE_THRESHOLD), which the /assistant/wake/ page drives too.
 WAKE_MODEL_ENV_OWNER = "jasper.wake_models; change it at /assistant/wake/ or with jasper-settings"
@@ -498,17 +497,12 @@ def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
     ]
 
 
-def seed_default_wake_model_env(
-    *,
-    log: Callable[[str], None] | None = print,
-) -> None:
+def seed_default_wake_model_env() -> None:
     if os.path.exists(WAKE_MODEL_FILE):
         return
     entry = default()
     if not os.path.exists(entry.model):
-        if log is not None:
-            log(f"  skipping wake_model.env seed: default file missing ({entry.model})")
+        print(f"  skipping wake_model.env seed: default file missing ({entry.model})")
         return
     atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
-    if log is not None:
-        log(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
+    print(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")

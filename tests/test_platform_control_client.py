@@ -26,7 +26,6 @@ from jasper.platform import control_client as client
 CLIENT_PATHS = [
     "/state",
     "/system/snapshot",
-    "/healthz",
     "/volume",
     "/volume/adjust",
     "/volume/set",
@@ -55,9 +54,7 @@ class _Echo(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/healthz":
-            self._send({"ok": True})
-        elif self.path == "/state":
+        if self.path == "/state":
             self._send({"voice": {"provider": "test"}})
         else:
             self._send({"error": "nope"}, status=404)
@@ -81,12 +78,6 @@ def server():
 def test_get_state_parses_json(server):
     state = client.get_state(base_url=server)
     assert state["voice"]["provider"] == "test"
-
-
-def test_healthz_true_then_false(server):
-    assert client.healthz(base_url=server) is True
-    # Point at a closed port → ControlError swallowed → False (never raises).
-    assert client.healthz(base_url="http://127.0.0.1:1", timeout=0.2) is False
 
 
 def test_post_sends_json_body(server):
@@ -243,7 +234,7 @@ def test_guarded_server_accepts_client_built_from_bind_address():
     try:
         port = srv.server_address[1]
         base = f"http://{client._connect_host('0.0.0.0')}:{port}"
-        resp = client.get("/healthz", base_url=base)
+        resp = client.get("/state", base_url=base)
         assert resp.status == 200, resp.body
     finally:
         srv.shutdown()

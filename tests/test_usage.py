@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -22,7 +23,7 @@ from jasper.usage import (
     USAGE_RETENTION_DAYS,
     _CONNECTION_INTERVALS_TABLE_DDL,
     _SESSIONS_TABLE_DDL,
-    _UNRECORDED_SESSION,
+    UNRECORDED_SESSION,
     Pricing,
     SpendCap,
     UsageStore,
@@ -38,6 +39,25 @@ from jasper.usage_writer import VoiceUsageStore
 
 from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _close_connections(monkeypatch):
+    """Close every connection a test opened: a dropped sqlite3.Connection is
+    self-referential, so its descriptor otherwise waits for a GC pass."""
+    opened: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def _tracked(*args, **kwargs):
+        opened.append(conn := connect(*args, **kwargs))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _tracked)
+    yield
+    for conn in opened:
+        # The usage writer thread closes its own; close() refuses cross-thread.
+        with contextlib.suppress(sqlite3.ProgrammingError):
+            conn.close()
 
 
 def test_open_and_close_session_records_cost(tmp_path: Path):
@@ -62,7 +82,7 @@ def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
     Reproduces the 2026-06-19 outage: usage.db ends up unwritable by
     jasper-voice, so the per-turn INSERT raises "attempt to write a
     readonly database". open_session must swallow it, return the
-    _UNRECORDED_SESSION sentinel, and let the caller serve the turn;
+    UNRECORDED_SESSION sentinel, and let the caller serve the turn;
     close_session must no-op on that sentinel and also survive a failed
     UPDATE. Neither may raise — a raise here aborted the turn and made
     the daemon play the (false) cant_connect cue."""
@@ -78,7 +98,7 @@ def test_session_writes_fail_soft_on_readonly_db(tmp_path: Path, caplog):
 
     with caplog.at_level("WARNING"):
         sid = store.open_session(provider="gemini")  # must not raise
-    assert sid == _UNRECORDED_SESSION
+    assert sid == UNRECORDED_SESSION
     assert any("open_session write failed" in r.message for r in caplog.records)
 
     # close_session on the sentinel is a no-op that still returns a cost
@@ -110,7 +130,7 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     )
 
     with caplog.at_level("WARNING"):
-        assert store.open_session() == _UNRECORDED_SESSION
+        assert store.open_session() == UNRECORDED_SESSION
     assert store.write_degraded is True
     assert len(event_records(caplog, "usage.write_degraded")) == 1, (
         "the ok->degraded transition emits the structured event exactly once"
@@ -119,7 +139,7 @@ def test_write_health_tracks_degraded_and_recovers(tmp_path: Path, caplog):
     # A further failure bumps the counter but must NOT re-emit (no journal spam).
     caplog.clear()
     with caplog.at_level("WARNING"):
-        assert store.open_session() == _UNRECORDED_SESSION
+        assert store.open_session() == UNRECORDED_SESSION
     assert store.write_degraded is True
     assert not event_records(caplog, "usage.write_degraded"), (
         "a persistent failure must not re-emit the degraded event"
@@ -380,7 +400,7 @@ def test_read_only_store_reads_existing_spend(tmp_path: Path):
     """A read-only reopen of a DDL-only DB (created by another surface, no
     rows written yet) must resolve spend without error once rows exist."""
     db = tmp_path / "usage.db"
-    UsageStore(str(db))._conn.close()
+    UsageStore(str(db)).close()
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
@@ -867,7 +887,7 @@ def test_read_only_cannot_write(tmp_path: Path):
     # reject the write, so a reader can never create/mutate usage.db (the
     # 2026-06-16 protection): the call returns the unrecorded sentinel and
     # no session row is persisted.
-    assert ro.open_session(provider="openai") == _UNRECORDED_SESSION
+    assert ro.open_session(provider="openai") == UNRECORDED_SESSION
     assert ro.session_count_today_utc() == 0
 
 
@@ -915,7 +935,7 @@ def _record_cost(db_path: str, cost_usd: float, *, provider: str = "openai") -> 
         "UPDATE sessions SET ended_at = ?, cost_usd = ? WHERE id = ?",
         (datetime.now(timezone.utc).isoformat(), cost_usd, sid),
     )
-    store._conn.close()
+    store.close()
 
 
 def test_tuning_db_is_sibling_of_usage_db():
@@ -1104,7 +1124,7 @@ async def test_buffered_usage_keeps_receipt_time_cost_and_attribution(tmp_path, 
     try:
         assert reader.spend_last_24h_usd() == pytest.approx(total)
     finally:
-        reader._conn.close()
+        reader.close()
 
 
 async def test_buffered_queue_reserves_closes_and_discloses_loss(tmp_path, monkeypatch, caplog):
@@ -1204,7 +1224,7 @@ async def test_buffered_start_recovers_history_without_rebilling_crash_interval(
     _record_cost(db, 0.25)
     disk = UsageStore(db)
     disk.record_billable_activity_open("grok", 3600)
-    disk._conn.close()
+    disk.close()
     lock = sqlite3.connect(db, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
     store = await VoiceUsageStore.start(db)
@@ -1254,7 +1274,7 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
             with pytest.raises(RuntimeError):
                 await wl._turns.begin_inner(pre_roll=False)
             wl._connection.acquire_turn.assert_awaited_once()
-            assert wl._turns.session_id != _UNRECORDED_SESSION
+            assert wl._turns.session_id != UNRECORDED_SESSION
             store.close_session(wl._turns.session_id, 0, 0)
             await tick
             assert time.monotonic() - began < 0.1
@@ -1265,7 +1285,7 @@ async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
 
 async def test_buffered_start_cancellation_stops_its_worker(tmp_path, monkeypatch):
     db = str(tmp_path / "usage.db")
-    UsageStore(db)._conn.close()
+    UsageStore(db).close()
     instances = []
     original_init = VoiceUsageStore.__init__
 
@@ -1298,7 +1318,7 @@ async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_pa
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
             [(now.isoformat(), 0.001)] * 1000,
         )
-    seed._conn.close()
+    seed.close()
     first = await VoiceUsageStore.start(db)
     second = await VoiceUsageStore.start(db)
     try:
@@ -1341,7 +1361,7 @@ async def test_buffered_snapshots_follow_day_month_and_rolling_windows(tmp_path,
     monkeypatch.setattr("jasper.usage.datetime", Clock)
     monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
     db = str(tmp_path / "usage.db")
-    UsageStore(db)._conn.close()
+    UsageStore(db).close()
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
@@ -1371,7 +1391,7 @@ async def test_unreadable_companion_cannot_fill_the_voice_queue(tmp_path, monkey
     try:
         for _ in range(6):
             sid = store.open_session("openai")
-            assert sid != _UNRECORDED_SESSION
+            assert sid != UNRECORDED_SESSION
             total += store.close_session(sid, 1000, 1000)
             await _wait_usage(lambda: not store._pending)
         assert store.write_degraded

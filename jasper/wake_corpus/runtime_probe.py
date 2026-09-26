@@ -30,6 +30,7 @@ from jasper.aec_sweep import (
 from jasper.audio_profile_state import (
     AEC_MODE_ENV,
     AEC_MODE_FILE_ENV,
+    DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -57,7 +58,7 @@ from jasper.mics.xvf3800 import (
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
 from jasper.env_file import read_env_file
-from jasper.env_load import parse_bool_value
+from jasper.env_load import BASE_ENV_PATH, parse_bool_value
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.service_units import AEC_BRIDGE_SERVICE
 from jasper.systemd_probe import unit_query, unit_state
@@ -73,15 +74,6 @@ CORPUS_PROFILES = (PROFILE_STANDARD, PROFILE_CHIP_AEC_COMPARISON)
 # Leg / profile vocabulary
 # ---------------------------------------------------------------------------
 
-# CONDITIONS / DISTANCES (defined in the sibling recording_backend.py,
-# which imports them from jasper.wake_conditions) are the operator-labelled
-# input domains — the shared single source of truth so the corpus, the
-# runtime and the wake telemetry agree on one taxonomy. The wizard
-# validates strictly against them to reject typos;
-# captured files land in aec_<leg>_<condition>/ for the upstream
-# extract/score/review pipeline, so do NOT rename a condition without an
-# alias (see wake_conditions' stability contract). "ambient" is the
-# realistic-home floor (AC, fridge; no music we control).
 # Legs the recorder knows about. "raw0" is the truly-raw mic 0 leg
 # (chip channel 2 — no chip DSP), opt-in per session via the
 # include_raw_mic_0 flag. The USB/reference legs are corpus-only
@@ -156,11 +148,9 @@ LEG_LABELS = {
 # The web service is intentionally sandboxed away from
 # /etc/jasper/jasper.env, so operator-driven corpus experiment flags live
 # in /var/lib/jasper like the other wizard-owned env files.
-SYSTEM_ENV_PATH = Path(os.environ.get(
-    "JASPER_SYSTEM_ENV_FILE", "/etc/jasper/jasper.env",
-))
+SYSTEM_ENV_PATH = Path(BASE_ENV_PATH)
 AEC_MODE_PATH = Path(os.environ.get(
-    AEC_MODE_FILE_ENV, "/var/lib/jasper/aec_mode.env",
+    AEC_MODE_FILE_ENV, DEFAULT_AEC_MODE_PATH,
 ))
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",

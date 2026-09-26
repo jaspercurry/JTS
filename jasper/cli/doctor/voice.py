@@ -12,7 +12,6 @@ from pathlib import Path
 from ...bus import parse_bus_stops
 from ...config import Config
 from ...env_load import parse_bool_value
-from ...secret_redaction import redact_secrets
 from ...transit import enabled_pack_ids
 from ...transit._mta_stations import stations_by_id
 from ...voice.catalog import (
@@ -27,10 +26,10 @@ from ...voice.provider_state import (
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    _EXCEPTION_DETAIL_LIMIT,
     CheckResult,
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
-    _exception_detail,
+    exception_detail,
+    redacted_detail,
     run,
 )
 
@@ -325,11 +324,7 @@ def check_provider_importable() -> CheckResult:
         # The child died before it could report (import-time crash, signal).
         crash = (proc.stderr or "").strip().splitlines()
         failure = crash[-1] if crash else "unknown import failure"
-    # Arbitrary text from a child's traceback goes through the doctor's
-    # redaction + length policy, not straight into the report.
-    failure = redact_secrets(failure)
-    if len(failure) > _EXCEPTION_DETAIL_LIMIT:
-        failure = failure[:_EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    failure = redacted_detail(failure)
     return CheckResult(
         "voice provider imports", "fail",
         f"{state.provider} is the active provider but its code will not "
@@ -839,7 +834,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
-            f"probe raised: {_exception_detail(e, literals=(cfg.ha_token,))}",
+            f"probe raised: {exception_detail(e, literals=(cfg.ha_token,))}",
             reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
         )
     if not result.get("connected"):

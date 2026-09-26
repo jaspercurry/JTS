@@ -30,10 +30,6 @@ from jasper.fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
-from jasper.install_profile import (
-    install_profile_allows_local_sources,
-    read_install_profile,
-)
 from jasper.local_sources import local_source_lifecycle
 from jasper.local_sources.markers import (
     SHARED_LABEL,
@@ -200,21 +196,6 @@ def _unit_failed(unit: str) -> bool | None:
     return _query_unit_state("is-failed", unit)
 
 
-def _local_sources_allowed() -> bool:
-    try:
-        if not install_profile_allows_local_sources(read_install_profile()):
-            return False
-        return local_sources_allowed()[0]
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "source.reconcile.role_probe_failed",
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return False
-
-
 def _usb_direct_sample():
     return extract_direct_sample(read_fanin_status(timeout_sec=USB_DIRECT_PROBE_TIMEOUT_SEC))
 
@@ -306,7 +287,7 @@ def default_reconcile_ops() -> ReconcileOps:
         unit_enabled=_unit_enabled,
         unit_active=_unit_active,
         unit_failed=_unit_failed,
-        local_sources_allowed=_local_sources_allowed,
+        local_sources_allowed=lambda: local_sources_allowed()[0],
         usb_port_role=current_usb_data_role,
         usb_audio_present=uac2_card_present,
         usb_direct_present=_usb_direct_present,

@@ -37,6 +37,9 @@ except ModuleNotFoundError as exc:
         raise
     from scripts._wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 
+# Importable only after _wake_pipeline_common has put the repo root on sys.path.
+from wake_training import feature_bank as fb
+
 try:
     import numpy as np
 except ModuleNotFoundError:  # pragma: no cover - exercised by CLI help paths.
@@ -60,36 +63,6 @@ def _require_numpy() -> None:
             "numpy is required to prepare wake training workdirs. Run inside "
             "the JTS environment or install numpy in the selected Python."
         )
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} does not contain a JSON object")
-    return data
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with open(path) as f:
-        for lineno, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            data = json.loads(line)
-            if not isinstance(data, dict):
-                raise ValueError(f"{path}:{lineno} does not contain a JSON object")
-            data["_manifest_line"] = lineno
-            rows.append(data)
-    return rows
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with open(path, "w") as f:
-        for row in rows:
-            clean = {k: v for k, v in row.items() if not k.startswith("_")}
-            f.write(json.dumps(clean, sort_keys=True) + "\n")
 
 
 def _default_output_dir(feature_bank_dir: Path) -> Path:
@@ -251,14 +224,6 @@ def _training_manifest_rows(
     return out
 
 
-def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for row in rows:
-        value = str(row.get(key) or "")
-        counts[value] = counts.get(value, 0) + 1
-    return dict(sorted(counts.items()))
-
-
 def _write_readme(path: Path, *, target_phrase: str, model_name: str) -> None:
     path.write_text(
         "\n".join([
@@ -309,7 +274,7 @@ def prepare_training_workdir(
     if not manifest_path.is_file():
         raise ValueError(f"{manifest_path} not found")
 
-    feature_bank = _read_json(summary_path)
+    feature_bank = fb.read_json(summary_path)
     if feature_bank.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"unsupported feature_bank.json schema_version: "
@@ -331,7 +296,7 @@ def prepare_training_workdir(
     train_features = _load_feature_array(train_source_path, split=SOURCE_TRAIN_SPLIT)
     eval_features = _load_feature_array(eval_source_path, split=SOURCE_EVAL_SPLIT)
 
-    manifest_rows = _read_jsonl(manifest_path)
+    manifest_rows = fb.read_jsonl(manifest_path)
     train_rows = _manifest_rows_by_split(manifest_rows, SOURCE_TRAIN_SPLIT)
     eval_rows = _manifest_rows_by_split(manifest_rows, SOURCE_EVAL_SPLIT)
     _validate_manifest_matches_features(
@@ -381,7 +346,7 @@ def prepare_training_workdir(
         repeat_train=False,
     )
     real_positive_manifest = train_manifest + test_manifest
-    _write_jsonl(output_dir / "real_positive_manifest.jsonl", real_positive_manifest)
+    fb.write_jsonl(output_dir / "real_positive_manifest.jsonl", real_positive_manifest)
 
     config_fragment = {
         "schema_version": SCHEMA_VERSION,
@@ -448,10 +413,10 @@ def prepare_training_workdir(
             "trainer_train_rows": int(weighted_train_features.shape[0]),
             "trainer_test_rows": int(eval_features.shape[0]),
             "manifest_rows": len(real_positive_manifest),
-            "source_by_profile": _count_by(train_rows + eval_rows, "profile"),
-            "source_by_leg": _count_by(train_rows + eval_rows, "leg"),
-            "source_by_condition": _count_by(train_rows + eval_rows, "condition"),
-            "source_by_distance": _count_by(train_rows + eval_rows, "distance"),
+            "source_by_profile": fb.count_by(train_rows + eval_rows, "profile"),
+            "source_by_leg": fb.count_by(train_rows + eval_rows, "leg"),
+            "source_by_condition": fb.count_by(train_rows + eval_rows, "condition"),
+            "source_by_distance": fb.count_by(train_rows + eval_rows, "distance"),
         },
         "artifacts": {
             "summary": "training_workdir.json",

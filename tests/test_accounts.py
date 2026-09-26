@@ -12,6 +12,8 @@ import tempfile
 import types
 from pathlib import Path
 
+import pytest
+
 from jasper.accounts import (
     Account,
     Registry,
@@ -19,6 +21,7 @@ from jasper.accounts import (
     build_cache_handler,
     default_cache_path_for,
     maybe_migrate_legacy,
+    valid_account_name,
 )
 
 
@@ -94,15 +97,40 @@ def test_registry_load_tolerates_legacy_pattern_field(tmp_path):
             os.unlink(path)
 
 
-def test_registry_remove_updates_default():
+def test_registry_remove_returns_the_record_and_updates_default():
     r = Registry()
-    r.add_or_update(Account(name="a"), make_default=True)
+    a = Account(name="a")
+    r.add_or_update(a, make_default=True)
     r.add_or_update(Account(name="b"))
     assert r.default_name == "a"
-    r.remove("a")
+    assert r.remove("a") is a
     assert r.default_name == "b"
+    assert r.remove("a") is None
     r.remove("b")
     assert r.default_name == ""
+
+
+def test_registry_set_default_only_names_a_linked_account():
+    r = Registry()
+    r.add_or_update(Account(name="a"))
+    r.add_or_update(Account(name="b"))
+    assert r.set_default("ghost") is False
+    assert r.default_name == "a"
+    assert r.set_default("b") is True
+    assert r.default_name == "b"
+
+
+@pytest.mark.parametrize("name, valid", [
+    ("brittany", True),
+    ("Jasper_2-b", True),
+    ("", False),
+    ("has space", False),
+    ("alice/../etc", False),
+    ("émile", False),
+    ("jasper\n", False),
+])
+def test_valid_account_name(name, valid):
+    assert valid_account_name(name) is valid
 
 
 def test_default_cache_path_blocks_traversal():

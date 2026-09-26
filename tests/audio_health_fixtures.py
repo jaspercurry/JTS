@@ -213,7 +213,7 @@ def _airplay_link(
     majflt_per_sec: float | None = 0.0,
 ) -> dict:
     """An `_airplay()` snapshot with AirPlay selected, plus the ring +
-    link blocks `_input_attribution` reads."""
+    link blocks `input_attribution` reads."""
     airplay = _airplay(selected="airplay")
     airplay["current"]["fanin"]["inputs"]["airplay"]["ring"] = ring
     airplay["current"]["link"] = {

@@ -7,18 +7,18 @@ overrides.
 
 A leaf the audio-health composer reads every fast tick: whether mux's
 canonical per-source ``playing`` truth can even be trusted right now
-(:func:`_active_source`, :func:`_activity_truth_unknown`), and — given that
-verdict — the ordered precedence ladder that turns fan-in/outputd/ring
-observations into one ``signal_path`` shape (:func:`_signal_path`). Ring
-pressure and TTS-backlog derivations live here too: both feed only this
-classifier.
+(:func:`resolve_active_source`, :func:`activity_truth_unknown`), and —
+given that verdict — the ordered precedence ladder that turns
+fan-in/outputd/ring observations into one ``signal_path`` shape
+(:func:`classify_signal_path`). The TTS-backlog derivation lives here too:
+it feeds only this classifier.
 
 The cause-naming detectors ``compose_audio_health`` layers onto that verdict
-also live here: a parked transport (:func:`_parked_signal`,
-:func:`_transport_park_signal`), a stopped CamillaDSP
-(:func:`_stopped_dsp_signal`, :func:`_camilla_stopped`), and hardware the
+also live here: a parked transport (:func:`parked_signal`,
+:func:`transport_park_signal`), a stopped CamillaDSP
+(:func:`stopped_dsp_signal`, :func:`camilla_stopped_verdict`), and hardware the
 reconciler has found but the household never declared
-(:func:`_undeclared_hardware_signal`). The override SEQUENCE and its guard
+(:func:`undeclared_hardware_signal`). The override SEQUENCE and its guard
 (``_yields_to_a_named_cause``) are the composer's own ladder logic and stay
 there — only the detectors moved.
 """
@@ -30,17 +30,17 @@ from typing import Any
 from ..output_hardware import detected_hardware_adoption_precondition
 from ..output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
-from ..fanin_coupling import RING_SLOT_FRAMES
+from ..music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
     DIAGNOSTICS_REMEDY,
     RESTART_REMEDY,
-    _as_int,
-    _finite_number,
+    as_int,
+    finite_number,
     mapping,
 )
-from ._health_sources import _LABEL_TO_SOURCE, SOURCE_LABELS
+from ._health_sources import SOURCE_LABELS
 from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
@@ -48,13 +48,13 @@ from .transport_eligibility import (
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
 
-# `_signal_path`'s generic "outputd never started" and "fan-in is not
+# `classify_signal_path`'s generic "outputd never started" and "fan-in is not
 # reporting" sentences. Written once because
-# `jasper.control.audio_state_issues._state_issues` raises the matching
+# `jasper.control.audio_state_issues.state_issues` raises the matching
 # `path.outputd_unavailable` / `path.fanin_unavailable` incidents from the
 # same two facts and neither pair may drift.
-_OUTPUT_ABSENT_TITLE = "The speaker's sound output is not running"
-_OUTPUT_ABSENT_DETAIL = (
+OUTPUT_ABSENT_TITLE = "The speaker's sound output is not running"
+OUTPUT_ABSENT_DETAIL = (
     f"Nothing will play until it comes back. {RESTART_REMEDY} "
     f"{DIAGNOSTICS_REMEDY}"
 )
@@ -65,7 +65,7 @@ PATH_UNREPORTED_DETAIL = (
 )
 
 # The closed vocabulary of signal-path shape codes — every `code` any
-# signal-path producer emits (`_signal_path` and the overrides
+# signal-path producer emits (`classify_signal_path` and the overrides
 # `compose_audio_health` layers on it). A new shape registers itself HERE, which
 # is what makes `test_the_household_shapes_cover_every_signal_path_code` fail
 # until it is added to the household-register sweep as well.
@@ -98,14 +98,14 @@ SIGNAL_PATH_CODES = frozenset({
 # /state wording; doctor phrases its own operator remedy.
 #
 # TWO detectors carry it, for the same household fact through different
-# evidence: :func:`_parked_signal` (a live transport contradiction) and
-# :func:`_transport_park_signal` (one of ADR-0178's shapes the ring cannot
+# evidence: :func:`parked_signal` (a live transport contradiction) and
+# :func:`transport_park_signal` (one of ADR-0178's shapes the ring cannot
 # serve). One sentence, so a household cannot be told two things about a
 # speaker that is silent either way.
 PARKED_HEADLINE = "Sound cannot come out of the speaker"
 
 # ...and the sentence under it, for a park whose cause the household cannot be
-# told anything more useful about: `_parked_signal`'s live transport
+# told anything more useful about: `parked_signal`'s live transport
 # contradiction, and any park class with no row in the table below.
 PARKED_DETAIL = (
     "The speaker's audio setup does not fit together, so nothing can play. "
@@ -156,8 +156,12 @@ STOPPED_DSP_HEADLINE = "Sound processing has stopped"
 # not see this sentence (#2812 B1/B2). Sole writer of this wording.
 UNDECLARED_HARDWARE_HEADLINE = "Detected hardware is ready — finish setup"
 
+_LABEL_TO_SOURCE = {
+    spec.fanin_label: spec.id.value for spec in MUSIC_SOURCE_SPECS
+}
 
-def _selected_source(airplay: Mapping[str, Any]) -> str | None:
+
+def fanin_selected_source(airplay: Mapping[str, Any]) -> str | None:
     current = mapping(airplay.get("current"))
     fanin = mapping(current.get("fanin"))
     selected = fanin.get("selected_input")
@@ -181,15 +185,15 @@ def _source_playing(
     return playing if isinstance(playing, bool) else None
 
 
-def _active_source(
+def resolve_active_source(
     airplay: Mapping[str, Any],
     mux_status: Mapping[str, Any] | None,
 ) -> str | None:
-    selected = _selected_source(airplay)
+    selected = fanin_selected_source(airplay)
     return selected if _source_playing(mux_status, selected) is True else None
 
 
-def _activity_truth_unknown(
+def activity_truth_unknown(
     airplay: Mapping[str, Any],
     mux_status: Mapping[str, Any] | None,
 ) -> bool:
@@ -199,56 +203,20 @@ def _activity_truth_unknown(
         Mapping,
     ):
         return True
-    selected = _selected_source(airplay)
+    selected = fanin_selected_source(airplay)
     return selected is not None and _source_playing(mux_status, selected) is None
 
 
 ACTIVITY_UNKNOWN_DETAIL = "JTS cannot tell which source is playing right now."
 
 
-def _activity_unavailable_signal() -> dict[str, str]:
+def activity_unavailable_signal() -> dict[str, str]:
     return {
         "code": "activity_unknown",
         "status": "unknown",
         "headline": "Playback activity unavailable",
         "detail": ACTIVITY_UNKNOWN_DETAIL,
     }
-
-
-def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
-    """Fraction of fan-in's ring publishes that had to wait for a free slot.
-
-    `full_waits` ticks once per SLOT publish that waited, so its rate is read
-    against the publish rate (sample_rate / RING_SLOT_FRAMES): jts4 measured
-    162 waits/s against 375 publishes/s in lockstep (issue #4124).
-
-    INFORMATIONAL ONLY. Ring A is a blocking handshake pinned near full by
-    design (ADR-0205), so a saturated ring is the steady state, not a fault:
-    this must never reach a verdict.
-
-    None whenever any term is absent or the publish rate is underivable —
-    absence must read as "not observed", never as "no pressure".
-    """
-    ring = mapping(fanin_output.get("ring"))
-    waits = _finite_number(ring.get("full_waits_per_sec"))
-    rate = _as_int(fanin_output.get("sample_rate"))
-    if waits is None or rate <= 0:
-        return None
-    return float(waits) * RING_SLOT_FRAMES / rate
-
-
-def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
-    """Fan-in's queued program depth, in ms.
-
-    ``occupancy`` counts ring SLOTS, each ``RING_SLOT_FRAMES`` frames wide
-    (rust/jasper-ring/src/layout.rs), not frames or ms.
-    """
-    ring = mapping(fanin_output.get("ring"))
-    slots = _finite_number(ring.get("occupancy"))
-    rate = _as_int(fanin_output.get("sample_rate"))
-    if slots is None or slots < 0 or rate <= 0:
-        return None
-    return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
 
 
 def _tts_backlog_ratio(*lanes: Any) -> float:
@@ -258,14 +226,14 @@ def _tts_backlog_ratio(*lanes: Any) -> float:
         lane = mapping(lane_raw)
         if lane.get("enabled") is not True:
             continue
-        budget_frames = _as_int(lane.get("budget_frames"))
+        budget_frames = as_int(lane.get("budget_frames"))
         if budget_frames <= 0:
             continue
-        deepest = max(deepest, _as_int(lane.get("pending_frames")) / budget_frames)
+        deepest = max(deepest, as_int(lane.get("pending_frames")) / budget_frames)
     return deepest
 
 
-def _signal_path(
+def classify_signal_path(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
     active_source: str | None,
@@ -298,8 +266,8 @@ def _signal_path(
         return {
             "code": "output_absent",
             "status": "issue",
-            "headline": _OUTPUT_ABSENT_TITLE,
-            "detail": _OUTPUT_ABSENT_DETAIL,
+            "headline": OUTPUT_ABSENT_TITLE,
+            "detail": OUTPUT_ABSENT_DETAIL,
         }
 
     outputd_map = mapping(outputd)
@@ -315,7 +283,7 @@ def _signal_path(
             ),
         }
     outputd_watchdog = mapping(outputd_map.get("watchdog"))
-    outputd_progress_age = _as_int(
+    outputd_progress_age = as_int(
         outputd_watchdog.get("last_progress_age_ms"),
     )
     if outputd_watchdog and outputd_progress_age > OUTPUTD_STALE_MS:
@@ -331,7 +299,7 @@ def _signal_path(
 
     fanin = mapping(fanin_raw)
     watchdog = mapping(fanin.get("watchdog"))
-    if _as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
+    if as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
         return {
             "code": "path_stalled",
             "status": "issue",
@@ -369,7 +337,7 @@ def _signal_path(
     # same way `camilla_stopped` outranks this in `compose_audio_health`.
     #
     # Not during warmup: outputd primes and starts reading an empty ring before
-    # CamillaDSP is producing (the gate `_stopped_dsp_signal` carries for the
+    # CamillaDSP is producing (the gate `stopped_dsp_signal` carries for the
     # same reason).
     if not warmup and mapping(outputd_map.get("content")).get("deaf") is True:
         return {
@@ -427,8 +395,8 @@ def _signal_path(
     # Losing periods, from either end: the ring dropped a period the reader
     # never took, or the active lane is xrunning. Both are rates, so neither
     # latches once the box recovers.
-    ring_drops = _finite_number(ring.get("drops_per_sec"))
-    input_xrun_rate = _finite_number(active_input.get("xruns_per_sec"))
+    ring_drops = finite_number(ring.get("drops_per_sec"))
+    input_xrun_rate = finite_number(active_input.get("xruns_per_sec"))
     if (
         (ring_drops is not None and ring_drops > 0.0)
         or (input_xrun_rate is not None and input_xrun_rate > 0.0)
@@ -465,7 +433,7 @@ def _signal_path(
     }
 
 
-def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
+def parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     """Return the parked signal-path state, or None when the transport is sane.
 
     When the cause is a DAC that cannot host the saved layout at all, the
@@ -500,7 +468,7 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _park_detail(parks: Any) -> str:
+def park_detail(parks: Any) -> str:
     """The household sentence for one or more live transport parks.
 
     Composed from :data:`_PARK_MESSAGES` plus the park record's OWN ``issue``
@@ -526,7 +494,7 @@ def _park_detail(parks: Any) -> str:
     return " ".join(messages) if messages else PARKED_DETAIL
 
 
-def _transport_park_signal(
+def transport_park_signal(
     transport_park: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
@@ -534,8 +502,8 @@ def _transport_park_signal(
     Only ``status="parked"`` reaches the household: that is the state where no
     transport serves this box and it emits nothing.
 
-    Presentation only, like :func:`_parked_signal`: the incident rows
-    :func:`~jasper.control.audio_state_issues._state_issues` writes from the
+    Presentation only, like :func:`parked_signal`: the incident rows
+    :func:`~jasper.control.audio_state_issues.state_issues` writes from the
     same snapshot keep one row per park class, named by its key.
     """
     state = mapping(transport_park)
@@ -545,27 +513,28 @@ def _transport_park_signal(
         "code": "transport_unservable",
         "status": "issue",
         "headline": PARKED_HEADLINE,
-        "detail": _park_detail(state.get("parks")),
+        "detail": park_detail(state.get("parks")),
     }
 
 
-def _stopped_dsp_signal(
+def stopped_dsp_signal(
     airplay: Mapping[str, Any],
     service_states: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Return the stopped-CamillaDSP signal path, or None when it is running.
 
-    :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
-    and outputd, and both keep looping when the stage between them disappears:
-    fan-in's `shm_ring` coupling free-run-drops on an absent reader rather than
-    blocking, outputd reads its content lane nonblocking and zero-fills, and
-    BOTH `last_progress_age_ms` counters time the work loop's iteration, not
-    audio actually moving.  A dead CamillaDSP therefore leaves every input to
-    `_signal_path` healthy while the speaker emits nothing.
+    :func:`classify_signal_path` structurally CANNOT see this.  It reads only
+    fan-in and outputd, and both keep looping when the stage between them
+    disappears: fan-in's `shm_ring` coupling free-run-drops on an absent reader
+    rather than blocking, outputd reads its content lane nonblocking and
+    zero-fills, and BOTH `last_progress_age_ms` counters time the work loop's
+    iteration, not audio actually moving.  A dead CamillaDSP therefore leaves
+    every input to `classify_signal_path` healthy while the speaker emits
+    nothing.
 
-    Presentation only, like :func:`_parked_signal`:
+    Presentation only, like :func:`parked_signal`:
     :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` feeds
-    :func:`~jasper.control.audio_state_issues._state_issues` the raw signal
+    :func:`~jasper.control.audio_state_issues.state_issues` the raw signal
     path, so `path.camilla_stopped` keeps its own incident row.
 
     Shares the boot-warmup gate with that issue, so a deploy's coordinated
@@ -573,7 +542,9 @@ def _stopped_dsp_signal(
     """
     if bool(airplay.get("warmup_active")):
         return None
-    stopped = _camilla_stopped(mapping(service_states).get(CAMILLA_SERVICE))
+    stopped = camilla_stopped_verdict(
+        mapping(service_states).get(CAMILLA_SERVICE)
+    )
     if stopped is None:
         return None
     code, detail = stopped
@@ -585,7 +556,7 @@ def _stopped_dsp_signal(
     }
 
 
-def _undeclared_hardware_signal(
+def undeclared_hardware_signal(
     output_hardware: Any,
     output_topology_snapshot: Any,
 ) -> dict[str, Any] | None:
@@ -641,7 +612,7 @@ def _undeclared_hardware_signal(
     }
 
 
-def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
+def camilla_stopped_verdict(raw_state: Any) -> tuple[str, str] | None:
     """``(code, household detail)`` for a CamillaDSP unit that is not running.
 
     ``None`` when it is running or on the way up. The code is what surfaces

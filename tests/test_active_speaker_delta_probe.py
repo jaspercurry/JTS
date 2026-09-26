@@ -51,13 +51,10 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_MODEL_ERROR,
     VERDICT_SPATIALLY_COSTLY,
     VERDICT_UNAVAILABLE,
-    boost_overshoot,
     classify_delta_probe,
     graded_command_floor_db,
     interquartile_band_hz,
-    louder_than_commanded,
     advice_deferral,
-    widest_exceedance_octaves,
 )
 
 _GRID_HZ = np.logspace(math.log10(100.0), math.log10(20_000.0), 400)
@@ -479,29 +476,6 @@ def test_a_mismatched_grid_is_unavailable_not_a_crash():
     )
     assert probe.verdict == VERDICT_UNAVAILABLE
     assert probe.reason == "grid_mismatch"
-
-
-# --------------------------------------------------------------------------- #
-# exceedance width
-# --------------------------------------------------------------------------- #
-
-
-def test_widest_exceedance_measures_index_contiguous_runs_only():
-    """Two exceeding bins either side of a compliant one are two runs — which
-    is the entire point of a width rule."""
-    freqs = np.array([100.0, 200.0, 400.0, 800.0, 1600.0])
-    split = np.array([True, True, False, True, True])
-    width, lo_hz = widest_exceedance_octaves(freqs, split)
-    assert width == pytest.approx(1.0)
-    assert lo_hz in (100.0, 800.0)
-    joined = np.array([True, True, True, True, True])
-    assert widest_exceedance_octaves(freqs, joined)[0] == pytest.approx(4.0)
-
-
-def test_widest_exceedance_of_nothing_is_zero():
-    assert widest_exceedance_octaves(
-        _GRID_HZ, np.zeros_like(_GRID_HZ, dtype=bool)
-    ) == (0.0, 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -1241,8 +1215,7 @@ def test_to_dict_carries_the_band_the_frame_and_the_intercept():
 
 
 # --------------------------------------------------------------------------- #
-# #2533 — the residual is a CHANGE, and its claim is bounded by where it was
-#         measured
+# #2533 — the level claim is bounded by where it was measured
 # --------------------------------------------------------------------------- #
 
 
@@ -1264,13 +1237,11 @@ _GRID_SHAPES = [
 ]
 
 
-def _entry_anchored(commanded, *, realized, grid=None, band=None, anchor_db=0.0,
-                    **kwargs):
-    """Classify with a flat pre-apply anchor of ``anchor_db`` dB."""
+def _classify(commanded, *, realized, grid=None, band=None, **kwargs):
+    """Classify on ``grid`` (default the log fixture) over ``band`` (default all of it)."""
     f = _GRID_HZ if grid is None else grid
     return classify_delta_probe(
-        f, realized, commanded, band_hz=band or (float(f[0]), float(f[-1])),
-        entry_delta_db=np.full_like(f, anchor_db), **kwargs,
+        f, realized, commanded, band_hz=band or (float(f[0]), float(f[-1])), **kwargs,
     )
 
 
@@ -1311,9 +1282,9 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     attenuation; a speaker that realizes exactly that move has nothing left over.
 
     The apply hands 3 dB of headroom BACK (5.00 dB charged before, 2.00 after),
-    so the speaker gets 3 dB louder and the emitter says so. Measured against the
-    pre-apply capture, that is the whole of the change — the residual is zero and
-    no level verdict is reached.
+    so the speaker gets 3 dB louder and the emitter says so. Declared as
+    ``expected_offset_db``, that is the whole of the change — the residual is
+    zero and no level verdict is reached.
     """
     from jasper.active_speaker.baseline_profile import (
         applied_program_level_delta_db,
@@ -1326,15 +1297,14 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     declared_db = applied_program_level_delta_db(previous, applied)
     assert declared_db == pytest.approx(3.00, abs=1e-9)
 
-    # The pre-apply capture sat exactly on its prediction; the post-apply one
-    # sits on its own prediction plus the declared move, everywhere.
+    # The post-apply capture sits on its prediction plus the declared move,
+    # everywhere.
     commanded = _commanded_lift()
-    probe = _entry_anchored(
-        commanded, realized=commanded + declared_db, anchor_db=0.0,
+    probe = _classify(
+        commanded, realized=commanded + declared_db,
         expected_offset_db=declared_db,
     )
     assert probe.residual_offset_db == pytest.approx(0.0, abs=1e-9)
-    assert probe.entry_anchor_offset_db == pytest.approx(0.0, abs=1e-9)
     assert probe.verdict != VERDICT_LEVEL_MISMATCH
     assert probe.verdict == VERDICT_MATCHED
 
@@ -1343,26 +1313,11 @@ def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
     # beyond what was declared is exactly what the residual is for.
     off_by_half = applied_program_level_delta_db(previous, _mirror_profile(1.5))
     assert off_by_half == pytest.approx(2.50, abs=1e-9)
-    strayed = _entry_anchored(
-        commanded, realized=commanded + declared_db, anchor_db=0.0,
+    strayed = _classify(
+        commanded, realized=commanded + declared_db,
         expected_offset_db=off_by_half,
     )
     assert strayed.residual_offset_db == pytest.approx(0.5, abs=1e-9)
-
-    # The same speaker, on a session whose model was NOT anchored exactly right
-    # going in — which is the ordinary case, and the arm that proves the anchor
-    # is what holds the residual at zero rather than a happy zero doing it. The
-    # standing offset is still a finding (it is a real difference between these
-    # two curves) but it is the FRAME's, not a level move nobody commanded.
-    standing_db = -2.0
-    anchored = _entry_anchored(
-        commanded, realized=commanded + declared_db + standing_db,
-        anchor_db=standing_db, expected_offset_db=declared_db,
-    )
-    assert anchored.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
-    assert anchored.residual_offset_db == pytest.approx(0.0, abs=1e-9)
-    assert anchored.verdict != VERDICT_LEVEL_MISMATCH
-    assert anchored.advises_against_keep is False
 
 
 @pytest.mark.parametrize("grid", _GRID_SHAPES)
@@ -1378,7 +1333,7 @@ def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band(gri
     """
     band = (400.0, 20_000.0)
     commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), -4.0, 0.0)
-    probe = _entry_anchored(
+    probe = _classify(
         commanded, realized=commanded - 3.0, grid=grid, band=band,
     )
 
@@ -1394,40 +1349,14 @@ def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band(gri
     assert probe.quiet_probe_coverage < DELTA_PROBE_MIN_QUIET_COVERAGE
 
 
-def test_a_standing_model_offset_present_before_the_apply_never_reaches_it():
-    """**#2533 (c).** An offset in BOTH captures is not a level move.
-
-    An in-room measurement and an on-axis two-branch model do not share a level
-    anchor, and the mismatch is a standing property of the comparison. Anchored,
-    it cancels and the residual reports the zero that is true. Unanchored — the
-    control, and the pre-#2533 behaviour — the identical evidence is named an
-    ``uncommanded_level_shift`` of the full standing amount.
-    """
-    commanded = _commanded_lift()
-    standing_db = -6.0
-    realized = commanded + standing_db
-
-    anchored = _entry_anchored(commanded, realized=realized, anchor_db=standing_db)
-    assert anchored.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
-    assert anchored.residual_offset_db == pytest.approx(0.0, abs=1e-9)
-    assert anchored.verdict != VERDICT_LEVEL_MISMATCH
-    assert anchored.advises_against_keep is False
-
-    blind = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
-    assert blind.entry_anchor_offset_db is None
-    assert blind.residual_offset_db == pytest.approx(standing_db, abs=1e-9)
-    assert blind.verdict == VERDICT_LEVEL_MISMATCH
-
-
 @pytest.mark.parametrize("grid", _GRID_SHAPES)
 def test_a_genuine_whole_band_shift_still_trips_the_level_verdict(grid):
-    """**#2533 (d).** The control that keeps the two fixes from swallowing the
-    thing this verdict exists to catch.
+    """**#2533 (d).** The control that keeps the coverage gate from swallowing
+    the thing this verdict exists to catch.
 
-    A real uncommanded drop, on top of a standing anchor AND a declared graph
-    move, still fires with the WHOLE-BAND reason — and the residual reports the
-    REAL shift rather than the sum of all three, which is the whole point of
-    anchoring it.
+    A real uncommanded drop, on top of a declared graph move, still fires with
+    the WHOLE-BAND reason — and the residual reports the REAL shift rather than
+    the declared move.
 
     The quiet bins are interleaved THROUGH the graded band, which is what a
     whole-band shift actually leaves behind and what makes this a test of the
@@ -1438,17 +1367,16 @@ def test_a_genuine_whole_band_shift_still_trips_the_level_verdict(grid):
     """
     lo_hz, hi_hz = 400.0, 12_800.0
     commanded = _half_octave_blocks(grid, lo_hz, hi_hz)
-    standing_db, declared_db, shift_db = -2.0, 1.0, -3.0
-    realized = commanded + standing_db + declared_db + shift_db
+    declared_db, shift_db = 1.0, -3.0
+    realized = commanded + declared_db + shift_db
 
-    probe = _entry_anchored(
+    probe = _classify(
         commanded, realized=realized, grid=grid, band=(lo_hz, hi_hz),
-        anchor_db=standing_db, expected_offset_db=declared_db,
+        expected_offset_db=declared_db,
     )
     assert probe.verdict == VERDICT_LEVEL_MISMATCH
     assert probe.reason == REASON_UNCOMMANDED_LEVEL_SHIFT
     assert probe.residual_offset_db == pytest.approx(shift_db, abs=1e-9)
-    assert probe.entry_anchor_offset_db == pytest.approx(standing_db, abs=1e-9)
     assert probe.quiet_probe_coverage >= DELTA_PROBE_MIN_QUIET_COVERAGE
     # The fixture really is co-spanning: the quiet evidence's middle half sits
     # INSIDE the band it is claimed over, on either grid.
@@ -1480,7 +1408,7 @@ def test_a_co_spanning_quiet_set_scores_one_whatever_the_grid_shape(grid):
     # one, which is what lets the reference be pinned on its own.
     commanded = np.zeros_like(grid)
     commanded[idx[1::2]] = -4.0
-    probe = _entry_anchored(
+    probe = _classify(
         commanded, realized=commanded - 3.0, grid=grid, band=(lo_hz, hi_hz),
     )
 
@@ -1546,7 +1474,7 @@ def test_two_stray_bins_cannot_make_a_sliver_look_band_wide(grid):
     # The two strays: in-band, and quiet, but far below where the rest sit.
     for stray_hz in (500.0, 1_900.0):
         commanded[int(np.argmin(np.abs(grid - stray_hz)))] = 0.0
-    probe = _entry_anchored(
+    probe = _classify(
         commanded, realized=commanded - 3.0, grid=grid, band=band,
     )
 
@@ -1566,130 +1494,6 @@ def test_two_stray_bins_cannot_make_a_sliver_look_band_wide(grid):
     assert min_max_coverage > DELTA_PROBE_MIN_QUIET_COVERAGE
 
 
-@pytest.mark.parametrize("grid", _GRID_SHAPES)
-def test_a_repeat_round_carries_the_previous_rounds_command_into_the_residual(grid):
-    """**What a MISMATCHED pair of references does to the residual** (#2533).
-
-    ``commanded`` and ``entry_delta_db`` must be stated against the SAME graph.
-    When they are not, the residual carries ``−mean(the other graph's command
-    over this round's quiet bins)``: a term this classifier is never given and
-    cannot bound. Both directions are reproduced here, unchanged.
-
-    **What changed is who can reach it** (#2611). This was a live production
-    hazard while the caller measured ``commanded`` against the RAW crossover and
-    the entry capture rode whatever graph was active — a REPEAT round handed the
-    two different references by construction. The caller's commanded axis is now
-    the applied graph minus the ENTRY graph
-    (:mod:`jasper.active_speaker.crossover_v2.commanded`), so the production pair
-    shares one reference and neither shape below is reachable through it. The
-    contract stays pinned because this function is public and a direct caller —
-    the offline bench, a future one — can still hand it a mismatched pair; what
-    it no longer is, is a description of what shipped rounds do.
-    """
-    band = (400.0, 20_000.0)
-    # This round stops at 8 kHz; the previous one corrected all the way out, so
-    # its command overlaps every one of this round's quiet bins.
-    this_round = np.where((grid >= 400.0) & (grid <= 8_000.0), -6.0, 0.0)
-    previous_round = np.where((grid >= 400.0) & (grid <= 20_000.0), -6.0, 0.0)
-
-    # FABRICATES: the speaker realized this round exactly and nothing moved, yet
-    # the residual reads +6.000 dB — the previous round's command, with its sign
-    # flipped, read as an uncommanded level shift.
-    phantom = classify_delta_probe(
-        grid, this_round, this_round, band_hz=band, entry_delta_db=previous_round,
-    )
-    assert phantom.residual_offset_db == pytest.approx(6.0, abs=1e-9)
-
-    # MASKS: a genuine −2.2 dB uncommanded drop, against a previous round that
-    # commanded −2.2 dB across exactly this round's quiet bins, re-grades to a
-    # residual of zero — the level verdict never fires and the finding arrives as
-    # the frame instead.
-    overlap = np.where(grid > 8_000.0, -2.2, 0.0)
-    masked = classify_delta_probe(
-        grid, this_round - 2.2, this_round, band_hz=band, entry_delta_db=overlap,
-    )
-    assert masked.residual_offset_db == pytest.approx(0.0, abs=1e-9)
-    assert masked.verdict != VERDICT_LEVEL_MISMATCH
-    assert masked.advises_against_keep is False
-    # The same evidence with no overlapping previous round names the shift.
-    clean = classify_delta_probe(
-        grid, this_round - 2.2, this_round, band_hz=band,
-        entry_delta_db=np.zeros_like(grid),
-    )
-    assert clean.residual_offset_db == pytest.approx(-2.2, abs=1e-9)
-    assert clean.verdict == VERDICT_LEVEL_MISMATCH
-
-
-def test_the_residual_is_the_frames_offset_minus_the_anchor():
-    """The decomposition, as an identity rather than as prose.
-
-    ``frame.offset_db`` is the quiet bins' ABSOLUTE disagreement with the model
-    (``fit_frame`` pivots at their geometric mean, so its offset is their plain
-    mean) and ``entry_anchor_offset_db`` is the part of it that was already there
-    before the apply. What is left is the change, and that is the residual. The
-    pre-#2533 identity — ``frame.offset_db == residual_offset_db`` — is the same
-    statement with a zero anchor, and is still pinned by
-    ``test_the_frames_offset_term_is_the_residual_offset_it_already_reported``.
-    """
-    commanded = _commanded_lift()
-    probe = _entry_anchored(commanded, realized=commanded - 5.0, anchor_db=-3.25)
-    assert probe.frame.fitted is True
-    assert probe.entry_anchor_offset_db == pytest.approx(-3.25, abs=1e-9)
-    assert probe.frame.offset_db - probe.entry_anchor_offset_db == pytest.approx(
-        probe.residual_offset_db, abs=1e-9,
-    )
-    assert probe.residual_offset_db == pytest.approx(-1.75, abs=1e-9)
-
-
-def test_an_unusable_entry_curve_leaves_the_residual_exactly_where_it_was():
-    """An absent anchor is "nothing known", never a lost verdict.
-
-    Governed by exactly ``expected_offset_db``'s rule: unsupplied, or a length
-    that disagrees with the grid, both mean nothing is removed — so the standing
-    offset stays VISIBLE in the residual rather than being pretended away, and
-    every pre-#2533 caller keeps its numbers byte for byte.
-    """
-    commanded = _commanded_lift()
-    realized = commanded - 4.0
-    baseline = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
-    for unusable in (None, np.zeros(_GRID_HZ.size - 3)):
-        probe = classify_delta_probe(
-            _GRID_HZ, realized, commanded, band_hz=_band(),
-            entry_delta_db=unusable,
-        )
-        assert probe.entry_anchor_offset_db is None
-        assert probe.residual_offset_db == pytest.approx(
-            baseline.residual_offset_db, abs=1e-12,
-        )
-        assert probe.verdict == baseline.verdict
-        assert probe.reason == baseline.reason
-
-
-def test_anchor_bins_the_pre_apply_capture_could_not_trust_are_dropped():
-    """A non-finite anchor bin is a bin that capture excluded, not a zero.
-
-    The remaining bins still anchor the residual as long as there are enough of
-    them; too few and the anchor is absent, which is the "nothing known" case
-    above rather than a partially-trusted number.
-    """
-    commanded = _commanded_lift()
-    realized = commanded - 5.0
-    anchor = np.full_like(_GRID_HZ, -2.0)
-    anchor[:5] = np.nan
-    probe = classify_delta_probe(
-        _GRID_HZ, realized, commanded, band_hz=_band(), entry_delta_db=anchor,
-    )
-    assert probe.entry_anchor_offset_db == pytest.approx(-2.0, abs=1e-9)
-    assert probe.residual_offset_db == pytest.approx(-3.0, abs=1e-9)
-
-    starved = classify_delta_probe(
-        _GRID_HZ, realized, commanded, band_hz=_band(),
-        entry_delta_db=np.full_like(_GRID_HZ, np.nan),
-    )
-    assert starved.entry_anchor_offset_db is None
-    assert starved.residual_offset_db == pytest.approx(-5.0, abs=1e-9)
-
-
 def test_the_quiet_coverage_bar_and_the_smoothing_width_rule_are_independent():
     """Two octave rules, deliberately not the same constant.
 
@@ -1704,145 +1508,18 @@ def test_the_quiet_coverage_bar_and_the_smoothing_width_rule_are_independent():
 
 def test_to_dict_carries_the_quiet_evidence_the_level_verdict_rests_on():
     """A band-scoped verdict is a claim ABOUT the band it covered, so the band,
-    the coverage, the bin count and the anchor removed all ride the record."""
+    the coverage and the bin count all ride the record."""
     band = (400.0, 20_000.0)
     grid = _LINEAR_GRID_HZ
     commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), -4.0, 0.0)
-    payload = _entry_anchored(
-        commanded, realized=commanded - 3.0, grid=grid, band=band, anchor_db=-1.0,
+    payload = _classify(
+        commanded, realized=commanded - 3.0, grid=grid, band=band,
     ).to_dict()
     quiet = payload["quiet"]
-    assert set(quiet) == {
-        "n_bins", "core_band_hz", "probe_coverage", "entry_anchor_offset_db",
-    }
+    assert set(quiet) == {"n_bins", "core_band_hz", "probe_coverage"}
     assert quiet["n_bins"] >= DELTA_PROBE_MIN_BINS
     assert len(quiet["core_band_hz"]) == 2
     assert quiet["probe_coverage"] < DELTA_PROBE_MIN_QUIET_COVERAGE
-    assert quiet["entry_anchor_offset_db"] == pytest.approx(-1.0, abs=1e-9)
-
-
-# --------------------------------------------------------------------------- #
-# the boost-overshoot hard stop (#2537, anchored by series-2 D1)
-# --------------------------------------------------------------------------- #
-#
-# Every map below carries a PRE-APPLY anchor, and since D1 that is a
-# precondition rather than a decoration: the two directional findings are
-# measurements of what the speaker did ACROSS the apply, so without a pre-apply
-# capture there is nothing to difference against and they are not made at all
-# (:func:`test_an_unanchored_map_makes_no_directional_finding_at_all`).
-#
-# ``anchor_db=0.0``, the helper's default, is the pre-apply capture that matched
-# the model exactly — ``measured_pre − predicted_previous == 0`` puts
-# ``entry_delta_db`` at 0 everywhere by the caller's own construction — so every
-# number these tests assert is the same one they asserted before D1, measured
-# now against a stated reference instead of an implied one.
-
-
-def test_an_exactly_realized_boost_measures_no_overshoot():
-    commanded = _commanded_lift()
-    probe = _entry_anchored(commanded, realized=commanded, band=_band())
-    assert probe.boost_over_declared_bound is False
-    assert probe.boost_overshoot_db == pytest.approx(0.0, abs=1e-9)
-    assert probe.boost_overshoot_octaves == 0.0
-
-
-def test_a_boost_realized_far_above_what_it_commanded_clears_the_bound():
-    """Energy the graph did not declare, over a structured run of the band."""
-    commanded = _commanded_lift()
-    probe = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
-    assert probe.boost_over_declared_bound is True
-    assert probe.boost_overshoot_db == pytest.approx(5.0, abs=1e-6)
-    assert probe.boost_overshoot_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
-
-
-def test_the_boost_finding_is_DIRECTIONAL_where_every_other_one_is_not():
-    """Under-realizing a boost is a quality miss; over-realizing it is a hazard.
-
-    Same magnitude, opposite sign, opposite answer — and the control matters:
-    the under-realized case still produces a large ``max_error_db``, so the
-    rest of the module DOES see it. Only this finding is silent about it.
-    """
-    commanded = _commanded_lift()
-    under = _entry_anchored(commanded, realized=commanded - 5.0, band=_band())
-    over = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
-
-    assert under.boost_over_declared_bound is False
-    assert under.boost_overshoot_db == pytest.approx(-5.0, abs=1e-6)
-    assert over.boost_over_declared_bound is True
-    # The control: the module is not blind to the under-realized case, it just
-    # does not call it a hazard.
-    assert under.max_error_db == pytest.approx(over.max_error_db, abs=1e-6)
-
-
-def test_a_cut_only_correction_reports_not_measured_never_zero():
-    """``None`` is "no graded bin commanded a boost", which 0.0 would misreport
-    as "measured, and it did not overshoot" — the distinction ``gain_factor``
-    and ``residual_offset_db`` both draw."""
-    commanded = -_commanded_lift()
-    probe = _entry_anchored(commanded, realized=commanded, band=_band())
-    assert probe.boost_overshoot_db is None
-    assert probe.boost_over_declared_bound is False
-
-
-def test_a_single_overshooting_bin_is_texture_not_a_hard_stop():
-    """The structured-exceedance rule, so noise cannot revert a correction.
-
-    A hard stop that fired on one bin would pull a household's graph off for a
-    measurement artefact — the same argument ``_structured_exceedance`` already
-    makes for every other finding in this module.
-    """
-    commanded = _commanded_lift()
-    realized = commanded.copy()
-    realized[300] += 9.0
-
-    probe = _entry_anchored(commanded, realized=realized, band=_band())
-
-    assert probe.boost_overshoot_db == pytest.approx(9.0, abs=1e-6)
-    assert probe.boost_overshoot_octaves < DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
-    assert probe.boost_over_declared_bound is False
-
-
-def test_the_overshoot_is_measured_on_the_raw_curve_not_the_frame_removed_one():
-    """A frame is removed to ask whether the SHAPE is right; this asks how much
-    energy reached the driver. Subtracting a fitted offset first would hide
-    exactly the whole-band overshoot the hard stop exists for."""
-    grid = _LINEAR_GRID_HZ
-    commanded = np.where((grid >= 400.0) & (grid <= 12_000.0), 4.0, 0.0)
-    probe = _entry_anchored(
-        commanded, realized=commanded + 3.0, grid=grid, band=(400.0, 20_000.0),
-    )
-    assert probe.frame.fitted is True
-    assert probe.frame.offset_db == pytest.approx(3.0, abs=1e-6)
-    # The frame says "the whole comparison sits 3 dB high"; the overshoot says
-    # the boosted bins delivered 3 dB more than they asked for. Both are true,
-    # and only the second is the safety question.
-    assert probe.boost_overshoot_db == pytest.approx(3.0, abs=1e-6)
-    assert probe.boost_over_declared_bound is True
-
-
-def test_boost_overshoot_reports_no_finding_when_no_bin_is_boosted():
-    """The helper's own contract, on the grid rather than through a verdict."""
-    grid = _GRID_HZ
-    commanded = -np.ones_like(grid) * 4.0
-    mask = np.ones_like(grid, dtype=bool)
-    over, worst, octaves = boost_overshoot(
-        grid, np.full_like(grid, 9.0), commanded, np.full_like(grid, 1.5), mask
-    )
-    assert (over, worst, octaves) == (False, None, 0.0)
-
-
-def test_to_dict_carries_the_boost_evidence_the_hard_stop_rests_on():
-    commanded = _commanded_lift()
-    payload = _entry_anchored(
-        commanded, realized=commanded + 5.0, band=_band(),
-    ).to_dict()
-    assert set(payload["boost"]) == {
-        "over_declared_bound", "overshoot_db", "overshoot_octaves",
-    }
-    assert payload["boost"]["over_declared_bound"] is True
-    assert payload["boost"]["overshoot_db"] == pytest.approx(5.0, abs=1e-6)
-    # ...and whether the block above is a measurement at all (series-2 D1).
-    assert payload["safety_anchored"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1868,10 +1545,7 @@ def _shape_miss(depth_db: float = 3.32, *, sign: float = -1.0):
     """
     commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
     realized = commanded + sign * np.where(_DIP_BAND, depth_db, 0.0)
-    # Anchored against a pre-apply capture that matched the model, so the
-    # direction finding is a statement about the SPEAKER (series-2 D1) — and so
-    # every number below is the one this fixture asserted before it.
-    return _entry_anchored(commanded, realized=realized, band=_band())
+    return classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
 
 
 def _quieter_only_model_error(depth_db: float = 3.32):
@@ -1884,7 +1558,7 @@ def test_the_1447_shape_is_a_model_error_that_realized_only_quieter():
 
     assert probe.verdict == VERDICT_MODEL_ERROR
     assert probe.advises_against_keep is True
-    assert probe.realized_louder_than_commanded is False
+    assert probe.model_departure_over_tolerance is False
     # Negative: the most POSITIVE disagreement in the whole graded band still
     # points quieter. That is what "entirely negative-direction" means, measured.
     assert probe.max_signed_error_db is not None
@@ -1928,196 +1602,11 @@ def test_one_bin_realized_louder_withholds_the_deferral():
     noisy = int(np.flatnonzero(_DIP_BAND)[10])
     realized[noisy] = commanded[noisy] + 4.0
 
-    probe = _entry_anchored(commanded, realized=realized, band=_band())
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
 
     assert probe.verdict == VERDICT_MODEL_ERROR
-    # The width rule still says this single bin is not structured…
-    assert probe.boost_over_declared_bound is False
-    # …and the deferral is withheld anyway.
-    assert probe.realized_louder_than_commanded is True
+    assert probe.model_departure_over_tolerance is True
     assert advice_deferral(probe) == ""
-
-
-def test_a_boost_realized_over_its_bound_is_always_louder_than_commanded():
-    """The implication the explicit boost guard is stated on top of.
-
-    ``advice_deferral`` names ``boost_over_declared_bound`` outright even
-    though the per-bin rule already subsumes it. This is the subsumption,
-    measured: if it ever stopped holding — the two bounds are independently
-    tunable — the explicit guard is what keeps the fence standing.
-    """
-    commanded = _commanded_lift()
-    probe = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
-
-    assert probe.boost_over_declared_bound is True
-    assert probe.realized_louder_than_commanded is True
-    assert advice_deferral(probe) == ""
-
-
-def test_an_unanchored_map_makes_no_directional_finding_at_all():
-    """No pre-apply capture, no statement about the speaker (series-2 D1).
-
-    The same +5 dB over-realization that is a hard stop with an anchor is not a
-    finding without one, because without one the only computable quantity is
-    ``(measured − predicted)`` — the model's error, which is what took a
-    measured, safe, improving round off jts3. Both directional fields report
-    absence, and ``safety_anchored`` is what tells that from "measured, nothing
-    found".
-
-    The model's own departure IS still measured, so the round is not blind — it
-    is precise about which question it answered.
-    """
-    commanded = _commanded_lift()
-    anchored = _entry_anchored(commanded, realized=commanded + 5.0, band=_band())
-    bare = classify_delta_probe(
-        _GRID_HZ, commanded + 5.0, commanded, band_hz=_band(),
-    )
-
-    assert anchored.safety_anchored is True
-    assert anchored.boost_over_declared_bound is True
-    assert anchored.realized_excess_db == pytest.approx(5.0, abs=1e-6)
-
-    assert bare.safety_anchored is False
-    assert bare.boost_over_declared_bound is False
-    assert bare.boost_overshoot_db is None
-    assert bare.realized_louder_than_commanded is False
-    assert bare.realized_excess_db is None
-    # ...and the model departure is measured on both, identically: it never
-    # needed an anchor, and it is the same number on the two maps.
-    assert bare.model_departure_over_tolerance is True
-    assert bare.max_signed_error_db == pytest.approx(
-        anchored.max_signed_error_db, abs=1e-9,
-    )
-
-
-def test_the_two_amounts_are_measured_against_their_OWN_references():
-    """A NON-zero anchor, which is what makes this test able to fail.
-
-    ``realized_excess_db`` is the anchored amount and ``max_signed_error_db``
-    the unanchored one, and every other fixture in this file anchors at 0.0 —
-    where ``safety_excess == model_excess`` numerically, so feeding the anchored
-    field from the unanchored curve is invisible. It was invisible: the exact
-    pre-D1 mispairing survived a mutation across 1,175 tests with zero failures,
-    because no assertion of that field ever ran against a non-zero anchor.
-
-    Here the anchor is −2.0 dB, so the two amounts MUST differ by exactly that,
-    and the assertion pins the anchored one.
-    """
-    commanded = _commanded_lift()
-    probe = _entry_anchored(
-        commanded, realized=commanded + 5.0, band=_band(), anchor_db=-2.0,
-    )
-
-    assert probe.safety_anchored is True
-    # (measured_post − measured_pre) − commanded == 5.0 − (−2.0)
-    assert probe.realized_excess_db == pytest.approx(7.0, abs=1e-6)
-    # (measured_post − predicted) — the model's departure, unanchored.
-    assert probe.max_signed_error_db == pytest.approx(5.0, abs=1e-6)
-    assert probe.realized_excess_db != pytest.approx(probe.max_signed_error_db)
-    assert (
-        probe.realized_excess_db - probe.max_signed_error_db
-        == pytest.approx(2.0, abs=1e-6)
-    )
-    # ...and the same separation on the wire, where a receipt reader meets it.
-    direction = probe.to_dict()["direction"]
-    assert direction["realized_excess_db"] == pytest.approx(7.0, abs=1e-6)
-    assert direction["max_signed_error_db"] == pytest.approx(5.0, abs=1e-6)
-
-
-def test_a_state_axis_map_refuses_an_anchor_rather_than_mixing_frames():
-    """``state_axis_only`` ENFORCES its no-anchor contract (series-2 D1).
-
-    A state axis and a change measurement share no reference, so differencing
-    one against the other produces a finding in a mixed frame — a number with no
-    meaning, on the axis that takes graphs off speakers. The caller is told not
-    to pass both; a caller that does gets the contract, not the mixture.
-
-    Asserted against the same call WITHOUT the anchor: identical, which is what
-    "the anchor was refused" means and what "the anchor was used" would break.
-    """
-    from jasper.active_speaker.delta_probe import VERDICT_SAFETY_ONLY
-
-    declared = _commanded_lift()
-    realized = declared + 5.0
-    anchor = np.full_like(_GRID_HZ, -3.0)
-
-    with_anchor = classify_delta_probe(
-        _GRID_HZ, realized, declared, band_hz=_band(),
-        entry_delta_db=anchor, state_axis_only=True,
-    )
-    without = classify_delta_probe(
-        _GRID_HZ, realized, declared, band_hz=_band(), state_axis_only=True,
-    )
-
-    assert with_anchor.verdict == VERDICT_SAFETY_ONLY
-    assert with_anchor.safety_anchored is False
-    assert with_anchor.boost_over_declared_bound is False
-    assert with_anchor.boost_overshoot_db is None
-    assert with_anchor.realized_excess_db is None
-    # Byte-for-byte the same map as the one that supplied no anchor at all.
-    assert with_anchor.to_dict() == without.to_dict()
-
-
-def test_an_unanchored_louder_map_is_not_handed_the_quieter_only_lenience():
-    """Absence must not GRANT a lenience, only withhold a finding (series-2 D1).
-
-    The fence's polarity is the opposite of a finding's. "No anchor, no claim"
-    is right for a hazard; applied to the fence it would mean an unanchored map
-    that reported nothing louder — because nothing looked — receives #2559's
-    quieter-only lenience and KEEPS, with
-    ``realized_quieter_than_commanded`` banked on a round measured louder.
-
-    So an unanchored map falls back to the model's departure, which is exactly
-    what this function read before D1.
-    """
-    commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
-    realized = commanded + np.where(_DIP_BAND, 4.0, 0.0)
-    louder = classify_delta_probe(
-        _GRID_HZ, realized, commanded, band_hz=_band(),
-    )
-
-    assert louder.verdict == VERDICT_MODEL_ERROR
-    assert louder.safety_anchored is False
-    # The anchored fields say nothing, exactly as the test above requires…
-    assert louder.realized_louder_than_commanded is False
-    # …and the fence is fed by the unanchored fact instead of by silence.
-    assert louder.model_departure_over_tolerance is True
-    assert advice_deferral(louder) == ""
-
-
-def test_an_unanchored_quieter_only_map_still_keeps_its_lenience():
-    """The control, and the direction #2559 exists to protect.
-
-    The fallback above must not become a blanket refusal: a round with no anchor
-    whose miss points entirely quieter has the same claim on the lenience it
-    always had, and gets it. Otherwise D1's fix would restore the very class
-    #2559 stopped restoring, one door over.
-    """
-    commanded = _commanded_lift(depth_db=8.0, corner_hz=1_000.0)
-    realized = commanded - np.where(_DIP_BAND, 3.32, 0.0)
-    quieter = classify_delta_probe(
-        _GRID_HZ, realized, commanded, band_hz=_band(),
-    )
-
-    assert quieter.verdict == VERDICT_MODEL_ERROR
-    assert quieter.safety_anchored is False
-    assert quieter.model_departure_over_tolerance is False
-    assert advice_deferral(quieter) == SEAM_DEFERRED_QUIETER_THAN_COMMANDED
-
-
-def test_a_boost_over_its_bound_never_defers_even_when_stated_alone():
-    """The explicit guard on its own terms, with the per-bin rule held off.
-
-    A stub rather than a classified map, because the point is what the FUNCTION
-    does when only the boost finding is present — which is the state the
-    subsumption above would have to break for this guard to become load-bearing.
-    """
-    stub = SimpleNamespace(
-        verdict=VERDICT_MODEL_ERROR,
-        realized_louder_than_commanded=False,
-        boost_over_declared_bound=True,
-    )
-    assert advice_deferral(stub) == ""
 
 
 @pytest.mark.parametrize(
@@ -2137,11 +1626,7 @@ def test_only_the_realized_vs_commanded_classes_defer(verdict, defers):
     does not: it differences two MEASUREMENTS with no model between them, which
     is the measured regression the adoption table restores ON.
     """
-    stub = SimpleNamespace(
-        verdict=verdict,
-        realized_louder_than_commanded=False,
-        boost_over_declared_bound=False,
-    )
+    stub = SimpleNamespace(verdict=verdict)
     expected = SEAM_DEFERRED_QUIETER_THAN_COMMANDED if defers else ""
     assert advice_deferral(stub) == expected
     assert set(DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS) <= set(
@@ -2170,27 +1655,20 @@ def test_a_map_that_never_reached_a_seam_rollback_records_no_deferral(probe):
     assert advice_deferral(probe) == ""
 
 
-def test_the_direction_helper_reports_not_measured_rather_than_zero():
-    """``None``, never 0.0 — ``gain_factor``'s own distinction."""
-    grid = _GRID_HZ
-    empty = np.zeros_like(grid, dtype=bool)
-    assert louder_than_commanded(
-        np.full_like(grid, 9.0), np.full_like(grid, 1.5), empty
-    ) == (False, None)
-
-
 def test_the_direction_helper_measures_the_raw_curve_not_a_frame_removed_one():
-    """:func:`boost_overshoot`'s reason, verbatim: this asks how much energy
-    reached the driver, and a fitted offset removed first would hide exactly the
-    whole-band overshoot the lenience must not be granted for."""
+    """This asks how much energy reached the driver, and a fitted offset removed
+    first would hide exactly the whole-band overshoot the lenience must not be
+    granted for."""
     commanded = _commanded_lift()
     # A pure +4 dB offset: the frame fit absorbs it, so the frame-removed curve
     # is flat and a check taken there would call this "quieter only".
-    probe = _entry_anchored(commanded, realized=commanded + 4.0, band=_band())
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band(),
+    )
 
     assert probe.frame.fitted is True
     assert probe.frame.offset_db == pytest.approx(4.0, abs=1e-6)
-    assert probe.realized_louder_than_commanded is True
+    assert probe.model_departure_over_tolerance is True
     assert advice_deferral(probe) == ""
 
 
@@ -2198,18 +1676,11 @@ def test_to_dict_carries_the_direction_evidence_the_deferral_rests_on():
     payload = _quieter_only_model_error().to_dict()
 
     assert set(payload["direction"]) == {
-        "realized_louder_than_commanded",
-        "realized_excess_db",
         "model_departure_over_tolerance",
         "max_signed_error_db",
         "max_signed_error_hz",
         "seam_rollback_deferral",
     }
-    # TWO findings, each with its OWN amount, on two references. Pairing a
-    # boolean with the other one's number is how a cut-only graph that really
-    # delivered 4 dB reported 7.0 dB of mostly model error beside it.
-    assert payload["direction"]["realized_louder_than_commanded"] is False
-    assert payload["direction"]["realized_excess_db"] <= 0.0
     assert payload["direction"]["max_signed_error_db"] <= 0.0
     # The model amount and the frequency it was measured at travel together, and
     # that frequency is NOT ``worst_hz`` — different reduction, different set.
@@ -2381,13 +1852,13 @@ def test_a_uniform_shortfall_across_the_graded_band_still_fires():
 
 
 def test_the_fitter_commands_nothing_above_the_mic_trust_ceiling():
-    """S-3: the invariant the ceiling-narrowed safety mask leans on.
+    """S-3: the invariant the trust ceiling leans on.
 
-    ``classify_delta_probe`` widens its safety mask with the ceiling-narrowed
-    ``in_band``, so a NONZERO commanded transfer above the ceiling would lose
-    safety coverage. It cannot exist for the LINEARIZATION half, and that is
-    structural rather than incidental: ``linearization_envelope.
-    compose_envelope`` stacks ``mic_trust_limit`` as one term
+    ``classify_delta_probe`` does not grade above ``trust_ceiling_hz``, so a
+    NONZERO commanded transfer above the ceiling would go unverified. It cannot
+    exist for the LINEARIZATION half, and that is structural rather than
+    incidental: ``linearization_envelope.compose_envelope`` stacks
+    ``mic_trust_limit`` as one term
     (``EnvelopeTerm(ReasonCode.LIMITED_BY_MIC_TIER, ...)``) and reduces the
     stack with ``np.min``, so the allowed depth can never exceed it — and it is
     exactly 0 from the tier's taper zero. Pinned here so the probe's coverage

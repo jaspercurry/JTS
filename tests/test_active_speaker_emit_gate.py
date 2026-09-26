@@ -450,7 +450,7 @@ def test_emit_gate_allows_protected_driver_domain_follower() -> None:
 # "Use of missing mixer 'split_active_2way'". None of the predicates above
 # could have caught this: GraphView drops Mixer pipeline steps entirely
 # (view_from_emitted_text / _emitted_step returns None for anything but
-# type: Filter) and never tracks the mixers: section at all, so every test in
+# `type: Filter`) and never tracks the mixers: section at all, so every test in
 # this file up to here is blind to a mixer-name mismatch by construction.
 # pipeline_reference_closure_errors is the dedicated, independent primitive
 # that closes that hole; these tests pin it directly and at the

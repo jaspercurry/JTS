@@ -44,14 +44,9 @@ from .chrome import CANONICAL_ICON_SPRITE, json_island
 from .nav import children, hub_paths, landing_groups_html, render_hub
 
 def substitutions(
-    *, app_css_version: str, caps: dict[str, object], control_token: str
+    *, app_css_version: str, caps: dict[str, bool], control_token: str
 ) -> dict[str, str]:
-    """Placeholder → replacement: the landing template's whole contract.
-
-    `caps` is `system_capabilities_for_profile`'s map as-is: mostly booleans
-    the page gates on, plus the `install_profile`/`role` strings — hence
-    `object`, not `bool`.
-    """
+    """Placeholder → replacement: the landing template's whole contract."""
     return {
         "__APP_CSS_VERSION__": app_css_version,
         "__JTS_CAPS_ISLAND__": json_island("landing-caps", caps),
@@ -65,7 +60,7 @@ def render_landing(
     template: str,
     *,
     app_css_version: str,
-    caps: dict[str, object],
+    caps: dict[str, bool],
     control_token: str,
 ) -> str:
     """Substitute every landing-page placeholder, or raise ValueError."""
@@ -83,7 +78,7 @@ def render_landing(
 
 
 def write_hub_pages(
-    web_root: Path, *, caps: dict[str, object], app_css_version: str
+    web_root: Path, *, caps: dict[str, bool], app_css_version: str
 ) -> None:
     """Write `<web_root>/<hub>/index.html` for every hub in the manifest."""
     for path in hub_paths():

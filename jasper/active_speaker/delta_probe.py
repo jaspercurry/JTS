@@ -8,8 +8,7 @@ Pure computation; verdicts advise the operator and do not change playback.
 ``commanded_delta_db`` is the applied graph's predicted sum minus the graph
 it replaces; ``realized_delta_db`` is the measured post-apply response minus
 that same prior-graph prediction — not level-offset-invariant (hence
-``expected_offset_db`` and the quiet-bin frame). A directional SAFETY
-finding also needs ``entry_delta_db``. See
+``expected_offset_db`` and the quiet-bin frame). See
 docs/measurement-loop-doctrine.md §3 and ADR-0209.
 """
 from __future__ import annotations
@@ -21,6 +20,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement.frame_fit import FRAME_UNFITTED, FrameFit, fit_frame
+from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # --------------------------------------------------------------------------- #
 # verdict vocabulary
@@ -47,13 +47,6 @@ VERDICT_FRAME_MISMATCH = "frame_mismatch"
 #: The correction commands nothing in the probe band, or curves could not
 #: be compared. Not a pass: no evidence to refuse on either.
 VERDICT_UNAVAILABLE = "unavailable"
-#: Carries the MODEL's departure only (#2614) — a declared transfer but no
-#: CHANGE axis. Not a pass, deliberately not a rollback:
-#: :attr:`DeltaProbeMap.safety_anchored` is False.
-VERDICT_SAFETY_ONLY = "safety_only"
-
-#: Why the shape half did not run on a :data:`VERDICT_SAFETY_ONLY` map.
-REASON_COMMANDED_AXIS_UNAVAILABLE = "commanded_axis_unavailable"
 
 #: Every verdict this module can return. Pinned by a test.
 DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
@@ -64,7 +57,6 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
     VERDICT_LEVEL_MISMATCH,
     VERDICT_FRAME_MISMATCH,
     VERDICT_UNAVAILABLE,
-    VERDICT_SAFETY_ONLY,
 })
 
 #: Verdicts that advise against keeping the correction. ``unavailable`` is excluded — an
@@ -94,7 +86,7 @@ REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 
 
 def advice_deferral(probe: Any | None) -> str:
-    """Defer a quieter-only finding to the adoption table (ADR-0209)."""
+    """The seam deferral an advise-against verdict pointing only quieter carries (ADR-0209), else ""."""
     if probe is None:
         return ""
     if (
@@ -102,13 +94,7 @@ def advice_deferral(probe: Any | None) -> str:
         not in DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS
     ):
         return ""
-    if bool(getattr(probe, "realized_louder_than_commanded", False)):
-        return ""
-    if bool(getattr(probe, "boost_over_declared_bound", False)):
-        return ""
-    if not bool(getattr(probe, "safety_anchored", False)) and bool(
-        getattr(probe, "model_departure_over_tolerance", False)
-    ):
+    if bool(getattr(probe, "model_departure_over_tolerance", False)):
         return ""
     return SEAM_DEFERRED_QUIETER_THAN_COMMANDED
 
@@ -273,10 +259,9 @@ class DeltaProbeMap:
     #: Level move the EMITTER told us it made, dB, removed before anything
     #: below is computed (#1811).
     expected_offset_db: float = 0.0
-    #: Level CHANGE across the apply that nobody commanded, dB — a CHANGE,
-    #: not an absolute (#2533). On a CHAINED round trustworthy only if the
-    #: previous side describes the entry graph — see
-    #: :func:`classify_delta_probe`. ``None`` when too few quiet bins.
+    #: Uncommanded level offset over the quiet bins, dB — realized −
+    #: commanded there, so it includes any standing model offset. ``None``
+    #: when too few quiet bins.
     residual_offset_db: float | None = None
     residual_offset_tolerance_db: float = DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
     #: The band the caller HANDED IN. Distinct from ``probe_band_hz`` (bins
@@ -293,10 +278,6 @@ class DeltaProbeMap:
     frame_removed_exceedance_octaves: float | None = None
     #: Where the ``gain_factor`` regression crosses zero commanded, dB.
     gain_intercept_db: float | None = None
-    #: Standing disagreement between pre-apply measurement and the
-    #: two-branch model, dB, over the same quiet bins (#2533) — removed from
-    #: :attr:`residual_offset_db`. ``None`` means not measured.
-    entry_anchor_offset_db: float | None = None
     #: Quiet bins :attr:`residual_offset_db` was measured over.
     quiet_n_bins: int = 0
     #: Interquartile span of those bins' frequencies, Hz (#2533) — robust
@@ -306,37 +287,15 @@ class DeltaProbeMap:
     #: — 1.0 is co-spanning; below :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`
     #: the verdict narrows its reason.
     quiet_probe_coverage: float | None = None
-    #: Were the two directional findings below measured against the
-    #: PRE-APPLY capture (series-2 D1)? ``False`` means neither ran.
-    safety_anchored: bool = False
-    #: Did a BOOST realize more lift than declared, structurally? (#2537)
-    #: The apply gate refuses this measured finding — see
-    #: :func:`boost_overshoot`. Measured over the SAFETY bins (#2614).
-    boost_over_declared_bound: bool = False
-    #: Worst signed ANCHORED excess, dB, over boosted safety bins; positive
-    #: is undeclared delivered energy. ``None`` when no boosted bin was
-    #: measured.
-    boost_overshoot_db: float | None = None
-    #: Widest contiguous run, octaves, over which that excess cleared
-    #: tolerance. ``0.0`` means nothing cleared it.
-    boost_overshoot_octaves: float = 0.0
-    #: Did ANY safety bin come out LOUDER than declared, past its own
-    #: tolerance? (#2559) See :func:`louder_than_commanded`.
-    realized_louder_than_commanded: bool = False
-    #: Most POSITIVE ANCHORED excess over safety bins, dB — distinct from
-    #: :attr:`boost_overshoot_db` (boosted bins only). ``None`` if not
-    #: measured.
-    realized_excess_db: float | None = None
     #: Did the room depart from the two-branch MODEL, upward past
-    #: tolerance, in the safety bins? Unanchored reading of the same rule —
-    #: a next-round target (#2600), never a hazard.
+    #: tolerance, in any graded bin? A next-round target (#2600), never a
+    #: hazard.
     model_departure_over_tolerance: bool = False
-    #: Most POSITIVE unanchored ``realized − commanded`` over safety bins,
-    #: dB. ``None`` when no bin was in the safety mask.
+    #: Most POSITIVE ``realized − commanded`` over graded bins, dB. ``None``
+    #: when no bin was graded.
     max_signed_error_db: float | None = None
     #: Frequency :attr:`max_signed_error_db` was measured at, Hz — not
-    #: :attr:`worst_hz` (worst ABSOLUTE over GRADED bins vs. worst POSITIVE
-    #: over SAFETY bins).
+    #: :attr:`worst_hz` (worst ABSOLUTE vs. worst POSITIVE error).
     max_signed_error_hz: float | None = None
     #: How much commanded arrived, PER BAND (#2649), keyed by
     #: :data:`DELTA_PROBE_REALIZATION_BANDS`; ``{band_hz, n_bins, ratio,
@@ -351,8 +310,7 @@ class DeltaProbeMap:
 
     @property
     def trusted_floor_hz(self) -> float | None:
-        """Graded band's lower edge, banked by the round receipt (#2609 SF5)
-        so a later round can refuse a cross-floor comparison."""
+        """The graded band's lower edge, Hz."""
         band = self.graded_band_hz or self.requested_band_hz
         return None if band is None else float(band[0])
 
@@ -391,24 +349,8 @@ class DeltaProbeMap:
                     else list(self.quiet_core_band_hz)
                 ),
                 "probe_coverage": self.quiet_probe_coverage,
-                "entry_anchor_offset_db": self.entry_anchor_offset_db,
             },
-            # Governs both blocks below; ``False`` means every directional
-            # finding under it is an absence, not a pass.
-            "safety_anchored": self.safety_anchored,
-            "boost": {
-                "over_declared_bound": self.boost_over_declared_bound,
-                "overshoot_db": self.boost_overshoot_db,
-                "overshoot_octaves": self.boost_overshoot_octaves,
-            },
-            # Two findings on two references (#2559): the first is what the
-            # SPEAKER did (a hazard is read off it); the second is how far the
-            # room departed from our MODEL (a next-round target).
             "direction": {
-                "realized_louder_than_commanded": (
-                    self.realized_louder_than_commanded
-                ),
-                "realized_excess_db": self.realized_excess_db,
                 "model_departure_over_tolerance": (
                     self.model_departure_over_tolerance
                 ),
@@ -462,56 +404,6 @@ def _unavailable(
     )
 
 
-def _safety_only(
-    spatial: SpatialCost,
-    *,
-    expected_offset_db: float,
-    requested_band_hz: tuple[float, float],
-    probe_band_hz: tuple[float, float],
-    n_bins: int,
-    safety_anchored: bool,
-    boost_over_declared_bound: bool,
-    boost_overshoot_db: float | None,
-    boost_overshoot_octaves: float,
-    realized_louder_than_commanded: bool,
-    realized_excess_db: float | None,
-    model_departure_over_tolerance: bool,
-    max_signed_error_db: float | None,
-    max_signed_error_hz: float | None,
-) -> DeltaProbeMap:
-    """A map carrying the model's departure and NO grade of anything else (#2614).
-
-    Every shape and level scalar keeps its dataclass default: on this path
-    the classifier was handed the STATE axis in the commanded slot, and each
-    of those numbers computed against it would be a claim in the wrong
-    frame. ``safety_anchored`` is False — this path has no pre-apply capture
-    to turn ``realized − commanded`` into a statement about the speaker
-    (series-2 D1).
-    """
-    return DeltaProbeMap(
-        verdict=VERDICT_SAFETY_ONLY,
-        reason=REASON_COMMANDED_AXIS_UNAVAILABLE,
-        probe_band_hz=probe_band_hz,
-        n_bins=n_bins,
-        max_error_db=0.0, rms_error_db=0.0, worst_hz=0.0,
-        exceedance_octaves=0.0, gain_factor=None,
-        tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
-        tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
-        spatial=spatial,
-        expected_offset_db=expected_offset_db,
-        requested_band_hz=requested_band_hz,
-        safety_anchored=safety_anchored,
-        boost_over_declared_bound=boost_over_declared_bound,
-        boost_overshoot_db=boost_overshoot_db,
-        boost_overshoot_octaves=boost_overshoot_octaves,
-        realized_louder_than_commanded=realized_louder_than_commanded,
-        realized_excess_db=realized_excess_db,
-        model_departure_over_tolerance=model_departure_over_tolerance,
-        max_signed_error_db=max_signed_error_db,
-        max_signed_error_hz=max_signed_error_hz,
-    )
-
-
 def _tolerance_curve(freqs_hz: np.ndarray) -> np.ndarray:
     """The two-tier per-bin tolerance (see the two tolerance constants)."""
     return np.where(
@@ -537,35 +429,6 @@ def graded_command_floor_db(freqs_hz: np.ndarray) -> np.ndarray:
     )
 
 
-def widest_exceedance_octaves(
-    freqs_hz: np.ndarray, exceeds: np.ndarray,
-) -> tuple[float, float]:
-    """``(widest contiguous run in octaves, that run's low edge in Hz)``.
-
-    A run is contiguous in GRID INDEX, not the exceeding set — two exceeding
-    bins either side of a compliant one are two runs. Width is log2
-    frequency (comparable at any center frequency). ``(0.0, 0.0)`` if none.
-    """
-    widest = 0.0
-    widest_lo_hz = 0.0
-    idx = np.flatnonzero(exceeds)
-    if idx.size == 0:
-        return 0.0, 0.0
-    breaks = np.flatnonzero(np.diff(idx) != 1)
-    starts = np.concatenate(([0], breaks + 1))
-    ends = np.concatenate((breaks, [idx.size - 1]))
-    for s, e in zip(starts, ends):
-        lo_hz = float(freqs_hz[idx[s]])
-        hi_hz = float(freqs_hz[idx[e]])
-        if lo_hz <= 0.0 or hi_hz <= 0.0:
-            continue
-        span = math.log2(hi_hz / lo_hz) if hi_hz > lo_hz else 0.0
-        if span > widest:
-            widest = span
-            widest_lo_hz = lo_hz
-    return widest, widest_lo_hz
-
-
 def _structured_exceedance(
     freqs_hz: np.ndarray,
     error_db: np.ndarray,
@@ -579,62 +442,11 @@ def _structured_exceedance(
     one "wide" run at every mask hole.
     """
     exceeds = probe_mask & (np.abs(error_db) > tolerance_db)
-    widest, _ = widest_exceedance_octaves(freqs_hz, exceeds)
+    widest = max(
+        (_octave_span(run) for run in merged_true_intervals(freqs_hz, exceeds)),
+        default=0.0,
+    )
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, widest
-
-
-def boost_overshoot(
-    freqs_hz: np.ndarray,
-    excess_db: np.ndarray,
-    commanded_db: np.ndarray,
-    tolerance_db: np.ndarray,
-    probe_mask: np.ndarray,
-    declared_db: np.ndarray | None = None,
-) -> tuple[bool, float | None, float]:
-    """Did a BOOST realize MORE lift than the graph declared? (#2537)
-
-    ``(over the bound, worst signed excess in dB, widest run in octaves)``
-    over bins where a boost is on the table. ``excess_db`` must be a
-    measured CHANGE (series-2 D1): ``(measured_post − measured_pre) −
-    expected_offset − commanded``. A bin qualifies when EITHER
-    ``commanded_db`` or ``declared_db`` (graph's own predicted transfer)
-    boosts (#2614); ``declared_db=None`` falls back to ``commanded_db``
-    alone. Directional and STRUCTURED
-    (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`) — under-realizing a boost
-    is not the hazard this asks about. Middle value ``None``, never 0.0,
-    when no bin carried a boost.
-    """
-    declared = commanded_db if declared_db is None else declared_db
-    boosted = probe_mask & ((commanded_db > 0.0) | (declared > 0.0))
-    if not bool(boosted.any()):
-        return False, None, 0.0
-    worst = float(np.max(excess_db[boosted]))
-    widest, _ = widest_exceedance_octaves(
-        freqs_hz, boosted & (excess_db > tolerance_db)
-    )
-    return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, worst, float(widest)
-
-
-def louder_than_commanded(
-    excess_db: np.ndarray,
-    tolerance_db: np.ndarray,
-    probe_mask: np.ndarray,
-) -> tuple[bool, float | None]:
-    """Did ANY bin come out LOUDER than the excess curve's reference? (#2559)
-
-    ``(over the bound anywhere, most POSITIVE excess in dB)``. Called on
-    the ANCHORED excess (a hearing fact, withholds ADR-0209's lenience) and
-    on the unanchored ``realized − commanded`` (an acoustic-MODEL target).
-    Deliberately unstructured, unlike :func:`boost_overshoot` — one bin is
-    enough. ``probe_mask`` is the SAFETY mask, not the graded one (#2614).
-    ``None`` only when the mask selects nothing.
-    """
-    if not bool(probe_mask.any()):
-        return False, None
-    return (
-        bool((probe_mask & (excess_db > tolerance_db)).any()),
-        float(np.max(excess_db[probe_mask])),
-    )
 
 
 def _octave_span(span_hz: tuple[float, float]) -> float:
@@ -722,10 +534,7 @@ def classify_delta_probe(
     band_hz: tuple[float, float],
     spatial: SpatialCost = SPATIAL_COST_UNAVAILABLE,
     expected_offset_db: float = 0.0,
-    entry_delta_db: Any | None = None,
-    declared_transfer_db: Any | None = None,
     trust_ceiling_hz: float | None = None,
-    state_axis_only: bool = False,
 ) -> DeltaProbeMap:
     """Classify one applied correction's realized-vs-commanded map.
 
@@ -734,18 +543,7 @@ def classify_delta_probe(
     — this function owns no gate/floor/ceiling beyond that (#2521).
 
     ``expected_offset_db``: whole-band level move the EMITTER made and did
-    NOT command, subtracted from ``realized`` first. ``entry_delta_db``:
-    pre-apply capture in the same frame, so ``residual_offset_db`` is a
-    CHANGE (#2533); also required for both directional SAFETY findings
-    (series-2 D1) — its absence means those findings are not made.
-    ``declared_transfer_db``: the STATE axis the two directional rules
-    union into their bin selection (#2614). ``state_axis_only``: the
-    ``commanded_delta_db`` slot holds a STATE axis (no change axis
-    available, #2614) — returns :data:`VERDICT_SAFETY_ONLY`; do NOT pass
-    ``entry_delta_db`` alongside it.
-
-    CHAINED ROUNDS: ``commanded_delta_db`` and ``entry_delta_db`` must both
-    be stated against the graph live at entry (#2611).
+    NOT command, subtracted from ``realized`` first.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     realized = np.asarray(realized_delta_db, dtype=np.float64)
@@ -784,22 +582,6 @@ def classify_delta_probe(
             requested_band_hz=requested_band_hz,
         )
 
-    # The STATE axis, read by the two directional safety rules only (#2614).
-    # ``commanded`` is a CHANGE, so on a repeat round the graded ``mask``
-    # stops covering a band the applied graph still boosts by 5 dB; those
-    # rules watch the UNION instead. ``None`` degrades to the graded mask
-    # alone (an identity on a first-ever apply).
-    declared: np.ndarray | None = None
-    if declared_transfer_db is not None:
-        candidate_declared = np.asarray(declared_transfer_db, dtype=np.float64)
-        if candidate_declared.shape == freqs.shape:
-            declared = candidate_declared
-    safety_mask = mask
-    if declared is not None:
-        safety_mask = mask | (
-            in_band & np.isfinite(declared) & (np.abs(declared) >= floor)
-        )
-
     f = freqs[mask]
     r = realized[mask]
     c = commanded[mask]
@@ -819,35 +601,8 @@ def classify_delta_probe(
     # like.
     quiet = in_band & (np.abs(commanded) < DELTA_PROBE_MIN_COMMANDED_DB)
     quiet_measurable = int(quiet.sum()) >= DELTA_PROBE_MIN_BINS
-
-    # Measured as a CHANGE, not an absolute disagreement with the model
-    # (#2533): subtracting the PRE-apply capture cancels the standing
-    # ``measured_post − predicted_post`` mismatch:
-    #     (measured_post − predicted − offset) − (measured_pre − predicted)
-    #         − commanded == (measured_post − measured_pre) − commanded − offset
-    # Holds only because ``commanded`` and ``entry_delta`` share one
-    # reference graph (#2611, the ENTRY graph).
-    entry: np.ndarray | None = None
-    if entry_delta_db is not None:
-        candidate = np.asarray(entry_delta_db, dtype=np.float64)
-        if candidate.shape == freqs.shape:
-            entry = candidate
-    anchored = (
-        quiet_measurable
-        and entry is not None
-        and int((quiet & np.isfinite(entry)).sum()) >= DELTA_PROBE_MIN_BINS
-    )
-    # One bin set for the residual and for the anchor removed from it, so the
-    # decomposition below is an identity rather than an approximation.
-    residual_bins = (quiet & np.isfinite(entry)) if anchored and entry is not None else quiet
-    entry_anchor_offset_db: float | None = (
-        float(np.mean(entry[residual_bins])) if anchored and entry is not None else None
-    )
     residual_offset_db: float | None = (
-        float(
-            np.mean(realized[residual_bins] - commanded[residual_bins])
-            - (entry_anchor_offset_db or 0.0)
-        )
+        float(np.mean(realized[quiet] - commanded[quiet]))
         if quiet_measurable
         else None
     )
@@ -855,11 +610,11 @@ def classify_delta_probe(
     # WHERE those bins sit, and how spread relative to a full sampling of the
     # band their level is claimed over (#2533) — see
     # DELTA_PROBE_MIN_QUIET_COVERAGE.
-    quiet_n_bins = int(residual_bins.sum()) if quiet_measurable else 0
+    quiet_n_bins = int(quiet.sum()) if quiet_measurable else 0
     quiet_core_band_hz: tuple[float, float] | None = None
     quiet_probe_coverage: float | None = None
     if quiet_measurable:
-        quiet_core_band_hz = interquartile_band_hz(freqs[residual_bins])
+        quiet_core_band_hz = interquartile_band_hz(freqs[quiet])
         band_core_hz = interquartile_band_hz(
             freqs[in_band & (freqs >= probe_band_hz[0]) & (freqs <= probe_band_hz[1])]
         )
@@ -915,76 +670,16 @@ def classify_delta_probe(
     )
     frame_error = frame_error_full[mask]
 
-    # THE TWO DIRECTIONAL SAFETY FINDINGS (series-2 D1), on the RAW curves
-    # (a frame answers SHAPE; this asks energy reaching the driver) and the
-    # SAFETY mask, not the graded one (#2614):
-    #   model_excess  = realized − commanded
-    #   safety_excess = model_excess − entry (cancels a standing model error
-    #                   present in both captures)
-    model_excess = realized - commanded
-    # ENFORCED: a state axis shares no reference with a change measurement.
-    safety_anchor = None if state_axis_only else entry
-    safety_excess = (
-        model_excess if safety_anchor is None else model_excess - safety_anchor
-    )
-    # No anchor, no finding: a bin with no usable pre-apply level cannot say
-    # what the speaker DID there.
-    safety_bins = safety_mask & np.isfinite(safety_excess)
-    safety_anchored = (
-        safety_anchor is not None
-        and int(safety_bins.sum()) >= DELTA_PROBE_MIN_BINS
-    )
-    if safety_anchored:
-        boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = (
-            boost_overshoot(
-                freqs, safety_excess, commanded, tolerance_full, safety_bins,
-                declared_db=declared,
-            )
-        )
-        realized_louder, realized_excess_db = louder_than_commanded(
-            safety_excess, tolerance_full, safety_bins,
-        )
-    else:
-        boost_over_bound, boost_overshoot_db, boost_overshoot_octaves = (
-            False, None, 0.0,
-        )
-        realized_louder, realized_excess_db = False, None
-    # The MODEL's own departure, always, on the unanchored curve — a
-    # next-round target (the blend region is known blind, #2600), never a
-    # hazard.
-    model_departure_over_tolerance, max_signed_error_db = louder_than_commanded(
-        model_excess, tolerance_full, safety_mask,
-    )
-    # WHERE it peaks — often a different bin from ``worst_hz`` (worst
-    # ABSOLUTE error over GRADED bins vs. worst POSITIVE over SAFETY bins:
-    # 1947.2 Hz and 1384.1 Hz on the banked series-2 r1b).
-    max_signed_error_hz: float | None = (
-        float(freqs[safety_mask][int(np.argmax(model_excess[safety_mask]))])
-        if max_signed_error_db is not None
-        else None
-    )
-
-    # The caller had no CHANGE axis (#2614): every shape/level scalar above
-    # is a claim in the wrong frame, so return the model's departure and
-    # none of it. The shape work above is not skipped, only discarded — one
-    # lstsq and frame fit per session is cheaper than a second exit path.
-    if state_axis_only:
-        return _safety_only(
-            spatial,
-            expected_offset_db=offset,
-            requested_band_hz=requested_band_hz,
-            probe_band_hz=probe_band_hz,
-            n_bins=int(f.size),
-            safety_anchored=safety_anchored,
-            boost_over_declared_bound=boost_over_bound,
-            boost_overshoot_db=boost_overshoot_db,
-            boost_overshoot_octaves=boost_overshoot_octaves,
-            realized_louder_than_commanded=realized_louder,
-            realized_excess_db=realized_excess_db,
-            model_departure_over_tolerance=model_departure_over_tolerance,
-            max_signed_error_db=max_signed_error_db,
-            max_signed_error_hz=max_signed_error_hz,
-        )
+    # The MODEL's departure, on the RAW curve (a frame answers SHAPE; this
+    # asks what reached the driver) — a next-round target (the blend region
+    # is known blind, #2600), never a hazard. Unstructured, unlike
+    # _structured_exceedance: one bin over tolerance is enough, so it
+    # withholds ADR-0209's lenience. The peak is often a different bin from
+    # ``worst_hz`` (worst POSITIVE vs. worst ABSOLUTE error).
+    peak = int(np.argmax(error))
+    model_departure_over_tolerance = bool(np.any(error > tolerance_full[mask]))
+    max_signed_error_db: float | None = float(error[peak])
+    max_signed_error_hz: float | None = float(f[peak])
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
@@ -1010,16 +705,9 @@ def classify_delta_probe(
                 float(frame_exceedance_octaves) if frame.fitted else None
             ),
             gain_intercept_db=intercept,
-            entry_anchor_offset_db=entry_anchor_offset_db,
             quiet_n_bins=quiet_n_bins,
             quiet_core_band_hz=quiet_core_band_hz,
             quiet_probe_coverage=quiet_probe_coverage,
-            safety_anchored=safety_anchored,
-            boost_over_declared_bound=boost_over_bound,
-            boost_overshoot_db=boost_overshoot_db,
-            boost_overshoot_octaves=boost_overshoot_octaves,
-            realized_louder_than_commanded=realized_louder,
-            realized_excess_db=realized_excess_db,
             model_departure_over_tolerance=model_departure_over_tolerance,
             max_signed_error_db=max_signed_error_db,
             max_signed_error_hz=max_signed_error_hz,
@@ -1038,12 +726,10 @@ def classify_delta_probe(
     # Before shape-or-scale: does the map fail only because the level moved
     # by something nobody commanded (#1811)? Requires BOTH (a) the
     # quiet-bin residual is material on its own (``residual_offset_db``)
-    # and (b) removing the quiet-bin offset makes the map pass (their whole
-    # disagreement with the MODEL, #2533).
+    # and (b) removing it makes the map pass.
     if residual_offset_db is not None:
-        quiet_offset_db = residual_offset_db + (entry_anchor_offset_db or 0.0)
         levelled_error_full = np.where(
-            mask, realized - commanded - quiet_offset_db, 0.0
+            mask, realized - commanded - residual_offset_db, 0.0
         )
         levelled_exceeded, _ = _structured_exceedance(
             freqs, levelled_error_full, tolerance_full, mask,
@@ -1139,7 +825,6 @@ __all__ = [
     "DELTA_PROBE_VERDICTS",
     "SEAM_DEFERRED_QUIETER_THAN_COMMANDED",
     "SPATIAL_COST_UNAVAILABLE",
-    "REASON_COMMANDED_AXIS_UNAVAILABLE",
     "REASON_UNCOMMANDED_LEVEL_SHIFT",
     "REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND",
     "DeltaProbeMap",
@@ -1149,14 +834,10 @@ __all__ = [
     "VERDICT_LEVEL_MISMATCH",
     "VERDICT_MATCHED",
     "VERDICT_MODEL_ERROR",
-    "VERDICT_SAFETY_ONLY",
     "VERDICT_SPATIALLY_COSTLY",
     "VERDICT_UNAVAILABLE",
-    "boost_overshoot",
     "classify_delta_probe",
     "graded_command_floor_db",
     "interquartile_band_hz",
-    "louder_than_commanded",
     "advice_deferral",
-    "widest_exceedance_octaves",
 ]

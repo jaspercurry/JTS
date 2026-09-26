@@ -265,7 +265,6 @@ def current_artifact_filter_kwargs(
     requested_profile: str | None = None,
     system_env: Mapping[str, str] | None = None,
     mic_probe: MicProbe | None = None,
-    outputd_status: Mapping[str, Any] | None = None,
 ) -> dict[str, str | None]:
     """Build hardware-bound filters for status-surface artifact reads.
 
@@ -277,7 +276,7 @@ def current_artifact_filter_kwargs(
 
     env = dict(system_env) if system_env is not None else read_system_env()
     mic = _mic_details(mic_probe if mic_probe is not None else _probe_xvf_mic())
-    dac = _dac_details(env, outputd_status)
+    dac = _dac_details(env, None)
     return {
         "requested_profile": requested_profile,
         "mic_id": str(mic.get("id") or "unknown"),

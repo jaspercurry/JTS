@@ -10,6 +10,10 @@ from pathlib import Path
 
 
 CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
+# camilla#1 (outputd) and camilla#2 (crossover); the units' --statefile flags
+# in deploy/systemd/ spell the same paths.
+DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
+DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 OUTPUT_HARDWARE_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
@@ -27,3 +31,11 @@ def resolve_state_path(
     """
     env_value = os.environ.get(env_name) if env_name else None
     return Path(explicit or env_value or default)
+
+
+def camilla_statefile(path: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_state_path(path, "JASPER_CAMILLA_STATEFILE", DEFAULT_CAMILLA_STATEFILE)
+
+
+def crossover_statefile(path: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_state_path(path, "JASPER_CAMILLA2_STATEFILE", DEFAULT_CAMILLA2_STATEFILE)

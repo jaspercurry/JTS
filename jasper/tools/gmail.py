@@ -38,7 +38,7 @@ import base64
 import html
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
@@ -75,19 +75,14 @@ _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def _parse_rfc2822_date(raw: str) -> datetime | None:
-    if not raw:
-        return None
+    """The header as an aware datetime local time can hold, else None."""
     try:
         dt = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
+        if dt.tzinfo is None:  # no zone, or "-0000": read as UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt.astimezone()
+    except (TypeError, ValueError, OverflowError):
         return None
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        # Some senders ship naive timestamps. Treat as UTC — better
-        # than crashing on the astimezone() call below.
-        from datetime import timezone
-        dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
 
@@ -187,6 +182,52 @@ def _header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def _date_fields(raw_date: str) -> dict[str, str]:
+    """`date` to read aloud plus `date_iso`; {} when the header won't parse."""
+    dt = _parse_rfc2822_date(raw_date)
+    if dt is None:
+        return {}
+    return {"date": _format_relative_date(dt), "date_iso": dt.isoformat()}
+
+
+# from / subject / snippet / body are attacker-controllable third-party text:
+# each is fenced so a crafted sender, subject or email ("Ignore previous
+# instructions and …") reaches the model as inert data, never instructions.
+# See jasper.tools.fence_untrusted.
+def _summary_entry(m: dict) -> dict[str, Any]:
+    headers = (m.get("payload") or {}).get("headers") or []
+    sender = fence_untrusted(_header(headers, "From"), source="gmail")
+    subject = fence_untrusted(
+        _header(headers, "Subject").strip(), source="gmail",
+    ) or "(no subject)"
+    raw_date = _header(headers, "Date")
+    entry: dict[str, Any] = {
+        "id": m.get("id") or "",
+        "thread_id": m.get("threadId") or "",
+        "from": sender,
+        "subject": subject,
+        **_date_fields(raw_date),
+    }
+    snippet = (m.get("snippet") or "").strip()
+    if snippet:
+        entry["snippet"] = fence_untrusted(snippet, source="gmail")
+    return entry
+
+
+def _thread_message(m: dict) -> tuple[str, dict[str, Any]]:
+    """A thread message's raw Subject and its entry."""
+    payload = m.get("payload") or {}
+    headers = payload.get("headers") or []
+    subject = _header(headers, "Subject")
+    raw_date = _header(headers, "Date")
+    return subject, {
+        "from": fence_untrusted(_header(headers, "From"), source="gmail"),
+        "subject": fence_untrusted(subject, source="gmail"),
+        "body": fence_untrusted(_decode_body(payload), source="gmail"),
+        **_date_fields(raw_date),
+    }
+
+
 # ----------------------------------------------------------------------
 # Sync API wrappers — invoked through asyncio.to_thread so the voice
 # loop's event loop isn't blocked on networking.
@@ -213,23 +254,23 @@ def _get_thread_sync(service, thread_id: str) -> dict:
     ).execute()
 
 
+async def _fetch_metadata(service, stub: dict) -> dict | None:
+    msg_id = stub.get("id") or ""
+    if not msg_id:
+        return None
+    try:
+        return await asyncio.to_thread(_get_message_metadata_sync, service, msg_id)
+    except Exception as e:  # noqa: BLE001
+        logger.info("gmail metadata fetch failed for %s: %s", msg_id, e)
+        return None
+
+
 # ----------------------------------------------------------------------
 # Tool factory.
 # ----------------------------------------------------------------------
 
 
-def make_gmail_tools(
-    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
-):
-    """`setup_url` is surfaced (as the `setup_url` field, and named in the
-    `error` sentence) when no account is linked or credentials need a
-    re-link. `monitor` (an `UntrustedContentMonitor`, optional) is stamped
-    whenever a call returns real message content — that's untrusted
-    third-party text entering the model's context, which arms the
-    consequential-action confirmation window in the home_assistant tool."""
-    if clients is None:
-        return []
-
+def _unread_summary_tool(clients: "GoogleClients", setup_url: str, monitor):
     @tool(
         log_payload=False,
         labels=("productivity", "google", "gmail"),
@@ -273,73 +314,26 @@ def make_gmail_tools(
         if service is None:
             return no_credentials_error(canonical, setup_url)
         try:
-            stub_list = await asyncio.to_thread(
-                _list_unread_sync, service, max_results=n,
-            )
+            stub_list = await asyncio.to_thread(_list_unread_sync, service, max_results=n)
         except Exception as e:  # noqa: BLE001
             return api_error("gmail", canonical, e)
         if not stub_list:
-            return {
-                "ok": True,
-                "account": canonical,
-                "count": 0,
-                "messages": [],
-            }
+            return {"ok": True, "account": canonical, "count": 0, "messages": []}
         # Fetch metadata for each id concurrently — Google's per-call
         # latency is 100-300 ms, so 5 sequential = up to 1.5 s, while
         # parallel keeps it close to a single call.
-        async def _fetch(stub: dict) -> dict | None:
-            msg_id = stub.get("id") or ""
-            if not msg_id:
-                return None
-            try:
-                return await asyncio.to_thread(
-                    _get_message_metadata_sync, service, msg_id,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.info("gmail metadata fetch failed for %s: %s", msg_id, e)
-                return None
-
-        msgs = await asyncio.gather(*(_fetch(s) for s in stub_list))
-        out: list[dict[str, Any]] = []
-        for m in msgs:
-            if m is None:
-                continue
-            headers = (m.get("payload") or {}).get("headers") or []
-            # from / subject / snippet are attacker-controllable third-party
-            # text — fence each so a crafted sender or subject ("Ignore
-            # previous instructions and …") reaches the model as inert data,
-            # never instructions. See jasper.tools.fence_untrusted.
-            sender = fence_untrusted(_header(headers, "From"), source="gmail")
-            subject = fence_untrusted(
-                _header(headers, "Subject").strip(), source="gmail",
-            ) or "(no subject)"
-            raw_date = _header(headers, "Date")
-            entry: dict[str, Any] = {
-                "id": m.get("id") or "",
-                "thread_id": m.get("threadId") or "",
-                "from": sender,
-                "subject": subject,
-            }
-            dt = _parse_rfc2822_date(raw_date)
-            if dt is not None:
-                entry["date"] = _format_relative_date(dt)
-                entry["date_iso"] = dt.isoformat()
-            snippet = (m.get("snippet") or "").strip()
-            if snippet:
-                entry["snippet"] = fence_untrusted(snippet, source="gmail")
-            out.append(entry)
+        msgs = await asyncio.gather(*(_fetch_metadata(service, s) for s in stub_list))
+        out = [_summary_entry(m) for m in msgs if m is not None]
         if out and monitor is not None:
             # Untrusted sender/subject/snippet text just entered the model's
             # context — arm the consequential-action confirmation window.
             monitor.mark()
-        return {
-            "ok": True,
-            "account": canonical,
-            "count": len(out),
-            "messages": out,
-        }
+        return {"ok": True, "account": canonical, "count": len(out), "messages": out}
 
+    return gmail_unread_summary
+
+
+def _read_thread_tool(clients: "GoogleClients", setup_url: str, monitor):
     @tool(
         log_payload=False,
         labels=("productivity", "google", "gmail"),
@@ -377,36 +371,19 @@ def make_gmail_tools(
         if service is None:
             return no_credentials_error(canonical, setup_url)
         try:
-            thread = await asyncio.to_thread(
-                _get_thread_sync, service, thread_id,
-            )
+            thread = await asyncio.to_thread(_get_thread_sync, service, thread_id)
         except Exception as e:  # noqa: BLE001
             return api_error("gmail", canonical, e)
         messages = (thread.get("messages") or [])[:_MAX_THREAD_MESSAGES]
         out_messages: list[dict[str, Any]] = []
         thread_subject = ""
         for m in messages:
-            payload = m.get("payload") or {}
-            headers = payload.get("headers") or []
-            subject = _header(headers, "Subject")
+            subject, entry = _thread_message(m)
             if subject and not thread_subject:
                 # First message's subject — usually the canonical thread
                 # subject without "Re: " prefixes. Kept raw here; fenced
                 # once when assembling the top-level `subject` below.
                 thread_subject = subject
-            raw_date = _header(headers, "Date")
-            # from / subject / body are attacker-controllable third-party
-            # text — fence each so a crafted email can't inject instructions
-            # into the model. See jasper.tools.fence_untrusted.
-            entry: dict[str, Any] = {
-                "from": fence_untrusted(_header(headers, "From"), source="gmail"),
-                "subject": fence_untrusted(subject, source="gmail"),
-                "body": fence_untrusted(_decode_body(payload), source="gmail"),
-            }
-            dt = _parse_rfc2822_date(raw_date)
-            if dt is not None:
-                entry["date"] = _format_relative_date(dt)
-                entry["date_iso"] = dt.isoformat()
             out_messages.append(entry)
         if out_messages and monitor is not None:
             # Untrusted email body/subject just entered the model's context —
@@ -421,7 +398,24 @@ def make_gmail_tools(
             "messages": out_messages,
         }
 
-    return [gmail_unread_summary, gmail_read_thread]
+    return gmail_read_thread
+
+
+def make_gmail_tools(
+    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
+):
+    """`setup_url` is surfaced (as the `setup_url` field, and named in the
+    `error` sentence) when no account is linked or credentials need a
+    re-link. `monitor` (an `UntrustedContentMonitor`, optional) is stamped
+    whenever a call returns real message content — that's untrusted
+    third-party text entering the model's context, which arms the
+    consequential-action confirmation window in the home_assistant tool."""
+    if clients is None:
+        return []
+    return [
+        _unread_summary_tool(clients, setup_url, monitor),
+        _read_thread_tool(clients, setup_url, monitor),
+    ]
 
 
 __all__ = ["make_gmail_tools"]

@@ -270,9 +270,7 @@ install_web_unit_files() {
     done
 }
 
-# Renderer/DSP + assistant wizard ports; the assistant ones are bound
-# whether or not the tier currently holds Capability.ASSISTANT, because a
-# static socket cannot follow the grant table. Forbidden = the WAKE_DETECTION
+# Renderer/DSP + assistant wizard ports. Forbidden = the WAKE_DETECTION
 # wizards, which a Zero-2-W-class board never runs. Kept in step with
 # deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
 # tests/test_web_main_imports.py.

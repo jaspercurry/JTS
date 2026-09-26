@@ -102,7 +102,7 @@ def _provider_html(
     </div>"""
 
 
-def _index_html(
+def index_html(
     state: dict[str, str], csrf_token: str, *, status_msg: str = "",
     discovery: dict[str, DiscoverySnapshot] | None = None,
     selected: str | None = None,

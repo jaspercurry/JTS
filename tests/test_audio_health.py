@@ -313,7 +313,7 @@ def test_the_household_shapes_cover_every_signal_path_code() -> None:
 
 
 def _every_incident_row() -> list[dict]:
-    """Every row `_state_issues` can raise, over all of its branches.
+    """Every row `state_issues` can raise, over all of its branches.
 
     The rows reach the same card as the sentences swept above but are built by
     a second function, so they are swept from their own writer rather than
@@ -346,7 +346,7 @@ def _every_incident_row() -> list[dict]:
             for latency in latencies:
                 for intents in (None, {"usbsink": False}):
                     for park in parks:
-                        rows.extend(audio_state_issues._state_issues(
+                        rows.extend(audio_state_issues.state_issues(
                             airplay,
                             None,
                             snapshot["signal_path"],

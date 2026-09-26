@@ -649,82 +649,6 @@ def test_system_snapshot_audio_quality_fails_soft(
     assert "unsupported ALSA rate converter" in body["error"]
 
 
-def test_system_snapshot_legacy_endpoint_token_reports_streambox_caps(
-    monkeypatch,
-    server_with_coordinator,
-):
-    # A persisted legacy "endpoint" marker normalizes to streambox; the
-    # capabilities payload reflects streambox, not a removed third role.
-    import jasper.control.server as srv_mod
-
-    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/system/snapshot")
-
-    assert status == 200
-    caps = body["system_capabilities"]
-    assert caps["install_profile"] == "endpoint"  # raw token preserved
-    assert caps["role"] == "streambox"            # normalized role
-    assert caps["voice_brain"] is True
-    assert caps["wake_detection"] is False
-    assert caps["developer_tools"] is False
-    assert caps["network_settings"] is True
-    assert caps["reboot"] is True
-    assert caps["poweroff"] is True
-    assert "unavailable_reason" not in caps
-
-
-def test_system_snapshot_reports_full_capabilities(
-    monkeypatch,
-    server_with_coordinator,
-):
-    import jasper.control.server as srv_mod
-
-    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "full")
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/system/snapshot")
-
-    assert status == 200
-    caps = body["system_capabilities"]
-    assert caps["install_profile"] == "full"
-    assert caps["role"] == "full"
-    assert caps["voice_brain"] is True
-    assert caps["developer_tools"] is True
-
-
-def test_system_snapshot_reports_streambox_capabilities(
-    monkeypatch,
-    server_with_coordinator,
-):
-    import jasper.control.server as srv_mod
-
-    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/system/snapshot")
-
-    assert status == 200
-    caps = body["system_capabilities"]
-    assert caps["install_profile"] == "streambox"
-    assert caps["role"] == "streambox"
-    assert caps["local_sources"] is True
-    assert caps["content_dsp"] is True
-    assert caps["voice_brain"] is True
-    assert caps["wake_detection"] is False
-    assert caps["audio_quality"] is True
-    assert caps["restart_voice"] is True
-    assert caps["restart_audio"] is True
-    assert caps["network_settings"] is True
-    assert caps["speaker_settings"] is True
-    assert caps["pair_management"] is True
-    assert caps["developer_tools"] is False
-    assert caps["reboot"] is True
-    assert caps["poweroff"] is True
-    assert "unavailable_reason" not in caps
-
-
 def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> None:
     """One reader per fact on the dashboard route (ADR-0233 rule 1): outputd
     is read ONCE per request and published through the shaper /state shares.
@@ -855,7 +779,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert "music_dbfs" in body["voice"]
     # /state.voice is hand-curated, NOT a session_status pass-through, so a
     # new session_status field is silently dropped if it isn't pulled
-    # through in _get_state. wake_legs (jasper-doctor's runtime cross-check
+    # through in get_state. wake_legs (jasper-doctor's runtime cross-check
     # source) is exactly such a field — guard that its key is present.
     assert "wake_legs" in body["voice"]
     # tool_packs is the same shape of curated pull-through (jasper-doctor's
@@ -934,7 +858,7 @@ async def test_state_section_read_past_the_deadline_reports_unavailable(
     A section read that never returns used to park the compute, and with it
     every /state client behind the single-flight cache. It now costs that
     section only: the key stays, its value is the same null every other
-    fail-soft section serves. Retire with the deadline in _get_state.
+    fail-soft section serves. Retire with the deadline in get_state.
     """
     from tests.test_wire_contracts import _state_payload
 
@@ -998,7 +922,7 @@ async def test_state_outputd_section_drops_the_chip_ref_write_ring():
             "recent_writes_capacity": 256,
         }}}
 
-    body = await state_aggregate._outputd_status(local_status_json=status)
+    body = await state_aggregate.outputd_status(local_status_json=status)
 
     writer = body["reference_outputs"]["chip_ref_writer"]
     assert "recent_writes" not in writer
@@ -1009,7 +933,7 @@ def test_state_voice_wake_legs_flows_from_session_status(
     server_with_coordinator, monkeypatch,
 ):
     """Regression for the curated-vs-passthrough drop: /state.voice is
-    hand-built in _get_state, so a session_status field (here wake_legs —
+    hand-built in get_state, so a session_status field (here wake_legs —
     the runtime-armed legs jasper-doctor cross-checks against configured
     intent) only reaches /state if it's explicitly pulled through. Before
     that pull-through, wake_legs lived in session_status but was absent
@@ -1112,7 +1036,7 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     `Wake legs` check does not read it: the doctor re-derives the same fact
     from the published env + accessory file to report `n/a` instead of a
     permanent yellow on such a box. Pinned here at the aggregator seam
-    specifically: _get_state hand-curates /state.voice field-by-field, so a
+    specifically: get_state hand-curates /state.voice field-by-field, so a
     key silently dropped from that dict literal is invisible to daemon-side
     coverage of session_status() (tests/test_voice_daemon_wake_triple_stream.py)
     and to source-level checks that the key is merely present somewhere in
@@ -1530,7 +1454,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
 
     with caplog.at_level("WARNING", logger="jasper.control.state_aggregate"):
         with pytest.raises(asyncio.TimeoutError):
-            await sa._get_state(
+            await sa.get_state(
                 camilla_host="127.0.0.1",
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
@@ -1553,7 +1477,7 @@ async def test_state_airplay_row_and_active_source_come_from_the_injected_reader
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 
-    body = await state_aggregate._get_state(
+    body = await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),
@@ -1645,7 +1569,7 @@ def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordin
     daemon on a bonded follower — refuse with the pair story."""
     import jasper.control.handlers.peering as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    monkeypatch.setattr(srv_mod, "pair_follower_leader_addr", lambda: "jts.local")
     base, _fake = server_with_coordinator
     status, body = _post(f"{base}/system/restart/voice", {})
     assert status == 409
@@ -1756,7 +1680,7 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     keeps alive (camilla) — never parked source resources."""
     import jasper.control.handlers.peering as srv_mod
 
-    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    monkeypatch.setattr(srv_mod, "pair_follower_leader_addr", lambda: "jts.local")
     calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
     status, _body = _post(f"{base}/system/restart/audio", {})

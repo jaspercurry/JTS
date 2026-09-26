@@ -266,7 +266,7 @@ async def test_usbsink_predicates_split_level_from_arbitration(
     status = {"inputs": [{"label": "usbsink", "source": "direct", **lane}]}
     monkeypatch.setattr(source_state, "read_fanin_status", lambda: status)
 
-    assert source_state.usbsink_direct_playing(status) is audible
+    assert source_state.usbsink_direct_audible(status) is audible
     assert await source_state.usbsink_streaming() is streaming
 
 

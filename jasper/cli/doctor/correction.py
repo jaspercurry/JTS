@@ -21,15 +21,14 @@ from ._shared import (
     REASON_CAMILLA_CONFIG_MISSING,  # noqa: F401 — re-exported, see below
     REASON_CAMILLA_CONFIG_UNREADABLE,  # noqa: F401 — re-exported, see below
     REASON_CAMILLA_STATEFILE_UNREADABLE,  # noqa: F401 — re-exported, see below
-    _group_writable_dir,
+    group_writable_dir,
     run,
     systemctl_unavailable_result,
 )
 from ...identity import identity_state
-from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
+from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
-    camilla_statefile_path,
     classify_camilla_config_text,
     read_camilla_statefile_config_path,
 )
@@ -341,7 +340,7 @@ def _not_writable_by_group(
     root, and ``os.access`` reports every path writable to the *caller* — root
     can write regardless of a directory's actual mode — so a root:root 0700
     directory reads as "ok" while the dropped ``jasper-web`` writer is locked
-    out. The predicate itself is ``_shared._group_writable_dir``; see its
+    out. The predicate itself is ``_shared.group_writable_dir``; see its
     docstring for the write+search+setgid reasoning."""
     not_writable: list[str] = []
     for p in paths:
@@ -349,7 +348,7 @@ def _not_writable_by_group(
             st = p.stat()
         except OSError:
             continue
-        writable, _ = _group_writable_dir(st, expected_group=expected_group)
+        writable, _ = group_writable_dir(st, expected_group=expected_group)
         if not writable:
             not_writable.append(str(p))
     return not_writable
@@ -439,12 +438,12 @@ def check_correction_state_dirs() -> CheckResult:
 def _active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
 
-    Both halves come from ``active_speaker.environment``, the one owner of the
-    ``JASPER_CAMILLA_STATEFILE`` override and the ``config_path`` parse. The
-    path is returned too so callers can name it when the parse fails.
+    The path comes from ``jasper.paths``' one resolver and the parse from
+    ``active_speaker.environment``. The path is returned too so callers can
+    name it when the parse fails.
     """
 
-    statefile = camilla_statefile_path()
+    statefile = camilla_statefile()
     return statefile, read_camilla_statefile_config_path(statefile)
 
 @doctor_check()
@@ -748,9 +747,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     return _result("ok", "; ".join(parts), "")
 
 
-def _classify_seat_level_reference(
-    path: Path, *, now: float | None = None
-) -> CheckResult:
+def _classify_seat_level_reference(path: Path) -> CheckResult:
     label = "session level"
     record = load_seat_level_reference(state_path=path)
     volume = seat_level_reference_volume_db(state_path=path)
@@ -762,7 +759,7 @@ def _classify_seat_level_reference(
     try:
         measured = float(record.get("measured_db_spl"))
         stamp = _datetime.fromisoformat(str(record["leveled_at"]).replace("Z", "+00:00"))
-        age = ((time.time() if now is None else now) - stamp.timestamp()) / 86400
+        age = (time.time() - stamp.timestamp()) / 86400
     except (KeyError, TypeError, ValueError):
         return CheckResult(label, "ok", f"gain {volume:.1f} dB, age unknown{identity}",
                            reason=REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE)

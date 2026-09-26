@@ -349,14 +349,13 @@ def active_leader_pipe_path() -> str:
     pipe — never a mirror of env intent (the retired
     ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total: any read failure resolves to
     ``""`` (degraded — fail visible)."""
-    # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override,
-    # the shipped default, and the ``config_path`` parse all live in
-    # active_speaker.environment. Lazy like every other import in this module,
-    # and free for every daemon that reaches this function: jasper-control's
-    # own audio-health sampler (audio_health.py) already imports that module;
-    # jasper-web builds every role-eligible wizard at startup, and `/sound`
-    # pulls it under the same role set that gates `/rooms`; the doctor's
-    # correction and grouping modules import it outright.
+    # The statefile's one reader, in active_speaker.environment. Lazy
+    # like every other import in this module, and free for every daemon that
+    # reaches this function: jasper-control's own audio-health sampler
+    # (audio_health.py) already imports that module; jasper-web builds every
+    # role-eligible wizard at startup, and `/sound` pulls it under the same
+    # role set that gates `/rooms`; the doctor's correction and grouping
+    # modules import it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
     devices = read_camilla_devices_config(read_camilla_statefile_config_path()) or {}

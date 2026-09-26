@@ -555,7 +555,7 @@ def install(
     cache_root: Path = CACHE_ROOT,
 ) -> dict[str, Any]:
     if not install_profile_supports_enhanced_aec():
-        return {"changed": False, "reason": "voice_brain_not_installed"}
+        return {"changed": False, "reason": "no_wake_detection"}
     if not read_intent()["requested"]:
         return {"changed": False, "reason": "not_requested"}
 

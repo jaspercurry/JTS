@@ -38,17 +38,17 @@ def _float_from_state(
     return value, raw, None
 
 
-def _fmt_env_money(value: float) -> str:
+def fmt_env_money(value: float) -> str:
     if value == 0:
         return "0"
     return f"{value:.2f}"
 
 
-def _fmt_env_float(value: float) -> str:
+def fmt_env_float(value: float) -> str:
     return f"{value:g}"
 
 
-def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
+def read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     cap_usd, cap_raw, cap_error = _float_from_state(
         state,
         "JASPER_DAILY_SPEND_CAP_USD",
@@ -126,7 +126,7 @@ def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _today_iso() -> str:
+def today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
@@ -145,7 +145,7 @@ def _parse_spend_float(raw: str, *, label: str, minimum: float) -> tuple[float, 
     return value, None
 
 
-def _apply_spend_cap(
+def apply_spend_cap(
     form: dict[str, str],
     current: dict[str, str],
 ) -> tuple[dict[str, str], str | None]:
@@ -164,14 +164,14 @@ def _apply_spend_cap(
     if multiplier_err is not None:
         return current, multiplier_err
     new = dict(current)
-    new["JASPER_DAILY_SPEND_CAP_USD"] = _fmt_env_money(cap_usd)
-    new["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] = _fmt_env_float(
+    new["JASPER_DAILY_SPEND_CAP_USD"] = fmt_env_money(cap_usd)
+    new["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] = fmt_env_float(
         safety_multiplier,
     )
     return {k: v for k, v in new.items() if v}, None
 
 
-def _apply_pricing_save(
+def apply_pricing_save(
     form: dict[str, str],
     provider: ProviderCatalogEntry,
     model_ids: list[str],
@@ -210,7 +210,7 @@ def _apply_pricing_save(
     return result
 
 
-def _apply_pricing_paste(
+def apply_pricing_paste(
     raw_text: str,
 ) -> tuple[dict[str, dict] | None, str, str | None]:
     """Parse a chatbot's pasted pricing JSON → ``(models_map, as_of, None)``
@@ -248,7 +248,7 @@ def _apply_pricing_paste(
     return models, as_of, None
 
 
-def _sparsify_overrides(models: dict[str, dict]) -> dict[str, dict]:
+def sparsify_overrides(models: dict[str, dict]) -> dict[str, dict]:
     """Drop fields equal to the bundled default, and models left empty, so
     ``pricing.json`` stays a minimal sparse override (the invariant the
     per-provider editor maintains). Idempotent on already-sparse maps."""

@@ -33,6 +33,7 @@ import urllib.request
 import httpx
 import pytest
 
+from jasper import home_assistant as ha_mod
 from jasper.web import home_assistant_setup as ha_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
@@ -58,6 +59,7 @@ _REAL_VERIFY_SYNC = ha_setup.verify_sync
         ("https://my-ha.example.com:8443/api", "https://my-ha.example.com:8443"),
         ("  http://x:8123  ", "http://x:8123"),
         ("", ""),
+        ("[::1", ""),
     ],
 )
 def test_normalize_url(raw, expected):
@@ -410,12 +412,20 @@ def test_verify_ssl_env_var_constant_matches_module():
     rather than defining its own — that's the staff-review fix for
     env-var-string duplication. Confirm the re-export holds and the
     new VERIFY_SSL constant is in the chain."""
-    import jasper.home_assistant as ha_mod
     assert ha_setup.ENV_URL == ha_mod.ENV_URL == "JASPER_HA_URL"
     assert ha_setup.ENV_TOKEN == ha_mod.ENV_TOKEN == "JASPER_HA_TOKEN"
     assert ha_setup.ENV_AGENT_ID == ha_mod.ENV_AGENT_ID == "JASPER_HA_AGENT_ID"
     assert ha_setup.ENV_VERIFY_SSL == ha_mod.ENV_VERIFY_SSL == "JASPER_HA_VERIFY_SSL"
     assert ha_setup.ENV_RECENT_URLS == ha_mod.ENV_RECENT_URLS == "JASPER_HA_RECENT_URLS"
+
+
+@pytest.mark.parametrize(
+    "value, expected", [(None, True), ("potato", True), (" FALSE ", False)],
+)
+def test_verify_ssl_stays_on_unless_the_state_says_false(value, expected):
+    state = {} if value is None else {ha_setup.ENV_VERIFY_SSL: value}
+
+    assert ha_mod.verify_ssl_from_state(state) is expected
 
 
 def test_save_persists_verify_ssl_off_when_user_accepts_self_signed(wizard_server):

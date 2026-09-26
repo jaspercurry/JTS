@@ -242,9 +242,8 @@ jobs:
     needs: [classify, python-policy]
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
-    # Headroom over the ~28-minute full run until the suite's late-run
-    # descriptor exhaustion is fixed (#5288).
-    timeout-minutes: 45
+    # About twice the 13-15 minute full run (#5288).
+    timeout-minutes: 30
     # Default provider for tests that load jasper.config (the config
     # loader hard-fails without this set). Individual tests can override.
     env:

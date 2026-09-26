@@ -1077,8 +1077,6 @@ def alignment_selection(env: Mapping[str, str] | None = None) -> str:
 
 def publish_alignment_record(
     health: chip_aec_health.AlignmentHealth | None,
-    *,
-    env: Mapping[str, str] | None = None,
 ) -> None:
     """Publish this run's verdict for jasper-aec-reconcile, or clear it.
 
@@ -1088,8 +1086,7 @@ def publish_alignment_record(
     record cannot outlive the pass it describes.
     """
 
-    source = os.environ if env is None else env
-    path = source.get("JASPER_AEC_ALIGNMENT_RECORD_FILE") or ALIGNMENT_RECORD_PATH
+    path = os.environ.get("JASPER_AEC_ALIGNMENT_RECORD_FILE") or ALIGNMENT_RECORD_PATH
     try:
         if health is None:
             Path(path).unlink(missing_ok=True)

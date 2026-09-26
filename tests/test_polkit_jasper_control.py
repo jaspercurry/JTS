@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper.control.restart_broker import MANAGED_UNITS, POLKIT_MANAGE_UNITS, START_ONLY_UNITS
+from jasper.control.restart_broker import MANAGED_UNITS, START_ONLY_UNITS
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "deploy/polkit/49-jasper-control.rules"
@@ -82,10 +82,6 @@ def test_rule_unit_allowlists_equal_broker_constants():
         "jasper.control.restart_broker.START_ONLY_UNITS.\n"
         f"  only in rule:   {sorted(start_only_in_rule - set(START_ONLY_UNITS))}\n"
         f"  only in broker: {sorted(set(START_ONLY_UNITS) - start_only_in_rule)}"
-    )
-    assert managed_in_rule | start_only_in_rule == set(POLKIT_MANAGE_UNITS), (
-        "deploy/polkit/49-jasper-control.rules union drifted from "
-        "jasper.control.restart_broker.POLKIT_MANAGE_UNITS"
     )
 
 

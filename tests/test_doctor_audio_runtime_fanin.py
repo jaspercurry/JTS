@@ -44,7 +44,7 @@ def _patch_asound_conf(
             return stale
         return real_path_cls(arg)
 
-    monkeypatch.setattr(audio_runtime_fanin, "_ASOUND_CONF_PATH", target)
+    monkeypatch.setattr(audio_runtime_fanin, "ASOUND_CONF_PATH", target)
     monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 
@@ -285,7 +285,7 @@ def test_one_doctor_pass_opens_the_fanin_status_socket_once(monkeypatch):
     ],
 )
 def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty):
-    fault = audio_runtime_fanin._assistant_gain_fault(loudness)
+    fault = audio_runtime_fanin.assistant_gain_fault(loudness)
     assert (fault is not None) is faulty, fault
 
 

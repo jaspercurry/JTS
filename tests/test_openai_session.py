@@ -16,6 +16,8 @@ from tests._provider_fakes import (
     RealtimeSocket as _FakeConn,
     RealtimeContext as _FakeAsyncCM,
     RealtimeConnect as _FakeConnectFactory,
+    no_wait,
+    stop_after,
 )
 from openai.types.realtime import ResponseDoneEvent
 
@@ -45,7 +47,6 @@ from tests._log_events import event_fields, event_records, leaked_lines
 
 def _make_conn(
     *,
-    backoff_schedule=(0.0, 0.0),
     model: str = "gpt-realtime-2",
     voice: str = "marin",
     reasoning_effort: str = "low",
@@ -58,8 +59,8 @@ def _make_conn(
         voice=voice,
         reasoning_effort=reasoning_effort,
         noise_reduction=noise_reduction,
-        backoff_schedule=backoff_schedule,
         connect_factory=factory,
+        sleep=no_wait,
     )
     return conn, factory
 
@@ -351,7 +352,6 @@ async def test_session_update_failure_redacts_the_connections_own_key(caplog, se
 
     conn = OpenAIRealtimeConnection(
         api_key="plainvalue123",
-        backoff_schedule=(0.0, 0.0),
         connect_factory=_connect_factory,
     )
     with caplog.at_level(logging.WARNING, logger="jasper.voice.openai_session"):
@@ -445,7 +445,6 @@ async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, trans
 
     conn = OpenAIRealtimeConnection(
         api_key="plainvalue123", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
-        backoff_schedule=(0.0,),
     )
     if phase == "steady":
         await conn._open_session()
@@ -477,8 +476,9 @@ async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, trans
     assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
     assert conn.is_paused()
     assert "plainvalue123" not in str(failure.value)
+    stop_after(conn, 1)
     await run_reconnect_with_backoff(conn)
-    assert conn._state is ConnectionState.FAILED
+    assert len(event_records(caplog, "provider.reconnect_attempt_failed")) == 1
     assert not leaked_lines(caplog, "plainvalue123")
     assert "plainvalue123" not in conn.last_failure_detail()
     await conn.stop()
@@ -685,8 +685,7 @@ async def test_truncate_failure_redacts_the_connections_own_key(caplog):
     a literal (ADR-0243)."""
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
-        api_key="plainvalue123", backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
+        api_key="plainvalue123", connect_factory=factory,
     )
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -1601,7 +1600,7 @@ async def test_clean_iteration_exit_triggers_reconnect(caplog):
     90 s, each producing ``send_audio failed (ConnectionClosedOK:
     received 1001 (going away) Your session hit the maximum duration
     of 60 minutes.); turn lost``, with no reconnect."""
-    conn, factory = _make_conn(backoff_schedule=(0.0, 0.05))
+    conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
     try:
@@ -1652,7 +1651,7 @@ async def test_first_connect_records_the_provider_reason():
             )
             self.response = _RejectedResponse()
 
-    conn, factory = _make_conn(backoff_schedule=(0.0,))
+    conn, factory = _make_conn()
     factory.next_exceptions = [_Rejected()]
     await conn.start(ToolRegistry(), "")
     # Read before any await: the supervisor task is scheduled but has
@@ -1678,7 +1677,6 @@ async def test_grok_uses_grok_provider_filter_and_default_model():
     conn = GrokRealtimeConnection(
         api_key="xai-fake",
         connect_factory=factory,
-        backoff_schedule=(0.0,),
     )
     assert conn.PROVIDER_NAME == "grok"
     assert conn._model == "grok-voice-think-fast-1.0"
@@ -1732,7 +1730,6 @@ async def test_grok_text_delta_normalised_to_openai_event_name():
     conn = GrokRealtimeConnection(
         api_key="xai-fake",
         connect_factory=factory,
-        backoff_schedule=(0.0,),
     )
 
     # Tap into the parent dispatcher to observe the normalised etype.
@@ -1780,8 +1777,8 @@ async def test_proactive_watchdog_fires_before_cap_when_idle():
         api_key="fake",
         session_max_sec=0.10,
         proactive_buffer_sec=0.05,
-        backoff_schedule=(0.0,),
         connect_factory=factory,
+        sleep=no_wait,
     )
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -1807,7 +1804,6 @@ async def test_proactive_watchdog_disabled_when_either_knob_zero():
         # Explicitly disabled — buffer is 0.
         session_max_sec=3600.0,
         proactive_buffer_sec=0.0,
-        backoff_schedule=(0.0,),
         connect_factory=factory,
     )
     registry = ToolRegistry()
@@ -1827,7 +1823,6 @@ async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
         api_key="fake",
         session_max_sec=300.0,
         proactive_buffer_sec=500.0,  # > cap
-        backoff_schedule=(0.0,),
         connect_factory=factory,
     )
     registry = ToolRegistry()
@@ -1888,7 +1883,7 @@ async def test_committed_stops_send_audio():
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
 async def test_stale_response_and_input_events_cannot_reach_a_new_turn(conn_cls):
     factory = _FakeConnectFactory()
-    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", connect_factory=factory)
     calls = []
     registry = ToolRegistry()
 
@@ -1943,7 +1938,7 @@ async def test_stale_response_and_input_events_cannot_reach_a_new_turn(conn_cls)
 @pytest.mark.parametrize("with_tools", [False, True])
 async def test_response_status_controls_completion_and_tool_execution(conn_cls, status, with_tools):
     factory = _FakeConnectFactory()
-    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", connect_factory=factory)
     registry = ToolRegistry()
     calls = []
 
@@ -1997,7 +1992,8 @@ async def test_requested_cancellation_is_terminal_without_a_failure():
 @pytest.mark.parametrize("boundary", ["release", "disconnect", "close", "cancel"])
 async def test_pending_tool_cannot_block_or_cross_a_turn_boundary(conn_cls, boundary):
     factory = _FakeConnectFactory()
-    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", connect_factory=factory)
+    conn._sleep = no_wait
     registry = ToolRegistry()
     entered, resume = asyncio.Event(), asyncio.Event()
     calls = []
@@ -2265,7 +2261,7 @@ async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending
         wires.append(wire)
         return _FakeAsyncCM(wire)
 
-    conn = conn_cls(api_key="fake", connect_factory=connect, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", connect_factory=connect)
     await conn.start(ToolRegistry(), "")
     try:
         await asyncio.wait_for(entered.wait(), 1)
@@ -2307,7 +2303,7 @@ async def test_only_progress_events_advance_the_idle_anchor(conn_cls, event, adv
     bookkeeping and error frames do not, so a session that chatters
     without ever answering still reaches the watchdog."""
     factory = _FakeConnectFactory()
-    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    conn = conn_cls(api_key="fake", connect_factory=factory)
     await conn.start(ToolRegistry(), "")
     try:
         wire = factory.conns[0]

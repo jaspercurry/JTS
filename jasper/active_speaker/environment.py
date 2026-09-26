@@ -12,7 +12,6 @@ CamillaDSP websocket client, no tone playback, and no state mutation.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -27,6 +26,7 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.paths import camilla_statefile
 
 from ._common import issue as _issue
 from .camilla_yaml import (
@@ -38,7 +38,6 @@ from .camilla_yaml import (
 SCHEMA_VERSION = 1
 ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
-DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
 # The active-leader's camilla#1 program bake (distributed-active Stage B): a flat
 # (no-Layer-A) program graph whose playback is a File/pipe sink, not a DAC. Its
@@ -201,31 +200,13 @@ def parse_camilla_statefile_config_path(text: str) -> str | None:
     return match.group("path").strip().strip("'\"") or None
 
 
-def camilla_statefile_path(path: str | Path | None = None) -> Path:
-    """Resolve which CamillaDSP statefile a caller means.
-
-    ``None`` takes the operator override (``JASPER_CAMILLA_STATEFILE``) and
-    otherwise the shipped default. Public because a caller that READS the
-    statefile through :func:`read_camilla_statefile_config_path` and then WRITES
-    it through :func:`~jasper.active_speaker.runtime_contract.write_camilla_statefile`
-    must resolve both against the same rule — the writer takes a concrete path,
-    so without this it would have to restate the override.
-    """
-
-    if path is not None:
-        return Path(path)
-    return Path(
-        os.environ.get("JASPER_CAMILLA_STATEFILE", str(DEFAULT_CAMILLA_STATEFILE))
-    )
-
-
 def read_camilla_statefile_config_path(
     statefile_path: str | Path | None = None,
 ) -> str | None:
     """Return the config path selected by the durable CamillaDSP statefile."""
 
     try:
-        text = camilla_statefile_path(statefile_path).read_text(encoding="utf-8")
+        text = camilla_statefile(statefile_path).read_text(encoding="utf-8")
     except OSError:
         return None
     return parse_camilla_statefile_config_path(text)
@@ -446,7 +427,7 @@ def _read_config_summary(
     config_path: str | Path | None,
     statefile_path: str | Path | None,
 ) -> dict[str, Any]:
-    statefile = camilla_statefile_path(statefile_path)
+    statefile = camilla_statefile(statefile_path)
     issues: list[dict[str, str]] = []
     path_source = "argument"
     resolved_config_path = str(config_path) if config_path else None

@@ -24,9 +24,9 @@ import socket
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from ..backoff import reconnect_delay, sleep_or_nudge
+from ..backoff import RECONNECT_INITIAL_BACKOFF_SEC, reconnect_delay, sleep_or_nudge
 from ..log_event import log_event
-from ..os_fault import root_os_error
+from ..os_fault import exception_chain, root_os_error
 from ..secret_redaction import redact_secrets
 from .session import ConnectionState, CuePlayer
 
@@ -132,7 +132,7 @@ def http_status(exc: BaseException) -> int | None:
     return status
 
 
-_NO_RCVD = object()
+_ABSENT = object()
 
 
 def provider_code(exc: BaseException) -> int | None:
@@ -147,8 +147,8 @@ def provider_code(exc: BaseException) -> int | None:
     absence. Never read it: any exception carrying an ``.rcvd`` attribute
     is treated as a websockets close, and its code comes from ``.rcvd``
     alone, even when that is ``None``."""
-    rcvd = getattr(exc, "rcvd", _NO_RCVD)
-    if rcvd is _NO_RCVD:
+    rcvd = getattr(exc, "rcvd", _ABSENT)
+    if rcvd is _ABSENT:
         candidate = getattr(exc, "code", None)
     else:
         candidate = getattr(rcvd, "code", None)
@@ -165,8 +165,18 @@ def peer_initiated_close(exc: BaseException) -> bool:
     edge, say — arrives on ``.rcvd`` indistinguishable from a rejection.
     websockets records who moved first in ``.rcvd_then_sent``; ``False``
     means we did. Any other value, the flag being absent included,
-    cannot rule the close ours."""
-    return getattr(exc, "rcvd_then_sent", None) is not False
+    cannot rule the close ours.
+
+    google-genai raises its ``APIError`` inside the ``except`` that caught
+    the close, so there the flag survives only down the error's chain: a
+    failure without one reads it off the first close in that chain which
+    received the same code. See #3895."""
+    code = provider_code(exc)
+    for link in exception_chain(exc, context=True):
+        flag = getattr(link, "rcvd_then_sent", _ABSENT)
+        if flag is not _ABSENT and provider_code(link) == code:
+            return flag is not False
+    return True
 
 
 # See ADR-0215
@@ -426,9 +436,6 @@ class SupervisedConnection(Protocol):
     # reconnect it asks for is not a failure. `run_reconnect_with_backoff`
     # spends the flag.
     _planned_rotate: bool
-    # None in production (retry forever); a bounded tuple in tests, to
-    # make schedule exhaustion observable.
-    _backoff_schedule: tuple[float, ...] | None
     _sleep: Callable[[float], Awaitable[None]]
 
     def _set_state(self, new_state: ConnectionState) -> None: ...
@@ -446,6 +453,9 @@ class SupervisedConnection(Protocol):
         ...
 
 
+AWAIT_CONNECTED_TIMEOUT_SEC = RECONNECT_INITIAL_BACKOFF_SEC * (1 + 2 + 4 + 8)
+
+
 async def await_connected(conn: SupervisedConnection) -> None:
     """Wait for an open session so a turn never opens against a
     half-open WS.
@@ -457,14 +467,10 @@ async def await_connected(conn: SupervisedConnection) -> None:
     hanging the wake."""
     if conn._connected_event.is_set():
         return
-    schedule = conn._backoff_schedule
-    timeout = (
-        sum(schedule) + 5.0
-        if schedule is not None
-        else 15.0  # production: long enough for one full backoff cycle
-    )
     try:
-        await asyncio.wait_for(conn._connected_event.wait(), timeout=timeout)
+        await asyncio.wait_for(
+            conn._connected_event.wait(), timeout=AWAIT_CONNECTED_TIMEOUT_SEC,
+        )
     except asyncio.TimeoutError:
         raise RuntimeError(f"{conn._log_tag} not connected after backoff window")
 
@@ -569,9 +575,6 @@ async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
         async with conn._turn_lock:
             conn._active_turn = None
 
-    schedule = conn._backoff_schedule
-    bounded = schedule is not None
-    last_exc: Exception | None = None
     # Seeds the first delay; the previous failure's classification picks
     # every one after that.
     last_transient = True
@@ -579,12 +582,8 @@ async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
     attempt = 0
     while not conn._stopping.is_set():
         attempt += 1
-        if schedule is not None and attempt > len(schedule):
-            break
         if attempt == 1 and planned_rotate:
             delay = 0.0
-        elif schedule is not None:
-            delay = schedule[attempt - 1]
         else:
             delay = reconnect_delay(attempt, transient=last_transient)
         async with conn._state_lock:
@@ -607,16 +606,13 @@ async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
         try:
             await conn._open_session()
         except Exception as e:  # noqa: BLE001
-            last_exc = e
             transient = is_transient(e)
             conn._on_reconnect_attempt_failed(e, attempt, transient)
-            if transient and not last_transient and not bounded:
+            if transient and not last_transient:
                 # The provider stopped rejecting us outright and is only
                 # failing normally now, so it is recovering. Restart the
                 # ramp at 1 s instead of resuming wherever the slow poll
-                # left the counter. Bounded (test) schedules index by
-                # `attempt`, so resetting one would replay the schedule
-                # forever.
+                # left the counter.
                 attempt = 0
             last_transient = transient
             continue
@@ -628,14 +624,3 @@ async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
                 attempt=attempt,
             )
         return
-
-    # Only reached when (a) a bounded test schedule was exhausted, or
-    # (b) the daemon is stopping. Production never reaches this — the
-    # loop iterates forever until success.
-    if bounded and not conn._stopping.is_set():
-        async with conn._state_lock:
-            conn._set_state(ConnectionState.FAILED)
-        logger.error(
-            "%s bounded test schedule exhausted after %d retries. "
-            "Last error: %s", conn._log_tag, attempt - 1, last_exc,
-        )

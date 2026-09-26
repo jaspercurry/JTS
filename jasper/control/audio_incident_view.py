@@ -9,7 +9,7 @@ the dashboard renders: impact sentence, likely area, evidence rows, and the
 :func:`~jasper.control.audio_health.compose_audio_health` and
 :class:`~jasper.control.audio_health_sampler.AudioHealthSampler` are this
 module's only callers; a raw ``IssueTracker``/``IncidentStore`` record never
-reaches a management surface unmapped by :func:`_present_incident`.
+reaches a management surface unmapped by :func:`present_incident`.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..music_sources import Source
-from ._health_fields import _as_int, _detail, _duration_label, _finite_number, mapping
+from ._health_fields import as_int, detail_row, duration_label, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 
 
@@ -71,44 +71,44 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
         attribution_details = mapping(context.get("attribution")).get("details")
         if isinstance(attribution_details, list):
             evidence.extend(
-                _detail(str(row["label"]), str(row["value"]))
+                detail_row(str(row["label"]), str(row["value"]))
                 for row in attribution_details
                 if isinstance(row, Mapping) and row.get("label") and row.get("value")
             )
     if context.get("clock_mode"):
-        evidence.append(_detail("Clock mode", context["clock_mode"]))
+        evidence.append(detail_row("Clock mode", context["clock_mode"]))
     input_context = mapping(context.get("input"))
-    if _finite_number(input_context.get("rms_dbfs")) is not None:
-        evidence.append(_detail(
+    if finite_number(input_context.get("rms_dbfs")) is not None:
+        evidence.append(detail_row(
             "Input level",
             f"{float(input_context['rms_dbfs']):.1f} dBFS",
         ))
     output_context = mapping(context.get("output"))
-    if _finite_number(output_context.get("snd_pcm_delay_ms")) is not None:
-        evidence.append(_detail(
+    if finite_number(output_context.get("snd_pcm_delay_ms")) is not None:
+        evidence.append(detail_row(
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
     host = mapping(context.get("host"))
     # `throttled_history` never clears within a boot, so it must not be
     # rendered as a live condition (jasper/control/system_metrics.py).
-    if _as_int(host.get("throttled_now")):
-        evidence.append(_detail("Power or heat throttling", "Now"))
-    elif _as_int(host.get("throttled_history")):
-        evidence.append(_detail("Power or heat throttling", "Earlier this boot"))
-    memory_pressure = _finite_number(host.get("mem_psi_some_avg60"))
+    if as_int(host.get("throttled_now")):
+        evidence.append(detail_row("Power or heat throttling", "Now"))
+    elif as_int(host.get("throttled_history")):
+        evidence.append(detail_row("Power or heat throttling", "Earlier this boot"))
+    memory_pressure = finite_number(host.get("mem_psi_some_avg60"))
     if memory_pressure is not None and memory_pressure > 0:
-        evidence.append(_detail("Memory pressure", f"{float(memory_pressure):.0f}%"))
+        evidence.append(detail_row("Memory pressure", f"{float(memory_pressure):.0f}%"))
     return evidence
 
 
 def _timestamp(value: Any, default: float) -> float:
-    number = _finite_number(value)
+    number = finite_number(value)
     return float(number) if number is not None else default
 
 
 def _incident_duration(issue: Mapping[str, Any], now: float) -> float:
-    observed = _finite_number(issue.get("observed_seconds"))
+    observed = finite_number(issue.get("observed_seconds"))
     if observed is not None:
         return max(0.0, float(observed))
     started = _timestamp(issue.get("started_at"), now)
@@ -116,7 +116,7 @@ def _incident_duration(issue: Mapping[str, Any], now: float) -> float:
     return max(0.0, end - started)
 
 
-def _present_incident(
+def present_incident(
     issue: Mapping[str, Any],
     now: float,
     history: list[dict[str, Any]],
@@ -140,7 +140,7 @@ def _present_incident(
         # not every timestamp. If it straddles the window boundary, only its
         # last occurrence is provably inside, so expose a lower bound.
         count = sum(
-            max(1, _as_int(item.get("count"), 1))
+            max(1, as_int(item.get("count"), 1))
             if _timestamp(
                 item.get("first_occurrence_at") or item.get("started_at"),
                 0.0,
@@ -194,7 +194,7 @@ def _present_incident(
         "started_at": started,
         "last_seen_at": issue.get("last_seen_at"),
         "recovered_at": issue.get("recovered_at"),
-        "count": max(1, _as_int(issue.get("count"), 1)),
+        "count": max(1, as_int(issue.get("count"), 1)),
         "impact": _incident_impact(issue),
         "observed": str(issue.get("detail") or "JTS observed an audio-path change."),
         "likely_area": _likely_area(issue),
@@ -204,15 +204,15 @@ def _present_incident(
         presented["recurrence"] = recurrence
     if issue.get("status") == "recovered" and duration > 0.0:
         presented["duration_seconds"] = round(duration, 1)
-        presented["duration_label"] = _duration_label(duration)
+        presented["duration_label"] = duration_label(duration)
     return presented
 
 
-def _incident_priority(
+def incident_priority(
     issue: Mapping[str, Any],
     active_source: str | None,
 ) -> tuple[int, int, int, float]:
-    relevant = _incident_is_relevant(issue, active_source)
+    relevant = incident_is_relevant(issue, active_source)
     key = str(issue.get("key") or "")
     return (
         1 if relevant else 0,
@@ -224,7 +224,7 @@ def _incident_priority(
     )
 
 
-def _incident_is_relevant(
+def incident_is_relevant(
     issue: Mapping[str, Any],
     active_source: str | None,
 ) -> bool:

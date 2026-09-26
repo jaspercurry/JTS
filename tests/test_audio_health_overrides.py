@@ -388,12 +388,12 @@ def test_setup_hint_does_not_fire_without_a_genuine_undeclared_match(
     ("outputd", "expected_code"),
     [
         # Healthy outputd: the ready/mismatched record alone is not the
-        # trigger, only `_signal_path`'s own generic absent/non-ALSA wording
-        # is refined.
+        # trigger, only `classify_signal_path`'s own generic absent/non-ALSA
+        # wording is refined.
         (_outputd(), "clean"),
         # A concrete, differently-worded live failure keeps its own
-        # diagnosis, the same precedence `_parked_signal` and
-        # `_stopped_dsp_signal` hold.
+        # diagnosis, the same precedence `parked_signal` and
+        # `stopped_dsp_signal` hold.
         (_outputd(progress_age_ms=30_000), "output_stalled"),
     ],
 )
@@ -444,10 +444,10 @@ def test_camilla_state_shapes_the_signal_path(
     expected_code: str,
     expected_status: str,
 ) -> None:
-    """The whole payload has to agree (#2163): before this, `_signal_path`
-    read only fan-in and outputd — neither of which notices CamillaDSP
-    leaving — so one response reported a clean path and an idle "ready"
-    overall while carrying its own stopped-processing incident.
+    """The whole payload has to agree (#2163): before this,
+    `classify_signal_path` read only fan-in and outputd — neither of which
+    notices CamillaDSP leaving — so one response reported a clean path and an
+    idle "ready" overall while carrying its own stopped-processing incident.
     """
     health = _compose_camilla(camilla_state, warmup=warmup)
 
@@ -529,7 +529,7 @@ def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> No
 def test_a_live_path_failure_still_outranks_a_stopped_camilla() -> None:
     """Deference, not precedence: the override only claims a clean path.
 
-    Same `!= "issue"` guard `_parked_signal` uses — a concrete failure that is
+    Same `!= "issue"` guard `parked_signal` uses — a concrete failure that is
     happening in fan-in or outputd keeps its own, more specific remedy.
     """
     health = _compose_camilla(

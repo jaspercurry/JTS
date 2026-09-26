@@ -657,7 +657,7 @@ async def test_state_carries_the_same_projection(tmp_path):
     from jasper.control import state_aggregate
 
     mh.acquire("seat-level")
-    state = await state_aggregate._get_state(
+    state = await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),
@@ -814,9 +814,9 @@ async def test_a_failed_first_acquire_is_retried_until_it_lands(monkeypatch):
     reporting nothing, the doctor seeing nothing, and no cross-process mutex —
     off ONE lost round trip against a daemon that came back seconds later.
 
-    Mutation-verified: restoring `if hold_acquired:` around the
-    `asyncio.create_task(_refresh_measurement_hold())` makes this time out on
-    `landed`, and the release assertion fails with it.
+    Mutation-verified: restoring `if hold_ours.is_set():` around the
+    `asyncio.create_task(_refresh_measurement_hold(...))` makes this time out
+    on `landed`, and the release assertion fails with it.
     """
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.01)
     calls: list[tuple[str, dict]] = []

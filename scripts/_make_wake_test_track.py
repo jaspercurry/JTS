@@ -28,13 +28,13 @@ import sys
 import wave
 from pathlib import Path
 
-from jasper.env_load import load_env_files
+from jasper.env_load import VOICE_PROVIDER_ENV_PATH, load_env_files
 
 
 DEFAULT_OUT_DIR = Path("/tmp/wake-test-track")
 ENV_FILES = (
     "/etc/jasper/jasper.env",
-    "/var/lib/jasper/voice_provider.env",
+    VOICE_PROVIDER_ENV_PATH,
     "/var/lib/jasper-secrets/voice_keys.env",
 )
 

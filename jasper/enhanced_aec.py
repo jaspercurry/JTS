@@ -445,8 +445,8 @@ def status(
             "current": False,
             "summary": "Enhanced echo cancellation is not used on this install",
             "detail": (
-                "This streambox does not run the local voice, microphone, or "
-                "echo-cancellation brain."
+                "This streambox does not run wake detection or a local "
+                "microphone."
             ),
             "last_error": "",
             "desired_fingerprint": "",
@@ -454,7 +454,7 @@ def status(
             "engine": "v1",
             "engine_semantics": "verified_capability",
             "runtime_refresh": "",
-            "unavailable_reason": "voice_brain_not_installed",
+            "unavailable_reason": "no_wake_detection",
             "action": {
                 "enabled": False,
                 "label": "Install enhancement",

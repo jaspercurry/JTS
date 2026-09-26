@@ -577,7 +577,7 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     from jasper import mux
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-    from jasper.control import audio_health_sampler, grouping_supervisor
+    from jasper.control import grouping_supervisor
     from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
     from jasper.platform import status_socket, uds
@@ -611,7 +611,6 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
         status_socket.MUX_CONTROL_SOCKET_PATH,
         mux.MUX_CONTROL_SOCKET_PATH,
         uds.MUX_CONTROL_SOCKET_PATH,
-        audio_health_sampler.MUX_CONTROL_SOCKET_PATH,
         system_soak.STATUS_SOCKETS["mux"],
     } == {mux_sock}
 
@@ -666,7 +665,7 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
     monkeypatch.setattr(asyncio, "create_subprocess_shell", record_spawn)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    await state_aggregate._get_state(
+    await state_aggregate.get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
         voice_socket_path=str(tmp_path / "voice.sock"),
@@ -729,7 +728,7 @@ async def _state_payload(monkeypatch, tmp_path, **overrides):
 
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    return await state_aggregate._get_state(**{
+    return await state_aggregate.get_state(**{
         "camilla_host": "127.0.0.1",
         "camilla_port": 1234,
         "voice_socket_path": str(tmp_path / "voice.sock"),

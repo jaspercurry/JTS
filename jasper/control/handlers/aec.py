@@ -10,6 +10,7 @@ import subprocess
 import time
 from typing import Any, cast
 
+from ... import enhanced_aec
 from ...audio_profile_state import normalize_audio_input_profile
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
@@ -478,8 +479,6 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            from ... import enhanced_aec
-
             enhanced_aec.request_install()
         except (OSError, TimeoutError, ValueError) as exc:
             self._send_json(

@@ -13,17 +13,15 @@ from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
 from .camilla_config_contract import DEFAULT_CAMILLA_PORT
-from .env_load import parse_bool_value
+from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
-    TRANSIT_DISPLAY_NAME_ENV,
-    TRANSIT_LAT_ENV,
-    TRANSIT_LON_ENV,
     WEATHER_DEFAULT_LOCATION_ENV,
     WEATHER_DISPLAY_NAME_ENV,
     WEATHER_LAT_ENV,
     WEATHER_LON_ENV,
     WEATHER_UNITS_ENV,
+    parse_transit_location,
 )
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
@@ -157,6 +155,23 @@ def _env_mapping(name: str, default: str) -> MappingProxyType[str, str]:
             raise VoiceConfigError(f"{name} contains duplicate source id {key!r}")
         result[key] = value
     return MappingProxyType(result)
+
+
+def _weather_defaults() -> tuple[str, float | None, float | None, str]:
+    """``(location, lat, lon, display_name)`` for a weather question that names
+    no place. With neither weather coordinate set, the saved transit location
+    stands in (its display name too, when none is set); an unset display name
+    falls back to ``location``."""
+    location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
+    lat = _env_optional_float(WEATHER_LAT_ENV)
+    lon = _env_optional_float(WEATHER_LON_ENV)
+    display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
+    if lat is None and lon is None:
+        transit = parse_transit_location(dict(os.environ))
+        if transit is not None:
+            lat, lon = transit.lat, transit.lon
+            display_name = display_name or transit.display_name
+    return location, lat, lon, display_name or location
 
 
 def _validate(cfg: "Config") -> "Config":
@@ -440,7 +455,7 @@ class Config:
                 "JASPER_VOICE_PROVIDER is not set — visit "
                 "http://jts.local/assistant/voice/ (or your speaker's "
                 "hostname) and pick a provider. The wizard writes "
-                "/var/lib/jasper/voice_provider.env for you.",
+                f"{VOICE_PROVIDER_ENV_PATH} for you.",
             )
         if provider not in VALID_PROVIDER_IDS:
             raise VoiceProviderNotConfigured(
@@ -457,27 +472,7 @@ class Config:
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
         hostname = resolve_hostname()
-        weather_default_location = _env(WEATHER_DEFAULT_LOCATION_ENV, "").strip()
-        weather_default_lat = _env_optional_float(WEATHER_LAT_ENV)
-        weather_default_lon = _env_optional_float(WEATHER_LON_ENV)
-        weather_default_display_name = _env(WEATHER_DISPLAY_NAME_ENV, "").strip()
-        if weather_default_lat is None and weather_default_lon is None:
-            transit_lat_raw = os.environ.get(TRANSIT_LAT_ENV, "").strip()
-            transit_lon_raw = os.environ.get(TRANSIT_LON_ENV, "").strip()
-            if transit_lat_raw and transit_lon_raw:
-                try:
-                    weather_default_lat = float(transit_lat_raw)
-                    weather_default_lon = float(transit_lon_raw)
-                except ValueError:
-                    weather_default_lat = None
-                    weather_default_lon = None
-                else:
-                    if not weather_default_display_name:
-                        weather_default_display_name = _env(
-                            TRANSIT_DISPLAY_NAME_ENV, "",
-                        ).strip()
-        if not weather_default_display_name:
-            weather_default_display_name = weather_default_location
+        weather_location, weather_lat, weather_lon, weather_name = _weather_defaults()
         return _validate(cls(
             voice_provider=provider,
             hostname=hostname,
@@ -492,15 +487,7 @@ class Config:
             openai_live_model=_env("JASPER_OPENAI_LIVE_MODEL", default_model_id("openai_live")),
             openai_live_voice=_env("JASPER_OPENAI_LIVE_VOICE", default_voice_id("openai_live")),
             openai_live_backend_model=_env("JASPER_OPENAI_LIVE_BACKEND_MODEL", default_extra_value("openai_live", "backend_model")),
-            # Default model is the post-2026-05-07 reasoning-capable
-            # GA: gpt-realtime-2 ($32 / $64 / $0.40 per 1M audio tokens
-            # in / out / cached). For the cheaper non-reasoning sibling
-            # set JASPER_OPENAI_MODEL=gpt-realtime-mini ($10 / $20 /
-            # $0.30) — same wire format, no `reasoning.effort` field.
             openai_model=_env("JASPER_OPENAI_MODEL", default_model_id("openai")),
-            # OpenAI Realtime voices include marin, cedar, alloy, ash,
-            # ballad, coral, echo, sage, shimmer, verse. `marin` is the
-            # default in the post-GA SDK quickstarts.
             openai_voice=_env("JASPER_OPENAI_VOICE", default_voice_id("openai")),
             # Reasoning effort for gpt-realtime-2: minimal | low |
             # medium | high | xhigh. Default `low` matches the SDK
@@ -520,13 +507,7 @@ class Config:
                 _env("JASPER_OPENAI_NOISE_REDUCTION", "auto"),
             ),
             grok_api_key=grok_key,
-            # xAI Grok Voice Agent. The `grok-voice-think-fast-1.0`
-            # model claims sub-second latency and is OpenAI-Realtime-
-            # protocol-compatible per xAI's docs (we run it through the
-            # same adapter as OpenAI with a base-URL override).
             grok_model=_env("JASPER_GROK_MODEL", default_model_id("grok")),
-            # Grok voice list is disjoint from OpenAI's: eve, ara, rex,
-            # sal, leo. Default is `eve` per xAI docs.
             grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
             # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
             # (e.g. "hey_jarvis", "alexa") or an absolute path to a
@@ -590,9 +571,8 @@ class Config:
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
             # Wake-event telemetry.
             # Directory holds wake-events.sqlite3 + per-event WAV
-            # files (one per leg, 6 s window). DB rows kept forever;
-            # audio ring rolls oldest-first when the byte cap is hit.
-            # install.sh creates this dir at mode 0755 owned by pi:pi.
+            # files (one per leg, 6 s window). Audio ring rolls
+            # oldest-first when the byte cap is hit.
             wake_events_dir=_env(
                 "JASPER_WAKE_EVENTS_DIR",
                 "/var/lib/jasper/wake-events",
@@ -780,14 +760,11 @@ class Config:
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.
-            weather_default_location=weather_default_location,
-            weather_default_lat=weather_default_lat,
-            weather_default_lon=weather_default_lon,
-            weather_default_display_name=weather_default_display_name,
+            weather_default_location=weather_location,
+            weather_default_lat=weather_lat,
+            weather_default_lon=weather_lon,
+            weather_default_display_name=weather_name,
             weather_units=_env(WEATHER_UNITS_ENV, "celsius"),
-            # (Transit — subway / bus / Citi Bike — is no longer parsed here:
-            # each jasper.transit provider reads its own JASPER_SUBWAY_* /
-            # JASPER_BUS_* / JASPER_CITIBIKE_* keys in build_client(env).)
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /ha
             # wizard writes these to /var/lib/jasper-intsecrets/home_assistant.env;
@@ -797,9 +774,7 @@ class Config:
             ha_url=_env(_ha_env.ENV_URL, "").strip().rstrip("/"),
             ha_token=_env(_ha_env.ENV_TOKEN, "").strip(),
             ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
-            # Default to verifying. Wizard writes "0" only when the
-            # household explicitly opts into self-signed-cert mode.
-            ha_verify_ssl=env_bool(_ha_env.ENV_VERIFY_SSL, True),
+            ha_verify_ssl=_ha_env.verify_ssl_from_state(os.environ),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_volume_persistence.configured_path(),

@@ -62,12 +62,15 @@ import logging
 import os
 import select
 import socket
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 
 from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
 
 # Per sd_listen_fds(3) — fds passed by systemd start at 3.
 SD_LISTEN_FDS_START = 3
@@ -89,8 +92,7 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 
 # Past this much CONTINUOUS busy time with nothing inbound, a hold is reported
 # at WARNING instead of INFO: no legitimate work runs this long, so the process
-# is stuck — it cannot idle-exit, and whatever its on-idle-exit hook converges
-# never converges.
+# is stuck and cannot idle-exit.
 #
 # Derivation (this module stays generic — it deliberately does NOT import the
 # correction session model, so the number is a literal and this comment is the
@@ -142,18 +144,43 @@ def adopt_systemd_sockets() -> list[socket.socket]:
     return sockets
 
 
+_REQUEST_FAILED = (
+    b"HTTP/1.0 500 Internal Server Error\r\n"
+    b"Content-Length: 0\r\n"
+    b"Connection: close\r\n\r\n"
+)
+
+
+class _WizardHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        """A request that raised past its page answers 500 and logs one event,
+        where socketserver would print to stderr and drop the connection. A
+        hung-up client is no event."""
+        exc = sys.exc_info()[1]
+        if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            log_event(
+                logger,
+                "web.request_failed",
+                level=logging.ERROR,
+                exc_info=True,
+                error=type(exc).__name__,
+            )
+        with contextlib.suppress(OSError):
+            request.sendall(_REQUEST_FAILED)
+
+
 def make_http_server(target, handler_cls) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer for either an int port (legacy
     direct bind) or a pre-bound socket.socket (systemd handoff)."""
     if isinstance(target, socket.socket):
-        srv = ThreadingHTTPServer(("", 0), handler_cls, bind_and_activate=False)
+        srv = _WizardHTTPServer(("", 0), handler_cls, bind_and_activate=False)
         srv.socket = target
         srv.server_address = target.getsockname()
         return srv
     if isinstance(target, tuple) and len(target) == 2:
-        return ThreadingHTTPServer(target, handler_cls)
+        return _WizardHTTPServer(target, handler_cls)
     if isinstance(target, int):
-        return ThreadingHTTPServer(("127.0.0.1", target), handler_cls)
+        return _WizardHTTPServer(("127.0.0.1", target), handler_cls)
     raise TypeError(
         f"make_http_server: target must be socket, (host, port) tuple, "
         f"or int port; got {type(target).__name__}"
@@ -196,7 +223,6 @@ def drain_unclaimed_listeners(
 
 
 def _drain_forever(sockets: list[socket.socket]) -> None:
-    log = logging.getLogger("jasper.platform.systemd")
     while True:
         try:
             ready, _, _ = select.select(sockets, [], [])
@@ -214,7 +240,7 @@ def _drain_forever(sockets: list[socket.socket]) -> None:
                 port = sock.getsockname()[1]
             except OSError:
                 continue
-            log.info(
+            logger.info(
                 "jasper-web refused a connection on unserved port %d "
                 "(no capability grants this wizard on this tier)",
                 port,
@@ -279,7 +305,6 @@ class IdleShutdownTracker:
         self,
         idle_threshold_sec: float = DEFAULT_IDLE_SHUTDOWN_SEC,
         watchdog_period_sec: float = DEFAULT_WATCHDOG_NOTIFY_SEC,
-        on_idle_exit=None,
     ) -> None:
         self._lock = threading.Lock()
         self._last_request = time.monotonic()
@@ -299,12 +324,6 @@ class IdleShutdownTracker:
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
-        # Optional zero-arg callable run once, exception-guarded, after the
-        # idle decision and before os._exit — the wizard's last in-process
-        # chance to converge state it left mid-flow (e.g. correction-web's
-        # abandoned-capture production restore). Keep hooks bounded: the
-        # process is exiting and a slow hook delays the socket rearm.
-        self._on_idle_exit = on_idle_exit
         self._thread = threading.Thread(
             target=self._run, name="jasper-web-idle", daemon=True,
         )
@@ -413,8 +432,7 @@ class IdleShutdownTracker:
 
         Past HOLD_LEAK_WARN_AFTER_SEC of unbroken busy time the same line
         escalates to WARNING: at that age it is not a long session, it is a
-        stuck one, and the process can no longer idle-exit OR run the
-        on-idle-exit hook that converges what it left mid-flow. This escalates
+        stuck one, and the process can no longer idle-exit. This escalates
         only — nothing here ends the process; a wedged worker is a bug to fix
         at its own layer, not something to reap out from under.
 
@@ -456,7 +474,6 @@ class IdleShutdownTracker:
         self._stopped = True
 
     def _run(self) -> None:
-        log = logging.getLogger("jasper.platform.systemd")
         while not self._stopped:
             time.sleep(self._watchdog_period)
             if self._stopped:
@@ -466,23 +483,12 @@ class IdleShutdownTracker:
             # Would have exited, but something is still in flight. (`active`
             # non-zero is exactly why `expired` is False here.)
             if active and idle >= self._idle_threshold:
-                self._log_deferred_exit(log, idle, active)
+                self._log_deferred_exit(logger, idle, active)
             if expired:
-                log.info(
+                logger.info(
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
                     idle, self._idle_threshold,
                 )
-                if self._on_idle_exit is not None:
-                    # Same specific tuple the service-start claim boundary
-                    # catches around this hook's restore (correction_setup):
-                    # correction_runtime.run_async timeouts are TimeoutError
-                    # (an OSError), and CamillaUnavailable is a RuntimeError.
-                    # Hooks are expected to be fail-soft themselves; os._exit
-                    # below still runs.
-                    try:
-                        self._on_idle_exit()
-                    except (OSError, RuntimeError, ValueError):
-                        log.exception("idle-exit hook failed; exiting anyway")
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)

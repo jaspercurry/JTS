@@ -1083,7 +1083,7 @@ def check_usbnet_management_probe() -> CheckResult:
     probe_url = f"http://{address}/system/data.json"
     host = resolve_hostname()
     try:
-        status, detail = web._read_management_response(probe_url, host)
+        status, detail = web.read_management_response(probe_url, host)
     except OSError as e:
         return CheckResult(
             label, "fail",

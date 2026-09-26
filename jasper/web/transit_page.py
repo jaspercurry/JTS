@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
-from ..env_load import parse_bool_value
+from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -101,7 +101,7 @@ def _badge_html(configured: bool) -> str:
 TRANSIT_CSS_HREF = "/assets/transit/transit.css"
 
 
-def _wrap_transit_page(
+def wrap_transit_page(
     title: str,
     body_main: str,
     *,
@@ -403,10 +403,10 @@ def _bus_card_html(
         external_notice_html = (
             '<div class="banner banner--info" role="status">'
             'Detected an MTA BusTime API key in '
-            '<code>/etc/jasper/jasper.env</code> (set outside the wizard). '
+            f'<code>{html.escape(BASE_ENV_PATH)}</code> (set outside the wizard). '
             'The daemon is using it already. Saving any change here will '
             'persist your picks (and the key) into '
-            '<code>/var/lib/jasper/transit.env</code>, where the wizard '
+            f'<code>{html.escape(TRANSIT_ENV_PATH)}</code>, where the wizard '
             'owns it from then on.</div>'
         )
 
@@ -416,8 +416,8 @@ def _bus_card_html(
     saved_key = _value_for(state, "JASPER_MTA_BUSTIME_KEY")
     masked = mask_secret(saved_key.strip())
     key_source_label = {
-        "state": "/var/lib/jasper/transit.env",
-        "env": "/etc/jasper/jasper.env (external)",
+        "state": TRANSIT_ENV_PATH,
+        "env": f"{BASE_ENV_PATH} (external)",
     }.get(key_source, "")
     masked_key_html = (
         f'<p class="saved-key">Saved key: '
@@ -903,7 +903,7 @@ def _cities_section_html(
 </form>"""
 
 
-def _index_html(
+def index_html(
     state: dict[str, str],
     csrf_token: str = "",
     *,
@@ -920,7 +920,7 @@ def _index_html(
 <p class="form-hint">Configure travel and transit settings for the speaker.</p>
 {_address_section_html(state, csrf_token)}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page(
+        return wrap_transit_page(
             "Transit", body, status_msg=status_msg, back_href=back_href,
         )
 
@@ -947,7 +947,7 @@ def _index_html(
 {save_form}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
-        return _wrap_transit_page(
+        return wrap_transit_page(
             "Transit", body, status_msg=status_msg, back_href=back_href,
         )
 
@@ -1023,6 +1023,6 @@ def _index_html(
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <button type="submit" class="btn btn--danger">Clear all transit settings</button>
 </form>"""
-    return _wrap_transit_page(
+    return wrap_transit_page(
         "Transit", body, status_msg=status_msg, back_href=back_href,
     )

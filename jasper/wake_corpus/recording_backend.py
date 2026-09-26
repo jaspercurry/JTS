@@ -5,12 +5,9 @@
 """Recording engine for the wake-corpus recorder.
 
 The backend drives a background asyncio loop (in a daemon thread) from
-sync HTTP handler threads via ``run_coroutine_threadsafe``. It is the
-upper layer of the recorder: it imports the bridge env / leg-plan /
-capture-health helpers + shared leg/profile constants from
-:mod:`jasper.wake_corpus.bridge_session`. ``UdpMicCapture`` is imported
-lazily inside ``RecordingTask.start`` so this module stays importable on
-dev machines without sounddevice/portaudio.
+sync HTTP handler threads via ``run_coroutine_threadsafe``; each clip's
+UDP capture is a :class:`~jasper.wake_corpus.clip_capture.RecordingTask`
+running on that loop.
 """
 from __future__ import annotations
 
@@ -23,13 +20,10 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import AsyncExitStack, contextmanager
-from dataclasses import asdict, dataclass, field
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 from jasper.atomic_io import atomic_write_json
 from jasper.aec_sweep import (
@@ -52,8 +46,6 @@ from jasper.wake_conditions import (
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
-    _default_enabled_legs,
-    build_capture_health,
     build_session_audio_context,
     chip_aec_config_metadata,
     exit_corpus_test_mode,
@@ -63,7 +55,9 @@ from .capture_plan import (
     build_capture_plan,
     validate_active_capture_plan,
 )
+from .clip_capture import RecordingTask
 from .runtime_probe import (
+    BASE_LEGS,
     CORPUS_PROFILES,
     DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
     DTLN_LEG,
@@ -72,9 +66,9 @@ from .runtime_probe import (
     RAW0_LEG,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
-    read_bridge_stats_snapshot,
     session_aec3_sweep_source,
 )
+from .session_store import METADATA_SCHEMA_VERSION, ClipMetadata
 from . import session_store
 
 logger = logging.getLogger("jasper-wake-corpus-web")
@@ -84,7 +78,6 @@ logger = logging.getLogger("jasper-wake-corpus-web")
 # Recorder-backend constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_OUTPUT_DIR = Path("data/enrollment_positives")
 DEFAULT_METADATA_SUBDIR = "metadata"
 ACTIVE_SESSION_MARKER = ".active_session.json"
 # Crash-safety marker for corpus test mode. Entering test mode stops
@@ -143,8 +136,6 @@ STOP_SHUTDOWN_JOIN_SEC = 5.0
 # exits and this never runs against a live session.
 TEST_MODE_STALE_SEC = 300.0
 
-METADATA_SCHEMA_VERSION = 2
-
 # session_store.parse_session_data()'s keys that map 1:1 onto a
 # RecordingBackend `self._<key>` attribute of the same name.
 _SESSION_STATE_KEYS = (
@@ -160,204 +151,6 @@ _SESSION_SUMMARY_KEYS = (
     "include_usb_mic", "include_usb_dtln", "include_xvf_raw0_dtln",
     "include_aec3_sweep", "corpus_profile", "aec3_sweep_source",
 )
-
-
-# ---------------------------------------------------------------------------
-# Data shapes
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ClipMetadata:
-    """One recorded clip's complete metadata, written to the per-session
-    JSON sidecar. All fields are JSON-serializable.
-    """
-
-    clip_id: str
-    member: str
-    condition: str
-    distance: str
-    session_id: str
-    seq: int
-    start_ts: str  # ISO8601 UTC
-    stop_ts: str
-    duration_sec: float
-    files: dict[str, str]  # leg → absolute WAV path
-    deleted: bool = False
-    auto_stopped: bool = False
-    # True when the recording was force-stopped because the household
-    # muted the mic mid-clip (see MUTE_POLL_INTERVAL_SEC). The audio on
-    # disk predates the mute flip (±1 poll interval); the flag tells
-    # the operator why the clip ended early.
-    mute_stopped: bool = False
-    notes: str = ""
-    selected_legs: list[str] = field(default_factory=list)
-    capture_plan: dict[str, Any] = field(default_factory=dict)
-    capture_plan_id: str = ""
-    capture_plan_conformance: dict[str, Any] = field(default_factory=dict)
-    audio_context: dict[str, Any] = field(default_factory=dict)
-    capture_health: dict[str, Any] = field(default_factory=dict)
-
-    def to_json(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-# ---------------------------------------------------------------------------
-# Recording — the actual audio I/O
-# ---------------------------------------------------------------------------
-
-
-def compute_rms_dbfs(frame: np.ndarray) -> float:
-    """Return the RMS of an int16 PCM frame in dBFS.
-
-    -100.0 dBFS for near-silent or empty frames (avoids -inf from
-    log(0)). 0.0 dBFS = full-scale int16. Used by the SSE level-meter
-    endpoint so the UI can show a live "is your voice reaching the
-    mic?" bar while recording.
-    """
-    if len(frame) == 0:
-        return -100.0
-    mean_sq = float(np.mean(frame.astype(np.float64) ** 2))
-    if mean_sq < 1.0:
-        return -100.0
-    rms = mean_sq ** 0.5
-    return 20.0 * float(np.log10(rms / 32768.0))
-
-
-class RecordingTask:
-    """Open-ended audio recording from multiple UDP captures.
-
-    Constructed on each Start click; cancelled on Stop click. Background
-    asyncio task streams frames into per-leg buffers. `stop()` cancels
-    cleanly + returns the captured PCM bytes per leg.
-
-    Side effect: while recording, updates `current_rms_dbfs` on every
-    AEC-ON frame so the SSE level meter can read it. Only the AEC ON
-    leg is metered (it's the canonical wake-detection signal); cost
-    is one numpy reduction per ~80 ms.
-
-    Memory bound: at 16 kHz mono int16 ≈ 32 KB/s per leg × 3 legs ≈
-    96 KB/s. Capped to MAX_RECORDING_DURATION_SEC by the backend, so
-    worst-case footprint is bounded.
-    """
-
-    def __init__(
-        self,
-        ports: dict[str, int],
-        *,
-        aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF,
-    ) -> None:
-        self._ports = ports
-        self._aec3_sweep_source = aec3_sweep_source
-        self._buffers: dict[str, list[np.ndarray]] = {leg: [] for leg in ports}
-        self._captures: dict[str, Any] = {}
-        self._task: asyncio.Task | None = None
-        self._stack: AsyncExitStack | None = None
-        self._start_monotonic: float = 0.0
-        self._bridge_stats_start: dict[str, Any] | None = None
-        self._bridge_stats_stop: dict[str, Any] | None = None
-        # Live RMS of the most recent AEC ON frame, read by the SSE
-        # level-meter handler. Written from the asyncio loop thread,
-        # read from HTTP handler threads — single-float reads/writes
-        # are atomic in CPython so no lock needed.
-        self.current_rms_dbfs: float = -100.0
-
-    async def start(self) -> None:
-        from jasper.mic_capture import UdpMicCapture  # lazy: test seam — tests/wake_corpus_setup_fixtures.py patches jasper.mic_capture.UdpMicCapture at call time
-
-        self._stack = AsyncExitStack()
-        await self._stack.__aenter__()
-        try:
-            for leg, port in self._ports.items():
-                cap = await self._stack.enter_async_context(
-                    UdpMicCapture(port=port),
-                )
-                self._captures[leg] = cap
-        except Exception:  # noqa: BLE001
-            # If any leg fails to bind, clean up the ones that succeeded
-            # so the user can retry without a "port already in use"
-            # cascade on the next start.
-            await self._stack.__aexit__(None, None, None)
-            raise
-
-        self._start_monotonic = time.monotonic()
-        self._bridge_stats_start = read_bridge_stats_snapshot()
-        self._task = asyncio.create_task(self._collect_all())
-
-    async def _collect_all(self) -> None:
-        async def _per_leg(leg: str, cap: Any) -> None:
-            is_aec_on = (leg == "on")
-            async for frame in cap.frames():
-                self._buffers[leg].append(frame)
-                # Live-meter the AEC ON leg only — it's the canonical
-                # wake-detection signal. Single-float atomic write; no
-                # lock needed (CPython guarantee).
-                if is_aec_on:
-                    self.current_rms_dbfs = compute_rms_dbfs(frame)
-
-        await asyncio.gather(*[
-            _per_leg(leg, cap) for leg, cap in self._captures.items()
-        ])
-
-    def elapsed_sec(self) -> float:
-        if self._start_monotonic == 0:
-            return 0.0
-        return time.monotonic() - self._start_monotonic
-
-    def request_stop(self) -> None:
-        """Cancel frame collection without waiting for clip publication.
-
-        Called on this task's event loop when a privacy/automatic stop races a
-        lifecycle owner. ``stop()`` later gathers the buffered PCM and closes
-        the capture stack; cancellation here ensures no more audio is retained
-        while that bounded-backoff publication retry is pending.
-        """
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-
-    async def stop(self) -> dict[str, bytes]:
-        """Cancel the collection task, return PCM bytes per leg.
-
-        Idempotent: calling twice is a no-op on the second call (the
-        task + stack sentinels are cleared after first cleanup, so we
-        skip both double-await and double-exit which AsyncExitStack
-        would error on).
-        """
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:  # noqa: BLE001
-                logger.warning("recording task raised on cancel: %s", e)
-        self._task = None
-
-        result: dict[str, bytes] = {}
-        for leg, frames in self._buffers.items():
-            if frames:
-                pcm = np.concatenate(frames).astype(np.int16).tobytes()
-            else:
-                pcm = b""
-            result[leg] = pcm
-
-        if self._stack is not None:
-            try:
-                await self._stack.__aexit__(None, None, None)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("cleanup raised: %s", e)
-            self._stack = None
-        self._bridge_stats_stop = read_bridge_stats_snapshot()
-        return result
-
-    def capture_health(self, wall_duration_sec: float) -> dict[str, Any]:
-        return build_capture_health(
-            wall_duration_sec=wall_duration_sec,
-            buffers=self._buffers,
-            bridge_start=self._bridge_stats_start,
-            bridge_stop=self._bridge_stats_stop,
-            aec3_sweep_source=self._aec3_sweep_source,
-        )
 
 
 _StopGeneration = tuple[str, RecordingTask]
@@ -400,6 +193,11 @@ class MicMutedError(StateError):
     is stopped, so it must honor the persisted flag itself. Subclasses
     StateError so the wizard's existing error plumbing surfaces the
     message as an HTTP error without new handler branches."""
+
+
+def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
+    """Session default: base production legs that exist in this process."""
+    return tuple(leg for leg in BASE_LEGS if leg in ports)
 
 
 class RecordingBackend:
@@ -1119,33 +917,10 @@ class RecordingBackend:
         with self._lock:
             return self._corpus_profile
 
-    def chip_aec_config(self) -> dict[str, object] | None:
-        with self._lock:
-            return dict(self._chip_aec_config) if self._chip_aec_config else None
-
-    def aec3_sweep_variants(self) -> list[dict[str, object]]:
-        """Effective AEC3 sweep variants for the active session or UI status."""
-        with self._lock:
-            if self._include_aec3_sweep and self._aec3_sweep_variants:
-                return list(self._aec3_sweep_variants)
-        return variant_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
-
-    def aec3_sweep_config(self) -> dict[str, object]:
-        """Effective AEC3 sweep config provenance for the active session/status."""
-        with self._lock:
-            if self._include_aec3_sweep and self._aec3_sweep_config:
-                return dict(self._aec3_sweep_config)
-        return config_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
-
     def enabled_legs(self) -> tuple[str, ...]:
         """The active session's leg set, in recording/playback order."""
         with self._lock:
             return self._enabled_legs
-
-    def capture_plan(self) -> dict[str, Any] | None:
-        """Layered mic/channel/transform plan for the active session."""
-        with self._lock:
-            return dict(self._capture_plan) if self._capture_plan else None
 
     def audio_context(self) -> dict[str, Any] | None:
         """Production-profile/corpus-context snapshot for the active session."""
@@ -1153,14 +928,9 @@ class RecordingBackend:
             return dict(self._audio_context) if self._audio_context else None
 
     def status_snapshot(self) -> dict[str, Any]:
-        """Every `/api/status` field, read under one lock acquisition.
-
-        The route this feeds used to call over a dozen separate
-        single-field getters, each independently locked — a session
-        switch (begin/load/unload) between two of those calls could mix
-        fields from two different sessions in one response. Reading them
-        together here means every value in the snapshot reflects the
-        same instant.
+        """Every `/api/status` field, read under one lock acquisition so a
+        session switch (begin/load/unload) cannot mix fields from two
+        sessions in one response.
         """
         with self._lock:
             include_aec3_sweep = self._include_aec3_sweep
@@ -1205,10 +975,9 @@ class RecordingBackend:
                 ),
                 "clip_count": sum(1 for c in self._clips if not c.deleted),
             }
-        # Stateless fallbacks + the conformance re-check, all pure functions
-        # of the values already snapshotted above — done outside the lock
-        # (matching what each getter this replaces did) without re-reading
-        # any `self._*` field, so the snapshot stays internally consistent.
+        # Stateless fallbacks + the conformance re-check are pure functions
+        # of the values snapshotted above, so they run outside the lock
+        # without re-reading any `self._*` field.
         snapshot["aec3_sweep_variants"] = aec3_sweep_variants or variant_metadata(
             input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
         )

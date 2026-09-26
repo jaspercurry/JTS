@@ -11,19 +11,19 @@ store-relative paths (ADR-0198). Store errors propagate to the host.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
+from jasper.log_event import log_event
 
-from jasper.attribution.findings import FINDING_SET_SCHEMA
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
     SessionIdentity,
     stamp_session_identity,
 )
-from jasper.attribution.storage import findings_relative_path
 
 from ..commissioning_evidence_store import CommissioningEvidenceStore
 from ..run_manifest import RUN_MANIFEST_KIND, RUN_MANIFEST_FILENAME
@@ -40,6 +40,8 @@ __all__ = [
     "CLOUD_EVIDENCE_KIND",
     "BankedRecordStore",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: The two artifact kinds no producer names for itself: a check bundle and a
 #: cloud group are plain dicts, so their discriminator is spelled here.
@@ -59,9 +61,6 @@ class _Route:
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
     live: bool = False
-    #: Keys a caller supplies to ROUTE the record and that the file does not
-    #: carry, taken back off the way ``kind`` is.
-    routing_keys: tuple[str, ...] = ()
     stamp_identity: bool = False
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
 
@@ -129,13 +128,6 @@ _ROUTES: dict[str, _Route] = {
         enveloped=False,
         verify=_verify_receipt,
     ),
-    # The CALLER injects ``phase`` to route on; the file is exactly
-    # ``FindingSet.to_dict()``, which carries none.
-    FINDING_SET_SCHEMA: _Route(
-        lambda capture, r: findings_relative_path(capture, _required(r, "phase")),
-        enveloped=False,
-        routing_keys=("phase",),
-    ),
 }
 
 
@@ -190,7 +182,9 @@ class BankedRecordStore:
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
-        await resilient_restore(asyncio.to_thread(self._publish, relative, payload, route))
+        size = await resilient_restore(asyncio.to_thread(self._publish, relative, payload, route))
+        log_event(logger, "active_speaker.record_banked", kind=discriminator, path=relative,
+                  live=route.live, bytes=size)
         return relative
 
     # --------------------------------------------------------------- internals
@@ -210,9 +204,8 @@ class BankedRecordStore:
         discriminator: str,
         measure: str | None,
     ) -> Mapping[str, Any]:
-        record = {k: v for k, v in record.items() if k not in route.routing_keys}
         if not route.enveloped:
-            return record
+            return dict(record)
         owned = [key for key in _ENVELOPE_KEYS if key in record]
         if owned:
             raise ValueError(
@@ -248,10 +241,9 @@ class BankedRecordStore:
 
     def _publish(
         self, relative: str, payload: Mapping[str, Any], route: _Route,
-    ) -> None:
+    ) -> int:
         if route.live:
-            self.evidence.write_live(relative, payload)
-            return
+            return self.evidence.write_live(relative, payload)
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if _measure_kind(payload) is not None and payload.get("wav_path"):
             record_artifact(
@@ -265,3 +257,4 @@ class BankedRecordStore:
             # whether what was written comes back, and the two differ wherever
             # the store owns keys the caller supplied.
             route.verify(payload, self.evidence.reopen_json_artifact(artifact))
+        return artifact.byte_size

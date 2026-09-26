@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.install_profile import system_capabilities_for_profile
 from jasper.web import wifi_setup
 from jasper.web.landing import render_landing
 from jasper.web.nav import hub_paths, render_hub
@@ -519,32 +520,28 @@ def test_landing_page_capability_gates_fail_closed() -> None:
 
 
 def test_landing_page_data_requires_match_capability_map() -> None:
-    # Every data-requires="X" gate must have a key X in the capability map
-    # (system_capabilities_for_profile) — otherwise applyCapabilities reads
-    # caps["X"] === undefined, fails closed, and the section is hidden forever
-    # with no error. Pin the seam so a typo'd or new gate fails the suite, not
-    # silently in the field. (Cap keys are profile-independent — only the
-    # boolean values differ — so checking one profile's keys is enough.)
-    from jasper.install_profile import system_capabilities_for_profile
-
-    used = set(re.findall(r'data-requires="([^"]+)"', _index_html()))
-    assert used, "expected data-requires capability gates in the landing page"
-    cap_keys = set(system_capabilities_for_profile("full"))
-    missing = used - cap_keys
-    assert not missing, (
-        f"data-requires values with no capability-map key: {sorted(missing)}"
-    )
+    # Every data-requires="X" gate on the landing page and hubs must have a
+    # key X in the capability map (system_capabilities_for_profile) —
+    # otherwise initSettingsStatus reads caps["X"] === undefined, fails
+    # closed, and the section is hidden forever with no error — and the map
+    # bakes nothing no page gates on. (Cap keys are profile-independent —
+    # only the boolean values differ — so checking one profile's keys is
+    # enough.)
+    pages = [_index_html()] + [
+        render_hub(hub, caps={}, app_css_version="testsha") for hub in hub_paths()
+    ]
+    used = {
+        gate for page in pages for gate in re.findall(r'data-requires="([^"]+)"', page)
+    }
+    assert used == set(system_capabilities_for_profile("full"))
 
 
 def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
-    # A capability grant is what unhides a section, so widening one (streambox
-    # gained ASSISTANT — ADR-0217) can reveal rows linking to wizards that
-    # profile's nginx conf never routes: the household taps "Voice" and gets
-    # the catch-all. Pin the seam between the two files rather than the three
-    # sections that happened to break, so the next widened grant is caught.
-    # The hubs hold most of those rows now, so they are walked too.
-    from jasper.install_profile import system_capabilities_for_profile
-
+    # A capability grant is what unhides a section, so widening one can
+    # reveal rows linking to wizards that profile's nginx conf never routes:
+    # the household taps "Voice" and gets the catch-all. Pin the seam between
+    # the two files, so the next widened grant is caught. The hubs hold most
+    # of those rows now, so they are walked too.
     caps = system_capabilities_for_profile("streambox")
     conf = _nginx_conf(_STREAMBOX_NGINX_PATH)
     # An exact-match block serves that one path (`= /` is the landing page,
@@ -945,7 +942,7 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
     assert 'id="source-section"' in html
     assert 'id="volume-eyebrow"' in html
-    assert 'id="pair-manage-link" href="/sound/pair/" data-requires="pair_management" hidden' in html
+    assert '<a id="pair-manage-link" href="/sound/pair/">Manage pair</a>' in html
     assert "fetch('/grouping')" in js
     assert "'Pair volume'" in js
     assert 'from "/assets/shared/js/local-web-host.js"' in js

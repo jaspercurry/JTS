@@ -34,7 +34,7 @@ from ...service_units import (
     read_unit_property,
     read_unit_states,
 )
-from ._shared import _nested_dict
+from ._shared import nested_dict
 from ._shared import install_profile_is_streambox as _install_profile_is_streambox
 
 T = TypeVar("T")
@@ -131,6 +131,24 @@ def _read_env_mapping(path: str) -> dict[str, str] | None:
     except OSError:
         return None
     return parse_env_mapping(text)
+
+
+def _parked_as_bonded_follower() -> bool:
+    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
+
+    The dumb-follower profile parks the renderer/source stack while bonded, so
+    liveness checks must read that as ok rather than as a failure against
+    intended state. Fail-open to NOT-parked: a broken read must never mask a
+    real failure on a solo speaker."""
+    try:
+        from ...multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
+
+        cfg = evidence.grouping_config()
+        return effective_local_sources_park_reason(cfg) is not None
+    except Exception:  # noqa: BLE001 — fail-open
+        return False
 
 
 class Evidence:
@@ -267,7 +285,7 @@ class Evidence:
         is missing — jasper-control is the only vcgencmd poller (ADR-0226),
         so a wedged sampler cannot report a supply-voltage verdict."""
         snapshot = self.control_system_snapshot()
-        metrics = _nested_dict(snapshot.payload, "metrics")
+        metrics = nested_dict(snapshot.payload, "metrics")
         if metrics is None:
             return None
         sampled_at = metrics.get("last_sample_at")
@@ -298,15 +316,13 @@ class Evidence:
     def outputd_env(self) -> dict[str, str] | None:
         """``outputd.env``'s own parsed mapping — just that single-writer
         file's text, NOT the merged ``outputd_reconciled_env`` three-layer
-        stack (see ``audio_runtime_outputd._outputd_reconciled_env``). None
+        stack (see ``audio_runtime_outputd.outputd_reconciled_env``). None
         when it could not be read."""
         from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
 
         return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 
     def parked_bonded_follower(self) -> bool:
-        from ._shared import _parked_as_bonded_follower
-
         return self.get("parked_bonded_follower", _parked_as_bonded_follower)
 
     def grouping_config(self) -> Any:

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..server import VolumeOps
 
 # Not `__name__`: one journal name for every route body, not one per mixin.
 logger = logging.getLogger("jasper.control")
@@ -17,27 +20,21 @@ logger = logging.getLogger("jasper.control")
 class ControlHandlerMixin(BaseHTTPRequestHandler):
     """Methods and factory-owned state consumed by concern route mixins.
 
-    The concrete nested handler in ``server._make_handler`` supplies these
-    attributes and most of these methods; ``_maybe_forward_pair_action_to_leader``
-    is instead implemented by ``PeeringRoutes``. Keeping the contract here lets
-    mypy check the extracted route bodies without changing their runtime
-    dispatch shape.
+    ``server._ControlHandler`` supplies most of these methods, the subclass
+    ``server._make_handler`` builds binds these attributes, and ``PeeringRoutes``
+    implements ``_maybe_forward_pair_action_to_leader``. Keeping the contract
+    here lets mypy check the extracted route bodies without changing their
+    runtime dispatch shape.
     """
 
-    _adjust_op: Any
     _audio_health_sampler: Any
     _camilla_host: str
     _camilla_port: int
-    _get_op: Any
     _ha_status_cache: Any
-    _install_profile: Any
-    _mute_set_op: Any
-    _mute_toggle_op: Any
-    _observe_op: Any
     _sampler: Any
-    _set_op: Any
     _state_response_cache: Any
     _voice_socket_path: str
+    _volume: VolumeOps
     server: ThreadingHTTPServer
 
     def _collect_state(
@@ -51,9 +48,8 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     ) -> Any:
         """The cross-daemon /state aggregate, as an awaitable.
 
-        A whole-callable seam (not one of the per-op attributes above):
-        route-level tests replace it outright to test caching/error
-        handling without running the real aggregation.
+        A whole-callable seam: route-level tests replace it outright to test
+        caching/error handling without running the real aggregation.
         """
         raise NotImplementedError
 

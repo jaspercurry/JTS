@@ -8,13 +8,75 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
 from ...log_event import log_event
 from ...platform import wire
 from ...platform.uds import voice_socket_command
+from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
+
+_VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
+    "activating",
+    "deactivating",
+    "reloading",
+})
+# Bounds the /mic request this read sits on; a wedged systemd must not hold it.
+_VOICE_UNIT_SHOW_TIMEOUT_SECONDS = 1.0
+
+
+def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
+    return {
+        "status": "parked",
+        "reason": "bonded_follower",
+        "available": False,
+        "muted": True,
+        "pair_leader": leader,
+        "message": "Paired — the assistant listens on the pair leader",
+    }
+
+
+def _voice_starting_mic_payload() -> dict[str, Any] | None:
+    """Return a first-class /mic payload while jasper-voice is in flight.
+
+    The voice daemon creates its UDS socket late in startup, so during a
+    restart/provider switch/unbond a missing socket means "not ready yet",
+    not "offline". The distinction is drawn here so the landing page stays a
+    dumb renderer of /mic state.
+    """
+    states = read_unit_states(
+        (JASPER_VOICE_SERVICE,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS,
+    )
+    record = (states or {}).get(JASPER_VOICE_SERVICE) or {}
+    active_state = str(record.get("active_state") or "")
+    if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
+        return None
+    return {
+        "status": "starting",
+        "reason": "voice_daemon_starting",
+        "available": False,
+        "muted": True,
+        "message": "Voice control is restarting",
+        "unit": {
+            "name": JASPER_VOICE_SERVICE,
+            "active_state": active_state,
+            "sub_state": record.get("sub_state"),
+            "result": record.get("result"),
+        },
+    }
+
+
+def _voice_offline_mic_payload(error: str) -> dict[str, Any]:
+    return {
+        "status": "offline",
+        "reason": "voice_daemon_unreachable",
+        "available": False,
+        "muted": True,
+        "message": "Voice control offline",
+        "error": error,
+    }
 
 
 class VoiceRoutes(ControlHandlerMixin):
@@ -24,9 +86,9 @@ class VoiceRoutes(ControlHandlerMixin):
         # voice, and a daemon restart temporarily lacks its UDS socket;
         # report both as first-class states instead of making every
         # client reinterpret a missing UDS as failure.
-        leader = _peering._pair_follower_leader_addr()
+        leader = _peering.pair_follower_leader_addr()
         if leader:
-            self._send_json(_peering._bonded_follower_mic_payload(leader))
+            self._send_json(_bonded_follower_mic_payload(leader))
             return
         try:
             st = asyncio.run(
@@ -37,12 +99,12 @@ class VoiceRoutes(ControlHandlerMixin):
                 ),
             )
         except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-            starting = _peering._voice_starting_mic_payload()
+            starting = _voice_starting_mic_payload()
             if starting is not None:
                 self._send_json(starting)
                 return
             self._send_json(
-                _peering._voice_offline_mic_payload(f"voice_daemon unreachable: {e}"),
+                _voice_offline_mic_payload(f"voice_daemon unreachable: {e}"),
                 status=503,
             )
             return
@@ -162,9 +224,9 @@ class VoiceRoutes(ControlHandlerMixin):
         # daemon's control socket, which drops mic frames at
         # the wake-loop gate (mute) or resumes (unmute) and
         # plays a short click on either edge for feedback.
-        leader = _peering._pair_follower_leader_addr()
+        leader = _peering.pair_follower_leader_addr()
         if leader:
-            payload = _peering._bonded_follower_mic_payload(leader)
+            payload = _bonded_follower_mic_payload(leader)
             self._send_json({**payload, "error": payload["message"]}, status=409)
             return
         body = self._read_json()

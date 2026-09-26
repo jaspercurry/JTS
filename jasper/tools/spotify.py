@@ -13,6 +13,7 @@ from rapidfuzz import fuzz
 from . import tool
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..renderer import airplay_now_playing
+from ..spotify_router import airplay_client_name
 from ..spotify_routing import resolve_target, stop_renderers
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ SPOTIFY_PLAY_LLM_DESCRIPTION = (
 )
 
 
-def _format_name_list(names: "list[str]") -> str:
+def format_name_list(names: "list[str]") -> str:
     """English list join for spoken output: ['jasper'] → 'jasper';
     ['jasper', 'brittany'] → 'jasper and brittany';
     ['a', 'b', 'c'] → 'a, b, and c'. Lowercased — voice tool error
@@ -212,177 +213,180 @@ async def _resolve_query(
     sp, query: str, kind: str,
     configured_playlists: "dict[str, str] | None" = None,
 ) -> "tuple[str, str, str] | None":
-    """Resolve a 'play X' query to (uri, resolved_kind, display_name).
-
-    Strategy:
-      - kind="playlist"  → fuzzy-match user library (loose threshold,
-                            tolerant of voice-to-text mishears); fall
-                            back to public playlist search.
-      - kind in {artist, album} → field-qualified Spotify search so the
-                            query matches the entity NAME, not the
-                            contents of its discography.
-      - kind="track"     → unqualified Spotify search (preserves
-                            "X by Y" phrasing).
-      - kind="auto"      → fan out artist + track + album + library
-                            scans, score with rapidfuzz, gate on
-                            confidence threshold, tiebreak by
-                            preference order.
+    """Resolve a 'play X' query to (uri, resolved_kind, display_name); a
+    kind other than playlist/artist/album/track resolves as "auto".
 
     Returns None when no candidate clears the confidence bar — caller
     should surface a clarification error to the user.
     """
-    safe_q = query.replace(chr(34), "")
-
     if kind == "playlist":
-        # Defensive query normalization: strip a trailing "playlist" /
-        # "playlists" before fuzzy-matching. The tool docstring tells
-        # the model to set `kind="playlist"` and pass just the playlist
-        # NAME (e.g. user says "play my Covers playlist" → query="Covers"),
-        # but in practice the model sometimes leaves the word "playlist"
-        # in the query string. That breaks fuzz.ratio: e.g. against the
-        # library [Covers, untitled playlist], query="covers playlist"
-        # scores ('untitled playlist', 62) > ('Covers', 57) because the
-        # shared word "playlist" tips the Levenshtein balance toward
-        # OTHER names that happen to contain "playlist". After this
-        # strip, query="covers playlist" → "covers" → ('Covers', 100).
-        # We only strip TRAILING occurrences so playlist names that
-        # actually start with "Playlist" (e.g. "Playlist Best of 2026")
-        # match correctly.
-        playlist_q = query.strip()
-        lower = playlist_q.lower()
-        for suffix in (" playlists", " playlist"):
-            if lower.endswith(suffix):
-                playlist_q = playlist_q[: -len(suffix)].rstrip()
-                break
+        return await _resolve_playlist(sp, query, configured_playlists)
+    if kind in ("artist", "album"):
+        return await _resolve_named(sp, query, kind)
+    if kind == "track":
+        return await _resolve_track(sp, query)
+    return await _resolve_auto(sp, query, configured_playlists)
 
-        # User said the word "playlist". First try THEIR pool — the
-        # account's configured-via-web-UI playlists merged with their
-        # Spotify library. Configured wins ties (stable sort).
-        # Fall back to Spotify-owned catalog search (Discover Weekly,
-        # Release Radar, Daily Mix N) — but per the 2026 API, that
-        # endpoint no longer returns the real Spotify-owned versions
-        # for newly-issued credentials, so the configured map is the
-        # only reliable path for those. Kept for the rare account that
-        # still has access.
-        # We do NOT fall back to general public playlist search —
-        # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
-        # Jams', which is exactly what we don't want.
-        ranked = await _user_library_ranked(sp, playlist_q, configured=configured_playlists)
-        if ranked:
-            logger.info(
-                "spotify_play: library candidates for query=%r → %s",
-                query, [(name, score) for _, name, score in ranked[:5]],
-            )
-            top = ranked[0]
-            if top[2] >= _PLAYLIST_THRESHOLD:
-                return top[0], "playlist", top[1]
-            # Best-by-far: take the top match even at low absolute score
-            # if it's well clear of #2. Single-playlist libraries naturally
-            # hit this; so do users with 3-10 distinctively-named playlists.
-            runner_up_score = ranked[1][2] if len(ranked) > 1 else 0
-            if (
-                top[2] >= _PLAYLIST_BEST_BY_FAR_FLOOR
-                and top[2] - runner_up_score >= _PLAYLIST_BEST_BY_FAR_GAP
-            ):
-                logger.info(
-                    "spotify_play: picking %r at score=%d via best-by-far "
-                    "(gap to #2 = %d)",
-                    top[1], top[2], top[2] - runner_up_score,
-                )
-                return top[0], "playlist", top[1]
 
-        # Library miss: try Spotify-owned playlists. Discover Weekly /
-        # Release Radar / Daily Mix N are owned by 'spotify' and are
-        # personalized to the listener when fetched with a user token.
-        # Use the normalized query here too — searching Spotify's
-        # catalog for "covers playlist" matches differently than
-        # "covers".
-        spotify_owned = await _spotify_owned_playlist_match(sp, playlist_q)
-        if spotify_owned and spotify_owned[2] >= _PLAYLIST_THRESHOLD:
-            logger.info(
-                "spotify_play: spotify-owned playlist hit %r (score=%d)",
-                spotify_owned[1], spotify_owned[2],
-            )
-            return spotify_owned[0], "playlist", spotify_owned[1]
+async def _safe_search(sp, q: str, type_: str):
+    """The top-hit search for one type; None, logged, when it fails."""
+    try:
+        return await asyncio.to_thread(sp.search, q=q, type=type_, limit=1)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s search failed: %s", type_, e)
         return None
 
-    if kind in ("artist", "album"):
-        q = f'{kind}:"{safe_q}"'
-        try:
-            results = await asyncio.to_thread(sp.search, q=q, type=kind, limit=1)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("%s search failed: %s", kind, e)
-            return None
-        items = ((results or {}).get(f"{kind}s") or {}).get("items") or []
-        if not items or not items[0]:
-            return None
-        return items[0]["uri"], kind, items[0].get("name") or query
 
-    if kind == "track":
-        try:
-            results = await asyncio.to_thread(
-                sp.search, q=query, type="track", limit=1
+def _field_query(kind: str, text: str) -> str:
+    """`kind:"text"`, so the search matches the entity NAME, not the
+    contents of its discography; a stray quote would end the field early."""
+    return f'{kind}:"{text.replace(chr(34), "")}"'
+
+
+def _top_hit(results, kind: str) -> "dict | None":
+    """The first `kind` item of a search response, or None."""
+    items = ((results or {}).get(f"{kind}s") or {}).get("items") or [None]
+    return items[0] or None
+
+
+async def _resolve_playlist(
+    sp, query: str, configured_playlists: "dict[str, str] | None",
+) -> "tuple[str, str, str] | None":
+    """Fuzzy-match the user's own playlists (loose threshold, tolerant of
+    voice-to-text mishears), then Spotify-owned catalog playlists."""
+    # Defensive query normalization: strip a trailing "playlist" /
+    # "playlists" before fuzzy-matching. The tool docstring tells
+    # the model to set `kind="playlist"` and pass just the playlist
+    # NAME (e.g. user says "play my Covers playlist" → query="Covers"),
+    # but in practice the model sometimes leaves the word "playlist"
+    # in the query string. That breaks fuzz.ratio: e.g. against the
+    # library [Covers, untitled playlist], query="covers playlist"
+    # scores ('untitled playlist', 62) > ('Covers', 57) because the
+    # shared word "playlist" tips the Levenshtein balance toward
+    # OTHER names that happen to contain "playlist". After this
+    # strip, query="covers playlist" → "covers" → ('Covers', 100).
+    # We only strip TRAILING occurrences so playlist names that
+    # actually start with "Playlist" (e.g. "Playlist Best of 2026")
+    # match correctly.
+    playlist_q = query.strip()
+    lower = playlist_q.lower()
+    for suffix in (" playlists", " playlist"):
+        if lower.endswith(suffix):
+            playlist_q = playlist_q[: -len(suffix)].rstrip()
+            break
+
+    # User said the word "playlist". First try THEIR pool — the
+    # account's configured-via-web-UI playlists merged with their
+    # Spotify library. Configured wins ties (stable sort).
+    # Fall back to Spotify-owned catalog search (Discover Weekly,
+    # Release Radar, Daily Mix N) — but per the 2026 API, that
+    # endpoint no longer returns the real Spotify-owned versions
+    # for newly-issued credentials, so the configured map is the
+    # only reliable path for those. Kept for the rare account that
+    # still has access.
+    # We do NOT fall back to general public playlist search —
+    # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
+    # Jams', which is exactly what we don't want.
+    ranked = await _user_library_ranked(sp, playlist_q, configured=configured_playlists)
+    if ranked:
+        logger.info(
+            "spotify_play: library candidates for query=%r → %s",
+            query, [(name, score) for _, name, score in ranked[:5]],
+        )
+        top = ranked[0]
+        if top[2] >= _PLAYLIST_THRESHOLD:
+            return top[0], "playlist", top[1]
+        # Best-by-far: take the top match even at low absolute score
+        # if it's well clear of #2. Single-playlist libraries naturally
+        # hit this; so do users with 3-10 distinctively-named playlists.
+        runner_up_score = ranked[1][2] if len(ranked) > 1 else 0
+        if (
+            top[2] >= _PLAYLIST_BEST_BY_FAR_FLOOR
+            and top[2] - runner_up_score >= _PLAYLIST_BEST_BY_FAR_GAP
+        ):
+            logger.info(
+                "spotify_play: picking %r at score=%d via best-by-far "
+                "(gap to #2 = %d)",
+                top[1], top[2], top[2] - runner_up_score,
             )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("track search failed: %s", e)
-            return None
-        items = ((results or {}).get("tracks") or {}).get("items") or []
-        if not items or not items[0]:
-            return None
-        name = items[0].get("name") or ""
-        # Relevance gate — mirror the auto-path's WRatio check so a misrouted
-        # query (e.g. a "new song by <artist>" recency request that lands here
-        # instead of spotify_play_latest_by_artist) refuses rather than playing
-        # whatever Spotify's search happened to return. Only gate when we have a
-        # name to score against; a missing name can't be assessed.
-        if name:
-            score = int(fuzz.WRatio(query.lower(), name.lower()))
-            if score < _TRACK_PLAY_THRESHOLD:
-                logger.info(
-                    "spotify_play: track %r scored %d (< %d) against %r — "
-                    "refusing rather than playing an unrelated track",
-                    query, score, _TRACK_PLAY_THRESHOLD, name,
-                )
-                return None
-        return items[0]["uri"], "track", name or query
+            return top[0], "playlist", top[1]
 
-    # kind == "auto" or anything unrecognized — unified resolution.
-    artist_q = f'artist:"{safe_q}"'
-    album_q = f'album:"{safe_q}"'
+    # Library miss: try Spotify-owned playlists. Discover Weekly /
+    # Release Radar / Daily Mix N are owned by 'spotify' and are
+    # personalized to the listener when fetched with a user token.
+    # Use the normalized query here too — searching Spotify's
+    # catalog for "covers playlist" matches differently than
+    # "covers".
+    spotify_owned = await _spotify_owned_playlist_match(sp, playlist_q)
+    if spotify_owned and spotify_owned[2] >= _PLAYLIST_THRESHOLD:
+        logger.info(
+            "spotify_play: spotify-owned playlist hit %r (score=%d)",
+            spotify_owned[1], spotify_owned[2],
+        )
+        return spotify_owned[0], "playlist", spotify_owned[1]
+    return None
 
-    async def _safe_search(q: str, type_: str):
-        try:
-            return await asyncio.to_thread(sp.search, q=q, type=type_, limit=1)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("%s search failed: %s", type_, e)
+
+async def _resolve_named(sp, query: str, kind: str) -> "tuple[str, str, str] | None":
+    """artist/album: a field-qualified search."""
+    top = _top_hit(await _safe_search(sp, _field_query(kind, query), kind), kind)
+    if top is None:
+        return None
+    return top["uri"], kind, top.get("name") or query
+
+
+async def _resolve_track(sp, query: str) -> "tuple[str, str, str] | None":
+    """An unqualified search (preserves "X by Y" phrasing)."""
+    top = _top_hit(await _safe_search(sp, query, "track"), "track")
+    if top is None:
+        return None
+    name = top.get("name") or ""
+    # Relevance gate — mirror the auto-path's WRatio check so a misrouted
+    # query (e.g. a "new song by <artist>" recency request that lands here
+    # instead of spotify_play_latest_by_artist) refuses rather than playing
+    # whatever Spotify's search happened to return. Only gate when we have a
+    # name to score against; a missing name can't be assessed.
+    if name:
+        score = int(fuzz.WRatio(query.lower(), name.lower()))
+        if score < _TRACK_PLAY_THRESHOLD:
+            logger.info(
+                "spotify_play: track %r scored %d (< %d) against %r — "
+                "refusing rather than playing an unrelated track",
+                query, score, _TRACK_PLAY_THRESHOLD, name,
+            )
             return None
+    return top["uri"], "track", name or query
 
+
+def _top_candidate(results, type_: str, q_lower: str) -> "tuple[str, str, str, int] | None":
+    """(uri, kind, name, score) for one search's top hit, or None."""
+    top = _top_hit(results, type_)
+    if top is None or not top.get("uri"):
+        return None
+    name = top.get("name") or ""
+    return top["uri"], type_, name, int(fuzz.WRatio(q_lower, name.lower()))
+
+
+async def _resolve_auto(
+    sp, query: str, configured_playlists: "dict[str, str] | None",
+) -> "tuple[str, str, str] | None":
+    """Fan out artist + track + album + library scans, score with
+    rapidfuzz, gate on the confidence threshold, tiebreak by preference
+    order."""
     artist_res, track_res, album_res, lib_match = await asyncio.gather(
-        _safe_search(artist_q, "artist"),
-        _safe_search(query, "track"),
-        _safe_search(album_q, "album"),
+        _safe_search(sp, _field_query("artist", query), "artist"),
+        _safe_search(sp, query, "track"),
+        _safe_search(sp, _field_query("album", query), "album"),
         _user_library_match(sp, query, configured=configured_playlists),
     )
 
     q_lower = query.lower()
-    candidates: list[tuple[str, str, str, int]] = []  # (uri, kind, name, score)
-
-    def _add_top(results, type_):
-        if results is None:
-            return
-        items = ((results or {}).get(f"{type_}s") or {}).get("items") or []
-        if not items or not items[0]:
-            return
-        name = items[0].get("name") or ""
-        uri = items[0].get("uri") or ""
-        if not uri:
-            return
-        score = int(fuzz.WRatio(q_lower, name.lower()))
-        candidates.append((uri, type_, name, score))
-
-    _add_top(artist_res, "artist")
-    _add_top(track_res, "track")
-    _add_top(album_res, "album")
+    tops = (
+        _top_candidate(artist_res, "artist", q_lower),
+        _top_candidate(track_res, "track", q_lower),
+        _top_candidate(album_res, "album", q_lower),
+    )
+    candidates: list[tuple[str, str, str, int]] = [c for c in tops if c is not None]
     if lib_match is not None:
         candidates.append((lib_match[0], "playlist", lib_match[1], lib_match[2]))
 
@@ -410,6 +414,201 @@ async def _resolve_query(
     return pick[0], pick[1], pick[2]
 
 
+def no_account_msg(router, setup_url: str) -> str:
+    """Pick the right user-facing message based on why the router is
+    empty. Spoken verbatim by the LLM, so the phrasing is tuned for
+    speech: short, no jargon, names the affected account(s) so a
+    multi-household speaker tells the user *which* account to re-link
+    rather than a generic "your spotify session"."""
+    reason = router.empty_reason() if router is not None else "no_accounts"
+    if reason == "revoked":
+        names = router.revoked_account_names() if router is not None else []
+        who = format_name_list(names) if names else "your spotify account"
+        base = f"spotify signed {who} out."
+        if setup_url:
+            base += f" tell the user to re-link at {setup_url}."
+        return base
+    base = "no spotify account is configured."
+    if setup_url:
+        base += f" tell the user to visit {setup_url} to set one up."
+    return base
+
+
+def _device_not_linked_error(librespot_name: str) -> dict[str, str]:
+    """The answer when the account resolved but has no device to play on.
+
+    The speaker's librespot is running and advertising via mDNS but isn't
+    in this account's Spotify Web API device list. That happens when no
+    one has tapped the speaker in their Spotify app since the last
+    librespot restart — pure-zeroconf devices are invisible to the Web API
+    until they've been claimed at least once. The system prompt instructs
+    the model to read the `error` field verbatim, so the message below IS
+    the user-facing fix instruction."""
+    return {
+        "error": (
+            "Spotify Connect on the speaker isn't linked to your "
+            "account yet. Open Spotify, tap the device picker, "
+            f"and select {librespot_name} once. Then try again."
+        ),
+    }
+
+
+async def ensure_clients(router) -> bool:
+    """Per-call client availability check. Returns True iff the
+    router has at least one usable client after attempting a
+    lazy rebuild. Cheap when clients are already loaded; rate-
+    limited inside Router.refresh_if_empty for the empty path."""
+    if router is None:
+        return False
+    if router.clients:
+        return True
+    return await router.refresh_if_empty()
+
+
+async def _resolve_for_play(
+    router, renderer, librespot_name: str,
+) -> "tuple[object, str | None, list[str], str, dict[str, str]] | None":
+    """Pick the active account and decide where to start_playback.
+    Returns (sp, device_id, stop_renderers, account_name,
+    configured_playlists) or None if no account / device combination
+    can be reached. `configured_playlists` is a uri→name map populated
+    via the web UI for that account (typically empty).
+
+    AirPlay-carrying-Spotify short-circuit: if the title-match already
+    identified the AirPlay sender's account, target that account's
+    currently-playing Spotify Connect device (the sender's phone)
+    directly. start_playback to that device just changes the track
+    riding the existing AirPlay stream — no need to stop anything,
+    and no dependency on whether the on-Pi librespot endpoint is
+    visible to that account. resolve_target's heuristics (which
+    re-derive the AirPlay→Spotify match from the renderer's
+    currentsong) only run for cold-start cases."""
+    if not await ensure_clients(router):
+        return None
+    renderers = await renderer.active_renderers()
+    airplay_active = bool(
+        renderers.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY])
+    )
+    if airplay_active:
+        client_name = await airplay_client_name()
+        try:
+            metadata = await airplay_now_playing()
+            title = metadata.get("title", "")
+        except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
+            title = ""
+        if client_name and title:
+            ac = await router.resolve_for_transport(client_name, title)
+            if ac is not None:
+                playback = await asyncio.to_thread(ac.sp.current_playback)
+                device_id = (playback or {}).get("device", {}).get("id")
+                if device_id:
+                    return (
+                        ac.sp, device_id, [], ac.account.name,
+                        dict(getattr(ac.account, "playlists", {}) or {}),
+                    )
+                logger.info(
+                    "spotify_play: title-match account=%s but current_playback "
+                    "has no device_id; falling through to resolve_target",
+                    ac.account.name,
+                )
+    ac = await router.active(airplay_active=airplay_active)
+    if ac is None:
+        return None
+    resolution = await resolve_target(ac.sp, renderer, librespot_name)
+    return (
+        ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name,
+        dict(getattr(ac.account, "playlists", {}) or {}),
+    )
+
+
+async def _start_playback(sp, device_id, uri: str, kind: str, shuffle: bool) -> None:
+    """Start a resolved pick on ``device_id`` the way its kind plays."""
+    if kind == "track":
+        await asyncio.to_thread(sp.start_playback, device_id=device_id, uris=[uri])
+    elif kind == "playlist":
+        # Standard Spotify playback: set shuffle state, then start
+        # the playlist via its context_uri. Spotify Web API has no
+        # sort/order parameter; the playlist plays in its native
+        # stored order (or shuffled, when shuffle=True). "Newest
+        # first" is not an API capability.
+        try:
+            await asyncio.to_thread(sp.shuffle, state=shuffle, device_id=device_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not set shuffle=%s: %s", shuffle, e)
+        await asyncio.to_thread(sp.start_playback, device_id=device_id, context_uri=uri)
+    else:
+        # artist / album: context_uri-only; Spotify picks reasonable
+        # ordering (top tracks for artist, track 1 for album).
+        await asyncio.to_thread(sp.start_playback, device_id=device_id, context_uri=uri)
+
+
+def _play_confirm(kind: str, name: str, shuffle: bool) -> str:
+    """The `confirm` sentence the model speaks verbatim. It names what the
+    resolver actually picked, which may be spelled or pronounced
+    differently than the user expected (e.g. "Jaspany Jamz" with a Z)."""
+    if kind == "playlist":
+        return (
+            f"Shuffling your {name} playlist."
+            if shuffle else
+            f"Now playing your {name} playlist."
+        )
+    return {
+        "track": f"Playing {name}.",
+        "artist": f"Playing top tracks for {name}.",
+        "album": f"Playing the album {name}.",
+    }.get(kind, f"Playing {name}.")
+
+
+async def _find_artist(sp, artist: str) -> "tuple[str, str] | None":
+    """(id, name) of the top field-qualified artist match, or None."""
+    top = _top_hit(await _safe_search(sp, _field_query("artist", artist), "artist"), "artist")
+    if top is None or not top.get("id"):
+        return None
+    return top["id"], top.get("name") or artist
+
+
+async def _artist_releases(sp, artist_id: str, artist_name: str) -> "list[dict] | None":
+    """The artist's singles and albums, or None when the first page fails.
+
+    Paged rather than one big call: the API caps `limit` at 10 per page
+    (published max=10; the live endpoint returns HTTP 400 'Invalid limit'
+    above it, and spotipy's own default of 20 is stale), and the sort
+    order is undocumented, so the newest release may not be on the first
+    page. Capped at 100 items (10 pages) so a freak artist with thousands
+    of releases doesn't stall the turn."""
+    releases: list[dict] = []
+    try:
+        page = await asyncio.to_thread(
+            sp.artist_albums, artist_id, include_groups="single,album", limit=10,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("artist_albums failed for %s: %s", artist_name, e)
+        return None
+    while page:
+        releases.extend(page.get("items") or [])
+        if not page.get("next") or len(releases) >= 100:
+            break
+        try:
+            page = await asyncio.to_thread(sp.next, page)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("artist_albums pagination failed for %s: %s", artist_name, e)
+            break
+    return releases
+
+
+def _release_date_key(release: dict) -> str:
+    """Sort key for a release's date. Spotify reports "day" (2026-05-15),
+    "month" (2026-05) or "year" (2026) precision; the shorter forms pad to
+    the START of their period so every key compares as a full date."""
+    date_str = release.get("release_date") or "0000-01-01"
+    precision = release.get("release_date_precision") or "day"
+    if precision == "year":
+        return f"{date_str}-01-01"
+    if precision == "month":
+        return f"{date_str}-01"
+    return date_str
+
+
 def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = ""):
     """Multi-account-aware Spotify tools.
 
@@ -433,99 +632,6 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
     time): `router.refresh_if_empty()` re-runs `build_clients` if the
     router is currently empty, so re-linking via the web wizard
     recovers the daemon without a manual restart."""
-    from ..spotify_router import airplay_client_name
-
-    def _no_account_msg() -> str:
-        """Pick the right user-facing message based on why the router is
-        empty. Spoken verbatim by the LLM, so the phrasing is tuned for
-        speech: short, no jargon, names the affected account(s) so a
-        multi-household speaker tells the user *which* account to re-link
-        rather than a generic "your spotify session"."""
-        reason = router.empty_reason() if router is not None else "no_accounts"
-        if reason == "revoked":
-            names = router.revoked_account_names() if router is not None else []
-            who = _format_name_list(names) if names else "your spotify account"
-            base = f"spotify signed {who} out."
-            if setup_url:
-                base += f" tell the user to re-link at {setup_url}."
-            return base
-        base = "no spotify account is configured."
-        if setup_url:
-            base += f" tell the user to visit {setup_url} to set one up."
-        return base
-
-    def _device_not_linked_error() -> dict[str, str]:
-        return {
-            "error": (
-                "Spotify Connect on the speaker isn't linked to your "
-                "account yet. Open Spotify, tap the device picker, "
-                f"and select {librespot_name} once. Then try again."
-            ),
-        }
-
-    async def _ensure_clients() -> bool:
-        """Per-call client availability check. Returns True iff the
-        router has at least one usable client after attempting a
-        lazy rebuild. Cheap when clients are already loaded; rate-
-        limited inside Router.refresh_if_empty for the empty path."""
-        if router is None:
-            return False
-        if router.clients:
-            return True
-        return await router.refresh_if_empty()
-
-    async def _resolve_for_play() -> "tuple[object, str | None, list[str], str, dict[str, str]] | None":
-        """Pick the active account and decide where to start_playback.
-        Returns (sp, device_id, stop_renderers, account_name,
-        configured_playlists) or None if no account / device combination
-        can be reached. `configured_playlists` is a uri→name map populated
-        via the web UI for that account (typically empty).
-
-        AirPlay-carrying-Spotify short-circuit: if the title-match already
-        identified the AirPlay sender's account, target that account's
-        currently-playing Spotify Connect device (the sender's phone)
-        directly. start_playback to that device just changes the track
-        riding the existing AirPlay stream — no need to stop anything,
-        and no dependency on whether the on-Pi librespot endpoint is
-        visible to that account. resolve_target's heuristics (which
-        re-derive the AirPlay→Spotify match from the renderer's
-        currentsong) only run for cold-start cases."""
-        if not await _ensure_clients():
-            return None
-        renderers = await renderer.active_renderers()
-        airplay_active = bool(
-            renderers.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY])
-        )
-        if airplay_active:
-            client_name = await airplay_client_name()
-            try:
-                metadata = await airplay_now_playing()
-                title = metadata.get("title", "")
-            except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
-                title = ""
-            if client_name and title:
-                ac = await router.resolve_for_transport(client_name, title)
-                if ac is not None:
-                    playback = await asyncio.to_thread(ac.sp.current_playback)
-                    device_id = (playback or {}).get("device", {}).get("id")
-                    if device_id:
-                        return (
-                            ac.sp, device_id, [], ac.account.name,
-                            dict(getattr(ac.account, "playlists", {}) or {}),
-                        )
-                    logger.info(
-                        "spotify_play: title-match account=%s but current_playback "
-                        "has no device_id; falling through to resolve_target",
-                        ac.account.name,
-                    )
-        ac = await router.active(airplay_active=airplay_active)
-        if ac is None:
-            return None
-        resolution = await resolve_target(ac.sp, renderer, librespot_name)
-        return (
-            ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name,
-            dict(getattr(ac.account, "playlists", {}) or {}),
-        )
 
     @tool(labels=("music", "spotify"), llm_description=SPOTIFY_PLAY_LLM_DESCRIPTION)
     async def spotify_play(
@@ -582,20 +688,12 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         matches confidently. The user must re-issue the wake word
         + command — the mic does not stay open for follow-ups.
         """
-        resolved = await _resolve_for_play()
+        resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg()}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, stops, account_name, configured_playlists = resolved
         if not device_id:
-            # The speaker's librespot is running and advertising via mDNS
-            # but isn't in this account's Spotify Web API device list.
-            # That happens when no one has tapped the speaker in their
-            # Spotify app since the last librespot restart — pure-zeroconf
-            # devices are invisible to the Web API until they've been
-            # claimed at least once. The system prompt instructs the model
-            # to read the `error` field verbatim, so the message below IS
-            # the user-facing fix instruction.
-            return _device_not_linked_error()
+            return _device_not_linked_error(librespot_name)
 
         pick = await _resolve_query(
             sp, query, kind, configured_playlists=configured_playlists,
@@ -606,58 +704,14 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
 
         if stops:
             await stop_renderers(stops)
-        if resolved_kind == "track":
-            await asyncio.to_thread(
-                sp.start_playback, device_id=device_id, uris=[uri]
-            )
-        elif resolved_kind == "playlist":
-            # Standard Spotify playback: set shuffle state, then start
-            # the playlist via its context_uri. Spotify Web API has no
-            # sort/order parameter; the playlist plays in its native
-            # stored order (or shuffled, when shuffle=True). "Newest
-            # first" is not an API capability — see commit history.
-            try:
-                await asyncio.to_thread(
-                    sp.shuffle, state=shuffle, device_id=device_id
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("could not set shuffle=%s: %s", shuffle, e)
-            await asyncio.to_thread(
-                sp.start_playback, device_id=device_id, context_uri=uri,
-            )
-        else:
-            # artist / album: context_uri-only; Spotify picks reasonable
-            # ordering (top tracks for artist, track 1 for album).
-            await asyncio.to_thread(
-                sp.start_playback, device_id=device_id, context_uri=uri
-            )
-
-        # User-facing confirmation. The tool description tells the model
-        # to speak the `confirm` field verbatim, so playlist matches in
-        # particular get an unambiguous "Now playing X" — important
-        # because the resolver may pick a name that's spelled or
-        # pronounced differently than the user expected (e.g. "Jaspany
-        # Jamz" with a Z).
-        if resolved_kind == "playlist":
-            confirm = (
-                f"Shuffling your {name} playlist."
-                if shuffle else
-                f"Now playing your {name} playlist."
-            )
-        else:
-            confirm = {
-                "track": f"Playing {name}.",
-                "artist": f"Playing top tracks for {name}.",
-                "album": f"Playing the album {name}.",
-            }.get(resolved_kind, f"Playing {name}.")
-
+        await _start_playback(sp, device_id, uri, resolved_kind, shuffle)
         return {
             "ok": True,
             "playing": name,
             "kind": resolved_kind,
             "account": account_name,
             "shuffle": bool(shuffle),
-            "confirm": confirm,
+            "confirm": _play_confirm(resolved_kind, name, shuffle),
         }
 
     @tool(labels=("music", "spotify"))
@@ -686,88 +740,24 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         word. The music starting is its own immediate confirmation;
         a preamble only adds latency.
         """
-        resolved = await _resolve_for_play()
+        resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg()}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, stops, account_name, _ = resolved
         if not device_id:
-            # Same root cause as spotify_play — see comment there.
-            return _device_not_linked_error()
+            return _device_not_linked_error(librespot_name)
 
-        safe_artist = artist.replace(chr(34), "")
-        try:
-            artist_res = await asyncio.to_thread(
-                sp.search, q=f'artist:"{safe_artist}"', type="artist", limit=1
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("artist search failed: %s", e)
+        found = await _find_artist(sp, artist)
+        if found is None:
             return {"error": _NOT_UNDERSTOOD}
-        items = ((artist_res or {}).get("artists") or {}).get("items") or []
-        if not items or not items[0]:
+        artist_id, artist_name = found
+        releases = await _artist_releases(sp, artist_id, artist_name)
+        if releases is None:
             return {"error": _NOT_UNDERSTOOD}
-        artist_id = items[0].get("id")
-        artist_name = items[0].get("name") or artist
-        if not artist_id:
-            return {"error": _NOT_UNDERSTOOD}
-
-        # Page through the artist's releases. Two constraints force
-        # pagination instead of one big call:
-        #   1. The API caps `limit` at 10 per page (the live endpoint
-        #      returns HTTP 400 'Invalid limit' for anything higher,
-        #      verified 2026-05-22 against the published max=10 in
-        #      developer.spotify.com — spotipy's own default of 20 is
-        #      stale relative to the current API).
-        #   2. Sort order is undocumented, so we can't assume the
-        #      newest release is in the first 10 items — we have to
-        #      collect everything and sort client-side.
-        # Cap total items at 100 (10 pages) so a freak artist with
-        # thousands of releases doesn't stall the turn; for any real
-        # "what's their newest?" use case, 100 is more than enough.
-        releases: list[dict] = []
-        try:
-            page = await asyncio.to_thread(
-                sp.artist_albums,
-                artist_id,
-                include_groups="single,album",
-                limit=10,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("artist_albums failed for %s: %s", artist_name, e)
-            return {"error": _NOT_UNDERSTOOD}
-        while page:
-            releases.extend(page.get("items") or [])
-            if not page.get("next") or len(releases) >= 100:
-                break
-            try:
-                page = await asyncio.to_thread(sp.next, page)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "artist_albums pagination failed for %s: %s",
-                    artist_name, e,
-                )
-                break
         if not releases:
-            return {
-                "error": f"couldn't find any releases for {artist_name}."
-            }
+            return {"error": f"couldn't find any releases for {artist_name}."}
 
-        # Sort by release_date descending. Spotify returns dates at one
-        # of three precisions: "day" (2026-05-15), "month" (2026-05), or
-        # "year" (2026). Pad less-specific values to the START of their
-        # period so a year-only "2026" can't accidentally outrank a more
-        # specific newer release like "2026-05-15" via lexicographic
-        # comparison ("2026" sorts BEFORE "2026-01-01" in plain string
-        # compare because shorter-prefix wins on equal prefix).
-        def _sort_key(r: dict) -> str:
-            date_str = r.get("release_date") or "0000-01-01"
-            precision = r.get("release_date_precision") or "day"
-            if precision == "year":
-                return f"{date_str}-01-01"
-            if precision == "month":
-                return f"{date_str}-01"
-            return date_str
-
-        releases.sort(key=_sort_key, reverse=True)
+        releases.sort(key=_release_date_key, reverse=True)
         newest = releases[0]
         uri = newest.get("uri")
         name = newest.get("name") or artist_name
@@ -780,9 +770,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
 
         if stops:
             await stop_renderers(stops)
-        await asyncio.to_thread(
-            sp.start_playback, device_id=device_id, context_uri=uri
-        )
+        await asyncio.to_thread(sp.start_playback, device_id=device_id, context_uri=uri)
 
         confirm = f"Playing {name}, the newest {album_type} from {artist_name}."
         return {
@@ -808,24 +796,17 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         queued — 'Queued <track>.' On error speak the `error` field
         verbatim.
         """
-        resolved = await _resolve_for_play()
+        resolved = await _resolve_for_play(router, renderer, librespot_name)
         if resolved is None:
-            return {"error": _no_account_msg()}
+            return {"error": no_account_msg(router, setup_url)}
         sp, device_id, _, account_name, _ = resolved
         if not device_id:
-            # Same root cause as spotify_play — see comment there.
-            return _device_not_linked_error()
+            return _device_not_linked_error(librespot_name)
         results = await asyncio.to_thread(sp.search, q=query, type="track", limit=1)
-        items = results.get("tracks", {}).get("items", [])
-        if not items:
+        top = _top_hit(results, "track")
+        if top is None:
             return {"error": f"no track found for: {query}"}
-        await asyncio.to_thread(
-            sp.add_to_queue, items[0]["uri"], device_id=device_id
-        )
-        return {
-            "ok": True,
-            "queued": items[0].get("name", query),
-            "account": account_name,
-        }
+        await asyncio.to_thread(sp.add_to_queue, top["uri"], device_id=device_id)
+        return {"ok": True, "queued": top.get("name", query), "account": account_name}
 
     return [spotify_play, spotify_play_latest_by_artist, spotify_queue]

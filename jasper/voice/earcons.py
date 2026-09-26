@@ -15,7 +15,7 @@ cuelume Web Audio palette (https://github.com/Danilaa1/cuelume):
 layered sine notes, each with an exponential attack→decay envelope, over
 a lowpass feedback-delay "shimmer" tail. The exponential envelope starts
 and ends at near-silence, so a rendered earcon has no onset/offset step
-— the source of the old mute click's roughness.
+(an audible click).
 
 cuelume is MIT-licensed (Copyright (c) 2026 Daniel Belyi); its full
 notice is preserved verbatim at `jasper/voice/CUELUME_LICENSE` and logged
@@ -23,18 +23,15 @@ in the attribution inventory `LICENSE-third-party.md`. The Python in this
 module is JTS's own reimplementation (Apache-2.0) — only the sound
 *designs* (note choices, envelopes, shimmer) are cuelume's.
 
-Name → sound (the function names predate this recipe port and are kept
-to avoid a rename ripple across the daemon + ~10 test files; the
-`going_on` flag still means "the up-cue" when True, "the down-cue" when
-False):
+Name → sound (`going_on=True` is the up-cue, `going_on=False` the down-cue):
 
-  _generate_listening_chirp(going_on=True)  → chime, ascending 5th (wake)
-  _generate_listening_chirp(going_on=False) → chime, descending 5th one
-                                              octave lower (end of turn)
-  _generate_mute_click(going_on=True)   → sparkle, ascending arpeggio
-                                          (unmute / assistant resumed)
-  _generate_mute_click(going_on=False)  → sparkle, descending arpeggio one
-                                          octave lower (mute / paused)
+  generate_listening_chirp(going_on=True)  → chime, ascending 5th (wake)
+  generate_listening_chirp(going_on=False) → chime, descending 5th one
+                                             octave lower (end of turn)
+  generate_mute_click(going_on=True)   → sparkle, ascending arpeggio
+                                         (unmute / assistant resumed)
+  generate_mute_click(going_on=False)  → sparkle, descending arpeggio one
+                                         octave lower (mute / paused)
 
 Each pair shares timbre + envelope and mirrors contour and register, so
 "start vs end" and "on vs off" are unmistakable without the listener
@@ -79,7 +76,7 @@ _I32_MAX = 2 ** 31 - 1
 # Final peak the rendered buffer is normalized to (~-6 dBFS). Outputd's
 # loudness stage matches perceived level to the room's silence target
 # regardless, so this only sets clean headroom + a healthy signal for the
-# source-loudness measurement in `_synthetic_audio_profile`.
+# source-loudness measurement in `synthetic_audio_profile`.
 _TARGET_PEAK = 0.5
 
 # Raised-cosine fade applied to the very end of every earcon so the final
@@ -92,7 +89,7 @@ SYNTHETIC_AUDIO_PROFILE_PROVIDER = "jts"
 SYNTHETIC_AUDIO_PROFILE_UPDATED_AT = "static"
 
 
-def _synthetic_audio_profile(
+def synthetic_audio_profile(
     *,
     model: str,
     voice: str,
@@ -376,28 +373,26 @@ def render_recipe(recipe: _Recipe, *, wide: bool = False) -> bytes:
     return _bake(buf, wide=wide)
 
 
-def _generate_mute_click(*, going_on: bool, wide: bool = False) -> bytes:
+def generate_mute_click(*, going_on: bool, wide: bool = False) -> bytes:
     """Sparkle earcon as 24 kHz mono PCM at the box's wire width — the
     shape `TtsPlayout.write()` accepts. `going_on=True` (unmute / assistant
     resumed) is the ascending arpeggio; `going_on=False` (mute / paused)
     is the descending arpeggio one octave lower.
 
-    Named `_generate_mute_click` for historical reasons — see the module
-    docstring. Rendered once at startup and cached by the caller; not a
-    registered TTS cue (those are spoken text)."""
+    Rendered once at startup and cached by the caller; not a registered
+    TTS cue (those are spoken text)."""
     return render_recipe(
         _SPARKLE_ASCENDING if going_on else _SPARKLE_DESCENDING, wide=wide
     )
 
 
-def _generate_listening_chirp(*, going_on: bool, wide: bool = False) -> bytes:
+def generate_listening_chirp(*, going_on: bool, wide: bool = False) -> bytes:
     """Chime earcon as 24 kHz mono PCM at the box's wire width — the
     shape `TtsPlayout.write()` accepts. `going_on=True` (wake) is the ascending
     perfect fifth; `going_on=False` (end of turn) is the descending fifth
     one octave lower, so "closing" reads as downward and lower.
 
-    Named `_generate_listening_chirp` for historical reasons — see the
-    module docstring. Rendered once at startup and cached by the caller."""
+    Rendered once at startup and cached by the caller."""
     return render_recipe(
         _CHIME_ASCENDING if going_on else _CHIME_DESCENDING, wide=wide
     )

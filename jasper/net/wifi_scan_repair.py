@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_text, read_json_mapping
+from jasper.json_fields import as_float
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 
@@ -154,7 +155,7 @@ def _maybe_repair_scan_suppression_locked(
     path = Path(state_path)
     state = _read_state(path)
 
-    next_allowed = _float_or_none(state.get("nextAllowedAt"))
+    next_allowed = as_float(state.get("nextAllowedAt"))
     if next_allowed is not None and now < next_allowed:
         remaining = max(0.0, next_allowed - now)
         result = RepairResult(
@@ -260,13 +261,6 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
             path=path,
             err=repr(e),
         )
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _strip_c_comments(text: str) -> str:

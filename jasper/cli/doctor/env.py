@@ -8,10 +8,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from ...config import Config
-from ...env_load import env_file_path, read_env_file_state
+from ...env_load import VOICE_PROVIDER_ENV_PATH, env_file_path, read_env_file_state
 from ...secret_redaction import SECRET_ENV_SUFFIX_RE
 from ._registry import doctor_check
-from ._shared import CheckResult, _group_writable_dir
+from ._shared import CheckResult, group_writable_dir
 
 # Machine-stable codes naming which branch of an env check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
@@ -40,7 +40,7 @@ def check_env_file() -> CheckResult:
             "env file", "fail", f"{p} missing — re-run install.sh",
             reason=REASON_ENV_FILE_MISSING,
         )
-    wizard = Path("/var/lib/jasper/voice_provider.env")
+    wizard = Path(VOICE_PROVIDER_ENV_PATH)
     if wizard.exists():
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
@@ -120,7 +120,7 @@ def check_state_dir(cfg: Config) -> CheckResult:
         return CheckResult(
             "state dir", "fail", f"{p}: {exc}", reason=REASON_STATE_DIR_STAT_FAILED,
         )
-    writable, group_name = _group_writable_dir(
+    writable, group_name = group_writable_dir(
         st, expected_group="jasper", require_setgid=False
     )
     if not writable:

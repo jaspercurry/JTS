@@ -6,8 +6,7 @@
 
 The base layer every per-domain check module imports from: the output
 contract re-exported from :mod:`jasper.doctor_contract`, the
-crash-isolation harness (so one crashing check cannot abort the run),
-the subprocess/env-file wrappers, the ANSI colour constants, and the
+subprocess/env-file wrappers, the ANSI colour constants, and the
 helpers and ``REASON_*`` codes more than one domain uses — each declared
 beside the helper it belongs to.
 
@@ -28,7 +27,9 @@ import stat as _stat
 import subprocess
 import time
 from collections.abc import Iterable
-from typing import Any, Awaitable, Callable
+from typing import Any
+# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
+# jasper-control can build contract rows without importing this package).
 from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
     CHECK_STATUSES,
     CheckResult,
@@ -42,14 +43,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
 )
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
-from ...service_units import (
-    AEC_BRIDGE_SERVICE,
-    JASPER_VOICE_SERVICE,
-    LIBRESPOT_SERVICE,
-    SHAIRPORT_SYNC_SERVICE,
-    unit_not_running,
-)
-from ...source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from ...service_units import unit_not_running
 
 GREEN = "\033[32m"
 
@@ -63,78 +57,29 @@ DIM = "\033[2m"
 
 RESET = "\033[0m"
 
-_CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
-    "runtime_profile",
-    "mic_detected",
-    "runtime_env",
-    "service_state",
-    "dac_reference",
-    "wake_legs",
-    "outputd_reference_health",
-    "bridge_counter_window",
-    "chip_profile_readback",
-    "chip_convergence",
-})
-
-# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
-# jasper-control can build contract rows without importing this package).
-DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
-
 _EXCEPTION_DETAIL_LIMIT = 240
 
-def _exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
-    """Redact + cap an exception's message for a doctor row.
+def redacted_detail(text: str, *, literals: Iterable[str] = ()) -> str:
+    """Redact + cap foreign text (an exception message, a child's output)
+    for a doctor row.
 
     ``literals`` are secret values the caller holds (e.g. a probed
-    credential) that may appear in the exception text in a shape
+    credential) that may appear in the text in a shape
     ``redact_secrets``'s patterns don't recognise; empty values are
     skipped by ``redact_secrets`` itself.
     """
-    message = redact_secrets(str(exc), literals=literals)
-    if len(message) > _EXCEPTION_DETAIL_LIMIT:
-        message = message[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    text = redact_secrets(text, literals=literals)
+    if len(text) > _EXCEPTION_DETAIL_LIMIT:
+        text = text[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    return text
+
+
+def exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
+    """:func:`redacted_detail` of an exception's message, led by its type."""
+    message = redacted_detail(str(exc), literals=literals)
     if not message:
         return type(exc).__name__
     return f"{type(exc).__name__}: {message}"
-
-def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
-    return CheckResult(
-        name,
-        "fail",
-        f"check crashed: {_exception_detail(exc)}",
-        reason=REASON_CHECK_CRASHED,
-    )
-
-def _check_name(check: Callable[[], CheckResult]) -> str:
-    name = getattr(check, "__name__", "doctor check")
-    if name == "<lambda>":
-        return "doctor check"
-    if name.startswith("check_"):
-        name = name[len("check_"):]
-    return name.replace("_", " ")
-
-def _normalize_doctor_check(
-    entry: DoctorCheck,
-) -> tuple[str, Callable[[], CheckResult]]:
-    if isinstance(entry, tuple):
-        return entry
-    return _check_name(entry), entry
-
-def _run_doctor_check(entry: DoctorCheck) -> CheckResult:
-    name, check = _normalize_doctor_check(entry)
-    try:
-        return check()
-    except Exception as e:  # noqa: BLE001
-        return _crashed_check_result(name, e)
-
-async def _run_async_doctor_check(
-    name: str,
-    check: Callable[[], Awaitable[CheckResult]],
-) -> CheckResult:
-    try:
-        return await check()
-    except Exception as e:  # noqa: BLE001
-        return _crashed_check_result(name, e)
 
 # systemd absent (a dev laptop, a container): nothing was observed, so the
 # callers of the systemctl helpers report `skipped` with this.
@@ -182,7 +127,7 @@ REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
 _CLOCK_SET_EPOCH = 1577836800  # 2020-01-01T00:00:00Z
 
 
-def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
+def parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
     """How long ago a park record's epoch stamp was, for the rows both park
     readers render (jasper.control.park_record)."""
     if parked_at is None:
@@ -201,7 +146,7 @@ def run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
 #: 48 kHz, per channel, so rc 0 means open → prepare → transfer → drain all
 #: completed (~0.16 s on a Pi). Every probe's timeout stays a BACKSTOP: a kill
 #: is a FAILURE, since a probe that never finished proved nothing.
-_PROBE_FRAMES = "4800"
+PROBE_FRAMES = "4800"
 
 def _parse_systemd_environment(text: str) -> dict[str, str]:
     """Parse ``systemctl show -p Environment`` output into key/value pairs."""
@@ -250,7 +195,7 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
             return match.group(1).strip().strip("'\"")
     return None
 
-def _group_writable_dir(
+def group_writable_dir(
     st: os.stat_result, *, expected_group: str, require_setgid: bool = True
 ) -> tuple[bool, str]:
     """Whether a non-root process in group ``expected_group`` could create or
@@ -300,26 +245,7 @@ REASON_SOURCE_INTENT_INVALID = "source_intent_invalid"
 REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
 
 
-def _parked_as_bonded_follower() -> bool:
-    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
-
-    The dumb-follower profile parks the renderer/source stack while bonded, so
-    liveness checks must read that as ok rather than as a failure against
-    intended state. Fail-open to NOT-parked: a broken read must never mask a
-    real failure on a solo speaker."""
-    try:
-        from ...multiroom.effective_role import (
-            effective_local_sources_park_reason,
-        )
-        from ._evidence import evidence  # lazy: _evidence imports _shared
-
-        cfg = evidence.grouping_config()
-        return effective_local_sources_park_reason(cfg) is not None
-    except Exception:  # noqa: BLE001 — fail-open
-        return False
-
-
-def _service_state_failure(
+def service_state_failure(
     label: str,
     unit: str,
     *,
@@ -387,73 +313,7 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
-# NO audio-path unit: `_service_state_failure` (jasper-fanin, jasper-camilla)
-# and resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
-# record and all) own their runtime state, so one down unit is one fail row.
-_RUNTIME_STATE_UNITS = (
-    "nginx.service",
-    JASPER_VOICE_SERVICE,
-    AEC_BRIDGE_SERVICE,
-    "jasper-control.service",
-    "jasper-input.service",
-    # A .path unit fails on a bad spec; resilience.check_required_units_active
-    # defers every non-`inactive` state to this row, so both must track it.
-    "jasper-accessory-reconcile.path",
-    "jasper-mux.service",
-    "nqptp.service",
-    SHAIRPORT_SYNC_SERVICE,
-    LIBRESPOT_SERVICE,
-    "bluealsa.service",
-    "bluealsa-aplay.service",
-    "bt-agent.service",
-    # A failed coupling-reconcile pass parks the unit in `failed` with the
-    # evidence only in `systemctl --failed` + the journal; tracking it here
-    # makes that doctor-visible.
-    "jasper-fanin-coupling-auto.service",
-    # Same reasoning (#2802 item 3): a dead grouping or source-intent
-    # reconciler was doctor-invisible except indirectly, via USB combo
-    # consistency.
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
-)
-
-# A oneshot normally stays `activating` during its pass; its unit timeout
-# moves a stalled pass to `failed`.
-_ONESHOT_RUNTIME_STATE_UNITS = frozenset({
-    "jasper-fanin-coupling-auto.service",
-    "jasper-grouping-reconcile.service",
-    SOURCE_INTENT_RECONCILE_UNIT,
-})
-
-def _loopback_playback_active() -> bool:
-    """True if any renderer is currently writing the music-chain loopback.
-
-    Reads `/proc/asound/Loopback/pcm0p/sub*/status`: an open subdevice prints
-    `state: …\\nowner_pid: …`, a closed one the single word `closed`. Only
-    input lanes 0..4 count as "music active" — substream 7 is jasper-fanin's
-    own summed output and may be open while every renderer is idle.
-
-    Gates the AEC bridge FAIL: ref-silent windows only diagnose a broken
-    reference chain while music is actually routed through the loopback.
-
-    Blind spot — False means "no snd-aloop renderer lane is open", NOT
-    "nothing is playing": USB Audio Input is DIRECT-captured by jasper-fanin
-    from hw:UAC2Gadget. A caller needing true output silence must consult
-    that too.
-
-    """
-    from ._evidence import evidence  # lazy: _evidence imports _shared
-
-    def first_line(text: str) -> str:
-        return text.splitlines()[0].strip() if text else ""
-
-    return any(
-        index <= 4 and first_line(status) not in ("", "closed")
-        for index, status in evidence.loopback_substreams().items()
-    )
-
-
-def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
+def nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     """Drill a nested dict out of a jasper-control HTTP payload along
     ``keys``, fail-soft to None on any shape mismatch."""
     for key in keys:
@@ -494,13 +354,13 @@ _SIGNAL_PATH_SILENT_CODES = frozenset({
 def _control_audio_health() -> dict[str, Any]:
     from ._evidence import evidence  # lazy: _evidence imports _shared
 
-    return _nested_dict(
+    return nested_dict(
         evidence.control_system_snapshot().payload, "audio_health",
     ) or {}
 
 
 def _signal_path_code(audio_health: dict[str, Any]) -> str:
-    code = (_nested_dict(audio_health, "signal_path") or {}).get("code")
+    code = (nested_dict(audio_health, "signal_path") or {}).get("code")
     return code if isinstance(code, str) else ""
 
 
@@ -509,7 +369,7 @@ def control_signal_path() -> dict[str, Any]:
     when control is unreachable. The block does not always carry a ``code``:
     the sampler's own stale override publishes a codeless "unavailable" shape.
     """
-    return _nested_dict(_control_audio_health(), "signal_path") or {}
+    return nested_dict(_control_audio_health(), "signal_path") or {}
 
 
 def speaker_silence_code() -> str:
@@ -529,12 +389,12 @@ def silence_unobserved() -> bool:
     doctor row that directly observed a down audio-path daemon is the only
     evidence of silence there is.
 
-    Includes the sampler's warmup window: `_signal_path` answers `starting` and
+    Includes the sampler's warmup window: `classify_signal_path` answers `starting` and
     the stopped-DSP and `output_deaf` detectors are gated off under it, so
     control reports a healthy path for a box that emits nothing.
     """
     audio_health = _control_audio_health()
-    sampler = _nested_dict(audio_health, "technical", "sampler") or {}
+    sampler = nested_dict(audio_health, "technical", "sampler") or {}
     if sampler.get("warmup_active") is True:
         return True
     code = _signal_path_code(audio_health)

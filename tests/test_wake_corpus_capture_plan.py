@@ -25,6 +25,7 @@ from jasper.wake_corpus import (
     capture_plan,
     recording_backend,
     runtime_probe,
+    session_store,
 )
 
 from tests._log_events import event_fields, event_records
@@ -1563,7 +1564,7 @@ def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
         ],
     }
 
-    assert bridge_session._enabled_legs_from_metadata(data, ports) == (
+    assert session_store._enabled_legs_from_metadata(data, ports) == (
         "on", *runtime_probe.AEC3_SWEEP_LEGS, "off",
     )
 

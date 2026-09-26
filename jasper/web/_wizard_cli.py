@@ -31,7 +31,6 @@ def run_wizard_cli(
     detail: Callable[[argparse.Namespace], str] | None = None,
     configure: Callable[[], None] = configure_logging,
     idle_threshold_sec: float = systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
-    on_idle_exit: Callable[[], None] | None = None,
 ) -> int:
     """Run one wizard and release its listener and timer on exit.
 
@@ -52,9 +51,7 @@ def run_wizard_cli(
     # Built before the server so ``start`` can hand ``tracker.hold`` to the
     # handler: background work a request never awaits has to take the busy
     # counter, or the process idle-exits out from under it (issue #1854).
-    tracker = systemd.IdleShutdownTracker(
-        idle_threshold_sec=idle_threshold_sec, on_idle_exit=on_idle_exit,
-    )
+    tracker = systemd.IdleShutdownTracker(idle_threshold_sec=idle_threshold_sec)
     kwargs = start(args, tracker) if start is not None else {}
 
     sockets = systemd.adopt_systemd_sockets()

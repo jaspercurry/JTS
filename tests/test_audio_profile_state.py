@@ -678,7 +678,7 @@ _WAKE_LEG_ENV_CASES = {
     # ADR-0101/review gap: a pre-profile file with only a per-beam leg armed.
     # A reader that drops chip_aec_150/210 sees raw-on/chip-off and infers
     # software AEC3 instead of custom — exactly the drift the two lossy
-    # copies (runtime_probe.read_aec_intent, doctor._doctor_aec_intent)
+    # copies (runtime_probe.read_aec_intent, doctor.doctor_aec_intent)
     # produced before they consumed intent_from_env.
     "chip_aec_150_leg_alone_pre_profile": (
         {"JASPER_WAKE_LEG_CHIP_AEC_150": "1"},
@@ -724,7 +724,7 @@ def test_intent_from_env_matches_field_by_field_and_reaches_every_consumer(
     assert probe_intent.chip_aec_210_enabled == expected.chip_aec_210_enabled
 
     monkeypatch.setattr(doctor_aec, "DEFAULT_AEC_MODE_PATH", mode_path)
-    doctor_intent = doctor_aec._doctor_aec_intent()
+    doctor_intent = doctor_aec.doctor_aec_intent()
     assert doctor_intent.chip_aec_150_enabled == expected.chip_aec_150_enabled
     assert doctor_intent.chip_aec_210_enabled == expected.chip_aec_210_enabled
     assert doctor_aec._doctor_audio_input_selection() == expected_profile

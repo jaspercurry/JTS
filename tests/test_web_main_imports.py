@@ -70,15 +70,22 @@ def test_registered_wizard_default_ports_are_socket_backed():
         )
 
 
+def test_every_registered_wizard_builds_its_server():
+    """A factory resolves its module attributes only when called, which on a
+    speaker is when jasper-web starts the wizard: build every one."""
+    from jasper.web import __main__ as web_main
+
+    for spec in web_main.WIZARD_SPECS:
+        spec.make_server(("127.0.0.1", 0)).server_close()
+
+
 # Which capability each wizard's availability follows. Named as literals so
 # moving a row between the groups — a product decision about what a tier
 # grants — cannot pass as a refactor.
-_ASSISTANT_PATHS = frozenset({
-    "/voice", "/google", "/transit", "/ha", "/weather", "/tools",
-})
 _WAKE_PATHS = frozenset({"/wake", "/wake-corpus"})
 _EVERY_TIER_PATHS = frozenset({
     "/spotify", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
+    "/voice", "/google", "/transit", "/ha", "/weather", "/tools",
 })
 
 
@@ -87,12 +94,7 @@ _EVERY_TIER_PATHS = frozenset({
     ("grants", "expected"),
     [
         (frozenset(), _EVERY_TIER_PATHS),
-        (("ASSISTANT",), _EVERY_TIER_PATHS | _ASSISTANT_PATHS),
         (("WAKE_DETECTION",), _EVERY_TIER_PATHS | _WAKE_PATHS),
-        (
-            ("ASSISTANT", "WAKE_DETECTION"),
-            _EVERY_TIER_PATHS | _ASSISTANT_PATHS | _WAKE_PATHS,
-        ),
     ],
 )
 def test_wizard_availability_follows_the_capability_not_the_profile(
@@ -101,9 +103,8 @@ def test_wizard_availability_follows_the_capability_not_the_profile(
     """A tier hosts exactly the wizards its capabilities grant.
 
     The grant table is monkeypatched rather than read, so this pins the
-    derivation and not today's rows: a tier with ASSISTANT and no
-    WAKE_DETECTION — the mic-bearing-remote streambox — gets every
-    assistant wizard and none of the wake ones, whichever profile it is.
+    derivation and not today's rows: a tier without WAKE_DETECTION gets
+    none of the wake wizards, whichever profile it is.
     """
     from jasper import install_profile
     from jasper.web import __main__ as web_main
@@ -138,9 +139,7 @@ def test_streambox_socket_validator_and_nginx_name_one_port_set():
     install.sh hard-fails the install when the socket and the validator
     disagree, and a port bound with no nginx location (or the reverse) is a
     502 nobody sees until someone opens that wizard. The set is every
-    non-wake wizard: these files cannot follow the grant table at runtime,
-    so they carry the assistant ports whether or not the tier holds
-    ASSISTANT yet, and the Python gate stays the thing that decides.
+    non-wake wizard.
     """
     from jasper.install_profile import Capability
     from jasper.web import __main__ as web_main

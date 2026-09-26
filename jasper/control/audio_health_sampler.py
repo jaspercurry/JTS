@@ -22,31 +22,37 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from ..output_hardware import load_state as load_output_hardware_state
 from ..platform import wire
 from ..platform.status_socket import (
-    MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET, STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..platform.uds import mux_socket_command
 from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
-from ._health_fields import _MONITOR_ERRORS, mapping
+from ._health_fields import MONITOR_ERRORS, mapping
+from .audio_attribution import input_attribution
 from .audio_health import (
     RESTART_WATCH_UNITS,
-    _health_prelude,
-    _incident_context,
     compose_audio_health,
+    health_prelude,
 )
 from .audio_health_events import (
     CounterBaselines,
     record_counter_events,
     record_raw_events,
 )
-from .audio_incident_view import _present_incident
+from .audio_incident_view import present_incident
+from . import transport_eligibility
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
-from .audio_signal_path import _parked_signal, _selected_source, _undeclared_hardware_signal
-from .audio_state_issues import _state_issues
+from .audio_signal_path import (
+    fanin_selected_source,
+    parked_signal,
+    undeclared_hardware_signal,
+)
+from .audio_state_issues import state_issues
+from .audio_stream_card import fresh_dac_delay_ms
 from ..output_topology_store import load_output_topology_snapshot
 
 logger = logging.getLogger(__name__)
@@ -69,61 +75,45 @@ def _read_local_status(
     )
 
 
-def _read_mux_status(
-    socket_path: str = MUX_CONTROL_SOCKET_PATH,
-    timeout_sec: float = LOCAL_STATUS_TIMEOUT_SEC,
-) -> dict[str, Any] | None:
+def _read_mux_status() -> dict[str, Any]:
     """Read mux's already-normalized source activity over its local UDS."""
-    try:
-        return asyncio.run(
-            mux_socket_command(
-                wire.STATUS,
-                socket_path=socket_path,
-                timeout=timeout_sec,
-            )
-        )
-    except _MONITOR_ERRORS:
-        logger.debug("audio health mux STATUS probe failed", exc_info=True)
-        return None
+    return asyncio.run(
+        mux_socket_command(wire.STATUS, timeout=LOCAL_STATUS_TIMEOUT_SEC)
+    )
 
 
-def _read_output_hardware() -> Any:
-    """Read the reconciler-published output-hardware record, fail-soft.
-
-    Same reader ``/state.audio.output_hardware``
-    (:mod:`jasper.control.state_aggregate`) and the ``/sound/speaker/``
-    hardware-adoption precondition use. ``_MONITOR_ERRORS`` degrades to "no
-    record" rather than taking a health tick down; a broken import is
-    deliberately NOT in that set — it would fail identically on every call from
-    process start, so it is a startup bug, not a per-tick condition.
-    """
-    try:
-        from ..output_hardware import load_state
-
-        return load_state()
-    except _MONITOR_ERRORS:
-        logger.debug("audio health output-hardware probe failed", exc_info=True)
-        return None
-
-
-def _read_output_topology() -> Any:
-    """Read the DECLARED output topology's SNAPSHOT (topology + revision),
-    fail-soft.
-
-    The SNAPSHOT, not the bare ``load_output_topology`` (#2812 B2): on a
-    missing file both readers fall back to ``new_topology_draft``, which
-    auto-seeds ``hardware`` FROM the observed record whenever it has outputs,
-    so an ``OutputTopology`` alone cannot distinguish "never declared" from
-    "declared and already matches". ``snapshot.revision == "missing"`` survives
-    that auto-seed and says nothing was ever persisted. Same reader
-    ``/sound/speaker/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
-    """
-    try:
-
-        return load_output_topology_snapshot()
-    except _MONITOR_ERRORS:
-        logger.debug("audio health output-topology probe failed", exc_info=True)
-        return None
+def _incident_context(
+    airplay: Mapping[str, Any],
+    outputd: Mapping[str, Any] | None,
+    active_source: str | None,
+    system: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Capture persisted incident evidence."""
+    current = mapping(airplay.get("current"))
+    fanin = mapping(current.get("fanin"))
+    source_input = (
+        mapping(mapping(fanin.get("inputs")).get(active_source))
+        if active_source is not None else {}
+    )
+    output = mapping(mapping(outputd).get("dac"))
+    host = mapping(system)
+    context: dict[str, Any] = {
+        "clock_mode": mapping(fanin.get("host_clock")).get("ladder"),
+        "input": {"rms_dbfs": source_input.get("rms_dbfs")},
+        "output": {"snd_pcm_delay_ms": fresh_dac_delay_ms(output)},
+        # Why the box could not keep up, frozen with the incident: SoC
+        # throttling and memory stall pressure are the two host conditions
+        # that starve the audio path without leaving a trace in it.
+        "host": {
+            "throttled_now": host.get("throttled_now"),
+            "throttled_history": host.get("throttled_history"),
+            "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
+        },
+    }
+    attribution = input_attribution(airplay, active_source)
+    if attribution is not None:
+        context["attribution"] = attribution
+    return context
 
 
 class AudioHealthSampler:
@@ -160,8 +150,11 @@ class AudioHealthSampler:
         self._route_probe = route_probe or read_route_claim
         self._service_probe = service_probe
         self._system_probe = system_probe
-        self._output_hardware_probe = output_hardware_probe or _read_output_hardware
-        self._output_topology_probe = output_topology_probe or _read_output_topology
+        self._output_hardware_probe = output_hardware_probe or load_output_hardware_state
+        # The snapshot, not the bare topology (#2812 B2): a missing file's
+        # draft auto-seeds hardware from the observed record, so only
+        # revision == "missing" says nothing was ever declared.
+        self._output_topology_probe = output_topology_probe or load_output_topology_snapshot
         observation_gap = max(15.0, sample_interval_sec * 3.0)
         self._issues = IssueTracker(
             store=incident_store,
@@ -173,9 +166,7 @@ class AudioHealthSampler:
         self._outputd: dict[str, Any] | None = None
         self._route: dict[str, Any] | None = None
         # Refreshed on the slow `_route_interval` cadence, not every fast tick:
-        # declared topology changes only when a household saves a new layout. A
-        # SNAPSHOT (topology + revision), not a bare topology -- see
-        # `_undeclared_hardware_signal` for why revision matters.
+        # declared topology changes only when a household saves a new layout.
         self._output_topology_snapshot: Any = None
         self._transport_park: dict[str, Any] | None = None
         self._service_states: dict[str, dict[str, Any]] = {}
@@ -256,7 +247,7 @@ class AudioHealthSampler:
                     "details": [],
                 },
             }
-            snapshot["current_incident"] = _present_incident(
+            snapshot["current_incident"] = present_incident(
                 stale_issue,
                 self._time(),
                 issues,
@@ -282,7 +273,7 @@ class AudioHealthSampler:
             started = time.monotonic()
             try:
                 self._tick()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.exception("audio health sampler tick failed")
             elapsed = time.monotonic() - started
             # Floor bounds the loop rate when a tick overruns the interval,
@@ -295,23 +286,23 @@ class AudioHealthSampler:
         airplay = self._airplay.snapshot()
         try:
             outputd = self._outputd_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health outputd probe failed", exc_info=True)
             outputd = None
         try:
             mux_status = self._mux_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health mux STATUS probe failed", exc_info=True)
             mux_status = None
         try:
             output_hardware = self._output_hardware_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health output-hardware probe failed", exc_info=True)
             output_hardware = None
         if self._service_probe is not None:
             try:
                 service_states = self._service_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health service-state probe failed", exc_info=True)
             else:
                 if isinstance(service_states, dict):
@@ -322,31 +313,27 @@ class AudioHealthSampler:
         ):
             try:
                 route = self._route_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health route probe failed", exc_info=True)
                 route = {"status": "unavailable", "low_latency_claim": False}
             self._route = route if isinstance(route, dict) else None
             try:
                 self._output_topology_snapshot = self._output_topology_probe()
-            except _MONITOR_ERRORS:
+            except MONITOR_ERRORS:
                 logger.debug("audio health output-topology probe failed", exc_info=True)
                 # Keep the previously cached snapshot: a transient read failure
                 # must not blank the declared side of the B1/B2 comparison.
             # ADR-0178's transport parks ride the SLOW cadence with the
             # topology read they classify; their own snapshot() is fail-soft,
             # so a bad read lands as status="unavailable" rather than raising.
-            # Imported here, not at module scope, so the name cannot shadow the
-            # `transport_park` PARAMETER the composers below take.
-            from . import transport_eligibility as transport_park_reader
-
-            self._transport_park = transport_park_reader.snapshot()
+            self._transport_park = transport_eligibility.snapshot()
             self._last_route_sample_at = now
 
         route_state = mapping(self._route)
-        active_source, activity_unknown, signal_path, latency = _health_prelude(
+        active_source, activity_unknown, signal_path, latency = health_prelude(
             airplay, outputd, mux_status, route_state,
         )
-        selected_source = _selected_source(airplay)
+        selected_source = fanin_selected_source(airplay)
         if activity_unknown:
             if (
                 self._session.source_id is not None
@@ -366,14 +353,14 @@ class AudioHealthSampler:
         except RuntimeError:
             logger.debug("audio health source-intent probe failed", exc_info=True)
             intents = None
-        # Computed once here and passed to _state_issues below, so the incident
+        # Computed once here and passed to state_issues below, so the incident
         # rows and the overall headline cannot present a different verdict for
         # the same tick: the raw path.outputd_unavailable row must not
         # contradict the headline when the setup hint wins (#2812).
-        undeclared_hardware = _undeclared_hardware_signal(
+        undeclared_hardware = undeclared_hardware_signal(
             output_hardware, self._output_topology_snapshot
         )
-        state_issues = _state_issues(
+        issue_rows = state_issues(
             airplay,
             outputd,
             signal_path,
@@ -382,12 +369,12 @@ class AudioHealthSampler:
             self._service_states,
             intents,
             activity_unknown=activity_unknown,
-            coherence_park=_parked_signal(route_state),
+            coherence_park=parked_signal(route_state),
             undeclared_hardware=undeclared_hardware,
             transport_park=self._transport_park,
         )
         tracked_state_issues = [
-            issue for issue in state_issues
+            issue for issue in issue_rows
             if not (
                 issue.get("impact") == "availability"
                 and issue.get("source_id") != active_source
@@ -476,7 +463,7 @@ class AudioHealthSampler:
             return None
         try:
             pressure = self._system_probe()
-        except _MONITOR_ERRORS:
+        except MONITOR_ERRORS:
             logger.debug("audio health system-pressure probe failed", exc_info=True)
             return None
         return pressure if isinstance(pressure, Mapping) else None
@@ -492,9 +479,7 @@ class AudioHealthSampler:
 
         Falls back to a fresh read only before the first slow tick.
         """
-        from . import transport_eligibility as transport_park_reader
-
         cached = self._transport_park
         if cached is not None:
             return cached
-        return transport_park_reader.snapshot()
+        return transport_eligibility.snapshot()

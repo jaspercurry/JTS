@@ -16,20 +16,28 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
-from ._health_fields import _as_int, mapping
+from ._health_fields import as_int, mapping
 from ._health_sources import (
-    SOURCE_OFF_DRIFT_DETAIL,
-    SOURCE_UNAVAILABLE_DETAIL,
-    _SOURCE_HEALTH_UNITS,
+    SOURCE_HEALTH_UNITS,
     SOURCE_LABELS,
-    _SOURCE_OFF_DRIFT_UNITS,
-    _SOURCE_PRIMARY_UNITS,
+    SOURCE_OFF_DRIFT_DETAIL,
+    SOURCE_OFF_DRIFT_UNITS,
+    SOURCE_UNAVAILABLE_DETAIL,
 )
 
+_SOURCE_PRIMARY_UNITS = {
+    lifecycle.source.value: (
+        lifecycle.intent_unit
+        or (lifecycle.runtime_units[0] if lifecycle.runtime_units else None)
+    )
+    for lifecycle in local_source_lifecycles()
+}
 
-def _usb_timing(
+
+def usb_timing(
     route: Mapping[str, Any],
     host_clock: Mapping[str, Any] | None,
     usb_input: Mapping[str, Any] | None = None,
@@ -172,7 +180,9 @@ def _usb_timing(
     }
 
 
-def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, Any]:
+def airplay_sync_timing(
+    airplay: Mapping[str, Any], *, active: bool,
+) -> dict[str, Any]:
     if not active:
         status = "idle"
         headline = "AirPlay idle"
@@ -180,9 +190,9 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
     else:
         recent = mapping(airplay.get("summary_5m"))
         sync_events = (
-            _as_int(recent.get("shairport_packet_drops"))
-            + _as_int(recent.get("shairport_sync_errors"))
-            + _as_int(recent.get("shairport_underruns"))
+            as_int(recent.get("shairport_packet_drops"))
+            + as_int(recent.get("shairport_sync_errors"))
+            + as_int(recent.get("shairport_underruns"))
         )
         if sync_events:
             status = "warn"
@@ -204,7 +214,7 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
     }
 
 
-def _not_applicable_timing() -> dict[str, Any]:
+def not_applicable_timing() -> dict[str, Any]:
     return {
         "applicable": False,
         "source_id": None,
@@ -228,7 +238,7 @@ def _source_service_summary(
     if desired is False:
         if any(
             mapping(states.get(unit)).get("active_state") == "active"
-            for unit in _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
+            for unit in SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
         ):
             return (
                 "unavailable",
@@ -238,7 +248,7 @@ def _source_service_summary(
         return "off", "Off", "Turned off in Playback sources."
     if not states:
         return None
-    for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
+    for unit in SOURCE_HEALTH_UNITS.get(source_id, ()):
         if unit_failed(mapping(states.get(unit))):
             return (
                 "unavailable",
@@ -254,7 +264,7 @@ def _source_service_summary(
     return None
 
 
-def _source_cards(
+def build_source_cards(
     airplay: Mapping[str, Any],
     signal_path: Mapping[str, Any],
     route: Mapping[str, Any],
@@ -292,11 +302,11 @@ def _source_cards(
                 status = "issue"
         timing: dict[str, Any] | None = None
         if spec.id == Source.AIRPLAY:
-            timing = _airplay_timing(airplay, active=active)
+            timing = airplay_sync_timing(airplay, active=active)
             if active and timing["status"] in {"warn", "unknown"}:
                 status = "warn"
         elif spec.id == Source.USBSINK:
-            timing = _usb_timing(
+            timing = usb_timing(
                 route, host_clock, mapping(inputs.get(source_id)), active=active
             )
             if active and timing["status"] in {"warn", "unknown"}:

@@ -407,6 +407,30 @@ def test_playlist_remove_uses_guarded_voice_restart(monkeypatch, outcome):
     assert flash == "Removed playlist from brittany." + RESTART_CLAUSE[outcome]
 
 
+def test_remove_deletes_the_account_and_its_token_cache(monkeypatch, tmp_path):
+    token = "y" * 64
+    monkeypatch.setattr(spotify_setup, "_invalidate_health_cache", lambda: None)
+    monkeypatch.setattr(
+        spotify_setup, "_restart_spotify_consumers", lambda: RestartOutcome.RAN,
+    )
+    registry = spotify_setup.Registry(path=str(tmp_path / "accounts.json"))
+    for name in ("jasper", "britt"):
+        cache = tmp_path / f"{name}.cache.json"
+        cache.write_text("{}")
+        registry.add_or_update(spotify_setup.Account(name=name, cache_path=str(cache)))
+    registry.save()
+
+    body = urllib.parse.urlencode({"csrf_token": token, "name": "jasper"}).encode()
+    _Request(
+        _handler_cls(registry_path=registry.path), "/remove", body=body,
+        cookies="jts_csrf=" + token,
+    ).do_POST()
+
+    remaining = spotify_setup.Registry.load(registry.path).accounts
+    assert [a.name for a in remaining] == ["britt"]
+    assert [p.name for p in tmp_path.glob("*.cache.json")] == ["britt.cache.json"]
+
+
 def test_get_root_unconfigured_renders_setup_wizard():
     h = _Request(_handler_cls(client_id=""), "/")
     h.do_GET()
@@ -466,6 +490,18 @@ def test_post_unknown_route_404s():
     h = _Request(_handler_cls(), "/nope", body=b"")
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+@pytest.mark.parametrize("pasted, expected", [
+    ("http://127.0.0.1:8888/callback?code=c&state=s", ("c", "s")),
+    ("http://127.0.0.1:8888/callback?code=c&state=s#top", ("c", "s")),
+    ("?code=c&state=s", ("c", "s")),
+    ("code=c&state=s", ("c", "s")),
+    ("http://[::1/callback?code=c&state=s", ("c", "s")),
+    ("http://127.0.0.1:8888/callback?code=c", None),
+])
+def test_parse_callback_url_reads_code_and_state_or_none(pasted, expected):
+    assert spotify_setup._parse_callback_url(pasted) == expected
 
 
 def test_manual_start_paste_form_preserves_session_csrf(monkeypatch, tmp_path):
@@ -559,10 +595,10 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
     spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     calls = {"invalidate": 0, "restart": 0}
 
-    def boom(self, account_name, code, verifier, challenge):
+    def boom(cfg, account_name, code, verifier, challenge):
         raise OSError("disk denied")
 
-    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+    monkeypatch.setattr(spotify_setup, "_exchange_code", boom)
     monkeypatch.setattr(
         spotify_setup,
         "_invalidate_health_cache",
@@ -599,10 +635,10 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     spotify_setup._PENDING_FLOWS.add(state, ("jasper", "verifier", "challenge"))
     leaked = "GOCSPX-fakefake1234"
 
-    def boom(self, account_name, code, verifier, challenge):
+    def boom(cfg, account_name, code, verifier, challenge):
         raise RuntimeError(f"400 invalid_client: client_secret={leaked}")
 
-    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+    monkeypatch.setattr(spotify_setup, "_exchange_code", boom)
 
     h = _Request(handler_cls, f"/oauth-callback?code=abc&state={state}")
     with caplog.at_level(logging.WARNING, logger="jasper.web.spotify_setup"):
@@ -625,8 +661,8 @@ def test_oauth_callback_with_error_redirects_without_exchange(monkeypatch):
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
     exchanged = []
     monkeypatch.setattr(
-        handler_cls, "_exchange_code",
-        lambda self, *a, **k: exchanged.append(True),
+        spotify_setup, "_exchange_code",
+        lambda *a, **k: exchanged.append(True),
     )
     h = _Request(handler_cls, "/oauth-callback?error=access_denied")
     h.do_GET()
@@ -647,8 +683,8 @@ def test_oauth_callback_rejects_unknown_state_without_exchange(monkeypatch):
     handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
     exchanged = []
     monkeypatch.setattr(
-        handler_cls, "_exchange_code",
-        lambda self, *a, **k: exchanged.append(True),
+        spotify_setup, "_exchange_code",
+        lambda *a, **k: exchanged.append(True),
     )
     h = _Request(handler_cls, "/oauth-callback?code=abc&state=forged")
     h.do_GET()

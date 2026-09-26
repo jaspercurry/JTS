@@ -413,7 +413,7 @@ def test_innomaker_hifi_amp_pro_declares_the_width_two_active_i2s_shape() -> Non
     # ALSA device, one mono active 2-way).
     assert profile.supports_active_outputd_lane is True
     assert profile.active_outputd_lane_channels == 2
-    assert profile.is_coherent_single() is True
+    assert profile.coherent_clock_domain is True
     # The lane can never ask for more than the board physically has.
     assert profile.active_outputd_lane_channels <= profile.physical_output_count
     # The declared format the raw `hw:` open lands on. Unchanged by the flip,
@@ -533,14 +533,6 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             supported_card_matches=("bad",),
             supports_active_outputd_lane=True,
         )
-
-
-def test_is_coherent_single_predicate() -> None:
-    # The single-PCM-transport shape: one device, one clock.
-    assert HIFIBERRY_DAC8X.is_coherent_single() is True
-    assert APPLE_USB_C_DONGLE.is_coherent_single() is True
-    # A composite of two independent-clock devices is not.
-    assert DUAL_APPLE_USB_C_DAC_4CH.is_coherent_single() is False
 
 
 def test_active_lane_width_stays_within_physical_outputs() -> None:

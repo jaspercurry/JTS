@@ -40,7 +40,9 @@ import logging
 from collections.abc import Mapping
 
 from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.env_file import env_value
 from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
+from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.systemd_probe import unit_state
 
@@ -88,8 +90,6 @@ def combo_armed_from_env(env: str | Mapping[str, str]) -> bool:
     reconciler's own output. Takes either raw env-file text or an
     already-parsed mapping (e.g. a caller's cached read of the file).
     """
-    from jasper.env_file import env_value
-
     return env_value(env, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
 
 
@@ -151,9 +151,8 @@ def usbsink_effectively_enabled() -> bool:
     also stays disarmed rather than opening capture for an unadvertised UAC2
     function. A malformed or unreadable intent raises visibly.
     """
-    from jasper.local_sources.markers import local_sources_allowed
-    from jasper.music_sources import Source
-    from jasper.source_intent import source_intent_enabled
+    from jasper.local_sources.markers import local_sources_allowed  # lazy: test patch boundary (tests/test_fanin_coupling_auto.py)
+    from jasper.source_intent import source_intent_enabled  # lazy: test patch boundary (tests/test_fanin_coupling_auto.py)
 
     if not source_intent_enabled(Source.USBSINK):
         return False

@@ -570,16 +570,12 @@ class BaseLiveConnection:
         model: str,
         voice: str,
         context_reset_sec: float = 0.0,
-        backoff_schedule: tuple[float, ...] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         nudge_clock: Callable[[], float] | None = None,
     ) -> None:
         self._model = model
         self._voice = voice
         self._context_reset_sec = context_reset_sec
-        # None in production (retry forever); a bounded tuple in tests,
-        # to make schedule exhaustion observable.
-        self._backoff_schedule = backoff_schedule
         self._sleep: Callable[[float], Awaitable[None]] = (
             sleep if sleep is not None else asyncio.sleep
         )

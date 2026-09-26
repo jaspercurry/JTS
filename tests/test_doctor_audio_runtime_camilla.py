@@ -457,7 +457,7 @@ def test_status_consumers_classify_non_object_root_without_crashing(
 
 # Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path out,
 # so a fail from any of these three means no source can be heard now. They
-# share one systemd ladder, `_shared._service_state_failure`; delete the
+# share one systemd ladder, `_shared.service_state_failure`; delete the
 # guards below when it is replaced.
 _OUTPUT_CHAIN_CHECKS = (
     audio_runtime_fanin.check_fanin_service,
@@ -650,7 +650,7 @@ def test_loaded_device_fields_reads_every_lane_from_one_config(
     cfg = tmp_path / "c.yml"
     cfg.write_text(text)
 
-    fields = audio_runtime_camilla._loaded_device_fields(cfg)
+    fields = audio_runtime_camilla.loaded_device_fields(cfg)
 
     assert {k: fields.get(k) for k in expected} == expected
     if not expected:
@@ -658,8 +658,8 @@ def test_loaded_device_fields_reads_every_lane_from_one_config(
 
 
 def test_loaded_device_fields_is_empty_for_a_config_that_is_not_there(tmp_path):
-    assert audio_runtime_camilla._loaded_device_fields(tmp_path / "gone.yml") == {}
-    assert audio_runtime_camilla._loaded_device_fields(None) == {}
+    assert audio_runtime_camilla.loaded_device_fields(tmp_path / "gone.yml") == {}
+    assert audio_runtime_camilla.loaded_device_fields(None) == {}
 
 
 # --- D-list survey finding 1 / wide-output-path PR-1: playback format check --

@@ -27,6 +27,7 @@ import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from jasper.json_fields import as_float
 from jasper.log_event import log_event
 
 from .config import MULTICAST_GROUP, MULTICAST_PORT, MULTICAST_TTL
@@ -173,8 +174,8 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
                 report=WakeReport(
                     peer_id=str(msg["peer"]),
                     score=float(msg["score"]),
-                    snr_db=_maybe_float(msg.get("snr_db")),
-                    rms_dbfs=_maybe_float(msg.get("rms_dbfs")),
+                    snr_db=as_float(msg.get("snr_db")),
+                    rms_dbfs=as_float(msg.get("rms_dbfs")),
                     primary=bool(msg.get("primary", 0)),
                     can_serve=bool(msg.get("can_serve", 1)),
                 ),
@@ -200,17 +201,8 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
             )
         logger.debug("peering: dropped unknown t=%r", t)
         return None
-    except (KeyError, ValueError, TypeError) as e:
+    except (KeyError, ValueError, TypeError, OverflowError) as e:
         logger.debug("peering: dropped bad %s payload: %s", t, e)
-        return None
-
-
-def _maybe_float(v) -> float | None:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
         return None
 
 
@@ -222,7 +214,6 @@ def open_multicast_socket(
     group: str = MULTICAST_GROUP,
     port: int = MULTICAST_PORT,
     ttl: int = MULTICAST_TTL,
-    bind_addr: str = "0.0.0.0",
 ) -> socket.socket:
     """Open a UDP socket configured for our peering multicast group.
 
@@ -247,7 +238,7 @@ def open_multicast_socket(
             pass
 
     try:
-        sock.bind((bind_addr, port))
+        sock.bind(("0.0.0.0", port))
 
         # Outbound TTL: 1 = single subnet, dies at first router hop.
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
@@ -366,7 +357,12 @@ class MulticastTransport:
                 logger.warning("peering: recv failed: %s", e)
                 await asyncio.sleep(0.1)
                 continue
-            msg = decode(data)
+            try:
+                msg = decode(data)
+            except Exception as e:  # noqa: BLE001 — neighbour-controlled input: no traceback flood
+                log_event(logger, "peering.transport.datagram_failed",
+                          level=logging.WARNING, error=repr(e))
+                continue
             if msg is None:
                 continue
             try:

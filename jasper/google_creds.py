@@ -54,11 +54,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar
 
-from .accounts import RecordRegistry
+from .accounts import RecordRegistry, account_file_stem
 from .atomic_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
@@ -144,8 +143,7 @@ class GoogleRegistry(RecordRegistry[GoogleAccount]):
 
 
 def default_token_path_for(name: str) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
-    return os.path.join(DEFAULT_TOKEN_DIR, f"{safe}.json")
+    return os.path.join(DEFAULT_TOKEN_DIR, f"{account_file_stem(name)}.json")
 
 
 # ----------------------------------------------------------------------

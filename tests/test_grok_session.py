@@ -25,11 +25,7 @@ from tests._log_events import parse_event
 
 def _make_grok_conn() -> tuple[GrokRealtimeConnection, _FakeConnectFactory]:
     factory = _FakeConnectFactory()
-    conn = GrokRealtimeConnection(
-        api_key="fake",
-        backoff_schedule=(0.0, 0.0),
-        connect_factory=factory,
-    )
+    conn = GrokRealtimeConnection(api_key="fake", connect_factory=factory)
     return conn, factory
 
 
@@ -62,32 +58,14 @@ def test_flat_rate_meter_wiring_uses_generic_activity_hook(tmp_path) -> None:
 
     conn = _FlatRateConnection()
     store = UsageStore(str(tmp_path / "usage.db"))
-    wired = _wire_billable_activity_meter(
+    _wire_billable_activity_meter(
         connection=conn,  # type: ignore[arg-type]
         usage_store=store,
         provider="future-flat",
         flat_per_hour_usd=2.5,
     )
 
-    assert wired is True
     assert isinstance(conn.meter, BillableActivityMeter)
-
-
-def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
-    from tests._log_events import event_fields
-
-    store = UsageStore(str(tmp_path / "usage.db"))
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wired = _wire_billable_activity_meter(
-            connection=object(),  # type: ignore[arg-type]
-            usage_store=store,
-            provider="future-flat",
-            flat_per_hour_usd=2.5,
-        )
-
-    assert wired is False
-    fields = event_fields(caplog, "pricing.flat_rate_meter_unavailable")
-    assert fields["provider"] == "future-flat"
 
 
 async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:

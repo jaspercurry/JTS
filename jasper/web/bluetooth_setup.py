@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import re
@@ -47,6 +48,7 @@ from ._common import (
     prefix_route,
     read_json_object,
     resolve_samples,
+    RouteTable,
     route_path,
     send_html_response,
     send_json_response,
@@ -507,33 +509,249 @@ def _landing_html(csrf_token: str = "") -> bytes:
     )
 
 
+def _run_claimed(
+    handler: BaseHTTPRequestHandler, claim: bool, change: Callable[[], object],
+) -> bool:
+    """Run `change`, holding the adapter's one action slot when `claim`.
+    False, with `change` never run, once a busy slot is answered 409."""
+    owner = object() if claim else None
+    if owner is not None and not _claim_bluetooth_action(owner):
+        send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
+        return False
+    try:
+        change()
+    finally:
+        if owner is not None:
+            _release_bluetooth_action(owner)
+    return True
+
+
+def _get_index(handler: BaseHTTPRequestHandler) -> None:
+    ctx = begin_request(handler)
+    send_html_response(handler, _landing_html(ctx["csrf_token"]))
+
+
+def _get_state(handler: BaseHTTPRequestHandler) -> None:
+    state, status = _bluetooth_state_snapshot()
+    send_json_response(handler, state, status=status)
+
+
+def _get_devices_stream(handler: Any) -> None:
+    handler._stream_devices()
+
+
+def _get_pair_stream(handler: Any) -> None:
+    path = route_path(handler.path)
+    mac = _normalize_mac(
+        path[len("/pair/"):-len("/stream")], url_encoded=True,
+    )
+    if mac is None:
+        handler.send_error(HTTPStatus.BAD_REQUEST)
+        return
+    handler._stream_pair(mac)
+
+
+def _get_action_stream(handler: Any) -> None:
+    parts = route_path(handler.path).split("/")
+    mutation_id = (
+        _normalize_mutation_id(parts[2], url_encoded=True)
+        if len(parts) == 4 else None
+    )
+    if mutation_id is None:
+        handler.send_error(HTTPStatus.BAD_REQUEST)
+        return
+    handler._stream_device_action(mutation_id)
+
+
+_resolve_stream = resolve_samples({
+    "/pair/AA:BB:CC:DD:EE:FF/stream": _get_pair_stream,
+    "/actions/00000000-0000-0000-0000-0000/stream": _get_action_stream,
+})(first_match(
+    prefix_route("/pair/", "/stream", _get_pair_stream),
+    prefix_route("/actions/", "/stream", _get_action_stream),
+))
+
+_GET_ROUTES = {
+    "/": _get_index,
+    "/state": _get_state,
+    "/devices/stream": _get_devices_stream,
+}
+
+
+def _prepare_action(handler: BaseHTTPRequestHandler, path: str) -> dict[str, Any] | None:
+    try:
+        body = read_json_object(handler, max_bytes=1_000_000)
+    except (JsonBodyError, OSError):
+        body = {}
+    if path in {"/power", "/discoverable"} and not isinstance(body.get("on"), bool):
+        send_json_response(handler, {"error": "on must be true or false"}, status=400)
+        return None
+    if path in {"/pair", "/connect", "/disconnect", "/forget"}:
+        body["mac"] = _normalize_mac(body.get("mac"))
+        if body["mac"] is None:
+            send_json_response(handler, {"error": "invalid mac"}, status=400)
+            return None
+    if path[1:] in _DEVICE_ACTIONS:
+        body["mutationId"] = _normalize_mutation_id(body.get("mutationId"))
+        if body["mutationId"] is None:
+            send_json_response(handler, {"error": "invalid mutation id"}, status=400)
+            return None
+    if bonded_follower_active():
+        send_json_response(
+            handler,
+            {"error": "Bluetooth is managed by the stereo pair "
+                      "while this speaker is a follower — unpair "
+                      "on /sound/pair/ to change it"},
+            status=HTTPStatus.CONFLICT,
+        )
+        return None
+    activates_radio = (
+        (path == "/discoverable" and body.get("on") is True)
+        or (path == "/scan" and body.get("action") == "start")
+        or path in {"/pair", "/connect"}
+    )
+    if activates_radio:
+        try:
+            bluetooth_desired = source_intent_enabled(Source.BLUETOOTH)
+        except RuntimeError as exc:
+            send_json_response(
+                handler,
+                {"error": f"Bluetooth intent is unavailable: {exc}"},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return None
+        if not bluetooth_desired:
+            send_json_response(
+                handler,
+                {"error": "Bluetooth is turned off in Sources"},
+                status=HTTPStatus.CONFLICT,
+            )
+            return None
+    if (path == "/power" and body.get("on") is True) or activates_radio:
+        availability = probe_bluetooth_availability(
+            _installed_unit_reader(
+                read_unit_states(_STATE_UNITS, timeout=STATE_PROBE_TIMEOUT_SEC)
+            )
+        )
+        if not availability.available:
+            send_json_response(
+                handler,
+                {"error": bluetooth_unavailable_reason(availability)},
+                status=HTTPStatus.CONFLICT,
+            )
+            return None
+    return body
+
+
+def _run_action(
+    handler: BaseHTTPRequestHandler, path: str, body: dict[str, Any],
+    fn: Callable[[dict[str, Any]], None],
+) -> None:
+    try:
+        fn(body)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST %s failed", path)
+        payload: dict[str, Any] = {"error": str(e)}
+        if path == "/power":
+            # Intent persists before reconciliation; read back even if it fails.
+            state, _status = _bluetooth_state_snapshot()
+            payload["state"] = state
+        send_json_response(handler, payload, status=502)
+
+
+def _post_power(handler: BaseHTTPRequestHandler) -> None:
+    body = _prepare_action(handler, "/power")
+    if body is None:
+        return
+
+    def apply(body: dict[str, Any]) -> None:
+        on = body["on"]
+        if _run_claimed(handler, on, lambda: request_source_intent(Source.BLUETOOTH, on)):
+            send_json_response(handler, {"ok": True, "desired": on})
+
+    _run_action(handler, "/power", body, apply)
+
+
+def _post_discoverable(handler: BaseHTTPRequestHandler) -> None:
+    body = _prepare_action(handler, "/discoverable")
+    if body is None:
+        return
+
+    def apply(body: dict[str, Any]) -> None:
+        on = body["on"]
+        if _run_claimed(handler, on, lambda: _dispatch().run(
+            set_discoverable(on), timeout_sec=MUTATION_TIMEOUT_SEC,
+        )):
+            send_json_response(handler, {"ok": True})
+
+    _run_action(handler, "/discoverable", body, apply)
+
+
+def _post_scan(handler: BaseHTTPRequestHandler) -> None:
+    body = _prepare_action(handler, "/scan")
+    if body is None:
+        return
+
+    def apply(body: dict[str, Any]) -> None:
+        action = (body.get("action") or "").strip()
+        if action == "start":
+            # BlueZ stops discovery when its client disconnects, so use the engine's bus.
+            if _run_claimed(handler, True, lambda: _dispatch().run(
+                _dispatch().engine.start_discovery(duration_s=SCAN_DURATION_SEC),
+                timeout_sec=MUTATION_TIMEOUT_SEC,
+            )):
+                send_json_response(handler, {"ok": True, "duration_s": SCAN_DURATION_SEC})
+        elif action == "stop":
+            _dispatch().run(
+                _dispatch().engine.stop_discovery(), timeout_sec=MUTATION_TIMEOUT_SEC,
+            )
+            send_json_response(handler, {"ok": True})
+        else:
+            send_json_response(handler, {"error": "action must be start or stop"}, status=400)
+
+    _run_action(handler, "/scan", body, apply)
+
+
+def _post_pair(handler: BaseHTTPRequestHandler) -> None:
+    body = _prepare_action(handler, "/pair")
+    if body is None:
+        return
+
+    def apply(body: dict[str, Any]) -> None:
+        if not _start_pair_stream(body["mac"]):
+            send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
+            return
+        send_json_response(handler, {"ok": True})
+
+    _run_action(handler, "/pair", body, apply)
+
+
+def _post_device_action(idle_hold: Any, action: str, handler: BaseHTTPRequestHandler) -> None:
+    path = f"/{action}"
+    body = _prepare_action(handler, path)
+    if body is None:
+        return
+
+    def apply(body: dict[str, Any]) -> None:
+        attempt, resumed = _start_device_mutation(
+            action, body["mac"], body["mutationId"], idle_hold=idle_hold,
+        )
+        if attempt is None:
+            send_json_response(handler, _device_busy_payload(), status=HTTPStatus.CONFLICT)
+            return
+        send_json_response(
+            handler,
+            _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
+        )
+
+    _run_action(handler, path, body, apply)
+
+
 def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            send_html_response(self, body, status=status)
-
-        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            send_json_response(self, payload, status=status)
-
-        def _claim_radio_activation(self) -> object | None:
-            owner = object()
-            if _claim_bluetooth_action(owner):
-                return owner
-            self._send_json(
-                _device_busy_payload(),
-                status=HTTPStatus.CONFLICT,
-            )
-            return None
-
-        def _read_json(self) -> dict[str, Any]:
-            try:
-                return read_json_object(self, max_bytes=1_000_000)
-            except (JsonBodyError, OSError):
-                return {}
 
         def _begin_sse(self) -> None:
             self.send_response(200)
@@ -600,235 +818,15 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                 if not self._sse_write(event):
                     return
 
-    # The tables stay local because device actions close over `idle_hold`.
-    def _get_index(handler: BaseHTTPRequestHandler) -> None:
-        ctx = begin_request(handler)
-        handler._send_html(_landing_html(ctx["csrf_token"]))
-
-    def _get_state(handler: BaseHTTPRequestHandler) -> None:
-        state, status = _bluetooth_state_snapshot()
-        handler._send_json(state, status=status)
-
-    def _get_devices_stream(handler: BaseHTTPRequestHandler) -> None:
-        handler._stream_devices()
-
-    def _get_pair_stream(handler: BaseHTTPRequestHandler) -> None:
-        path = route_path(handler.path)
-        mac = _normalize_mac(
-            path[len("/pair/"):-len("/stream")], url_encoded=True,
-        )
-        if mac is None:
-            handler.send_error(HTTPStatus.BAD_REQUEST)
-            return
-        handler._stream_pair(mac)
-
-    def _get_action_stream(handler: BaseHTTPRequestHandler) -> None:
-        parts = route_path(handler.path).split("/")
-        mutation_id = (
-            _normalize_mutation_id(parts[2], url_encoded=True)
-            if len(parts) == 4 else None
-        )
-        if mutation_id is None:
-            handler.send_error(HTTPStatus.BAD_REQUEST)
-            return
-        handler._stream_device_action(mutation_id)
-
-    _resolve_stream = resolve_samples({
-        "/pair/AA:BB:CC:DD:EE:FF/stream": _get_pair_stream,
-        "/actions/00000000-0000-0000-0000-0000/stream": _get_action_stream,
-    })(first_match(
-        prefix_route("/pair/", "/stream", _get_pair_stream),
-        prefix_route("/actions/", "/stream", _get_action_stream),
-    ))
-
-    _GET_ROUTES = {
-        "/": _get_index,
-        "/state": _get_state,
-        "/devices/stream": _get_devices_stream,
-    }
-
-    def _prepare_action(
-        handler: BaseHTTPRequestHandler, path: str,
-    ) -> dict[str, Any] | None:
-        body = handler._read_json()
-        if path in {"/power", "/discoverable"} and not isinstance(body.get("on"), bool):
-            handler._send_json({"error": "on must be true or false"}, status=400)
-            return None
-        if path in {"/pair", "/connect", "/disconnect", "/forget"}:
-            body["mac"] = _normalize_mac(body.get("mac"))
-            if body["mac"] is None:
-                handler._send_json({"error": "invalid mac"}, status=400)
-                return None
-        if path[1:] in _DEVICE_ACTIONS:
-            body["mutationId"] = _normalize_mutation_id(body.get("mutationId"))
-            if body["mutationId"] is None:
-                handler._send_json({"error": "invalid mutation id"}, status=400)
-                return None
-        if bonded_follower_active():
-            handler._send_json(
-                {"error": "Bluetooth is managed by the stereo pair "
-                          "while this speaker is a follower — unpair "
-                          "on /sound/pair/ to change it"},
-                status=HTTPStatus.CONFLICT,
-            )
-            return None
-        activates_radio = (
-            (path == "/discoverable" and body.get("on") is True)
-            or (path == "/scan" and body.get("action") == "start")
-            or path in {"/pair", "/connect"}
-        )
-        if activates_radio:
-            try:
-                bluetooth_desired = source_intent_enabled(Source.BLUETOOTH)
-            except RuntimeError as exc:
-                handler._send_json(
-                    {"error": f"Bluetooth intent is unavailable: {exc}"},
-                    status=HTTPStatus.BAD_GATEWAY,
-                )
-                return None
-            if not bluetooth_desired:
-                handler._send_json(
-                    {"error": "Bluetooth is turned off in Sources"},
-                    status=HTTPStatus.CONFLICT,
-                )
-                return None
-        if (path == "/power" and body.get("on") is True) or activates_radio:
-            availability = probe_bluetooth_availability(
-                _installed_unit_reader(
-                    read_unit_states(_STATE_UNITS, timeout=STATE_PROBE_TIMEOUT_SEC)
-                )
-            )
-            if not availability.available:
-                handler._send_json(
-                    {"error": bluetooth_unavailable_reason(availability)},
-                    status=HTTPStatus.CONFLICT,
-                )
-                return None
-        return body
-
-    def _run_action(
-        handler: BaseHTTPRequestHandler, path: str, body: dict[str, Any],
-        fn: Callable[[dict[str, Any]], None],
-    ) -> None:
-        try:
-            fn(body)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("POST %s failed", path)
-            payload: dict[str, Any] = {"error": str(e)}
-            if path == "/power":
-                # Intent persists before reconciliation; read back even if it fails.
-                state, _status = _bluetooth_state_snapshot()
-                payload["state"] = state
-            handler._send_json(payload, status=502)
-
-    def _post_power(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/power")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            on = body["on"]
-            owner = handler._claim_radio_activation() if on else None
-            if on and owner is None:
-                return
-            try:
-                request_source_intent(Source.BLUETOOTH, on)
-            finally:
-                if owner is not None:
-                    _release_bluetooth_action(owner)
-            handler._send_json({"ok": True, "desired": on})
-
-        _run_action(handler, "/power", body, apply)
-
-    def _post_discoverable(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/discoverable")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            on = body["on"]
-            owner = handler._claim_radio_activation() if on else None
-            if on and owner is None:
-                return
-            try:
-                _dispatch().run(set_discoverable(on), timeout_sec=MUTATION_TIMEOUT_SEC)
-            finally:
-                if owner is not None:
-                    _release_bluetooth_action(owner)
-            handler._send_json({"ok": True})
-
-        _run_action(handler, "/discoverable", body, apply)
-
-    def _post_scan(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/scan")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            action = (body.get("action") or "").strip()
-            if action == "start":
-                # BlueZ stops discovery when its client disconnects, so use the engine's bus.
-                owner = handler._claim_radio_activation()
-                if owner is None:
-                    return
-                try:
-                    _dispatch().run(
-                        _dispatch().engine.start_discovery(duration_s=SCAN_DURATION_SEC),
-                        timeout_sec=MUTATION_TIMEOUT_SEC,
-                    )
-                finally:
-                    _release_bluetooth_action(owner)
-                handler._send_json({"ok": True, "duration_s": SCAN_DURATION_SEC})
-            elif action == "stop":
-                _dispatch().run(
-                    _dispatch().engine.stop_discovery(), timeout_sec=MUTATION_TIMEOUT_SEC,
-                )
-                handler._send_json({"ok": True})
-            else:
-                handler._send_json({"error": "action must be start or stop"}, status=400)
-
-        _run_action(handler, "/scan", body, apply)
-
-    def _post_pair(handler: BaseHTTPRequestHandler) -> None:
-        body = _prepare_action(handler, "/pair")
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            if not _start_pair_stream(body["mac"]):
-                handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
-                return
-            handler._send_json({"ok": True})
-
-        _run_action(handler, "/pair", body, apply)
-
-    def _post_device_action(handler: BaseHTTPRequestHandler, action: str) -> None:
-        path = f"/{action}"
-        body = _prepare_action(handler, path)
-        if body is None:
-            return
-
-        def apply(body: dict[str, Any]) -> None:
-            attempt, resumed = _start_device_mutation(
-                action, body["mac"], body["mutationId"], idle_hold=idle_hold,
-            )
-            if attempt is None:
-                handler._send_json(_device_busy_payload(), status=HTTPStatus.CONFLICT)
-                return
-            handler._send_json(
-                _device_mutation_payload(attempt, resumed=resumed), status=HTTPStatus.ACCEPTED,
-            )
-
-        _run_action(handler, path, body, apply)
-
-    _POST_ROUTES = {
+    # The POST table stays local because device actions bind `idle_hold`.
+    _POST_ROUTES: RouteTable = {
         "/power": _post_power,
         "/discoverable": _post_discoverable,
         "/scan": _post_scan,
         "/pair": _post_pair,
-        "/connect": lambda handler: _post_device_action(handler, "connect"),
-        "/disconnect": lambda handler: _post_device_action(handler, "disconnect"),
-        "/forget": lambda handler: _post_device_action(handler, "forget"),
+        "/connect": functools.partial(_post_device_action, idle_hold, "connect"),
+        "/disconnect": functools.partial(_post_device_action, idle_hold, "disconnect"),
+        "/forget": functools.partial(_post_device_action, idle_hold, "forget"),
     }
 
     return Handler

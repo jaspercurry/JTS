@@ -22,7 +22,7 @@ Stage-5 live gate, keeping that analysis separate from config construction.
 The complementary half — the normalized ``GraphView``, the parse adapters, the
 fail-closed wiring predicates (``output_hard_muted_and_wired``,
 ``tweeter_guard_present``, …), and the shared scalar matchers (``float_matches``
-/ ``float_value`` / ``truthy_bool``) — lives in the sibling ``graph_safety``
+/ ``truthy_bool``) — lives in the sibling ``graph_safety``
 leaf; import those from there. The two modules are independent:
 ``graph_safety`` has no emitter dependency and stays promotable to a top-level
 shared module.
