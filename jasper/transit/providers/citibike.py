@@ -125,8 +125,6 @@ class _CitiBike:
         return {k: "citibike is keyless" for k in credentials} or None
 
     def build_client(self, env: Mapping[str, str]) -> object | None:
-        # Parse our own keys (mirrors Config.citibike_*): empty station list
-        # disables the tool. Lazy import also avoids the cycle described above.
         from ..citibike import CitiBikeClient, parse_saved_stations
 
         stations = list(parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
@@ -138,7 +136,7 @@ class _CitiBike:
         return CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
 
     def make_tools(self, client: object):
-        from ...tools.citibike import make_citibike_tools  # lazy
+        from ...tools.citibike import make_citibike_tools  # lazy: cycle via transit/__init__ imports this provider
 
         return make_citibike_tools(client)
 
