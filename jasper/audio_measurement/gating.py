@@ -153,6 +153,8 @@ LEDGER_PROMINENCE_LOOKBACK = 12
 LEDGER_MAX_ENTRIES = 6
 #: Classified, never gated: below :data:`SEARCH_T_MIN_MS`.
 CLASS_UNRESOLVED_EARLY = "unresolved_early_ungateable"
+#: Read from rounds banked before #2103; never written.
+CLASS_LEGACY_INTERNAL = "DUT_internal_ungateable"
 #: Inside the search span — the detector's own decision governs it.
 CLASS_GATEABLE = "gateable"
 

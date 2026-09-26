@@ -165,9 +165,9 @@ def test_gated_anything_is_true_only_for_a_measured_reflection():
 
 
 @pytest.mark.parametrize("classification", [
-    gating.CLASS_UNRESOLVED_EARLY, "DUT_internal_ungateable",
+    gating.CLASS_UNRESOLVED_EARLY, gating.CLASS_LEGACY_INTERNAL,
 ])
-def test_internal_reflection_count_excludes_gateable_ledger_entries(classification):
+def test_unresolved_early_count_excludes_gateable_ledger_entries(classification):
     d = gate_disclosure.build_gate_disclosure({
         "floor_source": gating.FLOOR_SEARCH_BOUND,
         "internal_reflection_ledger": [
@@ -177,7 +177,7 @@ def test_internal_reflection_count_excludes_gateable_ledger_entries(classificati
              "classification": gating.CLASS_GATEABLE},
         ],
     })
-    assert d.internal_reflection_count == 1
+    assert d.unresolved_early_count == 1
     assert d.ledger_count == 2
 
 
@@ -202,7 +202,7 @@ def test_build_gate_disclosure_never_raises_and_never_fabricates():
         assert d.gate_ms is None
         assert d.source_of_bound is None
         assert d.delta_rms_db is None
-        assert d.internal_reflection_count == 0
+        assert d.unresolved_early_count == 0
 
 
 def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields():
@@ -222,7 +222,7 @@ def test_build_gate_disclosure_reads_a_schema_1_block_without_inventing_fields()
     assert d.gate_ms == pytest.approx(4.0)
     assert d.f_min_hz == pytest.approx(250.0)
     assert d.f_trusted_hz is None
-    assert d.internal_reflection_count == 0
+    assert d.unresolved_early_count == 0
     assert d.ledger_count == 0
 
 
@@ -478,11 +478,12 @@ def test_a_large_delta_gets_no_smallness_gloss_either_way():
             ("loudspeaker-internal",),
         ),
         (
-            "DUT_internal_ungateable",
-            ("1 early feature", "origin unresolved", "deliberately not gated"),
+            gating.CLASS_LEGACY_INTERNAL,
+            ("1 early feature arriving before the search window opens",
+             "origin unresolved", "deliberately not gated"),
             ("loudspeaker-internal",),
         ),
-        (gating.CLASS_GATEABLE, (), ("loudspeaker-internal",)),
+        (gating.CLASS_GATEABLE, (), ("loudspeaker-internal", "early feature", "origin unresolved")),
     ],
 )
 def test_describe_gate_and_the_internal_reflection_ledger(classification, expected, unexpected):
