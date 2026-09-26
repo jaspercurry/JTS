@@ -21,16 +21,20 @@ from jasper.active_speaker import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.path_safety import (
     _startup_muted_by_candidate,
+    path_safety_evidence_payload,
     software_guard_ready_for_startup,
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
+from jasper.active_speaker.startup_load import build_startup_load_preflight
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
 )
+from tests.test_active_speaker_environment import _active_config_text, _runner
 
 
 def test_path_safety_writer_preserves_private_mode(tmp_path: Path) -> None:
@@ -250,6 +254,76 @@ def test_write_path_safety_evidence_persists_probe_payload(tmp_path: Path) -> No
     path = write_path_safety_evidence(evidence, path=tmp_path / "path_safety.json")
 
     assert path.read_text(encoding="utf-8").startswith("{\n")
+
+
+_UNUSABLE_EVIDENCE_BYTES = {"unparseable": b"{not json", "not_utf8": b"\xff", "invalid": b"{}"}
+_EVIDENCE_BLOCKER_CODES = {
+    "path_safety_evidence_missing",
+    "path_safety_evidence_unreadable",
+    "path_safety_evidence_invalid",
+}
+
+
+@pytest.mark.parametrize("door", ["environment_probe", "startup_load_preflight"])
+@pytest.mark.parametrize(
+    ("evidence", "status", "load_gate", "code"),
+    [
+        ("missing", "missing", "evidence_missing", "path_safety_evidence_missing"),
+        ("unreadable", "unreadable", "evidence_unreadable", "path_safety_evidence_unreadable"),
+        ("unparseable", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
+        ("not_utf8", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
+        ("invalid", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
+        ("valid", "pass", "ready", None),
+    ],
+)
+def test_both_load_doors_read_evidence_alike_and_block_on_every_unusable_file(
+    tmp_path: Path, door: str, evidence: str, status: str, load_gate: str, code: str | None
+) -> None:
+    staged = _staged(tmp_path)
+    level = calibration_level_payload()
+    path = tmp_path / "path_safety.json"
+    if evidence == "valid":
+        write_path_safety_evidence(
+            build_startup_load_path_safety_evidence(
+                _topology(),
+                staged_config=staged,
+                calibration_level=level,
+                current_config_path=staged["config"]["path"],
+            ),
+            path=path,
+        )
+    elif evidence in _UNUSABLE_EVIDENCE_BYTES:
+        path.write_bytes(_UNUSABLE_EVIDENCE_BYTES[evidence])
+    # "unreadable" names a file that was never written.
+    evidence_path = None if evidence == "missing" else path
+
+    if door == "environment_probe":
+        config = tmp_path / "active.yml"
+        config.write_text(_active_config_text(), encoding="utf-8")
+        report = probe_active_speaker_environment(
+            config_path=config,
+            path_safety=path_safety_evidence_payload(evidence_path),
+            runner=_runner,
+            validate=_valid_config,
+        )
+        load_allowed = report["ok_to_load_active_config"]
+    else:
+        report = build_startup_load_preflight(
+            _topology(),
+            staged_config=staged,
+            calibration_level=level,
+            safe_session={},
+            path_safety_evidence_path=evidence_path,
+            validate=_valid_config,
+        )
+        load_allowed = report["load_allowed"]
+
+    assert report["path_safety"]["status"] == status
+    assert report["path_safety"]["load_gate"] == load_gate
+    assert load_allowed is (code is None)
+    assert {issue["code"] for issue in report["issues"]} & _EVIDENCE_BLOCKER_CODES == (
+        {code} if code else set()
+    )
 
 
 def test_a_tweeter_topology_always_needs_software_guard_evidence(
