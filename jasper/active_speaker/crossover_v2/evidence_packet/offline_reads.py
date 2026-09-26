@@ -353,7 +353,7 @@ def derived_view_path(beside: Path, evidence_dir: Path | None, name: str) -> tup
     return beside, False
 
 
-def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
+def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[str, Any]:
     """The classification and H2/H3 views, read where
     :func:`derived_view_path` finds them. ``legacy_view_files_in_evidence``
     says one came from a copy inside the round's evidence (``round_dir``)."""

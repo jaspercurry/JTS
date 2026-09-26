@@ -17,7 +17,7 @@ from .applied_identity import applied_identity
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
-from .crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_round_evidence
+from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
@@ -240,8 +240,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                   measured=axis.get("timing_verdict") == TIMING_MEASURED,
                   needs_measurement=axis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT),
               "packet_fingerprint": evidence.get("packet_fingerprint"),
-              EVIDENCE_KEY: {key: value for key, value in evidence.items()
-                             if key not in ("packet_fingerprint", DERIVED_VIEWS)} or None,
+              EVIDENCE_KEY: fingerprinted(evidence) or None,
               "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
