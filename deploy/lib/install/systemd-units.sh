@@ -807,8 +807,8 @@ release_fanin_coupling_fence() {
 
 forget_core_graph_park_record() {
     # Closes the window park_audio_clients_for_core_graph_restart opened. Once
-    # the restart tail has CONVERGED, the reconcilers it invokes (audio
-    # hardware, outputd, source intent, AEC, grouping, fan-in coupling) OWN
+    # the restart tail has CONVERGED, the reconcilers it invokes (audio hardware,
+    # outputd, source intent, accessory, AEC, grouping, fan-in coupling) OWN
     # every JASPER_CORE_GRAPH_PARK_UNITS entry, and one they left stopped is
     # stopped on purpose: an output lane the hardware reconciler refused to
     # validate, a follower's snapserver. Replaying the park record over that
@@ -1330,7 +1330,8 @@ _start_core_graph_units() {
 _converge_runtime_units() {
     local profile="$1" unit
     # Mux is core arbitration infrastructure, not a selectable source: start it
-    # on every install. Its role ExecCondition skips a bonded follower.
+    # on every install. A bonded follower lacks the allowed/shared marker that
+    # its ConditionPathExists= needs.
     systemctl enable --now jasper-mux.service
     systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
@@ -1346,8 +1347,10 @@ _converge_runtime_units() {
     # Before the AEC reconcile, which takes over its accessory half on full, and
     # before the park-record forget: where wake detection does not run, this
     # reconciler owns jasper-voice (ADR-0217).
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || {
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
     if [[ "${profile}" == full ]]; then
         # An absent Array parks voice instead of leaving it on an unfed UDP socket.
         reconcile_aec_state

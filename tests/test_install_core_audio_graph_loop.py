@@ -617,12 +617,12 @@ _LEFT_OFF_BY_THE_TAIL = frozenset(
 # validate the DAC lane. reconcile_grouping_state genuinely stops
 # snapclient/snapserver: both ship disabled and are reconciler-started, so they
 # are in OFF_AT_PARK and the unpark's "left off on purpose" skip can never
-# protect them. jasper-audio-hardware-reconcile is an absolute-path binary that
-# does not exist here; shim it converged so its own WARN arm is the one
-# variable the degraded run below changes.
+# protect them. The two absolute-path reconcilers do not exist here; shim them
+# converged so each one's own WARN arm is the one variable a degraded run changes.
 _TAIL_RECONCILER_SHIMS = """
 install_run_bounded() { shift 2; "$@"; }
 /usr/local/sbin/jasper-audio-hardware-reconcile() { return 0; }
+/opt/jasper/.venv/bin/jasper-accessory-reconcile() { return 0; }
 require_outputd_ready() {
     systemctl stop jasper-outputd.service jasper-voice.service
     return 0
@@ -635,29 +635,22 @@ reconcile_grouping_state() {
 _build_sandbox_log() { :; }
 """
 
-# The same tail with the hardware reconcile WARNing instead of converging: it
-# runs to the end anyway (every one of its steps is non-fatal) but nothing has
-# taken ownership of the parked units, so the record must survive to the trap.
-_DEGRADED_TAIL_SHIM = """
-/usr/local/sbin/jasper-audio-hardware-reconcile() { return 1; }
-"""
-
 
 def _run_tail(
     tmp_path: Path,
     function: str,
     *,
     low_memory: bool = False,
-    degraded: bool = False,
+    degraded: str = "",
 ) -> tuple[list[str], list[str]]:
     """Run one profile's whole restart tail with the park/record/unpark chain
     real, a stateful systemctl and reconcilers that leave
     `_LEFT_OFF_BY_THE_TAIL` stopped, then enter the installer's REAL EXIT trap
     entry. Returns the call log split at the sentinel: what the tail did, then
-    what the trap did."""
+    what the trap did. `degraded` names a reconciler that WARNs instead."""
     shims = _stateful_systemctl(tmp_path) + _TAIL_RECONCILER_SHIMS
     if degraded:
-        shims += _DEGRADED_TAIL_SHIM
+        shims += f"{degraded}() {{ return 1; }}\n"
     if low_memory:
         # build_swap_required lives in build-sandbox.sh, which the stub loop
         # must not have seen; force the constrained-build park on.
@@ -738,16 +731,20 @@ def test_a_green_tail_keeps_the_low_memory_build_park_restorable(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "failing",
+    ("/usr/local/sbin/jasper-audio-hardware-reconcile", "/opt/jasper/.venv/bin/jasper-accessory-reconcile"),
+)
+@pytest.mark.parametrize(
     "function",
     ("start_streambox_runtime_units", "install_systemd_units"),
 )
-def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function):
+def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function, failing):
     """The forget is only earned by a tail that CONVERGED. Every step that
     justifies it is non-fatal (`|| WARN`), so one of them WARNing leaves the
     parked units down with no reconciler that owns them. Dropping the record
     there would end the install green on a silent speaker with nothing left to
     restore it, so a WARNed tail must reach the trap with the record intact."""
-    tail, trap = _run_tail(tmp_path, function, degraded=True)
+    tail, trap = _run_tail(tmp_path, function, degraded=failing)
 
     # Not vacuous: the park has to have taken the speaker down first.
     parked = {c.split()[2] for c in tail if c.startswith("systemctl stop ")}
@@ -1066,6 +1063,8 @@ def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function):
 
     # A deploy must never transiently start a household-Off renderer: only
     # the coordinator may make a canonical On transition, and it runs last.
+    assert calls.count("fn enable_usbgadget") == 1
+    assert calls.index("fn enable_usbgadget") < calls.index("fn reapply_source_intent")
     assert not [
         call
         for call in calls

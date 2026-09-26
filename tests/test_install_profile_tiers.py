@@ -401,12 +401,12 @@ _ON_EVERY_PROFILE = (
     "peering_template",
     "state_modes",
     "retired",
+    "control_polkit",
     "systemd_units",
     "wifi_guardian",
     "memory_resilience",
     "cgroup_memory",
     "journald",
-    "control_polkit",
     "web_polkit",
     "web_writable_dirs",
     "correction_tls",
@@ -437,6 +437,8 @@ _REQUIRED_ORDER = (
     # the retired /sources/ socket holds the port the jasper-web bundle enable
     # is about to claim.
     ("retired", "systemd_units"),
+    # The unit install's coupling pass calls the broker; a polkit denial has no root fallback.
+    ("control_polkit", "systemd_units"),
     # Above service_users each compartment re-assert is a silent no-op (its
     # opening `getent group ... || return 0`); above the tier's python step
     # the ownership half still runs but there is no seeded jasper.env to
